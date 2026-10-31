@@ -125,6 +125,13 @@ class AgentPath(unittest.TestCase):
         self.addCleanup(setattr, backend, "agent_ask", None)
         return hosts
 
+    def ask_with(self, served, body):
+        with served.client.stream("POST", "/api/ask", json=body) as reply:
+            self.assertEqual(reply.status_code, 200)
+            text = "".join(reply.iter_text())
+        blocks = [events(b)[0] for b in text.split("\n\n") if b.strip()]
+        return next(data for name, data in reversed(blocks) if name == "answer")
+
     def ask(self, served, question):
         started = time.monotonic()
         seen = []
@@ -217,6 +224,16 @@ class AgentPath(unittest.TestCase):
         self.assertEqual([s["object_id"] for s in answer["subjects"]],
                          [p["object_id"] for p in self.late])
         self.assertTrue(answer["direct_answer"].startswith(f"{len(self.late)} purchase order"))
+        self.assertIn("This is the list on your home page.", answer["direct_answer"])
+        # each late order names its supplier as the reader reads it, on Home and here
+        for po in self.late:
+            self.assertTrue(po["supplier"], po)
+            self.assertIn(f"{po['label']} from {po['supplier']}", answer["direct_answer"])
+        # chat spellings answer from the same list, with the same count
+        for asked in ("wat r the late pos", "any late pos rn?"):
+            got = self.ask(self.ops, asked)[-1][0][1]
+            self.assertEqual([s["object_id"] for s in got["subjects"]],
+                             [p["object_id"] for p in self.late], asked)
         for fact, po in zip(answer["facts"], self.late):
             self.assertIn(f"{po['days_late']} days late", fact["text"])
             self.assertEqual([s["handle"] for s in fact["sources"]],
@@ -232,7 +249,10 @@ class AgentPath(unittest.TestCase):
     def test_only_the_unqualified_list_question_takes_the_late_list(self):
         for asked in ("Which purchase orders are late?", "which POs are late",
                       "What's late?", "late purchase orders", "show me overdue POs",
-                      "Are there any POs past due?", "Which POs are late right now?"):
+                      "Are there any POs past due?", "Which POs are late right now?",
+                      # chat spellings and typos (demo rehearsal 2026-10-31)
+                      "wat r the late pos", "any late pos rn?", "late purchse ordres",
+                      "whats overdue atm", "any late p.o.s?"):
             self.assertTrue(be.late_list_question(asked), asked)
         for asked in ("Why is our latest PO late?", "Which of Acme's POs are late?",
                       "Which POs from Thames Chemicals are late?",
@@ -241,7 +261,10 @@ class AgentPath(unittest.TestCase):
                       "Which purchase orders are late for PO5455?",
                       "Which purchase orders did we receive?",
                       "Which of Maria's purchase orders are overdue?",
-                      f"is {case_fixtures.PO_NUMBER} late?", "Are POs 12 and 14 late?"):
+                      f"is {case_fixtures.PO_NUMBER} late?", "Are POs 12 and 14 late?",
+                      "which of our late purchase orders has the vendor confirmed a "
+                      "delivery date for?", "older late pos", "any late pos from dsm rn?",
+                      "wat r the late pos not confirmed"):
             self.assertFalse(be.late_list_question(asked), asked)
 
     def test_a_host_that_does_not_start_falls_back_to_the_quicker_answer(self):
@@ -306,6 +329,28 @@ class AgentPath(unittest.TestCase):
         answer = self.ask(self.ops, f"whats the status on {po['label'].lower()}")[-1][0][1]
         self.assertIn("though the order status is Overdue", answer["direct_answer"])
 
+    def test_a_hedge_naming_the_po_gives_way_to_the_late_list(self):
+        # demo rehearsal 2026-10-31: "PO 106093 is 111 days late ... I can't tell you
+        # whether PO 106093 is late": the PO's own number is a checked value, so the
+        # hedge naming it was kept as if it stated a checked fact
+        po = self.late[0]
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, po["label"]))]
+        prose = (f"I can't tell you whether PO {po['label']} is late, and I found no vendor "
+                 f"confirmation.\n\nThe due date isn't proven, so I'm not calling it late."
+                 f"\n\nThe order status is {po['label']}.\n\n"
+                 + answer_block(self.handle, po["label"]))
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose))
+        answer = self.ask(self.ops, f"is PO {po['label']} late, and did the vendor confirm "
+                                    "the date?")[-1][0][1]
+        text = answer["direct_answer"]
+        self.assertTrue(text.startswith(f"{po['label']} is {po['days_late']} days late")
+                        or text.startswith(f"PO {po['label']} is {po['days_late']} days late"),
+                        text)
+        self.assertNotIn("can't tell you whether", text)
+        self.assertNotIn("not calling it late", text)
+        self.assertIn(f"The order status is {po['label']}.", text)   # a checked fact stays
+
     def test_a_hedge_about_receipt_is_not_shown_as_a_contrary_source(self):
         po = self.late[0]
         lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
@@ -318,7 +363,7 @@ class AgentPath(unittest.TestCase):
         first = answer["direct_answer"].splitlines()[0]
         self.assertTrue(first.startswith(f"{po['label']} is {po['days_late']} days late"),
                         first)
-        self.assertNotIn("A source says", answer["direct_answer"])
+        self.assertNotIn("Not everything agrees", answer["direct_answer"])
         self.assertIn("The order status is Overdue.", answer["direct_answer"])
 
     def test_a_late_po_a_source_calls_complete_shows_both_side_by_side(self):
@@ -332,7 +377,7 @@ class AgentPath(unittest.TestCase):
         first = answer["direct_answer"].splitlines()[0]
         self.assertTrue(first.startswith(f"Home lists {po['label']} as {po['days_late']} "
                                          "days late"), first)
-        self.assertIn("A source says: The order status is Complete.", first)
+        self.assertIn("Not everything agrees: The order status is Complete.", first)
         # moved up, not repeated; and nothing else the gate passed is dropped
         self.assertEqual(answer["direct_answer"].count("The order status is Complete."), 1)
         self.assertIn("It is marked complete in the Portal.", answer["direct_answer"])
@@ -419,6 +464,114 @@ class AgentPath(unittest.TestCase):
         text = json.dumps(answer["not_found"])
         self.assertNotIn("7342", text)
         self.assertIn("A value the question asks for", text)
+
+    def test_a_materials_question_gives_the_agent_the_walk_and_the_reply_agrees(self):
+        """The materials walk is read before the session starts and handed to the agent
+        in its task; the answer's table is that same walk (read once), and a reply saying
+        no purchase order is linked gives way to the table's own count."""
+        from operator_api import trail as tr
+        ref = lambda oid, label: m.ObjectRef(object_id=oid, type=oid.split(":")[0],  # noqa
+                                             label=label, open_url="/o")
+        rows = [m.MaterialRow(assembly=ref("AssemblyOrder:x", "AO"),
+                              item=ref(f"Product:i{k}", f"ITEM-{k}"),
+                              po=ref(f"PurchaseOrder:p{k}", f"PO-{k}"),
+                              state="undetermined" if k < 2 else None)
+                 for k in range(5)]
+        walked = m.EvidenceTrail(kind="materials", title=tr.materials_title(rows, 5),
+                                 materials=rows, hidden_steps=0)
+        calls = []
+
+        def walk(mapper, view, starts, seconds=0):
+            calls.append(starts)
+            return walked
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, "Overdue"))]
+        prose = (f"I couldn't find any purchase orders linked to {case_fixtures.AO_CODES[0]}, "
+                 "so I can't say which are late. The order status is Overdue. Its "
+                 "materials include ITEM-3.\n\n" + answer_block(self.handle, "Overdue"))
+        seen = {}
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose, seen=seen))
+        with mock.patch.object(tr, "materials_trail", side_effect=walk):
+            got = self.ask(self.ops, f"which POs on {case_fixtures.AO_CODES[0]} are late?")
+        answer = got[-1][0][1]
+        self.assertEqual(len(calls), 1)                     # one walk, before the session
+        self.assertEqual(calls[0][0][1], "AssemblyOrder")
+        self.assertIn(walked.title, seen["prompt"])
+        # the walk is a tool output in the task, never part of the question the reply is
+        # screened against: a figure only it carries is not stated without a passed claim
+        self.assertIn(aa.PREREAD_HEADING, seen["prompt"])
+        self.assertTrue(seen["prompt"].startswith(aa.app_prompt(
+            f"which POs on {case_fixtures.AO_CODES[0]} are late?")))
+        self.assertNotIn("ITEM-3", answer["direct_answer"])
+        self.assertIn("PO PO-0 (object id PurchaseOrder:p0) for item ITEM-0: lateness "
+                      "undecided", seen["prompt"])
+        # undetermined verdicts are not counted as checked
+        self.assertEqual(walked.title, "From the recorded links: 5 purchase orders for this "
+                                       "order's materials, 0 late of 0 with a lateness "
+                                       "verdict; 5 undecided or not checked")
+        self.assertTrue(answer["direct_answer"].startswith(walked.title + "."),
+                        answer["direct_answer"])
+        self.assertNotIn("couldn't find any purchase orders", answer["direct_answer"])
+        self.assertIn("The order status is Overdue.", answer["direct_answer"])
+        self.assertEqual(answer["trail"]["kind"], "materials")
+        self.assertEqual(answer["trail"]["title"], walked.title)
+        # a question naming no order walks nothing and the task carries no walk
+        calls.clear()
+        with mock.patch.object(tr, "materials_trail", side_effect=walk):
+            self.ask(self.ops, "What is the status of the late order?")
+        self.assertEqual(calls, [])
+        self.assertNotIn("materials walk", seen["prompt"])
+
+    def test_a_number_two_different_records_share_is_asked_back_and_the_pick_answers(self):
+        """An identifier naming two different records (not one record's copies) gets a
+        did-you-mean before any session; the pick runs the session on the earlier question
+        about the picked record."""
+        from operator_api import preread
+        po = self.late[0]
+        other = 'PurchaseOrder:bc.purchase_orders:{"id":"synthetic-other"}'
+        real = preread.resolve
+
+        def two(call, found, object_id=None, same=None):
+            item = {"mention": po["label"], "kind": "petra_po", "candidates": [
+                {"object_id": po["object_id"], "object_type": "PurchaseOrder"},
+                {"object_id": other, "object_type": "PurchaseOrder"}]}
+            return real(call, {**found, "ambiguous": [item]}, object_id,
+                        same=lambda ids: False)
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, "Overdue"))]
+        seen = {}
+        self.use(self.ops, lambda on_line: ScriptedSession(
+            on_line, lines, "The order status is Overdue.\n\n"
+            + answer_block(self.handle, "Overdue"), seen=seen))
+        question = f"why don't the invoice and receipt match on {po['label']}?"
+        with mock.patch.object(preread, "resolve", side_effect=two):
+            answer = self.ask(self.ops, question)[-1][0][1]
+            self.assertEqual(seen, {})                       # no session ran
+            self.assertTrue(answer["direct_answer"].endswith("Which did you mean?"))
+            self.assertEqual([c["object_id"] for c in answer["did_you_mean"]],
+                             [po["object_id"], other])
+            self.assertEqual(answer["did_you_mean"][1]["label"],
+                             f"{po['label']} in Business Central")
+            pick = answer["did_you_mean"][0]
+            with self.ops.client.stream("POST", "/api/ask", json={
+                    "question": f"I mean {pick['label']}", "object_id": pick["object_id"],
+                    "history": [{"role": "user", "text": question},
+                                {"role": "assistant", "text": answer["direct_answer"]}]}
+                    ) as reply:
+                self.assertEqual(reply.status_code, 200)
+                body = "".join(reply.iter_text())
+        self.assertIn(question, seen["prompt"])          # the earlier question, answered
+        self.assertIn(pick["object_id"], seen["prompt"])
+        self.assertIn('"outcome"', body)
+        # a pick of a record that settles neither asks the number back again
+        seen.clear()
+        with mock.patch.object(preread, "resolve", side_effect=two):
+            again = self.ask_with(self.ops, {
+                "question": "I mean the other one", "object_id": "Customer:x:1",
+                "history": [{"role": "user", "text": question}]})
+        self.assertEqual(seen, {})
+        self.assertEqual([c["object_id"] for c in again["did_you_mean"]],
+                         [po["object_id"], other])
 
 
 class ItemRecheck(unittest.TestCase):

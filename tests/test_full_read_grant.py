@@ -260,6 +260,58 @@ class FullReadGrantTest(unittest.TestCase):
         now[0] += 301
         self.assertFalse(vince.full_read.usable())
 
+    def test_the_app_s_case_host_keeps_the_grant_s_finance_markings(self):
+        """The app and console read through ``host_access``'s case host: the finance and
+        price markings the grant holds (and the host config's marking grants) stay in its
+        policy, with the console's own markings added, never substituted (the reader once
+        saw every item ledger entry withheld under a finance grant)."""
+        from unittest import mock
+        from operating import ontology_host
+        from operating.case_tools_host import CaptureCaseHostTools
+        from operator_ui.object_workspace import host_access
+        runtime = SimpleNamespace(
+            employee_gate=ep.EmployeeActorGate(self.resolver(), "plx"),
+            mirror=SimpleNamespace(_audience=lambda: SimpleNamespace(
+                allows=lambda actor, relation: True)))
+
+        def base_policy(host, reader):
+            return ontology_host.case_host_policy(
+                runtime, reader, None, marking_grants={"finance": frozenset({"staff:x"})})
+        with mock.patch.object(CaptureCaseHostTools, "__init__", lambda *a, **k: None), \
+                mock.patch.object(CaptureCaseHostTools, "policy_now", base_policy):
+            held = {}
+            for oid in (VINCE, OTHER):
+                actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
+                host = host_access(runtime, None, actor, markings=("l5",)).host
+                held[oid] = set(host.policy_now(actor).held_markings(actor))
+        self.assertEqual(held[VINCE], {"finance", "purchasing_prices", "l5"})
+        self.assertEqual(held[OTHER], {"l5"})
+
+    def test_no_access_caveat_for_a_reader_whose_grant_opens_every_item(self):
+        """Under a full-read grant of mail (all mailboxes), SharePoint and Teams no item
+        permission withholds anything from the reader: the app's "may be in places you
+        can't open" caveats are not shown unless a count says something was withheld; a
+        reader without it, or with a narrower grant, keeps them."""
+        from operator_api import backend, trail
+        resolver = self.resolver()
+
+        def view(oid, res=resolver):
+            gate = ep.EmployeeActorGate(res, "plx")
+            return SimpleNamespace(access=SimpleNamespace(
+                runtime=SimpleNamespace(employee_gate=gate),
+                actor=Actor("plx", frozenset({"employee:" + oid}), "restricted")))
+        self.assertTrue(trail.reads_every_item(view(VINCE)))
+        self.assertFalse(trail.reads_every_item(view(OTHER)))
+        doc = json.loads(json.dumps(self.policy_doc))
+        doc["full_read"][0]["mail_scope"] = "shared_only"
+        self.assertFalse(trail.reads_every_item(view(VINCE, self.resolver(doc))))
+        self.assertFalse(trail.reads_every_item(SimpleNamespace()))
+        reply = ("I found no confirmation. Some mail and files are restricted from your "
+                 "view, so one could still exist. Some mail and files were withheld from "
+                 "this reader, so that isn't proof. The PO is Open.")
+        self.assertEqual(backend.without_access_caveats(reply),
+                         "I found no confirmation. The PO is Open.")
+
     def test_source_and_object_pages_are_labelled_and_journalled_under_the_grant(self):
         from operator_api import auth, backend, models as m
         resolver = self.resolver()

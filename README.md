@@ -16,6 +16,7 @@ Full guide: [`context/HOW-TO-USE.md`](context/HOW-TO-USE.md).
 
 ## What's new
 
+- **v0.16:** a correct late-order list, freshness per source, profitability labelled on item cost with careful verdicts, ambiguous order numbers resolved by asking.
 - **v0.15:** answers show how we know (late-PO trails with vendor confirmation, why-trails for every record type); customer profitability; the email behind a vendor price; an accuracy report.
 - **v0.14:** faster refreshes that keep already-read documents; large Portal tables load in resumable steps.
 - **v0.13:** questions keep working during data refreshes; R&D agenda in seconds; search by meaning measured and ready.

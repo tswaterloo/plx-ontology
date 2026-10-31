@@ -148,6 +148,18 @@ def _decimal(raw: Any) -> Decimal | None:
     return number if number.is_finite() else None
 
 
+def shown_numbers(numbers: list[Decimal]) -> list[str]:
+    """Distinct quantities as a person reads them: at most two decimals (1257.1666... ->
+    1257.17), more only where two would show the same, never a trailing zero."""
+    for places in range(2, 13):
+        step = Decimal(1).scaleb(-places)
+        shown = [format(n.quantize(step).normalize(), "f") if n != n.to_integral_value()
+                 else format(n.normalize(), "f") for n in numbers]
+        if len(set(shown)) == len(shown):
+            return shown
+    return [format(n.normalize(), "f") for n in numbers]
+
+
 def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
     out = []
     for conflict in conflicts if isinstance(conflicts, list) else []:
@@ -170,15 +182,15 @@ def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
                         for number in distinct]
             if len(distinct) < 2 or not all(requires):
                 continue   # every disagreeing value must be cited
-            shown = ", ".join(format(number.normalize(), "f") for number in distinct)
+            shown = " and ".join(f"{n} {unit}" for n in shown_numbers(distinct))
             name = f"{role} quantity" if role else "quantity"
             out.append({
                 "kind": "conflicting_quantity", "key": f"{subject}|{unit}|{role}",
                 "handles": handles,
                 "requires": requires,
                 "summary": _clip(f"{subject}: sources report different {name} values "
-                                 f"({shown} {unit})"),
-                "missing": _clip(f"Which {name} of {subject} is right: {shown} {unit}?", 480),
+                                 f"({shown})"),
+                "missing": _clip(f"Which {name} of {subject} is right: {shown}?", 480),
                 "why": "Cited sources hold different values of the same quantity in the "
                        "same unit; none is taken as the winner.",
                 "about": ("", subject), "priority": "high"})

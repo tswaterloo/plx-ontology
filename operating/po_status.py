@@ -56,7 +56,9 @@ a lead is never compared), is compared on
 receipt state (fully received or Complete against open lines outstanding) and received
 quantity (one unit, both recorded; an FM-mirrored order's seeded 0 is not), and the
 requested-by dates on their precedence tiers. Each conflict holds both values, each
-side's own cited items and who governs: BC lines govern receipt state (Late = requested date passed and not fully received), so a BC side decides the status;
+side's own cited items and who governs: an issued BC order's lines govern receipt state
+(a BC Draft whose lines record no receipt states none: never received against;
+Late = requested date passed and not fully received), so a BC side decides the status;
 with no governing side the status is ``status_disputed``. A twin this reader cannot read
 is no twin here, so it gets no conflict that reveals the other side. A settled twin link
 that joins a BC record to another system's (the Portal entity map's verified
@@ -679,16 +681,22 @@ def _directions(link: str, member: str) -> tuple[str, ...]:
 def side_receipt(records: Sequence[str],
                  reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
                  status: PoStatus, lines: Mapping[str, tuple[Any, list]]) -> str | None:
-    """A side's receipt state. BC lines govern receipt state, whatever
-    the BC header word (the BC API's ``Draft`` is a document not yet released; live
-    2026-10-27 every BC order linked to a Portal one reads Draft): a BC record with
-    readable lines is open while any line's received quantity is below its ordered one,
-    else fully received; with no readable line its ``fullyReceived`` flag states it. Any
+    """A side's receipt state. BC lines govern receipt state of an
+    issued BC order: a BC record with readable lines is open while any line's received
+    quantity is below its ordered one, else fully received; with no readable line its
+    ``fullyReceived`` flag states it. A BC ``Draft`` never received against (no line
+    records a received quantity above 0: the Portal posts its orders to BC as Draft, live
+    2026-10-30) states none: its zero lines are no receipt record, and a draft is not
+    applicable to lateness (decision open-demo-a-bc-draft-states-no-receipt). A Draft
+    whose lines record a receipt (released, received, then reopened for edit) keeps its
+    lines' receipt state, conflicts and all; so does one whose lines are unreadable. Any
     other side by the one definition's status. A missing, unparseable or disputed flag
     and BC records that disagree state none, never a guess."""
     bc_records = [r for r in records if system_of(r) == RECEIPT_AUTHORITY]
     if not bc_records:
         return receipt_state(status)
+    if any(unreceived_draft(reads[r][0], lines.get(r)) for r in bc_records):
+        return None
     states = set()
     for record_id in bc_records:
         triples = (lines.get(record_id) or (None, []))[0]
@@ -701,6 +709,30 @@ def side_receipt(records: Sequence[str],
             return None
         states.add(FULLY_RECEIVED if flags.pop() else OPEN_LINES)
     return states.pop() if len(states) == 1 else None
+
+
+def bc_draft(values: Mapping[str, Sequence[Any]]) -> bool:
+    """A BC record whose header word is Draft (or disputed with Draft): not released, so
+    its lines record no receipt (``side_receipt``)."""
+    return any(header_class(v, "bc") == NOT_ISSUED for v in values.get("bc_status") or ())
+
+
+def unreceived_draft(values: Mapping[str, Sequence[Any]], lines: Any) -> bool:
+    """A BC Draft whose readable lines record no received quantity above 0: never
+    released or received against, so its lines are no receipt record. ``lines``: the
+    record's ``(triples, evidence)`` as read (None or unreadable: not proven, False)."""
+    if not bc_draft(values):
+        return False
+    triples = lines[0] if lines else None
+    if triples is None:
+        return False
+    for _want, got, _unit in triples:
+        if got is UNREAD:
+            return False
+        number = Decimal(0) if got is None else _number(got)
+        if number is None or number > EPS:
+            return False
+    return True
 
 
 def _recorded_received(lines: Iterable[tuple[Any, list]]) -> tuple[Decimal, str | None,
@@ -817,10 +849,14 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     a = _recorded_received(mine_lines.values())
     b = _recorded_received(other_lines.values())
 
-    # an FM-mirrored Portal order's received 0 is ETL-seeded, not a recorded receipt
+    # an FM-mirrored Portal order's received 0 is ETL-seeded, not a recorded receipt;
+    # a BC draft never received against records no receipt at all
     def seeded(records: Sequence[str], got: Any) -> bool:
         return got is not None and got[0] <= EPS and any(r in fm_members for r in records)
-    if seeded(out.members, a) or seeded(firm, b):
+    drafts = [r for r, read in (*mine_reads.items(), *reads.items())
+              if system_of(r) == RECEIPT_AUTHORITY
+              and unreceived_draft(read[0], mine_lines.get(r) or other_lines.get(r))]
+    if seeded(out.members, a) or seeded(firm, b) or drafts:
         return
     if a is not None and b is not None and a[1] == b[1] and abs(a[0] - b[0]) > EPS:
         out.conflicts.append({

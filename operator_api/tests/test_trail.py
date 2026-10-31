@@ -126,15 +126,24 @@ class TrailBoundaryTests(unittest.TestCase):
                  "state": "late" if k % 2 else None, "days_late": None, "verdict": None}
                 for k in range(n)], "gaps": [], "trails": [], "hidden": 0, "may_hide": False,
                 "late_pos": [], "checked_pos": []}
+        # odd rows late, even rows not checked for lateness (no verdict read): the late
+        # count never reads as covering the unchecked ones
         for n, title in (
                 (40, "From the recorded links: 40 purchase orders for this order's "
-                     "materials, 20 late"),
+                     "materials, 20 late of 20 with a lateness verdict; 20 undecided or not "
+                     "checked"),
                 (41, "From the recorded links: 41 purchase orders for this order's "
-                     "materials, 20 late (40 rows shown, 1 more not shown)"),
+                     "materials, 20 late of 20 with a lateness verdict; 21 undecided or "
+                     "not checked (40 "
+                     "rows shown, 1 more not shown)"),
                 (46, "From the recorded links: 46 purchase orders for this order's "
-                     "materials, 23 late (40 rows shown, 6 more not shown)"),
+                     "materials, 23 late of 23 with a lateness verdict; 23 undecided or "
+                     "not checked (40 "
+                     "rows shown, 6 more not shown)"),
                 (60, "From the recorded links: 60 purchase orders for this order's "
-                     "materials, 30 late (40 rows shown, 20 more not shown)")):
+                     "materials, 30 late of 30 with a lateness verdict; 30 undecided or "
+                     "not checked (40 "
+                     "rows shown, 20 more not shown)")):
             with mock.patch.object(tr.et, "materials", return_value=walk(n)):
                 got = tr.materials_trail(mapper(View()), View(),
                                          [("a", "AssemblyOrder", "AO")])
@@ -142,6 +151,12 @@ class TrailBoundaryTests(unittest.TestCase):
             self.assertNotIn("missed", got.model_dump_json())
         self.assertEqual(tr.materials_title([], 0),
                          "From the recorded links: no open purchase order found")
+        # every row checked: the plain count
+        with mock.patch.object(tr.et, "materials", return_value={**walk(2), "rows": [
+                dict(r, state="not_due") for r in walk(2)["rows"]]}):
+            got = tr.materials_trail(mapper(View()), View(), [("a", "AssemblyOrder", "AO")])
+        self.assertEqual(got.title, "From the recorded links: 2 purchase orders for this "
+                                    "order's materials, 0 late")
 
     def test_a_person_the_directory_does_not_clear_is_never_named(self):
         got = mapper(View(), shown=False).po(raw_trail())

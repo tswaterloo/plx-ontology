@@ -61,12 +61,22 @@ from .auth import Reader
 
 MAX_WORKSPACES = 64
 MAX_FACTS = 12
+# The late purchase orders Home lists and the late-list answer names: one limit, one list.
+LATE_LIST_LIMIT = MAX_FACTS
+# How many inbox items the late-order count reads past the first page.
+LATE_COUNT_LIMIT = 20000
 MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
 ASK_TIMEOUT_SECONDS = 600
 ASK_WORKERS = 2
 MAX_QUEUED_ASKS = 8
 READ_TIMEOUT_SECONDS = 60
+# A record page reads its trail and plans: the first page a reader opens after a start
+# checks every mail item of a message type against its item gate once (cold, measured
+# 60 s and more on the live store), so it gets longer than a plain read before "busy".
+PAGE_TIMEOUT_SECONDS = 150
+WARM_PRIORITY = 9          # after every page and Ask read
+WARM_SECONDS = 240         # one warming read per reader in this window
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
 ORIGINAL_READS_PER_READER = 2
 ORIGINAL_READ_WAIT = 5.0       # seconds a read waits for a slot before it is busy
@@ -101,6 +111,11 @@ FAMILY_OWNER = {"BC": "Finance (Business Central owners)", "Portal": "the Portal
 # Host ledger sources -> system labels.
 LEDGER_SYSTEMS = {"portal": "Portal", "bc": "BC", "mail": "Email", "sharepoint": "File",
                   "sharepoint_lists": "File", "teams": "Teams", "mc": "MC"}
+# How bad a capture state is, when two entries name one system.
+CAPTURE_RANK = {"complete": 0, "partial": 1, "failed": 2, "never_captured": 3}
+# The served projection's source families (``store_meta.freshness``) as Home names them.
+STORE_SYSTEMS = {"portal_api": "Portal", "bc": "BC", "graph_mail": "Email",
+                 "sharepoint": "File", "teams": "Teams", "mission_control": "MC"}
 STEP_WORDS = {"plx.find": "Looking up records", "plx.object": "Reading a record",
               "plx.around": "Following links between records",
               "plx.timeline": "Reading the timeline", "plx.documents": "Searching documents "
@@ -309,10 +324,19 @@ class WorkspaceBackend:
                  pg_dsn: Optional[str] = None, understand: Optional[Callable] = None,
                  search: Optional[Callable] = None, ask_served: bool = True,
                  today: Callable[[], date] | None = None, agent_ask: Any = None,
-                 agent_sessions: int = ASK_WORKERS) -> None:
+                 agent_sessions: int = ASK_WORKERS, store_path: Optional[Path] = None,
+                 freshness_bounds: Mapping[str, float] | None = None,
+                 clock: Callable[[], datetime] | None = None) -> None:
         """``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
-        objective box answers), at most ``agent_sessions`` sessions at once."""
+        objective box answers), at most ``agent_sessions`` sessions at once.
+        ``store_path`` and ``freshness_bounds``: the served projection and the host's
+        capture bounds (``operating.host.freshness_bounds``), so Home states each source's
+        age and staleness by the rule answers apply (``ontology_tools.aged``)."""
         self.data_label = data_label
+        self._warmed: dict[str, float] = {}
+        self.store_path = Path(store_path) if store_path else None
+        self.freshness_bounds = dict(freshness_bounds or {})
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.agent_ask = agent_ask
         self._original_slots: dict[str, threading.BoundedSemaphore] = {}
         self._original_all = threading.BoundedSemaphore(ORIGINAL_READS)
@@ -390,11 +414,78 @@ class WorkspaceBackend:
 
     # ---- freshness ----------------------------------------------------------------------
 
+    def _store_freshness(self) -> Optional[list[dict[str, Any]]]:
+        """The served projection's per-source freshness entries (``store_meta``), None
+        when there is no store or it cannot be read."""
+        path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
+                                   if self.state_dir else None)
+        if path is None or not path.is_file():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute("SELECT value FROM store_meta WHERE key = 'freshness'"
+                                   ).fetchone()
+            finally:
+                conn.close()
+            raw = json.loads(row[0]) if row else None
+        except (sqlite3.Error, ValueError, TypeError):
+            return None
+        if isinstance(raw, dict):
+            raw = [dict(v, source=k) for k, v in raw.items() if isinstance(v, dict)]
+        return [e for e in raw if isinstance(e, dict) and isinstance(e.get("source"), str)] \
+            if isinstance(raw, list) else None
+
     def freshness(self, base: Mapping[str, Any] | None = None) -> m.Freshness:
+        """Each source's age as the data served states it: the served projection's own
+        per-source capture time, judged by the host's capture bound with the one rule
+        answers apply (``ontology_tools.aged``), so Home never says fresh where an answer
+        says stale. Without a readable projection, the host ledger's capture times."""
         sources: list[m.FreshnessSource] = []
         oldest: Optional[str] = None
         ledger = self.state_dir / "host" / "host.sqlite" if self.state_dir else None
-        if ledger is not None and ledger.is_file():
+        entries = self._store_freshness()
+        if entries is not None:
+            from operating.ontology_tools import aged, capture_failures
+            now = self.clock()
+            failed = capture_failures(ledger)
+            seen: dict[str, m.FreshnessSource] = {}
+            for entry in entries:
+                system = STORE_SYSTEMS.get(entry["source"])
+                if system is None:
+                    continue
+                captured = entry.get("captured_at")
+                age = None
+                if isinstance(captured, str):
+                    try:
+                        age = max(0, int((now - datetime.fromisoformat(
+                            captured.replace("Z", "+00:00"))).total_seconds()))
+                    except ValueError:
+                        captured = None
+                if not isinstance(captured, str):
+                    shown = m.FreshnessSource(system=system, stale=True,
+                                              capture="never_captured")
+                else:
+                    capture = ("failed" if entry["source"] in failed else "complete"
+                               if entry.get("completeness") == "complete" else "partial")
+                    # partial: budgeted, continuing next cycle, judged by age alone;
+                    # failed: stale whatever its age (the answers' rule, ``aged``)
+                    shown = m.FreshnessSource(
+                        system=system, as_of=captured, age_seconds=age, capture=capture,
+                        stale=bool(aged(entry, self.freshness_bounds, now,
+                                        failed).get("stale")))
+                held = seen.get(system)
+                if held is None:
+                    seen[system] = shown
+                    continue
+                # one system, two families or entries: the oldest time, the worst state
+                worst = max((held, shown), key=lambda x: CAPTURE_RANK[x.capture or "complete"])
+                older = max((held, shown), key=lambda x: (x.as_of is None, x.age_seconds or 0))
+                seen[system] = older.model_copy(update={
+                    "stale": held.stale or shown.stale, "capture": worst.capture})
+            sources = list(seen.values())
+            oldest = min((s.as_of for s in sources if s.as_of), default=None)
+        elif ledger is not None and ledger.is_file():
             try:
                 conn = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True, timeout=1)
                 try:
@@ -513,6 +604,11 @@ class WorkspaceBackend:
         from operating.objective_runner import MAX_OBJECTIVE
 
         question = request.question.strip()
+        picked = picked_question(request)
+        if picked is not None:
+            # A did-you-mean pick answers the person's previous question about the record
+            # they picked; the pick itself names the record.
+            return f"{picked}\n({question})"[:MAX_OBJECTIVE]
         earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
                    and turn.text.strip()][-2:]
         if earlier and not list(find_identifiers(question)):
@@ -541,12 +637,18 @@ class WorkspaceBackend:
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
         answer = None
+        # A did-you-mean pick keeps the question it answers (its intent) with the record
+        # picked as ``object_id``.
+        intent = picked_question(request) or request.question
         if not request.object_id and late_list_question(request.question):
             answer = yield from self._late_ask(reader, request, conversation, ms)
-        elif not request.object_id and profit_question(request.question):
-            # A customer the question names, answered from checked order margins; a
-            # question naming no readable customer goes on to the agent path.
-            answer = yield from self._profit_ask(reader, request, conversation, ms)
+        elif profit_question(intent) and (not request.object_id
+                                          or customer_object(request.object_id)):
+            # A customer the question names (or the customer record it is asked about),
+            # answered from checked order margins; a question naming no readable customer
+            # goes on to the agent path.
+            answer = yield from self._profit_ask(reader, request, conversation, ms,
+                                                 question=intent)
         if answer is not None:
             pass
         elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
@@ -601,50 +703,59 @@ class WorkspaceBackend:
                                       elapsed_ms=ms())
 
         def job(view: Any) -> m.AnswerPayload:
-            inbox, labels = self._attention(view)
-            late, _risk = attention_items(inbox, labels, limit=MAX_FACTS)
+            inbox, labels, suppliers = self._attention(view)
+            late, _risk = attention_items(inbox, labels, suppliers=suppliers)
             with view._request():
                 return late_answer(self, view, request, inbox, late, conversation, ms)
         return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
 
     def _profit_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
-                    ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+                    ms: Callable[[], int], *, question: Optional[str] = None
+                    ) -> Iterator[tuple[str, Any]]:
         """Is a customer profitable, and why not (``operating.customer_profit``): the
-        customer the question names, found by this reader's ``plx.find``, its orders' checked
-        margins, the worst order's cost breakdown, the trail and a suggested next step. None
-        when the question names no customer this reader can find (the agent path answers)."""
+        customer the question names, found by this reader's ``plx.find`` (or the customer
+        record ``request.object_id`` names: a pick or the record's page), its orders'
+        checked margins, the worst order's cost breakdown, the trail and a suggested next
+        step. ``question``: the question being answered (a pick's earlier question; default
+        the request's). None when it names no customer this reader can find (the agent path
+        answers)."""
         from operating import customer_profit
+        from operating.customer_profit import normal_name
 
+        question = question or request.question
         events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
-        words = customer_profit.customer_words(request.question)
-        if not words:
+        words = customer_profit.customer_words(question)
+        named = customer_profit.name_and_number(question)
+        if not words and not request.object_id:
             return None
 
         def job(view: Any) -> Optional[m.AnswerPayload]:
             with view._request():
-                from operating.customer_profit import normal_name
-                found = view._call("plx.find", {"query": normal_name(words) or words,
-                                                "object_type": "Customer", "limit": 8})
-                candidates = [c["object"] for c in found.get("candidates") or ()
-                              if isinstance(c.get("object"), Mapping)
-                              and c["object"].get("object_type") == "Customer"]
-                if not candidates:
-                    return None
-                # Margins are Business Central figures: a name matching one customer in BC
-                # and its Portal or Sage twins is that BC customer; two BC customers (two
-                # companies, two accounts) are offered, never merged or picked.
-                bc = [c for c in candidates if str(c["object_id"]).split(":")[1:2] and
-                      str(c["object_id"]).split(":")[1].startswith("bc.")]
-                candidates = bc or candidates
-                from operating.customer_profit import normal_name
-                exact = [c for c in candidates
-                         if normal_name(words) in customer_names(view, c)]
-                if len(exact) != 1:
-                    # Picked only on an exact name or customer number; a fuzzy match (one or
-                    # several) is offered as a choice, never picked.
-                    return profit_choices(self, view, request, exact or candidates,
-                                          conversation, ms)
-                candidates = exact
+                if request.object_id:
+                    card = view._call("plx.object", {"object_id": request.object_id,
+                                                     "properties": ["name"]}) or {}
+                    if not card or card.get("error"):
+                        return None   # not readable by this reader: the agent path answers
+                    candidates = [{"object_id": request.object_id}]
+                else:
+                    exact, candidates = [], []
+                    # "Name (number)", as a did-you-mean choice reads: found by its number,
+                    # picked only when the name is the customer's too; else by the words.
+                    for query, wanted in ([(named[1], {normal_name(named[0]),
+                                                       normal_name(named[1])})] if named
+                                          else []) + [(normal_name(words) or words,
+                                                       {normal_name(words)})]:
+                        exact, candidates = find_customers(view, query, wanted)
+                        if len(exact) == 1:
+                            break
+                    if not candidates:
+                        return None
+                    if len(exact) != 1:
+                        # Picked only on an exact name or customer number; a fuzzy match (one
+                        # or several) is offered as a choice, never picked.
+                        return profit_choices(self, view, request, exact or candidates,
+                                              conversation, ms)
+                    candidates = exact
                 events.put(("status", m.StatusEvent(
                     step="reading", message="Reading the customer's orders and their margins",
                     elapsed_ms=ms())))
@@ -658,8 +769,8 @@ class WorkspaceBackend:
                 try:
                     profit = customer_profit.profitability(
                         call, candidates[0]["object_id"], today=today,
-                        question=request.question,
-                        focus=customer_profit.order_words(request.question))
+                        question=question,
+                        focus=customer_profit.order_words(question))
                 except customer_profit.ProfitError:
                     return None
                 return profit_answer(self, view, request, profit, conversation, ms)
@@ -705,9 +816,68 @@ class WorkspaceBackend:
                 status("checking", "A figure did not check out; correcting it")
 
         session: Future = Future()
+        pre: dict[str, Any] = {}
+
+        def prepare() -> Optional[str]:
+            """Before the session (``operator_api.preread``): which record each identifier
+            names, and the evidence the answer's trail shows (a purchase order's trail or
+            an order's materials walk), read once as this reader and handed to the agent as
+            a tool output it cites from, so its reply and the trail agree. None: the
+            question names records that only share a number, so the person picks one
+            first (no session)."""
+            from . import preread, trail as trails
+            try:
+                found = found_future.result(timeout=READ_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001 - no roots: the agent finds its own
+                return ""
+
+            def read(view: Any) -> tuple[dict, list, Optional[m.EvidenceTrail], str]:
+                with view._request():
+                    call = lambda name, args: view._call(name, dict(args))  # noqa: E731
+                    resolved, several = preread.resolve(call, found, request.object_id)
+                    if several:
+                        # a number the record asked about (a pick, a page) does not settle
+                        # is asked back again, never dropped
+                        return resolved, several, None, ""
+                    roots = list(resolved.get("roots") or ())
+                    late = named_late_pos(self, view, request.question, resolved)
+                    starts = trails.materials_starts(request.question, roots + (
+                        [{"object_id": request.object_id}] if request.object_id else []),
+                        list(resolved.get("ambiguous") or ()), late)
+                    names_po = late or any(
+                        str(r.get("object_type") or r.get("object_id")).startswith(
+                            "PurchaseOrder") for r in roots)
+                    if not starts and not names_po:
+                        return resolved, [], None, preread.brief(
+                            None, [r for r in roots if r.get("found_by") == "identifier"])
+                    status("reading", "Reading the purchase orders behind the order's "
+                                      "materials" if starts else
+                           "Reading the purchase order's trail: receipts, confirmations "
+                           "and mail")
+                    got = answer_trail(self, view, request, resolved, late, [])
+                    if got is None or got.kind not in ("materials", "purchase_order"):
+                        return resolved, [], None, ""
+                    return resolved, [], got, preread.brief(
+                        got, [r for r in roots if r.get("found_by") == "identifier"], call)
+            try:
+                resolved, several, got, told = submit(
+                    self.ask_jobs, self.ask_stopped, reader, read, 1).result(
+                    timeout=trails.MATERIALS_SECONDS + READ_TIMEOUT_SECONDS + 30)
+            except Exception:  # noqa: BLE001 - the agent answers without it
+                return ""
+            pre["found"] = resolved
+            if several:
+                pre["several"] = several
+                return None
+            pre["trail"] = got
+            return told
 
         def run_session() -> None:
             try:
+                brief = prepare()
+                if brief is None:
+                    session.set_result(None)   # the person picks the record first
+                    return
                 if not self._sessions.acquire(blocking=False):
                     status("searching", "Waiting for a free agent; other questions are "
                                         "running")
@@ -715,7 +885,8 @@ class WorkspaceBackend:
                         raise errors.ASK_BUSY
                 try:
                     status("searching", "Finding the records your question is about")
-                    session.set_result(self.agent_ask.run(reader.session, question, emit))
+                    session.set_result(self.agent_ask.run(reader.session, question,
+                                                          emit, context=brief))
                 finally:
                     self._sessions.release()
             except BaseException as error:  # noqa: BLE001 - handed to the route
@@ -725,6 +896,18 @@ class WorkspaceBackend:
         threading.Thread(target=run_session, name="app-ask-session", daemon=True).start()
         yield from self._drain(events, session,
                                AGENT_QUEUE_SECONDS + self.agent_ask.seconds + 120)
+        if pre.get("several"):
+            from . import preread
+
+            def pick(view: Any) -> m.AnswerPayload:
+                with view._request():
+                    return preread.choices_answer(
+                        lambda name, args: view._call(name, dict(args)), request,
+                        pre["several"], conversation=conversation,
+                        freshness=self.freshness(_base(view)), object_url=object_url,
+                        latency_ms=ms(), answer_id=secrets.token_hex(12))
+            return submit(self.ask_jobs, self.ask_stopped, reader, pick, 0).result(
+                timeout=READ_TIMEOUT_SECONDS)
         try:
             ran = session.result()
         except errors.UserFacing:
@@ -737,7 +920,7 @@ class WorkspaceBackend:
             answer.direct_answer = (AGENT_FALLBACK + answer.direct_answer)[:4000]
             return answer
         try:
-            found = found_future.result(timeout=READ_TIMEOUT_SECONDS)
+            found = pre.get("found") or found_future.result(timeout=READ_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001 - the subjects are a hint; the answer stands
             found = {}
         while not events.empty():
@@ -747,7 +930,8 @@ class WorkspaceBackend:
 
         def shape(view: Any) -> m.AnswerPayload:
             with view._request():
-                return agent_answer(self, view, request, ran, found, conversation, ms)
+                return agent_answer(self, view, request, ran, found, conversation, ms,
+                                    trail=pre.get("trail"))
         future = submit(self.ask_jobs, self.ask_stopped, reader, shape, 0)
         return future.result(timeout=READ_TIMEOUT_SECONDS)
 
@@ -1068,22 +1252,54 @@ class WorkspaceBackend:
     # ---- home ---------------------------------------------------------------------------
 
     @staticmethod
-    def _attention(view: Any) -> tuple[dict[str, Any], dict[str, str]]:
-        """The reader's gap inbox (``ObjectWorkspace.gap_inbox``) and each gap subject's
-        display label: what Home's needs-attention and the late-PO answer both read."""
+    def _attention(view: Any) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+        """The reader's gap inbox (``ObjectWorkspace.gap_inbox``), each gap subject's
+        display label and each late purchase order's supplier as this reader reads it
+        (``supplier_of``): what Home's needs-attention and the late-PO answer both read."""
         inbox = view.gap_inbox()
+        total = late_total(inbox)
+        if inbox.get("more") and total >= len(inbox.get("gaps") or ()) - 1:
+            # late orders come first: a full page of them may hide more, so count them
+            # over a read that pages past the list's page (the shown list stays as read)
+            try:
+                total = late_total(view.gap_inbox(limit=LATE_COUNT_LIMIT))
+            except TypeError:   # a workspace that reads one page only
+                pass
+        inbox = {**inbox, "late_total": total}
         labels: dict[str, str] = {}
+        suppliers: dict[str, str] = {}
+        wanted: dict[bool, int] = {True: 0, False: 0}   # late, at risk: subjects to label
         with view._request():
-            for gap in (inbox.get("gaps") or ())[:20]:
+            for gap in inbox.get("gaps") or ():
                 oid = gap.get("object_id")
-                if isinstance(oid, str) and oid not in labels:
-                    card = view._call("plx.object", {"object_id": oid})
-                    labels[oid] = plain((card.get("object") or {}).get("display")) or ""
-        return inbox, labels
+                late = gap.get("days_late") is not None
+                if not isinstance(oid, str) or oid in labels or \
+                        wanted[late] >= LATE_LIST_LIMIT:
+                    continue      # every subject Home shows is labelled, no more
+                wanted[late] += 1
+                card = view._call("plx.object", {"object_id": oid})
+                labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+                if late:
+                    name = supplier_of(view, oid, card)
+                    if name:
+                        suppliers[oid] = name
+        return inbox, labels, suppliers
 
     def home(self, reader: Reader) -> m.Home:
-        inbox, labels = self.reads.run(reader, self._attention, timeout=READ_TIMEOUT_SECONDS)
-        late, risk = attention_items(inbox, labels)
+        inbox, labels, suppliers = self.reads.run(reader, self._attention,
+                                                  timeout=READ_TIMEOUT_SECONDS)
+        late, risk = attention_items(inbox, labels, suppliers=suppliers)
+        warmed = self._warmed.get(reader.key, 0.0)
+        if late and time.monotonic() - warmed > WARM_SECONDS:
+            self._warmed[reader.key] = time.monotonic()
+            # The first record page a reader opens checks every mail item of a message
+            # type against their item gate (cold: a minute and more); read the first late
+            # order's page now, behind every other read, so that check is done before
+            # they click.
+            first = late[0]
+            self.reads.submit(reader, lambda view: object_page(
+                self, view, first.object_id.split(":", 1)[0], first.object_id),
+                priority=WARM_PRIORITY)
         status = inbox.get("status")
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
@@ -1096,6 +1312,8 @@ class WorkspaceBackend:
                 status="read" if status == "read" else "not_configured"
                 if status in ("not_configured", "not_scheduled") else "unavailable",
                 late_pos=late, at_risk=risk, hidden=None,   # the inbox counts no hidden gap
+                late_total=max(len(late), int(inbox.get("late_total") or 0))
+                if status == "read" else None,
                 as_of=inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
@@ -1105,7 +1323,7 @@ class WorkspaceBackend:
         """The record's page; one served under a full-read grant is labelled and journalled."""
         page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
                                                                object_id),
-                              timeout=READ_TIMEOUT_SECONDS)
+                              timeout=PAGE_TIMEOUT_SECONDS)
         return self._labelled(reader, page, "/api/object")
 
     def _labelled(self, reader: Reader, payload: Any, path: str) -> Any:
@@ -1205,26 +1423,68 @@ class WorkspaceBackend:
 
 # ---- helpers shared by the routes ------------------------------------------------------
 
+def late_total(inbox: Mapping[str, Any]) -> int:
+    """How many late purchase orders the reader's inbox lists (each order once)."""
+    return len({g.get("object_id") for g in inbox.get("gaps") or ()
+                if g.get("days_late") is not None and isinstance(g.get("object_id"), str)})
+
+
+def supplier_of(view: Any, oid: str, card: Mapping[str, Any]) -> Optional[str]:
+    """The supplier of a purchase order as this reader reads it: the order's own vendor
+    name (a BC order carries it), else the display of the supplier its settled
+    ``ordered_from`` link reaches (one supplier only: two are not picked between); None
+    when neither is readable."""
+    names = {plain(v.get("value")) for v in card.get("values") or ()
+             if isinstance(v, Mapping) and v.get("property") == "vendor_name"} - {None, ""}
+    if len(names) == 1:
+        return str(next(iter(names)))[:200]
+    if names:
+        return None
+    try:
+        found = view._call("plx.around", {
+            "from": oid, "tier_floor": "verified", "limit": 3,
+            "path": [{"link_type": "PurchaseOrder.ordered_from", "direction": "forward"}]})
+    except Exception:  # noqa: BLE001 - no supplier shown rather than a wrong one
+        return None
+    shown = {plain(o.get("display")) for o in found.get("objects") or ()
+             if isinstance(o, Mapping)} - {None, ""}
+    return str(next(iter(shown)))[:200] if len(shown) == 1 else None
+
+
 def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
-                    limit: int = 10) -> tuple[list[m.LatePo], list[m.AtRisk]]:
+                    limit: int = LATE_LIST_LIMIT, *, suppliers: Mapping[str, str] | None = None
+                    ) -> tuple[list[m.LatePo], list[m.AtRisk]]:
     """Home's late purchase orders and at-risk items from the reader's gap inbox, in the
-    inbox's order (longest late first); the late-PO answer reads the same list."""
+    inbox's order (longest late first); the late-PO answer reads the same list with the
+    same limit, so both show the same orders and the same count."""
     late: list[m.LatePo] = []
     risk: list[m.AtRisk] = []
+    suppliers = suppliers or {}
     for gap in inbox.get("gaps") or ():
         oid, kind = gap.get("object_id"), str(gap.get("object_type") or "Object")
         if not isinstance(oid, str):
             continue
-        label = labels.get(oid) or f"{kind} record"
+        label = labels.get(oid) or re.sub(r"(?<=[a-z])(?=[A-Z])", " ", kind).capitalize()
         sources = [m.Source(system=system_of(h), handle=h, label=record_words(h),
                             open_url=open_url(h))
                    for h in (gap.get("citations") or ())[:3] if isinstance(h, str)]
         reason = str(gap.get("summary") or (gap.get("follow_up") or {}).get("why")
                      or "Needs attention")[:300]
+        if gap.get("kind") == "conflicting_quantity":
+            # an inbox built before the summary rounded its values: "(1257, 1257.1666 box)"
+            # reads "(1257 box and 1257.17 box)", as the gap engine now writes it
+            reason = re.sub(r"\((-?[\d.]+(?:, -?[\d.]+)+) ([^()\d][^()]*)\)$",
+                            _quantities_in_words, reason)
+        # "AssemblyOrder.ordered_boxes: ..." reads "Assembly order ordered boxes: ..."
+        reason = re.sub(r"^([A-Z][A-Za-z]+)\.([a-z_]+)(?=:)", lambda f: (
+            re.sub(r"(?<=[a-z])(?=[A-Z])", " ", f.group(1)).capitalize() + " "
+            + f.group(2).replace("_", " ")), reason)
+        if gap.get("days_late") is not None and any(p.object_id == oid for p in late):
+            continue   # one order, one line
         if gap.get("days_late") is not None and len(late) < limit:
             late.append(m.LatePo(object_id=oid, label=label, days_late=int(gap["days_late"]),
-                                 reason=reason, open_url=object_url(kind, oid),
-                                 sources=sources))
+                                 supplier=suppliers.get(oid), reason=reason,
+                                 open_url=object_url(kind, oid), sources=sources))
         elif gap.get("days_late") is None and len(risk) < limit:
             risk.append(m.AtRisk(object_id=oid, label=label, kind=str(gap.get("kind")),
                                  reason=reason, open_url=object_url(kind, oid),
@@ -1232,31 +1492,23 @@ def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
     return late, risk
 
 
-# "Which purchase orders are late?": the reader's whole late list, asked with no filter.
-# Only these words may make it up: any other word (a supplier, customer or person, a
-# negation, a time frame, another filter: "open", "from", "last quarter") sends the
-# question to the agent, which reads and the gate checks.
-LATE_WORDS = frozenset({"late", "overdue", "behind"})
-PO_WORDS = frozenset({"po", "pos", "purchase", "orders", "order"})
-LIST_FILLER = frozenset({
-    "which", "what", "whats", "s", "are", "is", "show", "list", "me", "all", "our", "the",
-    "any", "there", "currently", "right", "now", "today", "of", "my", "please", "how",
-    "many", "still", "past", "due", "running", "us", "we", "have", "do", "can", "you",
-    "a", "at", "moment"})
+def _quantities_in_words(found: re.Match) -> str:
+    from decimal import Decimal, InvalidOperation
+    from operating.proactive_gaps import shown_numbers
+    try:
+        numbers = [Decimal(n) for n in found.group(1).split(", ")]
+    except InvalidOperation:
+        return found.group(0)
+    return "(" + " and ".join(f"{n} {found.group(2)}" for n in shown_numbers(numbers)) + ")"
 
 
 def late_list_question(question: str) -> bool:
-    """Whether ``question`` asks only for the list of late purchase orders: a late word,
-    and every other word a list or purchase-order word (``LIST_FILLER``, ``PO_WORDS``);
-    "past due" counts as late, and "what's late" needs no PO word."""
-    from ontology.identifiers import find_identifiers
-    if re.search(r"\d", question) or list(find_identifiers(question)):
-        return False   # a number or a record named: never the whole list
-    words = re.findall(r"[a-z]+", question.lower().replace("\u2019", "'").replace("'", ""))
-    if not words or len(words) > 12:
-        return False
-    late = bool(LATE_WORDS & set(words)) or "past due" in " ".join(words)
-    return late and set(words) <= LATE_WORDS | PO_WORDS | LIST_FILLER
+    """Whether ``question`` asks only for the list of late purchase orders, typos and chat
+    spellings included ("wat r the late pos", "any late pos rn?"); a qualified question (a
+    supplier, a negation, a time frame, a record) goes to the agent, which reads and the
+    gate checks (``mcp_portfolio.late_list_words``, plx.find's home mode reads the same)."""
+    from operating.mcp_portfolio import late_list_words
+    return late_list_words(question)
 
 
 def _base(view: Any) -> Mapping[str, Any]:
@@ -1291,11 +1543,15 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         direct = f"No purchase order you can see is late{when}."
         outcome = "answered"
     else:
-        named = "; ".join(f"{po.label} ({po.days_late} days)" for po in late[:5])
+        total = max(len(late), int(inbox.get("late_total") or late_total(inbox)))
+        named = "; ".join(f"{po.label}" + (f" from {po.supplier}" if po.supplier else "")
+                          + f" ({po.days_late} days)" for po in late[:5])
         more = f", and {len(late) - 5} more below" if len(late) > 5 else ""
-        direct = (f"{len(late)} purchase order{'s' if len(late) != 1 else ''} you can see "
-                  f"{'are' if len(late) != 1 else 'is'} late{when}: {named}{more}. "
-                  "This is the list on your home page.")
+        shown = ("This is the list on your home page." if total == len(late) else
+                 f"The {len(late)} longest late are below and on your home page; "
+                 f"{total - len(late)} more are not listed.")
+        direct = (f"{total} purchase order{'s' if total != 1 else ''} you can see "
+                  f"{'are' if total != 1 else 'is'} late{when}: {named}{more}. {shown}")
         outcome = "answered"
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
@@ -1306,6 +1562,28 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                               label=po.label[:200], open_url=po.open_url)
                   for po in late[:MAX_FACTS]],
         did_you_mean=[], conversation_id=conversation, latency_ms=ms())
+
+
+# How the app words a did-you-mean pick (app/src/app/(app)/ask/page.tsx ``onPick``): the
+# picked record goes as the request's ``object_id``.
+PICK_PREFIX = "i mean "
+
+
+def picked_question(request: m.AskRequest) -> Optional[str]:
+    """The question a did-you-mean pick answers: with a picked record (``object_id``) and
+    the pick's wording, the person's latest earlier question that is not itself a pick;
+    else None (not a pick, or nothing earlier to carry)."""
+    if not request.object_id or not request.question.strip().casefold().startswith(
+            PICK_PREFIX):
+        return None
+    earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
+               and turn.text.strip()
+               and not turn.text.strip().casefold().startswith(PICK_PREFIX)]
+    return earlier[-1] if earlier else None
+
+
+def customer_object(object_id: str) -> bool:
+    return str(object_id).split(":", 1)[0] == "Customer"
 
 
 def profit_question(question: str) -> bool:
@@ -1327,6 +1605,25 @@ def _decided_sources(backend: "WorkspaceBackend", view: Any, handles: Iterable[A
     handles = [h for h in dict.fromkeys(handles) if isinstance(h, str)][:MAX_SOURCES_PER_FACT]
     decided = view.access.decide(handles) if handles else {}
     return [backend._source(view, h) for h in handles if decided.get(h) is None]
+
+
+def find_customers(view: Any, query: str, wanted: set[str]
+                   ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """(the customers whose name and number as this reader reads them include every
+    ``wanted`` form, the customers ``plx.find`` offers for ``query``). Margins are Business
+    Central figures: a name matching one customer in BC and its Portal or Sage twins is that
+    BC customer; two BC customers (two companies, two accounts) are offered, never merged
+    or picked."""
+    if not query:
+        return [], []
+    found = view._call("plx.find", {"query": query, "object_type": "Customer", "limit": 8})
+    candidates = [c["object"] for c in found.get("candidates") or ()
+                  if isinstance(c.get("object"), Mapping)
+                  and c["object"].get("object_type") == "Customer"]
+    bc = [c for c in candidates if str(c["object_id"]).split(":")[1:2] and
+          str(c["object_id"]).split(":")[1].startswith("bc.")]
+    candidates = bc or candidates
+    return [c for c in candidates if wanted <= customer_names(view, c)], candidates
 
 
 def customer_names(view: Any, candidate: Mapping[str, Any]) -> set[str]:
@@ -1368,6 +1665,8 @@ def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest
 
 GAP_OWNER = {"LINE_NOT_INVOICED": "Finance: post the order's invoice in Business Central",
              "COST_NOT_YET_ACTUAL": "Finance: the cost is booked once the shipment is invoiced",
+             "COST_NOT_VALUED": "Finance: the item's cost in Business Central (its unit cost "
+                                "or cost adjustment)",
              "NO_QUOTE_LINK": "Sales: the Portal quote the order was converted from",
              "MATERIAL_SOURCE_NOT_LINKED": "Operations: the item's bill of materials",
              "LABOUR_OVERHEAD_NOT_RECORDED": "Finance: production cost reports outside the "
@@ -1380,7 +1679,27 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     """``operating.customer_profit.profitability`` as the contract's answer: the totals and
     the worst orders as facts, the cost breakdown, the drivers, the trail, the gaps as not
     found and the withheld orders as a count."""
-    from operating.customer_profit import money_words, not_read_words, _plain
+    from operating.customer_profit import (MARGIN_BASIS, MARGIN_NOTE, money_words,
+                                           not_read_words, _plain)
+
+    def blocking_words(blocking: Sequence[tuple[str, str]]) -> str:
+        by: dict[str, list[str]] = {}
+        for number, why in blocking:
+            by.setdefault(why, []).append(number)
+        verbs = {"has ": "have ", "is ": "are ", "rests ": "rest "}
+        out = []
+        for why, numbers in by.items():
+            many = len(numbers) != 1
+            said = next((verbs[k] + why[len(k):] for k in verbs
+                         if many and why.startswith(k)), why)
+            out.append(f"{len(numbers)} invoiced order{'s' if many else ''} {said} ("
+                       + ", ".join(numbers[:6]) + (", ..." if len(numbers) > 6 else "") + ")")
+        return "; ".join(out)
+
+    def excluded_words(totals: Mapping[str, Any]) -> str:
+        n = len(totals.get("excluded") or ())
+        return (f" {n} order{'s' if n != 1 else ''} not yet invoiced, excluded." if n
+                else "")
 
     cust = profit["customer"]
     totals = profit["totals"]
@@ -1401,6 +1720,9 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
 
     facts: list[m.Fact] = []
     period = profit["period"]["words"]
+    mixed = sorted({o["currency"] for o in profit["orders"] if o["decided"] and o["currency"]}
+                   ) if any(g.get("code") == "MIXED_CURRENCY" for g in profit.get("gaps") or ()
+                            ) else []
     counted, in_period, read = totals["counted"], totals["orders"], totals["read"]
     exact = profit.get("coverage", {}).get("count_exact", True)
     basis = profit["period"]["basis"]
@@ -1409,33 +1731,54 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                     f"{'' if exact else 'at least '}{in_period} orders in the period and "
                     f"only the {read} most recent were read "
                     f"({not_read_words(in_period, read, exact)}); {basis}.")
+    elif totals.get("blocking"):
+        # No verdict and no customer total while an invoiced order of the
+        # period has no checked margin; the checked orders are still ranked (partial).
+        headline = (f"I can't give a verdict for {cust['name']} in {period}: "
+                    + blocking_words(totals["blocking"]) + "."
+                    + excluded_words(totals)
+                    + ((" The checked order is ranked below (partial)." if counted == 1
+                        else f" The {counted} checked orders are ranked below (partial).")
+                       if counted else ""))
     elif totals.get("margin") is not None:
         verdict = "profitable" if totals["margin"] > 0 else "not profitable"
-        over = (f"over {counted} of {in_period} orders" if counted != in_period
-                else f"over {counted} order{'s' if counted != 1 else ''}")
         headline = (f"{cust['name']} is {verdict} in {period}: revenue "
-                    f"{money_words(totals['revenue'], cur)}, booked cost "
-                    f"{money_words(totals['booked_cost'], cur)}, margin "
+                    f"{money_words(totals['revenue'], cur)}, item cost "
+                    f"{money_words(totals['booked_cost'], cur)}, margin {MARGIN_BASIS}: "
                     f"{money_words(totals['margin'], cur)}"
                     + (f" ({_plain(totals['margin_pct'])}%)" if totals.get("margin_pct")
-                       is not None else "") + f" {over} with a complete margin; {basis}.")
+                       is not None else "")
+                    + f" over {counted} invoiced order{'s' if counted != 1 else ''}; "
+                    f"{basis}." + excluded_words(totals) + " " + MARGIN_NOTE)
         decided = [o for o in profit["orders"] if o["decided"]]
         facts.append(m.Fact(text=headline, check="computed_from_cited_records",
                             sources=_decided_sources(backend, view, [
                                 h for o in decided for h in order_handles(o)])))
+    elif in_period and totals.get("excluded") and not counted:
+        headline = (f"I can't state a margin for {cust['name']} in {period}: none of its "
+                    f"{in_period} order{'s' if in_period != 1 else ''} you can see is "
+                    "invoiced yet." + excluded_words(totals))
+    elif mixed:
+        # every invoiced order has a checked margin, but in different currencies: nothing
+        # is converted, so no single total and no verdict; each order in its own currency
+        headline = (f"I can't give a verdict for {cust['name']} in {period}: its orders are "
+                    f"in different currencies ({' and '.join(mixed)}), so no single total. "
+                    f"The {counted} checked order{'s are' if counted != 1 else ' is'} ranked "
+                    "below within each currency." + excluded_words(totals))
     elif in_period:
         headline = (f"I can't state a margin for {cust['name']} in {period}: none of its "
                     f"{in_period} order{'s' if in_period != 1 else ''} you can see has a "
-                    "complete margin yet (what is missing is listed below).")
+                    "checked margin yet (what is missing is listed below)."
+                    + excluded_words(totals))
     else:
         headline = f"{cust['name']} has no order you can see in {period}."
     for order in [o for o in profit["orders"] if o["decided"]][:5]:
         loss = order["margin"] < 0
         oc = order["currency"]          # the order's own checked currency
         text = (f"Order {order['number']}: revenue {money_words(order['revenue'], oc)}, "
-                f"cost {money_words(order['booked_cost'], oc)}, "
-                + (f"loss {money_words(-order['margin'], oc)}" if loss else
-                   f"margin {money_words(order['margin'], oc)}") + ".")
+                f"item cost {money_words(order['booked_cost'], oc)}, "
+                + (f"loss {MARGIN_BASIS} {money_words(-order['margin'], oc)}" if loss else
+                   f"margin {MARGIN_BASIS} {money_words(order['margin'], oc)}") + ".")
         facts.append(m.Fact(text=text, check="computed_from_cited_records",
                             sources=_decided_sources(backend, view, order_handles(order))))
     for driver in profit.get("drivers") or ():
@@ -1448,13 +1791,17 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     if breakdown is not None and breakdown["order"].margin is not None:
         order = breakdown["order"]
         lost = order.margin < 0
-        worst_word = ("Worst" if totals.get("complete") else
+        worst_word = ("Worst of the checked orders" if totals.get("blocking") else
+                      "Worst" if totals.get("complete") else
                       f"Worst of the {read} most recent orders read")
         parts.append(f"{worst_word if worst and worst['object_id'] == order.object_id else 'Order'}"
                      f" {order.number}: revenue {money_words(order.revenue, order.currency)}, "
-                     f"cost {money_words(order.cost, order.currency)}, "
-                     + (f"loss {money_words(-order.margin, order.currency)}." if lost else
-                        f"margin {money_words(order.margin, order.currency)}."))
+                     f"item cost {money_words(order.cost, order.currency)}, "
+                     + (f"loss {MARGIN_BASIS} {money_words(-order.margin, order.currency)}."
+                        if lost else
+                        f"margin {MARGIN_BASIS} {money_words(order.margin, order.currency)}."))
+        if totals.get("margin") is None:
+            parts.append(MARGIN_NOTE)
     elif breakdown is not None:
         order = breakdown["order"]
         why = ", ".join(dict.fromkeys(words_of(c).lower() for c, _ in order.gaps))[:300]
@@ -1505,9 +1852,20 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         margin_pct=_plain(totals["margin_pct"]) if totals.get("margin_pct") is not None
         else None, orders_in_period=in_period, orders_counted=counted, orders_read=read,
         orders_in_period_exact=exact,
-        ranking=("worst first, every order of the period" if totals.get("complete") else
+        ranking=(f"partial: the {counted} checked orders only; "
+                 + blocking_words(totals["blocking"]) if totals.get("blocking") else
+                 "worst first within each currency; orders are in different currencies "
+                 "(" + " and ".join(mixed) + "), so no single total" if mixed else
+                 "worst first, every invoiced order of the period"
+                 + (f"; {len(totals['excluded'])} not yet invoiced, excluded"
+                    if totals.get("excluded") else "")
+                 if totals.get("complete") else
                  f"partial: worst of the {read} most recent orders; "
                  + not_read_words(in_period, read, exact)),
+        margin_basis=MARGIN_BASIS, margin_note=MARGIN_NOTE,
+        verdict=(None if totals.get("margin") is None else
+                 "profitable" if totals["margin"] > 0 else "not_profitable"),
+        orders_excluded=len(totals.get("excluded") or ()),
         orders_more=max(0, len(profit["orders"]) - 30), period_basis=basis,
         withheld_orders=withheld,
         orders=[m.OrderMargin(order=order_ref(o), date=(o["dates"] or [None])[-1],
@@ -1519,7 +1877,9 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                               gap=None if o["decided"] else "; ".join(
                                   words_of(g["code"]).lower() for g in o["gaps"][:2])
                               or "not stated")
-                for o in profit["orders"][:30]],
+                for o in (sorted(profit["orders"], key=lambda o: (
+                    not o["decided"], o["currency"] or "", o["margin"] or 0))
+                          if mixed else profit["orders"])[:30]],
         breakdown=cost_breakdown(backend, view, breakdown, drivers) if breakdown else None,
         next_action=m.NextAction(text=action["text"], rule=action["rule"])
         if action else None)
@@ -1666,7 +2026,8 @@ def without_claim_words(text: str, claims: Sequence[Mapping[str, Any]]) -> str:
 
 def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, ran: Any,
                  found: Mapping[str, Any], conversation: str,
-                 ms: Callable[[], int]) -> m.AnswerPayload:
+                 ms: Callable[[], int], *,
+                 trail: Optional[m.EvidenceTrail] = None) -> m.AnswerPayload:
     """The agent session's gated reply as the contract's answer: the direct answer is the
     reply's sentences (``agent_ask.reply_prose``: the gate removed every sentence no
     passed claim backs); the facts are the claims the session's last gate decision passed,
@@ -1787,6 +2148,11 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
             direct = ("I couldn't establish this from the records you can see; what is "
                       "missing is listed below." if not_found else
                       "I couldn't find records you can see that answer this.")
+    if not withheld and trail_reads_all(view):
+        # Nothing was withheld from this answer and the reader's full-read grant opens
+        # every mail, SharePoint and Teams item: a "material I may not read" caveat says
+        # nothing true, so it is not shown.
+        direct = without_access_caveats(direct) or direct
     late = named_late_pos(backend, view, request.question, found)
     if late:
         # The lateness Home shows for a PO the question names: the gap inbox's own fact
@@ -1811,13 +2177,18 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                 # shown side by side, neither dropped (the sentence moves up beside it).
                 rest = rest.replace(contrary, "", 1)
                 lead.append(f"Home lists {name} as {po.days_late} days late{when}: "
-                            f"{po.reason.rstrip('.')}. A source says: {contrary.strip()}")
+                            f"{po.reason.rstrip('.')}. Not everything agrees: "
+                            f"{contrary.strip()}")
             else:
                 # The agent's own hedge that lateness is unknown is answered by the late
                 # list's fact; a sentence stating a checked phrase or figure stays.
                 checked = [c.get("phrase") for c in passed] + [
                     v.get("value") for c in passed for v in c.get("value_claims") or ()
                     if isinstance(v, Mapping) and isinstance(v.get("value"), str)]
+                # the PO's own number is the sentence's subject, not a checked fact it
+                # adds: "I can't tell whether PO 106001 is late" goes like any hedge
+                own = sorted({po.label, _po_key(po.label)} - {""}, key=len, reverse=True)
+                checked = [_masked(v, own) for v in checked if isinstance(v, str)]
                 rest = presentation.without(rest, LATENESS_HEDGE, checked)[0]
                 lead.append(f"{name} is {po.days_late} days late{when} (it is on the late "
                             f"list on your home page): {po.reason.rstrip('.')}.")
@@ -1872,7 +2243,10 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     hidden_ids = {str(h.get("id")) for h in hidden_claims}
     trail = one_trail(
         backend, view, request, found, late,
-        [c for c in passed if str(c.get("id")) not in hidden_ids], roots, facts)
+        [c for c in passed if str(c.get("id")) not in hidden_ids], roots, facts,
+        read=trail)
+    if trail is not None and trail.kind == "materials" and trail.materials:
+        direct = materials_lead(trail, direct)
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
         direct_answer=str(direct)[:4000], facts=facts, not_found=not_found[:10],
@@ -2018,7 +2392,8 @@ def answer_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
 def one_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
               found: Mapping[str, Any], late_pos: Sequence[tuple[m.LatePo, Optional[str]]],
               claims: Sequence[Mapping[str, Any]], why_roots: Sequence[m.ObjectRef],
-              facts: Sequence[m.Fact]) -> Optional[m.EvidenceTrail]:
+              facts: Sequence[m.Fact], *,
+              read: Optional[m.EvidenceTrail] = None) -> Optional[m.EvidenceTrail]:
     """The answer's one trail, never two: an answer rooted on a purchase order (or naming a
     late-listed one), or a customer order's late-materials question, gets the evidence
     trail (``answer_trail``); every other record type the why trail
@@ -2029,11 +2404,62 @@ def one_trail(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
 
     subject = (why_roots[0].object_id.split(":", 1)[0] if why_roots[0].type in (
         "Object", "Record", "") else why_roots[0].type) if why_roots else None
+    if read is not None:
+        return read     # the trail the agent was given before it wrote: its reply agrees
     if subject == "PurchaseOrder" or late_pos or (
             subject in START_TYPES and MATERIALS_QUESTION.search(request.question or "")):
         return answer_trail(backend, view, request, found, late_pos, claims)
     return why_answer_trail(backend, view, request.question, why_roots, facts) \
         or answer_trail(backend, view, request, found, late_pos, claims)
+
+
+# A sentence saying some material may be outside the reader's access (not a count).
+ACCESS_CAVEAT = re.compile(
+    r"not (?:permitted|allowed) to read|(?:I'm|I am) (?:not )?allowed to read|restricted from "
+    r"(?:your|my) view|hidden from (?:my|your) access|(?:my|your) access (?:doesn't|does not) "
+    r"cover|restrict(?:s)? access by item|(?:can't|cannot) open could still|outside (?:my|"
+    r"your) access|restricted to (?:me|you)|(?:mail|files|sources) you can't open"
+    r"|(?:withheld|hidden) from (?:this reader|you|me)\b", re.I)
+
+
+def trail_reads_all(view: Any) -> bool:
+    from .trail import reads_every_item
+    return reads_every_item(view)
+
+
+def without_access_caveats(text: str) -> str:
+    """``text`` without its sentences that only say some material may be outside the
+    reader's access, paragraph breaks kept."""
+    out = []
+    for para in (text or "").split("\n"):
+        sentences = re.split(r"(?<=[.!?])\s+", para)
+        kept = [s for s in sentences if not ACCESS_CAVEAT.search(s)]
+        if kept or not para.strip():
+            out.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+# A sentence saying no purchase order is linked or was found (the materials table then
+# lists some: the sentence is replaced by the table's own count).
+NO_PURCHASE_ORDERS = re.compile(
+    r"(?:n't|\bnot) (?:find|see) any (?:\w+ ){0,2}purchase[- ]orders?\b"
+    r"|\bno (?:links?|records?) (?:to|of) any purchase[- ]orders?\b"
+    r"|\b(?:found )?no purchase[- ]orders? (?:is |are |was |were )?(?:linked|found|recorded)\b"
+    r"|\bfound no purchase[- ]orders?\b"
+    r"|\bpurchase[- ]orders?\b[^.]*\b(?:found nothing|none (?:is|are|was|were) linked)\b",
+    re.I)
+
+
+def materials_lead(trail: m.EvidenceTrail, direct: str) -> str:
+    """The reply led by the materials table's own count (the walk the agent was given),
+    with any sentence saying no purchase order is linked or found left out: the reply never
+    contradicts the table under it."""
+    sentences = re.split(r"(?<=[.!?])\s+", direct or "")
+    kept = [s for s in sentences if not NO_PURCHASE_ORDERS.search(s)]
+    if len(kept) == len(sentences):
+        return direct
+    rest = " ".join(kept).strip()
+    return (trail.title.rstrip(".") + "." + ("\n\n" + rest if rest else ""))[:4000]
 
 
 # A sentence saying a late-listed PO was received, closed or complete: shown beside the
@@ -2045,7 +2471,9 @@ LATENESS_CONTRARY = re.compile(
 LATENESS_HEDGE = re.compile(
     r"\b(?:couldn't|could not|can't|cannot|unable to)\s+(?:be\s+)?(?:confirm|decide|"
     r"determine|establish|tell|say)\w*\b[^.]*\b(?:late|lateness|overdue)\b"
-    r"|\blateness\b[^.]*\b(?:can't|cannot|couldn't|could not)\b", re.I)
+    r"|\blateness\b[^.]*\b(?:can't|cannot|couldn't|could not)\b"
+    r"|\bnot\s+(?:calling|call|counting|treating|say(?:ing)?)\s+(?:it|this|the "
+    r"(?:po|order|purchase order))\s+(?:as\s+)?(?:late|overdue)\b", re.I)
 # A sentence that negates or hedges what it states (not a source saying the PO arrived).
 NEGATED = re.compile(r"\b(?:couldn't|could not|can't|cannot|unable to|not|no|never|"
                      r"isn't|wasn't|hasn't|haven't|aren't|weren't)\b", re.I)
@@ -2055,6 +2483,13 @@ MAX_LATE_LOOKUPS = 60
 STATUS_QUESTION = re.compile(r"\b(?:status|late|lateness|overdue|behind|delay\w*|where|"
                              r"when|update|arriv\w*|deliver\w*|receiv\w*|eta|due|stuck|"
                              r"standing|progress)\b", re.I)
+
+
+def _masked(value: str, names: Sequence[str]) -> str:
+    """``value`` with each of ``names`` (a record's own number) taken out."""
+    for name in names:
+        value = value.replace(name, " ")
+    return value
 
 
 def _po_key(text: Any) -> str:
@@ -2629,6 +3064,13 @@ def source_payload(handle: str, got: Mapping[str, Any], text_offset: int) -> m.S
     following = page.get("next_text_offset") if isinstance(page, Mapping) else \
         got.get("next_text_offset")
     title = plain(got.get("title")) if got.get("title") else None
+    if title is None:
+        # a message or file titled by its own subject or name (an email's subject line)
+        for key in ("subject", "row.subject", "title", "row.title", "name", "row.name"):
+            for source in (got, fields or {}):
+                value = source.get(key) if isinstance(source, Mapping) else None
+                if title is None and value not in (None, "") and not isinstance(value, list):
+                    title = (plain(value) or "")[:300] or None
     if handle.startswith("original://") and isinstance(text, str):
         # A captured original's page reads as its text, titled by its file name; the
         # receipt's fields (hash, byte count) are no reading matter.
@@ -2736,6 +3178,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                        seconds=max(30, args.ask_seconds))
         backend = WorkspaceBackend(ctx["objects_for"], data_label=str(label),
                                    state_dir=Path(ctx["state_dir"]),
+                                   store_path=ctx.get("ontology_path"),
+                                   freshness_bounds=ctx.get("freshness_bounds"),
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
                                    search=optional_search(), ask_served=bool(args.ask),

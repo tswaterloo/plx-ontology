@@ -85,6 +85,7 @@ class Mapper:
         self.url, self.open_url, self.host_schemes = object_url, open_url, tuple(host_schemes)
         self.people = People(view)
         self.hidden = 0
+        self.reads_all = reads_every_item(view)
 
     def decide(self, handles: Iterable[str]) -> dict[str, Any]:
         handles = [h for h in dict.fromkeys(handles) if isinstance(h, str)]
@@ -152,8 +153,12 @@ class Mapper:
                                        "exists that you can't open, so its date is not "
                                        "shown.")
             else:
-                eta_model = m.EtaCheck(state=eta["state"], text=str(eta["text"])[:300],
-                                       source=source)
+                text = str(eta["text"])
+                if eta["state"] == "no_confirmation_found" and self.reads_all:
+                    # nothing of mail, files or Teams is withheld from this reader by its
+                    # item permissions: no "you can't open" caveat
+                    text = NOT_FOUND_ALL_READ
+                eta_model = m.EtaCheck(state=eta["state"], text=text[:300], source=source)
         action_model = None
         if action:
             handle = action.get("contact_handle")
@@ -180,11 +185,31 @@ class Mapper:
         return m.PoTrail(
             subject=_ref(raw["subject"], raw.get("label"), self.url), state=raw.get("state"),
             days_late=raw.get("days_late"), verdict=raw.get("verdict"), eta=eta_model,
-            steps=steps, hidden_steps=hidden, may_hide_more=bool(raw.get("may_hide")),
+            steps=steps, hidden_steps=hidden,
+            may_hide_more=bool(raw.get("may_hide")) and not self.reads_all,
             next_action=action_model,
             not_found=[m.NotFound(what=str(g.get("what"))[:300],
                                   where_it_would_live=str(g.get("where"))[:300])
                        for g in raw.get("gaps") or ()][:5])
+
+
+NOT_FOUND_ALL_READ = ("No vendor confirmation found in the mail, files and records "
+                      "searched.")
+FULL_READ_ITEM_SCOPES = ("mail", "sharepoint", "teams")
+
+
+def reads_every_item(view: Any) -> bool:
+    """Whether this reader's declared full-read grant opens every mail, SharePoint and
+    Teams item now (all mailboxes): their item permissions then withhold nothing from it,
+    so a "may be in places you can't open" caveat says nothing true. Undecidable: False."""
+    try:
+        access = view.access
+        entitlement = access.runtime.employee_gate.entitlement(access.actor)
+        return entitlement is not None and all(
+            entitlement.full_read_covers(scope) for scope in FULL_READ_ITEM_SCOPES) \
+            and entitlement.full_read.grant.mail_scope == "all"
+    except Exception:  # noqa: BLE001 - no grant read: the caveat stays
+        return False
 
 
 def hidden_words(count: int, maybe: bool) -> Optional[str]:
@@ -241,7 +266,8 @@ def po_trails(mapper: Mapper, view: Any, oids: Sequence[str],
         f"How we know: {trails[0].subject.label}")
     return m.EvidenceTrail(kind="purchase_order", title=title[:200], trails=trails,
                            hidden_steps=mapper.hidden,
-                           hidden_message=hidden_words(mapper.hidden, maybe))
+                           hidden_message=hidden_words(mapper.hidden,
+                                                       maybe and not mapper.reads_all))
 
 
 MAX_STARTS = 2
@@ -249,15 +275,70 @@ MAX_STARTS = 2
 
 def materials_title(rows: Sequence[m.MaterialRow], shown: int) -> str:
     """The table's heading: neutral, counting every row the walk found (purchase orders
-    and late ones over all of them), and how many of them the table shows."""
+    and late ones over all of them), how many of them were not checked for lateness (a
+    late count is never read as covering those), and how many rows the table shows."""
     if not rows:
         return "From the recorded links: no open purchase order found"
     pos = {r.po.object_id for r in rows}
     late = {r.po.object_id for r in rows if r.state == "late"}
+    # a PO is checked when its lateness was decided; an undetermined verdict or none read
+    # is not (a late count never reads as covering those)
+    open_ = {r.po.object_id for r in rows if r.state in (None, "undetermined")} - late
     text = (f"From the recorded links: {len(pos)} purchase order{'s' if len(pos) != 1 else ''}"
             f" for this order's materials, {len(late)} late")
+    if open_:
+        text += (f" of {len(pos) - len(open_)} with a lateness verdict; {len(open_)} "
+                 "undecided or not checked")
     more = len(rows) - shown
     return text + (f" ({shown} rows shown, {more} more not shown)" if more > 0 else "")
+
+
+def materials_starts(question: str, roots: Sequence[Mapping[str, Any]],
+                     ambiguous: Sequence[Mapping[str, Any]] = (),
+                     late_pos: Sequence[Any] = ()) -> list[tuple[str, str, str]]:
+    """The records a materials question walks from (``for_answer``'s rule): a customer
+    order, assembly order or customer the question resolved to (else each record of such a
+    type one identifier names in several systems), when the question asks about materials
+    or purchase orders and names no purchase order; else none."""
+    if not MATERIALS_QUESTION.search(question or "") or late_pos:
+        return []
+    mention = {str(r.get("object_id")): str(r.get("mention") or "")[:120] for r in roots
+               if isinstance(r, Mapping)}
+    typed = [(str(r.get("object_id")), str(r.get("object_type") or
+                                             str(r.get("object_id")).split(":", 1)[0]))
+             for r in roots if isinstance(r, Mapping) and isinstance(r.get("object_id"), str)]
+    if any(kind == "PurchaseOrder" for _oid, kind in typed):
+        return []
+    starts = [(oid, kind, mention.get(oid, "")) for oid, kind in typed
+              if kind in et.START_TYPES]
+    if not starts:
+        starts = [(str(c["object_id"]), str(c.get("object_type")),
+                   str(item.get("mention") or "")[:120])
+                  for item in ambiguous for c in item.get("candidates") or ()
+                  if isinstance(c, Mapping) and c.get("object_type") in et.START_TYPES
+                  and isinstance(c.get("object_id"), str)]
+    return starts
+
+
+def materials_brief(trail: m.EvidenceTrail, rows: int = 12) -> str:
+    """The materials walk's result as the agent reads it before it writes (the same rows
+    and counts the answer's table shows): the heading, the first ``rows`` rows (PO, item,
+    lateness, each with its record's object id to read and cite) and the walk's gaps."""
+    lines = [f"Already read for you, as this reader, by the Workbench's materials walk "
+             f"(plx.around over recorded links: order -> assembly order -> component "
+             f"items -> purchase order lines; plx.process lateness of each PO). {trail.title}."]
+    for row in trail.materials[:rows]:
+        state = {"late": f"late by {row.days_late} days" if row.days_late else "late",
+                 "not_due": "not due", "undetermined": "lateness undecided"}.get(
+            row.state or "", "lateness not checked")
+        lines.append(f"- PO {row.po.label} (object id {row.po.object_id}) for item "
+                     f"{row.item.label}: {state}")
+    for gap in trail.gaps[:6]:
+        lines.append(f"- Not established: {gap.what} ({gap.where_it_would_live})")
+    lines.append("Your reply must agree with these counts and rows: never say no purchase "
+                 "order is linked when rows are listed. Read a row's record (plx.object) "
+                 "to cite it.")
+    return "\n".join(lines)
 
 
 def materials_trail(mapper: Mapper, view: Any, starts: Sequence[tuple[str, ...]],
@@ -318,7 +399,8 @@ def materials_trail(mapper: Mapper, view: Any, starts: Sequence[tuple[str, ...]]
     hidden += mapper.hidden
     return m.EvidenceTrail(kind="materials", title=title, trails=trails[:et.MAX_PO_TRAILS],
                            materials=shown, gaps=gaps[:12], hidden_steps=hidden,
-                           hidden_message=hidden_words(hidden, maybe))
+                           hidden_message=hidden_words(hidden,
+                                                       maybe and not mapper.reads_all))
 
 
 def claims_trail(mapper: Mapper, claims: Sequence[Mapping[str, Any]]
@@ -346,25 +428,16 @@ def for_answer(backend: Any, view: Any, question: str, roots: Sequence[Mapping[s
                     host_schemes=host_schemes)
     started = time.monotonic()
     try:
-        mention = {str(r.get("object_id")): str(r.get("mention") or "")[:120] for r in roots
-                   if isinstance(r, Mapping)}
         typed = [(str(r.get("object_id")), str(r.get("object_type") or
                                                  str(r.get("object_id")).split(":", 1)[0]))
                  for r in roots if isinstance(r, Mapping) and isinstance(r.get("object_id"),
                                                                          str)]
         late = {po.object_id: (po, run_at) for po, run_at in late_pos}
         pos = [oid for oid, kind in typed if kind == "PurchaseOrder"] + list(late)
-        starts = [(oid, kind, mention.get(oid, "")) for oid, kind in typed
-                  if kind in et.START_TYPES]
-        if not starts and not pos:
-            # one identifier naming the order in several records (say its FileMaker and
-            # Sage copies): each record of a start type is walked, none chosen
-            starts = [(str(c["object_id"]), str(c.get("object_type")),
-                       str(item.get("mention") or "")[:120])
-                      for item in ambiguous for c in item.get("candidates") or ()
-                      if isinstance(c, Mapping) and c.get("object_type") in et.START_TYPES
-                      and isinstance(c.get("object_id"), str)]
-        if starts and MATERIALS_QUESTION.search(question or "") and not pos:
+        # one identifier naming the order in several records (say its FileMaker and Sage
+        # copies): each record of a start type is walked, none chosen
+        starts = materials_starts(question, roots, ambiguous, list(late))
+        if starts and not pos:
             got = materials_trail(mapper, view, starts)
             if got is not None:
                 return got

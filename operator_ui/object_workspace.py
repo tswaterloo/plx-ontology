@@ -688,7 +688,7 @@ class ObjectWorkspace:
         with self._request():
             return explain(self._workspace(object_id))
 
-    def gap_inbox(self, *, inbox: Any = None) -> dict[str, Any]:
+    def gap_inbox(self, *, inbox: Any = None, limit: int | None = None) -> dict[str, Any]:
         """The gaps the scheduled engine found (``operating.proactive_engine``: set-based
         rules over the whole projection store, persisted in the inbox beside it), trimmed
         for this reader: a gap shows only when its subject and a citation of each of its
@@ -709,7 +709,8 @@ class ObjectWorkspace:
             found = proactive_engine.read_inbox(
                 proactive_engine.inbox_path(path) if inbox is None else inbox, path,
                 reader=proactive_engine.reader_key(self.actor), may_read=may_read,
-                held=held, decide=self.access.decide)
+                held=held, decide=self.access.decide,
+                **({"limit": limit} if limit is not None else {}))
             return {**base, **found}
 
     def status_card(self, object_id: str | None = None, *, object_type: str | None = None,
@@ -2289,8 +2290,13 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
                 return pinned
             policy = super().policy_now(reader)
             principals = frozenset(reader.principals)
-            return ReadPolicy(policy.tenant, policy.audiences,
-                              {marking: principals for marking in held}, policy.units)
+            # The host's own marking grants (the host config's ``marking_grants`` and a
+            # declared full-read grant's finance markings, ``case_host_policy``) stay; the
+            # markings this console says the reader holds are added, never substituted.
+            markings = {m: frozenset(p) for m, p in policy.markings.items()}
+            for marking in held:
+                markings[marking] = markings.get(marking, frozenset()) | principals
+            return ReadPolicy(policy.tenant, policy.audiences, markings, policy.units)
 
     host = ConsoleHost(runtime, actor, store_path=store_path,
                        mail_capture_dir=mail_capture_dir,
@@ -2691,17 +2697,29 @@ def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
         # A record held whose status no definition decides (an unmapped PO header word)
         # is not established, never missing: no follow-up asks for a record that exists.
         undecided = [s for s in gaps if (s.get("reading") or {}).get("kind") == "not_decided"]
-        absent = [s for s in gaps if s not in undecided]
+        # A record held whose status has not reached the stage (a draft order's own
+        # "purchase order" step) is not missing: it is there, not yet issued.
+        unreached = [s for s in gaps if (s.get("reading") or {}).get("kind") == "not_reached"]
+        absent = [s for s in gaps if s not in undecided and s not in unreached]
         hidden = [s for s in stages if s.get("missing")
                   and s["missing"].get("state") in _STAGE_HIDDEN]
         names = [field_words(s.get("stage")) for s in absent]
         unsure = ", ".join(field_words(s.get("stage")) for s in undecided)
         tail = (f"; {len(hidden)} more step{'' if len(hidden) == 1 else 's'} not visible to you"
                 if hidden else "")
+        held = ", ".join(field_words(s.get("stage")) for s in unreached)
+        held_words = f"held, its status not reached yet: {held}" if held else ""
         missing = ({"state": "missing", "text": f"Missing: {', '.join(names)}"
+                    + (f"; {held_words}" if held else "")
                     + (f"; not established: {unsure}" if unsure else "") + tail} if absent
-                   else {"state": "not_established", "text": f"Not established: {unsure}{tail}"}
+                   else {"state": "not_established",
+                         "text": (f"{held_words[:1].upper()}{held_words[1:]}; "
+                                  f"not established: {unsure}{tail}" if held
+                                  else f"Not established: {unsure}{tail}")}
                    if undecided
+                   else {"state": "not_established",
+                         "text": f"{held_words[:1].upper()}{held_words[1:]}{tail}"}
+                   if unreached
                    else {"state": "not_established" if hidden else "complete",
                          "text": f"Nothing missing that you can see{tail}" if hidden
                          else "Nothing missing: every step has a record"})

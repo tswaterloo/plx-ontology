@@ -15,6 +15,37 @@ Must keep working:
 Known gaps:
 ```
 
+## v0.16 (2026-10-31)
+
+Fixed:
+- **The late purchase order list is right:**
+  - a Business Central draft copy that never received anything no longer makes a completed order look late;
+  - one count everywhere ("34 late; 12 shown");
+  - suppliers are shown;
+  - informal questions like "any late pos rn?" are answered.
+- **Freshness is judged per source** from its own last capture, so answers no longer call fresh data stale. A failed or never-run capture is shown as stale.
+- **A purchase order's trail and its answer agree on lateness.**
+- **Customer profitability:**
+  - works with full-read access;
+  - margins are labelled "on item cost only", because Business Central books no labour or overhead;
+  - no profitable/unprofitable verdict is given unless every invoiced order has a checked margin;
+  - a zero cost in Business Central is reported as "no cost value", not as a cost of zero.
+- **Ambiguous order numbers:** when an order number means different orders in Business Central and the Portal, the answer asks which one, showing each system's vendor and date. Records firmly linked as one order are treated as one.
+- **"Did you mean" keeps your original question.**
+- **Before answering, the agent reads a purchase order's trail and the vendor emails linked to it,** so answers about what a vendor told us include those emails.
+- **"You can't open" notes appear only when something was actually hidden.**
+- **Labels:**
+  - quantities are rounded with units;
+  - opened emails show their subject;
+  - purchase order pages open quickly.
+
+Must keep working:
+- Everything in v0.15.
+
+Known gaps:
+- Sign-in with a Microsoft account is not switched on yet.
+- A full answer takes about 40 to 90 seconds.
+
 ## v0.15 (2026-10-31)
 
 Added:

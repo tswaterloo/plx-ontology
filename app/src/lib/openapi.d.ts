@@ -603,6 +603,11 @@ export type components = {
             /** As Of */
             as_of?: string | null;
             /**
+             * Capture
+             * @description How the last capture of this source ended: failed and never_captured are stale whatever their age; partial (a budgeted capture continuing next cycle) is judged by age.
+             */
+            capture?: ("complete" | "partial" | "failed" | "never_captured") | null;
+            /**
              * Stale
              * @default false
              */
@@ -818,6 +823,11 @@ export type components = {
             /** Late Pos */
             late_pos?: components["schemas"]["LatePo"][];
             /**
+             * Late Total
+             * @description Every late purchase order this reader may see; late_pos lists the longest late of them.
+             */
+            late_total?: number | null;
+            /**
              * Status
              * @enum {string}
              */
@@ -1001,6 +1011,18 @@ export type components = {
             /** @default null */
             margin: components["schemas"]["Money"] | null;
             /**
+             * Margin Basis
+             * @description What every margin here covers: item ledger cost only (BC books no labour or overhead).
+             * @default on item cost only
+             */
+            margin_basis: string;
+            /**
+             * Margin Note
+             * @description The plain line saying what the margin basis leaves out.
+             * @default null
+             */
+            margin_note: string | null;
+            /**
              * Margin Pct
              * @default null
              */
@@ -1020,6 +1042,12 @@ export type components = {
              * @description Orders whose margin is complete; the totals cover these only.
              */
             orders_counted: number;
+            /**
+             * Orders Excluded
+             * @description Orders of the period not yet invoiced: excluded, never blocking.
+             * @default 0
+             */
+            orders_excluded: number;
             /** Orders In Period */
             orders_in_period: number;
             /**
@@ -1063,6 +1091,12 @@ export type components = {
             ranking: string | null;
             /** @default null */
             revenue: components["schemas"]["Money"] | null;
+            /**
+             * Verdict
+             * @description Stated only when every invoiced order of the period has a checked margin; null otherwise.
+             * @default null
+             */
+            verdict: ("profitable" | "not_profitable") | null;
             /**
              * Withheld Orders
              * @description Orders whose figures you may not read: a count only, never named.

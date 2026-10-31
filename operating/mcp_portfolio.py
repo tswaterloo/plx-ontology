@@ -147,6 +147,80 @@ _TYPE = re.compile(r"[A-Z][A-Za-z0-9]{0,63}")
 _NUMBER = re.compile(r"-?[0-9]{1,15}(?:\.[0-9]{1,8})?")
 
 
+# The whole late purchase-order list asked with no filter (the Ask shortcut to Home's list,
+# and plx.find's home mode): a late word, and every other word a list, purchase-order or
+# conversational word. Any other word (a supplier, customer or person, a negation, a time
+# frame, another filter: "open", "from", "last quarter") makes it a qualified question.
+LATE_WORDS = frozenset({"late", "overdue", "behind"})
+PO_WORDS = frozenset({"po", "pos", "purchase", "purchases", "orders", "order"})
+LIST_FILLER = frozenset({
+    "which", "what", "whats", "s", "are", "is", "show", "list", "me", "all", "our", "the",
+    "any", "there", "currently", "right", "now", "today", "of", "my", "please", "how",
+    "many", "still", "past", "due", "running", "us", "we", "have", "do", "can", "you",
+    "a", "at", "moment", "theres", "got",
+    # chat spellings: "wat r the late pos", "any late pos rn?"
+    "wat", "wats", "wht", "r", "u", "ur", "rn", "atm", "pls", "plz", "rite", "ny", "da",
+    "tho", "lol", "hey", "hi", "ok", "so"})
+# Words a question for the late list *with its confirmation status* may add (plx.find's
+# home mode returns each late order's kind: confirmed or not); never a name or a filter.
+CONFIRMATION_WORDS = frozenset({
+    "vendor", "vendors", "supplier", "suppliers", "confirmed", "confirm", "confirms",
+    "confirmation", "confirmations", "unconfirmed", "status", "statuses", "delivery",
+    "date", "dates", "with", "and", "their", "has", "for", "been", "whether", "or",
+    "them"})
+# A negation asks for the other list ("which POs are not late"): never this one.
+NEGATIONS = frozenset({"not", "no", "never", "isnt", "arent", "wasnt", "werent", "without",
+                       "non", "nt", "dont", "doesnt", "havent", "hasnt", "yet"})
+# Typos within one edit of these (words of 6+ letters only, so "older" is not "order").
+_FUZZY_TARGETS = ("purchase", "purchases", "orders", "overdue", "behind")
+
+
+def _one_edit(a: str, b: str) -> bool:
+    """``a`` and ``b`` differ by one insertion, deletion, substitution or swap of
+    neighbours."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return a == b
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1
+                                  and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def late_list_words(question: Any, *, with_confirmation: bool = False) -> bool:
+    """Whether ``question`` asks only for the list of late purchase orders (with
+    ``with_confirmation``: optionally with their confirmation status): a late word
+    (or "past due"), and every other word a list, purchase-order or chat word
+    (``LIST_FILLER``), a one-edit typo of a long purchase-order or late word, or (with
+    ``with_confirmation``) a ``CONFIRMATION_WORDS`` word, then with a purchase-order word
+    named. A digit or a record identifier
+    is never the whole list; neither is a question of more than 16 words."""
+    if not isinstance(question, str):
+        return False
+    from ontology.identifiers import find_identifiers
+    if re.search(r"\d", question) or list(find_identifiers(question)):
+        return False   # a number or a record named: never the whole list
+    text = question.lower().replace("\u2019", "'").replace("'", "")
+    text = re.sub(r"\bp\.o\.?(s?)\b", r"po\1", text)
+    words = re.findall(r"[a-z]+", text)
+    if not words or len(words) > 16:
+        return False
+    if NEGATIONS & set(words):
+        return False
+    allowed = LATE_WORDS | PO_WORDS | LIST_FILLER | (
+        CONFIRMATION_WORDS if with_confirmation else frozenset())
+    seen = []
+    for word in words:
+        if word not in allowed and len(word) >= 6:
+            word = next((t for t in _FUZZY_TARGETS if _one_edit(word, t)), word)
+        seen.append(word)
+    late = bool(LATE_WORDS & set(seen)) or "past due" in " ".join(seen)
+    if with_confirmation and not PO_WORDS & set(seen):
+        return False   # a tool query names what it lists: "late" alone may be a name
+    return late and set(seen) <= allowed
+
+
 def normalized(query: Any) -> str | None:
     """The question as home mode matches it: lower case, runs of spaces as one, one
     trailing '?', '.' or '!' dropped."""
@@ -607,6 +681,11 @@ def _age_words(seconds: Any) -> str:
     return f"{seconds // 86400} days old"
 
 
+# What a late purchase order's kind says of its supplier confirmation (proactive_engine).
+_CONFIRMATION_SAID = {"unconfirmed_po": ", no supplier confirmation linked",
+                      "late_po": ", a supplier confirmation is linked"}
+
+
 def home_text(home: Mapping[str, Any], gaps: Sequence[Mapping[str, Any]] = ()) -> str:
     """plx.find home mode's readable answer (``gaps``: the answer's own gaps about the
     inbox, each said by its reason code)."""
@@ -633,6 +712,9 @@ def home_text(home: Mapping[str, Any], gaps: Sequence[Mapping[str, Any]] = ()) -
         # The gap's summary is source text (an envelope in the JSON): never echoed.
         on = gap.get("object_type")
         on = f" on a {on}" if isinstance(on, str) and _TYPE.fullmatch(on) else ""
+        late = gap.get("days_late")
+        late = f", {late} days late" if type(late) is int else ""
+        said = _CONFIRMATION_SAID.get(gap["kind"], "")
         items.append(f"{gap['rank']}. [{gap['priority']}] {gap['kind']}: "
-                     f"{gap['kind'].replace('_', ' ')}{on} [{gap['citations'][0]}]")
+                     f"{gap['kind'].replace('_', ' ')}{on}{late}{said} [{gap['citations'][0]}]")
     return _fit(head, items, [SOURCE_NOTE], len(home["gaps"]))

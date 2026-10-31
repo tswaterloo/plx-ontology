@@ -58,16 +58,31 @@ class ProcessTest(unittest.TestCase):
         self.n = 0
 
     def world(self, bc_received="4", fully=False, portal_received="10", status="Complete",
-              portal_expected="2026-09-01", bc_expected=None, bc_status="Draft",
-              posted=False):
+              portal_expected="2026-09-01", bc_expected=None, bc_status="Open",
+              posted=False, renumbered="null"):
         self.n += 1
         path = self.dir / f"store{self.n}.sqlite"
         header = {**portal_po(1, "PO7001", fm="PO7001"), "status": status,
                   "expected_date": portal_expected}
         # no FM twin, never renumbered: the identity keys are read, and null
         header["custom_fields"].update(fmGeneratedPoId=None, renumberedTo=None)
-        # the BC API's header word of every linked order live (2026-10-27): Draft, a
-        # document not yet released; its lines are the receipt state
+        others = []
+        if renumbered != "null":
+            # "unserved": the reporting API carries no renumberedTo on any order;
+            # "partly": another order carries one, this one none (absent, not null)
+            del header["custom_fields"]["renumberedTo"]
+            if renumbered == "unreadable_lead":
+                # another order whose number no identifier grammar reads: the lead
+                # number match (a text_match, never counted) cannot read its key
+                other = {**portal_po(3, "fm-po-100"), "status": "Pending"}
+                other["custom_fields"].update(fmGeneratedPoId=None)
+                others.append(other)
+            if renumbered == "partly":
+                other = {**portal_po(2, "PO7002", fm="PO7002"), "status": "Pending"}
+                other["custom_fields"].update(fmGeneratedPoId=None, renumberedTo="PO7099")
+                others.append(other)
+        # an issued (released) BC order: its lines are the receipt state; a Draft BC
+        # order states none
         order = {**bc_po(1, "PO106001"), "status": bc_status, "fullyReceived": fully,
                  **({"requestedReceiptDate": bc_expected} if bc_expected else {})}
         line = {"id": "c0000000-0000-4000-8000-000000000001", "documentId": bid(1),
@@ -76,7 +91,7 @@ class ProcessTest(unittest.TestCase):
         bc = Source("bc", {"purchaseOrders": [order], "purchaseOrderLines": [line]},
                     [ref(1, "PO106001", "PO7001")])
         portal = Source("portal_api", {
-            "public.app_purchase_order": [header],
+            "public.app_purchase_order": [header, *others],
             "public.app_purchase_order_line": [{
                 "id": "l1", "purchase_order_id": "p1", "quantity": "10",
                 "quantity_received": portal_received, "uom": "EA"}]})
@@ -142,8 +157,73 @@ class ProcessTest(unittest.TestCase):
         # the live shape: BC's header word Open, a requested date both systems state
         path = self.world(posted=True, bc_status="Open", bc_expected="2026-09-01")
         self.assert_late_from_both(path)
-        # the BC header word of every linked order live: Draft; its lines still decide
-        self.assert_late_from_both(self.world(posted=True, bc_expected="2026-09-01"))
+
+    def test_a_bc_draft_twin_states_no_receipt_and_never_reopens_a_complete_order(self):
+        # live 2026-10-30: the Portal posts its orders to BC as Draft (never released, so
+        # no receipt is ever posted on them): 0 received on every BC line, the header
+        # flag true or false, the Portal order Complete and received in full. A draft is
+        # not applicable to lateness and its zero lines are no receipt record: no
+        # receipt-state or quantity conflict, never late, from either record and either
+        # link, whatever the flag says
+        for posted in (True, False):
+            for fully in (True, False):
+                path = self.world(posted=posted, bc_status="Draft", bc_received="0",
+                                  fully=fully, bc_expected="2026-09-01")
+                for root in (po("api", 1), po("bc", 1)):
+                    with self.subTest(posted=posted, fully=fully, root=root.split(":")[1]):
+                        entry, _ = self.lateness(path, FULL, root)
+                        fields = {c["field"] for c in entry.get("systems_disagree") or ()}
+                        self.assertFalse(fields & {"receipt_state", "received_quantity"},
+                                         entry)
+                        self.assertNotEqual(entry["state"], "late", entry)
+                        self.assertIsNot(entry["late"], True)
+
+    def test_a_draft_reopened_after_a_receipt_keeps_its_lines_receipt_state(self):
+        # BC also reads Draft for an order released, received
+        # against and reopened for edit; its received quantities stay on the lines. A
+        # Portal Pending order (0 received) with such a twin (10 of 10 received, flag
+        # true) is never late with no conflict: both receipt conflicts stay named
+        path = self.world(status="Pending", portal_received="0", bc_status="Draft",
+                          bc_received="10", fully=True, bc_expected="2026-09-01")
+        for root in (po("api", 1), po("bc", 1)):
+            with self.subTest(root=root.split(":")[1]):
+                entry, _ = self.lateness(path, FULL, root)
+                self.assertNotEqual(entry["state"], "late", entry)
+                self.assertIsNot(entry["late"], True)
+                fields = {c["field"] for c in entry.get("systems_disagree") or ()}
+                self.assertIn("receipt_state", fields, entry)
+                (state,) = [c for c in entry["systems_disagree"]
+                            if c["field"] == "receipt_state"]
+                bc = next(side for side in state["sides"] if side["system"] == "bc")
+                self.assertEqual(bc["value"], ps.FULLY_RECEIVED)
+
+    def test_a_link_key_the_source_never_serves_leaves_a_caveat_never_a_blank(self):
+        # live 2026-10-31: renumberedTo is absent on every Portal order (the reporting
+        # API does not carry it), and every PO's lateness went unstated. Not served at
+        # all: the verdict stands with a caveat. Served on some orders and absent on this
+        # one: still not stated (fails closed)
+        open_bc = dict(bc_status="Open", bc_received="4", bc_expected="2026-09-01")
+        entry, _ = self.lateness(self.world(renumbered="unserved", **open_bc), FULL,
+                                 po("bc", 1))
+        self.assertEqual((entry["state"], entry["late"]), ("late", True), entry)
+        caveat = [g for g in entry.get("gaps") or () if g["reason"] == "link_key_not_served"]
+        self.assertEqual(len(caveat), 1, entry)
+        self.assertIn("renumbered_to", caveat[0]["subject"])
+        self.assertIn("not tracked", caveat[0]["detail"])
+        # a lead carrier's key unreadable on another order changes nothing counted
+        path = self.world(renumbered="unreadable_lead", **open_bc)
+        with sqlite3.connect(path) as conn:
+            report = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
+                                             "'build_report'").fetchone()[0])
+        self.assertTrue(any(g["code"].startswith("parse_") and "po_number" in g["where"]
+                            for g in report["gaps"]), report["gaps"])
+        entry, _ = self.lateness(path, FULL, po("bc", 1))
+        self.assertEqual((entry["state"], entry["late"]), ("late", True), entry)
+        entry, _ = self.lateness(self.world(renumbered="partly", **open_bc), FULL,
+                                 po("bc", 1))
+        self.assertNotEqual(entry["state"], "late", entry)
+        self.assertIn("could not read a key", json.dumps(entry))
+        self.assertNotIn("link_key_not_served", json.dumps(entry))
 
     def assert_late_from_both(self, path):
         for root in (po("api", 1), po("bc", 1)):
@@ -253,7 +333,7 @@ class EngineTest(Engine):
     """The home list's ``systems_disagree`` gap, per reader."""
 
     def pair(self, w: World, *, bc_fully: str = "false", portal_audience: str = "api:a",
-             bc_audience: str = "bc:x", tier: str = "corroborated", bc_status: str = "Draft",
+             bc_audience: str = "bc:x", tier: str = "corroborated", bc_status: str = "Open",
              link: str = "PurchaseOrder.same_record_as"):
         portal = w.obj("PurchaseOrder", {"status": "Complete", "expected_date": "2026-10-01"},
                        audience=portal_audience, binding="portal.app_purchase_order")
@@ -303,6 +383,32 @@ class EngineTest(Engine):
                 for gap in late:
                     portal = next(p for p, bc in pairs if bc == gap["object_id"])
                     self.assertIn(handle(n(portal)), gap["citations"])
+                self.store.unlink()
+                self.inbox.unlink(missing_ok=True)
+
+    def test_a_bc_draft_twin_never_puts_a_complete_order_on_the_late_list(self):
+        # live 2026-10-30: 7 of Home's 10 late orders were Portal Complete orders whose BC
+        # twin is a Draft with 0 received lines (6 flagged fully received); a draft states
+        # no receipt, so none is late and no receipt conflict is raised, while an issued
+        # BC twin with open lines still is: nothing lost, nothing doubled at 1/10/60
+        for count in (1, 10, 60):
+            with self.subTest(n=count):
+                w = World()
+                drafts = [self.pair(w, bc_status="Draft", bc_fully=("true", "false")[i % 2],
+                                    link=("PurchaseOrder.bc_posted_as",
+                                          "PurchaseOrder.same_record_as")[i % 2],
+                                    tier=("verified", "corroborated")[i % 2])
+                          for i in range(count)]
+                issued = [self.pair(w, bc_status="Open", link="PurchaseOrder.bc_posted_as",
+                                    tier="verified") for _ in range(count)]
+                self.run_engine(w)
+                gaps = self.read(limit=1000)["gaps"]
+                late = sorted(g["object_id"] for g in gaps
+                              if g["kind"] in ("late_po", "unconfirmed_po"))
+                self.assertEqual(late, sorted(bc for _, bc in issued))
+                disagree = {r for g in gaps if g["kind"] == "systems_disagree"
+                            for r in (g["object_id"],)}
+                self.assertFalse(disagree & {r for pair in drafts for r in pair})
                 self.store.unlink()
                 self.inbox.unlink(missing_ok=True)
 

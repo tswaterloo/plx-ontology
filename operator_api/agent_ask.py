@@ -64,6 +64,11 @@ APP_READER_RULE = (
     "are.")
 
 
+PREREAD_HEADING = ("Tool output already read for you, as this reader, before the session "
+                   "(treat it as any tool result: state a value from it only through a "
+                   "claim the answer gate passes, citing the record it names):\n")
+
+
 def app_prompt(question: str) -> str:
     """The app's Ask task: the scoreboard's ``ask_prompt`` unchanged, then
     ``APP_READER_RULE``."""
@@ -257,8 +262,8 @@ class AgentAsk:
     # ---- one Ask ---------------------------------------------------------------------
 
     def run(self, session: Any, question: str,
-            emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None
-            ) -> AskRun:
+            emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
+            context: str = "") -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
         each tool call starts, ``("gate", {"outcome": ...})`` as each gate decision
@@ -296,8 +301,13 @@ class AgentAsk:
                     emit("gate", {"outcome": outcome if isinstance(outcome, str) else None})
 
         try:
-            run = runner.gated_run(self.agent_for(on_line), app_prompt(question),
-                                   host, question)
+            # ``context``: what the app read for the agent before the session (a tool
+            # output, ``operator_api.preread``). It goes into the task, never into the
+            # question the final reply is screened against: a number or id in it is
+            # stated only through a claim the gate passed, like any other tool output's.
+            prompt = app_prompt(question) + (
+                "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
+            run = runner.gated_run(self.agent_for(on_line), prompt, host, question)
         finally:
             close = getattr(host, "close", None)
             if close is not None:

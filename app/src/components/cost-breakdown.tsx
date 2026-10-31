@@ -37,8 +37,8 @@ export function OrderRanking({ orders, note, more = 0 }: { orders: OrderMargin[]
         <tr>
           <th className="py-1 font-medium">Order</th>
           <th className="py-1 font-medium">Revenue</th>
-          <th className="py-1 font-medium">Cost</th>
-          <th className="py-1 font-medium">Margin</th>
+          <th className="py-1 font-medium">Item cost</th>
+          <th className="py-1 font-medium">Margin (item cost only)</th>
         </tr>
       </thead>
       <tbody>
@@ -88,7 +88,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
         {loss ? <TrendingDown className="size-4 text-bad" aria-hidden /> : <TrendingUp className="size-4 text-good" aria-hidden />}
         Why <Link href={refHref(b.order)} className="hover:underline">{b.order.label}</Link> {loss ? "lost money" : "made what it made"}
         <span className="font-normal text-muted">
-          revenue {money(b.revenue) || "not stated"} · cost {money(b.booked_cost) || "not stated"} · margin <Signed m={b.margin} />
+          revenue {money(b.revenue) || "not stated"} · item cost {money(b.booked_cost) || "not stated"} · margin on item cost only <Signed m={b.margin} />
         </span>
       </h3>
       {(b.lines ?? []).length > 0 && (
@@ -97,7 +97,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
             <li key={i} className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-medium">{l.label}</span>
               {l.quantity && <span className="text-muted">{l.quantity} {l.unit ?? ""}</span>}
-              <span>revenue {money(l.revenue) || "not stated"}, cost {money(l.booked_cost) || "not stated"}, margin</span>
+              <span>revenue {money(l.revenue) || "not stated"}, item cost {money(l.booked_cost) || "not stated"}, margin on item cost only</span>
               <Signed m={l.margin} />
               {l.share_of_cost_pct && <span className="text-muted">({l.share_of_cost_pct}% of the cost)</span>}
               <span className="inline-flex flex-wrap gap-1">
@@ -144,6 +144,11 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
   return (
     <div className="space-y-3" data-testid="profitability">
       <OrderRanking orders={p.orders ?? []} note={p.ranking} more={p.orders_more ?? 0} />
+      {p.margin_note && (
+        <p className="text-xs text-muted" data-testid="margin-basis">
+          Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
+        </p>
+      )}
       {p.breakdown && <CostBreakdown breakdown={p.breakdown} />}
       {p.next_action && (
         <p className="flex items-start gap-2 rounded-xl border border-accent/30 bg-accent-soft/50 p-3 text-sm" data-testid="next-action">

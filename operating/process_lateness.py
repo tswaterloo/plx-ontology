@@ -26,8 +26,10 @@ disputed word, unread lines) is undetermined (``status_unknown``), never late.
 
 Where linked records of two systems disagree (``po_status.read``'s conflicts) the entry's
 ``systems_disagree`` names each conflict with both values, each side cited as this reader
-reads it, and who governs; BC lines govern receipt state, so open BC lines keep a Portal
-"Complete" order open (never fully received).
+reads it, and who governs; an issued BC order's lines govern receipt state, so its open
+lines keep a Portal "Complete" order open (never fully received); a BC Draft whose lines
+record no receipt (never received against) states no receipt state, so it never reopens
+one, while a Draft reopened after a receipt keeps its lines' receipt state.
 
 Lateness (Vince's rule, ``po_status.lateness_verdict``) is the received date (fully
 received) or today (open or partially received) against the governing date: the top
@@ -362,6 +364,14 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
     if len(lines) > MAX_LINES:
         gaps.append(_gap("unknown", "lines_truncated", subject,
                          f"{len(lines) - MAX_LINES} of {len(lines)} lines are not listed"))
+    for where in sorted(getattr(ctx, "unserved", ()))[:2]:
+        # a link key the source serves on no record: the verdict stands, with the caveat
+        prop, _, binding = where.partition("@")
+        words = prop.split(".", 1)[-1].replace("_", " ")
+        gaps.insert(0, _gap("unknown", "link_key_not_served", where, (
+            f"the {binding.split('.', 1)[0]} source does not record {words} on any "
+            "record, so links through it are not tracked: a record joined only through "
+            "it (for example an order renumbered later) shows under its own number")))
     if gaps:
         entry["gaps"] = gaps[:MAX_GAPS]
     return entry

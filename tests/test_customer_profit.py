@@ -183,9 +183,9 @@ class World:
     tools opened for one reader (``audiences``: who may read each source)."""
 
     def __init__(self, test: unittest.TestCase, audiences: dict | None = None,
-                 markings: tuple = store_ddl.MARKINGS) -> None:
+                 markings: tuple = store_ddl.MARKINGS, records: list | None = None) -> None:
         os.environ.pop("PLX_WORKBENCH_API_KEY", None)
-        self.h = tb.Harness(test, fake_bc(bc_records()))
+        self.h = tb.Harness(test, fake_bc(bc_records() if records is None else records))
         self.h.run(entity_sets=CAPTURE_ENTITY_SETS)
         scratch = tempfile.TemporaryDirectory()
         test.addCleanup(scratch.cleanup)
@@ -248,13 +248,46 @@ class CustomerProfitTests(unittest.TestCase):
         self.assertEqual(totals["margin_pct"], Decimal("-21.58"))
         self.assertEqual(totals["currency"], "CAD")
         self.assertEqual((totals["counted"], totals["orders"]), (3, 4))
-        # SO-104 is not invoiced: a typed gap, never a zero, and the totals say so.
+        # SO-104 is not invoiced: a typed gap, never a zero; it is excluded, listed, and
+        # does not block the verdict.
         codes = {g["code"] for g in got["gaps"]}
-        self.assertIn("ORDERS_WITHOUT_MARGIN", codes)
+        self.assertIn("ORDERS_NOT_INVOICED", codes)
+        self.assertEqual((totals["excluded"], totals["blocking"]), (["SO-104"], []))
         so104 = next(o for o in got["orders"] if o["number"] == "SO-104")
         self.assertFalse(so104["decided"])
         self.assertIsNone(so104["margin"])
         self.assertIn("LINE_NOT_INVOICED", {g["code"] for g in so104["gaps"]})
+
+    def test_an_invoiced_order_without_a_cost_value_means_no_verdict_and_no_total(self):
+        """SO-103 is invoiced but its ledger cost
+        reads 0, so it has no checked margin: no verdict and no customer total; the checked
+        orders are still ranked, and the uninvoiced SO-104 stays excluded."""
+        records = bc_records()
+        for record in records:
+            if record["fields"].get("documentNumber") == "SS-103":
+                record["fields"]["costAmountActual"] = 0
+        world = World(self, records=records)
+        got = cp.profitability(world.call, world.customer("C-50"), today=TODAY)
+        totals = got["totals"]
+        self.assertIsNone(totals["margin"])
+        self.assertIsNone(totals["revenue"])
+        self.assertEqual(totals["blocking"], [("SO-103", "has no cost value in BC")])
+        self.assertEqual(totals["excluded"], ["SO-104"])
+        gap = next(g for g in got["gaps"] if g["code"] == "INVOICED_ORDERS_WITHOUT_MARGIN")
+        self.assertIn("1 invoiced order has no cost value in BC (SO-103)", gap["detail"])
+        self.assertEqual([(o["number"], o["margin"]) for o in got["orders"]][:2],
+                         [("SO-101", Decimal("-45")), ("SO-102", Decimal("-20"))])
+        self.assertEqual([s["value"] for s in got["trail"]][1],
+                         "no verdict: SO-103 has no cost value in BC")
+        # the next step never asks to complete an excluded order while one blocks
+        self.assertNotIn("SO-104", got["next_action"]["text"])
+        blocked = cp.Order("o3", "SO-103", [TODAY], gaps=[("COST_NOT_VALUED", "zero")],
+                           lines=[cp.Line(1, "l", None, invoice_handles=["bc://x"])])
+        later = cp.Order("o4", "SO-104", [TODAY], gaps=[("LINE_NOT_INVOICED", "none")])
+        action = cp.next_action({**got, "breakdown": None}, [later, blocked], {})
+        self.assertEqual(action["text"], "Ask Finance to complete SO-103 in Business "
+                                         "Central (cost not valued) so their margin can be "
+                                         "stated.")
 
     def test_orders_rank_worst_first_and_undecided_orders_follow(self):
         ranked = [(o["number"], o["margin"]) for o in self.answer["orders"]]
@@ -306,8 +339,8 @@ class CustomerProfitTests(unittest.TestCase):
 
     def test_drivers_and_next_action_come_from_the_computed_facts(self):
         texts = [d["text"] for d in self.answer["drivers"]]
-        self.assertTrue(texts[0].startswith("Item FG-9 (Synthetic tube) lost 45.00 CAD on "
-                                            "SO-101"), texts)
+        self.assertTrue(texts[0].startswith("Item FG-9 (Synthetic tube) lost 45.00 CAD (on "
+                                            "item cost only) on SO-101"), texts)
         self.assertIn("15.00 CAD/PCS", texts[0])
         self.assertTrue(any("Credit memos took 10.00 CAD" in t for t in texts), texts)
         self.assertTrue(any("16.7% below the quoted price" in t for t in texts), texts)
@@ -317,7 +350,7 @@ class CustomerProfitTests(unittest.TestCase):
         action = self.answer["next_action"]
         self.assertEqual(action["writes"], 0)
         self.assertEqual(action["text"], "Review the price for Northwind Test Foods on item "
-                         "FG-9 (Synthetic tube): the last 2 orders with it ran below cost "
+                         "FG-9 (Synthetic tube): the last 2 orders with it ran below item cost "
                          "(SO-101, SO-102).")
 
     def test_trail_runs_customer_order_lines_sources_driver(self):

@@ -19,11 +19,13 @@ Semantics (BC API v2.0, mirrored from the Portal where it has a rule):
   ``costAmountActual`` of the item ledger entries of entry type Sale and document type Sales
   Shipment, posted on the order's shipments, for the line's item. BC books the cost of the
   invoiced quantity there (``Cost Amount (Actual)``); the expected cost of a shipped,
-  uninvoiced quantity is not served by API v2.0, so a zero or empty actual cost is a typed
-  gap (``COST_NOT_YET_ACTUAL``), never a zero cost. Returned cost: the ``costAmountActual``
-  of the entries of entry type Sale and document type Sales Credit Memo posted by a netted
-  credit memo, for the item, matched memo by memo: a memo crediting goods with no such entry
-  of its own (a return receipt, or none posted) is a typed gap (``RETURN_NOT_IN_LEDGER``),
+  uninvoiced quantity is not served by API v2.0, so an empty actual cost is a typed gap
+  (``COST_NOT_YET_ACTUAL``), never a zero cost; a zero actual cost on a line invoiced in full
+  is no cost value either (``COST_NOT_VALUED``: the item's cost is zero or not yet
+  adjusted). Returned cost: the ``costAmountActual`` of the entries of entry type Sale and
+  document type Sales Credit Memo posted by a netted credit memo, for the item, matched memo
+  by memo: a memo crediting goods with no such entry of its own (a return receipt, or none
+  posted) is a typed gap (``RETURN_NOT_IN_LEDGER``),
   never covered by another memo's entry. In the base unit the returned quantity must equal
   each memo's credited quantity; in another unit nothing is converted and the capture must
   be complete (``COST_COMPLETENESS_UNPROVEN``).
@@ -124,6 +126,7 @@ LOCAL_CURRENCY = {"bc_manufacturing": "CAD", "bc_distribution": "CAD"}
 CURRENCY_FIELD = "currencyCode"
 _GAP_STATES = {"MIXED_CURRENCY_NO_CITED_RATE": "not_ingested",
                "COST_NOT_YET_ACTUAL": "not_ingested",
+               "COST_NOT_VALUED": "unknown",
                "INVOICE_CORRECTED": "not_ingested",
                "INVOICE_CURRENCY_UNKNOWN": "not_ingested",
                "CREDIT_MEMO_CURRENCY_UNKNOWN": "not_ingested",
@@ -810,9 +813,18 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
                         "a ledger entry has no actual cost (its expected cost is not served by "
                         "the BC API) or did not re-read", "cost", "ledger_quantity")
         if value == 0:
-            return stop("COST_NOT_YET_ACTUAL", "a ledger entry's actual cost is zero: its "
-                        "cost is not yet invoiced (expected cost is not served by the BC API)",
-                        "cost")
+            # The line is invoiced in full here (checked above), so BC has moved a
+            # shipment's cost from expected to actual, and a posted credit memo's return
+            # entry carries its own: a zero is no cost value at all (the item's cost is
+            # zero or not yet adjusted), never a booked cost of zero. Worded by the
+            # entry's document type.
+            what = ("the return entry of a posted credit memo has an actual cost of 0"
+                    if memo is not None else
+                    "the line is invoiced in full, yet its shipment's ledger entry has an "
+                    "actual cost of 0")
+            return stop("COST_NOT_VALUED", what + ": Business Central holds no cost value "
+                        "for it (the item's cost is zero or not yet adjusted), so 0 is not "
+                        "taken as its cost", "cost")
         cost_currency = entry["cost"].get("currency")
         if cost_currency != currency:
             return stop("MIXED_CURRENCY_NO_CITED_RATE", f"revenue is in {currency}, booked "

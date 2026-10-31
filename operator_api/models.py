@@ -157,6 +157,11 @@ class FreshnessSource(_Model):
     as_of: Optional[str] = None
     age_seconds: Optional[int] = None
     stale: bool = False
+    capture: Optional[Literal["complete", "partial", "failed", "never_captured"]] = Field(
+        None, json_schema_extra=_optional,
+        description="How the last capture of this source ended: failed and "
+                    "never_captured are stale whatever their age; partial (a budgeted "
+                    "capture continuing next cycle) is judged by age.")
 
 
 class Freshness(_Model):
@@ -425,6 +430,10 @@ class NeedsAttention(_Model):
     hidden: Optional[Hidden] = Field(None, description="Omitted when the source of the list "
                                                        "does not count what it hides.")
     as_of: Optional[str] = None
+    late_total: Optional[int] = Field(
+        None, json_schema_extra=_optional,
+        description="Every late purchase order this reader may see; late_pos lists the "
+                    "longest late of them.")
 
 
 class RecentQuestion(_Model):
@@ -518,6 +527,16 @@ class Profitability(_Model):
                                                      "'partial: worst of the 60 most recent "
                                                      "orders; 214 more in the period not "
                                                      "read'.")
+    margin_basis: str = Field("on item cost only", description="What every margin here "
+                              "covers: item ledger cost only (BC books no labour or "
+                              "overhead).")
+    margin_note: Optional[str] = Field(None, description="The plain line saying what the "
+                                       "margin basis leaves out.")
+    verdict: Optional[Literal["profitable", "not_profitable"]] = Field(
+        None, description="Stated only when every invoiced order of the period has a "
+                          "checked margin; null otherwise.")
+    orders_excluded: int = Field(0, ge=0, description="Orders of the period not yet "
+                                                      "invoiced: excluded, never blocking.")
     orders: list[OrderMargin] = Field(default_factory=list, description="Worst margin first.")
     orders_more: int = Field(0, ge=0, description="Orders read but not listed (the list "
                                                   "stops at 30).")

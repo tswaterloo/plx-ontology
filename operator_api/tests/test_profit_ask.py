@@ -14,7 +14,7 @@ import unittest
 
 from operator_api import backend as be
 from operator_api import models as m
-from tests.test_customer_profit import TODAY, World
+from tests.test_customer_profit import TODAY, World, bc_records
 
 
 class View:
@@ -24,8 +24,10 @@ class View:
     the thread that first uses the view (the Ask worker's owner thread: its stores are
     SQLite connections bound to it, as the console's runtime is)."""
 
-    def __init__(self, case: unittest.TestCase, withheld: str | None = None) -> None:
+    def __init__(self, case: unittest.TestCase, withheld: str | None = None,
+                 records: list | None = None) -> None:
         self.withheld, self._world, self.calls = withheld, None, 0
+        self.records = records
         self._cleanups: list = []
         self.case = SimpleNamespace(addCleanup=self._cleanups.append)
         self.access = SimpleNamespace(decide=lambda hs: {
@@ -35,7 +37,7 @@ class View:
     @property
     def world(self) -> World:
         if self._world is None:
-            self._world = World(self.case)
+            self._world = World(self.case, records=self.records)
         return self._world
 
     def _call(self, name, arguments):
@@ -90,16 +92,19 @@ class ProfitAskTests(unittest.TestCase):
         self.assertEqual(answer["outcome"], "partial")     # SO-104 has no margin yet
         self.assertTrue(answer["direct_answer"].startswith(
             "Northwind Test Foods is not profitable in the last 12 months: revenue 190.00 "
-            "CAD, booked cost 231.00 CAD, margin -41.00 CAD (-21.58%) over 3 of 4 orders "
-            "with a complete margin; an order counts in the period by its first posted "
+            "CAD, item cost 231.00 CAD, margin on item cost only: -41.00 CAD (-21.58%) over "
+            "3 invoiced orders; an order counts in the period by its first posted "
             "invoice's posting date"), answer["direct_answer"])
-        self.assertIn("Worst SO-101: revenue 90.00 CAD, cost 135.00 CAD, loss 45.00 CAD. "
-                      "Why: Item FG-9", answer["direct_answer"])
+        self.assertIn("1 order not yet invoiced, excluded. Labour and overhead aren't booked "
+                      "in Business Central, so this overstates true margin.",
+                      answer["direct_answer"])
+        self.assertIn("Worst SO-101: revenue 90.00 CAD, item cost 135.00 CAD, loss on item "
+                      "cost only 45.00 CAD. Why: Item FG-9", answer["direct_answer"])
         self.assertIn("Suggested next step: Review the price for Northwind Test Foods on item "
                       "FG-9", answer["direct_answer"])
         facts = [f["text"] for f in answer["facts"]]
-        self.assertIn("Order SO-101: revenue 90.00 CAD, cost 135.00 CAD, loss 45.00 CAD.",
-                      facts)
+        self.assertIn("Order SO-101: revenue 90.00 CAD, item cost 135.00 CAD, loss on item "
+                      "cost only 45.00 CAD.", facts)
         for fact in answer["facts"]:
             self.assertEqual(fact["check"], "computed_from_cited_records")
             self.assertTrue(fact["sources"])
@@ -127,6 +132,76 @@ class ProfitAskTests(unittest.TestCase):
         gaps = " ".join(n["what"] for n in answer["not_found"])
         self.assertIn("Labour overhead not recorded", gaps)
         self.assertIn("SO-104", gaps)
+
+    def test_an_invoiced_order_with_no_cost_value_gives_no_verdict_only_a_partial_ranking(self):
+        """The review's repro: SO-103's ledger cost set to 0. No verdict, no customer total,
+        the blocking order named; the checked orders ranked as partial; the uninvoiced
+        order listed as excluded; every margin labelled item cost only."""
+        records = bc_records()
+        for record in records:
+            if record["fields"].get("documentNumber") == "SS-103":
+                record["fields"]["costAmountActual"] = 0
+        _names, answer = self.ask(View(self, records=records),
+                                  "Is Northwind Test Foods profitable and why not?")
+        text = answer["direct_answer"]
+        self.assertTrue(text.startswith(
+            "I can't give a verdict for Northwind Test Foods in the last 12 months: 1 "
+            "invoiced order has no cost value in BC (SO-103). 1 order not yet invoiced, "
+            "excluded. The 2 checked orders are ranked below (partial)."), text)
+        self.assertNotIn("is profitable", text)
+        self.assertNotIn("is not profitable", text)
+        self.assertIn("Labour and overhead aren't booked in Business Central", text)
+        profit = answer["profitability"]
+        self.assertIsNone(profit["margin"])
+        self.assertIsNone(profit["verdict"])
+        self.assertEqual(profit["margin_basis"], "on item cost only")
+        self.assertEqual(profit["orders_excluded"], 1)
+        self.assertTrue(profit["ranking"].startswith("partial: the 2 checked orders only"))
+        self.assertEqual([o["order"]["label"] for o in profit["orders"] if o["margin"]],
+                         ["SO-101", "SO-102"])
+        self.assertNotEqual(answer["outcome"], "answered")
+
+    def test_a_customer_with_no_order_in_the_period_says_so(self):
+        records = bc_records()
+        template = next(r for r in records if r["entity_set"] == "customers"
+                        and r["fields"].get("number") == "C-51")
+        extra = {**template, "id": template["id"][:-4] + "beef",
+                 "fields": {**template["fields"], "id": template["id"][:-4] + "beef",
+                            "number": "C-52", "displayName": "Eastwind Test"}}
+        records.append(extra)
+        _names, answer = self.ask(View(self, records=records), "Is Eastwind Test profitable?")
+        self.assertEqual(answer["direct_answer"].split(" Suggested")[0],
+                         "Eastwind Test has no order you can see in the last 12 months.")
+        self.assertIsNone(answer["profitability"]["margin"])
+        self.assertIsNone(answer["profitability"]["verdict"])
+
+    def test_checked_orders_in_different_currencies_give_no_single_total(self):
+        """Every invoiced order checked, but in two currencies: no verdict, no single
+        total, each order ranked within its own currency."""
+        from unittest import mock
+        from operating import customer_profit as cp
+        real = cp.read_order
+
+        def in_usd(call, order):
+            got = real(call, order)
+            if got.number == "SO-103" and got.decided:
+                got.currency = "USD"
+            return got
+        with mock.patch.object(cp, "read_order", in_usd):
+            _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
+        text = answer["direct_answer"]
+        self.assertTrue(text.startswith(
+            "I can't give a verdict for Northwind Test Foods in the last 12 months: its orders "
+            "are in different currencies (CAD and USD), so no single total. The 3 checked "
+            "orders are ranked below within each currency."), text)
+        profit = answer["profitability"]
+        self.assertIsNone(profit["margin"])
+        self.assertIsNone(profit["verdict"])
+        self.assertIn("different currencies (CAD and USD), so no single total",
+                      profit["ranking"])
+        ranked = [(o["order"]["label"], (o["margin"] or {}).get("currency"))
+                  for o in profit["orders"] if o["margin"]]
+        self.assertEqual(ranked, [("SO-101", "CAD"), ("SO-102", "CAD"), ("SO-103", "USD")])
 
     def test_a_record_the_reader_may_not_open_is_never_named(self):
         _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
@@ -211,6 +286,34 @@ class ProfitAskTests(unittest.TestCase):
         self.assertEqual(sorted(c["label"] for c in answer["did_you_mean"]),
                          ["Northwind Test Foods (C-50)", "Southwind Test (C-51)"])
         self.assertIsNone(answer["profitability"])
+
+    def test_a_did_you_mean_pick_keeps_the_question_it_answers(self):
+        """The app sends a pick as "I mean <choice>" with the picked customer and the
+        conversation so far: it answers the earlier profitability question for that
+        customer, and the choice's own wording ("Name (number)") picks it as well."""
+        view = View(self)
+        backend = self.backend(view)
+        first = list(backend.ask(self.reader(), m.AskRequest(question="Is Test profitable?")))
+        choice = next(c for c in first[-1][1].did_you_mean
+                      if c.label.startswith("Northwind"))
+        events = list(backend.ask(self.reader(), m.AskRequest(
+            question=f"I mean {choice.label}", object_id=choice.object_id,
+            history=[m.HistoryTurn(role="user", text="Is Test profitable?"),
+                     m.HistoryTurn(role="assistant", text=first[-1][1].direct_answer)])))
+        for name, payload in events:
+            m.ASK_EVENTS[name].model_validate(payload.model_dump())
+        picked = events[-1][1].model_dump()
+        self.assertEqual(picked["profitability"]["customer"]["object_id"], choice.object_id)
+        self.assertTrue(picked["direct_answer"].startswith(
+            "Northwind Test Foods is not profitable in the last 12 months"),
+            picked["direct_answer"])
+        _names, named = self.ask(View(self), f"is {choice.label} profitable, and why not?")
+        self.assertEqual(named["profitability"]["customer"]["object_id"], choice.object_id)
+        # A pick with no earlier question to carry is no profitability question, and a
+        # record that is not a customer never runs this path.
+        self.assertIsNone(be.picked_question(m.AskRequest(
+            question=f"I mean {choice.label}", object_id=choice.object_id)))
+        self.assertFalse(be.customer_object("PurchaseOrder:bc.purchase_orders:{}"))
 
 
 if __name__ == "__main__":

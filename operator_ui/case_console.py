@@ -682,6 +682,7 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
                                "session": session, "entra_resource": entra_resource,
                                "state_dir": state_dir, "ontology_path": ontology_path,
                                "evidence": evidence, "planner": planner,
+                               "freshness_bounds": freshness,
                                "replay_guard": None if resolver is None
                                else session_identity.replay_guard_for(state_dir)})
         if resolver is None:

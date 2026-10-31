@@ -251,6 +251,16 @@ KEY_ENV, URL_ENV = "PLX_WORKBENCH_API_KEY", "PLX_WORKBENCH_API_URL"
 KEYCHAIN_SERVICE = "plx-workbench-api-key"
 DEFAULT_PRINCIPAL = "svc:workbench-host"
 DEFAULT_INTERVAL_SECONDS = 900
+# How old a host's own capture of a source may be before answers and Home state it stale,
+# unless the config's ``freshness_hours`` says otherwise (``freshness_bounds``): one capture
+# cycle (captures, then a projection build) takes hours, and the generation served is
+# published after it, so a bound of minutes called every healthy capture stale.
+DEFAULT_FRESHNESS_HOURS = 36.0
+MAX_FRESHNESS_HOURS = 720.0   # 30 days: a longer bound would call any capture fresh
+# Every source family a projection serves from a host's captures (operating.mcp_server
+# BOUND_SOURCES): each gets a bound, configured or not.
+CAPTURED_FAMILIES = ("portal_api", "bc", "graph_mail", "sharepoint", "teams",
+                     "mission_control")
 # The coverage census's own time bound when the SharePoint source sets no
 # ``census_budget_seconds``: never the capture's ``budget_seconds``, which bounds one cycle's
 # reads, not the listing of what the library holds.
@@ -272,7 +282,8 @@ RUN_CHILD = (sys.executable, "-I", "-c", "import runpy, sys; sys.path.insert(0, 
 _CONFIG_KEYS = {"schema", "note", "tenant", "capture_principal", "capture_audience",
                 "live_audience", "mirror_audience", "employee_policy", "portal_access",
                 "entra_directory", "interval_seconds", "agent", "action_path",
-                "knowledge_namespaces", "case_coworker", "marking_grants", "ingest"}
+                "knowledge_namespaces", "case_coworker", "marking_grants", "ingest",
+                "freshness_hours"}
 _COWORKER_KEYS = {"group", "principal", "member_of"}
 _SOURCE_KEYS = {"portal": {"base_url", "relations", "budget_seconds"},
                 "bc": {"entity_sets", "budget_seconds", "books"},
@@ -391,6 +402,7 @@ class HostConfig:
                 or not isinstance(interval, int) or not 60 <= interval <= 86400:
             raise HostError("host_config_invalid")
         self.interval_seconds = interval
+        self.freshness_hours = self._freshness_hours(document.get("freshness_hours"))
         self.case_coworker = self._case_coworker(document.get("case_coworker"))
         # The agent definition the MCP session runs (operating/agent_definitions.json);
         # None: the definitions' default_agent.
@@ -453,6 +465,27 @@ class HostConfig:
         if self.capture_audience is None and any(
                 "live_audience" in self.capture_sources[name].fields for name in self.sources):
             raise HostError("host_config_invalid:capture_audience")
+
+    def _freshness_hours(self, value: Any) -> dict[str, float] | float | None:
+        """``freshness_hours`` (absent: the default bound): one positive number of hours
+        for every captured source, or source section name -> hours; anything else (a
+        source name the host does not know, zero, a negative, NaN or infinite value, a
+        boolean) is refused."""
+        if value is None:
+            return None
+
+        def hours(raw: Any) -> float:
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)) \
+                    or not 0 < raw <= MAX_FRESHNESS_HOURS:
+                raise HostError("host_config_invalid:freshness_hours")
+            return float(raw)
+        if isinstance(value, Mapping):
+            from . import ingest_forever
+            known = set(SOURCES) | set(ingest_forever.SOURCES)
+            if not value or set(value) - known:
+                raise HostError("host_config_invalid:freshness_hours")
+            return {str(name): hours(raw) for name, raw in value.items()}
+        return hours(value)
 
     def _case_coworker(self, value: Any) -> dict[str, Any] | None:
         """``case_coworker`` (absent: off): the group the ``check`` probe case is opened
@@ -2903,14 +2936,20 @@ def console_arguments(host: Host, port: int) -> list[str]:
 
 def freshness_bounds(config: "HostConfig") -> dict[str, float]:
     """Source family -> seconds: how old this host's own capture of a source may be
-    before answers state it stale (captured-Portal
-    staleness). Twice one capture turn of the source: its re-run interval (ingest mode:
+    before answers and Home state it stale (captured-
+    Portal staleness, and 2026-10-31, the bound fits the cycle). The config's
+    ``freshness_hours`` for the source when it names one; else the larger of
+    ``DEFAULT_FRESHNESS_HOURS`` (a capture cycle plus the projection build behind it takes
+    hours) and twice one capture turn of the source: its re-run interval (ingest mode:
     the section's ``min_interval_seconds``, default 120 s; cycle mode: the host's
     ``interval_seconds``) plus the time one capture may take (its ``budget_seconds``, else
     ``timeout_seconds``, else the ingest default timeout, plus the ingest grace). A
-    family two sources write (SharePoint and its lists) takes the larger bound."""
+    family two sources write (SharePoint and its lists) takes the larger bound. Each
+    source's age is its own capture time in the served projection, never a cycle's
+    start (``ontology_tools.aged``)."""
     from . import ingest_forever as ingest
     out: dict[str, float] = {}
+    given = config.freshness_hours
     for name, section in sorted(config.sources.items()):
         if config.ingest is not None:
             spec = config.capture_sources.get(name)
@@ -2921,9 +2960,22 @@ def freshness_bounds(config: "HostConfig") -> dict[str, float]:
             family, interval, grace = PROJECTED_SOURCE.get(name), config.interval_seconds, 0
         if family is None:
             continue
-        run = (section.get("budget_seconds") or section.get("timeout_seconds")
-               or ingest.DEFAULT_TIMEOUT_SECONDS)
-        out[family] = max(out.get(family, 0.0), 2.0 * (float(interval) + float(run) + grace))
+        hours = given.get(name) if isinstance(given, dict) else given
+        if hours is not None:
+            bound = hours * 3600.0
+        else:
+            run = (section.get("budget_seconds") or section.get("timeout_seconds")
+                   or ingest.DEFAULT_TIMEOUT_SECONDS)
+            bound = max(DEFAULT_FRESHNESS_HOURS * 3600.0,
+                        2.0 * (float(interval) + float(run) + grace))
+        out[family] = max(out.get(family, 0.0), bound)
+    # A family the served projection holds but this config does not capture (another
+    # host's capture, an older generation's) is judged too, never left fresh forever:
+    # the config's one number of hours, else the default.
+    for family in CAPTURED_FAMILIES:
+        if family not in out:
+            out[family] = (given if isinstance(given, float)
+                           else DEFAULT_FRESHNESS_HOURS) * 3600.0
     return out
 
 

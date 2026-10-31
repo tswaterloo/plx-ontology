@@ -138,6 +138,9 @@ class FactText(unittest.TestCase):
              "BC status: Open"),
             (self.claim("ordered", "18 (recorded as \"18.00\")", "row.quantity", bc_po,
                         role="ordered_quantity"), "Ordered: 18 (recorded as \"18.00\")"),
+            (self.claim("cost_amount_actual", "12 CAD", "cost_amount_actual",
+                        "bc://production/fbd2/itemLedgerEntries/e1@g-3"),
+             "Item ledger entry cost amount actual: 12 CAD"),
         ]
         for claim, want in cases:
             got = p.fact_text(claim["text"], claim)

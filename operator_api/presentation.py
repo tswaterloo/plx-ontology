@@ -72,7 +72,9 @@ def record_kind(handle: str) -> Optional[str]:
     else:
         return None
     said = words(table)
-    if said.endswith("s") and not said.endswith("ss"):
+    if said.endswith("ies"):
+        said = said[:-3] + "y"           # "item ledger entries" -> "item ledger entry"
+    elif said.endswith("s") and not said.endswith("ss"):
         said = said[:-1]
     for long, short in RECORD_WORDS:
         said = said.replace(long, short)

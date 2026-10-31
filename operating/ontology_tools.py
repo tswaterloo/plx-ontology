@@ -322,6 +322,62 @@ def _envelope_bytes(value: Mapping[str, Any]) -> int:
 
 # --------------------------------------------------------------------------- time
 
+
+# The host ledger's capture names (``operating.host`` source_state) as projected families.
+LEDGER_FAMILIES = {"portal": "portal_api", "bc": "bc", "mail": "graph_mail",
+                   "sharepoint": "sharepoint", "sharepoint_lists": "sharepoint",
+                   "teams": "teams", "mc": "mission_control"}
+
+
+def capture_failures(ledger: Any) -> frozenset[str]:
+    """The projected families whose last capture attempt the host ledger
+    (``<state>/host/host.sqlite``) records as failed: an error, or stale since a failure.
+    A partial capture is not a failure (budgeted captures resume next cycle). Empty
+    without a readable ledger."""
+    path = Path(ledger) if ledger else None
+    if path is None or not path.is_file():
+        return frozenset()
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        try:
+            rows = conn.execute("SELECT source, error, stale_since FROM source_state "
+                                "WHERE configured = 1").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return frozenset()
+    return frozenset(LEDGER_FAMILIES[source] for source, error, since in rows
+                     if source in LEDGER_FAMILIES and (error or since))
+
+
+def aged(entry: Mapping[str, Any], bounds: Mapping[str, float], now: dt.datetime,
+         failed: Iterable[str] = ()) -> dict:
+    """The one staleness rule of a projected source's freshness entry (answers through
+    ``OntologyTools._aged`` and Home through ``operator_api``): the source's own capture
+    time (``captured_at``, the oldest last refresh of its bound relations in the served
+    projection) against the host's bound for that source (``operating.host.
+    freshness_bounds``). Past it the entry is stale, labelled with its time and age; an
+    entry already stale (a copy served while the live source was out) keeps its own
+    label; no bound or no capture time leaves the entry as it is (an unknown time is
+    never called fresh: the entry says ``captured_at`` null). A source whose last capture
+    the host ledger records as failed (``failed``, ``capture_failures``) is stale whatever
+    its age; a partial capture (budgeted, continuing next cycle) is judged by age alone."""
+    entry = dict(entry)
+    bound = bounds.get(entry.get("source"))
+    captured = _parse_time(entry.get("captured_at"))
+    if captured is not None and not entry.get("stale") \
+            and entry.get("source") in set(failed):
+        return dict(entry, stale=True, label=(
+            f"host captures as of {entry['captured_at']}, the host's last capture of "
+            "this source failed"))
+    if bound is None or captured is None or entry.get("stale"):
+        return entry
+    age = (now - captured).total_seconds()
+    if age <= bound:
+        return entry
+    from integrations.mirror_capture import capture_label
+    return dict(entry, stale=True, label=capture_label(entry["captured_at"], age, bound))
+
 def _parse_time(text: Any, *, end_of_day: bool = False) -> dt.datetime | None:
     """ISO date or timestamp -> aware UTC datetime at millisecond resolution (the
     resolution SQLite's ``julianday`` compares store times at, so Python and SQL
@@ -2040,15 +2096,20 @@ class OntologyTools:
         the bound it is stale, labelled with its captured time and age (one
         ``stale_source`` gap, ``_source_freshness_gaps``). An entry already stale (a
         copy served while the live source was out) keeps its own label."""
-        bound = self.freshness_bounds.get(entry["source"])
-        captured = _parse_time(entry.get("captured_at"))
-        if bound is None or captured is None or entry.get("stale"):
-            return entry
-        age = ((self.freshness_clock or self.clock)() - captured).total_seconds()
-        if age <= bound:
-            return entry
-        from integrations.mirror_capture import capture_label
-        return dict(entry, stale=True, label=capture_label(entry["captured_at"], age, bound))
+        return aged(entry, self.freshness_bounds, (self.freshness_clock or self.clock)(),
+                    self._capture_failures())
+
+    def _capture_failures(self) -> frozenset[str]:
+        """``capture_failures`` of the host ledger beside this store's state directory
+        (``<state>/projection/<store>`` -> ``<state>/host/host.sqlite``); none without."""
+        try:
+            rows = self.store.conn.execute("PRAGMA database_list").fetchall()
+        except (sqlite3.Error, AttributeError):
+            return frozenset()
+        main = next((row[2] for row in rows if row[1] == "main" and row[2]), None)
+        if not main:
+            return frozenset()
+        return capture_failures(Path(main).parent.parent / "host" / "host.sqlite")
 
     def _meta(self, store_meta: Mapping[str, str], at: dt.datetime,
               sources: Iterable[str]) -> dict[str, Any]:

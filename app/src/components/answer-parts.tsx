@@ -149,10 +149,20 @@ export function ConflictCard({ conflict }: { conflict: Conflict }) {
   );
 }
 
+// How the last capture ended, said beside an out-of-date source.
+const CAPTURE_WORDS: Record<string, string> = {
+  complete: "",
+  partial: " (capture continuing)",
+  failed: " (last capture failed)",
+  never_captured: " (never captured)",
+};
+
 export function FreshnessLabel({ freshness, now }: { freshness: Freshness | null | undefined; now?: Date }) {
   if (!freshness || (!freshness.as_of && !freshness.label)) return null;
   const sources = freshness.sources ?? [];
   const stale = sources.filter((s) => s.stale);
+  // a budgeted capture that continues next cycle: fresh by age, said beside its time
+  const continuing = sources.filter((s) => !s.stale && s.capture === "partial");
   const detail = sources
     .filter((s) => s.as_of)
     .map((s) => `${SYSTEM_LABEL[s.system] ?? s.system}: ${formatDateTime(s.as_of)}`)
@@ -171,10 +181,15 @@ export function FreshnessLabel({ freshness, now }: { freshness: Freshness | null
           freshness.label
         )}
       </p>
+      {continuing.length > 0 && (
+        <p className="text-xs text-muted" data-testid="capture-continuing">
+          Capture continuing: {continuing.map((s) => SYSTEM_LABEL[s.system] ?? s.system).join(", ")}
+        </p>
+      )}
       {stale.length > 0 && (
         <p className="inline-flex items-center gap-1.5 text-xs text-warn">
           <AlertTriangle className="size-3.5" aria-hidden />
-          Out of date: {stale.map((s) => SYSTEM_LABEL[s.system] ?? s.system).join(", ")}
+          Out of date: {stale.map((s) => (SYSTEM_LABEL[s.system] ?? s.system) + CAPTURE_WORDS[s.capture ?? "complete"]).join(", ")}
         </p>
       )}
     </div>

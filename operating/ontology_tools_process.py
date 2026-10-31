@@ -961,6 +961,9 @@ class _Ctx:
         self._withheld: dict[str, set[str]] = {}
         # (process, stage, record) -> that stage of a prerequisite record (``_stage_of``)
         self.stage_reads: dict[tuple[str, str, str], _Outcome] = {}
+        # Link key properties the source serves on no record at all (``ProcessTools.
+        # _key_unserved``): links through them are not tracked, said as a caveat.
+        self.unserved: set[str] = set()
 
     # ---------------------------------------------------------------- objects
 
@@ -2634,7 +2637,12 @@ class ProcessTools:
             problem = problem_of(index, lb)
             if problem:
                 out.proven = False
-                out.reasons.append(_Why(_EVIDENCE, "lead_carrier_unproven",
+                # A key the projector could not read on some record of a lead carrier
+                # changes nothing any reader counts (a lead row is never counted): a lead
+                # reason. What the reader may not see stays an evidence reason.
+                tier = (_LEAD if problem[0] == _UNPROVEN
+                        and problem[1].startswith("the projector") else _EVIDENCE)
+                out.reasons.append(_Why(tier, "lead_carrier_unproven",
                                         f"lead carrier: {problem[1]}", problem[0]))
         column, other = ("from_object", "to_object") if forward else ("to_object", "from_object")
         rows = list(self.base.store.conn.execute(
@@ -2829,6 +2837,14 @@ class ProcessTools:
                 return _UNPROVEN, f"the projector reported {gap['code']} for {where}"
             if gap["where"] in names and (gap["code"].startswith("parse_")
                                           or gap["code"] == "path_absent"):
+                if gap["code"] == "path_absent" and self._key_unserved(gap["where"]):
+                    # The source carries the key on no record (the reporting API does not
+                    # serve it): no link through it is ever made, so it hides none from
+                    # this answer; said as a caveat, never a reason to state nothing. A
+                    # key served on some records but absent or unreadable on others
+                    # still leaves the hop unproven.
+                    ctx.unserved.add(gap["where"])
+                    continue
                 return _UNPROVEN, f"the projector could not read a key of {where}"
         return None
 
@@ -2941,6 +2957,27 @@ class ProcessTools:
                 if binding["id"] == bid:
                     return tid, binding
         return None
+
+    def _key_unserved(self, where: str) -> bool:
+        """Whether the property a build-report ``where`` (``Type.property@binding``) names
+        holds no value on any record of that binding while the binding has records: the
+        source does not serve the field at all. Cached per tools instance (one store)."""
+        cache = self.__dict__.setdefault("_unserved_cache", {})
+        if where not in cache:
+            found = re.fullmatch(r"([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)@([A-Za-z0-9_.]+)", where)
+            unserved = False
+            if found:
+                tid, prop, binding = found.groups()
+                conn = self.base.store.conn
+                held = conn.execute("SELECT 1 FROM objects WHERE object_type = ? AND "
+                                    "binding_id = ? LIMIT 1", (tid, binding)).fetchone()
+                valued = conn.execute(
+                    "SELECT 1 FROM objects o JOIN object_values v ON v.object_id = "
+                    "o.object_id WHERE o.object_type = ? AND o.binding_id = ? AND "
+                    "v.property = ? LIMIT 1", (tid, binding, prop)).fetchone()
+                unserved = held is not None and valued is None
+            cache[where] = unserved
+        return cache[where]
 
     def _pair_wheres(self, lb: Mapping[str, Any]) -> set[str]:
         """Build-report ``where`` names (``Type.property@binding``) of the properties

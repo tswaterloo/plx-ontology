@@ -662,6 +662,8 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "order_without_customer_po", "late_order", "expired_quote",
               "conflicting_quantity", "missing_in_record", "order_at_risk", "po_impact",
               "po_impact_margin", "systems_disagree")
+LATE_PO_KINDS = ("late_po", "unconfirmed_po")
+NARROWED_READ = 20000   # inbox items a kind-narrowed home question reads
 _PURCHASE_ORDERS = r"(?:purchase orders|pos)"
 _LATE = r"(?:late|overdue|past due|behind)"
 _HOME_PHRASES: tuple[tuple[re.Pattern[str], tuple[str, ...] | None], ...] = tuple(
@@ -708,6 +710,11 @@ def home_kinds(query: Any) -> tuple[str, ...] | None:
     for pattern, kinds in _HOME_PHRASES:
         if pattern.fullmatch(text):
             return kinds or ()
+    # The late purchase-order list in any wording, typos and chat spellings included,
+    # optionally asking for each one's confirmation status (``late_list_words``); a
+    # supplier, a time frame or a record named is not.
+    if mcp_portfolio.late_list_words(query, with_confirmation=True):
+        return LATE_PO_KINDS
     return None
 
 
@@ -790,6 +797,8 @@ def _home_gap(gap: Any) -> dict[str, Any] | None:
              "citations": handles[:HOME_CITATIONS], "citations_total": len(handles)}
     if isinstance(follow.get("missing"), str) and follow["missing"]:
         shown["next_question"] = {"untrusted_text": follow["missing"], "origin": origin}
+    if type(gap.get("days_late")) is int and gap["days_late"] >= 0:
+        shown["days_late"] = gap["days_late"]
     contracts = ontology_tools.load_contracts()
     return shown if not validate(shown, _HOME_GAP, root=contracts, limit=1) else None
 
@@ -2295,8 +2304,12 @@ class MCPServer:
         record found by the words wins (conservative identity); a filter or object_type
         is never home."""
         kinds = home_kinds(arguments.get("query"))
+        # the late list may be asked with its own type named (object_type PurchaseOrder)
+        typed = (set(kinds or ()) <= set(LATE_PO_KINDS) and bool(kinds)
+                 and arguments.get("object_type") == "PurchaseOrder")
         if (kinds is None or not isinstance(found, dict) or found.get("status") != "not_found"
-                or set(arguments) - {"query", "limit", "response_format"}):
+                or set(arguments) - {"query", "limit", "response_format"}
+                - ({"object_type"} if typed else set())):
             return found
         return self._inbox_answer(host, gated, kinds, arguments, found)
 
@@ -2317,7 +2330,10 @@ class MCPServer:
                     proactive_engine.inbox_path(store), store,
                     reader=proactive_engine.reader_key(self.actor),
                     may_read=lambda key: policy.may_read(gated, key),
-                    held=frozenset(policy.held_markings(gated)), decide=decide)
+                    held=frozenset(policy.held_markings(gated)), decide=decide,
+                    # a narrowed question (the late list) reads every item, so its total
+                    # is the true one past the inbox's first page
+                    **({"limit": NARROWED_READ} if kinds else {}))
             except (sqlite3.Error, OSError, ValueError):
                 inbox = {"status": "unreadable"}   # said, never a clean empty inbox
         result = _home_answer(inbox, kinds, arguments.get("limit", HOME_LIMIT),

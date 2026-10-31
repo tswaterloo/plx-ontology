@@ -14,11 +14,16 @@ itself, writes or sends anything):
   run decided it (non-null), its claim checks passed and every cited input it rests on
   (transitively) passed its check; else the order is a typed gap with the engine's codes,
   never zero or an estimate.
-* **Customer figures.** Revenue, booked cost and margin are Decimal sums of the order
+* **Customer figures.** Revenue, item cost and margin are Decimal sums of the order
   figures used, in one currency (several: no total, ``MIXED_CURRENCY``); margin % is margin
-  / revenue x 100 (on price, the order engine's convention). When an order of the period has
-  no figure, the totals cover only the orders that have one and say so
-  (``ORDERS_WITHOUT_MARGIN``); they are never scaled up.
+  / revenue x 100 (on price, the order engine's convention). Every margin is on item cost
+  only: BC books no labour or overhead, so it overstates true margin (``MARGIN_BASIS``,
+  ``MARGIN_NOTE``). A verdict and a customer total are stated only when every invoiced
+  order of the period has a checked margin: an order nothing of
+  which is invoiced yet is listed as excluded (``ORDERS_NOT_INVOICED``) and does not block;
+  an invoiced order without one (a zero cost value, a partial invoice, a withheld record)
+  means no verdict and no total (``INVOICED_ORDERS_WITHOUT_MARGIN``), and the ranking of the
+  checked orders is partial. Totals are never scaled up.
 * **Ranking.** Orders with a margin, worst first; those without follow with their gap.
 * **Why an order lost money** (the order the question names, else the worst one): its lines
   (item, quantity, revenue, booked cost, margin, unit price and unit cost, each with the
@@ -207,6 +212,16 @@ def customer_words(question: str) -> str:
     text = _FILLER.sub(" ", text)
     text = re.sub(r"[?!.,;:'\"()]+", " ", text)
     return " ".join(text.split())[:200]
+
+
+def name_and_number(question: str) -> tuple[str, str] | None:
+    """(name, customer number) when the question names a customer as "Name (NUMBER)", the
+    way a did-you-mean choice reads ("Diversified (C0042)"), else None."""
+    found = re.search(r"\(\s*([A-Za-z0-9][\w-]{0,39})\s*\)", question or "")
+    if not found:
+        return None
+    name = customer_words(question[:found.start()] + " " + question[found.end():])
+    return (name, found.group(1)) if name else None
 
 
 ORDER_TOKEN = re.compile(r"\b(S-?ORD[-\s]?\d[\w-]*|S-?O[-\s]?\d[\w-]*)", re.IGNORECASE)
@@ -818,13 +833,27 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         out["gaps"].append({"code": "STALE_SOURCE", "subject": "Business Central",
                             "detail": stale})
     decided = [o for o in visible if o.decided]
+    # A verdict and a customer total only when every invoiced
+    # order of the period has a checked margin. An order nothing of which is invoiced yet
+    # is listed as excluded and does not block; an invoiced order without a checked margin
+    # (a zero cost value, a partial invoice, a withheld record) blocks both.
+    excluded = [o for o in visible if not_invoiced(o)]
+    blocking = [o for o in visible if not o.decided and o not in excluded]
     currencies = sorted({o.currency for o in decided if o.currency})
     totals: dict[str, Any] = {"orders": in_period, "read": len(visible),
                               "counted": len(decided), "complete": covered,
                               "currency": None, "revenue": None, "booked_cost": None,
-                              "margin": None, "margin_pct": None, "steps": []}
+                              "margin": None, "margin_pct": None, "steps": [],
+                              "excluded": [o.number for o in excluded],
+                              "blocking": [(o.number, block_reason(o)) for o in blocking]}
     if not covered:
         pass                     # no customer total over a subset of the period's orders
+    elif blocking:
+        out["gaps"].append({"code": "INVOICED_ORDERS_WITHOUT_MARGIN",
+                            "subject": "customer verdict",
+                            "detail": blocking_words(blocking) + "; no verdict and no "
+                            "customer total is stated, the ranking covers the checked "
+                            "orders only"})
     elif len(currencies) > 1:
         out["gaps"].append({"code": "MIXED_CURRENCY", "subject": "customer total",
                             "detail": "the orders are in " + " and ".join(currencies)
@@ -834,22 +863,24 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         revenue = _sum([o.revenue for o in decided])
         cost = _sum([o.cost for o in decided])
         margin = revenue - cost
-        steps = [f"{o.number}: revenue {_plain(o.revenue)} - booked cost {_plain(o.cost)} "
-                 f"= margin {_plain(o.margin)} {currency}" for o in decided][:40]
-        steps.append(f"customer: revenue {_plain(revenue)} - booked cost {_plain(cost)} = "
-                     f"margin {_plain(margin)} {currency} over {len(decided)} order(s)")
+        steps = [f"{o.number}: revenue {_plain(o.revenue)} - item cost {_plain(o.cost)} "
+                 f"= margin on item cost only {_plain(o.margin)} {currency}"
+                 for o in decided][:40]
+        steps.append(f"customer: revenue {_plain(revenue)} - item cost {_plain(cost)} = "
+                     f"margin on item cost only {_plain(margin)} {currency} over "
+                     f"{len(decided)} invoiced order(s)")
         totals.update(currency=currency, revenue=revenue, booked_cost=cost, margin=margin)
         if revenue:
             totals["margin_pct"] = (margin * 100 / revenue).quantize(CENT, ROUND_HALF_EVEN)
             steps.append(f"margin % on price = {_plain(margin)} / {_plain(revenue)} x 100 = "
                          f"{_plain(totals['margin_pct'])}")
         totals["steps"] = steps
+    if excluded and covered:
+        out["gaps"].append({"code": "ORDERS_NOT_INVOICED", "subject": "customer total",
+                            "detail": f"{len(excluded)} order(s) not yet invoiced, excluded "
+                            "(" + ", ".join(o.number for o in excluded[:8])
+                            + (", ..." if len(excluded) > 8 else "") + ")"})
     without = [o for o in visible if not o.decided]
-    if without and decided and covered:
-        out["gaps"].append({"code": "ORDERS_WITHOUT_MARGIN", "subject": "customer total",
-                            "detail": f"{len(without)} of {len(visible)} order(s) in the "
-                            "period have no complete margin; the totals cover the other "
-                            f"{len(decided)} only and are not scaled up"})
     out["totals"] = totals
     ranked = sorted(decided, key=lambda o: (o.margin, o.number)) + \
         sorted(without, key=lambda o: o.number)
@@ -876,6 +907,52 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     out["items"] = items
     out["trail"] = trail(out)
     return out
+
+
+# What an order's first gap says when it blocks the verdict ("1 invoiced order has no cost
+# value in BC (S-ORD101177)"); another code reads as its words.
+BLOCK_WORDS = {"COST_NOT_VALUED": "has no cost value in BC",
+               "COST_NOT_YET_ACTUAL": "has no actual cost in BC yet",
+               "LINE_NOT_INVOICED": "is only partly invoiced",
+               "LINE_PARTIALLY_INVOICED": "is only partly invoiced",
+               "ORDER_MARGIN_NOT_READ": "could not be read"}
+MARGIN_BASIS = "on item cost only"
+MARGIN_NOTE = ("Labour and overhead aren't booked in Business Central, so this overstates "
+               "true margin.")
+
+
+def not_invoiced(order: Order) -> bool:
+    """Nothing of the order is invoiced yet: no margin, every gap of it is a line not
+    invoiced, and no line carries a posted invoice line or an invoiced quantity."""
+    codes = {c for c, _ in order.gaps}
+    return (not order.decided and not order.withheld and "LINE_NOT_INVOICED" in codes
+            and codes <= {"LINE_NOT_INVOICED", "ORDER_LINES_INCOMPLETE"}
+            and not any(line.invoice_handles or line.invoiced for line in order.lines))
+
+
+def block_reason(order: Order) -> str:
+    if order.withheld:
+        return "rests on records you may not read"
+    for code, _detail in order.gaps:
+        if code in BLOCK_WORDS:
+            return BLOCK_WORDS[code]
+    code = order.gaps[0][0] if order.gaps else "no checked margin"
+    return "has no checked margin (" + code.lower().replace("_", " ") + ")"
+
+
+def blocking_words(blocking: Sequence[Order]) -> str:
+    """"1 invoiced order has no cost value in BC (S-ORD101177)", one clause per reason."""
+    by: dict[str, list[str]] = {}
+    for order in blocking:
+        by.setdefault(block_reason(order), []).append(order.number)
+    parts = []
+    for why, numbers in by.items():
+        many = len(numbers) != 1
+        verb = {"has ": "have ", "is ": "are ", "rests ": "rest ", "could ": "could "}
+        said = next((verb[k] + why[len(k):] for k in verb if many and why.startswith(k)), why)
+        parts.append(f"{len(numbers)} invoiced order{'s' if many else ''} {said} ("
+                     + ", ".join(numbers[:6]) + (", ..." if len(numbers) > 6 else "") + ")")
+    return "; ".join(parts)
 
 
 def _order_out(order: Order) -> dict[str, Any]:
@@ -952,8 +1029,8 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
         verb = "lost" if line.margin < 0 else "made"
         lc = line.currency
         text = (f"{row['label'][0].upper()}{row['label'][1:]} {verb} "
-                f"{money_words(abs(line.margin), lc)} on {order.number}: booked cost "
-                f"{money_words(line.cost, lc)}")
+                f"{money_words(abs(line.margin), lc)} ({MARGIN_BASIS}) on {order.number}: "
+                f"item cost {money_words(line.cost, lc)}")
         if row["unit_cost"] is not None and row["unit_price"] is not None:
             text += (f" ({unit_words(row['unit_cost'], lc, line.unit)}) against revenue "
                      f"{money_words(line.revenue, lc)} "
@@ -1022,7 +1099,7 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
         item, with_loss = repeat[0]
         numbers = ", ".join(o.number for o in with_loss[:5])
         return {"text": f"Review the price for {name} on {item_label(items.get(item, {}))}: "
-                f"the last {len(with_loss)} orders with it ran below cost ({numbers}).",
+                f"the last {len(with_loss)} orders with it ran below item cost ({numbers}).",
                 "rule": "item_below_cost_on_repeat_orders",
                 "basis": [o.object_id for o in with_loss[:5]], "writes": 0}
     breakdown = out.get("breakdown")
@@ -1034,7 +1111,7 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
         quoted = "against the quote " + breakdown["quote"]["number"] \
             if breakdown.get("quote") else "and set a price that covers it"
         return {"text": f"Check the cost of {what} on {order.number} {quoted}: the order ran "
-                f"{money_words(-order.margin, order.currency)} below cost.",
+                f"{money_words(-order.margin, order.currency)} below item cost.",
                 "rule": "order_below_cost", "basis": [order.object_id], "writes": 0}
     held = [o for o in orders if o.withheld and not o.decided]
     if held:
@@ -1043,7 +1120,10 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
                 f"{out['period']['words']} rest on records you may not read, so their margin "
                 "is not stated.", "rule": "margin_records_withheld",
                 "basis": [], "writes": 0}
-    undecided = [o for o in orders if not o.decided]
+    # the invoiced orders that block a verdict first; orders not yet invoiced only when
+    # nothing else is missing
+    undecided = [o for o in orders if not o.decided and not not_invoiced(o)] or \
+        [o for o in orders if not o.decided]
     if undecided:
         codes = sorted({c for o in undecided for c, _ in o.gaps})
         first = undecided[0]
@@ -1085,10 +1165,15 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
     elif totals.get("margin") is not None:
         steps.append({"label": f"{totals['counted']} of {totals['orders']} order(s) in "
                       f"{out['period']['words']} with a complete margin",
-                      "value": f"revenue {money_words(totals['revenue'], cur)}, booked cost "
-                      f"{money_words(totals['booked_cost'], cur)}, margin "
+                      "value": f"revenue {money_words(totals['revenue'], cur)}, item cost "
+                      f"{money_words(totals['booked_cost'], cur)}, margin {MARGIN_BASIS} "
                       f"{money_words(totals['margin'], cur)} ({_pct(totals['margin_pct'])})",
                       "handle": None, "check": "computed_from_cited_records"})
+    elif totals.get("blocking"):
+        steps.append({"label": f"{totals['orders']} order(s) in {out['period']['words']}",
+                      "value": "no verdict: " + "; ".join(
+                          f"{n} {why}" for n, why in totals["blocking"][:6]),
+                      "handle": None, "check": "gap"})
     else:
         steps.append({"label": f"{totals['orders']} order(s) in {out['period']['words']}",
                       "value": "no complete margin", "handle": None, "check": "gap"})
@@ -1098,8 +1183,8 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
     order: Order = breakdown["order"]
     steps.append({"date": order.dates[-1].isoformat() if order.dates else None,
                   "label": f"Order {order.number}",
-                  "value": f"revenue {money_words(order.revenue, order.currency)}, cost "
-                  f"{money_words(order.cost, order.currency)}, margin "
+                  "value": f"revenue {money_words(order.revenue, order.currency)}, item cost "
+                  f"{money_words(order.cost, order.currency)}, margin {MARGIN_BASIS} "
                   f"{money_words(order.margin, order.currency)}",
                   "handle": order.handle, "check": "computed_from_cited_records"
                   if order.decided else "gap"})
@@ -1107,8 +1192,8 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
         line = row["line"]
         steps.append({"label": f"Line {line.index}: {row['label']}, "
                       f"{_plain(line.quantity, Decimal('1'))} {line.unit or ''}".rstrip(),
-                      "value": f"revenue {money_words(line.revenue, line.currency)}, cost "
-                      f"{money_words(line.cost, line.currency)}, margin "
+                      "value": f"revenue {money_words(line.revenue, line.currency)}, item cost "
+                      f"{money_words(line.cost, line.currency)}, margin {MARGIN_BASIS} "
                       f"{money_words(line.margin, line.currency)}",
                       "handle": (line.invoice_handles or [None])[0],
                       "check": "computed_from_cited_records" if line.margin is not None

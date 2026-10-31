@@ -164,6 +164,36 @@ class OrderMarginTests(unittest.TestCase):
         self.assertTrue(all(tb.CO[1] not in json.dumps(e.get("citation") or {})
                             for e in result["answer"]))
 
+    def test_a_zero_cost_on_an_invoiced_line_is_a_gap_never_a_booked_zero(self):
+        """BC moves a shipment's cost to actual when it is invoiced: a line invoiced in full
+        whose ledger cost reads 0 has no cost value (never "not yet invoiced", never 0)."""
+        for record in self.records:
+            fields = record["fields"]
+            if record["company_id"] == tb.CO[0] and fields.get("documentNumber") == "SS-3A":
+                fields["costAmountActual"] = 0
+        self.open_world(BcWorld(self, fake_bc(self.records)))
+        result = self.ask(tb.CO[0], "SO-3")
+        got = self.computed(result)
+        self.assertEqual(got["order_margin_line_1_revenue"]["value"], "20")
+        self.assertIsNone(got["order_margin_line_1_booked_cost"]["value"])
+        self.assertIsNone(got["order_margin"]["value"])
+        self.assertIn("cost_not_valued", result["answerability"]["reasons"])
+        gap = next(g for g in result["gaps"] if g["reason"] == "cost_not_valued")
+        self.assertIn("invoiced in full", gap["detail"])
+        self.assertNotIn("not yet invoiced", gap["detail"])
+        # a zero on a credit memo's return entry is worded by its document type
+        for record in self.records:
+            fields = record["fields"]
+            if record["company_id"] == tb.CO[0] and fields.get("documentNumber") == "SS-3A":
+                fields["costAmountActual"] = -4.0
+            if record["company_id"] == tb.CO[0] and fields.get("documentNumber") == "CM-5":
+                fields["costAmountActual"] = 0
+        self.open_world(BcWorld(self, fake_bc(self.records)))
+        result = self.ask(tb.CO[0], "SO-5")
+        gap = next(g for g in result["gaps"] if g["reason"] == "cost_not_valued")
+        self.assertIn("return entry of a posted credit memo", gap["detail"])
+        self.assertNotIn("invoiced in full", gap["detail"])
+
     def test_partial_invoices_and_two_currencies_give_no_margin(self):
         partial = self.ask(tb.CO[0], "SO-4")
         self.assertIsNone(self.computed(partial)["order_margin_line_1_margin"]["value"])

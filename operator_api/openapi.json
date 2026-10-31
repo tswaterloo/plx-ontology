@@ -1099,6 +1099,24 @@
             ],
             "title": "As Of"
           },
+          "capture": {
+            "anyOf": [
+              {
+                "enum": [
+                  "complete",
+                  "partial",
+                  "failed",
+                  "never_captured"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the last capture of this source ended: failed and never_captured are stale whatever their age; partial (a budgeted capture continuing next cycle) is judged by age.",
+            "title": "Capture"
+          },
           "stale": {
             "default": false,
             "title": "Stale",
@@ -1757,6 +1775,18 @@
             "title": "Late Pos",
             "type": "array"
           },
+          "late_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every late purchase order this reader may see; late_pos lists the longest late of them.",
+            "title": "Late Total"
+          },
           "status": {
             "enum": [
               "read",
@@ -2296,6 +2326,25 @@
             ],
             "default": null
           },
+          "margin_basis": {
+            "default": "on item cost only",
+            "description": "What every margin here covers: item ledger cost only (BC books no labour or overhead).",
+            "title": "Margin Basis",
+            "type": "string"
+          },
+          "margin_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The plain line saying what the margin basis leaves out.",
+            "title": "Margin Note"
+          },
           "margin_pct": {
             "anyOf": [
               {
@@ -2332,6 +2381,13 @@
             "description": "Orders whose margin is complete; the totals cover these only.",
             "minimum": 0,
             "title": "Orders Counted",
+            "type": "integer"
+          },
+          "orders_excluded": {
+            "default": 0,
+            "description": "Orders of the period not yet invoiced: excluded, never blocking.",
+            "minimum": 0,
+            "title": "Orders Excluded",
             "type": "integer"
           },
           "orders_in_period": {
@@ -2408,6 +2464,23 @@
               }
             ],
             "default": null
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "enum": [
+                  "profitable",
+                  "not_profitable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Stated only when every invoiced order of the period has a checked margin; null otherwise.",
+            "title": "Verdict"
           },
           "withheld_orders": {
             "default": 0,

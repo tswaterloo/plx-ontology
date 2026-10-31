@@ -24,6 +24,10 @@ const p: Profitability = {
   period_basis: null,
   ranking: "worst first, every order of the period",
   orders_more: 0,
+  margin_basis: "on item cost only",
+  margin_note: "Labour and overhead aren't booked in Business Central, so this overstates true margin.",
+  verdict: "not_profitable",
+  orders_excluded: 1,
   orders: [
     { order: ref("o1", "SO-101"), date: null, revenue: cad("90.00"), booked_cost: cad("135.00"), margin: cad("-45.00"), margin_pct: "-50.00", gap: null },
     { order: ref("o3", "SO-103"), date: null, revenue: cad("40.00"), booked_cost: cad("16.00"), margin: cad("24.00"), margin_pct: "60.00", gap: null },
@@ -62,6 +66,11 @@ describe("ProfitabilityView", () => {
     expect(b).toHaveTextContent("16.00 CAD/PCS goods cost; landed cost not established");
     expect(within(b).getAllByRole("link", { name: /BC item ledger entry/ }).length).toBe(2);
     expect(screen.getByTestId("next-action")).toHaveTextContent("a suggestion; nothing was changed");
+    // every margin says what it covers
+    expect(screen.getByTestId("order-ranking")).toHaveTextContent("Item costMargin (item cost only)");
+    expect(b).toHaveTextContent("margin on item cost only");
+    expect(screen.getByTestId("margin-basis")).toHaveTextContent(
+      "Margins are on item cost only. Labour and overhead aren't booked in Business Central, so this overstates true margin.");
   });
 
   it("labels a partial ranking and says how many more orders are not listed", () => {

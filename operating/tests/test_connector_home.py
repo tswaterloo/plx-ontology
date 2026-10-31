@@ -224,6 +224,18 @@ class HomeModeTest(Base):
         self.assertLessEqual(kinds, {"late_po", "unconfirmed_po"})
         self.assertIn(ids["overdue"], {g["object_id"] for g in late["home"]["gaps"]})
         self.assertEqual(late["home"]["kinds"], ["late_po", "unconfirmed_po"])
+        # the agent's own wordings of the list, typos and its confirmation status
+        # included, and with its type named: the same late list, each with its days late
+        for query, extra in (("late purchse ordres with vendor confirmation status", {}),
+                             ("wat r the late pos rn", {}),
+                             ("overdue purchase orders", {"object_type": "PurchaseOrder"})):
+            with self.subTest(query=query):
+                asked = self.find(host, {"query": query, "limit": 50, **extra})["home"]
+                self.assertEqual(asked["kinds"], ["late_po", "unconfirmed_po"])
+                self.assertEqual([g["object_id"] for g in asked["gaps"]],
+                                 [g["object_id"] for g in late["home"]["gaps"]])
+        self.assertTrue(any(isinstance(g.get("days_late"), int) and g["days_late"] > 0
+                            for g in late["home"]["gaps"]))
         quotes = self.find(host, {"query": "expired quotes"})["home"]
         self.assertEqual({(g["kind"], g["object_id"]) for g in quotes["gaps"]},
                          {("expired_quote", ids["expired"])})
@@ -237,7 +249,10 @@ class HomeModeTest(Base):
                          ["status"], "found")
         for query in ("Urgent Packaging Inc", "late PO100012", "Acme Industries",
                       "what is at risk for SYNTH-PO-1", "issues", "needs attention",
-                      "late", "Late Orders Ltd", "gaps"):
+                      "late", "Late Orders Ltd", "gaps", "late POs from Acme Industries",
+                      "which POs were late last quarter", "older late purchase orders",
+                      "which POs are not late", "which purchase orders aren't overdue",
+                      "late POs not yet confirmed by the vendor"):
             with self.subTest(query=query):
                 self.assertIsNone(mcp_server.home_kinds(query))
                 found = self.find(host, {"query": query})

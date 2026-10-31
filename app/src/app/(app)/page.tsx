@@ -126,6 +126,11 @@ export default function HomePage() {
                 <div>
                   <h3 className="mb-2 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted">
                     <Timer className="size-3.5" aria-hidden /> Late purchase orders
+                    {typeof na.late_total === "number" && na.late_total > 0 && (
+                      <span className="ml-auto normal-case tracking-normal" data-testid="late-total">
+                        {na.late_total} late{na.late_total > late.length ? `; ${late.length} shown` : ""}
+                      </span>
+                    )}
                   </h3>
                   {late.length === 0 ? (
                     <p className="text-sm text-muted">No late purchase orders you can see.</p>

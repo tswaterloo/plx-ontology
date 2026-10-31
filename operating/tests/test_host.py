@@ -1636,21 +1636,64 @@ def call(request_id, name, arguments):
 
 
 class FreshnessBoundTests(HostCase):
-    """Each captured source's freshness bound comes from
-    the host config's capture cadence, and the MCP host is started with it."""
+    """Each captured source's freshness
+    bound is the config's ``freshness_hours`` for it, else the larger of the default (a
+    capture cycle and its projection build take hours) and the capture cadence; the MCP
+    host and the console are started with it."""
+
+    def test_bounds_fit_the_cycle_unless_the_config_names_them(self):
+        from operating import mcp_server
+        day = host_module.DEFAULT_FRESHNESS_HOURS * 3600
+        portal = {"base_url": BASE, "relations": sorted(CATALOG), "budget_seconds": 500}
+        # no setting: the default for every captured source (the cadence is below it)
+        plain = self.write_config(interval_seconds=900, portal=portal)
+        # (a family the config does not capture, Mission Control here, is bounded too)
+        self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(plain)),
+                         dict.fromkeys(host_module.CAPTURED_FAMILIES, day))
+        # a cadence longer than the default keeps its own, larger bound
+        slow = self.write_config(interval_seconds=86400, portal=portal)
+        self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(
+            slow))["portal_api"], 2.0 * (86400 + 500))
+        # one number for every source, or hours per source section (the rest default)
+        every = self.write_config(interval_seconds=900, portal=portal, freshness_hours=6)
+        self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(
+            every)), dict.fromkeys(host_module.CAPTURED_FAMILIES, 6 * 3600.0))
+        some = self.write_config(interval_seconds=900, portal=portal,
+                                 freshness_hours={"portal": 12, "mail": 0.5})
+        bounds = host_module.freshness_bounds(host_module.HostConfig.from_file(some))
+        self.assertEqual((bounds["portal_api"], bounds["graph_mail"], bounds["bc"]),
+                         (12 * 3600.0, 1800.0, day))
+        host = host_module.Host(self.state, host_module.HostConfig.from_file(some),
+                                environ=ENV, sender=self.router, clock=self.clock)
+        argv = host_module.mcp_arguments(host, session_ticket_env="T")
+        given = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--freshness-bound"]
+        self.assertEqual(mcp_server.freshness_bounds(given), bounds)
+        # fail closed: an unknown source, zero, negative, NaN, infinite, a boolean, text
+        self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(
+            self.write_config(interval_seconds=900, portal=portal, freshness_hours=720)))
+            ["bc"], 720 * 3600.0)
+        for bad in ({"nowhere": 1}, {}, 0, -1, float("nan"), float("inf"), True, "36",
+                    720.5, {"bc": 100000},
+                    {"portal": 0}, {"portal": True}, [36]):
+            refused = self.write_config(interval_seconds=900, portal=portal,
+                                        freshness_hours=bad)
+            with self.assertRaises(host_module.HostError, msg=repr(bad)):
+                host_module.HostConfig.from_file(refused)
 
     def test_bounds_follow_the_configured_cadence_in_both_modes(self):
         from operating import ingest_forever as forever
         from operating import mcp_server
-        cycle = self.write_config(interval_seconds=900,
+        cycle = self.write_config(interval_seconds=80000,
                                   portal={"base_url": BASE, "relations": sorted(CATALOG),
                                           "budget_seconds": 500})
         host = host_module.Host(self.state, host_module.HostConfig.from_file(cycle),
                                 environ=ENV, sender=self.router, clock=self.clock)
-        # 2 x (interval + one capture's budget, else the default timeout).
+        # 2 x (interval + one capture's budget, else the default timeout), above the
+        # default bound
         self.assertEqual(host_module.freshness_bounds(host.config), {
-            "portal_api": 2800.0, "bc": 3000.0, "graph_mail": 3000.0, "sharepoint": 3000.0,
-            "teams": 3000.0})
+            "portal_api": 161000.0, "bc": 161200.0, "graph_mail": 161200.0,
+            "sharepoint": 161200.0, "teams": 161200.0,
+            "mission_control": host_module.DEFAULT_FRESHNESS_HOURS * 3600})
         argv = host_module.mcp_arguments(host, session_ticket_env="T")
         given = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--freshness-bound"]
         self.assertEqual(mcp_server.freshness_bounds(given),
@@ -1665,10 +1708,11 @@ class FreshnessBoundTests(HostCase):
             "sharepoint": {"scope": "sharepoint-scope.json", "budget_seconds": 100},
             "sharepoint_lists": {"scope": "sharepoint-scope.json", "timeout_seconds": 900},
             "teams": {"scope": "teams-scope.json"}})
-        # 2 x (min_interval (default 120) + budget, timeout or default 600 + grace); the
-        # family two captures write takes the larger.
+        # 2 x (min_interval (default 120) + budget, timeout or default 600 + grace), each
+        # far below one cycle: the default bound for every projected family
         self.assertEqual(host_module.freshness_bounds(host_module.HostConfig.from_file(
-            ingest)), {"portal_api": 3720.0, "sharepoint": 2160.0, "teams": 1560.0})
+            ingest)), dict.fromkeys(host_module.CAPTURED_FAMILIES,
+                                    host_module.DEFAULT_FRESHNESS_HOURS * 3600))
         for refused in (["portal_api=0"], ["nowhere=60"], ["bc=60", "bc=70"], ["bc=x"],
                         ["bc=nan"], ["bc=1e10"]):
             with self.assertRaises(ValueError, msg=refused):

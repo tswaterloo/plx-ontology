@@ -520,3 +520,149 @@ class SuggestPermissionFilter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeFreshnessTest(unittest.TestCase):
+    """Home states each source's age from the served projection's own capture time, by
+    the one staleness rule answers apply (``ontology_tools.aged``), never from the host
+    ledger's capture of a cycle still running (demo rehearsal 2026-10-31: Home said fresh
+    while every answer said stale)."""
+
+    def test_home_and_answers_judge_each_source_alike(self):
+        import sqlite3
+        from datetime import datetime, timezone
+        from operating import ontology_tools
+
+        tmp = Path(tempfile.mkdtemp(prefix="home-fresh-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        now = datetime(2026, 10, 31, 5, 20, tzinfo=timezone.utc)
+        entries = [
+            {"source": "portal_api", "captured_at": "2026-10-30T15:08:15Z",
+             "completeness": "complete", "stale": False},      # 14 h: within 36 h
+            {"source": "teams", "captured_at": "2026-10-29T10:15:03Z",
+             "completeness": "partial", "stale": False},       # 43 h: past it
+            {"source": "bc", "captured_at": "2026-10-31T05:00:00Z",
+             "completeness": "complete", "stale": True,         # an outage copy
+             "label": "source-mirror captures as of X, live source unavailable (500, x)"},
+            {"source": "graph_mail", "captured_at": None, "completeness": "unknown",
+             "stale": False},                                   # never captured
+            {"source": "sharepoint", "captured_at": "2026-10-31T05:00:00Z",
+             "completeness": "partial", "stale": False},       # young, but partial
+            {"source": "mission_control", "captured_at": "2026-10-31T05:00:00Z",
+             "completeness": "complete", "stale": False}]      # young, last run failed
+        store = tmp / "projection" / "ontology.sqlite"
+        store.parent.mkdir()
+        with sqlite3.connect(store) as conn:
+            conn.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute("INSERT INTO store_meta VALUES ('freshness', ?)",
+                         (json.dumps(entries),))
+        # the ledger names the cycle now running: never the age of the data served
+        (tmp / "host").mkdir()
+        with sqlite3.connect(tmp / "host" / "host.sqlite") as conn:
+            conn.execute("CREATE TABLE source_state (source TEXT, configured INTEGER, "
+                         "captured_at TEXT, stale_since TEXT, error TEXT)")
+            conn.executemany("INSERT INTO source_state VALUES (?, 1, ?, NULL, NULL)",
+                             [(s, "2026-10-31T04:24:26Z") for s in ("portal", "teams", "bc")])
+            conn.execute("INSERT INTO source_state VALUES ('mc', 1, '2026-10-31T04:24:26Z', "
+                         "'2026-10-31T04:30:00Z', 'capture_failed')")
+        bounds = dict.fromkeys(("portal_api", "teams", "bc", "graph_mail", "sharepoint",
+                                "mission_control"), 36 * 3600.0)
+        backend = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
+                                      freshness_bounds=bounds, clock=lambda: now)
+        self.addCleanup(backend.stop)
+        home = {s.system: s for s in backend.freshness().sources}
+        failed = ontology_tools.capture_failures(tmp / "host" / "host.sqlite")
+        self.assertEqual(failed, {"mission_control"})
+        # answers find the same ledger from their store's own path
+        from types import SimpleNamespace
+        conn = sqlite3.connect(store)
+        self.addCleanup(conn.close)
+        self.assertEqual(ontology_tools.OntologyTools._capture_failures(
+            SimpleNamespace(store=SimpleNamespace(conn=conn))), failed)
+        answers = {e["source"]: ontology_tools.aged(e, bounds, now, failed)["stale"]
+                   for e in entries if e["captured_at"]}
+        # a failed or never-run capture is stale whatever its age; a partial one
+        # (budgeted, continuing next cycle) is judged by age like any other
+        self.assertEqual({"Portal": False, "Teams": True, "BC": True, "Email": True,
+                          "File": False, "MC": True},
+                         {k: v.stale for k, v in home.items()})
+        self.assertEqual({k: v.capture for k, v in home.items()},
+                         {"Portal": "complete", "Teams": "partial", "BC": "complete",
+                          "Email": "never_captured", "File": "partial", "MC": "failed"})
+        for family, system in be.STORE_SYSTEMS.items():   # Home and answers: one rule
+            if family in answers:
+                self.assertEqual(home[system].stale, answers[family], family)
+        self.assertEqual(home["Portal"].as_of, "2026-10-30T15:08:15Z")
+        self.assertEqual(home["Portal"].age_seconds, 51105)   # 14 h 11 min
+        self.assertIsNone(home["Email"].as_of)   # no capture time: never said fresh
+        self.assertEqual(backend.freshness().as_of, "2026-10-29T10:15:03Z")
+        # past the bound the same source is stale on Home too (fails closed)
+        tight = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
+                                    freshness_bounds={"portal_api": 3400.0},
+                                    clock=lambda: now)
+        self.addCleanup(tight.stop)
+        self.assertTrue({s.system: s for s in tight.freshness().sources}["Portal"].stale)
+
+
+class LateListCountTest(unittest.TestCase):
+    """Home and the late-list answer read one list with one limit and state one count
+    (demo rehearsal 2026-10-31: the answer said 12 "on your home page" while Home showed
+    10). Past the limit the answer says how many more there are; nothing is doubled."""
+
+    def test_home_and_the_answer_list_the_same_orders_and_count(self):
+        from types import SimpleNamespace
+        for total in (1, 10, 15, 60):
+            with self.subTest(total=total):
+                gaps = [{"object_id": f"PurchaseOrder:bc.purchase_orders:{i}",
+                         "object_type": "PurchaseOrder", "days_late": 200 - i,
+                         "summary": "An open purchase order is past its need date",
+                         "citations": []} for i in range(total)]
+                gaps += [dict(gaps[0])]   # an order read twice is counted once
+                inbox = {"status": "read", "run_at": "2026-10-31T01:26:26Z", "gaps": gaps}
+                labels = {g["object_id"]: str(106000 + n) for n, g in enumerate(gaps[:-1])}
+                home, _ = be.attention_items(inbox, labels, suppliers={
+                    gaps[0]["object_id"]: "DSM"})
+                fake = SimpleNamespace(freshness=lambda _base: m.Freshness())
+                answer = be.late_answer(fake, None, m.AskRequest(question="late pos?"),
+                                        inbox, home, "c1", lambda: 0)
+                shown = min(total, be.LATE_LIST_LIMIT)
+                self.assertEqual(len({p.object_id for p in home}), shown)
+                self.assertEqual(len(home), shown)
+                self.assertEqual([s.object_id for s in answer.subjects], [
+                    p.object_id for p in home][:be.MAX_FACTS])
+                self.assertTrue(answer.direct_answer.startswith(
+                    f"{total} purchase order"), answer.direct_answer)
+                self.assertIn("106000 from DSM (200 days)", answer.direct_answer)
+                if total <= be.LATE_LIST_LIMIT:
+                    self.assertIn("This is the list on your home page.", answer.direct_answer)
+                else:
+                    self.assertIn(f"{total - shown} more are not listed", answer.direct_answer)
+
+    def test_the_true_total_past_the_inbox_page(self):
+        # The count stopped at the inbox's first page (100)
+        import contextlib
+        from types import SimpleNamespace
+        gaps = [{"object_id": f"PurchaseOrder:bc.purchase_orders:{i}",
+                 "object_type": "PurchaseOrder", "days_late": 500 - i,
+                 "summary": "late", "citations": []} for i in range(150)]
+
+        class View:
+            def gap_inbox(self, *, limit=None):
+                shown = gaps[:limit or 100]
+                return {"status": "read", "gaps": shown, "more": len(shown) < len(gaps)}
+
+            def _request(self):
+                return contextlib.nullcontext()
+
+            def _call(self, tool, arguments):
+                return {"object": {"display": "PO"}, "values": []} \
+                    if tool == "plx.object" else {"objects": []}
+
+        inbox, labels, suppliers = be.WorkspaceBackend._attention(View())
+        self.assertEqual(inbox["late_total"], 150)
+        home, _ = be.attention_items(inbox, labels, suppliers=suppliers)
+        fake = SimpleNamespace(freshness=lambda _base: m.Freshness())
+        answer = be.late_answer(fake, None, m.AskRequest(question="late pos?"), inbox, home,
+                                "c1", lambda: 0)
+        self.assertTrue(answer.direct_answer.startswith("150 purchase orders"))
+        self.assertIn("138 more are not listed", answer.direct_answer)

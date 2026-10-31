@@ -463,6 +463,23 @@ class UndecidedStageTest(unittest.TestCase):
         self.assertEqual((said["state"], said["text"]),
                          ("complete", "Nothing missing: every step has a record"))
 
+    def test_a_held_draft_order_is_never_its_own_missing_purchase_order(self):
+        # demo rehearsal 2026-10-31: a BC Draft order's page read "Missing: purchase
+        # order" (the record is held, its status has not reached issued)
+        draft = {"stage": "purchase_order", "owner_role": "PROC",
+                 "reading": {"kind": "not_reached", "text": "Record held, its status has "
+                                                            "not reached this stage"},
+                 "missing": {"state": "unknown", "reason": "status_not_reached"}}
+        said = self.missing(draft, self.UNCONFIRMED)
+        self.assertEqual(said["text"], "Missing: supplier confirmation; held, its status "
+                                       "not reached yet: purchase order")
+        self.assertEqual([f["missing"] for f in said["follow_ups"]],
+                         ["Supplier confirmation of Purchase order PO-9"])
+        said = self.missing(draft)
+        self.assertEqual((said["state"], said["text"], said["follow_ups"]),
+                         ("not_established", "Held, its status not reached yet: purchase "
+                                             "order", []))
+
 
 class ConsoleQuestionLiveCheckTest(unittest.TestCase):
     """``workspace.console_question_one_path`` held to its spec on the probe's own output:

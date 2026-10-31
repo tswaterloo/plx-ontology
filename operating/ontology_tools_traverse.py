@@ -235,6 +235,10 @@ def order_class(time_basis: str, lineage: str | None) -> int:
 
 DEFAULT_LIMIT = 10
 HOP_SCAN_CAP = 5000
+# How long one reader's item-gate result over a slice's handles is reused (an exclusion
+# list is re-read on a comparable interval), and how many such results are kept.
+SLICE_GATE_SECONDS = 300.0
+SLICE_GATE_KEPT = 256
 # A row's end that is no time: never superseded, or a superseded time that does not parse
 # (``_from_t``). Above every fixed-width store time.
 _OPEN = "~"
@@ -468,6 +472,10 @@ class TraverseTools:
         self.limits = self.contracts["limits"]
         self.sets: SetRegistry = base.sets
         self._source_index: dict[tuple[str, str], tuple[str, ...]] | None = None
+        # (actor, store state, the slice's gated handles) -> whether one fails the item
+        # gate, for ``SLICE_GATE_SECONDS``: one page's many walks over the same message
+        # types re-check thousands of mail items once, not per walk.
+        self._slice_gate: dict[tuple, tuple[float, bool]] = {}
         with self.store.lock:
             self.store.conn.create_function("plx_l9_time", 1, _store_time,
                                             deterministic=True)
@@ -1192,9 +1200,24 @@ class TraverseTools:
             return True
         if not marks <= set(scope.marking_sets):
             return True
-        return bool(handles) and self.store.conn.execute(
-            f"SELECT 1 FROM json_each(?) WHERE NOT {scope.gate}(value) LIMIT 1",
-            (json.dumps(sorted(handles)),)).fetchone() is not None
+        if not handles:
+            return False
+        listed = json.dumps(sorted(handles))
+        conn = self.store.conn
+        # the handles themselves are the slice's state (a new capture is a new handle)
+        key = (scope.actor, conn.execute("PRAGMA data_version").fetchone()[0],
+               hashlib.sha256(listed.encode()).hexdigest())
+        now = time.monotonic()
+        held = self._slice_gate.get(key)
+        if held is not None and held[0] > now:
+            return held[1]
+        failed = conn.execute(f"SELECT 1 FROM json_each(?) WHERE NOT {scope.gate}(value) "
+                              "LIMIT 1", (listed,)).fetchone() is not None
+        if len(self._slice_gate) >= SLICE_GATE_KEPT:
+            self._slice_gate = {k: v for k, v in self._slice_gate.items() if v[0] > now}
+        if len(self._slice_gate) < SLICE_GATE_KEPT:
+            self._slice_gate[key] = (now + SLICE_GATE_SECONDS, failed)
+        return failed
 
     def _audiences(self) -> dict[str, tuple[str, ...]]:
         """Object type -> the audience keys its objects carry, once per store state."""

@@ -3007,6 +3007,11 @@
                         "next_question": {
                           "$ref": "#/$defs/untrusted_text"
                         },
+                        "days_late": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "description": "A late purchase order's days past its requested-by date (late_po overdue, unconfirmed_po); unconfirmed_po: no supplier confirmation is linked, late_po: one is."
+                        },
                         "citations": {
                           "type": "array",
                           "items": {
