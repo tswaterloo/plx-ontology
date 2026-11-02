@@ -5,6 +5,7 @@ Evidence label: isolated-fixture (synthetic rows, a fake host, a scripted agent)
 from __future__ import annotations
 
 import copy
+import dataclasses
 from decimal import Decimal
 from datetime import date, datetime, timedelta, timezone
 import json
@@ -163,6 +164,32 @@ class VerdictTests(unittest.TestCase):
                             PO_VALUES[1:]), key(orders))
         self.assertEqual(paid["outcome"], "correct", paid)
 
+    def test_a_forbidden_phrase_contradicts_only_as_the_answers_own_claim(self):
+        # a recorded key (main, 2026-11-01) forbids the bare "vendor confirmed"; the answer
+        # said the date was a system date, not a confirmation, and was graded false
+        none = {"id": "no_confirmation", "kind": "absent", "value": "confirmation",
+                "accept": lk.FORMS["no_confirmation"]["accept"],
+                "contradicts": ["vendor confirmed", "confirmed the date", "confirmed delivery"]}
+        for text in ("Its BC lines carry 2026-07-14, a system date rather than a recorded "
+                     "vendor confirmation.",
+                     "The mail does not show a date the vendor confirmed.",
+                     "I searched the mailbox for \"vendor confirmed\" and found nothing.",
+                     "There is no reply in which the vendor confirmed delivery."):
+            got = grade(answer(text), key(none))
+            self.assertEqual(got["facts"][0]["contradicted"], [], text)
+        # the answer's own claim still contradicts: after a comma or an "and" that leaves
+        # the negation behind, after a closed quotation, or with the contrast after the form
+        for text in ("The vendor confirmed delivery for 2026-07-14.",
+                     "There was no delay, and the vendor confirmed delivery on 2026-07-14.",
+                     "Nothing is late, the vendor confirmed delivery.",
+                     "The PO is marked \"urgent\" and the vendor confirmed delivery.",
+                     "The vendor confirmed delivery rather than calling."):
+            got = grade(answer(text), key(none))
+            self.assertEqual((got["outcome"], got["facts"][0]["contradicted"]),
+                             ("false", ["contradicting_claim"]), text)
+        # a stated claim keeps its narrow window: "not on hold, it is late" states late
+        self.assertTrue(lo.asserted("It is not on hold, it is late.", "late"))
+
     def test_two_figures_for_one_count_are_incomplete_and_one_in_its_clause_counts(self):
         count = {"id": "late_count", "kind": "number", "value": "14", "tolerance": "0",
                  "label": lk.LABELS["late_count"], "records": [H_PO], "allowed": ["api"]}
@@ -186,6 +213,30 @@ class VerdictTests(unittest.TestCase):
             self.assertEqual(lo._labelled_numbers(text, margin)[0][0], Decimal("480.96"), text)
             self.assertEqual(grade(answer(text, values), key(margin))["outcome"], "correct",
                              text)
+
+    def test_the_cost_a_margin_is_taken_on_is_part_of_the_margins_name(self):
+        """The app writes "margin on item cost only 1,743.51 CAD (19.09%)": the cost there
+        is the margin's basis, never a cost figure, so the margin is read (right or wrong)
+        and no cost is read from it."""
+        margin = {"id": "margin_pct", "kind": "number", "value": "19.09", "unit": "%",
+                  "amount": "1743.51", "label": lk.LABELS["margin_pct"], "tolerance": "0.6",
+                  "tolerance_pct": lk.MONEY_PCT, "records": [H_AR], "allowed": ["api"]}
+        cost = {"id": "cost", "kind": "number", "value": "7387.63", "unsigned": True,
+                "label": lk.LABELS["cost"], "tolerance": "1", "tolerance_pct": lk.MONEY_PCT,
+                "records": [H_AR], "allowed": ["api"]}
+        values = [cited("balance", "4821.75", H_AR, "row.balance")]
+        said = ("Order SO1: revenue 9,131.14 CAD, item cost 7,387.63 CAD, margin on item "
+                "cost only 1,743.51 CAD (19.09%).")
+        self.assertEqual(grade(answer(said, values), key(margin, cost))["outcome"], "correct")
+        wrong = said.replace("1,743.51 CAD (19.09%)", "3,100.00 CAD (33.95%)")
+        self.assertEqual(grade(answer(wrong, values), key(margin))["outcome"], "false")
+        alone = "Margin on item cost only: -41.45 CAD."
+        self.assertEqual(lo._labelled_numbers(alone, cost), [])
+        self.assertEqual(lo._labelled_numbers(alone, dict(margin, amount="-41.45")),
+                         [(Decimal("-41.45"), False)])
+        # a cost stated on its own beside a margin is still the cost
+        self.assertEqual(lo._labelled_numbers("Margin 19% on cost of 7,387.63.", cost),
+                         [(Decimal("7387.63"), False)])
 
     def test_money_is_read_as_written_and_a_margin_amount_against_the_amount(self):
         values = [cited("balance", "4821.75", H_AR, "row.balance")]
@@ -257,6 +308,21 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual((extra["outcome"], extra["facts"][0]["contradicted"]),
                          ("false", ["extra_member"]))
 
+    def test_a_draft_sales_order_number_is_one_whole_member(self):
+        """A BC draft order DSO100025 is named whole: the SO100025 inside it is no other
+        order (a recorded run listing exactly the key's DSO orders was graded false)."""
+        from evals import live_ops_more as more
+        orders = {"id": "open_orders", "kind": "set", "records": [H_PO], "allowed": ["api", "bc"],
+                  "pattern": more.SO_TOKEN, "members": [["DSO100009"], ["DSO100037"]]}
+        both = grade(answer("Two BC orders still need to ship: DSO100009 and DSO100037.",
+                            PO_VALUES[1:]), key(orders))
+        self.assertEqual(both["outcome"], "correct", both)
+        for other in ("SO100009", "S-ORD100011", "SO-100012", "DSO100099"):
+            extra = grade(answer(f"Open: DSO100009, DSO100037 and {other}.", PO_VALUES[1:]),
+                          key(orders))
+            self.assertEqual((extra["outcome"], extra["facts"][0]["contradicted"]),
+                             ("false", ["extra_member"]), other)
+
     def test_a_freshness_gap_covers_only_its_stale_fact_never_a_leak_or_a_contradiction(self):
         # A quality reader stating the withheld open AR, with a
         # freshness flag on an unrelated fact, is false
@@ -318,12 +384,15 @@ def world(changed: int = 0, **extra) -> lk.World:
     customer with open AR, ``changed`` BC orders modified since yesterday."""
     portal = {
         lk.PO: [mirror(lk.PO, {"id": "p1", "po_number": "PO#7001", "status": "SUBMITTED",
-                               "expected_date": "2026-09-15", "supplier_id": "s1"})],
+                               "expected_date": "2026-09-15", "supplier_id": "s1",
+                               "updated_at": "2026-09-01T00:00:00"})],
         lk.PO_LINE: [mirror(lk.PO_LINE, {"id": "l1", "purchase_order_id": "p1",
                                          "product_id": "pr1", "quantity": "10",
                                          "quantity_received": "0"})],
-        lk.BATCH: [mirror(lk.BATCH, {"id": "b1", "batch_number": "BX-1", "status": "Allocated",
-                                     "status_qc": "On-Hold"})],
+        lk.BATCH: [mirror(lk.BATCH, {"id": "b1", "batch_number": "BX-1", "batch_name": "BX-1",
+                                     "status": "Allocated", "status_qc": "On-Hold"})],
+        lk.FM_BATCH: [mirror(lk.FM_BATCH, {"id": 11, "namebatch_c": "BX-1",
+                                           "status": "Allocated", "statusqc": "On-Hold"})],
         lk.RAW_LOT: [mirror(lk.RAW_LOT, {"id": 5, "lotnoqc": "LOT-55", "status_c": "Released",
                                          "expirydate": "2026-12-03"})],
     }
@@ -341,6 +410,114 @@ def world(changed: int = 0, **extra) -> lk.World:
 
 
 class KeyTests(unittest.TestCase):
+    def test_a_customers_last_mail_reads_every_spelling_and_skips_automatic_replies(self):
+        """A customer is its name case-folded: "CITY OF X" (its BC email at an invoice
+        service) and "City of X" (at its own domain) are one customer, keyed under each
+        spelling; an auto-reply whose subject carries a tag prefix ("[Petra] Accounting RE:
+        Concur Auto Reply ...") is never the last message with it."""
+        import sqlite3
+        customers = [{"fields": {"displayName": "CITY OF X", "email": "inv@invoices.example"}},
+                     {"fields": {"displayName": "City of X", "email": "ap@cityx.example"}},
+                     {"fields": {"displayName": "Other Co", "email": "a@other.example"}}]
+        mails = [("m1", "ap@cityx.example", ["us@petra.example"], "RE: invoice 1",
+                  "2026-08-26T13:39:10Z"),
+                 ("m2", "bot@invoices.example", ["acct@petra.example"],
+                  "[Petra] Accounting RE: Concur Auto Reply Statement X", "2026-10-06T16:20:34Z"),
+                 ("m3", "us@petra.example", ["a@other.example"], "Order", "2026-10-01T00:00:00Z")]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "capture.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE messages (l1_handle TEXT, message_id TEXT, record TEXT, "
+                         "superseded_at TEXT, removed_reason TEXT)")
+            for mid, sender, to, subject, at in mails:
+                conn.execute("INSERT INTO messages VALUES (?, ?, ?, NULL, NULL)", (
+                    f"graph-mail://mb/{mid}@ck", mid, json.dumps(
+                        {"from": sender, "to": to, "subject": subject, "received_at": at})))
+            conn.commit()
+            conn.close()
+            found = script.customer_mail(db, customers)
+        by = {}
+        for m in found:
+            by.setdefault(m["customer"], set()).add(m["message_id"])
+        self.assertEqual(by["CITY OF X"], {"m1", "m2"})
+        self.assertEqual(by["City of X"], {"m1", "m2"})
+        self.assertEqual(by["Other Co"], {"m3"})
+        w = world(customer_mail=found)
+        from evals import live_ops_more as more
+        keyed = {c.slots["customer"]: c.facts[0]["message_id"]
+                 for c in more.customer_last_mail(w)}
+        self.assertEqual(keyed["CITY OF X"], "m1")
+        self.assertEqual(keyed["City of X"], "m1")
+        for subject in ("Automatic reply: away", "RE: Undeliverable: order",
+                        "[Petra] Accounting RE: Concur Auto Reply Invoice IN1"):
+            self.assertTrue(lk.AUTOMATIC.search(subject), subject)
+        for subject in ("RE: Petra Hygienic - invoice # IN1", "Re: Onboarding",
+                        "We accepted: your PO"):
+            self.assertFalse(lk.AUTOMATIC.search(subject), subject)
+
+    def test_a_customer_margin_key_needs_every_invoiced_order_decided(self):
+        """The product states a customer total only when every order with a posted invoice
+        has a margin: a customer with a partly invoiced order
+        gets no key; with that order's invoices gone, the key is the oracle's totals summed
+        over both companies' orders of the name (none lost to a shared order number)."""
+        from evals.oracle import order_margin as oracle
+        from evals.oracle.source import BcReads
+        from integrations.tests import test_bc_capture as tb
+        records = oracle.fixture_world(companies=tb.CO[:2])
+        for record in records:
+            if record["fields"].get("customerNumber"):
+                record["fields"]["customerName"] = "Cust " + record["fields"]["customerNumber"]
+
+        def margin_keys(rows):
+            w = lk.World(as_of=AS_OF, now=NOW, portal={}, bc=rows)
+            return {c.identifier: {f["id"]: f["value"] for f in c.facts}
+                    for c in lk.customer_margin(w)}
+        self.assertNotIn("Cust C-1", margin_keys(records))
+        totals, undecided = [], set()
+        for company in tb.CO[:2]:
+            port = oracle.RecordPort(records, company)
+            numbers = {r["fields"]["orderNumber"] for r in records
+                       if r["entity_set"] == "salesInvoices" and r["company_id"] == company
+                       and r["fields"].get("customerNumber") == "C-1"}
+            for number in numbers:
+                total = oracle.reading(BcReads(port), number, book="manufacturing")["total"]
+                if total.get("reason") == "decided":
+                    totals.append(Decimal(total["revenue"]))
+                else:
+                    undecided.add((company, number))
+        self.assertTrue(undecided)
+        gone = {r["id"] for r in records if r["entity_set"] == "salesInvoices"
+                and (r["company_id"], r["fields"].get("orderNumber")) in undecided}
+        kept = [r for r in records if r["id"] not in gone and r.get("document_id") not in gone]
+        self.assertEqual(Decimal(margin_keys(kept)["Cust C-1"]["revenue"]), sum(totals))
+
+    def test_an_order_margin_rests_on_its_invoice_lines_and_shipment_ledger_too(self):
+        """An answer citing the invoice lines and ledger entries a many-line order's figures
+        are summed from cites that order: they are its key's records, and no other order's
+        line or entry is."""
+        from evals.oracle import order_margin as oracle
+        from integrations.tests import test_bc_capture as tb
+        records = oracle.fixture_world(companies=tb.CO[:1])
+        by_citation = {r["citation"]: r for r in records}
+        margins = lk._margins(lk.World(as_of=AS_OF, now=NOW, portal={}, bc=records))
+        decided = [(number, e) for (_c, number), e in margins.items() if e["total"]]
+        self.assertTrue(decided)
+        for number, entry in decided:
+            mine = [by_citation[c] for c in entry["records"]]
+            sets = {r["entity_set"] for r in mine}
+            self.assertLessEqual({"salesInvoiceLines", "itemLedgerEntries"}, sets, number)
+            invoices = {r["id"] for r in mine if r["entity_set"] == "salesInvoices"}
+            shipments = {r["fields"]["number"] for r in mine
+                         if r["entity_set"] == "salesShipments"}
+            for r in mine:
+                if r["entity_set"] == "salesInvoiceLines":
+                    self.assertIn(r["document_id"], invoices)
+                elif r["entity_set"] == "itemLedgerEntries":
+                    self.assertIn(r["fields"]["documentNumber"], shipments)
+                else:
+                    self.assertIn(number, (r["fields"].get("orderNumber"),
+                                           r["fields"].get("number")))
+
     def test_families_read_the_rows_never_an_answer(self):
         w = world()
         late = lk.po_late(w)
@@ -353,6 +530,40 @@ class KeyTests(unittest.TestCase):
         for family in (lk.po_late, lk.open_ar, lk.batch_on_hold, lk.lot_expiry):
             for candidate in family(w):
                 self.assertTrue(candidate.reads and candidate.rule)
+
+    def test_a_batch_is_counted_once_by_filemaker_the_system_of_record(self):
+        """The same rule as the product's count: one batch per code held in both systems;
+        FileMaker's status where the Portal's copy disagrees (and the rule says how many
+        do); a Portal-only copy, a code-less record or a staging test batch is no key."""
+        w = world()
+        fm = lambda i, code, status="Allocated", qc="On-Hold": mirror(lk.FM_BATCH, {
+            "id": i, "namebatch_c": code, "status": status, "statusqc": qc})
+        portal = lambda i, code, status="Allocated", qc="On-Hold": mirror(lk.BATCH, {
+            "id": f"g{i}", "batch_number": code, "batch_name": code, "status": status,
+            "status_qc": qc})
+        w.portal = {**w.portal,
+                    lk.FM_BATCH: [fm(1, "BC-1"), fm(2, "BC-2", qc="Released"),
+                                  fm(3, "BC-3", status="Cancelled"), fm(5, "BC-5"),
+                                  fm(6, None), fm(9000001, "TEST-BC-1")],
+                    lk.BATCH: [portal(1, "BC-1"), portal(2, "BC-2"), portal(3, "BC-3"),
+                               portal(4, "BC-4"), portal(5, "BC-5", qc="Released")]}
+        # "is it on hold?" of every batch either system shows held, answered by FileMaker:
+        # released, cancelled there or no FileMaker batch at all is a key of its own
+        asked = {c.identifier: c.facts[0] for c in lk.batch_on_hold(w)}
+        self.assertEqual({code: (f["kind"], f["id"]) for code, f in asked.items()}, {
+            "BC-1": ("claim", "on_hold"), "BC-2": ("claim", "released"),
+            "BC-3": ("claim", "cancelled"), "BC-4": ("absent", "no_filemaker_batch"),
+            "BC-5": ("claim", "on_hold")})                # never TEST-BC-1 (staging)
+        self.assertTrue(all("public.batch" in r for code, f in asked.items()
+                            if code != "BC-4" for r in f["records"]))
+        for f in asked.values():
+            self.assertEqual(lo.key_problems({
+                "format": lo.KEY_FORMAT, "item_id": "i", "facts": [f],
+                "query": {"rule": "r", "reads": ["x"]}}), [])
+        [count] = lk.batches_on_hold_count(w)
+        self.assertEqual(count.facts[0]["value"], "2")
+        self.assertTrue(all("public.batch" in r for r in count.facts[0]["records"]))
+        self.assertIn("3 batches the two disagree on", " ".join(count.reads))
 
     def test_the_late_list_rules_decided_for_draft_twins(self):
         """A BC Draft twin with nothing
@@ -400,6 +611,35 @@ class KeyTests(unittest.TestCase):
                          ("number", "10", 10))
         sixty = lk.po_changed(world(60))[0].facts[0]
         self.assertEqual((sixty["value"], len(sixty["records"])), ("60", 60))
+
+    def test_a_portal_restamp_is_no_change_and_a_value_change_is(self):
+        """A Portal row whose only
+        difference from the version held at since is updated_at is not changed (as
+        plx.changes' restamped); a changed column or a creation since is; a row read first
+        since then that says it is older is not; without versions there is no key."""
+        before = datetime(2026, 10, 30, 9, tzinfo=timezone.utc)
+        old = {"id": "s{}", "order_number": "OR{}", "status": "Open", "total_amount": "10",
+               "created_at": "2026-09-01T00:00:00", "updated_at": "2026-10-30T08:00:00"}
+
+        def row(i, **change):
+            base = {k: v.format(i) if "{}" in v else v for k, v in old.items()}
+            return {**base, "updated_at": "2026-10-31T10:00:00", **change}
+        rows = [mirror(lk.PORTAL_SO, row(0)),                             # restamped
+                mirror(lk.PORTAL_SO, row(1, total_amount="12")),          # changed
+                mirror(lk.PORTAL_SO, row(2, created_at="2026-10-31T09:00:00")),   # new
+                mirror(lk.PORTAL_SO, row(3))]       # first read since: not counted
+        versions = {lk.PORTAL_SO: {
+            item["citation"].rsplit("@", 1)[0]: [(before, {**item["row"], "updated_at":
+                                                          old["updated_at"],
+                                                          "total_amount": "10"})]
+            for item in rows[:3]}}
+        w = world(portal_versions=versions)
+        w.portal = {**w.portal, lk.PORTAL_SO: rows}
+        fact = lk.so_changed(w)[0].facts[0]
+        self.assertEqual((fact["kind"], fact["members"]), ("set", [["OR1"], ["OR2"]]))
+        self.assertEqual(len(fact["records"]), 2)
+        w.portal_versions = None
+        self.assertEqual(lk.so_changed(w), [])
 
     def test_an_absence_is_never_claimed_where_any_text_names_the_number(self):
         self.assertEqual(lk.no_such_po(world()), [])   # the default index names everything
@@ -478,7 +718,8 @@ class KeyTests(unittest.TestCase):
                 "expirydate", "2026-12-03", lot_row["citation"], "row.expirydate")]))
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
                 "os.environ", {"PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",
-                               "PLX_EVAL_HELD_OUT_DIR": str(Path(tmp) / "ho")}), \
+                               "PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",
+                "PLX_EVAL_HELD_OUT_DIR": str(Path(tmp) / "ho")}), \
                 mock.patch.object(script, "load_cards", lambda: (cards, "c" * 64)):
             out = __import__("io").StringIO()
             with __import__("contextlib").redirect_stdout(out):
@@ -495,6 +736,315 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(sum(doc["by_split"][s]["runs"] for s in ("dev", "held_out")), 2)
         for value in ("4821.75", "2026-12-03", "LOT-55", "Fixture Soap"):
             self.assertNotIn(value, json.dumps(doc))
+
+    def test_a_live_host_config_run_reads_with_its_grants_and_deletes_the_copy(self):
+        import contextlib
+        import io
+        from scripts import eval_case_cards as cards_run
+        from scripts import eval_owner_host as owner
+        from scripts import eval_real_agent as real
+        claims = {"uid": "cmreader0001", "email": "reader@example.com",
+                  "entraTenantId": "11111111-2222-4333-8444-555555555555",
+                  "entraObjectId": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+        cards = [{"id": "LO-20", "family": "lot_expiry", "instances": 1,
+                  "question": "when does lot {lot} expire"}]
+        lot_row = world().portal[lk.RAW_LOT][0]
+        rows = {lot_row["citation"]: (lk.RAW_LOT, {"id": 5}, lot_row["row"])}
+        used = []
+
+        def live_host(environ, args, identity):
+            config = Path(args.host_config)
+            used.append((config, identity,
+                         json.loads(config.read_text("utf-8"))["marking_grants"]))
+            return (lambda: fx.FakeHost(rows)), None
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", {
+                "PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",
+                "PLX_EVAL_HELD_OUT_DIR": str(Path(tmp) / "ho")}), \
+                mock.patch.object(script, "load_cards", lambda: (cards, "c" * 64)):
+            live = Path(tmp) / "live"
+            with contextlib.redirect_stdout(io.StringIO()):
+                owner.main(["--out", str(live)], environ={"PLX_EVAL_READER": json.dumps(claims)})
+            doc = json.loads((live / "host.json").read_text("utf-8"))
+            doc["marking_grants"]["pii"] = doc["marking_grants"]["finance"]
+            (live / "host.json").write_text(json.dumps(doc), "utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(cards_run, "run_reader",
+                                      lambda e, a: (claims, "employee", None)), \
+                    mock.patch.object(cards_run, "live_host", live_host), \
+                    mock.patch.object(real, "reader_refusal", lambda host: None):
+                self.assertEqual(script.main(["keys", "--dev-dir", f"{tmp}/dev"],
+                                             world=world()), 0)
+                run = ["run", "--dev-dir", f"{tmp}/dev", "--work-dir", f"{tmp}/work",
+                       "--live-host-config", str(live / "host.json"), "--offline-directory"]
+                self.assertEqual(script.main(run, agent=runner.ScriptedAgent(
+                    lambda prompt, call: fx.final_text(answer("unknown")))), 0)
+                # never beside another config
+                self.assertEqual(script.main([*run, "--host-config", str(live / "host.json")],
+                                             agent=runner.ScriptedAgent(lambda p, c: "")), 1)
+            [(config, identity, grants)] = used
+            self.assertEqual(identity, claims)
+            self.assertEqual(grants, doc["marking_grants"])          # the live grants, all
+            self.assertTrue(config.is_relative_to(Path(tmp) / "work"))
+            self.assertFalse(config.exists())                         # the copy is deleted
+            self.assertEqual(list((Path(tmp) / "work").glob(".live-host-*")), [])
+
+    def test_the_run_routes_as_the_app_does_and_reports_the_share_without_claude(self):
+        from types import SimpleNamespace as NS
+        cards = [{"id": "LO-15", "family": "open_ar", "instances": 1,
+                  "question": "open AR for {customer}?"},
+                 {"id": "LO-20", "family": "lot_expiry", "instances": 1,
+                  "question": "when does lot {lot} expire"}]
+        lot_row = world().portal[lk.RAW_LOT][0]
+        rows = {lot_row["citation"]: (lk.RAW_LOT, {"id": 5}, lot_row["row"])}
+        good = fx.final_text(answer("LOT-55 expires 2026-12-03.", [cited(
+            "expirydate", "2026-12-03", lot_row["citation"], "row.expirydate")]))
+        asked = []
+
+        class Fast:   # serves and answers the lot question only
+            Reads = NS(of_server=staticmethod(lambda server: server))
+
+            @staticmethod
+            def serves(question):
+                return "lot" in question
+
+            @staticmethod
+            def answer(question, reads):
+                asked.append(question)
+                found = fx.FakeHost(rows).call("plx.find", {"relation": lk.RAW_LOT})
+                events = [{"seq": 0, "type": "tool_call", "name": "plx.find", "t_ms": 1,
+                           "arguments": {"relation": lk.RAW_LOT}, "result": found,
+                           "is_error": False}]
+                return NS(events=events, final_text=good, intent="lot_expiry", reply={})
+
+        agent_calls = []
+
+        def agent(prompt, call):
+            agent_calls.append(prompt)
+            return fx.final_text(answer("Open AR is 4821.75."))
+
+        def go(*extra):
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                    "os.environ", {"PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",
+                                   "PLX_WORKBENCH_API_KEY": "placeholder-not-a-key",
+                "PLX_EVAL_HELD_OUT_DIR": str(Path(tmp) / "ho")}), \
+                    mock.patch.object(script, "load_cards", lambda: (cards, "c" * 64)):
+                out = __import__("io").StringIO()
+                with __import__("contextlib").redirect_stdout(out):
+                    self.assertEqual(script.main(["keys", "--dev-dir", f"{tmp}/dev"],
+                                                 world=world()), 0)
+                    self.assertEqual(script.main(
+                        ["run", "--dev-dir", f"{tmp}/dev", "--work-dir", f"{tmp}/work",
+                         *extra], agent=runner.ScriptedAgent(agent), fast=Fast,
+                        session=lambda host: (None, object()),
+                        make_host=lambda: fx.FakeHost(rows)), 0)
+                return json.loads(out.getvalue()[out.getvalue().index('{\n "by_split"'):])
+        doc = go()
+        routed = {r["card"]: r["routed"] for r in doc["cards"]}
+        self.assertEqual(routed, {"LO-15": "agent", "LO-20": "fast_path"})
+        self.assertEqual(doc["routing"]["share_without_claude"], 0.5)
+        self.assertEqual(doc["routing"]["fast_path"]["outcomes"], {"correct": 1})
+        self.assertEqual(len(agent_calls), 1)
+        self.assertEqual(len(asked), 1)
+        agent_calls.clear()
+        doc = go("--agent-only")
+        self.assertEqual({r["routed"] for r in doc["cards"]}, {"agent"})
+        self.assertEqual(doc["routing"]["share_without_claude"], 0.0)
+        self.assertEqual(len(agent_calls), 2)
+
+    def test_a_lot_file_key_is_a_lot_document_never_a_file_sharing_its_number(self):
+        """The product's rule (``fast_answer.lot_document_name``): an R&D formula numbered
+        like the lot, or a screenshot's time, is no key; a COA naming the lot is."""
+        from evals import live_ops_more as more
+        w = world()
+        w.portal = {**w.portal, lk.RAW_LOT: [mirror(lk.RAW_LOT, {
+            "id": i, "lotnoqc": lot, "status_c": "Released", "expirydate": "2027-01-01"})
+            for i, lot in enumerate(("250135", "3241766", "175455"), start=40)]}
+        w.sharepoint = [{"handle": f"sharepoint://d/{i}", "name": name} for i, name in
+                        enumerate(("250135 - Saint Jo -Nourish Moisturizer Version #6.pdf",
+                                   "COA DayMoist CLR_3241766.pdf",
+                                   "Screenshot 2026-01-14 175455.png"))]
+        found = {c.slots["lot"]: c.facts[0]["quote"] for c in more.sharepoint_lot_file(w)}
+        self.assertEqual(found, {"3241766": "COA DayMoist CLR_3241766.pdf"})
+
+    def test_a_margin_question_takes_the_apps_profit_route_before_the_fast_path(self):
+        """``backend.ask_shortcut`` decides the route as the app's Ask does: a margin
+        question runs the profit route first; declined, the fast path, then the agent,
+        with why each route before it did not answer."""
+        from types import SimpleNamespace as NS
+        tried, served = [], []
+
+        class Fast:
+            Reads = NS(of_server=staticmethod(lambda server: server))
+
+            @staticmethod
+            def serves(question):
+                served.append(question)
+                return False
+
+        class Agent:
+            def run(self, prompt, host):
+                return runner.AgentRun(events=[], final_text="", usage={}, agent={})
+
+        def profit(self, host, declined):
+            tried.append(self.question)
+            declined.append("profit:no_customer")
+            return None
+        with mock.patch.object(script.RoutedAgent, "_profit", profit):
+            routed = script.RoutedAgent(Agent(), "hows our margin on 1-Shoppe orders in BC?",
+                                        fast=Fast, session=lambda host: (None, object()))
+            run = routed.run("p", None)
+            self.assertEqual((tried, served), ([routed.question], [routed.question]))
+            self.assertEqual(run.agent, {"routed": "agent",
+                                         "declined": ["profit:no_customer"]})
+            tried.clear()
+            script.RoutedAgent(Agent(), "status on PO#10515?", fast=Fast,
+                               session=lambda host: (None, object())).run("p", None)
+            self.assertEqual(tried, [])          # no margin question: no profit route
+        answered = runner.AgentRun(events=[], final_text="x", usage={},
+                                   agent={"routed": "profit"})
+        with mock.patch.object(script.RoutedAgent, "_profit",
+                               lambda self, host, declined: answered):
+            served.clear()
+            run = script.RoutedAgent(Agent(), "is 1-Shoppe profitable?", fast=Fast,
+                                     session=lambda host: (None, object())).run("p", None)
+            self.assertIs(run, answered)
+            self.assertEqual(served, [])         # answered: the fast path never runs
+
+    def test_a_late_list_question_takes_the_apps_late_list_route_and_nothing_else(self):
+        """``how many POs are late`` is answered by the app's late-list job over the
+        reader's gap inbox (``WorkspaceBackend.late_job``), read with the reader's grant;
+        the fast path and the agent never run, as in the app. A reader whose inbox has not
+        run gets the app's own words for that."""
+        from contextlib import contextmanager
+        from types import SimpleNamespace as NS
+        granted = []
+
+        class Policy:
+            def may_read(self, gated, key):
+                granted.append(gated)
+                return False
+
+            def held_markings(self, gated):
+                return {"finance"}
+
+        class Host:
+            def __init__(self, store):
+                self.store_path = store
+
+            @contextmanager
+            def request(self):
+                yield self
+
+            def policy_now(self, gated):
+                return Policy()
+        actor = NS(tenant="t", principals=("vince@x",))
+
+        class Agent:
+            def run(self, prompt, host):
+                raise AssertionError("the agent never answers a late-list question")
+
+        class Fast:
+            @staticmethod
+            def serves(question):
+                raise AssertionError("the fast path never runs after the late list")
+        with tempfile.TemporaryDirectory() as tmp:
+            server = NS(ontology=Host(Path(tmp) / "store.sqlite"),
+                        case_runtime=NS(employee_gate=lambda a: ("gated", a)), actor=actor)
+            routed = script.RoutedAgent(Agent(), "how many POs are late rn", fast=Fast,
+                                        session=lambda host: (None, server))
+            run = routed.run("p", None)
+        self.assertEqual(run.agent, {"routed": "late_list", "outcome": "not_found"})
+        self.assertTrue(run.final_text.startswith("The late-order check has not run for your "
+                                                  "records yet"), run.final_text)
+        block = json.loads(run.final_text.split("```json\n")[1].rstrip("`\n"))
+        self.assertEqual(block["answerability"], "blocked")
+
+        # a session that cannot start: the next route answers and the run says why
+        answered = runner.AgentRun(events=[], final_text="x", usage={}, agent={})
+
+        class Answering:
+            def run(self, prompt, host):
+                return answered
+
+        class NoFast:
+            @staticmethod
+            def serves(question):
+                return False
+
+        def broken(host):
+            raise RuntimeError("no session")
+        run = script.RoutedAgent(Answering(), "how many POs are late rn", fast=NoFast,
+                                 session=broken).run("p", None)
+        self.assertEqual(run.agent, {"routed": "agent",
+                                     "declined": ["late_list_unavailable:RuntimeError"]})
+
+    def test_the_late_list_answer_is_graded_on_the_orders_it_names(self):
+        """The values of a late-list answer are the late orders' names as the session
+        served them, on records its facts cite; a record no fact cites adds nothing."""
+        from types import SimpleNamespace as NS
+        h1, h2 = "api://public.app_purchase_order/1@g-1", "api://public.app_purchase_order/2@g-1"
+        payload = NS(direct_answer="1 purchase order you can see is late.", outcome="answered",
+                     facts=[NS(text="PO4154: 20 days late. Due 2026-10-12.",
+                               sources=[NS(handle=h1)])])
+
+        def card(handle, number):
+            return {"name": "plx.object", "is_error": False, "result": {"object": {
+                "display": {"origin": {"citation": handle, "field_path": "row.po_number"},
+                            "untrusted_text": number}}}}
+        text = script.late_text(payload, [card(h1, "PO4154"), card(h2, "PO4155"),
+                                          card(h1, "PO4154")])
+        values = json.loads(text.split("```json\n")[1].rstrip("`\n"))["values"]
+        self.assertEqual(values, [{"name": "late_purchase_order_1", "value": "PO4154",
+                                   "citations": [{"l1_handle": h1,
+                                                  "field_path": "row.po_number"}]}])
+
+    def test_the_profit_answer_is_graded_on_what_it_shows_and_its_cited_inputs(self):
+        """The words are the app's answer; the values are the passed plan inputs on the
+        records the answer's facts cite, never an input it does not show or one that
+        failed its check."""
+        from types import SimpleNamespace as NS
+        h1, h2 = "bc://p/c/salesInvoices/1@g-1", "bc://p/c/salesInvoiceLines/9@g-2"
+        payload = NS(direct_answer="1-Shoppe is profitable: margin 99.52%.", outcome="answered",
+                     facts=[NS(text="Order SO1: revenue $100.00 CAD.",
+                               sources=[NS(handle=h1)])])
+
+        def entry(name, value, handle, field, check="passed"):
+            return {"name": name, "value": value, "check": check,
+                    "citation": {"l1_handle": handle, "field_path": field}}
+        events = [{"name": "plx.investigate", "is_error": False, "result": {"answer": [
+            entry("invoice", {"untrusted_text": "INV1"}, h1, "row.number"),
+            entry("status", "Open", h1, "row.status", check="failed"),
+            entry("revenue", "100", h2, "row.amountExcludingTax")]}}]
+        text = script.profit_text(payload, events)
+        said, block = text.split("\n\n```json\n")
+        self.assertEqual(said, "1-Shoppe is profitable: margin 99.52%.\n"
+                               "- Order SO1: revenue $100.00 CAD.")
+        values = json.loads(block.rstrip("`\n"))["values"]
+        self.assertEqual(values, [{"name": "invoice_1", "value": "INV1", "citations": [
+            {"l1_handle": h1, "field_path": "row.number"}]}])
+
+    def test_in_process_session_starts_never_share_their_environment(self):
+        """Two scoreboard workers starting sessions at once each start with their own
+        ticket, and the environment is as it was afterwards."""
+        import os
+        import threading
+        import time
+        from scripts import eval_real_agent as real
+        seen, key = [], "PLX_EVAL_TEST_TICKET"
+
+        def start(ticket):
+            def build():
+                time.sleep(0.05)
+                seen.append((ticket, os.environ.get(key)))
+                return ticket
+            return real._in_process(build, {key: ticket})
+        threads = [threading.Thread(target=start, args=(f"t{i}",)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(seen), [(f"t{i}", f"t{i}") for i in range(4)])
+        self.assertNotIn(key, os.environ)
 
     def test_last_price_paid_is_a_posted_invoice_never_a_draft_order(self):
         w = world()
@@ -568,6 +1118,21 @@ class KeyTests(unittest.TestCase):
             path = Path(tmp) / "k" / "x.json"
             script._write_json(path, {"a": 1})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_the_report_says_the_items_with_no_key_beside_the_rate(self):
+        rows = [{"item_id": f"i{n}", "split": split, "outcome": outcome, "codes": []}
+                for n, (split, outcome) in enumerate([
+                    ("dev", "correct"), ("dev", "false"), ("dev", "no_key"),
+                    ("held_out", "correct"), ("held_out", "no_key"), ("held_out", "no_key"),
+                    ("dev", "not_run")])]
+        doc = script.report(rows, reader="vince", evidence_label="fixture")
+        self.assertEqual((doc["totals"]["graded"], doc["totals"]["correct"],
+                          doc["totals"]["no_key"]), (3, 2, 3))
+        self.assertEqual([doc["by_split"][s]["no_key"] for s in ("dev", "held_out")], [1, 2])
+        self.assertEqual(doc["headline"]["all"], "2/3 correct (66.7%), 1 false; 3 with no "
+                                                 "key, not in the denominator")
+        self.assertIn("1/1 correct (100.0%)", doc["headline"]["held_out"])
+        self.assertEqual(doc["routing"]["agent"]["runs"], 3)   # graded runs only
 
     def test_rekey_judges_time_as_of_the_run_and_keeps_a_pending_rule(self):
         cards = [{"id": "LO-06", "family": "late_po_count", "instances": 1,
@@ -704,6 +1269,72 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(values(more.bc_receipt_vs_po),
                          {"ordered": "10", "received": "7", "short": "short"})
         self.assertEqual(values(more.mc_task), {"stage": "merged", "owner": "vince"})
+
+    def test_a_text_fact_with_a_dot_inside_is_one_fact_never_two_clauses(self):
+        """An owner's e-mail address (an MC task's accountable owner) is stated when the
+        answer writes it; its dots are not sentence ends. A full stop still ends a clause."""
+        owner = {"id": "owner", "kind": "text", "value": "stephen@petrasoap.com"}
+        said = "TASK-7 is at the backlog stage in Mission Control, owned by stephen@petrasoap.com."
+        self.assertTrue(lo.stated(owner, said, []))
+        self.assertFalse(lo.stated(owner, "It is not owned by stephen@petrasoap.com.", []))
+        self.assertFalse(lo.stated(owner, "Owned by stephen. Petrasoap.com is the domain.", []))
+        vendor = {"id": "vendor", "kind": "text", "value": "NINGBO SOMEWANG PACKAGING CO.,LTD"}
+        self.assertTrue(lo.stated(vendor, "P-1 was last bought from NINGBO SOMEWANG PACKAGING "
+                                          "CO.,LTD, at 0.035 USD per PCS.", []))
+        # A full stop before closing marks still ends the clause: the "not" of the bold
+        # sentence never reaches the vendor named after it.
+        acme = {"id": "vendor", "kind": "text", "value": "Acme Packaging"}
+        for said in ("**Price not shown.** Acme Packaging supplies it.",
+                     "(Price not shown.) Acme Packaging supplies it.",
+                     '"Price not shown." Acme Packaging supplies it.'):
+            self.assertTrue(lo.stated(acme, said, []), said)
+
+    def test_a_teams_message_names_a_po_by_its_own_number_never_its_digits_alone(self):
+        """A Portal PO whose number is no PO token (PO2-FM87) is named only whole: another
+        order's PO-287 shares its digits and is not it (a dev key once took it for it)."""
+        from evals import live_ops_more as more
+        w = world()
+        w.portal = {**w.portal, lk.PO: [*w.portal[lk.PO], mirror(lk.PO, {
+            "id": "p2", "po_number": "PO2-FM87", "status": "DRAFT"})]}
+        message = lambda n, text, at: {"handle": f"teams-chat://c/{n}@t-{n}", "text": text,
+                                       "at": at}
+        named = lambda *messages: {c.identifier: c.facts[0]["records"] for c in
+                                   more.teams_po_discussion(dataclasses.replace(
+                                       w, teams=list(messages)))}
+        self.assertEqual(named(message(1, "bulk left over from PO-287", "2026-10-28T15:00:00Z"),
+                               message(2, "PO 7001 lands Friday", "2026-10-27T15:00:00Z")),
+                         {"PO#7001": ["teams-chat://c/2@t-2"]})
+        self.assertEqual(named(message(3, "Is PO2-FM-87 approved?", "2026-10-29T15:00:00Z")),
+                         {"PO2-FM87": ["teams-chat://c/3@t-3"]})
+
+    def test_a_mail_names_a_po_by_its_own_number_never_its_digits_alone(self):
+        """As for Teams: the vendor's PO-287 mail is not the last mail about Portal PO2-FM87
+        (same digits, another order); one naming PO2-FM-87 whole is, and PO 7001 names
+        PO#7001. An absence key still stays clear of any message a digit run could name."""
+        w = world()
+        w.portal = {**w.portal,
+                    lk.PO: [*w.portal[lk.PO], mirror(lk.PO, {
+                        "id": "p2", "po_number": "PO2-FM87", "status": "DRAFT",
+                        "custom_fields": {"fmGeneratedPoId": "87"}})],
+                    lk.FM_PO: [mirror(lk.FM_PO, {"id": 87, "ponumber": "87",
+                                                 "emailrep": "rep@vendor.example"})]}
+        w.portal[lk.PO][0]["row"]["custom_fields"] = {"fmGeneratedPoId": "87"}
+        mail = lambda n, subject, at: {"handle": f"graph-mail://m/{n}@v", "message_id": f"m{n}",
+                                       "subject": subject, "preview": "", "received_at": at,
+                                       "from": "rep@vendor.example"}
+        last = lambda *messages: {c.identifier: c.facts[0]["message_id"] for c in
+                                  lk.po_vendor_last_mail(dataclasses.replace(
+                                      w, mail=list(messages), _cache={}))}
+        self.assertEqual(last(mail(1, "Re: PO-287 left over bulk", "2026-10-28T15:00:00Z"),
+                              mail(2, "PO 7001 ships Friday", "2026-10-27T15:00:00Z")),
+                         {"PO#7001": "m2"})
+        self.assertEqual(last(mail(3, "Is PO2-FM-87 approved?", "2026-10-29T15:00:00Z")),
+                         {"PO2-FM87": "m3"})
+        absent = lambda *messages: [c.identifier for c in lk.po_no_vendor_mail(
+            dataclasses.replace(w, mail=list(messages), _cache={},
+                                named_in_text=lambda _token: False))]
+        self.assertEqual(absent(mail(1, "Re: PO-287", "2026-10-28T15:00:00Z")), ["PO#7001"])
+        self.assertEqual(absent(mail(2, "PO-7001 ships", "2026-10-28T15:00:00Z")), [])
 
     def test_a_document_fact_is_stated_only_by_citing_that_record(self):
         doc = {"id": "teams_message", "kind": "document", "records": [H_PO],

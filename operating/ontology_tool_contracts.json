@@ -144,7 +144,7 @@
       "pattern": "^(?:row|key|rows\\.(?:0|[1-9][0-9]*))(?:\\.[A-Za-z_][A-Za-z0-9_]*){1,3}$"
     },
     "object_id": {
-      "description": "<Type>:<binding id>:<native key>. The native key (canonical JSON of the binding key values) holds no whitespace and no invisible character (controls, zero-width, bidi marks and overrides, BOM: percent-encoded by the projector), so source prose never rides an object id.",
+      "description": "<Type>:<binding id>:<native key>. The native key (canonical JSON of the binding key values) holds no whitespace or invisible character (controls, zero-width, bidi marks and overrides, BOM: percent-encoded by the projector).",
       "type": "string",
       "maxLength": 700,
       "pattern": "^[A-Z][A-Za-z0-9]{1,63}:[a-z][a-z0-9_.-]{1,95}:[^\\s\\x00-\\x1f\\x7f-\\x9f\\xad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000e0001\\U000e0020-\\U000e007f]{1,512}$"
@@ -2652,7 +2652,7 @@
       }
     },
     "plx.find": {
-      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; normalized, aliases included) or filter objects of one type (an undeclared property is unknown_property, naming the valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
+      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; aliases included) or filter objects of one type (an undeclared property is unknown_property, naming the valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -2944,6 +2944,24 @@
                   "returned": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "late_orders": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "count",
+                      "complete"
+                    ],
+                    "description": "The distinct late purchase orders of this reader's late list (Home's): every one the inbox holds, not only this page. complete: the count is exact (the inbox is built, current and complete); else a lower bound.",
+                    "properties": {
+                      "count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "complete": {
+                        "type": "boolean"
+                      }
+                    }
                   },
                   "more": {
                     "type": "boolean"
@@ -3943,7 +3961,7 @@
       }
     },
     "plx.aggregate": {
-      "description": "Exact Decimal count/sum/min/max over a set, grouped by up to two properties. Unit-, currency- and quantity-role-aware: mixing roles, units or currencies, or any unknown unit or currency, is refused, and so is summing across a fan-out hop; a sum over one many-to-many hop is split only by reviewed allocations (plx.review allocate), never inferred. A member's value a person corrected (plx.review correct_value in force, readable by this reader) is the person's, citing the correction beside the value it corrects. Totals carry the union of their inputs' markings.",
+      "description": "Exact Decimal count/sum/min/max over a set, or an exact count of object_type matching filters (no scan cap), grouped by up to two properties; only what this reader may read counts. Mixed quantity roles, units or currencies, unknown units or currencies, or a sum across a fan-out hop is refused; a many-to-many hop splits only by reviewed allocations (plx.review allocate). Corrections in force are used, cited. Totals carry their inputs' markings.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4013,11 +4031,35 @@
           },
           "as_known_at": {
             "$ref": "#/$defs/as_known_at"
+          },
+          "object_type": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/filter"
+            },
+            "minItems": 1,
+            "maxItems": 8
           }
         },
         "required": [
-          "set",
           "measure"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "set"
+            ]
+          },
+          {
+            "required": [
+              "object_type",
+              "filters"
+            ]
+          }
         ]
       },
       "output": {
@@ -4181,7 +4223,7 @@
           "process": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,63}$",
-            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (open by the shared PO status definition, operating.po_status: an issued header word with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window with its lateness: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised and received dates, late or not with days late and the reason chain; any other root gets its type's one implicit process."
+            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (open by operating.po_status: an issued header word with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window with its lateness: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised, received dates, late or not with days late and the reason chain; any other root gets its type's one implicit process."
           },
           "include_variants": {
             "type": "boolean"
@@ -4551,6 +4593,23 @@
                       "minLength": 1,
                       "maxLength": 600
                     },
+                    "sums": {
+                      "type": "array",
+                      "description": "A decided quantity check (agree true or false): each role's summed quantity in roles order, as a decimal, in unit; difference is the first minus the second (ordered vs received: the shortfall when positive, an overage when negative).",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "unit": {
+                      "$ref": "#/$defs/unit"
+                    },
+                    "difference": {
+                      "type": "string",
+                      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+                    },
                     "measured_by": {
                       "type": "string",
                       "pattern": "^[a-z][a-z0-9_]{0,63}$",
@@ -4758,7 +4817,7 @@
               "lateness": {
                 "type": "array",
                 "maxItems": 8,
-                "description": "Single root only: per stage whose graph declares due.lateness (po_delivery_window's receipt), whether the root is late against its governing date. The governing date is the top declared precedence tier's planned (requested-by) date (FM datearrive and Sage exparrival, then Portal expected_date, then BC dates; authority_rank on each due value is its tier); with no planned date anywhere the verdict is the gap no_due_date, never the supplier's promise. Open, received or not applicable is the shared purchase-order status definition (operating.po_status): a draft or cancelled PO is not_applicable, never late, cited to its status; an unknown status (Sage-only, an FM header alone, an unmapped, withheld or disputed word, unread lines) is undetermined with the gap status_unknown. Measured is the latest receipt date when fully received, else today (open or partially received). late is null with gap when a due date is contradicted, withheld, unproven or unattested, receipts are not proven complete, a receipt has no readable date, or the measured date falls between disagreeing top-tier dates. reasons/chain state only what this reader's proven records show.",
+                "description": "Single root only: per stage whose graph declares due.lateness (po_delivery_window's receipt), whether the root is late against its governing date. The governing date is the top declared precedence tier's planned (requested-by) date (FM datearrive and Sage exparrival, then Portal expected_date, then BC dates; authority_rank on each due value is its tier); with no planned date anywhere the verdict is the gap no_due_date, never the supplier's promise. Open, received or not applicable is the shared purchase-order status definition (operating.po_status): a draft or cancelled PO is not_applicable, never late, cited to its status, and so is a Sage PO Sage says is complete (historical_sage: a historical record, not judged); an unknown status (a Sage PO open in Sage, an FM header alone, an unmapped, withheld or disputed word, unread lines) is undetermined with the gap status_unknown. Measured is the latest receipt date when fully received, else today (open or partially received). late is null with gap when a due date is contradicted, withheld, unproven or unattested, receipts are not proven complete, a receipt has no readable date, or the measured date falls between disagreeing top-tier dates. reasons/chain state only what this reader's proven records show.",
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -4842,11 +4901,13 @@
                         "type": "string",
                         "enum": [
                           "not_issued_or_closed",
+                          "historical_sage",
                           "no_expected_date",
                           "expected_dates_disagree",
                           "no_confirmation",
                           "no_confirmation_found",
                           "confirmation_lead_only",
+                          "po_number_match_only",
                           "no_promised_date",
                           "promises_disagree",
                           "promise_slipped",
@@ -4923,6 +4984,67 @@
                       "maxItems": 8,
                       "description": "Caveats that do not decide the verdict (promises withheld or unproven, lines cut)."
                     },
+                    "quantities": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "lines",
+                        "by_state"
+                      ],
+                      "description": "Every line of the order aggregated, however many lines and receipts it has (lines lists only the first few; the rest page through plx.around from the order over PurchaseOrderLine.line_of reverse): the line count by state and, when every line's quantities are decided in one unit, the ordered and received totals (Decimal text) and that unit.",
+                      "properties": {
+                        "lines": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "by_state": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "received": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "partial": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "not_received": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "unknown": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          }
+                        },
+                        "ordered": {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+                        },
+                        "received": {
+                          "type": "string",
+                          "pattern": "^[0-9]+(\\.[0-9]+)?$"
+                        },
+                        "unit": {
+                          "oneOf": [
+                            {
+                              "$ref": "#/$defs/unit"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "note": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300,
+                      "description": "A closed order with an outstanding quantity (Complete, or received by the governing BC lines, with a line below its ordered quantity) is closed short, not late: 'closed short: N of M <unit> received' over the short lines (Decimal sums, one unit), the rest cancelled."
+                    },
                     "systems_disagree": {
                       "type": "array",
                       "maxItems": 3,
@@ -4954,10 +5076,47 @@
                         }
                       }
                     },
+                    "vs_vendor_promise": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["basis", "link", "state", "late"],
+                      "description": "Beside the verdict, never in its place: the order against the vendor's own promised date, labelled as the vendor's promise and never our due date. basis vendor_promise: a confirmation a counted link joins to this PO, its latest revision; late when the last receipt (fully received) or today (open) is after it. basis possible_vendor_promise: a confirmation only a lead link reaches (unconfirmed_link); its date is stated, not_judged. complete false: a later promise this reader cannot see may exist.",
+                      "properties": {
+                        "basis": {"type": "string", "enum": ["vendor_promise", "possible_vendor_promise"]},
+                        "link": {"type": "string", "enum": ["confirmed", "unconfirmed_link"]},
+                        "state": {"type": "string", "enum": ["late", "on_time", "not_due", "undetermined", "not_judged"]},
+                        "late": {"type": ["boolean", "null"]},
+                        "promised_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                        "days_late": {"type": "integer", "minimum": 1},
+                        "measured_against": {"type": "string", "enum": ["received", "today"]},
+                        "measured_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                        "reason": {"type": "string", "enum": ["promises_disagree", "received_date_unproven", "receipts_unproven", "receipt_coverage_unproven", "line_promises_partial", "line_promises_unmatched"]},
+                        "complete": {"type": "boolean"},
+                        "values": {"type": "array", "minItems": 1, "maxItems": 2, "items": {"$ref": "#/$defs/value"}},
+                        "per_line": {"type": "boolean", "description": "The confirmation promises each item its own date: each order line matched to its item on firm evidence (one item code or one description, both ways unique) is judged against its own promised arrival; late when any open line is past it (the furthest past is promised_date and days_late), not_due/on_time only when every line is matched and none is late, else undetermined (line_promises_partial)."},
+                        "lines": {"type": "array", "maxItems": 5, "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["line", "matched_by", "state", "late"],
+                          "properties": {
+                            "line": {"$ref": "#/$defs/object_id"},
+                            "matched_by": {"type": "string", "enum": ["item_code", "description"]},
+                            "state": {"type": "string", "enum": ["late", "on_time", "not_due", "undetermined", "received", "not_judged"]},
+                            "late": {"type": ["boolean", "null"]},
+                            "promised_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+                            "days_late": {"type": "integer", "minimum": 1},
+                            "reason": {"type": "string", "enum": ["promises_disagree"]},
+                            "values": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/value"}}
+                          }}},
+                        "lines_judged": {"type": "integer", "minimum": 0},
+                        "lines_unmatched": {"type": "integer", "minimum": 0, "description": "Order lines that count for the verdict (open, or every line once received) no item promise matched."},
+                        "unmatched_dates": {"type": "array", "maxItems": 3, "items": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}, "description": "Arrival dates the confirmation promises items no order line matched on firm evidence: stated at document level, never judged against a line (line_promises_unmatched when no line matched)."}
+                      }
+                    },
                     "because": {
                       "type": "array",
                       "maxItems": 3,
-                      "description": "The cited source values behind not_issued_or_closed (the PO's own status), partial_receipt (status or line quantities) and promise_slipped (the promises and the governing date).",
+                      "description": "The cited source values behind not_issued_or_closed and historical_sage (the PO's own status), partial_receipt (status or line quantities) and promise_slipped (the promises and the governing date).",
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -4970,6 +5129,7 @@
                             "type": "string",
                             "enum": [
                               "not_issued_or_closed",
+                              "historical_sage",
                               "promise_slipped",
                               "partial_receipt"
                             ]
@@ -5258,7 +5418,7 @@
       }
     },
     "plx.documents": {
-      "description": "Search mail, SharePoint and operator originals the session employee may read, optionally around an object, with identifier mentions resolved to objects at their tier. Titles, snippets and spans are untrusted source text. States exactly what was searched.",
+      "description": "Search mail, SharePoint, originals and Teams (if sources names it) the employee may read, newest first, optionally around an object, with identifier mentions resolved at their tier. Titles, snippets and spans are untrusted. States what was searched.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5285,11 +5445,12 @@
               "enum": [
                 "graph_mail",
                 "sharepoint",
-                "original"
+                "original",
+                "teams"
               ]
             },
             "minItems": 1,
-            "maxItems": 3,
+            "maxItems": 4,
             "uniqueItems": true
           },
           "since": {
@@ -5359,7 +5520,8 @@
                         "email",
                         "attachment",
                         "sharepoint_file",
-                        "original"
+                        "original",
+                        "teams_message"
                       ]
                     },
                     "title": {
@@ -5494,6 +5656,10 @@
                         "domain"
                       ]
                     },
+                    "captured_after_refresh": {
+                      "const": true,
+                      "description": "Mail newer than the last full refresh: read from the mail capture at question time under the same permission checks (no mentions or links yet)."
+                    },
                     "mention_summary": {
                       "type": "object",
                       "additionalProperties": false,
@@ -5614,7 +5780,7 @@
       }
     },
     "plx.read": {
-      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (#page=<n>) of an original or captured PDF; says when changed, withheld or unresolvable. A page read cites its #page=<n>: cite a figure by its page. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation.",
+      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (#page=<n>) of an original or captured PDF; says when changed, withheld or unresolvable. A page read cites its #page=<n>. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -6092,7 +6258,7 @@
       }
     },
     "plx.investigate": {
-      "description": "Run the declarative plan for a question family (ontology/plans/<family>.json), or an inline plan (plan) when no family fits, from a root inside the Workbench. Returns the chain, cited values, gaps, conflicts and computed answerability, labelled with the procedure id and digest. Unknown family: no_plan; a plan the schema check refuses: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder (listed as a writer) records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
+      "description": "Run the declarative plan for a question family (ontology/plans/<family>.json), or an inline plan when no family fits, from a root in the Workbench. Returns the chain, cited values, gaps, conflicts and computed answerability, with procedure id and digest. Unknown family: no_plan; a refused plan: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder (a listed writer) records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -6104,7 +6270,7 @@
           },
           "plan": {
             "type": "object",
-            "description": "An inline plan document (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no listed family answers: give family or plan, never both, and ask a family when one fits. Checked against the live schema before anything runs: every object type, link type, property and binding declared, each step a primitive (plx.object, plx.around, ...) with valid arguments, steps <= step_budget <= 128; a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. It runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: $schema \"_plan.schema.json\", format, id, families [\"F<n>\"], title, description, root {object_types, fallback_filters}, step_budget, steps [{id, tool, from (root or a step id), bind (object_id or from), args}], evidence [{name, kind property|count, object_type, properties}]. Examples (ontology/plans/_inline_examples.json): a supplier's orders past due: root Supplier; plx.around path [PurchaseOrder.ordered_from reverse] filters [expected_date lt <date>]; plx.object; evidence PurchaseOrder po_number, expected_date, status. An order's items with no receipt: root PurchaseOrder; plx.around [PurchaseOrderLine.line_of reverse] filters [received_quantity eq 0]; evidence PurchaseOrderLine description, ordered_quantity (quantity_role ordered). A shipment's documents: root Shipment; plx.around links {binding_kind mention, direction reverse, far_relation documentFields}; evidence count FreightBill, DeliveryReceipt with their bindings, distinct content."
+            "description": "An inline plan (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no listed family answers: family or plan, never both; prefer a family when one fits. Checked against the live schema first: every type, link, property and binding declared, each step a primitive (plx.object, plx.around, ...) with valid arguments, steps <= step_budget <= 128; a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. Runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: $schema \"_plan.schema.json\", format, id, families [\"F<n>\"], title, description, root {object_types, fallback_filters}, step_budget, steps [{id, tool, from (root or a step id), bind (object_id or from), args}], evidence [{name, kind property|count, object_type, properties}]. Examples: ontology/plans/_inline_examples.json. Supplier's orders past due: root Supplier; plx.around path [PurchaseOrder.ordered_from reverse] filters [expected_date lt <date>]; plx.object; evidence PurchaseOrder po_number, expected_date. Order items with no receipt: root PurchaseOrder; plx.around [PurchaseOrderLine.line_of reverse] filters [received_quantity eq 0]; evidence PurchaseOrderLine description, ordered_quantity."
           },
           "root": {
             "$ref": "#/$defs/investigate_root"
@@ -6141,7 +6307,7 @@
                 "pattern": "^case-[0-9a-f]{32}$"
               }
             },
-            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, through the action path (ontology_tools_investigate.record_follow_ups): one workbench.follow_up.record per gap and one workbench.draft.record per engine-worded request; workbench-internal, approval none, read back, nothing sent. A gap already on the case is not recorded again; the executor's notes, run limits and the host's own state (source_not_configured, freshness_unknown, projection_not_built) record nothing. Only on the first page (the next pages are asked without it). A host without an action path refuses it (follow_ups_not_configured); a case the reader cannot see is case_not_found, nothing recorded."
+            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, via the action path (ontology_tools_investigate.record_follow_ups): one workbench.follow_up.record per gap and one workbench.draft.record per engine-worded request; workbench-internal, approval none, nothing sent. A gap already on the case is not recorded again; executor notes, run limits and host state (source_not_configured, freshness_unknown, projection_not_built) record nothing. First page only. A host without an action path refuses it (follow_ups_not_configured); an unseen case is case_not_found."
           },
           "response_format": {
             "type": "string",
@@ -6436,6 +6602,31 @@
                       "pattern": "^[0-9a-f]{64}$",
                       "description": "computed: sha256 of the engine's canonical record; equal inputs give an equal digest."
                     },
+                    "calculation": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["op", "expression", "inputs"],
+                      "description": "computed: the value as an expression over the cited cells it was computed from (the claim gate's op expression: x0 is the first input; round_to_cents rounds the result, for a percent entry the percent), each input the figure its cell holds. Submitted to the answer gate as an expression value claim, the gate re-reads every cell for the reader and recomputes the value. Absent when the engine cannot state it so.",
+                      "properties": {
+                        "op": {"type": "string", "enum": ["expression"]},
+                        "expression": {"type": "string", "minLength": 2, "maxLength": 500},
+                        "inputs": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 50,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["l1_handle", "field_path", "value"],
+                            "properties": {
+                              "l1_handle": {"$ref": "#/$defs/handle"},
+                              "field_path": {"$ref": "#/$defs/field_path"},
+                              "value": {"type": "string", "pattern": "^-?[0-9]+(\\.[0-9]+)?$"}
+                            }
+                          }
+                        }
+                      }
+                    },
                     "records": {
                       "type": "array",
                       "maxItems": 100,
@@ -6597,7 +6788,7 @@
                   "returned",
                   "total"
                 ],
-                "description": "Present when the answer is paged: page of pages, answer entries on this page and in the whole answer. Each computed entry travels with the inputs only it uses; shared entries (common inputs and values computed from computed entries, such as a total over every page's entries) repeat on every page. completeness is then truncated on every page (reason answer_paged unless the run itself was cut), as no page holds the whole answer; next_cursor is null on the last page.",
+                "description": "Present when the answer is paged: page of pages, answer entries on this page and in the whole answer. Each computed entry travels with the inputs only it uses; shared entries (common inputs and values computed from computed entries, such as a total over every page's entries) repeat on every page. The first page also lists the answer's gaps, plan trace and follow-ups whole; a later page says gaps_on_page 1 (its gaps are empty, never meaning none). A conflict is listed on the page of the entries citing its records, and also on the first page when no trusted value resolves it or no entry cites it. completeness is then truncated on every page (reason answer_paged unless the run itself was cut), as no page holds the whole answer; next_cursor is null on the last page.",
                 "properties": {
                   "page": {
                     "type": "integer",
@@ -6614,6 +6805,11 @@
                   "total": {
                     "type": "integer",
                     "minimum": 0
+                  },
+                  "gaps_on_page": {
+                    "type": "integer",
+                    "const": 1,
+                    "description": "On a page after the first: the page that lists the answer's gaps, trace and follow-ups."
                   }
                 }
               },
@@ -6668,7 +6864,7 @@
               "follow_ups": {
                 "type": "array",
                 "maxItems": 100,
-                "description": "With follow_ups: one entry per follow-up (a gap that asks a person) and per draft request (draft), naming the gaps it records by their index in gaps (the same on every page) and its case record (record_id). outcome only when not recorded: exists (already on the case) or refused (refused: the action catalog's refusal class, its code before any ':'); read_back only when the record did not read back verified. A gap a recorded follow-up holds may come without its detail when the page needs the room: the case record keeps it.",
+                "description": "With follow_ups: one entry per follow-up (a gap that asks a person) and per draft request (draft), naming the gaps it records by their index in gaps (listed on the first page; a later page carries neither) and its case record (record_id). outcome only when not recorded: exists (already on the case) or refused (refused: the action catalog's refusal class, its code before any ':'); read_back only when the record did not read back verified. A gap a recorded follow-up holds may come without its detail when the page needs the room: the case record keeps it.",
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
@@ -6786,7 +6982,7 @@
       }
     },
     "plx.agenda": {
-      "description": "A recurring meeting's agenda from cited records since the previous meeting: open projects and status, changes, blockers, decisions needed and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
+      "description": "A recurring meeting's agenda from cited records since the last meeting: open projects and status, changes, blockers, decisions and owners, each line cited; missing sources and values are named gaps. agenda: the spec id (ontology/agendas). scope: per lane, the exact values its spec names (a chat id, a list id, an MC bucket). since: ISO instant with offset; absent: the previous agenda's posting. offset/limit page the lines. Read-only.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7164,7 +7360,7 @@
       }
     },
     "plx.review": {
-      "description": "Record a person's review decision in the Workbench's own store (accept or reject a declared link, an identifier alias, an allocation of a supply's quantity to a demand over a many-to-many link, a confirmation or a correction of a number, quantity, money or date value (cited by an existing page or a span; shown beside the source value), or retract a review), or list a record's reviews. Document kinds: use plx.document_fields. The author is the signed-in employee session; agent sessions are refused. Evidence must be the current versions the person reviewed. No business system is written.",
+      "description": "Record a person's review decision in the Workbench store (accept or reject a declared link, an identifier alias, an allocation of a supply's quantity to a demand over a many-to-many link, a confirmation or a correction of a number, quantity, money or date value (cited by an existing page or a span; shown beside the source value), or retract a review), or list a record's reviews. Document kinds: use plx.document_fields. Author: the signed-in employee; agent sessions are refused. Evidence must be the current versions reviewed. No business system is written.",
       "read_only": false,
       "input": {
         "type": "object",

@@ -84,13 +84,14 @@ test("demo walkthrough", async ({ page }, info) => {
   // 4. A messy question; the answer streams in. An observer records every
   // progressive state the page showed while the answer was still busy.
   await page.evaluate(() => {
-    const w = window as unknown as { __plx: { statuses: string[]; partial: boolean } };
-    w.__plx = { statuses: [], partial: false };
+    const w = window as unknown as { __plx: { statuses: string[]; partial: boolean; verdict: boolean } };
+    w.__plx = { statuses: [], partial: false, verdict: false };
     new MutationObserver(() => {
       for (const a of document.querySelectorAll('article[aria-busy="true"]')) {
         const st = a.querySelector('[role="status"]')?.textContent?.trim();
         if (st && !w.__plx.statuses.includes(st)) w.__plx.statuses.push(st);
         if (a.querySelector('[data-testid="direct-answer"]')?.textContent) w.__plx.partial = true;
+        if (a.querySelector('[data-testid="verdict"]')?.textContent?.includes("12 days late")) w.__plx.verdict = true;
       }
     }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
   });
@@ -103,10 +104,14 @@ test("demo walkthrough", async ({ page }, info) => {
   await shot(page, "4-streaming", project);
   await expect(card).toHaveAttribute("aria-busy", "false", { timeout: 20_000 });
   await expect(direct).toContainText("12 days late");
-  const seen = await page.evaluate(() => (window as unknown as { __plx: { statuses: string[]; partial: boolean } }).__plx);
-  // At least two distinct progress steps were shown before the answer landed.
+  const seen = await page.evaluate(() => (window as unknown as { __plx: { statuses: string[]; partial: boolean; verdict: boolean } }).__plx);
+  // At least two distinct progress states were shown before the answer landed, each
+  // step in plain words (never a tool name or an id), then the gate-accepted verdict.
   expect(seen.statuses.length).toBeGreaterThanOrEqual(2);
-  expect(seen.statuses.some((t) => t.includes("Searching"))).toBe(true);
+  for (const step of ["Finding PO 90412", "Reading Business Central receipts", "Checking supplier confirmations in mail", "Checking the answer against the records"])
+    expect(seen.statuses.some((t) => t.includes(step)), step).toBe(true);
+  expect(seen.statuses.some((t) => /plx\.|:\/\/|PurchaseOrder:/.test(t))).toBe(false);
+  expect(seen.verdict).toBe(true);
 
   // Sources: chips on facts; hover (or focus) shows the quoted passage.
   const chips = card.getByTestId("source-chip");

@@ -70,7 +70,7 @@ import re
 import subprocess
 import threading
 import zlib
-from typing import Any, Callable, Generic, Hashable, Iterator, Mapping, TypeVar
+from typing import Any, Callable, Generic, Hashable, Iterable, Iterator, Mapping, TypeVar
 from urllib.parse import parse_qs, quote
 
 from .captured_pages import PAGE_BREAK, is_paged_file, text_pages
@@ -672,9 +672,11 @@ class KeptReadings:
     KEEP_BUILDS = 3
     _BATCH = 500   # writes per commit
 
+    TABLE = "readings"
+
     def __init__(self, path: str | Path, code: str) -> None:
         import sqlite3
-        self.code = code
+        self.code, self.path = code, Path(path)
         self._lock = threading.Lock()
         self._pending = 0
         self.hits = self.misses = self.kept = 0
@@ -712,6 +714,19 @@ class KeptReadings:
             self._db.execute("BEGIN")
             self._pending = 0
 
+    @staticmethod
+    def decode(value: bytes) -> CapturedText | None:
+        """A kept value's reading."""
+        return decode_reading(json.loads(zlib.decompress(value).decode("utf-8")))
+
+    @staticmethod
+    def encode(found: CapturedText | None) -> bytes | None:
+        """The value a reading is kept as; None when it does not survive its encoding."""
+        encoded = encode_reading(found)
+        if decode_reading(json.loads(json.dumps(encoded))) != found:
+            return None
+        return zlib.compress(json.dumps(encoded, ensure_ascii=False).encode("utf-8"), 6)
+
     def get(self, key: Hashable) -> tuple[CapturedText | None] | None:
         """``(reading,)`` kept for ``key`` under this code, else None (a miss)."""
         name = self._key(key)
@@ -728,19 +743,42 @@ class KeptReadings:
                                  (self.build, name))
                 self._wrote()
                 self.hits += 1
-            return (decode_reading(json.loads(zlib.decompress(row[1]).decode("utf-8"))),)
+            return (self.decode(row[1]),)
         except Exception:  # noqa: BLE001 - an unreadable entry is a miss
             return None
+
+    def flush(self) -> None:
+        """Commit what is kept so far, so another process's reader sees it."""
+        with self._lock:
+            self._db.execute("COMMIT")
+            self._db.execute("BEGIN")
+            self._pending = 0
+
+    def absorb(self, used: Iterable[str], kept: Iterable[tuple[str, bytes]]) -> None:
+        """What a parallel build's worker read (``used``: the keys it hit) and kept
+        (``kept``: key and encoded value) through its read-only view of this file
+        (``ontology.project_parallel``), recorded here: the one writer of the file."""
+        with self._lock:
+            for name in used:
+                self._db.execute("UPDATE readings SET used = ? WHERE key = ?",
+                                 (self.build, name))
+                self._wrote()
+                self.hits += 1
+            for name, value in kept:
+                self._db.execute("INSERT INTO readings VALUES (?, ?, ?, ?) ON CONFLICT(key) "
+                                 "DO UPDATE SET code = excluded.code, value = excluded.value, "
+                                 "used = excluded.used", (name, self.code, value, self.build))
+                self._wrote()
+                self.kept += 1
 
     def put(self, key: Hashable, found: CapturedText | None) -> None:
         name = self._key(key)
         if name is None:
             return
         try:
-            encoded = encode_reading(found)
-            if decode_reading(json.loads(json.dumps(encoded))) != found:
+            value = self.encode(found)
+            if value is None:
                 return
-            value = zlib.compress(json.dumps(encoded, ensure_ascii=False).encode("utf-8"), 6)
             with self._lock:
                 self._db.execute("INSERT INTO readings VALUES (?, ?, ?, ?) ON CONFLICT(key) "
                                  "DO UPDATE SET code = excluded.code, value = excluded.value, "

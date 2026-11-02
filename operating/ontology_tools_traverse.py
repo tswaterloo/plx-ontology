@@ -147,7 +147,7 @@ import base64
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 import datetime as dt
-from functools import lru_cache
+from functools import cached_property, lru_cache
 import hashlib
 import json
 import os
@@ -175,6 +175,9 @@ from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     LIVE_LOOKUP_HINT,
     SET_TTL_SECONDS,
     OntologyTools,
+    encoded_list,
+    reader_grants,
+    run_memo_for,
     ReadPolicy,
     SetRegistry,
     StoreReader,
@@ -420,9 +423,14 @@ class _Scope:
     corroboration: dict[str, Any] = field(default_factory=dict, compare=False)
     handles: dict[str, str | None] = field(default_factory=dict, compare=False)
 
+    @cached_property
+    def _encoded(self) -> tuple[str, str]:
+        # once per scope: every query of the call passes the reader's audience keys
+        return encoded_list(self.audience_keys), encoded_list(self.marking_sets)
+
     def params(self, **extra: Any) -> dict[str, Any]:
-        return {"t": self.t, "aud": json.dumps(list(self.audience_keys)),
-                "marks": json.dumps(list(self.marking_sets)), **extra}
+        aud, marks = self._encoded
+        return {"t": self.t, "aud": aud, "marks": marks, **extra}
 
 
 def _live(alias: str) -> str:
@@ -573,11 +581,9 @@ class TraverseTools:
             at, explicit = pinned
         else:
             at, explicit = self.base.clock().astimezone(dt.timezone.utc), False
-        keys = tuple(k for k in self._audience_keys() if self.policy.may_read(actor, k))
-        held = self.policy.held_markings(actor)
-        sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
-        return _Scope(actor, at, _fixed(at), explicit, keys, held, sets,
-                      self.policy.granted_sources(actor), gate)
+        keys, held, sets, granted = reader_grants(self, self.policy, actor,
+                                                  self._audience_keys())
+        return _Scope(actor, at, _fixed(at), explicit, keys, held, sets, granted, gate)
 
     def prime(self, cell_families: Sequence[str] = ()) -> None:
         """Read every reader-independent store fact now (``_store_cached``'s keys), so no
@@ -1615,6 +1621,14 @@ class TraverseTools:
                      None)
         if not isinstance(group, str) or not group:
             return False
+        # The same reader's decision for the rest of a plan run (``run_memo``): its calls
+        # read the same mail through each twin, page and retry of the run.
+        kept = run_memo_for(("mention_ambiguous", id(self), scope.actor, scope.audience_keys,
+                             scope.held, scope.marking_sets, scope.sources,
+                             scope.t if scope.explicit_at else None))
+        key = (row["from_object"], group)
+        if kept is not None and key in kept:
+            return kept[key]
         seen = self.store.conn.execute(
             f"""SELECT COUNT(DISTINCT l.to_object) FROM links l
                 JOIN objects x ON x.object_id = l.to_object
@@ -1626,6 +1640,8 @@ class TraverseTools:
                                 WHERE NOT {scope.gate}(h.value))
                 AND {_visible_object('x', scope.gate)}""",
             scope.params(from_object=row["from_object"], grp=group)).fetchone()[0]
+        if kept is not None:
+            kept[key] = seen >= 2
         return seen >= 2
 
     # ------------------------------------------------------------------ plx.timeline

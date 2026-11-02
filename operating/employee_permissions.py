@@ -633,6 +633,15 @@ class FullReadAccess:
     def covers(self, scope: str) -> bool:
         return scope in self.grant.scopes and self.usable()
 
+    def unrestricted(self) -> bool:
+        """The owner-open rule (Permission checks never slow or
+        block the owner): a grant over every source (``FULL_READ_SCOPES``) and every
+        mailbox (``mail_scope`` ``all``), usable now. Its holder reads every marking and
+        every item without per-item permission reads (``EmployeeEntitlement.unrestricted``);
+        the people exclusion is never lifted (``usable``, ``allows_item``)."""
+        return self.grant.scopes == frozenset(FULL_READ_SCOPES) \
+            and self.grant.mail_scope == "all" and self.usable()
+
     def allows_item(self, scheme: str, source_acl: Any, record: Any = None) -> bool:
         """The item of ``scheme`` with ``source_acl`` under this grant. Mail needs the
         derived mailbox-owner ACL naming the mailbox's object id (the exclusion decides on
@@ -660,6 +669,11 @@ class FullReadAccess:
             if not decidable or _people_excluded(guard, people):
                 return False
             identities = identities if isinstance(identities, (list, tuple)) else []
+        elif scope == "sharepoint" and isinstance(record, Mapping) \
+                and isinstance(record.get("created_by"), str) \
+                and record["created_by"].strip() \
+                and _people_excluded(guard, [record["created_by"].strip()]):
+            return False   # a file an excluded person created is theirs: never read
         if not isinstance(identities, (list, tuple)) \
                 or any(not isinstance(i, str) for i in identities):
             return False
@@ -908,6 +922,16 @@ class EmployeeEntitlement:
             return None
         return self.full_read.grant.code()
 
+    def unrestricted(self) -> bool:
+        """THE one owner-open flag (``FullReadAccess.unrestricted``): this employee holds the
+        owner full-read grant over every source and marking now. Every permission check
+        consults it (``ReadPolicy.unrestricted`` carries it to the tools): no per-item
+        permission read, every marking held, no evidence dropped for permissions. The people
+        exclusion (``PLX_EXCLUDED_PEOPLE_OIDS``) still decides every item it names; an
+        exclusion that cannot be decided now makes this False (nothing is granted)."""
+        return self.actor is not None and self.full_read is not None \
+            and self.full_read.unrestricted()
+
     def full_read_covers(self, scope: str) -> bool:
         return self.actor is not None and self.full_read is not None \
             and self.full_read.covers(scope)
@@ -979,6 +1003,8 @@ class EmployeeEntitlement:
             return False
         security_class, owner = taxonomy.file_security_class(
             record, self.library_security_classes)
+        if self.unrestricted():
+            return True   # every class and QC document (the exclusion is the item gate's)
         qc_ok = self.qc_document_reader or not taxonomy.may_be_qc_document(record)
         if self.full_read_covers("sharepoint"):
             # A full-read grant reads every class; Finance, Business Central and an
@@ -1445,16 +1471,34 @@ def gate_actor_methods(target: Any, gate: Callable[[Any], Any]) -> Any:
 
 # ------------------------------------------------------------------ adapter
 
+def reader_unrestricted(gate: Any, actor: Any) -> bool:
+    """``EmployeeEntitlement.unrestricted`` for ``actor`` as the employee gate (an
+    ``EmployeeActorGate``) resolved and holds it: how every consumer outside the read
+    policy asks the one owner-open flag. No gate, no entitlement, or anything
+    undecidable: False (the checks run as for anyone)."""
+    try:
+        entitlement = gate.entitlement(actor) if gate is not None else None
+        return entitlement is not None and entitlement.unrestricted() is True
+    except Exception:  # noqa: BLE001 - undecidable: never unrestricted
+        return False
+
+
 def full_read_marking_grants(marking_grants: Mapping[str, Iterable[str]] | None,
                              entitlement: EmployeeEntitlement | None
                              ) -> dict[str, frozenset[str]]:
     """The host's ``marking_grants`` with this employee's principal added to every
-    ``FULL_READ_MARKINGS`` marking when their full-read grant covers ``finance`` now.
-    Anyone else, or a grant without that scope: the host's grants unchanged."""
+    ``FULL_READ_MARKINGS`` marking when their full-read grant covers ``finance`` now, and
+    to every store marking when they are unrestricted (``EmployeeEntitlement.
+    unrestricted``). Anyone else, or a grant without that scope: the host's grants
+    unchanged."""
     out = {m: frozenset(p) for m, p in (marking_grants or {}).items()}
     if entitlement is None or not entitlement.full_read_covers("finance"):
         return out
-    for marking in FULL_READ_MARKINGS:
+    markings = FULL_READ_MARKINGS
+    if entitlement.unrestricted():
+        from ontology.store_ddl import MARKINGS
+        markings = tuple(MARKINGS)
+    for marking in markings:
         out[marking] = out.get(marking, frozenset()) | {entitlement.principal.principal}
     return out
 
@@ -1492,4 +1536,5 @@ __all__ = ["DIRECTORY_SOURCE", "EMPLOYEE_IDENTITY_REQUIRED", "EMPLOYEE_PREFIX",
            "GROUP_READ_BLOCKER", "MAILBOX_ACCESS_UNDETERMINED", "POLICY_SCHEMA",
            "PORTAL_ACCESS_SNAPSHOT_SCHEMA", "PortalAccessRead", "PortalAccessSnapshot",
            "PrincipalDecision", "PrincipalRule", "employee_principals",
-           "gate_actor_methods", "groups_unavailable", "live_source_audience_document"]
+           "gate_actor_methods", "groups_unavailable", "live_source_audience_document",
+           "reader_unrestricted"]

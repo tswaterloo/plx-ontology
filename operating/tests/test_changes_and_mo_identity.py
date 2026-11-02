@@ -263,6 +263,59 @@ class ChangesTests(unittest.TestCase):
         self.assertEqual(len(set(seen)), 61)
         self.assertNotIn("error", changes(FULL))    # the default call
 
+    def test_the_kept_index_answers_exactly_as_the_store_for_every_reader(self):
+        """The index kept beside a store file (built by the background prime) gives every
+        reader the same answer as reading the store (records, counts, pages, item-ACL
+        records, values a reader may not read); a changed file or a foreign index is never
+        read."""
+        import shutil
+        directory = Path(TEMP.name) / "kept"
+        directory.mkdir()
+        kept = with_documents(directory / "store.sqlite")
+        plain = Path(TEMP.name) / "plain"
+        plain.mkdir()
+        shutil.copy(kept, plain / "store.sqlite")
+        plain = plain / "store.sqlite"
+        base = ot.OntologyTools(ot.StoreReader.open(kept), POLICY, schema=ot.shared_schema(),
+                                contracts=ot.load_contracts(), clock=lambda: NOW)
+        tool = ch.ChangeTools(base)
+        thread = tool.prime_later()
+        self.assertIsNotNone(thread)
+        thread.join(60)
+        self.assertIsNotNone(tool.kept())
+        self.assertIsNone(tool.prime_later())   # kept: nothing to build again
+        types = ["SharePointFile", *ch.DEFAULT_TYPES]
+        for actor in (FULL, NARROW):
+            for gate in (lambda a, h: True, lambda a, h: not h.startswith("sharepoint://")):
+                for arguments in ({}, {"object_types": ["PurchaseOrder"]},
+                                  {"object_types": types, "limit": 50},
+                                  {"since": "2099-01-01T00:00:00Z"},
+                                  {"since": "2099-01-22T00:00:00Z"},   # nothing since
+                                  {"as_known_at": "2099-01-12T00:00:00Z",
+                                   "since": "2099-01-05T00:00:00Z"}):
+                    with self.subTest(actor=sorted(actor.principals), **arguments):
+                        got = changes(actor, store=kept, gate=gate, **arguments)
+                        want = changes(actor, store=plain, gate=gate, **arguments)
+                        self.assertNotIn("error", got, json.dumps(got)[:500])
+                        self.assertEqual(got, want)
+        before = changes(FULL, store=kept)["counts"]["first_captured_earlier"]
+        # a write to the file: its index no longer names it, and is not read
+        conn = sqlite3.connect(str(kept))
+        oid = 'PurchaseOrder:portal.app_purchase_order:{"id":"po-late"}'
+        conn.execute("INSERT INTO objects VALUES (?,?,?,?,?,?,?)",
+                     (oid, "PurchaseOrder", "portal.app_purchase_order", '{"id":"po-late"}',
+                      "api:public.app_purchase_order", T2, None))
+        conn.execute("INSERT INTO object_versions VALUES (?,?,?,?,?,?,?)",
+                     (oid, "api://public.app_purchase_order/late@fx-20", "0" * 64,
+                      "gold_native_staging", "[]", T2, None))
+        conn.commit()
+        conn.close()
+        self.assertIsNone(ch.ChangeTools(ot.OntologyTools(
+            ot.StoreReader.open(kept), POLICY, schema=ot.shared_schema(),
+            contracts=ot.load_contracts(), clock=lambda: NOW)).kept())
+        self.assertEqual(changes(FULL, store=kept)["counts"]["first_captured_earlier"],
+                         before + 1)
+
     def test_unknown_input_fails_closed(self):
         for arguments in ({"object_types": ["NoSuchType"]}, {"cursor": "chg1:5:000000000000"},
                           {"since": "yesterday"}, {"since": "2099-02-01T00:00:00Z"}):

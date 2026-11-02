@@ -27,6 +27,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 from urllib.parse import quote
@@ -464,6 +465,65 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         shutil.copyfile(self.state / case_fixtures.MIRROR_AUDIENCE_FILE, audience_path)
         self.assertEqual(self.open(request, po)["object_id"], po)
 
+    def test_a_kept_reader_policy_is_decided_again_on_any_change_and_per_session(self):
+        """The reader's policy is decided once per session while what it is decided from
+        is unchanged (a page's five requests pay for it once), and again at once when a
+        grant is revoked or regained, for another session, or once kept too long."""
+        from operating.case_tools_host import CaptureCaseHostTools
+
+        audience_path = self.tmp / "kept-policy-audience.json"
+        shutil.copyfile(self.state / case_fixtures.MIRROR_AUDIENCE_FILE, audience_path)
+        runtime = CaseRuntime(self.state, client=None, audience=audience_path, tenant="plx")
+        self.addCleanup(runtime.close)
+        drives = self.tmp / "kept-policy-sharepoint"
+        access = objects.host_access(runtime, self.store, Actor("plx", OPS),
+                                     sharepoint_capture_dir=drives)
+        self.addCleanup(access.close)
+        sessions = [session_identity.fixture_session(
+            "plx", OPS, channel=session_identity.CHANNEL_CONSOLE) for _ in range(2)]
+        self.assertNotEqual(sessions[0], sessions[1])
+        relation = "api:public.app_purchase_order"
+        decided = mock.patch.object(CaptureCaseHostTools, "policy_now", autospec=True,
+                                    side_effect=CaptureCaseHostTools.policy_now)
+
+        def grant(session):
+            access.bind(session)
+            with access.request():
+                return access.grant()[0](relation)
+        with decided as policy_now:
+            self.assertTrue(grant(sessions[0]))
+            self.assertTrue(grant(sessions[0]))
+            self.assertEqual(policy_now.call_count, 1)   # kept for the session
+            self.assertTrue(grant(sessions[1]))           # another session: its own
+            self.assertEqual(policy_now.call_count, 2)
+            # revoked in the mirror audience: the very next request reads without it
+            audience = json.loads(audience_path.read_text("utf-8"))
+            audience["audiences"] = {r: [p for p in principals if p not in OPS]
+                                     for r, principals in audience["audiences"].items()}
+            audience_path.write_text(json.dumps(audience), "utf-8")
+            self.assertFalse(grant(sessions[0]))
+            self.assertEqual(policy_now.call_count, 3)
+            self.assertFalse(grant(sessions[0]))
+            self.assertEqual(policy_now.call_count, 3)
+            shutil.copyfile(self.state / case_fixtures.MIRROR_AUDIENCE_FILE, audience_path)
+            self.assertTrue(grant(sessions[0]))           # regained: at once too
+            # a capture store written since (its drives' or mailboxes' recorded ACLs): again
+            store = drives / "sharepoint-capture" / "capture.db"
+            store.parent.mkdir(parents=True)
+            store.write_bytes(b"")
+            before = policy_now.call_count
+            grant(sessions[0])
+            self.assertEqual(policy_now.call_count, before + 1)
+            store.write_bytes(b"x")
+            grant(sessions[0])
+            self.assertEqual(policy_now.call_count, before + 2)
+            # kept at most POLICY_KEPT_SECONDS, whatever it was decided from
+            with mock.patch.object(objects, "POLICY_KEPT_SECONDS", -1.0):
+                store.write_bytes(b"xy")
+                grant(sessions[0])
+                grant(sessions[0])
+            self.assertEqual(policy_now.call_count, before + 4)
+
     def test_store_status_is_shown_and_a_foreign_store_is_refused(self):
         request = self.serve(OPS)
         po = self.find_one(request, case_fixtures.PO_NUMBER, "PurchaseOrder")
@@ -774,7 +834,9 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
     def test_one_answer_decides_the_readers_grants_once(self):
         """The case host decides the reader's policy once per request: every tool call,
         item decision and read of one answer uses that grant (none mixes grants from
-        before and after a change), and the next request decides again."""
+        before and after a change); the next request of the session keeps it while
+        nothing it is decided from changed (a change decides it again:
+        ``test_a_kept_reader_policy_is_decided_again_on_any_change_and_per_session``)."""
         from operating.case_tools_host import CaptureCaseHostTools
 
         runtime = CaseRuntime(self.state, client=None,
@@ -796,7 +858,7 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
             po = next(c["object"]["object_id"] for c in found["find"]["candidates"]
                       if c["object"]["object_type"] == "PurchaseOrder")
             opened = view.workspace(po)
-            self.assertEqual(len(decided), 2)
+            self.assertEqual(len(decided), 1)
         self.assertEqual(opened["status"], "read")
         self.assertGreater(len(opened["around"]["hops"]) + len(opened["timeline"]["calls"]), 2)
 
@@ -839,13 +901,13 @@ class ObjectWorkspaceHttpTest(unittest.TestCase):
         first = generation(view.find(case_fixtures.PO_NUMBER))
         self.assertEqual(first[0], "current")
         self.assertEqual(first[2], [False])
-        original = CaptureCaseHostTools.policy_now
+        original = CaptureCaseHostTools.policy_inputs
 
         def swap_in_flight(host, reader):   # the host publishes mid-answer
             if newer.exists():
                 newer.replace(served)
             return original(host, reader)
-        with mock.patch.object(CaptureCaseHostTools, "policy_now", swap_in_flight):
+        with mock.patch.object(CaptureCaseHostTools, "policy_inputs", swap_in_flight):
             in_flight = view.find(case_fixtures.PO_NUMBER)
         self.assertEqual(generation(in_flight), first)
         self.assertTrue(in_flight["find"]["candidates"])
@@ -2151,6 +2213,17 @@ class StoreProvenanceTest(unittest.TestCase):
         view = objects.ObjectWorkspace(table, Actor("plx", OPS), store_status=status)
         return view.find("anything")["store"]
 
+    @staticmethod
+    def described_again(status):
+        """``status`` once a capture written after it was last described has been
+        described again (in the background, ``CAPTURE_STATUS_SECONDS`` after the last)."""
+        with mock.patch.object(objects, "CAPTURE_STATUS_SECONDS", 0.0):
+            status.read()
+            deadline = time.monotonic() + 30
+            while status._refresh_running and time.monotonic() < deadline:
+                time.sleep(0.02)
+        return status
+
     def test_an_unprojected_unreadable_capture_never_refuses_or_is_blamed_on_bc(self):
         garbage = self.state_copy("garbage-teams", teams=b"not a capture store " * 64)
         store = self.answer(case_console.checked_store_status(self.bc_only, garbage))
@@ -2191,7 +2264,16 @@ class StoreProvenanceTest(unittest.TestCase):
         bc_file = self.state / BC_DIR / BC_FILE
         stat = bc_file.stat()
         os.utime(bc_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        # A capture still being written changes every few seconds: a request is answered
+        # from the kept status at once, never by describing the captures again ...
         self.assertEqual(self.answer(status)["state"], "current")
+        self.assertEqual(sorted(opened), ["bc", "graph_mail"])
+        # ... which happens in the background once CAPTURE_STATUS_SECONDS have passed
+        with mock.patch.object(objects, "CAPTURE_STATUS_SECONDS", 0.0):
+            self.assertEqual(self.answer(status)["state"], "current")
+            deadline = time.monotonic() + 30
+            while (status._refresh_running or len(opened) < 4) and time.monotonic() < deadline:
+                time.sleep(0.02)
         self.assertEqual(sorted(opened), ["bc", "bc", "graph_mail", "graph_mail"])
 
     def test_a_bc_capture_newer_than_the_store_reads_stale(self):
@@ -2213,7 +2295,7 @@ class StoreProvenanceTest(unittest.TestCase):
         fake.data[(tb.CO[0], "purchaseOrders")][0].update(
             {"@odata.etag": 'W/"changed"', "number": "N-CHANGED"})
         capture.run(entity_sets=("purchaseOrders",))
-        self.assertIn("bc/purchaseOrders", status.read()["newer_relations"])
+        self.assertIn("bc/purchaseOrders", self.described_again(status).read()["newer_relations"])
         # A reader BC is withheld from (no host grant) sees BC stale, not which of its
         # relations changed.
         stale = self.answer(status)
@@ -4060,6 +4142,72 @@ class IdentityExplanationTest(unittest.TestCase):
         self.assertEqual(differing[0]["tiers"], {"verified": 1, "lead": 1})
         other = 'PurchaseOrder:portal.app_purchase_order:{"id":"po-synth-9"}'
         self.assertEqual(len(self.identity_why(self.edge(self.FM, self.PO), self.edge(other, self.FM))), 2)
+
+class HostAccessRequestTests(unittest.TestCase):
+    def test_one_grant_per_answer_and_a_revocation_applies_to_the_next(self):
+        from operating.ontology_tools import ReadPolicy
+
+        decided, audiences = [], {"api:*": OPS}
+
+        def policy_now(reader):
+            decided.append(reader)
+            return ReadPolicy("plx", dict(audiences))
+        host = SimpleNamespace(policy_now=policy_now, request=contextlib.nullcontext)
+        access = objects.HostAccess(host, SimpleNamespace(employee_gate=lambda a: a),
+                                    Actor("plx", OPS))
+        with access.request():
+            may_read, _ = access.grant()
+            with access.request():   # a nested part of the same answer (a page section)
+                with access.request():
+                    self.assertTrue(access.grant()[0]("api:public.app_purchase_order"))
+            # the outer answer's grant stands after its nested parts
+            self.assertTrue(access.grant()[0]("api:public.app_purchase_order"))
+            self.assertTrue(may_read("api:public.app_purchase_order"))
+        self.assertEqual(len(decided), 1)
+        audiences.clear()   # revoked between two answers
+        with access.request():
+            self.assertFalse(access.grant()[0]("api:public.app_purchase_order"))
+        self.assertEqual(len(decided), 2)
+
+    def test_a_policy_with_a_transient_answer_is_never_kept(self):
+        """A policy decided with a transient answer in it (a BC listing that failed, a
+        mailbox check that could not decide: ``policy_settled`` false), or whose inputs
+        changed while it was decided, or from inputs that cannot be named, is decided
+        again on the next request."""
+        from operating.ontology_tools import ReadPolicy
+
+        decided, state = [], {"settled": False, "inputs": ((1,), ()), "moving": False}
+
+        def inputs(reader):
+            if state["moving"]:
+                state["inputs"] = ((state["inputs"][0][0] + 1,), ())
+            return state["inputs"]
+        host = SimpleNamespace(
+            policy_now=lambda reader: decided.append(reader) or ReadPolicy("plx", {}),
+            request=contextlib.nullcontext, policy_inputs=inputs,
+            policy_settled=lambda reader: state["settled"])
+        access = objects.HostAccess(host, SimpleNamespace(employee_gate=lambda a: a),
+                                    Actor("plx", OPS))
+        for _ in range(2):
+            with access.request():
+                pass
+        self.assertEqual(len(decided), 2)   # unsettled: decided each time
+        state.update(settled=True, moving=True)
+        for _ in range(2):
+            with access.request():
+                pass
+        self.assertEqual(len(decided), 4)   # inputs moved while decided: not kept
+        state.update(moving=False, inputs=None)
+        for _ in range(2):
+            with access.request():
+                pass
+        self.assertEqual(len(decided), 6)   # no inputs named: decided each time
+        state.update(inputs=((7,), ()))
+        for _ in range(3):
+            with access.request():
+                pass
+        self.assertEqual(len(decided), 7)   # settled and still: kept
+
 
 if __name__ == "__main__":
     unittest.main()

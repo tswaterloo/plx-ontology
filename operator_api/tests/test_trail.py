@@ -119,6 +119,43 @@ class TrailBoundaryTests(unittest.TestCase):
         self.assertNotIn("2099-01-28", got.next_action.text)
         self.assertIn("The vendor's confirmed date has passed", got.next_action.text)
 
+    def test_a_per_line_promise_shows_only_the_lines_the_reader_may_open(self):
+        line_shut = "graph-mail://box/msg-line-secret@ck"
+        raw = raw_trail()
+        raw["eta"]["handle"] = OPEN
+        raw["vendor_promise"] = {
+            "link": "confirmed", "state": "late", "promised_date": "2099-01-20",
+            "days_late": 12, "measured_against": "today", "complete": True, "handle": None,
+            "per_line": True, "lines_unmatched": 0, "lines": [
+                {"line": "PurchaseOrderLine:bc.x:L1", "label": "Line 1 · SECRET-ITEM",
+                 "state": "late", "promised_date": "2099-01-20", "days_late": 12,
+                 "matched_by": "item_code", "handle": line_shut},
+                {"line": "PurchaseOrderLine:bc.x:L2", "label": "Line 2 · Tube",
+                 "state": "not_due", "promised_date": "2099-02-09", "days_late": None,
+                 "matched_by": "description", "handle": OPEN}]}
+        full = mapper(View()).po(raw).eta.promise
+        self.assertEqual((full.state, full.days_late, full.promised_date, len(full.lines)),
+                         ("late", 12, "2099-01-20", 2))
+        self.assertEqual(full.lines[0].line.label, "Line 1 · SECRET-ITEM")
+        got = mapper(View(refused={line_shut})).po(raw)
+        m.PoTrail.model_validate(got.model_dump())
+        p = got.eta.promise
+        self.assertEqual([x.line.object_id for x in p.lines], ["PurchaseOrderLine:bc.x:L2"])
+        self.assertEqual(p.lines_hidden, 1)
+        # the roll-up was decided over the hidden line too: not stated to this reader
+        self.assertEqual((p.state, p.promised_date, p.days_late), ("undetermined", None, None))
+        self.assertFalse(p.complete)
+        body = p.model_dump_json()
+        for secret in ("SECRET-ITEM", "2099-01-20", "msg-line-secret", "L1"):
+            self.assertNotIn(secret, body)
+        # a document-level promise whose confirmation is refused or uncited: not stated
+        raw["vendor_promise"].update(per_line=False, lines=[], handle=SHUT)
+        self.assertIsNone(mapper(View(refused={SHUT})).po(raw).eta.promise)
+        raw["vendor_promise"]["handle"] = None
+        self.assertIsNone(mapper(View()).po(raw).eta.promise)
+        with self.assertRaises(Exception):
+            m.VendorPromise(link="confirmed", state="slipping")
+
     def test_the_materials_heading_counts_every_row_and_says_how_many_are_shown(self):
         def walk(n):
             return {"labels": {}, "rows": [

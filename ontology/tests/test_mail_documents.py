@@ -10,15 +10,19 @@ reach them per reader. No network, no credentials. Evidence: injected-transport.
 
 from __future__ import annotations
 
+import contextlib
 from contextlib import closing
 import datetime as dt
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import tempfile
 import unittest
 import unittest.mock
+import zipfile
 
 from integrations import graph_read
 from integrations.capture_mail import MailCapture, MailCaptureStore
@@ -63,6 +67,23 @@ class StaticPortal:
 
     def describe(self):
         return {"generation": "static", "relations": {}}
+
+
+def text_index(path):
+    """The document-text index of a store: its fields, chunks and every word instance
+    of its FTS table (``fts5vocab``)."""
+    with closing(sqlite3.connect(str(path))) as db:
+        db.execute("CREATE VIRTUAL TABLE temp.words USING fts5vocab(main, chunk_text, "
+                   "'instance')")
+        return {"fields": db.execute("SELECT * FROM text_fields ORDER BY field_id").fetchall(),
+                "chunks": db.execute("SELECT * FROM text_chunks ORDER BY chunk_id").fetchall(),
+                "words": db.execute("SELECT term, doc, col, offset FROM temp.words "
+                                    "ORDER BY 1, 2, 3, 4").fetchall()}
+
+
+def _die(*_args):
+    """A document worker that dies (``ontology.project_parallel._parse`` replaced)."""
+    os._exit(3)
 
 
 class MailDocumentsTests(unittest.TestCase):
@@ -326,6 +347,116 @@ class MailDocumentsTests(unittest.TestCase):
                                  expected.execute(query).fetchall())
             self.assertEqual(after.mode, "incremental")
             self.assertEqual(after.content_digest, cold["content_digest"])
+
+    def test_a_build_with_document_workers_equals_the_serial_one(self):
+        """Documents parsed (documentFields) and their mentions extracted by the build's
+        worker processes (``ontology.project_parallel.DocumentPool``): the generation, its
+        report and every table equal a serial build's, and so does what the build keeps
+        (the fields, readings and document memo files: same keys, same values). A worker
+        that dies leaves its documents to the build's own process: still equal."""
+        from integrations import captured_text
+        from ontology import document_fields
+        from ontology import project_incremental as inc
+        from ontology import project_parallel as par
+        from ontology.tests.test_project_incremental import tables
+        from ontology.text_index import store_text_index
+
+        steps = {"mentions": mentions.store_mention_links, "text_index": store_text_index}
+        pools = []
+        held = par.document_pool
+
+        @contextlib.contextmanager
+        def watched(count):
+            with held(count) as pool:
+                pools.append(pool)
+                yield pool
+
+        # Classified documents (a packing list, a freight quote, a proforma invoice), one
+        # of them also inside a zip (a container's member), over several messages.
+        from ontology.tests.test_document_fields import CONFIRMATION, QUOTE, SLIP, pdf
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as packed:
+            packed.writestr("slip.pdf", pdf(SLIP))
+        graph = FakeGraph()
+        for n, pages in enumerate((SLIP, QUOTE, CONFIRMATION, SLIP)):
+            graph.put(BOX_A, f"MSG-D{n}", f"CK-D{n}", subject=f"Documents {n}",
+                      body=f"Attached for PO10023{n}.",
+                      attachments=[file_attachment(f"ATT-D{n}", pdf(pages), f"doc{n}.pdf"),
+                                   file_attachment(f"ZIP-D{n}", archive.getvalue(),
+                                                   f"docs{n}.zip")])
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        capture = MailCaptureStore(root / "capture", clock=Clock())
+        self.addCleanup(capture.close)
+        api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+        run = MailCapture(capture, GraphMailReader(api, capture_audience()), CAPTURE,
+                          sleep=lambda s: None).run(SCOPE)
+        self.assertTrue(run["complete"], run)
+
+        def build(state, workers):
+            with MailCaptures(root / "capture", internal_domains=SCOPE.internal_domains) \
+                    as mail, \
+                    unittest.mock.patch.object(captured_text, "_CACHE",
+                                               captured_text._CACHE.empty()), \
+                    unittest.mock.patch.object(captured_text, "_MEMBER_READINGS",
+                                               captured_text._MEMBER_READINGS.empty()), \
+                    unittest.mock.patch.object(document_fields, "_FIELDS",
+                                               document_fields._FIELDS.empty()):
+                return inc.build_generation(
+                    state, self.compiled, {"portal_api": self.portal, "graph_mail": mail},
+                    clock=lambda: NOW, post_project=steps, workers=workers)
+
+        def kept(state):
+            out = {}
+            for name, query in (
+                    ("fields.sqlite", "SELECT key, code, value, used FROM fields"),
+                    ("readings.sqlite", "SELECT key, code, value, used FROM readings"),
+                    ("mentions.sqlite", "SELECT 'm', key, code, value, used FROM mentions "
+                                        "UNION ALL SELECT 't', key, code, value, used FROM texts "
+                                        "UNION ALL SELECT 'g', key, '', value, used FROM groups")):
+                with closing(sqlite3.connect(state / name)) as db:
+                    out[name] = sorted(db.execute(query).fetchall())
+            return out
+
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = build(Path(tmp) / "serial", 1)
+            expected = kept(Path(tmp) / "serial")
+            self.assertTrue(expected["fields.sqlite"])
+            self.assertTrue(expected["mentions.sqlite"])
+            with closing(sqlite3.connect(serial.store)) as db:   # typed documents, members too
+                self.assertEqual(dict(db.execute(
+                    "SELECT object_type, COUNT(*) FROM objects WHERE object_type IN "
+                    "('PackingSlip', 'ForwarderQuote', 'SupplierConfirmation') "
+                    "GROUP BY 1").fetchall()),
+                    {"PackingSlip": 10, "ForwarderQuote": 1, "SupplierConfirmation": 1})
+            small = unittest.mock.patch.multiple(par, MIN_PARSE_RECORDS=1, PARSE_CHUNK=1)
+            with small, unittest.mock.patch.multiple(mentions, MENTION_AHEAD=1,
+                                                     MENTION_TASK=1), \
+                    unittest.mock.patch.object(par, "document_pool", watched):
+                parallel = build(Path(tmp) / "parallel", 3)
+                pool = pools[-1]
+                self.assertGreater(pool.tasks, 1)
+                self.assertEqual((pool.fallback, pool.broken), (0, False))
+                # A source a worker opens again reading other bytes than the build pinned:
+                # its groups are read by the build itself.
+                spec = par._source_spec
+                with unittest.mock.patch.object(
+                        par, "_source_spec",
+                        lambda *a: (*spec(*a)[:-1], "another watermark")):
+                    drifted = build(Path(tmp) / "drifted", 3)
+                self.assertGreater(pools[-1].fallback, 0)
+                with unittest.mock.patch.object(par, "_parse", _die):
+                    died = build(Path(tmp) / "died", 3)
+                self.assertTrue(pools[-1].broken)
+            for generation, state in ((parallel, "parallel"), (drifted, "drifted"),
+                                      (died, "died")):
+                self.assertEqual(generation.content_digest, serial.content_digest)
+                self.assertEqual(generation.report,
+                                 {**serial.report, "store": str(generation.store)})
+                self.assertEqual(tables(generation.store), tables(serial.store))
+                self.assertEqual(text_index(generation.store), text_index(serial.store))
+                self.assertEqual(kept(Path(tmp) / state), expected, state)
 
     def test_a_file_reading_is_remembered_only_when_the_reading_memo_keeps_it(self):
         """``ontology.project.readings_remembered`` reads ``captured_text``'s memo keys: a
@@ -598,6 +729,43 @@ class MailDocumentsTests(unittest.TestCase):
                 continue
             if any(p["value_type"] == "identifier" for p in spec["properties"]):
                 self.assertIn(("Email", tid), declared, tid)
+
+
+class MailFreshnessTests(unittest.TestCase):
+    """The mail source's freshness facts (``MailCaptures.describe``): its last refresh is
+    the stalest run of a folder the capture reads; a folder left with a terminal reason
+    (no mailbox, not visible, forbidden) is a gap that keeps the source partial, never
+    its age (2026-11-02: 34 such folder rows held the source at a three-day-old run while
+    every readable folder had been read within the hour)."""
+
+    def test_a_terminal_folder_is_a_gap_never_the_age_of_the_source(self):
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            graph = FakeGraph()
+            graph.put(BOX_A, "MSG-1", "CK-1-1", body="PO100234", subject="Order")
+            graph.put(BOX_B, "MSG-B1", "CKB-1", body="PO100236", subject="Freight")
+            with closing(MailCaptureStore(state, clock=Clock())) as store:
+                api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
+                    sleep=lambda s: None, jitter=lambda: 0.0))
+                run = MailCapture(store, GraphMailReader(api, capture_audience()), CAPTURE,
+                                  sleep=lambda s: None).run(SCOPE)
+                self.assertTrue(run["complete"], run)
+                readable = min(r[0] for r in store.db.execute(
+                    "SELECT last_run_at FROM folders"))
+                for reason in ("not_visible", "forbidden,no_mailbox"):
+                    store.save_folder(BOX_B, f"gone-{reason}", status="incomplete",
+                                      reason=reason, last_run_at="2026-01-01T00:00:00Z")
+                # A readable folder the budget left unread for long still ages the source.
+                with MailCaptures(state, internal_domains=SCOPE.internal_domains) as mail:
+                    facts = mail.describe()["relations"]["messages"]
+                self.assertEqual(facts["last_refresh_at"], readable)
+                self.assertIsNone(facts["last_full_traversal_at"])     # partial: the gaps
+                store.save_folder(BOX_B, "behind", status="incomplete", reason="time_budget",
+                                  last_run_at="2026-02-01T00:00:00Z")
+                with MailCaptures(state, internal_domains=SCOPE.internal_domains) as mail:
+                    facts = mail.describe()["relations"]["messages"]
+                self.assertEqual(facts["last_refresh_at"], "2026-02-01T00:00:00Z")
 
 
 class MentionCorroborationTests(unittest.TestCase):

@@ -124,6 +124,14 @@
             ],
             "description": "A customer's profitability and why an order lost money, when the question asks it (optional: older clients ignore it)."
           },
+          "proposals": {
+            "description": "Follow-up drafts and proposed updates built from the answer's gated trail; never sent or applied.",
+            "items": {
+              "$ref": "#/components/schemas/Proposal"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
           "question": {
             "title": "Question",
             "type": "string"
@@ -326,6 +334,18 @@
             ],
             "title": "As Of"
           },
+          "checked_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While refreshing: when the checks left out last ran (ISO time).",
+            "title": "Checked On"
+          },
           "checks": {
             "items": {
               "$ref": "#/components/schemas/BriefingCheck"
@@ -445,6 +465,12 @@
           "rank_basis": {
             "title": "Rank Basis",
             "type": "string"
+          },
+          "refreshing": {
+            "default": false,
+            "description": "True while some checks' findings are of older data than the records now show: those are left out until the checks re-run on it.",
+            "title": "Refreshing",
+            "type": "boolean"
           },
           "routing_basis": {
             "title": "Routing Basis",
@@ -1077,8 +1103,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "cost_sources": {
             "items": {
@@ -1096,7 +1121,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Date"
           },
           "drivers": {
@@ -1128,8 +1152,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "margin_pct": {
             "anyOf": [
@@ -1140,7 +1163,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Margin Pct"
           },
           "order": {
@@ -1154,8 +1176,15 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
+          },
+          "why": {
+            "description": "The margin's why in one or two plain sentences, e.g. 'Item cost rose 36.4% (1.59 → 2.17 CAD/PCS) while the price was unchanged: −69.00 CAD against <order> (<date>).'; each a driver's own figures.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Why",
+            "type": "array"
           }
         },
         "required": [
@@ -1175,8 +1204,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "label": {
             "description": "The item, e.g. 'item FG-9 (Tube 50 ml)'.",
@@ -1191,8 +1219,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "quantity": {
             "anyOf": [
@@ -1203,7 +1230,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Quantity"
           },
           "revenue": {
@@ -1214,8 +1240,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "share_of_cost_pct": {
             "anyOf": [
@@ -1226,7 +1251,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Share Of Cost Pct"
           },
           "sources": {
@@ -1245,7 +1269,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Unit"
           },
           "unit_cost": {
@@ -1257,7 +1280,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Booked cost per unit, decimal string.",
             "title": "Unit Cost"
           },
@@ -1270,7 +1292,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Revenue per unit, decimal string.",
             "title": "Unit Price"
           }
@@ -1292,8 +1313,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "detail": {
             "anyOf": [
@@ -1304,12 +1324,12 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Detail"
           },
           "kind": {
             "enum": [
               "item_ledger",
+              "sage_cost_of_sales",
               "credit_memo",
               "return",
               "material_po",
@@ -1331,7 +1351,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "e.g. '$16.00 CAD/PCS goods cost'.",
             "title": "Per Unit"
           },
@@ -1537,6 +1556,37 @@
         "title": "DevLoginResponse",
         "type": "object"
       },
+      "DraftFigure": {
+        "additionalProperties": false,
+        "description": "One figure a proposal states (a PO number, a date, a line's quantity, a contact) and\nthe record or message it was read from; every one passed this reader's gate.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null only for the record's own label, which the page states."
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "DraftFigure",
+        "type": "object"
+      },
       "EntraConfig": {
         "additionalProperties": false,
         "properties": {
@@ -1620,6 +1670,17 @@
       "EtaCheck": {
         "additionalProperties": false,
         "properties": {
+          "promise": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VendorPromise"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The supplier's promise and the order (per line when the supplier promised each item its own date) against it; omitted when none is read or the reader can't open the confirmation."
+          },
           "source": {
             "anyOf": [
               {
@@ -1894,7 +1955,7 @@
                 "type": "null"
               }
             ],
-            "description": "Oldest capture an answer relies on (ISO).",
+            "description": "The data cut-off (ISO): the newest capture the served data holds, the same on every screen. A source read over a day before it is named in the label and keeps its own time in sources.",
             "title": "As Of"
           },
           "label": {
@@ -2354,6 +2415,19 @@
             "description": "Why the total is suspect (shown as a check, never as fact).",
             "title": "Amount Suspect"
           },
+          "confirmation": {
+            "anyOf": [
+              {
+                "const": "none_found",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "none_found: no supplier confirmation is linked to the order. Null: the list's entry does not say (the order's page decides it).",
+            "title": "Confirmation"
+          },
           "days_late": {
             "anyOf": [
               {
@@ -2678,6 +2752,18 @@
             "title": "At Risk",
             "type": "array"
           },
+          "checked_on": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "While refreshing: when the checks left out last ran (ISO time).",
+            "title": "Checked On"
+          },
           "hidden": {
             "anyOf": [
               {
@@ -2707,6 +2793,12 @@
             ],
             "description": "Every late purchase order this reader may see; late_pos lists the longest late of them.",
             "title": "Late Total"
+          },
+          "refreshing": {
+            "default": false,
+            "description": "True while some checks' findings are of older data than the records now show: those are left out until the checks re-run on it.",
+            "title": "Refreshing",
+            "type": "boolean"
           },
           "status": {
             "enum": [
@@ -2918,6 +3010,25 @@
             "description": "Omitted when no people plan answered for this record.",
             "title": "People"
           },
+          "profitability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Profitability"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A BC customer's or sales order's margin and why (the margin section)."
+          },
+          "proposals": {
+            "description": "Follow-up drafts and proposed updates built from this page's gated facts and trail; never sent or applied.",
+            "items": {
+              "$ref": "#/components/schemas/Proposal"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
           "related": {
             "items": {
               "$ref": "#/components/schemas/ObjectRef"
@@ -2995,6 +3106,143 @@
         "title": "ObjectRef",
         "type": "object"
       },
+      "ObjectSection": {
+        "additionalProperties": false,
+        "description": "One slow part of a record's page, read after the quick first read (``?quick=1``)\nand merged into it by the app: ``late`` (the late-PO check: ``status`` when it\nestablishes one, and ``late_lines``), ``people`` (people on the record),\n``landed_cost``, ``trail`` (how we know, with the page's ``not_found`` said against\nit), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged.",
+        "properties": {
+          "access_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Label"
+          },
+          "applies": {
+            "default": true,
+            "description": "False: this kind of record has no such section (nothing to show, nothing withheld).",
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "landed_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LandedCost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "late_lines": {
+            "items": {
+              "$ref": "#/components/schemas/LateLine"
+            },
+            "title": "Late Lines",
+            "type": "array"
+          },
+          "not_found": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/NotFound"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "trail: the page's not-found items said against the trail (replace the quick read's); omitted for the other sections.",
+            "title": "Not Found"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "people": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Person"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "People"
+          },
+          "profitability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Profitability"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "margin: a BC customer's margin and why, or a BC sales order's (its customer's, led by the order)."
+          },
+          "proposals": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Proposal"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "trail: the page's follow-up drafts and proposed updates, built from the record, its late lines and this trail (replace the quick read's); never sent or applied. Omitted for the other sections.",
+            "title": "Proposals"
+          },
+          "section": {
+            "enum": [
+              "late",
+              "people",
+              "landed_cost",
+              "trail",
+              "margin"
+            ],
+            "title": "Section",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ObjectStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "late: the record's status as the late-PO check established it (replaces the quick read's); omitted when it established none."
+          },
+          "trail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTrail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "object_id",
+          "section"
+        ],
+        "title": "ObjectSection",
+        "type": "object"
+      },
       "ObjectStatus": {
         "additionalProperties": false,
         "properties": {
@@ -3032,8 +3280,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "date": {
             "anyOf": [
@@ -3044,7 +3291,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Date"
           },
           "gap": {
@@ -3056,9 +3302,20 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Why no margin is stated, in words.",
             "title": "Gap"
+          },
+          "gap_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The first reason's code, e.g. COST_NOT_VALUED (BC holds no valid cost).",
+            "title": "Gap Code"
           },
           "margin": {
             "anyOf": [
@@ -3068,8 +3325,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "margin_pct": {
             "anyOf": [
@@ -3080,7 +3336,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Margin Pct"
           },
           "order": {
@@ -3094,8 +3349,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           }
         },
         "required": [
@@ -3300,6 +3554,111 @@
         "title": "PoTrail",
         "type": "object"
       },
+      "ProductMargin": {
+        "additionalProperties": false,
+        "description": "One item's margin over the customer's checked order lines of the period.",
+        "properties": {
+          "booked_cost": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "complete": {
+            "description": "False: an invoiced order without a checked margin carries the item, or not every order was read; the figures cover the checked orders only.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "item": {
+            "description": "The item, e.g. 'item FG-9 (Tube 50 ml)'.",
+            "title": "Item",
+            "type": "string"
+          },
+          "margin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "margin_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Pct"
+          },
+          "orders": {
+            "description": "Checked orders carrying the item.",
+            "minimum": 0.0,
+            "title": "Orders",
+            "type": "integer"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "unit_cost_range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lowest to highest booked unit cost over those orders.",
+            "title": "Unit Cost Range"
+          }
+        },
+        "required": [
+          "item",
+          "quantity",
+          "orders",
+          "complete"
+        ],
+        "title": "ProductMargin",
+        "type": "object"
+      },
       "Profitability": {
         "additionalProperties": false,
         "properties": {
@@ -3311,8 +3670,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "breakdown": {
             "anyOf": [
@@ -3322,8 +3680,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "customer": {
             "$ref": "#/components/schemas/ObjectRef"
@@ -3336,8 +3693,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "margin_basis": {
             "default": "on item cost only",
@@ -3354,7 +3710,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "The plain line saying what the margin basis leaves out.",
             "title": "Margin Note"
           },
@@ -3367,7 +3722,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Margin Pct"
           },
           "next_action": {
@@ -3379,7 +3733,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "A suggested next step from the facts only."
           },
           "orders": {
@@ -3392,19 +3745,19 @@
           },
           "orders_counted": {
             "description": "Orders whose margin is complete; the totals cover these only.",
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Orders Counted",
             "type": "integer"
           },
           "orders_excluded": {
             "default": 0,
             "description": "Orders of the period not yet invoiced: excluded, never blocking.",
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Orders Excluded",
             "type": "integer"
           },
           "orders_in_period": {
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Orders In Period",
             "type": "integer"
           },
@@ -3417,14 +3770,14 @@
           "orders_more": {
             "default": 0,
             "description": "Orders read but not listed (the list stops at 30).",
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Orders More",
             "type": "integer"
           },
           "orders_read": {
             "default": 0,
             "description": "Orders read; fewer than orders_in_period means no customer total is stated.",
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Orders Read",
             "type": "integer"
           },
@@ -3442,7 +3795,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "How an order counts in the period.",
             "title": "Period Basis"
           },
@@ -3454,6 +3806,14 @@
             "title": "Period Start",
             "type": "string"
           },
+          "products": {
+            "description": "Margin per item over the checked orders, worst first.",
+            "items": {
+              "$ref": "#/components/schemas/ProductMargin"
+            },
+            "title": "Products",
+            "type": "array"
+          },
           "ranking": {
             "anyOf": [
               {
@@ -3463,7 +3823,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "What the ranking covers, e.g. 'partial: worst of the 60 most recent orders; 214 more in the period not read'.",
             "title": "Ranking"
           },
@@ -3475,8 +3834,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null
+            ]
           },
           "test_records_hidden": {
             "anyOf": [
@@ -3503,14 +3861,13 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "Stated only when every invoiced order of the period has a checked margin; null otherwise.",
             "title": "Verdict"
           },
           "withheld_orders": {
             "default": 0,
             "description": "Orders whose figures you may not read: a count only, never named.",
-            "minimum": 0,
+            "minimum": 0.0,
             "title": "Withheld Orders",
             "type": "integer"
           }
@@ -3524,6 +3881,266 @@
           "orders_counted"
         ],
         "title": "Profitability",
+        "type": "object"
+      },
+      "PromiseLine": {
+        "additionalProperties": false,
+        "description": "One order line the supplier promised its own date, matched on firm evidence (the\nline's item code or description), with its verdict against that date.",
+        "properties": {
+          "days_late": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Days past the supplier's promised date (late only).",
+            "title": "Days Late"
+          },
+          "line": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "matched_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the confirmation's item was matched to the line: item_code or description.",
+            "title": "Matched By"
+          },
+          "promised_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promised Date"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The confirmation that promised the line its date."
+          },
+          "state": {
+            "description": "Against the supplier's date for this line: late (open past it), not_due, on_time, received (its receipt date unread), undetermined, or not_judged (a lead).",
+            "enum": [
+              "late",
+              "on_time",
+              "not_due",
+              "received",
+              "undetermined",
+              "not_judged"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line",
+          "state"
+        ],
+        "title": "PromiseLine",
+        "type": "object"
+      },
+      "Proposal": {
+        "additionalProperties": false,
+        "description": "A follow-up draft (email text the person edits, copies or opens in their own mail\nclient) or a proposed record update. Never sent and never applied by the Workbench.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The draft text; every date and figure in it is one of ``figures``.",
+            "title": "Body"
+          },
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProposedChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the address was found, or that no contact was found.",
+            "title": "Contact Note"
+          },
+          "email_subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Subject"
+          },
+          "figures": {
+            "items": {
+              "$ref": "#/components/schemas/DraftFigure"
+            },
+            "title": "Figures",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "vendor_chase",
+              "customer_heads_up",
+              "record_update"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "description": "What the draft could not state from the records, in words.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "sent": {
+            "const": false,
+            "default": false,
+            "description": "Always false: the Workbench never sends or writes; the person does.",
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ObjectRef"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The recipient's address, only when a cited source this reader may open states it and the people directory clears it; null when unknown.",
+            "title": "To"
+          },
+          "to_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Name"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "subject"
+        ],
+        "title": "Proposal",
+        "type": "object"
+      },
+      "ProposedChange": {
+        "additionalProperties": false,
+        "description": "A record field the evidence shows is out of date: before, after and why. The person\napplies it in the system named; the Workbench writes nothing.",
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "string"
+          },
+          "before": {
+            "title": "Before",
+            "type": "string"
+          },
+          "before_source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/Source",
+            "description": "The message or document that states the new value."
+          },
+          "field": {
+            "description": "The field, in words, e.g. 'Expected receipt date'.",
+            "title": "Field",
+            "type": "string"
+          },
+          "record": {
+            "description": "The record to change, e.g. 'PO 90412'.",
+            "title": "Record",
+            "type": "string"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "record",
+          "field",
+          "before",
+          "after",
+          "before_source",
+          "evidence",
+          "why"
+        ],
+        "title": "ProposedChange",
         "type": "object"
       },
       "RecentQuestion": {
@@ -4239,6 +4856,138 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "VendorPromise": {
+        "additionalProperties": false,
+        "description": "The order against the date the supplier promised, beside our requested-by verdict\nand never in its place. ``link`` confirmed: a firm link joins the confirmation to the\norder; unconfirmed_link: a lead whose dates are stated and never judged.",
+        "properties": {
+          "complete": {
+            "default": true,
+            "description": "False: a later promise this reader cannot see may exist.",
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "days_late": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Days past the supplier's promised date (late only).",
+            "title": "Days Late"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/PromiseLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "lines_hidden": {
+            "default": 0,
+            "description": "Promised lines whose confirmation this reader can't open: counted, never named.",
+            "minimum": 0.0,
+            "title": "Lines Hidden",
+            "type": "integer"
+          },
+          "lines_unmatched": {
+            "default": 0,
+            "description": "Open lines no promise matched.",
+            "minimum": 0.0,
+            "title": "Lines Unmatched",
+            "type": "integer"
+          },
+          "link": {
+            "enum": [
+              "confirmed",
+              "unconfirmed_link"
+            ],
+            "title": "Link",
+            "type": "string"
+          },
+          "measured_against": {
+            "anyOf": [
+              {
+                "enum": [
+                  "today",
+                  "received"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "today: the order is open; received: its last receipt.",
+            "title": "Measured Against"
+          },
+          "per_line": {
+            "default": false,
+            "description": "The supplier promised each item its own date; lines lists the matched lines.",
+            "title": "Per Line",
+            "type": "boolean"
+          },
+          "promised_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promised Date"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The confirmation that states the promised date."
+          },
+          "state": {
+            "enum": [
+              "late",
+              "on_time",
+              "not_due",
+              "received",
+              "undetermined",
+              "not_judged"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link",
+          "state"
+        ],
+        "title": "VendorPromise",
+        "type": "object"
+      },
+      "VerdictEvent": {
+        "additionalProperties": false,
+        "description": "The answer's first line, sent the moment the answer gate accepts it (before the\nfull answer): only what that decision passed, every citation decided for the reader.",
+        "properties": {
+          "text": {
+            "maxLength": 400,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "VerdictEvent",
+        "type": "object"
       }
     }
   },
@@ -4287,12 +5036,15 @@
                     },
                     "understanding": {
                       "$ref": "#/components/schemas/UnderstandingEvent"
+                    },
+                    "verdict": {
+                      "$ref": "#/components/schemas/VerdictEvent"
                     }
                   }
                 }
               }
             },
-            "description": "Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent), sources (SourcesEvent), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last)."
+            "description": "Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent: a plain-words progress step), sources (SourcesEvent), verdict (VerdictEvent: the answer's first line once the answer gate accepts it), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last)."
           },
           "401": {
             "content": {
@@ -4829,6 +5581,94 @@
         "summary": "Me",
         "tags": [
           "identity"
+        ]
+      }
+    },
+    "/api/object-section/{section}/{object_type}/{object_id}": {
+      "get": {
+        "description": "One slow section of a record's page (late check, people, landed cost, how we\nknow), read after its quick first read and merged into it. Not found reads the\nsame as a record the reader cannot see.",
+        "operationId": "object_section_api_object_section__section___object_type___object_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "section",
+            "required": true,
+            "schema": {
+              "enum": [
+                "late",
+                "people",
+                "landed_cost",
+                "trail",
+                "margin"
+              ],
+              "title": "Section",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_type",
+            "required": true,
+            "schema": {
+              "title": "Object Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectSection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Object Section",
+        "tags": [
+          "object"
         ]
       }
     },

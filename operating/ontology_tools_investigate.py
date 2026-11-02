@@ -143,11 +143,20 @@ count.
 whose inputs are not computed travels with the inputs only it uses, an entry no computed entry
 uses travels alone (in an answer with computed entries; one with none is never paged); every
 other entry (common inputs, a value computed from computed entries such as a total over all of
-them) repeats on every page, as do the gaps and conflicts. When those alone leave no room for
+them) repeats on every page. The first page also lists the gaps, plan trace and follow-ups whole;
+a later page says ``gaps_on_page`` 1 instead (``_later_page``). A conflict is listed on the
+page of the entries citing its records, and also on the first page when its precedence did
+not resolve it or no entry cites it (``_page_conflicts``), so a long answer (dev F29 price history: 74 pages
+when every page repeated them) takes few pages: the answer-level values and the first rows on
+page 1, the rest of the rows after it. When those on the first page leave no room for
 the widest unit, the conflicts no answer entry cites are dropped, last first, once for the
 whole answer (``_make_room``), and ``_fit`` drops them before any entry loses its cells; then
 the rest, last first, after the gap details. Every drop is stated: a ``conflicts_truncated``
-gap says how many conflicts are not shown (the answer is then cut: ``result_too_large``). A unit too large
+gap says how many conflicts are not shown (the answer is then cut: ``result_too_large``). When even so no page holds the widest unit, the plan trace and then the gap list are
+halved (``_summarise_gaps``: at least ``MIN_GAPS_KEPT`` gaps and every gap a follow-up records
+stay; one ``gaps_truncated`` gap counts the rest by reason): such an answer is never refused.
+An entry wider than any page even then is a page of its own whose working ``_squeeze`` drops
+(steps, basis, inputs; ``inputs_cut``), never its value, check or citation. A unit too large
 for any page alone (even as trimmed) is split
 across consecutive pages in its order (the computed entry first), never dropped. ``answer_page`` states page of
 pages, ``completeness`` is truncated on every page (``answer_paged`` unless the run itself was
@@ -165,7 +174,7 @@ and draft records (workbench-internal actions through ``ActionPath.execute_inter
 none, nothing sent), each citing what the answer showed its reader about the gap; the
 ``follow_ups`` option does it in the same call on a host that gives a recorder
 (``follow_up_recorder``), from the whole answer before paging, so its entries (each citing its
-gaps by index) fit every page. Such a host lists the tool as a writer (``readOnlyHint``
+gaps by index) fit the first page, which lists the gaps. Such a host lists the tool as a writer (``readOnlyHint``
 false, as the contract's ``read_only``); a host without one lists it read-only and refuses the
 option (``tool_specs``). A gap
 about the host's own state (``HOST_STATE_REASONS``) is never a follow-up.
@@ -217,7 +226,7 @@ from .explanations import FRESHNESS_SOURCES
 from .ontology_tools import (_AUDIENCE_SOURCE, _IDENTITY_TIERS, _ITEM_ACL_AUDIENCES, REFUSED_CODES,
                              ROOT_REASONS, SchemaView, identity_link_type,
                              _compare_key, _envelope_bytes, _fingerprint, _inline_defs,
-                             default_grammar, default_schema, load_contracts, plan_read,
+                             default_grammar, default_schema, load_contracts, plan_read, run_memo,
                              scoped_kind, scoped_root_lead)
 from .ontology_tools_traverse import (DEFAULT_TIER_FLOOR, PERMISSION_LOSSES, TIER_ORDER,
                                       WITHHELD, navigation_hops)
@@ -435,6 +444,52 @@ def _bindings_of(schema: SchemaView, type_id: str) -> set[str]:
     return {b.get("id") for b in schema.object_types.get(type_id, {}).get("bindings") or ()}
 
 
+DIRECTIONS = {"up": "went up", "down": "went down", "flat": "stayed flat"}
+MAX_SAID_CHARS = 400
+
+
+def say_direction(entries: list[dict[str, Any]]) -> None:
+    """Give each computed direction entry of an engine's ``entries`` (value ``up``,
+    ``down`` or ``flat`` over two inputs, the later and the earlier value, both entries
+    with a value) its sentence in words as its first step: ``in words: went up by 4.2%
+    from 12.14 to 12.65``, the percent the computed ``*_change_percent`` entry over the
+    same inputs gives (none: no percent is said). The answer states it beside the two
+    cited values (the reply screen backs the percent only as their change,
+    ``answer_gate.change_backed``). Any other entry is left as it is; nothing is
+    computed here."""
+    by_name = {e.get("name"): e for e in entries if isinstance(e, dict)}
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("kind") != "computed" \
+                or not isinstance(entry.get("value"), str) or entry["value"] not in DIRECTIONS:
+            continue
+        inputs = [by_name.get(name) for name in entry.get("inputs") or ()]
+        if len(inputs) != 2 or any(i is None or i.get("value") in (None, "") for i in inputs):
+            continue
+        later, earlier = (_number(i.get("value")) for i in inputs)
+        if later is None or earlier is None:
+            continue   # only figures are said in the Workbench's words, never source text
+        change = next((e.get("value") for e in entries if isinstance(e, dict)
+                       and e is not entry and e.get("kind") == "computed"
+                       and str(e.get("name", "")).endswith("_change_percent")
+                       and list(e.get("inputs") or ()) == list(entry.get("inputs") or ())
+                       and e.get("value") is not None), None)
+        change = _number(change)
+        by = "" if change is None or entry["value"] == "flat" else f" by {change.lstrip('-+')}%"
+        said = (f"in words: {DIRECTIONS[entry['value']]}{by} from {earlier} to {later}; "
+                "state it so beside the two cited values")[:MAX_SAID_CHARS]
+        entry["steps"] = [said, *[step for step in entry.get("steps") or ()
+                                  if not str(step).startswith("in words: ")]][:MAX_STEPS]
+
+
+MAX_STEPS = 40   # a computed entry's steps (the contract's maxItems)
+
+
+def _number(value: Any) -> str | None:
+    """A plain decimal figure as written (``12.14``), else None (text, an envelope)."""
+    return value if isinstance(value, str) and re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value) \
+        else str(value) if type(value) is int else None
+
+
 def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     """The Workbench engines a plan's ``compute`` evidence may name."""
     from .commercial_chain import PLAN_ENGINES as CHAIN
@@ -446,9 +501,10 @@ def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     from .order_margin import PLAN_ENGINES as MARGIN
     from .people_graph import PLAN_ENGINES as PEOPLE
     from .price_history import PLAN_ENGINES as PRICES
+    from .sage_order_margin import PLAN_ENGINES as SAGE_MARGIN
     from .vendor_terms import PLAN_ENGINES as VENDOR_TERMS
     return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT, **LOT, **PEOPLE,
-            **PRICES, **VENDOR_TERMS}
+            **PRICES, **SAGE_MARGIN, **VENDOR_TERMS}
 
 
 def check_plan(doc: Mapping[str, Any], schema: SchemaView | None,
@@ -1146,6 +1202,11 @@ class InvestigateTools:
                    timer=self.timer)
         if "time_budget_ms" in arguments:
             run.deadline = run.timer() + int(arguments["time_budget_ms"]) / 1000.0
+        with run_memo():   # one reader, one policy: its decisions kept for the run
+            return self._run(run, plan, arguments, actor, cursor)
+
+    def _run(self, run: _Run, plan: Plan, arguments: Mapping[str, Any], actor: Actor,
+             cursor: Any) -> dict[str, Any]:
         roots = self._resolve_root(run, arguments["root"])
         if roots == "no_plan":
             return self._checked(self._no_plan(arguments, actor, run))
@@ -2615,6 +2676,7 @@ class InvestigateTools:
                 run.add_gap(_gap("unknown", "input_person_corrected", entry["name"],
                                  f"computed from {', '.join(used)}, which a person corrected; "
                                  "this engine re-reads the cited source and uses its value"))
+        say_direction(entries)
         if item.get("required") and not any(e["name"] == item["name"] and e["value"] is not None
                                             for e in entries):
             run.reason(f"missing_{item['name']}")
@@ -2906,13 +2968,17 @@ class InvestigateTools:
                           "ask again without cursor")
         self._make_room(out, shared, units)
         bounds = self._bounds(out, shared, units, start)
-        if bounds is None:
-            return _too_large()
+        if bounds is None and self._summarise_gaps(out, shared, units):
+            bounds = self._bounds(out, shared, units, start)
+        if bounds is None:   # an entry wider than any page: one page each, working dropped
+            bounds = [(at, at + 1) for at in range(start, sum(map(len, units)))] or [(0, 0)]
         if page == 1 and len(bounds) == 1:
             out["answer"] = answer[:MAX_ANSWER]
             return self._fit(out)
         first, end = bounds[0]
         kept = {id(e) for e in shared} | {id(e) for e in flat[first:end]}
+        out["conflicts"] = _page_conflicts(out, [e for e in answer if id(e) in kept],
+                                           page == 1)
         out["answer"] = [e for e in answer if id(e) in kept][:MAX_ANSWER]
         cited = {(e["citation"]["l1_handle"], e["citation"]["field_path"])
                  for e in out["answer"] if e.get("citation")}
@@ -2921,18 +2987,71 @@ class InvestigateTools:
         pages = page + len(bounds) - 1
         out["answer_page"] = {"page": page, "pages": pages, "returned": len(out["answer"]),
                               "total": len(answer)}
+        if page > 1:
+            _later_page(out)
+            out["answer_page"]["gaps_on_page"] = 1
         out["completeness"] = dict(
             out["completeness"], complete=False, truncated=True,
             reason=out["completeness"].get("reason") or "answer_paged",
             next_cursor=_write_cursor(page + 1, end, digest, _question(arguments, actor))
             if end < len(flat) else None)
-        return self._fit(out)
+        return self._squeeze(self._fit(out))
+
+    def _summarise_gaps(self, out: dict[str, Any], shared: list[dict[str, Any]],
+                        units: list[list[dict[str, Any]]]) -> bool:
+        """Room for the widest unit when what every page repeats leaves none (dev F29
+        item_lineage: 50 gaps filled every page and the answer was refused): the plan trace,
+        then the gap list halved (never below ``MIN_GAPS_KEPT`` gaps nor past a gap a
+        follow-up records), the dropped gaps counted by reason in one ``gaps_truncated``
+        gap, until the widest unit fits a page alone or nothing is left to cut. Whether
+        anything was cut (the answer is then cut: ``result_too_large``)."""
+        held = max((i for item in out.get("follow_ups") or () for i in item["gaps"]),
+                   default=-1)
+        widest = max(units, key=lambda u: _envelope_bytes({"a": u}), default=[])
+        dropped: Counter[str] = Counter()
+        changed = False
+        while not self._trims_to_fit(dict(base := _page_base(out, shared), conflicts=_beside(
+                out, base, widest)), list(widest)):
+            gaps = [g for g in out.get("gaps") or () if g.get("reason") != GAPS_CUT]
+            keep = max(len(gaps) // 2, held + 1, MIN_GAPS_KEPT)
+            if len(out.get("trace") or ()) > 8:
+                out["trace"] = out["trace"][: len(out["trace"]) // 2]
+            elif keep < len(gaps):
+                dropped.update(str(g.get("reason")) for g in gaps[keep:])
+                out["gaps"] = gaps[:keep] + [_gaps_cut_note(dropped)]
+            else:
+                break
+            changed = True
+        if changed:
+            out["completeness"] = dict(
+                out["completeness"], complete=False, truncated=True,
+                reason=out["completeness"].get("reason") or "result_too_large")
+        return changed
+
+    def _squeeze(self, out: dict[str, Any]) -> dict[str, Any]:
+        """A page ``_fit`` left over the bound (one entry wider than any page): the working
+        of its widest entries (``steps``, ``basis``, ``inputs``) dropped, widest first, until
+        it fits; the value, its check and citation stay, and the entry says ``inputs_cut``."""
+        for entry in sorted(out["answer"], key=lambda e: -_envelope_bytes({"a": [e]})):
+            if _envelope_bytes(out) <= self.page_cap:
+                break
+            if not any(key in entry for key in ("steps", "basis", "inputs")):
+                continue
+            for key in ("steps", "basis", "inputs"):
+                entry.pop(key, None)
+            entry["inputs_cut"] = True
+            out["completeness"] = dict(
+                out["completeness"], complete=False, truncated=True,
+                reason=out["completeness"].get("reason") or "result_too_large")
+        return out
 
     def _bounds(self, out: Mapping[str, Any], shared: list[dict[str, Any]],
                 units: list[list[dict[str, Any]]], start: int) -> list[tuple[int, int]] | None:
         """Ranges of the pages from ``start``, as positions in the units' entries laid end
         to end (what a cursor names, so a page starts exactly where the previous ended):
-        each as many whole units as fit beside the shared entries and the rest of the
+        each as many whole units as fit beside what the page repeats (the first page: the
+        shared entries, gaps, conflicts, trace and follow-ups; a later page: the shared
+        entries and the conflicts its entries cite, ``_later_page``) and the rest of the
         result (chain and values, which ``_fit`` trims, left out); a unit that fits no
         page alone even as ``_fit`` trims it (or the rest of one a previous page began) is
         split across consecutive pages in its order, as many of its entries on each as fit
@@ -2940,12 +3059,18 @@ class InvestigateTools:
         even alone beside the shared entries and trimmed: the answer is too large, refused
         before any page rather than a page over the bound."""
         cap = self.page_cap
-        base = _page_base(out, shared)
-        fixed = _envelope_bytes(base)
+        frames = {True: _page_base(out, shared), False: _later_base(out, shared)}
+        sizes = {key: _envelope_bytes(base) for key, base in frames.items()}
 
-        def cost(entries: list[dict[str, Any]]) -> int:
-            return (_envelope_bytes(dict(base, answer=list(shared) + entries)) - fixed
-                    + _ENTRY_SLACK * len(entries))
+        def cost(head: bool, entries: list[dict[str, Any]]) -> int:
+            base = frames[head]
+            return (_envelope_bytes(dict(base, answer=list(shared) + entries,
+                                         conflicts=_beside(out, base, entries)))
+                    - sizes[head] + _ENTRY_SLACK * len(entries))
+
+        def fits(head: bool, entries: list[dict[str, Any]]) -> bool:
+            return self._trims_to_fit(dict(frames[head], conflicts=_beside(
+                out, frames[head], entries)), entries)
 
         segments: list[tuple[int, list[dict[str, Any]]]] = []  # (first position, entries)
         position = 0
@@ -2955,24 +3080,31 @@ class InvestigateTools:
                 segments.append((position + skip, unit[skip:]))
             position += len(unit)
         bounds: list[tuple[int, int]] = []
-        first, size, count = start, fixed, len(shared)
+        head = start == 0   # the first page lists what later pages leave to it
+        first, size, count = start, sizes[head], len(shared)
+
+        def turn(at: int) -> None:
+            nonlocal first, size, count, head
+            bounds.append((first, at))
+            head = False
+            first, size, count = at, sizes[head], len(shared)
+
         for at, entries in segments:
-            whole = cost(entries)
+            whole = cost(head, entries)
             if at > first and (size + whole > cap or count + len(entries) > MAX_ANSWER):
-                bounds.append((first, at))
-                first, size, count = at, fixed, len(shared)
-            if (size + whole <= cap or at == first and self._trims_to_fit(base, entries)) \
+                turn(at)
+                whole = cost(head, entries)
+            if (size + whole <= cap or at == first and fits(head, entries)) \
                     and count + len(entries) <= MAX_ANSWER:
                 size += whole
                 count += len(entries)
                 continue
             for offset, entry in enumerate(entries):  # fits no page alone: split it
-                one = cost([entry])
+                one = cost(head, [entry])
                 if at + offset > first and (size + one > cap or count + 1 > MAX_ANSWER):
-                    bounds.append((first, at + offset))
-                    first, size, count = at + offset, fixed, len(shared)
-                if at + offset == first and size + one > cap \
-                        and not self._trims_to_fit(base, [entry]):
+                    turn(at + offset)
+                    one = cost(head, [entry])
+                if at + offset == first and size + one > cap and not fits(head, [entry]):
                     return None  # not even alone and trimmed: no page can hold it
                 size += one
                 count += 1
@@ -3361,12 +3493,54 @@ def _api_row(handle: Any) -> tuple[str, tuple[tuple[str, str], ...]] | None:
     return relation, _plain_key(key)
 
 
+def _beside(out: Mapping[str, Any], base: Mapping[str, Any],
+            entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The conflicts of a page of ``base`` with ``entries`` added: its own and those the
+    entries cite (``_page_conflicts``), each once, in the answer's order."""
+    held = {id(c) for c in base["conflicts"]} | {id(c) for c in _page_conflicts(
+        out, entries, False)}
+    return [c for c in out.get("conflicts") or () if id(c) in held]
+
+
+def _later_page(out: dict[str, Any]) -> None:
+    """A page after the first: the gaps, the plan trace and the follow-ups are listed whole
+    on the first page only (``answer_page.gaps_on_page``), so the later pages hold the rest
+    of the rows rather than the same notes again."""
+    out["gaps"] = []
+    out.pop("trace", None)
+    out.pop("follow_ups", None)
+
+
+def _page_conflicts(out: Mapping[str, Any], entries: Sequence[Mapping[str, Any]],
+                    first: bool) -> list[dict[str, Any]]:
+    """The conflicts of ``out`` a page of ``entries`` lists, in their order: those on a
+    record one of its entries cites (a conflict travels with the values it questions); the
+    first page also every conflict its declared precedence did not resolve (no trusted
+    value: it qualifies the whole answer, so a reader of page 1 alone sees it) and those on
+    no record an entry of the whole answer (``out["answer"]``) cites."""
+    on = {_cite_key(e.get("citation")) for e in entries} - {None}
+    anywhere = {_cite_key(e.get("citation")) for e in out["answer"]} - {None}
+    return [c for c in out.get("conflicts") or ()
+            if on & _conflict_cites(c) or first and (
+                not (c.get("resolution") or {}).get("trusted")
+                or not anywhere & _conflict_cites(c))]
+
+
+def _later_base(out: Mapping[str, Any], shared: list[dict[str, Any]]) -> dict[str, Any]:
+    """What every page after the first holds whatever its units (``_later_page``)."""
+    base = dict(_page_base(out, shared), conflicts=_page_conflicts(out, shared, False))
+    _later_page(base)
+    base["answer_page"] = dict(base["answer_page"], gaps_on_page=1)
+    return base
+
+
 def _page_base(out: Mapping[str, Any], shared: list[dict[str, Any]]) -> dict[str, Any]:
     """What every page of ``out`` holds whatever its units: the shared entries, the gaps,
     conflicts and the rest, with page numbers and a cursor as wide as any real one (chain
     and values, which ``_fit`` trims, left out)."""
     widest = 10 ** 6
     return dict(out, answer=list(shared), values=[], chain={"objects": [], "edges": []},
+                conflicts=_page_conflicts(out, shared, True),
                 answer_page=dict.fromkeys(("page", "pages", "returned", "total"), widest),
                 completeness=dict(out["completeness"], complete=False, truncated=True,
                                   reason=out["completeness"].get("reason") or "answer_paged",
@@ -3374,6 +3548,16 @@ def _page_base(out: Mapping[str, Any], shared: list[dict[str, Any]]) -> dict[str
 
 
 CONFLICTS_CUT = "conflicts_truncated"
+GAPS_CUT = "gaps_truncated"
+MIN_GAPS_KEPT = 10  # gaps a page always lists whole (beyond them, the gaps_truncated note)
+
+
+def _gaps_cut_note(dropped: Counter[str]) -> dict[str, Any]:
+    """The gap that stands for the gaps no page has room for: how many, by reason."""
+    reasons = ", ".join(f"{reason} x{count}" for reason, count in dropped.most_common())
+    return {"state": "unknown", "reason": GAPS_CUT, "subject": "gaps",
+            "detail": (f"{sum(dropped.values())} further gap(s) are not listed, so the answer "
+                       f"fits one response: {reasons}")[:600]}
 _CUT_DETAIL = re.compile(r"^([0-9]+) ")
 
 
@@ -3884,12 +4068,17 @@ def _with_captured_row(runtime: Any, view: Any, handle: str, actor: Actor) -> An
 
 
 def gate_rows(rows: Callable[[str, Actor], Mapping[str, Any] | None] | None, actor: Actor,
-              as_known_at: str | None = None) -> Callable[[str], Mapping[str, Any] | None]:
+              as_known_at: str | None = None, *, moved_on: bool = False
+              ) -> Callable[[str], Mapping[str, Any] | None]:
     """``check_items``'s ``rows`` for one reader over a row reader (``citation_rows``): any
     refusal is no row, and a changed-since view (a superseded mirror or BC capture
     revision, a live record that moved) keeps no row unless ``as_known_at`` falls before
     its supersession (``_superseded_by``): that revision was current then, the answer's
-    own, and its row is checked as usual. None ``as_known_at``: now."""
+    own, and its row is checked as usual. None ``as_known_at``: now. ``moved_on`` (the
+    answer gate's re-read, now): a view that keeps no row carries it as ``revision``, read
+    only by the claim gate's moved-on check (``claim_checks._moved_on``: the same cited
+    value on the source's current revision passes there, citing it); a plan's own checks
+    keep a superseded revision changed since."""
     def read(handle: str) -> Mapping[str, Any] | None:
         try:
             view = rows(handle, actor)  # type: ignore[misc]
@@ -3900,8 +4089,12 @@ def gate_rows(rows: Callable[[str, Actor], Mapping[str, Any] | None] | None, act
         if _superseded_by(view, as_known_at):
             # A revision the source moved past before the answer's moment: the
             # projection is behind its capture, so the value is not the answer's.
-            return {"citation": handle, "status": "changed_since", "changed_since": True,
-                    "current_citation": view.get("current_citation")}
+            # For the answer gate its row stays only as ``revision``, read by nothing but
+            # the moved-on check (``claim_checks._moved_on``: the cited cell holds the
+            # same value on the current revision, else refused); no other check sees it.
+            stale = {"citation": handle, "status": "changed_since", "changed_since": True,
+                     "current_citation": view.get("current_citation")}
+            return {**stale, "revision": dict(view)} if moved_on else stale
         return {**view, "changed_since": False}
     return read
 
@@ -3987,10 +4180,19 @@ def capture_claims(tools: Any) -> Callable[[str, str, Actor], bool | None]:
     a BC record (None). Read as ``plx.process`` reads it (``_scope_claims`` /
     ``_claim_cause``, no anchored claim: a per-record read never proves a whole set). A claim
     is no grant: None unless the policy (as set for the call) lets ``actor`` read that unit
-    (``bc:<company>/<relation>``) at every store marking, so a hidden record never becomes a
-    confident absence."""
+    (``bc:<company>/<relation>``) and every marking a record of it can carry, so a hidden
+    record never becomes a confident absence. A record's version carries exactly its type's
+    markings (``ontology/project.py``), so those are the markings of every object type bound
+    to the relation; a relation no type binds proves nothing (None). Markings on properties
+    hide values, never records: a plan reading one checks it itself."""
     from types import SimpleNamespace
     from .ontology_tools_process import _INCOMPLETE, ProcessTools, _scope_claims
+
+    def record_markings(relation: str) -> set[str] | None:
+        bound = [spec for spec in tools.schema.object_types.values()
+                 if any(b.get("source") == "bc" and b.get("relation") == relation
+                        for b in spec.get("bindings") or ())]
+        return {m for spec in bound for m in spec.get("markings") or ()} if bound else None
 
     def captured(relation: str, root_id: str, actor: Actor) -> bool | None:
         with tools.store.lock:
@@ -4000,8 +4202,9 @@ def capture_claims(tools: Any) -> Callable[[str, str, Actor], bool | None]:
         if row is None or not str(row["audience_key"]).startswith("bc:"):
             return None
         unit = f"{str(row['audience_key']).partition('/')[0]}/{relation}"
-        if not (tools.policy.may_read(actor, unit)
-                and set(store_ddl.MARKINGS) <= tools.policy.held_markings(actor)):
+        marks = record_markings(relation)
+        if marks is None or not (tools.policy.may_read(actor, unit)
+                                 and marks <= tools.policy.held_markings(actor)):
             return None
         if any(f.get("stale") for f in tools._freshness(store_meta, ("bc",))):
             return False

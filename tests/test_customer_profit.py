@@ -289,6 +289,49 @@ class CustomerProfitTests(unittest.TestCase):
                                          "Central (cost not valued) so their margin can be "
                                          "stated.")
 
+    def test_a_projection_wide_caveat_never_makes_an_uninvoiced_order_block(self):
+        """Live repro (2026-11-02): every F10 run on the live projection carries a
+        projection-wide ``schema_drift`` gap; it was taken as the order's own gap, so draft
+        orders with nothing invoiced read "only partly invoiced" and blocked the verdict of
+        every customer. A caveat of the projection is never an order's gap."""
+        def call(name, arguments):
+            result = self.world.call(name, arguments)
+            if name == "plx.investigate" and arguments.get("family") == cp.MARGIN_FAMILY:
+                result = {**result, "gaps": list(result.get("gaps") or ()) + [{
+                    "reason": "schema_drift", "subject": "projection",
+                    "detail": "the projection was built from another schema version"}]}
+            return result
+        got = cp.profitability(call, self.world.customer("C-50"), today=TODAY)
+        totals = got["totals"]
+        self.assertEqual((totals["excluded"], totals["blocking"]), (["SO-104"], []))
+        self.assertEqual(totals["margin"], Decimal("-41"))
+
+    def test_a_capture_label_of_another_file_never_makes_an_uninvoiced_order_block(self):
+        """Live repro (gen 7, 1-Shoppe): the host labels every later result of a session
+        with the SharePoint files it served before (``as_of_capture``); on one draft order's
+        F10 run that label read as the order's gap, so the draft read "only partly
+        invoiced" and the customer got no verdict. The label is the order's own only when
+        its margin cites that file: then it still blocks."""
+        def runs(subject):
+            def call(name, arguments):
+                result = self.world.call(name, arguments)
+                if name == "plx.investigate" and arguments.get("family") == cp.MARGIN_FAMILY:
+                    cited = [str(e["citation"]["l1_handle"]) for e in result.get("answer") or ()
+                             if isinstance(e.get("citation"), dict)]
+                    result = {**result, "gaps": list(result.get("gaps") or ()) + [{
+                        "reason": "as_of_capture",
+                        "subject": subject(cited),
+                        "detail": "3 further SharePoint files from the Workbench's capture "
+                                  "entered this answer's counts"}]}
+                return result
+            return cp.profitability(call, self.world.customer("C-50"), today=TODAY)["totals"]
+        totals = runs(lambda cited: "sharepoint")
+        self.assertEqual((totals["excluded"], totals["blocking"]), (["SO-104"], []))
+        self.assertEqual(totals["margin"], Decimal("-41"))
+        totals = runs(lambda cited: cited[0] if cited else "sharepoint")
+        self.assertIsNone(totals["margin"])
+        self.assertTrue(totals["blocking"])
+
     def test_orders_rank_worst_first_and_undecided_orders_follow(self):
         ranked = [(o["number"], o["margin"]) for o in self.answer["orders"]]
         self.assertEqual(ranked, [("SO-101", Decimal("-45")), ("SO-102", Decimal("-20")),
@@ -347,11 +390,62 @@ class CustomerProfitTests(unittest.TestCase):
         self.assertIn("Purchase order PO9002 bought item FG-9 (Synthetic tube) at 16.00 "
                       "CAD/PCS in goods cost alone (freight and duty not recorded), above the "
                       "10.00 CAD/PCS it sold for on SO-101.", texts)
+        # Why, against the same item's previous order (SO-102, 9 PCS at its unit figures):
+        # the cost per unit fell (+9.00 to the margin), the price fell more (-18.00);
+        # 6.25% reads 6.2%: percentages round half-even, as every percent here.
+        self.assertIn("Item FG-9 (Synthetic tube) on SO-101 against SO-102 (2026-08-10, the "
+                      "previous order with it): item cost 15.00 CAD/PCS against 16.00 "
+                      "CAD/PCS, down 6.2%, which added 9.00 CAD to the margin at 9 PCS; price "
+                      "10.00 CAD/PCS against 12.00 CAD/PCS, down 16.7%, which took 18.00 CAD "
+                      "off the margin.", texts)
+        (moved,) = self.answer["breakdown"]["previous"]
+        self.assertEqual((moved["price_effect"], moved["cost_effect"]),
+                         (Decimal("-18.00"), Decimal("9.00")))
+        # the two effects are the whole change against selling 9 PCS at SO-102's figures
+        self.assertEqual(moved["price_effect"] + moved["cost_effect"],
+                         moved["line"].margin - 9 * (Decimal(12) - Decimal(16)))
+        # the why in one or two plain sentences: what moved first, its net effect signed
+        # (+9.00 - 18.00 = -9.00), then the losing line; every figure is a driver's own
+        self.assertEqual(self.answer["why"], [
+            "Item cost fell 6.2% (16.00 → 15.00 CAD/PCS) and price fell 16.7% "
+            "(12.00 → 10.00 CAD/PCS): −9.00 CAD against SO-102 (2026-08-10).",
+            "Item FG-9 (Synthetic tube) lost 45.00 CAD: cost 15.00 CAD/PCS against price "
+            "10.00 CAD/PCS."])
         action = self.answer["next_action"]
         self.assertEqual(action["writes"], 0)
         self.assertEqual(action["text"], "Review the price for Northwind Test Foods on item "
                          "FG-9 (Synthetic tube): the last 2 orders with it ran below item cost "
                          "(SO-101, SO-102).")
+
+    def test_margin_per_product_sums_to_the_customer_margin(self):
+        got = self.answer
+        rows = {got["items"][r["item"]]["code"]: r for r in got["products"]}
+        self.assertEqual(list(rows), ["FG-9", "FG-1"])                  # worst first
+        fg9, fg1 = rows["FG-9"], rows["FG-1"]
+        self.assertEqual((fg9["quantity"], fg9["revenue"], fg9["cost"], fg9["margin"],
+                          fg9["margin_pct"], fg9["orders"]),
+                         (Decimal(14), Decimal(150), Decimal(215), Decimal(-65),
+                          Decimal("-43.33"), ["SO-101", "SO-102"]))
+        self.assertEqual((fg9["low_unit_cost"], fg9["high_unit_cost"]),
+                         (Decimal(15), Decimal(16)))
+        self.assertEqual((fg1["margin"], fg1["margin_pct"]), (Decimal(24), Decimal("60.00")))
+        self.assertEqual(sum(r["margin"] for r in rows.values()), got["totals"]["margin"])
+        self.assertTrue(all(r["complete"] and r["handles"] for r in rows.values()))
+        # an invoiced order without a checked margin carrying the item: that item's figures
+        # are the checked orders' only, never presented as complete
+        blocked = cp.Order("o", "SO-9", [TODAY], lines=[cp.Line(1, "l", fg1["item"])])
+        decided = [o for o in self.world_orders() if o.decided]
+        partial = {r["item"]: r["complete"] for r in cp.products(decided, [blocked], True)}
+        self.assertEqual(partial, {fg9["item"]: True, fg1["item"]: False})
+        # what the item cost leaves out is said with every breakdown
+        self.assertIn("FREIGHT_DUTY_NOT_IN_ITEM_COST",
+                      {g["code"] for g in got["breakdown"]["gaps"]})
+
+    def world_orders(self) -> list:
+        return [cp.read_order(self.world.call, cp.Order(o["object_id"], o["number"],
+                                                        [date.fromisoformat(d)
+                                                         for d in o["dates"]]))
+                for o in self.answer["orders"]]
 
     def test_trail_runs_customer_order_lines_sources_driver(self):
         labels = [s["label"] for s in self.answer["trail"]]

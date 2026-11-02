@@ -4,20 +4,20 @@ import { ArrowRight, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { HiddenNotice } from "@/components/answer-parts";
+import { FreshnessLabel, HiddenNotice } from "@/components/answer-parts";
 import { AskBox, type Pin } from "@/components/ask-box";
 import { useAuth } from "@/components/auth";
 import { BriefingCounts, BriefingRow } from "@/components/briefing";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { ErrorNotice } from "@/components/ui/notice";
+import { LoadProblem } from "@/components/ui/notice";
 import { Skeleton, SkeletonRows, SkeletonStats } from "@/components/ui/skeleton";
 import { Stat, StatRow } from "@/components/ui/stat";
 import { getBriefing, getHome, markBriefingSeen } from "@/lib/api";
-import { plainError } from "@/lib/errors";
+import { noticeKind, plainError } from "@/lib/errors";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { ago, formatDateTime, objectHref, recordLabel, safeHref } from "@/lib/format";
-import { headline } from "@/lib/home";
+import { headline, refreshingLine } from "@/lib/home";
 import { stashPending } from "@/lib/pending";
 import { useSaved } from "@/lib/saved";
 import type { Briefing, HomeResponse, LatePo } from "@/lib/types";
@@ -52,13 +52,18 @@ export default function HomePage() {
   const saved = useSaved();
   const [home, setHome] = useState<HomeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
     const c = new AbortController();
     setError(null);
     getHome(c.signal)
       .then(setHome)
-      .catch((e) => !c.signal.aborted && setError(didntLoad("Home", e)));
+      .catch((e) => {
+        if (c.signal.aborted) return;
+        setBusy(noticeKind(e) === "busy");
+        setError(didntLoad("Home", e));
+      });
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
@@ -67,6 +72,7 @@ export default function HomePage() {
   // marked seen so the next "since your last visit" starts now.
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingError, setBriefingError] = useState<string | null>(null);
+  const [briefingBusy, setBriefingBusy] = useState(false);
   const [slow, setSlow] = useState(false);
   const loadBriefing = useCallback(() => {
     const c = new AbortController();
@@ -78,7 +84,11 @@ export default function HomePage() {
         setBriefing(b);
         if (b.status === "read") markBriefingSeen().catch(() => undefined);
       })
-      .catch((e) => !c.signal.aborted && setBriefingError(didntLoad("Your briefing", e)))
+      .catch((e) => {
+        if (c.signal.aborted) return;
+        setBriefingBusy(noticeKind(e) === "busy");
+        setBriefingError(didntLoad("Your briefing", e));
+      })
       .finally(() => clearTimeout(t));
     return () => {
       clearTimeout(t);
@@ -151,7 +161,7 @@ export default function HomePage() {
                 label="No confirmed date"
                 value={`${unconfirmed} of ${late.length}`}
                 status="risk"
-                caption={late.length < lateTotal ? `of the ${late.length} oldest; vendor hasn't confirmed` : "vendor hasn't confirmed"}
+                caption={late.length < lateTotal ? `among the ${late.length} oldest` : "vendor hasn't confirmed"}
                 href="/late"
                 testId="stat-unconfirmed"
               />
@@ -161,7 +171,7 @@ export default function HomePage() {
             )}
           </StatRow>
         ) : null}
-        {error && <ErrorNotice message={error} onRetry={load} />}
+        {error && <LoadProblem message={error} busy={busy} onRetry={load} />}
         {na && !lateRead && (
           <p className="text-row text-muted" data-testid="attention-unavailable">
             {na.status === "not_configured"
@@ -182,7 +192,7 @@ export default function HomePage() {
         </CardHeader>
         <CardBody>
           {briefingError ? (
-            <ErrorNotice message={briefingError} onRetry={loadBriefing} />
+            <LoadProblem message={briefingError} busy={briefingBusy} onRetry={loadBriefing} />
           ) : !briefing ? (
             <SkeletonRows rows={5} label="Loading what needs you today" />
           ) : briefing.status !== "read" ? (
@@ -191,20 +201,29 @@ export default function HomePage() {
                 ? "The watch list hasn't run on this server yet."
                 : "Your briefing couldn't be read just now. Try again in a few minutes."}
             </p>
+          ) : top.length === 0 && (briefing.refreshing || na?.refreshing) ? (
+            <p className="text-row text-muted" data-testid="briefing-refreshing">
+              {refreshingLine(briefing.checked_on ?? na?.checked_on)}
+            </p>
           ) : top.length === 0 ? (
             <EmptyState icon={CheckCircle2} title="Nothing needs you today." line="Late orders, slipped dates and vendors who haven't replied will show here." />
           ) : (
             <>
               <ol className="divide-y divide-border" data-testid="needs-you">
-                {top.map((i) => (
-                  <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} dense />
+                {top.map((i, n) => (
+                  <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} position={n + 1} dense />
                 ))}
               </ol>
               <div className="mt-2 space-y-1">
+                {(briefing.refreshing || na?.refreshing) && (
+                  <p className="text-meta text-muted" data-testid="briefing-refreshing">
+                    {refreshingLine(briefing.checked_on ?? na?.checked_on)}
+                  </p>
+                )}
                 <BriefingCounts briefing={briefing} compact />
                 {(briefing.test_records_hidden || na?.test_records_hidden) && (
                   <p className="text-meta text-muted" data-testid="briefing-tests-hidden">
-                    {briefing.test_records_hidden ?? na?.test_records_hidden} (test and placeholder records are left out)
+                    {briefing.test_records_hidden ?? na?.test_records_hidden} and left out of the counts.
                   </p>
                 )}
               </div>
@@ -240,7 +259,7 @@ export default function HomePage() {
           </CardHeader>
           <CardBody>
             {error ? (
-              <p className="text-row text-muted">—</p>
+              <p className="text-row text-muted">Your recent questions show here once Today loads.</p>
             ) : !home ? (
               <div className="space-y-2.5" role="status" aria-label="Loading recent questions">
                 <Skeleton className="h-3.5" />
@@ -288,11 +307,15 @@ export default function HomePage() {
         </Card>
       </div>
 
-      {(home?.freshness?.as_of || na?.as_of) && (
+      {home?.freshness?.as_of ? (
+        <div className="mt-8" data-testid="home-freshness">
+          <FreshnessLabel freshness={home.freshness} />
+        </div>
+      ) : na?.as_of ? (
         <p className="mt-8 text-meta text-muted" data-testid="home-freshness">
-          Data as of {formatDateTime(home?.freshness?.as_of ?? na?.as_of)}
+          Data as of {formatDateTime(na.as_of)}
         </p>
-      )}
+      ) : null}
     </div>
   );
 }

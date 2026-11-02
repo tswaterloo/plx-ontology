@@ -1811,7 +1811,8 @@ class PortalRelationCompletenessTests(Mixin, unittest.TestCase):
                                   for g in answer.result["gaps"]}.get("received"), reason)
 
     def test_a_bc_relation_claim_never_proves_a_bc_hop(self):
-        # BC absence stays decided by a family or scoped claim (2026-10-14 decision).
+        # A BC relation entry alone (no per-company claims) proves nothing (2026-10-14
+        # decision; 2026-11-02 amendment: the entry and every company claim together).
         bc = {b["relation"] for spec in SCHEMA.object_types.values()
               for b in spec.get("bindings", ()) if b["source"] == "bc"}
         store = Store(freshness=[{"source": s, "captured_at": "2099-02-01T11:00:00Z",
@@ -1824,6 +1825,126 @@ class PortalRelationCompletenessTests(Mixin, unittest.TestCase):
                                for r in bc}}),))
         st = stages(self.answer(tools(store), {"from": ids["po_b"]}).result)
         self.assertEqual(st["vendor_invoice"]["missing"]["state"], "unknown")
+
+
+def portal_po_with_bc_twin(*, claims=None, relations=None, family_stale=False):
+    """An open Portal PO whose BC twin (company_a, same_record_as) states the requested
+    receipt date 2099-01-15, nothing received, in a store whose BC family is partial.
+    ``claims``: {relation: [scope claim]} for ``source_freshness``; ``relations``: the BC
+    ``relation_completeness`` entries."""
+    s = Store(freshness=[
+        {"source": "portal_api", "captured_at": "2099-02-01T11:00:00Z",
+         "completeness": "complete", "stale": False},
+        {"source": "bc", "captured_at": "2099-02-01T11:00:00Z",
+         "completeness": "partial", "stale": family_stale}])
+    po = s.obj("PurchaseOrder:portal.app_purchase_order:po-g")
+    s.val(po, "status", "text", "ORDERED")
+    line = s.obj("PurchaseOrderLine:portal.app_purchase_order_line:po-g-1")
+    s.val(line, "ordered_quantity", "quantity", "10", unit="each", role="ordered")
+    s.link("PurchaseOrderLine.line_of", line, po)
+    twin = s.obj("PurchaseOrder:bc.purchase_orders:po-t")
+    s.val(twin, "bc_status", "text", "Open")
+    s.event("PurchaseOrder.bc_expected", twin, "2099-01-15")
+    bc_line = s.obj("PurchaseOrderLine:bc.purchase_order_lines:po-t-1")
+    s.val(bc_line, "ordered_quantity", "quantity", "10", unit="each", role="ordered")
+    s.link("PurchaseOrderLine.line_of", bc_line, twin)
+    s.link("PurchaseOrder.same_record_as", po, twin, kind="same_record")
+    if claims is not None:
+        s.conn.execute("INSERT INTO store_meta VALUES ('source_freshness', ?)",
+                       (json.dumps({"bc": {r: {"scopes": c} for r, c in claims.items()}}),))
+    if relations is not None:
+        s.conn.execute("INSERT INTO store_meta VALUES ('relation_completeness', ?)",
+                       (json.dumps({"bc": relations}),))
+    return s, po
+
+
+class BcRelationWholePerCompanyTests(Mixin, unittest.TestCase):
+    """A hop into BC from a
+    record that is no BC record (a Portal PO to its BC twin) is proven when the far
+    relation is whole in every captured company: its relation entry complete, not stale,
+    finished by the answer's time, and every ``company=`` claim on it complete."""
+
+    def late(self, store, root, policy=POLICY, actor=STAFF):
+        base = ot.OntologyTools(ot.StoreReader(store.conn), policy, schema=SCHEMA,
+                                contracts=CONTRACTS, clock=lambda: NOW)
+        result = self.answer(op.ProcessTools(base, GRAPHS),
+                             {"from": root, "process": "po_delivery_window"}, actor).result
+        (late,) = result["lateness"]
+        (due,) = result["due"]
+        return late, due
+
+    @staticmethod
+    def whole(**fact):
+        relations = sorted({b["relation"] for spec in SCHEMA.object_types.values()
+                            for b in spec.get("bindings", ()) if b["source"] == "bc"})
+        claim = {"scope": "company=company_a", "company_id": "company_a", "complete": True,
+                 "read_at": "2099-02-01T11:00:00Z"}
+        entry = dict({"completeness": "complete", "stale": False,
+                      "full_traversal_at": "2099-02-01T10:00:00Z"}, **fact)
+        return {r: [dict(claim)] for r in relations}, {r: dict(entry) for r in relations}
+
+    def test_a_whole_bc_relation_decides_the_lateness_of_a_portal_po(self):
+        claims, relations = self.whole()
+        late, due = self.late(*portal_po_with_bc_twin(claims=claims, relations=relations))
+        self.assertEqual((late["late"], late["governing_date"], late["days_late"]),
+                         (True, "2099-01-15", 17))
+        self.assertEqual((due["overdue"], due["days_overdue"]), (True, 17))
+
+    def test_anything_short_of_every_company_whole_stays_unproven(self):
+        def company_b(complete):
+            return {"scope": "company=company_b", "company_id": "company_b",
+                    "complete": complete, "read_at": "2099-02-01T11:00:00Z"}
+
+        def variant(name):
+            claims, relations = self.whole()
+            if name == "no_claims":
+                claims = None
+            elif name == "no_relation_entry":
+                relations = None
+            elif name == "another_company_unsettled":
+                claims["purchaseOrders"].append(company_b(False))
+            elif name == "only_a_per_po_claim":
+                claims["purchaseOrders"] = [{"scope": "po=PO-T", "company_id": "company_a",
+                                             "anchors": ["po-t"], "by": ["number"],
+                                             "complete": True,
+                                             "read_at": "2099-02-01T11:00:00Z"}]
+            elif name == "relation_partial":
+                relations["purchaseOrders"].update(completeness="partial",
+                                                   full_traversal_at=None)
+            elif name == "relation_stale":
+                relations["purchaseOrders"]["stale"] = True
+            elif name == "finished_after_the_answer":
+                relations["purchaseOrders"]["full_traversal_at"] = "2099-02-01T12:00:01Z"
+            return portal_po_with_bc_twin(claims=claims, relations=relations,
+                                          family_stale=name == "family_stale")
+
+        for name in ("no_claims", "no_relation_entry", "another_company_unsettled",
+                     "only_a_per_po_claim", "relation_partial", "relation_stale",
+                     "finished_after_the_answer", "family_stale"):
+            with self.subTest(name):
+                late, due = self.late(*variant(name))
+                self.assertIsNone(late["late"])
+                self.assertEqual(late["gap"]["reason"], "due_date_unproven")
+                self.assertIsNone(due["overdue"])
+        # Every company whole (company_b settled too) decides as one company does.
+        claims, relations = self.whole()
+        claims["purchaseOrders"].append(company_b(True))
+        late, _ = self.late(*portal_po_with_bc_twin(claims=claims, relations=relations))
+        self.assertIs(late["late"], True)
+
+    def test_a_one_company_reader_never_reads_a_whole_relation(self):
+        # The twin of a Portal record could be in any company: only a grant of the whole
+        # BC family reads the relation whole; a company_a grant leaves it unstated.
+        claims, relations = self.whole()
+        store, po = portal_po_with_bc_twin(claims=claims, relations=relations)
+        policy = ot.ReadPolicy("plx", {"api:*": frozenset({"ops"}),
+                                       "bc:company_a/*": frozenset({"ops"})},
+                               {m: frozenset({"ops"}) for m in
+                                ("finance", "pii", "l5", "quality_controlled")})
+        late, due = self.late(store, po, policy, Actor("plx", frozenset({"ops"})))
+        self.assertIsNone(late["late"])
+        self.assertIsNone(due["overdue"])
+        self.assertNotIn("2099-01-15", json.dumps(late.get("gap")))
 
 
 class RegisterTests(unittest.TestCase):

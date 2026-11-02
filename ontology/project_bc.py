@@ -60,7 +60,7 @@ from integrations.capture_store import (
     make_handle,
     removals_of,
 )
-from ontology.project import (CapturedRecord, ProjectionError, RowSample, _Relations,
+from ontology.project import (Reopenable, CapturedRecord, ProjectionError, RowSample, _Relations,
                               _file_marks, _sampled, _watermark, begin_snapshot)
 
 SOURCE = "bc"
@@ -71,7 +71,7 @@ INCOMPLETE = "source_capture_incomplete"
 _INCREMENTAL = "incremental"
 
 
-class BcCaptures:
+class BcCaptures(Reopenable):
     """Every retained version of a BC capture store file, read-only (``source = "bc"``)."""
 
     source = SOURCE

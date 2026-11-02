@@ -88,6 +88,7 @@ Stdlib only. Imports nothing from the legacy ontology store and nothing from
 
 from __future__ import annotations
 
+from collections import deque
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
@@ -1053,7 +1054,7 @@ def _store_links(builder: Any, conn: Any, declared: Mapping[tuple[str, str], str
             counts["links"] += builder.add("links", rows)
             rows = []
 
-    def one(key: str | None, found: Any, document: Document) -> None:
+    def one(key: str | None, found: Any, document: Document, ahead: Any = None) -> None:
         if found is not None:
             entry, valid = found
             if valid and changed is not None and _still_resolves(
@@ -1061,32 +1062,183 @@ def _store_links(builder: Any, conn: Any, declared: Mapping[tuple[str, str], str
                 memo.still_valid(key)
                 written(entry["resolved"])
                 return
-        mentioned = found[0]["mentions"] if found is not None else document_mentions(document)
+        mentioned = found[0]["mentions"] if found is not None else \
+            ahead.get() if ahead is not None else None
+        if mentioned is None:   # not extracted by a worker (or it failed): here
+            mentioned = document_mentions(document)
         resolved = _document_links(conn, declared, document, mentioned, aliases, extractor)
         if memo is not None:
             memo.keep_mentions(key, code, {"document": _document_facts(document),
                                            "mentions": mentioned, "resolved": resolved})
         written(resolved)
 
-    for group, load in groups:
+    ahead = read_ahead(
+        groups, "mentions",
+        (lambda group: memo.holds_group(group, code)) if memo is not None else None,
+        (lambda document: memo.mentions(document_key(document), code) is None)
+        if memo is not None else None)
+    for group, load, read in ahead:
         kept = memo.group(group) if memo is not None and group is not None else None
         held = [(key, memo.mentions(key, code)) for key in kept] if kept is not None else None
         if held is not None and all(found is not None for _, found in held):
             for key, found in held:   # read as before: its documents are not read again
                 one(key, found, _facts_document(found[0]["document"]))
             continue
-        documents, remembered = load()
+        documents, remembered, derived = read if read is not None else (*load(), None)
         keys = []
-        for document in documents:
+        for index, document in enumerate(documents):
             key = document_key(document) if memo is not None else None
             keys.append(key)
-            one(key, memo.mentions(key, code) if memo is not None else None, document)
+            one(key, memo.mentions(key, code) if memo is not None else None, document,
+                derived[index] if derived is not None else None)
         if memo is not None and group is not None and remembered:
             memo.keep_group(group, keys)
     if rows:
         counts["links"] += builder.add("links", rows)
     return {"format": FORMAT, "extractor": extractor, "tier": TIER, "counts": counts,
             "link_tiers": {TIER: counts["links"]}}
+
+
+# A build with document workers (``ontology.project_parallel.DocumentPool``) reads this many
+# groups ahead of the one a document step writes, the workers deriving from their documents
+# in tasks of ``MENTION_TASK`` documents meanwhile.
+MENTION_AHEAD = 1024
+MENTION_TASK = 16
+MENTION_GROUPS = 8   # groups a worker reads in one task
+
+
+class Derived:
+    """What a worker task derives from one document (None: it did not)."""
+
+    def __init__(self, task: Callable[[], list[Any] | None], index: int) -> None:
+        self.task, self.index = task, index
+
+    def get(self) -> Any:
+        found = self.task()
+        return None if found is None else found[self.index]
+
+
+class _Sent:
+    """A group a worker reads (``DocumentPool.load``): one of the task's groups."""
+
+    def __init__(self, work: Callable[[], Any], done: list[Any], index: int) -> None:
+        self.work, self.done, self.index = work, done, index
+
+    def get(self) -> Any:
+        """The group's documents, remembered and derived; None when the worker failed."""
+        if not self.done:
+            self.done.append(self.work())
+        return None if self.done[0] is None else self.done[0][self.index]
+
+
+def read_ahead(groups: Iterable[DocumentGroup], task: str,
+               holds: Callable[[str], bool] | None,
+               wanted: Callable[[Document], bool] | None = None, *, remote: bool = True
+               ) -> Iterator[tuple[str | None, Callable[[], tuple[list[Document], bool]],
+                                   tuple[list[Document], bool, list[Any]] | None]]:
+    """``(key, load, read)`` of each of ``groups`` in their order, for a document step. In
+    a build with document workers, ``read`` is ``load()``'s documents and whether they are
+    remembered, with what the workers' ``task`` (``DocumentPool.derive``) derives from each
+    document (:class:`Derived`; None for one not ``wanted``), read up to ``MENTION_AHEAD``
+    groups ahead: by a worker that opened the group's source again when it can
+    (``ontology.project.GroupLoad``, ``DocumentPool.load``: its readings are then the
+    worker's), else here. ``read`` is None for a group ``holds`` (the step's memo holds it
+    whole: never read) and in a build without workers. The step still decides each group
+    in order as it would without them: a group read by a worker is read from the same
+    rows of the same source, and a task derives a function of the document alone.
+    ``remote`` False: every group is read here (the text index: what a worker would send
+    back, its text and its chunks, costs this process more than reading it)."""
+    from ontology import project_parallel
+    from ontology.project import GroupLoad
+
+    pool = project_parallel.DOCUMENTS
+    if pool is None or not pool.usable():
+        for group, load in groups:
+            yield group, load, None
+        return
+    window: deque[list[Any]] = deque()
+    batch: list[Document] = []
+    slots: list[list[Any]] = []
+    queued: list[list[Any]] = []   # window entries a worker is to read, not sent yet
+    unsent = object()
+
+    def submit() -> None:
+        if not batch:
+            return
+        work = pool.derive(task, batch)
+        if work is not None:
+            done: list[Any] = []
+
+            def once() -> Any:
+                if not done:
+                    done.append(work())
+                return done[0]
+            for index, (ahead, at) in enumerate(slots):
+                ahead[at] = Derived(once, index)
+        batch.clear()
+        slots.clear()
+
+    def here(entry: list[Any]) -> None:   # read in this process, derived by workers
+        documents, remembered = entry[1]()
+        ahead: list[Any] = [None] * len(documents)
+        for at, document in enumerate(documents):
+            if wanted is not None and not wanted(document):
+                continue
+            batch.append(document)
+            slots.append([ahead, at])
+            if len(batch) >= MENTION_TASK:
+                submit()
+        entry[2] = (documents, remembered, ahead)
+
+    def send() -> None:
+        if not queued:
+            return
+        entries = list(queued)
+        queued.clear()
+        work = pool.load(task, [entry[1] for entry in entries])
+        if work is None:
+            for entry in entries:
+                here(entry)
+            return
+        done: list[Any] = []
+        for index, entry in enumerate(entries):
+            entry[2] = _Sent(work, done, index)
+
+    def resolved(entry: list[Any]) -> tuple[Any, ...]:
+        if entry[2] is unsent:
+            send()
+        read = entry[2]
+        if isinstance(read, _Sent):
+            found = read.get()
+            if found is None:   # the worker failed: read here
+                here(entry)
+            else:
+                documents, remembered, derived = found
+                entry[2] = (documents, remembered,
+                            [Derived(lambda values=derived: values, at)
+                             for at in range(len(documents))])
+        submit()
+        return tuple(entry)
+
+    for group, load in groups:
+        entry = [group, load, None]
+        if not (holds is not None and group is not None and holds(group)):
+            if remote and isinstance(load, GroupLoad) and pool.knows(load.source):
+                if queued and queued[0][1].source is not load.source:
+                    send()
+                entry[2] = unsent
+                queued.append(entry)
+                if len(queued) >= MENTION_GROUPS:
+                    send()
+            else:
+                here(entry)
+        window.append(entry)
+        if len(window) > MENTION_AHEAD:
+            yield resolved(window.popleft())
+    send()
+    submit()
+    while window:
+        yield resolved(window.popleft())
 
 
 def _add_counts(counts: dict[str, int], more: Mapping[str, int]) -> None:

@@ -389,7 +389,8 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
     if bc_units:
         units["bc"] = tuple(sorted(set(bc_units) | {k for k in grants if k.startswith("bc:")}))
     return ReadPolicy(actor.tenant, grants,
-                      full_read_marking_grants(marking_grants, entitlement), units)
+                      full_read_marking_grants(marking_grants, entitlement), units,
+                      unrestricted=entitlement is not None and entitlement.unrestricted())
 
 
 # A granted principal: ``<kind>:<name>``, both parts non-empty, no whitespace.
@@ -431,6 +432,21 @@ def _file_identity(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return (found.st_dev, found.st_ino)
+
+
+def _file_stamp(path: Any) -> tuple | None:
+    """A file's state now (device, inode, change time, size) with its write-ahead log's,
+    or None for no path; a missing file is ``-1``. Any commit or rename changes it."""
+    if path is None:
+        return None
+    out: list[Any] = []
+    for name in (Path(path), Path(f"{path}-wal")):
+        try:
+            found = os.stat(name)
+            out.append((found.st_dev, found.st_ino, found.st_mtime_ns, found.st_size))
+        except OSError:
+            out.append(-1)
+    return tuple(out)
 
 
 class CaseHostTools:
@@ -624,12 +640,59 @@ class CaseHostTools:
     def policy_now(self, actor: Any) -> ReadPolicy:
         """The policy for ``actor`` (already through the employee gate) decided now from
         the readers' audiences: a revoked grant applies to the next call."""
+        return self._decide_policy(actor, self._bc_lookup)
+
+    def stored_policy(self, actor: Any) -> ReadPolicy:
+        """``policy_now``'s grants of the record systems decided over the units the store
+        holds, with no live BC company listing requested: a scheduled run's reader check
+        (``proactive_engine.refresh``), which must not spend a BC GET of its own."""
+        return self._decide_policy(actor, None)
+
+    def _decide_policy(self, actor: Any, bc_lookup: Any) -> ReadPolicy:
         self.tools  # noqa: B018 - built on first use
         return case_host_policy(self.runtime, actor, self.schema,
-                                audience_keys=self._reader_keys, bc_lookup=self._bc_lookup,
+                                audience_keys=self._reader_keys, bc_lookup=bc_lookup,
                                 bc_units=self._bc_units,
                                 knowledge_namespaces=self.knowledge_namespaces,
                                 marking_grants=self.marking_grants)
+
+    def policy_inputs(self, actor: Any) -> tuple[tuple, tuple] | None:
+        """What ``policy_now(actor)`` is decided from now, for a caller that keeps the
+        decided policy (``object_workspace.HostAccess``): (values compared by equality,
+        objects compared by identity, held so their identity is never reused). Any grant,
+        policy, exclusion, audience or projection-generation change changes it: the gated
+        actor and its entitlement's fingerprint (the employee policy's digest, identities,
+        clearances, a full-read grant), the generation served, the mirror audience
+        (reloaded when its file changes), the live audience, both people exclusions, the
+        case mail scope and the knowledge namespace document's file state. None: not
+        keyable now (the policy is decided again)."""
+        self.tools  # noqa: B018 - built on first use (the generation served)
+        try:
+            gate = getattr(self.runtime, "employee_gate", None)
+            entitlement = gate.entitlement(actor) if gate is not None else None
+            mirror = self.runtime.mirror._audience()
+        except Exception:  # noqa: BLE001 - undecidable: never kept
+            return None
+        from .pg.permissions import load_exclusion
+        values = (actor.tenant, tuple(sorted(actor.principals)), actor.clearance,
+                  None if entitlement is None else (entitlement.fingerprint or None),
+                  entitlement is None, self._store_identity,
+                  _file_stamp(self.knowledge_namespaces))
+        if entitlement is not None and not entitlement.fingerprint:
+            return None   # an entitlement that names no fingerprint: never kept
+        objects = (self._reader, mirror,
+                   getattr(getattr(self.runtime, "live", None), "audience", None),
+                   getattr(self.runtime, "people_exclusion", None),
+                   getattr(self.runtime, "mail_scope", None), load_exclusion())
+        return values, objects
+
+    def policy_settled(self, actor: Any) -> bool:
+        """Whether the policy just decided for ``actor`` holds no transient answer: a BC
+        company listing that was refused or unreadable is read again on the next call
+        (``BcLookup.companies``), so such a policy is never kept."""
+        lookup = self._bc_lookup
+        kept = getattr(lookup, "listed", None)
+        return lookup is None or (callable(kept) and kept(actor) is True)
 
     @property
     def evidence(self) -> Any:

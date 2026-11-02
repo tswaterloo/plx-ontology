@@ -185,11 +185,12 @@ class PlansAreDataTests(unittest.TestCase):
         # evidence, F12 commercial chain links, F13 item lineage,
         # F14 late PO, F15 counterparty position, F16 impact chain, F17 lot impact, F18 people
         # on a record, F19 what we last said to a party, F26-F28 vendor terms (provenance,
-        # proposed updates, follow-ups), F30 an item's purchase price history and trend;
-        # held-out F5/F6 have no plan.
+        # proposed updates, follow-ups), F30 an item's purchase price history and trend, F31
+        # Sage order margin; held-out F5/F6 have no plan.
         self.assertEqual(set(families),
                          {"F1", "F2", "F3", "F4", "F7", "F10", "F11", "F12", "F13", "F14", "F15",
-                          "F16", "F17", "F18", "F19", "F26", "F27", "F28", "F30"})
+                          "F16", "F17", "F18", "F19", "F26", "F27", "F28", "F30",
+                          "F31"})
         evaluated = {json.loads(p.read_text("utf-8"))["family"]
                      for p in DEV.glob("dev-*.json")}
         self.assertLessEqual(evaluated, set(families))
@@ -2531,13 +2532,22 @@ class TwinConflictTests(unittest.TestCase):
                                      (1, 1))
                 for page in pages:
                     self.assertIn("landed_cost", [e["name"] for e in page["answer"]])
-                    # the conflict on the answer's own cited record stays on every page
-                    self.assertIn("PurchaseOrder.p0", [c["subject"] for c in page["conflicts"]])
+                    # the conflict on an answer entry's cited record stays on its page
+                    self.assertEqual(
+                        "PurchaseOrder.p0" in [c["subject"] for c in page["conflicts"]],
+                        page is pages[0] or "po" in [e["name"] for e in page["answer"]])
                     self.assertTrue(page["completeness"]["truncated"])
-                    # the drop is stated, with how many are not shown
-                    (note,) = [g for g in page["gaps"] if g["reason"] == "conflicts_truncated"]
-                    self.assertTrue(note["detail"].startswith(
-                        f"{20 - len(page['conflicts'])} conflict(s)"), note)
+                # the drop is stated on the first page, which lists the conflicts, with how
+                # many are not shown; a later page lists only those its entries cite
+                (note,) = [g for g in pages[0]["gaps"] if g["reason"] == "conflicts_truncated"]
+                self.assertTrue(note["detail"].startswith(
+                    f"{20 - len(pages[0]['conflicts'])} conflict(s)"), note)
+                for page in pages[1:]:
+                    self.assertEqual((page["gaps"], page["answer_page"]["gaps_on_page"]),
+                                     ([], 1))
+                    self.assertEqual([c["subject"] for c in page["conflicts"]],
+                                     ["PurchaseOrder.p0"] * ("po" in [
+                                         e["name"] for e in page["answer"]]))
                 self.assertLess(len(pages[0]["conflicts"]), 20)
                 # an answer that fits drops nothing and says nothing about it
                 (whole,) = self.pages(out, 10 ** 6)
@@ -2545,6 +2555,97 @@ class TwinConflictTests(unittest.TestCase):
                 self.assertNotIn("conflicts_truncated", [g["reason"] for g in whole["gaps"]])
                 if lines > 1:   # the room is made once: pages pack lines, never one each
                     self.assertLess(len(pages), lines)
+
+
+    def test_gaps_that_fill_every_page_are_summarised_never_refused(self):
+        """Live defect (dev F29 item_lineage): 50 long gaps left no page room for one unit
+        and the answer was refused result_too_large. It now pages, the gaps past
+        ``MIN_GAPS_KEPT`` counted by reason in one ``gaps_truncated`` gap."""
+        for lines in (1, 10, 60):
+            with self.subTest(lines=lines):
+                out = self.result(lines, conflicts=0)
+                out["gaps"] = [{"state": "unknown", "reason": f"r{n % 3}",
+                                "subject": "S" * 600 + str(n), "detail": "d" * 500,
+                                "who_can_answer": ["PROC"]} for n in range(50)]
+                cap = 24000
+                self.assertGreater(ot._envelope_bytes(dict(out, answer=[])), cap)
+                pages = self.pages(out, cap)
+                names = [e["name"] for page in pages for e in page["answer"]]
+                for i in range(lines):   # no line or input lost or duplicated
+                    self.assertEqual((names.count(f"line_{i}"), names.count(f"price_{i}")),
+                                     (1, 1))
+                first = pages[0]
+                self.assertEqual(first["completeness"]["reason"], "result_too_large")
+                (note,) = [g for g in first["gaps"] if g["reason"] == "gaps_truncated"]
+                listed = len(first["gaps"]) - 1
+                self.assertGreaterEqual(listed, oi.MIN_GAPS_KEPT)
+                self.assertTrue(note["detail"].startswith(f"{50 - listed} further gap(s)"))
+                self.assertIn("r0 x", note["detail"])
+
+    def test_a_long_answer_lists_its_notes_once_and_pages_its_rows_densely(self):
+        """Live defect (dev F29 price history: 74, 49 and 93 pages): every page repeated the
+        gaps, the trace and every conflict (each a resolved twin disagreement on one row's
+        record), so each page held one row. The first page now carries the answer-level
+        values, the gaps and trace whole and every unresolved conflict; a later page the
+        shared values, the rest of the rows and the conflicts on its own rows, with
+        gaps_on_page 1. 1, 10 and 60 rows: none lost or doubled, each resolved conflict on
+        its row's page, every page in bounds and the pages few."""
+        cap = 46000
+        for rows in (1, 10, 60):
+            with self.subTest(rows=rows):
+                out = self.result(1, conflicts=1)   # unresolved, on the po row
+                out["answer"] += [{"name": f"order_price_{i}", "kind": "property",
+                                   "value": "2.50", "value_type": "money", "check": "passed",
+                                   "citation": {"l1_handle": f"bc://production/co/purchaseOrders/"
+                                                             f"o{i}@v-1",
+                                                "field_path": "row.currency"}}
+                                  for i in range(rows)]
+                out["conflicts"] += [
+                    {"kind": "value_disagreement", "subject": f"PurchaseOrder.o{i}",
+                     "values": [self.value(f"o{i}"), self.value(f"t{i}")],
+                     "resolution": {"rule": "system_of_record", "trusted": [0]}}
+                    for i in range(rows)]
+                out["trace"] = [{"step": f"s{n}", "tool": "plx.around", "status": "ok",
+                                 "calls": 1, "objects": 1} for n in range(30)]
+                whole = copy.deepcopy(out)
+                pages = self.pages(out, cap)
+                names = [e["name"] for page in pages for e in page["answer"]]
+                for i in range(rows):
+                    self.assertEqual(names.count(f"order_price_{i}"), 1)
+                    (page,) = [p for p in pages if f"order_price_{i}" in
+                               [e["name"] for e in p["answer"]]]
+                    self.assertIn(f"PurchaseOrder.o{i}", [c["subject"] for c in page["conflicts"]])
+                listed = [c["subject"] for page in pages for c in page["conflicts"]]
+                self.assertEqual(sorted(set(listed)), sorted(c["subject"]
+                                                            for c in whole["conflicts"]))
+                first = pages[0]
+                self.assertEqual((first["gaps"], first["trace"]), (whole["gaps"], whole["trace"]))
+                self.assertIn("PurchaseOrder.p0", [c["subject"] for c in first["conflicts"]])
+                if rows == 60:
+                    self.assertGreaterEqual(len([n for n in names[:len(first["answer"])]
+                                                 if n.startswith("order_price_")]), 8)
+                    # one row a page (61 pages) when every page repeated the notes
+                    self.assertLessEqual(len(pages), 5)
+                for page in pages[1:]:
+                    self.assertIn("landed_cost", [e["name"] for e in page["answer"]])
+                    self.assertEqual((page["gaps"], page["answer_page"]["gaps_on_page"]),
+                                     ([], 1))
+                    self.assertNotIn("trace", page)
+                    on = {e["citation"]["l1_handle"] for e in page["answer"]
+                          if e.get("citation")}
+                    for conflict in page["conflicts"]:   # only those on its own rows
+                        self.assertTrue(on & {v["citation"]["l1_handle"]
+                                              for v in conflict["values"]})
+
+    def test_an_entry_wider_than_any_page_keeps_its_value_and_drops_its_working(self):
+        out = self.result(2, conflicts=0)
+        out["answer"][0]["steps"] = ["s" * 390] * 40
+        pages = self.pages(out, 20000)
+        totals = [e for page in pages for e in page["answer"] if e["name"] == "landed_cost"]
+        self.assertTrue(totals)
+        for total in totals:
+            self.assertEqual((total["value"], total.get("inputs_cut")), ("1.00", True))
+            self.assertNotIn("steps", total)
 
 
 if __name__ == "__main__":

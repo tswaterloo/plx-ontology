@@ -3,10 +3,13 @@ and at-risk lists, the briefing, the late-PO answer, profitability's order rows)
 
 What counts as one, and nothing else:
 
-* **a name that says so**: a supplier, customer or record whose name carries the exact
-  marker ``(DO NOT USE)``, or is exactly ``TEST`` or ends in `` TEST``, in capitals (``Laura TEST``);
-  a real name with the word in it (``Test Kitchen Inc``, ``XYZ Lab Test``, ``Covid test``,
-  ``... Materials Testing``) is not;
+* **a name that says so**: a record whose own name carries the exact marker
+  ``(DO NOT USE)``, or a record, supplier or customer whose name is exactly ``TEST`` or ends
+  in `` TEST``, in capitals (``Laura TEST``); a real name with the word in it (``Test
+  Kitchen Inc``, ``XYZ Lab Test``, ``Covid test``, ``... Materials Testing``) is not. A
+  supplier or customer card marked ``(DO NOT USE)`` is a retired card (``Lorpon Labels (DO
+  NOT USE)``, its orders migrated from FileMaker), not a test: an open order placed with it
+  is still the business's order, and a late one is still late;
 * **the Portal's environment prefix**: a number issued by a prefix-setting Portal database
   (``UAT-SO100004``, ``UAT-AO-...``; ``ontology/schema/identifiers.json``,
   ``environment_prefixes``) is a staging record, not the business's;
@@ -57,13 +60,16 @@ def listed(data_dir: Optional[Path], environ: Any = os.environ) -> frozenset[str
                      if isinstance(r, (str, int)) and str(r).strip())
 
 
-def is_test(texts: Iterable[Any], named: frozenset[str] = frozenset()) -> bool:
-    """Whether any of ``texts`` (a record's label, its supplier's or customer's name;
-    never free text) marks a test or placeholder record (module doc)."""
-    for text in texts:
+def is_test(texts: Iterable[Any], named: frozenset[str] = frozenset(),
+            parties: Iterable[Any] = ()) -> bool:
+    """Whether any of ``texts`` (a record's own label or number) or ``parties`` (its
+    supplier's or customer's name; never free text) marks a test or placeholder record
+    (module doc). A party's ``(DO NOT USE)`` marks a retired card, never a test."""
+    for text, party in [*((t, False) for t in texts), *((p, True) for p in parties)]:
         if not isinstance(text, str) or not text.strip():
             continue
-        if NAME_RULE.search(text) or TEST_NAME.search(text) or ENVIRONMENT_PREFIX.match(text):
+        if (not party and NAME_RULE.search(text)) or TEST_NAME.search(text) \
+                or ENVIRONMENT_PREFIX.match(text):
             return True
         if text.strip().casefold() in named:
             return True

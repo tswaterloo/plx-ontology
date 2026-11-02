@@ -165,7 +165,10 @@ class FreshnessSource(_Model):
 
 
 class Freshness(_Model):
-    as_of: Optional[str] = Field(None, description="Oldest capture an answer relies on (ISO).")
+    as_of: Optional[str] = Field(None, description="The data cut-off (ISO): the newest "
+                                 "capture the served data holds, the same on every screen. "
+                                 "A source read over a day before it is named in the label "
+                                 "and keeps its own time in sources.")
     label: Optional[str] = Field(None, description="e.g. 'Data as of 10:42 today'.")
     sources: list[FreshnessSource] = Field(default_factory=list)
 
@@ -208,6 +211,51 @@ class TrailStep(_Model):
                                                     "people exclusion decides it may be shown.")
 
 
+PromiseState = Literal["late", "on_time", "not_due", "received", "undetermined",
+                       "not_judged"]
+
+
+class PromiseLine(_Model):
+    """One order line the supplier promised its own date, matched on firm evidence (the
+    line's item code or description), with its verdict against that date."""
+    line: ObjectRef
+    promised_date: Optional[str] = None
+    state: PromiseState = Field(description="Against the supplier's date for this line: "
+                                            "late (open past it), not_due, on_time, "
+                                            "received (its receipt date unread), "
+                                            "undetermined, or not_judged (a lead).")
+    days_late: Optional[int] = Field(None, ge=1, description="Days past the supplier's "
+                                                            "promised date (late only).")
+    matched_by: Optional[str] = Field(None, description="How the confirmation's item was "
+                                                        "matched to the line: item_code or "
+                                                        "description.")
+    source: Optional[Source] = Field(None, description="The confirmation that promised "
+                                                       "the line its date.")
+
+
+class VendorPromise(_Model):
+    """The order against the date the supplier promised, beside our requested-by verdict
+    and never in its place. ``link`` confirmed: a firm link joins the confirmation to the
+    order; unconfirmed_link: a lead whose dates are stated and never judged."""
+    link: Literal["confirmed", "unconfirmed_link"]
+    state: PromiseState
+    promised_date: Optional[str] = None
+    days_late: Optional[int] = Field(None, ge=1, description="Days past the supplier's "
+                                                            "promised date (late only).")
+    measured_against: Optional[Literal["today", "received"]] = Field(
+        None, description="today: the order is open; received: its last receipt.")
+    complete: bool = Field(True, description="False: a later promise this reader cannot "
+                                             "see may exist.")
+    source: Optional[Source] = Field(None, description="The confirmation that states the "
+                                                       "promised date.")
+    per_line: bool = Field(False, description="The supplier promised each item its own "
+                                              "date; lines lists the matched lines.")
+    lines: list[PromiseLine] = Field(default_factory=list)
+    lines_hidden: int = Field(0, ge=0, description="Promised lines whose confirmation this "
+                                                   "reader can't open: counted, never named.")
+    lines_unmatched: int = Field(0, ge=0, description="Open lines no promise matched.")
+
+
 class EtaCheck(_Model):
     state: Literal["confirmed", "promises_disagree", "lead_only", "no_confirmation",
                    "no_confirmation_found", "not_determined", "withheld", "not_applicable"]
@@ -215,6 +263,11 @@ class EtaCheck(_Model):
     source: Optional[Source] = Field(None, description="The confirmation (or the lead) "
                                                        "that says so, when the reader can "
                                                        "open it.")
+    promise: Optional[VendorPromise] = Field(
+        None, json_schema_extra=_optional,
+        description="The supplier's promise and the order (per line when the supplier "
+                    "promised each item its own date) against it; omitted when none is "
+                    "read or the reader can't open the confirmation.")
 
 
 class NextAction(_Model):
@@ -339,6 +392,10 @@ class AnswerPayload(_Model):
         description="Up to three questions to ask next, built only from this answer's own "
                     "records and what it could not confirm (optional: older clients ignore "
                     "it).")
+    proposals: list[Proposal] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Follow-up drafts and proposed updates built from the answer's gated "
+                    "trail; never sent or applied.")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -391,9 +448,16 @@ class TokenEvent(_Model):
     text: str
 
 
+class VerdictEvent(_Model):
+    """The answer's first line, sent the moment the answer gate accepts it (before the
+    full answer): only what that decision passed, every citation decided for the reader."""
+    text: str = Field(max_length=400)
+
+
 ASK_EVENTS: dict[str, type[_Model]] = {
     "understanding": UnderstandingEvent, "status": StatusEvent, "sources": SourcesEvent,
-    "token": TokenEvent, "answer": AnswerPayload, "error": ErrorBody}
+    "verdict": VerdictEvent, "token": TokenEvent, "answer": AnswerPayload,
+    "error": ErrorBody}
 
 
 # ---- suggest ---------------------------------------------------------------------------
@@ -429,6 +493,10 @@ class LatePo(_Model):
     amount_suspect: Optional[str] = Field(None, description="Why the total is suspect "
                                           "(shown as a check, never as fact).")
     reason: str
+    confirmation: Optional[Literal["none_found"]] = Field(
+        None, json_schema_extra=_optional,
+        description="none_found: no supplier confirmation is linked to the order. Null: "
+                    "the list's entry does not say (the order's page decides it).")
     open_url: str
     sources: list[Source] = Field(default_factory=list)
 
@@ -453,6 +521,12 @@ class NeedsAttention(_Model):
         None, json_schema_extra=_optional,
         description="Every late purchase order this reader may see; late_pos lists the "
                     "longest late of them.")
+    refreshing: bool = Field(False, description="True while some checks' findings are of "
+                                                "older data than the records now show: those "
+                                                "are left out until the checks re-run on it.")
+    checked_on: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="While refreshing: when the checks left out last ran (ISO time).")
     test_records_hidden: Optional[str] = Field(
         None, json_schema_extra=_optional,
         description="How many test or placeholder records were left out, in words "
@@ -507,7 +581,8 @@ class CostLine(_Model):
 
 
 class CostSource(_Model):
-    kind: Literal["item_ledger", "credit_memo", "return", "material_po", "quote"]
+    kind: Literal["item_ledger", "sage_cost_of_sales", "credit_memo", "return",
+                  "material_po", "quote"]
     label: str
     detail: Optional[str] = None
     amount: Optional[Money] = None
@@ -525,6 +600,11 @@ class CostBreakdown(_Model):
     lines: list[CostLine] = Field(default_factory=list)
     cost_sources: list[CostSource] = Field(default_factory=list)
     drivers: list[str] = Field(default_factory=list)
+    why: list[str] = Field(default_factory=list, json_schema_extra=_optional,
+                           description="The margin's why in one or two plain sentences, "
+                                       "e.g. 'Item cost rose 36.4% (1.59 → 2.17 CAD/PCS) "
+                                       "while the price was unchanged: −69.00 CAD against "
+                                       "<order> (<date>).'; each a driver's own figures.")
     gaps: list[NotFound] = Field(default_factory=list)
 
 
@@ -536,6 +616,27 @@ class OrderMargin(_Model):
     margin: Optional[Money] = None
     margin_pct: Optional[str] = None
     gap: Optional[str] = Field(None, description="Why no margin is stated, in words.")
+    gap_code: Optional[str] = Field(None, json_schema_extra=_optional,
+                                    description="The first reason's code, e.g. "
+                                                "COST_NOT_VALUED (BC holds no valid cost).")
+
+
+class ProductMargin(_Model):
+    """One item's margin over the customer's checked order lines of the period."""
+    item: str = Field(description="The item, e.g. 'item FG-9 (Tube 50 ml)'.")
+    quantity: str
+    unit: Optional[str] = None
+    revenue: Optional[Money] = None
+    booked_cost: Optional[Money] = None
+    margin: Optional[Money] = None
+    margin_pct: Optional[str] = None
+    orders: int = Field(ge=0, description="Checked orders carrying the item.")
+    unit_cost_range: Optional[str] = Field(None, description="Lowest to highest booked unit "
+                                                             "cost over those orders.")
+    complete: bool = Field(description="False: an invoiced order without a checked margin "
+                                       "carries the item, or not every order was read; the "
+                                       "figures cover the checked orders only.")
+    sources: list[Source] = Field(default_factory=list)
 
 
 class Profitability(_Model):
@@ -575,6 +676,9 @@ class Profitability(_Model):
     orders: list[OrderMargin] = Field(default_factory=list, description="Worst margin first.")
     orders_more: int = Field(0, ge=0, description="Orders read but not listed (the list "
                                                   "stops at 30).")
+    products: list[ProductMargin] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Margin per item over the checked orders, worst first.")
     breakdown: Optional[CostBreakdown] = None
     next_action: Optional[NextAction] = Field(None, description="A suggested next step "
                                                                 "from the facts only.")
@@ -678,6 +782,60 @@ class CustomerSummary(_Model):
     not_established: list[str] = Field(default_factory=list)
 
 
+# ---- proposals (drafts and proposed updates; nothing is ever sent or written) -----------
+
+ProposalKind = Literal["vendor_chase", "customer_heads_up", "record_update"]
+
+
+class DraftFigure(_Model):
+    """One figure a proposal states (a PO number, a date, a line's quantity, a contact) and
+    the record or message it was read from; every one passed this reader's gate."""
+    label: str
+    value: str
+    source: Optional[Source] = Field(None, description="Null only for the record's own "
+                                                       "label, which the page states.")
+
+
+class ProposedChange(_Model):
+    """A record field the evidence shows is out of date: before, after and why. The person
+    applies it in the system named; the Workbench writes nothing."""
+    system: System
+    record: str = Field(description="The record to change, e.g. 'PO 90412'.")
+    field: str = Field(description="The field, in words, e.g. 'Expected receipt date'.")
+    before: str
+    after: str
+    before_source: Source
+    evidence: Source = Field(description="The message or document that states the new "
+                                         "value.")
+    why: str
+
+
+class Proposal(_Model):
+    """A follow-up draft (email text the person edits, copies or opens in their own mail
+    client) or a proposed record update. Never sent and never applied by the Workbench."""
+    id: str
+    kind: ProposalKind
+    title: str
+    subject: ObjectRef
+    to: Optional[str] = Field(None, description="The recipient's address, only when a "
+                                                "cited source this reader may open states it "
+                                                "and the people directory clears it; null "
+                                                "when unknown.")
+    to_name: Optional[str] = None
+    contact_note: Optional[str] = Field(None, description="Where the address was found, or "
+                                                          "that no contact was found.")
+    email_subject: Optional[str] = None
+    body: Optional[str] = Field(None, description="The draft text; every date and figure in "
+                                                  "it is one of ``figures``.")
+    change: Optional[ProposedChange] = None
+    figures: list[DraftFigure] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list, description="What the draft could not "
+                                                                 "state from the records, in "
+                                                                 "words.")
+    sent: Literal[False] = Field(False, description="Always false: the Workbench never "
+                                                    "sends or writes; the person does.")
+
+
 class ObjectPage(_Model):
     object_id: str
     type: str
@@ -702,6 +860,9 @@ class ObjectPage(_Model):
     customer: Optional[CustomerSummary] = Field(
         None, json_schema_extra=_optional,
         description="A customer's revenue, orders and contacts (customers only).")
+    profitability: Optional[Profitability] = Field(
+        None, json_schema_extra=_optional,
+        description="A BC customer's or sales order's margin and why (the margin section).")
     complete: bool = Field(
         True, description="False on a quick first read (?quick=1): the record, its "
                           "timeline and links without the checks (lateness, landed cost, "
@@ -710,6 +871,47 @@ class ObjectPage(_Model):
     access_label: Optional[str] = Field(
         None, description="'Viewing with full-read access' when served under the reader's "
                           "declared full-read grant.")
+    proposals: list[Proposal] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Follow-up drafts and proposed updates built from this page's gated "
+                    "facts and trail; never sent or applied.")
+
+
+PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin")
+
+
+class ObjectSection(_Model):
+    """One slow part of a record's page, read after the quick first read (``?quick=1``)
+    and merged into it by the app: ``late`` (the late-PO check: ``status`` when it
+    establishes one, and ``late_lines``), ``people`` (people on the record),
+    ``landed_cost``, ``trail`` (how we know, with the page's ``not_found`` said against
+    it), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged."""
+    object_id: str
+    section: Literal["late", "people", "landed_cost", "trail", "margin"]
+    applies: bool = Field(True, description="False: this kind of record has no such "
+                                            "section (nothing to show, nothing withheld).")
+    status: Optional[ObjectStatus] = Field(
+        None, json_schema_extra=_optional,
+        description="late: the record's status as the late-PO check established it "
+                    "(replaces the quick read's); omitted when it established none.")
+    late_lines: list[LateLine] = Field(default_factory=list)
+    people: Optional[list[Person]] = Field(None, json_schema_extra=_optional)
+    landed_cost: Optional[LandedCost] = Field(None, json_schema_extra=_optional)
+    trail: Optional[EvidenceTrail] = Field(None, json_schema_extra=_optional)
+    profitability: Optional[Profitability] = Field(
+        None, json_schema_extra=_optional,
+        description="margin: a BC customer's margin and why, or a BC sales order's (its "
+                    "customer's, led by the order).")
+    not_found: Optional[list[NotFound]] = Field(
+        None, json_schema_extra=_optional,
+        description="trail: the page's not-found items said against the trail (replace "
+                    "the quick read's); omitted for the other sections.")
+    proposals: Optional[list[Proposal]] = Field(
+        None, json_schema_extra=_optional,
+        description="trail: the page's follow-up drafts and proposed updates, built from "
+                    "the record, its late lines and this trail (replace the quick read's); "
+                    "never sent or applied. Omitted for the other sections.")
+    access_label: Optional[str] = None
 
 
 # ---- source view -----------------------------------------------------------------------
@@ -852,6 +1054,12 @@ class Briefing(_Model):
     last_visit: Optional[str] = None
     as_of: Optional[str] = None
     complete: bool
+    refreshing: bool = Field(False, description="True while some checks' findings are of "
+                                                "older data than the records now show: those "
+                                                "are left out until the checks re-run on it.")
+    checked_on: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="While refreshing: when the checks left out last ran (ISO time).")
     more: bool = False
     items: list[BriefingItem] = Field(default_factory=list, description="The top items.")
     groups: list[BriefingGroup] = Field(default_factory=list)

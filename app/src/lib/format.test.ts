@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ago, fieldValue, formatMoney, money, objectHref, plainServerNote, readable, safeHref, safeNext, typeLabel, withoutFloatNoise } from "./format";
+import { recordLabel } from "./format";
 
 describe("safeHref", () => {
   it("allows same-origin paths and https links only", () => {
@@ -125,5 +126,16 @@ describe("a float's noise", () => {
     expect(formatMoney("116.25000000000001", "CAD")).toBe("$116.25 CAD");
     expect(fieldValue("directUnitCost", "116.25000000000001")).toBe("116.25");
     for (const kept of ["3.14159265358", "1.2345678.9", "SKU-116.25000000000001x", "116.25"]) expect(withoutFloatNoise(kept)).toBe(kept);
+  });
+});
+
+describe("recordLabel", () => {
+  it("names every order one way, whatever the source wrote", () => {
+    expect(recordLabel("PurchaseOrder", "106001")).toBe("PO 106001");
+    expect(recordLabel("PurchaseOrder", "PO100095")).toBe("PO 100095");
+    expect(recordLabel("PurchaseOrder", "PO 4809")).toBe("PO 4809");
+    expect(recordLabel("SalesOrder", "SO77120")).toBe("SO 77120");
+    expect(recordLabel("Customer", "POLARIS")).toBe("POLARIS");
+    expect(recordLabel("SalesOrder", "SO SO-11")).toBe("SO-11");
   });
 });

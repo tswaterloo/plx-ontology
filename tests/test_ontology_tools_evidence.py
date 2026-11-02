@@ -237,6 +237,11 @@ FULL = Actor("plx", frozenset({"full"}))
 OPS = Actor("plx", frozenset({"ops"}))
 
 
+SAGE_SHIPMENT = "api://sage.oe_shipment_header/%7B%22shiuniq%22%3A%22407939%22%7D@0000000000000001-1"
+SAGE_ORDER = "api://sage.oe_order_header/%7B%22orduniq%22%3A%221339649%22%7D@0000000000000001-1"
+SAGE_INVOICE = "api://sage.oe_invoice_header/%7B%22invuniq%22%3A%22294356%22%7D@0000000000000001-1"
+
+
 class StubReader(ev.CitationReader):
     """A CitationReader over fixed records; mail is withheld from readers without
     'full' unless the mailbox is mbx-a (the reader's own audience)."""
@@ -268,6 +273,18 @@ class StubReader(ev.CitationReader):
                                "row.broken_json": "{not json", "row.empty_json": "",
                                "row.nested": {"ship": {"carrier": "UPS"}, "flag": 5},
                                "row.nested_text": '{"ship": {"carrier": "UPS"}, "flag": 5}'}}
+        if handle == SAGE_SHIPMENT:
+            return {"status": "resolved", "lineage": "sage_bronze", "digest": _h(handle),
+                    "document": False, "gaps": [],
+                    "fields": {"row.shidate": "20180710", "row.audtdate": "20180711",
+                               "row.shinumber": "SH1000006908"}}
+        if handle == SAGE_ORDER:
+            return {"status": "resolved", "lineage": "sage_bronze", "digest": _h(handle),
+                    "document": False, "gaps": [],
+                    "fields": {"row.orddate": 20170411, "row.expdate": 0}}
+        if handle == SAGE_INVOICE:
+            return {"status": "resolved", "lineage": "sage_bronze", "digest": _h(handle),
+                    "document": False, "gaps": [], "fields": {"row.invdate": "20181332"}}
         if handle.startswith("original://o-1"):
             if page is not None and page > 2:
                 return {"status": "unresolvable", "reason": "original_not_resolvable"}
@@ -1016,6 +1033,28 @@ class ReadTests(unittest.TestCase):
         one = ok(self, "plx.read", self.call(citation=handle,
                                              field_path="row.custom_fields.fmId"))
         self.assertEqual(one["fields"], {"row.custom_fields.fmId": 7})
+
+    def test_a_sage_compact_date_is_read_as_its_iso_date(self):
+        """A column the schema reads as Sage's compact date (``yyyymmdd_date``) is shown as
+        its ISO date, as text or as a number, whole or as the one field read; a claim of
+        that ISO date holds on the cell. Another column, Sage's zero date and a value
+        that is no calendar day are shown as held."""
+        from operating import claim_checks
+        whole = ok(self, "plx.read", self.call(citation=SAGE_SHIPMENT))["fields"]
+        self.assertEqual(whole["row.shidate"], {"untrusted_text": "2018-07-10", "origin": {
+            "citation": SAGE_SHIPMENT, "field_path": "row.shidate"}})
+        self.assertEqual(whole["row.audtdate"]["untrusted_text"], "20180711")
+        self.assertEqual(whole["row.shinumber"]["untrusted_text"], "SH1000006908")
+        one = ok(self, "plx.read", self.call(citation=SAGE_SHIPMENT, field_path="row.shidate"))
+        self.assertEqual(one["fields"]["row.shidate"]["untrusted_text"], "2018-07-10")
+        order = ok(self, "plx.read", self.call(citation=SAGE_ORDER))["fields"]
+        self.assertEqual(order["row.orddate"]["untrusted_text"], "2017-04-11")
+        self.assertEqual(order["row.expdate"], 0)
+        invoice = ok(self, "plx.read", self.call(citation=SAGE_INVOICE))["fields"]
+        self.assertEqual(invoice["row.invdate"]["untrusted_text"], "20181332")
+        claim = {"kind": "text", "value": "2018-07-10"}
+        form = claim_checks.value_form(claim, SAGE_SHIPMENT, {}, "row.shidate")
+        self.assertTrue(claim_checks._same_value(claim, "20180710", form))
 
     JSON_ROW = "api://public.app_purchase_order/j@0000000000000001-1"
 

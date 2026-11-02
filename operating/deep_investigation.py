@@ -36,17 +36,33 @@ from typing import Any, Mapping, Sequence
 # most one repair, the final message: 25-45 s measured), and the tool calls it may make
 # besides the answer gate's.
 SESSION_SECONDS = 150
-RESERVE_SECONDS = 45
+# Measured (12 of 240 sessions at 105 s / 120 s): the gate had passed the answer and the
+# session was cut while the agent wrote its final message. Research now ends 60 s before
+# the session, every call 50 s before it: composing the claims (p90 28 s), the gate's
+# decisions (p90 9 s) and a short final message fit.
+RESERVE_SECONDS = 60
+# Every tool call ends this many seconds before the session's end (``call_limits``: the
+# host cuts each call's limit to it), so the agent always has time to submit to the
+# answer gate and write its reply before the app's hard cap.
+SUBMIT_SECONDS = 50
 MAX_STEPS = 30
 # Reads still served after the budget is spent, once the agent has submitted to the
 # answer gate: re-reading a passage to repair a refused quote.
 REPAIR_READS = 3
 REPAIR_TOOLS = frozenset({"plx.read"})
-# Calls still served after the research time ends (before the session's end), so a
-# session slowed by a loaded machine or a slow tool reads what it found before it
-# submits, instead of submitting nothing it read (measured: a map found at the deadline
-# and never opened). The step budget has no grace.
+# Calls still served after the research time ends, so a session slowed by a loaded
+# machine or a slow tool reads what it found before it submits, instead of submitting
+# nothing it read (measured: a map found at the deadline and never opened). Only fast
+# reads (``GRACE_TOOLS``: plx.read, a page or a find in a text; p99 5 s, limit 20 s),
+# and only while one still ends before the submit deadline (``SUBMIT_SECONDS``), so a
+# grace call can never push the session past its cap. The step budget has no grace.
 GRACE_CALLS = 3
+GRACE_TOOLS = frozenset({"plx.read"})
+# What the reply says when research was cut short (budget spent, a call stopped at its
+# limit), when the agent did not say it itself (``agent_session.gated_run``).
+STOPPED_LINE = ("I stopped researching at the time limit; the parts not yet checked are "
+                "listed as open.")
+STOPPED_WORDS = "stopped researching"
 # Turns a budgeted session may take (each turn makes one or more calls): above the step
 # budget, so the budget, not the turn cap, ends the research.
 MAX_TURNS = 45
@@ -71,9 +87,70 @@ INTENT_SOURCES = {
 }
 
 
-def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
+# Question intents an open question has (``query_understanding.classify_intent``): a
+# reason, a comparison or a rule needs the deep method even when it names one record.
+OPEN_INTENTS = frozenset({"why", "compare", "policy"})
+
+
+def is_lookup(question: Any) -> bool:
+    """Whether ``question`` is a lookup of one named record: the identifier grammar reads
+    exactly one identifier in it (``query_understanding.identifier_leads``) and its intent
+    is not an open one (``OPEN_INTENTS``). A lookup gets the short method
+    (``method_rule(lookup=True)``); any other question, and anything the analysis cannot
+    read, the deep one."""
+    from operating import query_understanding as qu
+    if not isinstance(question, str) or not question.strip():
+        return False
+    try:
+        leads = qu.identifier_leads(question)
+        intent = qu.classify_intent(question)
+    except Exception:  # noqa: BLE001 - unread: the deep method
+        return False
+    return len(leads) == 1 and intent not in OPEN_INTENTS
+
+
+def lookup_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
                 reserve: int = RESERVE_SECONDS) -> str:
-    """The deep-investigation method, as the task states it (``agent_session``)."""
+    """The method for a lookup of one named record (``is_lookup``): the record first, its
+    plan and links in the same turn, mail and documents only for what the question asks
+    of them, then the answer: no written plan and no broad search (measured: a lookup
+    run with the deep method took a median 11 turns)."""
+    return " ".join([
+        "How to answer: the question asks about one named record. Answer it from that "
+        "record and what links to it; never guess, and do not give up while a source you "
+        "can open may hold the answer.",
+        "(1) No written plan: start with your tool calls. Make independent calls together "
+        "in one turn: in your first turn, plx.find on the identifier (its forms in the "
+        "question analysis) and, when a plan family fits the question (plx.investigate; "
+        "its description lists them), plx.investigate on the record (root {\"identifier\": "
+        "\"<the identifier>\"}).",
+        "(2) In your next turn, read in one go what the question asks of the record you "
+        "found: plx.object, plx.around along the links it needs, plx.timeline for its dated "
+        "events, plx.documents (sources [\"graph_mail\"] for mail) for what a message or "
+        "document says. Where the identifier names several records, say which ones; read "
+        "the documents and threads the answer rests on whole (the paging rule above). A "
+        "search that finds nothing proves no absence: before calling a value missing, try "
+        "one more form or source.",
+        "(3) Submit as soon as each value the question asks for is cited or has its gap; do "
+        "not search beyond what the question asks. Before the gate, check that each value "
+        "appears verbatim in its quote and each quote verbatim in the text a tool returned "
+        "for its handle. A claim the gate refuses: re-read its passage, correct the quote or "
+        "the citation and submit again.",
+        f"(4) Budget: at most {seconds} seconds and {steps} tool calls; tool results carry a "
+        + BUDGET_KEY + " note. Once the tools refuse with " + BUDGET_REFUSAL + ", submit "
+        "what you have established, never nothing.",
+        "(5) Answer what is established: each established part with its citation (partial "
+        "when part is missing); each missing piece gets a gap whose subject says what is "
+        "missing, what you searched and where it would live.",
+    ])
+
+
+def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
+                reserve: int = RESERVE_SECONDS, *, lookup: bool = False) -> str:
+    """The deep-investigation method, as the task states it (``agent_session``);
+    ``lookup``: the short method of a lookup of one named record (``lookup_rule``)."""
+    if lookup:
+        return lookup_rule(seconds, steps, reserve)
     return " ".join([
         "How to investigate: work as a careful analyst who answers from the sources, never "
         "guesses, and does not give up while a source you can open may hold the answer.",
@@ -110,7 +187,9 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "the searches that found nothing. A search that finds nothing proves no absence: "
         "before you call a sub-question missing, run at least one more targeted search "
         "for it (another wording or identifier form, another source, or a link from a "
-        "record you found).",
+        "record you found). Before you settle a sub-question on a document, read the top "
+        "document for it whole at least once (page with text_offset until next_offset is "
+        "null, or to the read cap): a find hit or a search snippet is not a read.",
         "(4) Cross-check: where two sources state the same fact (a record and a message, "
         "the same order in two systems, a map and the record it describes), compare them "
         "(plx.compare, or the two values side by side). The system of record decides a "
@@ -118,8 +197,12 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "conflicting_sources gap.",
         "(5) Critique your draft before the answer gate: each value appears verbatim in "
         "its quote and each quote verbatim in the text a tool returned for its handle "
-        "(copy, never paraphrase); each sub-question is answered or has its gap; nothing "
-        "rests on a file name or your own inference. Fix what fails, then submit. A "
+        "(copy, never paraphrase); each claim cites only a handle you read in this session "
+        "(a handle seen in a search result is read with plx.read first); where a use "
+        "case's own document (listed in its use_case block) and another copy hold the "
+        "same text, read and cite the use case's own document; each sub-question is "
+        "answered or has its gap; nothing rests on a file name or your own inference. "
+        "Fix what fails, then submit. A "
         "claim the gate refuses: re-read its passage, correct the quote or the citation "
         "(its current version when told so) and submit again; never drop an established "
         "fact for a quote you can fix.",
@@ -129,13 +212,39 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "you already found that the answer needs (a few reads stay open), then submit; "
         "past that, or once the steps are used, the tools refuse further reads ("
         + BUDGET_REFUSAL + ") and only the answer gate stays open: submit what you have "
-        "established then, never nothing. Spend the budget: a question answered in three "
-        "calls was rarely searched broadly enough.",
-        "(7) Answer what is established. When you found part of the answer, state each "
+        "established then, never nothing. Each call also has a time limit: a call that "
+        "passes it returns tool_timed_out with nothing; narrow it or go on without it. "
+        "When research was cut short (the time limit, a refused or timed-out call), begin "
+        "your reply with \"I stopped researching at the time limit; not yet checked: <the "
+        "open sub-questions>\". Spend the budget: a question answered in three calls was "
+        "rarely searched broadly enough.",
+        "(7) Answer what is established, the answer itself first: the number a how-many "
+        "question asks (then what it counts), the list a which or what question asks "
+        "(each item and how many), the figures a comparison asks (each side and the "
+        "difference), then the evidence. A plan entry whose first step reads \"in words: "
+        "...\" (a direction) is said in those words, beside the cited figures it names, in "
+        "one sentence. When you found part of the answer, state each "
         "established part with its citation (partial), never only that it cannot be "
         "answered. Each missing piece gets a gap whose subject says precisely what is "
         "missing, what you searched (the sources and the terms) and where it would live "
-        "(the system, mailbox, record or document that would hold it).",
+        "(the system, mailbox, record or document that would hold it). After the gate's "
+        "decision, write the reply at once and keep it short (a few sentences and the json "
+        "block): the session ends at its time limit whether or not the reply is written. "
+        "An answer that "
+        "says a source was only partly read, or that any part of the question stays "
+        "unchecked, is partial, never answerable; a figure from a map's worked example "
+        "is that example's, never the record's.",
+        "(8) Lead with the answer itself, in the question's own terms, before any detail, "
+        "each part a value claim: a how-many question with its count (plx.find the "
+        "object type with filters for the set, then plx.aggregate count over its set "
+        "handle: a complete count is the exact figure, its records the count's inputs; a "
+        "record a filter cannot reach is a gap, never a smaller count); a what-changed or "
+        "what-is-new-since question with plx.changes since that moment (its object types), "
+        "listing each changed record or giving their count; a what-is-open or which "
+        "question with the records themselves (each one's number and the status that "
+        "makes it one); a did-we-get-everything question with the ordered and the "
+        "received quantity per item and the difference between them (short or over by "
+        "it, an expression over the two cited quantities), then whether that is all.",
     ])
 
 
@@ -231,13 +340,74 @@ def question_analysis(question: str, pinned: str = "",
         lines.append(f"It reads as a {intent.replace('_', ' ')} question: usually settled "
                      f"by {INTENT_SOURCES[intent]}.")
     lines += question_kind_hints(question)
-    hint = use_case_hint(question)
+    # The catalog hint only for a question that names no identifier: on questions naming
+    # an order, PO or document number it sent the agent to maps over the records
+    # (measured, 20 cards' messy variants, hint alone: 27/60 correct without, 19/60 with).
+    hint = "" if any(any(ch.isdigit() for ch in lead.text) for lead in leads) \
+        else use_case_hint(question)
     if hint:
         lines.append(hint)
+    lines += answer_shape_hints(question)
     if not lines:
         return ""
     return ("Question analysis (the Workbench's query understanding; hints for your plan, "
             "never facts): " + " ".join(lines))
+
+
+# Answer shapes the method names (``answer_shape_hints``): the words a question of that
+# shape uses, never a record, party or case.
+HOW_MANY = re.compile(r"\b(how many|number of|count of|count the|how much stock is on)\b", re.I)
+LATE_WORDS = re.compile(r"\b(late|overdue|past due|behind)\b", re.I)
+PO_WORDS = re.compile(r"\b(pos?|p\.o\.?s?|purchase orders?)\b", re.I)
+OPEN_ORDERS = re.compile(r"\b(open|outstanding|unreceived|not (?:yet )?received)\b", re.I)
+ORDER_WORDS = re.compile(r"\b(pos?|purchase orders?|orders?|sales orders?|sos?)\b", re.I)
+RECEIVED_VS_ORDERED = re.compile(
+    r"\b(received|receiv\w*|get|got|came in)\b.*\b(ordered|order(?:ed)? qty)\b"
+    r"|\b(ordered)\b.*\b(received|get|got|came in)\b|\bshort(?:fall|ed|age)?\b", re.I)
+# A set of records in a state, asked in the plural (quarantined lots, batches on hold):
+# its size is part of the answer.
+STATE_SET = re.compile(r"\b(quarantin\w*|on (?:qc )?hold|held up|blocked|expir\w*|late|"
+                       r"overdue|past due)\b", re.I)
+PLURAL_RECORDS = re.compile(r"\b(lots|batches|pos|purchase orders|orders|receipts|"
+                            r"invoices|shipments|items)\b", re.I)
+COUNT_HINT = (
+    "It asks how many (or which, a set whose size is part of the answer): state the "
+    "number first, then what it counts. Count with an exact "
+    "count of what you may read, never by paging a list: late purchase orders are Home's "
+    "late list (plx.find query \"which POs are late\": its late-order count, every late "
+    "order, cite the listed ones); anything else is plx.aggregate with object_type and "
+    "filters (plx.find's) and measure {\"op\": \"count\", \"property\": a property "
+    "every member carries} (no scan cap). Submit it as a count claim {\"op\": \"count\", "
+    "\"of\": records the tool listed}; a count the tool marks incomplete is \"at least N\".")
+OPEN_ORDERS_HINT = (
+    "It asks for a party's open orders: list each open order's number first and say how "
+    "many (plx.find object_type with filters on the party and the status: its candidates "
+    "and completeness.total, or plx.aggregate's count over the same filters), each order "
+    "cited.")
+RECEIVED_HINT = (
+    "It compares received with ordered: run plx.investigate three_way_match (or "
+    "plx.process purchase_to_invoice with include_groups) and state per item first the "
+    "ordered and received quantities and the shortfall (its quantity check's sums and "
+    "difference, in its unit), each figure cited; the shortfall an expression claim over "
+    "the cited ordered and received values.")
+
+
+def answer_shape_hints(question: str) -> list[str]:
+    """What the answer leads with for the shape the question reads as (a count, a party's
+    open orders, received against ordered), from its own words only: hints, never facts.
+    Empty for any other question and for anything that is not text."""
+    if not isinstance(question, str) or not question.strip():
+        return []
+    out = []
+    if HOW_MANY.search(question) or (STATE_SET.search(question)
+                                      and PLURAL_RECORDS.search(question)):
+        out.append(COUNT_HINT)
+    if OPEN_ORDERS.search(question) and ORDER_WORDS.search(question) \
+            and not HOW_MANY.search(question):
+        out.append(OPEN_ORDERS_HINT)
+    if RECEIVED_VS_ORDERED.search(question):
+        out.append(RECEIVED_HINT)
+    return out
 
 
 # Question kinds whose standard route the method names (``question_kind_hints``): the words
@@ -330,6 +500,7 @@ class Budget:
         self.ends_at = ends_at if ends_at is not None else deadline
         self.repair_reads, self.grace_calls = repair_reads, grace_calls
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
+        self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
 
     @property
     def active(self) -> bool:
@@ -362,7 +533,7 @@ class Budget:
             self.steps += 1
             return None
         if why == "time" and not self.submissions and self.grace < self.grace_calls \
-                and (self.ends_at is None or now < self.ends_at):
+                and name in GRACE_TOOLS and self._grace_fits(now):
             # research time is up, the session's is not: a last few reads, then submit
             self.grace += 1
             self.steps += 1
@@ -382,6 +553,17 @@ class Budget:
                         "" if self.submissions else " After a submission, up to "
                         f"{self.repair_reads} reads stay open to repair a refused quote."))}
 
+    def _grace_fits(self, now: float) -> bool:
+        """Whether a grace read still ends before the submit deadline."""
+        from operating.call_limits import MIN_SECONDS
+        return self.ends_at is None or now < self.ends_at - SUBMIT_SECONDS - MIN_SECONDS
+
+    @property
+    def cut_short(self) -> bool:
+        """Whether research ended before the agent was done: a call refused for the
+        budget, a grace read used, or a call stopped at its limit."""
+        return bool(self.refused or self.grace or self.timed_out)
+
     def note(self, now: float) -> dict[str, Any]:
         """The note a served call's result carries."""
         out: dict[str, Any] = {"steps_used": self.steps}
@@ -392,9 +574,9 @@ class Budget:
         if self.ends_at is not None:
             out["session_seconds_left"] = max(0, int(self.ends_at - now))
         if self.spent(now) == "time" and not self.submissions and \
-                self.grace < self.grace_calls:
+                self.grace < self.grace_calls and self._grace_fits(now):
             left = self.grace_calls - self.grace
-            out["next"] = (f"research time is up: at most {left} more read"
+            out["next"] = (f"research time is up: at most {left} more plx.read call"
                            + ("" if left == 1 else "s") + " of what you already found, "
                            "then submit to the answer gate")
         elif self.spent(now):
@@ -404,7 +586,8 @@ class Budget:
     def summary(self) -> dict[str, Any]:
         return {"steps_used": self.steps, "max_steps": self.max_steps,
                 "refused_after_budget": self.refused, "repair_reads": self.repairs,
-                "grace_calls": self.grace,
+                "grace_calls": self.grace, "timed_out": self.timed_out,
+                "cut_short": self.cut_short,
                 "submissions": self.submissions}
 
 

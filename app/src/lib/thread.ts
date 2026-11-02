@@ -6,13 +6,22 @@ import { ask } from "./api";
 import { noticeKind, plainError } from "./errors";
 import type { AskEvent, HistoryTurn } from "./types";
 
+/** The progress steps a turn keeps (the latest). */
+export const MAX_STEPS = 8;
+
 /** Pure: fold one stream event into a turn. */
 export function applyEvent(turn: Turn, ev: AskEvent): Turn {
   switch (ev.event) {
     case "understanding":
       return { ...turn, understanding: ev.data };
-    case "status":
-      return { ...turn, status: ev.data.message };
+    case "status": {
+      // each plain-words step once, in the order the work did them
+      const said = typeof ev.data?.message === "string" ? ev.data.message : "";
+      const steps = turn.steps ?? [];
+      return { ...turn, status: said || turn.status, steps: said && steps[steps.length - 1] !== said ? [...steps, said].slice(-MAX_STEPS) : steps };
+    }
+    case "verdict":
+      return typeof ev.data?.text === "string" && ev.data.text.trim() ? { ...turn, verdict: ev.data.text.trim() } : turn;
     case "sources":
       return { ...turn, sourcesFound: Array.isArray(ev.data.sources) ? ev.data.sources.length : turn.sourcesFound };
     case "token":

@@ -55,6 +55,9 @@ from ontology.units import unit_token
 Call = Callable[[str, dict], Mapping[str, Any]]
 
 MARGIN_FAMILY, LANDED_FAMILY, CHAIN_FAMILY = "F10", "F7", "F12"
+# A Sage O/E order's margin is its own plan (F31, ``operating.sage_order_margin``: the cost
+# Sage booked to cost of sales), with the same entry names as F10.
+SAGE_MARGIN_FAMILY, SAGE_ORDER_BINDING = "F31", "portal.sage_oe_order_header"
 MAX_ORDERS = 60           # orders of one customer read per answer; past it no total
 MAX_PAGES = 8             # answer pages read per plan run
 MATERIAL_POS = 2          # purchase orders of an item whose landed cost is read
@@ -69,11 +72,25 @@ LINE_ITEM = "SalesOrderLine.for_item"
 QUOTE_LINE_OF = "QuoteLine.line_of"
 LINE_RE = re.compile(r"^order_margin_line_(\d+)_(revenue|booked_cost|margin)$")
 WITHHELD_REASONS = frozenset({"marking_withheld", "withheld_by_permission"})
-# Gap reasons of a plan run that describe the record types or bindings, not the order.
-SCHEMA_CAVEATS = frozenset({"DEGRADED_BINDING", "NO_MATCH", "NOT_APPLICABLE_TO_SOURCE"})
+# Gap reasons of a plan run that describe the record types, bindings or the projection as a
+# whole (built from another schema version; conflicts on records no answer entry cites),
+# not the order: never an order's gap, so they never decide whether an order is invoiced
+# or why it has no margin.
+SCHEMA_CAVEATS = frozenset({"DEGRADED_BINDING", "NO_MATCH", "NOT_APPLICABLE_TO_SOURCE",
+                            "SCHEMA_DRIFT", "CONFLICTS_TRUNCATED"})
 LABOUR_GAP = ("LABOUR_OVERHEAD_NOT_RECORDED",
               "labour and overhead are not booked separately: BC API v2.0 serves no capacity "
               "or overhead ledger, so the item ledger cost is the only booked cost")
+FREIGHT_GAP = ("FREIGHT_DUTY_NOT_IN_ITEM_COST",
+               "inbound freight and duty are expensed to the G/L (ERP-D-015), not to the item "
+               "ledger, so the item cost leaves them out; a purchase order's landed cost per "
+               "unit is shown where it is computed, never added to the margin")
+# A Sage order's cost is the cost of sales Sage posted for its invoiced items:
+# no BC ledger is read for it.
+SAGE_COST_GAP = ("LABOUR_OVERHEAD_NOT_RECORDED",
+                 "the cost is what Sage posted to cost of sales for the invoiced items, as "
+                 "Sage costed each item: labour, overhead, freight and duty are in it only as "
+                 "far as Sage's item cost held them; nothing is added")
 
 
 class ProfitError(ValueError):
@@ -180,6 +197,14 @@ _FILLER = re.compile(
     re.IGNORECASE)
 
 
+# The system a margin is asked in ("orders in BC", "(BC orders)"): margins are Business
+# Central figures, so the words name no customer. Only as a phrase: a customer's own name
+# may hold "BC" (a province).
+_SYSTEM_WORDS = re.compile(r"\b(?:in|from|per)\s+(?:bc|business\s+central)(?=\s*(?:[?!.,;:)]|$))|"
+                           r"\b(?:bc|business\s+central)(?=\s+(?:orders?|sales|invoices?)\b)",
+                           re.IGNORECASE)
+# Chat contractions of question words ("hows our margin", "what's our profit").
+_CHAT_WORDS = re.compile(r"\b(?:how|what)'?s\b|\b(?:doing|going|looking)\b", re.IGNORECASE)
 LEGAL_SUFFIXES = ("incorporated", "inc", "limited", "ltd", "llc", "corporation", "corp",
                   "co", "company", "ltee", "lte")
 
@@ -209,6 +234,8 @@ def customer_words(question: str) -> str:
     text = ORDER_TOKEN.sub(" ", text)
     text = re.sub(r"\border\s+(?:no\.?\s*|number\s+|#\s*)?[A-Z]*-?\d[\w-]*", " ", text,
                   flags=re.IGNORECASE)
+    text = _SYSTEM_WORDS.sub(" ", text)
+    text = _CHAT_WORDS.sub(" ", text)
     text = _FILLER.sub(" ", text)
     text = re.sub(r"[?!.,;:'\"()]+", " ", text)
     return " ".join(text.split())[:200]
@@ -234,6 +261,55 @@ def order_words(question: str) -> str | None:
         re.search(r"\border\s+(?:no\.?\s*|number\s+|#\s*)?([A-Z]*-?\d[\w-]*)\b",
                   question or "", re.IGNORECASE)
     return found.group(1).replace(" ", "").upper() if found else None
+
+
+ORDER_MARGIN_WORDS = re.compile(r"\b(margins?|profit\w*|made on|make on|money|loss|lost|"
+                                r"lose|losing)\b", re.IGNORECASE)
+
+
+def order_margin_question(question: str) -> bool:
+    """Whether ``question`` names a sales order and asks its margin or why it made or lost
+    money ("what margin did we make on S-ORD101084", "why did SO100011 lose money")."""
+    return bool(order_words(question) and ORDER_MARGIN_WORDS.search(question or ""))
+
+
+def _key(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(text or "").casefold())
+
+
+def order_customer(call: Call, number: str) -> tuple[str, str] | None:
+    """(order, customer) object ids of the one Business Central sales order whose own
+    order number is ``number`` as this reader reads it, and of the one customer it is
+    ordered by; None when no such order, several, or not one customer (never picked)."""
+    found = _safe(call, "plx.find", {"query": number, "object_type": "SalesOrder",
+                                     "limit": 8}) or {}
+    orders = []
+    for candidate in found.get("candidates") or ():
+        obj = candidate.get("object") if isinstance(candidate, Mapping) else None
+        oid = str((obj or {}).get("object_id") or "")
+        if (obj or {}).get("object_type") != "SalesOrder" or \
+                not oid.split(":")[1:2] or not oid.split(":")[1].startswith("bc."):
+            continue
+        card = _safe(call, "plx.object", {"object_id": oid, "properties": ["order_number"]})
+        said = {_key((v or {}).get("value")) for v in _values(card or {}).values()}
+        if _key(number) in said | {_key(_display(obj))} and oid not in orders:
+            orders.append(oid)
+    if len(orders) != 1:
+        return None
+    customers, _e, _w, _c = _around(call, orders[0], [(ORDER_LINK, "forward")], 2)
+    if len(customers) != 1:
+        return None
+    return orders[0], customers[0]["object_id"]
+
+
+def period_covering(call: Call, order: str, period: "Period") -> "Period":
+    """``period`` widened back to the order's own date when the question asked no period
+    and the order is older, so the order asked about is always one of those read."""
+    dates = _order_dates(call, order)
+    if period.asked or not dates or min(dates) >= period.start:
+        return period
+    start = min(dates)
+    return Period(start, period.end, f"since {start.isoformat()}", False)
 
 
 @dataclass(frozen=True)
@@ -371,6 +447,7 @@ class Line:
     invoice_handles: list[str] = field(default_factory=list)
     credit_handles: list[str] = field(default_factory=list)
     ledger_handles: list[str] = field(default_factory=list)
+    cost_handles: list[str] = field(default_factory=list)    # Sage: the costed invoice lines
     return_handles: list[str] = field(default_factory=list)
     gap: str | None = None
 
@@ -403,6 +480,11 @@ class Order:
     def decided(self) -> bool:
         return self.margin is not None
 
+    @property
+    def sage(self) -> bool:
+        """A Sage O/E order: its cost is what Sage posted to cost of sales (F31)."""
+        return self.object_id.split(":", 2)[1:2] == [SAGE_ORDER_BINDING]
+
 
 def _passed(name: str, by_name: Mapping[str, Mapping[str, Any]], seen: set[str]) -> bool:
     """Whether the entry and every input it rests on (transitively) is decided and checked:
@@ -420,8 +502,10 @@ def _passed(name: str, by_name: Mapping[str, Mapping[str, Any]], seen: set[str])
 
 
 def read_order(call: Call, order: Order) -> Order:
-    """The order's F10 margin run, parsed: totals only when decided and checked."""
-    run = investigate(call, MARGIN_FAMILY, order.object_id)
+    """The order's margin run (F10; a Sage order F31), parsed: totals only when decided and
+    checked."""
+    run = investigate(call, SAGE_MARGIN_FAMILY if order.sage else MARGIN_FAMILY,
+                      order.object_id)
     order.run = run
     if run is None:
         order.gaps.append(("ORDER_MARGIN_NOT_READ", "the order margin could not be run for "
@@ -446,9 +530,11 @@ def read_order(call: Call, order: Order) -> Order:
         basis = entry.get("basis") or []
         line_id = str(basis[0]) if basis else ""
         if index not in lines:
-            items = {line_id} if line_id.startswith("Product:") else _line_items(call, line_id)
-            lines[index] = Line(index, line_id, next(iter(items)) if len(items) == 1 else None)
+            lines[index] = Line(index, "", None)
         line = lines[index]
+        if line_id and not line.line_id:   # the first part naming its order line
+            items = {line_id} if line_id.startswith("Product:") else _line_items(call, line_id)
+            line.line_id, line.item = line_id, next(iter(items)) if len(items) == 1 else None
         value = _dec(entry.get("value")) if _passed(name, by_name, set()) else None
         setattr(line, {"revenue": "revenue", "booked_cost": "cost", "margin": "margin"}[part],
                 value)
@@ -460,6 +546,9 @@ def read_order(call: Call, order: Order) -> Order:
         for input_name in entry.get("inputs") or ():
             _line_input(line, by_name.get(input_name), returns)
     order.lines = [lines[i] for i in sorted(lines)]
+    for line in order.lines:        # a line margin only beside both of its figures
+        if line.revenue is None or line.cost is None:
+            line.margin = None
     currency = (by_name.get("order_margin") or {}).get("currency") or next(
         (ln.currency for ln in order.lines if ln.currency), None)
     for line in order.lines:
@@ -467,7 +556,10 @@ def read_order(call: Call, order: Order) -> Order:
     if not (run.get("claim_checks") or {}).get("passed"):
         order.gaps.append(("CLAIM_CHECK_FAILED", "a cited input of the order margin did not "
                                                  "check against its record"))
-    elif run.get("pages_unread"):
+    elif run.get("pages_unread") and not (order.sage and "order_margin" in by_name):
+        # A BC order's total rests on its line entries; a Sage order's (stated or not, with
+        # the run's gaps saying why) on its summed invoices (``operating.sage_order_margin``),
+        # on the first page whatever the order's size.
         order.gaps.append(("ANSWER_PAGES_UNREAD", "the order margin answer was not read whole"))
     elif _passed("order_margin", by_name, set()):
         total = by_name["order_margin"]
@@ -480,10 +572,21 @@ def read_order(call: Call, order: Order) -> Order:
             order.margin = order.revenue = order.cost = order.margin_pct = None
             order.gaps.append(("ORDER_FIGURES_INCONSISTENT",
                                "the order's revenue, cost and margin do not add up"))
+        elif run.get("pages_unread"):
+            order.gaps.append(("ORDER_LINES_NOT_ALL_SHOWN", f"the order figure is whole; "
+                               f"{len(order.lines)} of its item lines are shown (the rest "
+                               "are on answer pages not read)"))
+    cited = {str((e.get("citation") or {}).get("l1_handle") or "").split("#", 1)[0]
+             for e in by_name.values() if isinstance(e.get("citation"), Mapping)}
     for gap in run.get("gaps") or ():
         code = str(gap.get("reason") or "unknown").upper()
         if code in SCHEMA_CAVEATS:
             continue       # caveats of the record types, not of this order
+        if code == "AS_OF_CAPTURE" and str(gap.get("subject") or "").split("#", 1)[0] \
+                not in cited:
+            # the host's label for captured files this session served (any call's): a
+            # provenance note, the order's only when the margin cites that file
+            continue
         if code == "STALE_SOURCE":
             order.stale = str(gap.get("detail") or "")[:300]
             continue
@@ -508,8 +611,11 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
     if kind == "SalesInvoiceLine" and prop == "invoiced_quantity" and value is not None:
         line.invoiced += value
         line.unit = line.unit or entry.get("unit")
-    elif kind == "SalesInvoiceLine" and handle and handle not in line.invoice_handles:
-        line.invoice_handles.append(handle)
+    elif kind == "SalesInvoiceLine" and handle:
+        if handle not in line.invoice_handles:
+            line.invoice_handles.append(handle)
+        if prop == "unit_cost" and handle not in line.cost_handles:   # Sage's costed line
+            line.cost_handles.append(handle)
     elif kind == "SalesCreditMemoLine" and prop == "credited_quantity" and value is not None:
         line.credited += value
     elif kind == "SalesCreditMemoLine" and prop == "amount_excluding_tax" and value is not None:
@@ -593,12 +699,16 @@ def item_label(card: Mapping[str, Any]) -> str:
 
 
 def materials(call: Call, item: str, before: date | None, currency: str | None,
-              unit: str | None) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+              unit: str | None, sage: bool = False
+              ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """The latest purchase orders of the item (ordered no later than ``before``) with the
-    landed cost per unit of their line for it (F7), or the typed gaps."""
+    landed cost per unit of their line for it (F7), or the typed gaps (``sage``: worded for
+    a Sage order, whose cost is Sage's posted cost of sales)."""
     lines, _e, _w, _c = _around(call, item, [(PO_LINE_ITEM, "reverse")], 50)
     if not lines:
         return [], [("MATERIAL_SOURCE_NOT_LINKED",
+                     "no purchase order line names this item; the order's cost is Sage's "
+                     "posted cost of sales, which states no material breakdown" if sage else
                      "no purchase order line in Business Central names this item; a "
                      "manufactured item's materials are not on the BC item ledger the API "
                      "serves")]
@@ -781,7 +891,8 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                   period: Period | None = None, focus: str | None = None,
                   skip_order: Callable[[str], bool] | None = None) -> dict[str, Any]:
     """The customer's profitability over the period, its orders ranked worst first, and why
-    the focus order (named, else the worst) lost money (module doc). Raises ``ProfitError``
+    the focus order (``focus``: its number or object id; else the worst) lost money
+    (module doc). Raises ``ProfitError``
     when the customer is not readable for this reader."""
     period = period or period_of(question, today)
     card = _safe(call, "plx.object", {"object_id": customer})
@@ -897,12 +1008,13 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     focus_order = None
     if focus:
         key = re.sub(r"[^a-z0-9]", "", focus.casefold())
-        focus_order = next((o for o in visible
-                            if re.sub(r"[^a-z0-9]", "", o.number.casefold()) == key), None)
+        focus_order = next((o for o in visible if o.object_id == focus
+                            or re.sub(r"[^a-z0-9]", "", o.number.casefold()) == key), None)
         if focus_order is None:
             out["gaps"].append({"code": "FOCUS_ORDER_NOT_FOUND", "subject": focus[:60],
                                 "detail": "the order named is not one of this customer's "
                                 "orders in the period that you can see"})
+    out["focus"] = focus_order.number if focus_order is not None else None
     if focus_order is None and decided:
         focus_order = ranked[0]
     items: dict[str, dict[str, Any]] = {}
@@ -910,21 +1022,112 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         for line in order.lines:
             _item_card(call, line.item, items)
     out["breakdown"] = _breakdown(call, focus_order, items) if focus_order else None
+    if out["breakdown"]:
+        out["breakdown"]["previous"] = previous_sales(focus_order, decided)
+    out["products"] = products(decided, blocking, covered)
     out["drivers"] = drivers(out["breakdown"], items) if out["breakdown"] else []
+    out["why"] = why(out["drivers"])
     out["next_action"] = next_action(out, visible, items)
     out["items"] = items
     out["trail"] = trail(out)
     return out
 
 
+def _same_unit(a: str | None, b: str | None) -> bool:
+    return bool(a and b and unit_token(a) == unit_token(b))
+
+
+def previous_sales(order: Order, decided: Sequence[Order]) -> list[dict[str, Any]]:
+    """Each checked line of ``order`` beside the same item's line on this customer's latest
+    earlier order with a checked margin (with none, its earliest later one: ``relation``
+    next), dated by first posted invoice, same currency and unit, nothing converted: unit price and unit cost then and now, and what each change
+    did to this order's margin at its quantity (``price_effect`` + ``cost_effect`` = the
+    change in margin against selling this quantity at the earlier unit price and cost).
+    Both lines' figures are checked order-margin lines; Decimal throughout."""
+    if not order.dates:
+        return []
+    out = []
+    for line in order.lines:
+        if line.item is None or line.margin is None or line.quantity <= 0:
+            continue
+        others = [(o.dates[0], o.number, o, ln) for o in decided
+                  if o is not order and o.dates
+                  for ln in o.lines
+                  if ln.item == line.item and ln.margin is not None and ln.quantity > 0
+                  and ln.currency == line.currency and _same_unit(ln.unit, line.unit)]
+        # same-day orders in number order
+        earlier = [e for e in others if (e[0], e[1]) < (order.dates[0], order.number)]
+        if not others:
+            continue
+        day, _n, then, was = max(earlier, key=lambda e: (e[0], e[1])) if earlier else \
+            min(others, key=lambda e: (e[0], e[1]))
+        price_then, cost_then = was.revenue / was.quantity, was.cost / was.quantity
+        price_now, cost_now = line.revenue / line.quantity, line.cost / line.quantity
+        out.append({
+            "item": line.item, "line": line, "then_order": then, "then_line": was,
+            "then_date": day.isoformat(), "relation": "previous" if earlier else "next",
+            "currency": line.currency, "unit": line.unit,
+            "quantity": line.quantity, "price_now": price_now, "price_then": price_then,
+            "cost_now": cost_now, "cost_then": cost_then,
+            "price_effect": (line.revenue - line.quantity * price_then).quantize(CENT),
+            "cost_effect": (line.quantity * cost_then - line.cost).quantize(CENT),
+            "price_change_pct": (price_now - price_then) * 100 / price_then
+            if price_then else None,
+            "cost_change_pct": (cost_now - cost_then) * 100 / cost_then if cost_then else None})
+    return out
+
+
+def products(decided: Sequence[Order], blocking: Sequence[Order], covered: bool
+             ) -> list[dict[str, Any]]:
+    """Margin per item (and currency and unit, nothing converted) over the checked lines of
+    the orders with a checked margin, worst first: quantity, revenue, item cost, margin,
+    margin % on price, the orders and the lowest and highest unit cost. ``complete`` only
+    when every order of the period was read and no invoiced order without a checked margin
+    carries the item (or a line of no known item): else the figures are those of the
+    checked orders only."""
+    open_items = {ln.item for o in blocking for ln in o.lines}
+    rows: dict[tuple, dict[str, Any]] = {}
+    for order in decided:
+        for line in order.lines:
+            if line.item is None or line.margin is None or line.quantity <= 0:
+                continue
+            key = (line.item, line.currency, unit_token(line.unit) if line.unit else None)
+            row = rows.setdefault(key, {
+                "item": line.item, "currency": line.currency, "unit": line.unit,
+                "quantity": Decimal(0), "revenue": Decimal(0), "cost": Decimal(0),
+                "margin": Decimal(0), "orders": [], "unit_costs": [], "handles": []})
+            row["quantity"] += line.quantity
+            row["revenue"] += line.revenue
+            row["cost"] += line.cost
+            row["margin"] += line.margin
+            row["unit_costs"].append(line.cost / line.quantity)
+            if order.number not in row["orders"]:
+                row["orders"].append(order.number)
+            row["handles"] += [h for h in line.ledger_handles[:1] + line.invoice_handles[:1]
+                               if h not in row["handles"]][:max(0, 4 - len(row["handles"]))]
+    out = []
+    for row in rows.values():
+        costs = row.pop("unit_costs")
+        row.update(low_unit_cost=min(costs), high_unit_cost=max(costs),
+                   margin_pct=(row["margin"] * 100 / row["revenue"]).quantize(CENT)
+                   if row["revenue"] else None,
+                   complete=covered and row["item"] not in open_items
+                   and None not in open_items)
+        out.append(row)
+    return sorted(out, key=lambda r: (r["margin"], str(r["item"])))[:30]
+
+
 # What an order's first gap says when it blocks the verdict ("1 invoiced order has no cost
 # value in BC (S-ORD101177)"); another code reads as its words.
 BLOCK_WORDS = {"COST_NOT_VALUED": "has no cost value in BC",
+               "SAGE_COST_NOT_VALUED": "has no cost value in Sage",
                "COST_NOT_YET_ACTUAL": "has no actual cost in BC yet",
                "LINE_NOT_INVOICED": "is only partly invoiced",
                "LINE_PARTIALLY_INVOICED": "is only partly invoiced",
                "ORDER_MARGIN_NOT_READ": "could not be read"}
 MARGIN_BASIS = "on item cost only"
+SAGE_MARGIN_NOTE = ("A Sage order's cost is what Sage posted to cost of sales, so labour "
+                    "and overhead are in it only as Sage costed the item.")
 MARGIN_NOTE = ("Labour and overhead aren't booked in Business Central, so this overstates "
                "true margin.")
 
@@ -992,6 +1195,13 @@ def _breakdown(call: Call, order: Order, items: dict[str, dict[str, Any]]) -> di
                             "detail": f"booked item-ledger cost of {len(line.ledger_handles)}"
                             " shipment entr" + ("y" if len(line.ledger_handles) == 1 else
                                                 "ies")})
+        if line.cost_handles:
+            many = len(line.cost_handles) != 1
+            sources.append({"kind": "sage_cost_of_sales", "item": line.item,
+                            "label": row["label"], "amount": line.cost,
+                            "currency": line.currency, "handles": line.cost_handles[:4],
+                            "detail": f"cost Sage posted to cost of sales for "
+                            f"{len(line.cost_handles)} invoice line{'s' if many else ''}"})
         if line.credit_handles:
             sources.append({"kind": "credit_memo", "item": line.item, "label": row["label"],
                             "amount": line.credit_amount, "currency": line.currency,
@@ -1010,12 +1220,13 @@ def _breakdown(call: Call, order: Order, items: dict[str, dict[str, Any]]) -> di
         line = row["line"]
         if line.item is None:
             continue
-        found, missing = materials(call, line.item, before, line.currency, line.unit)
+        found, missing = materials(call, line.item, before, line.currency, line.unit,
+                                   order.sage)
         for got in found:
             got.update(item=line.item, label=row["label"])
         material_rows += found
         gaps += [(code, f"{row['label']}: {detail}") for code, detail in missing]
-    gaps.append(LABOUR_GAP)
+    gaps += [SAGE_COST_GAP] if order.sage else [FREIGHT_GAP, LABOUR_GAP]
     quote, quote_gaps = quote_comparison(call, order, items)
     gaps += quote_gaps
     return {"order": order, "lines": lines, "sources": sources, "materials": material_rows,
@@ -1047,8 +1258,17 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
             text += f" against revenue {money_words(line.revenue, lc)}"
         if row["share_of_cost"] is not None and len(priced) > 1:
             text += f"; it is {_pct(row['share_of_cost'])} of the order's booked cost"
+        short = f"{row['label'][0].upper()}{row['label'][1:]} {verb} " \
+            f"{money_words(abs(line.margin), lc)}"
+        if row["unit_cost"] is not None and row["unit_price"] is not None:
+            short += (f": cost {unit_words(row['unit_cost'], lc, line.unit)} against price "
+                      f"{unit_words(row['unit_price'], lc, line.unit)}")
         out.append({"kind": "line_margin", "item": line.item, "text": text + ".",
-                    "handles": (line.ledger_handles + line.invoice_handles)[:4]})
+                    "short": short + ".",
+                    "handles": (line.ledger_handles + line.cost_handles
+                                + line.invoice_handles)[:4]})
+    for row in breakdown.get("previous") or ():
+        out.append(_previous_driver(row, order, items))
     credited = [r for r in breakdown["lines"] if r["line"].credit_amount]
     if credited:
         amount = _sum([r["line"].credit_amount for r in credited])
@@ -1088,6 +1308,116 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
                         f"for on {order.number}."})
             break
     return out
+
+
+def _num(value: Decimal) -> str:
+    """A per-unit figure as ``unit_words`` writes it, without currency or unit."""
+    return unit_words(value, "X", "U").rsplit(" ", 1)[0]
+
+
+def _signed(value: Decimal, currency: str | None) -> str:
+    """``−69.00 CAD`` / ``+12.00 CAD``: an effect on the margin, its sign always said."""
+    return ("−" if value < 0 else "+") + money_words(abs(value), currency)
+
+
+def _previous_short(row: Mapping[str, Any]) -> str:
+    """One plain sentence: what moved against the item's neighbouring sale and what it did
+    to the margin, e.g. "Item cost rose 36.4% (1.59 → 2.17 CAD/PCS) while the price was
+    unchanged: −69.00 CAD against S-ORD1 (2026-03-02)." Every figure is the row's own."""
+    cur, unit = row["currency"], row["unit"]
+    per = f" {cur or '(currency not stated)'}" + (f"/{unit}" if unit else " per unit")
+
+    def moved(what: str, now: Decimal, then: Decimal, pct: Decimal | None) -> str:
+        verb = "rose" if now > then else "fell"
+        by = f" {_pct(abs(pct))}" if pct is not None else ""
+        return f"{what} {verb}{by} ({_num(then)} → {_num(now)}{per})"
+
+    cost = row["cost_now"] != row["cost_then"]
+    price = row["price_now"] != row["price_then"]
+    then = f"against {row['then_order'].number} ({row['then_date']})"
+    if not cost and not price:
+        return (f"Price ({_num(row['price_now'])}{per}) and item cost "
+                f"({_num(row['cost_now'])}{per}) were unchanged {then}.")
+    parts = []
+    if cost:
+        parts.append(moved("Item cost", row["cost_now"], row["cost_then"],
+                           row["cost_change_pct"]))
+    if price:
+        parts.append(moved("price" if cost else "Price", row["price_now"],
+                           row["price_then"], row["price_change_pct"]))
+    joined = " and ".join(parts)
+    if cost and not price:
+        joined += " while the price was unchanged"
+    elif price and not cost:
+        joined += " at an unchanged item cost"
+    effect = (row["cost_effect"] if cost else Decimal(0)) + \
+        (row["price_effect"] if price else Decimal(0))
+    return f"{joined}: {_signed(effect, cur)} {then}."
+
+
+WHY_ORDER = ("cost_change", "price_change", "line_margin", "credit", "material",
+             "quote_cost", "quote_price", "unchanged")
+
+
+def why(found: Sequence[Mapping[str, Any]], limit: int = 2) -> list[str]:
+    """The margin's why in one or two plain sentences: what moved against the item's
+    neighbouring sale (largest effect first), else the losing line, credits, a dearer
+    purchase or the quote. Each sentence is a driver's own (never a new figure)."""
+    def rank(d: Mapping[str, Any]) -> tuple[int, int]:
+        kind = str(d.get("kind"))
+        return (WHY_ORDER.index(kind) if kind in WHY_ORDER else len(WHY_ORDER), 0)
+    ranked = sorted((d for d in found if isinstance(d, Mapping)), key=rank)
+    changed = [d for d in ranked if d.get("kind") in ("cost_change", "price_change")]
+    if changed:   # what moved explains the margin; an unchanged line says nothing
+        ranked = changed + [d for d in ranked if d.get("kind") not in
+                            ("cost_change", "price_change", "unchanged")]
+    return [str(d.get("short") or d["text"]) for d in ranked][:limit]
+
+
+def _change(pct: Decimal | None) -> str:
+    if pct is None:
+        return ""
+    return f", {'up' if pct > 0 else 'down'} {_pct(abs(pct))}"
+
+
+def _previous_driver(row: Mapping[str, Any], order: Order,
+                     items: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """One line against the same item's earlier sale: what moved (cost, price, neither)
+    and by how much it moved this order's margin."""
+    label = item_label(items.get(row["item"], {}))
+    label = label[0].upper() + label[1:]
+    cur, unit, then = row["currency"], row["unit"], row["then_order"].number
+    qty = f"{_plain(row['quantity'], Decimal('1'))} {unit or 'units'}"
+    parts = []
+    if row["cost_now"] != row["cost_then"]:
+        effect = row["cost_effect"]
+        parts.append(f"item cost {unit_words(row['cost_now'], cur, unit)} against "
+                     f"{unit_words(row['cost_then'], cur, unit)}{_change(row['cost_change_pct'])}"
+                     f", which {'took' if effect < 0 else 'added'} {money_words(abs(effect), cur)} "
+                     f"{'off' if effect < 0 else 'to'} the margin at {qty}")
+    if row["price_now"] != row["price_then"]:
+        effect = row["price_effect"]
+        parts.append(f"price {unit_words(row['price_now'], cur, unit)} against "
+                     f"{unit_words(row['price_then'], cur, unit)}"
+                     f"{_change(row['price_change_pct'])}, which "
+                     f"{'took' if effect < 0 else 'added'} {money_words(abs(effect), cur)} "
+                     f"{'off' if effect < 0 else 'to'} the margin")
+    if parts:
+        text = (f"{label} on {order.number} against {then} ({row['then_date']}, the "
+                f"{row['relation']} order with it): " + "; ".join(parts) + ".")
+        kind = "cost_change" if row["cost_now"] != row["cost_then"] else "price_change"
+        if row["price_now"] == row["price_then"]:
+            text = text[:-1] + f"; the price was unchanged at " \
+                f"{unit_words(row['price_now'], cur, unit)}."
+    else:
+        kind = "unchanged"
+        text = (f"{label} sold at the same price ({unit_words(row['price_now'], cur, unit)}) "
+                f"and item cost ({unit_words(row['cost_now'], cur, unit)}) on {order.number} "
+                f"as on {then} ({row['then_date']}), the {row['relation']} order with it.")
+    line, was = row["line"], row["then_line"]
+    return {"kind": kind, "item": row["item"], "text": text, "short": _previous_short(row),
+            "handles": (line.ledger_handles[:1] + line.invoice_handles[:1]
+                        + was.ledger_handles[:1] + was.invoice_handles[:1])}
 
 
 def next_action(out: Mapping[str, Any], orders: Sequence[Order],
@@ -1135,9 +1465,10 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
     if undecided:
         codes = sorted({c for o in undecided for c, _ in o.gaps})
         first = undecided[0]
+        systems = sorted({"Sage" if o.sage else "Business Central" for o in undecided})
         return {"text": f"Ask Finance to complete {first.number}"
                 + (f" and {len(undecided) - 1} more order(s)" if len(undecided) > 1 else "")
-                + " in Business Central (" + ", ".join(c.lower().replace("_", " ")
+                + " in " + " and ".join(systems) + " (" + ", ".join(c.lower().replace("_", " ")
                                                        for c in codes[:2])
                 + ") so their margin can be stated.",
                 "rule": "orders_without_margin",
@@ -1230,6 +1561,7 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 __all__ = ["Period", "ProfitError", "customer_words", "drivers", "money_words",
-           "not_read_words", "normal_name",
-           "next_action", "order_words", "period_of", "profit_question", "profitability",
+           "not_read_words", "normal_name", "previous_sales", "products",
+           "next_action", "order_customer", "order_margin_question", "order_words",
+           "period_covering", "period_of", "profit_question", "profitability",
            "trail"]

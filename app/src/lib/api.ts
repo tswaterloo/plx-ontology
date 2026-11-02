@@ -19,6 +19,8 @@ import type { LateList,
   HomeResponse,
   Me,
   ObjectPage,
+  ObjectSection,
+  SectionName,
   SourceView,
   SuggestResponse,
 } from "./types";
@@ -125,6 +127,34 @@ export function getObject(type: string, id: string, signal?: AbortSignal, quick 
   return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
 }
 
+/** The slow sections of a record's page, read after its quick first read and merged in
+ * (`mergeSection`): the late check, people, landed cost, how we know and the margin. */
+export const PAGE_SECTIONS: readonly SectionName[] = ["late", "people", "landed_cost", "trail", "margin"];
+
+export function getObjectSection(section: SectionName, type: string, id: string, signal?: AbortSignal): Promise<ObjectSection> {
+  if (!PAGE_SECTIONS.includes(section) || !isObjectType(type) || !id || id.length > 700)
+    return Promise.reject(new ApiError(404, "not_found"));
+  return getJson<ObjectSection>(`/api/object-section/${section}/${type}/${encodeURIComponent(id)}`, signal);
+}
+
+/** `page` with one section merged, as the full page (no `quick`) carries it. */
+export function mergeSection(page: ObjectPage, s: ObjectSection): ObjectPage {
+  if (s.object_id !== page.object_id) return page;
+  switch (s.section) {
+    case "late":
+      return { ...page, ...(s.status ? { status: s.status } : {}), late_lines: s.late_lines ?? [] };
+    case "people":
+      return { ...page, people: s.people ?? null };
+    case "landed_cost":
+      return { ...page, landed_cost: s.landed_cost ?? null };
+    case "trail":
+      return { ...page, trail: s.trail ?? null, ...(s.not_found ? { not_found: s.not_found } : {}), ...(s.proposals ? { proposals: s.proposals } : {}) };
+    case "margin":
+      return { ...page, profitability: s.profitability ?? null };
+  }
+  return page;
+}
+
 export function getSource(handle: string, textOffset = 0, signal?: AbortSignal): Promise<SourceView> {
   if (!handle || handle.length < 3 || handle.length > 2000) return Promise.reject(new ApiError(404, "not_found"));
   const off = Number.isSafeInteger(textOffset) && textOffset > 0 ? `&text_offset=${textOffset}` : "";
@@ -135,7 +165,7 @@ export async function sendFeedback(body: FeedbackRequest): Promise<FeedbackRespo
   return (await (await call("/api/feedback", { method: "POST", json: body })).json()) as FeedbackResponse;
 }
 
-const ASK_EVENTS = new Set(["understanding", "status", "sources", "token", "answer", "error"]);
+const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "token", "answer", "error"]);
 
 /**
  * POST /api/ask and yield typed events as they arrive. Unknown event names

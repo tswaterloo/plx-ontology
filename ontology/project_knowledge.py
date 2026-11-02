@@ -25,14 +25,14 @@ from urllib.parse import unquote
 
 from integrations.capture_store import FORMAT, REMOVALS_COLUMN, make_handle, removals_of
 from integrations.knowledge_source import BRAIN_KIND, SOURCE
-from ontology.project import (CapturedRecord, ProjectionError, _Relations, _file_marks,
+from ontology.project import (Reopenable, CapturedRecord, ProjectionError, _Relations, _file_marks,
                               _watermark, begin_snapshot)
 from ontology.project_bc import INCOMPLETE, NOT_CAPTURED
 
 RELATION = "items"
 
 
-class KnowledgeCaptures:
+class KnowledgeCaptures(Reopenable):
     """Every retained version of a knowledge capture store file
     (``integrations.knowledge_source.store_path``), read-only."""
 

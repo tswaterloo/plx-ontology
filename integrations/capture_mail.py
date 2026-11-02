@@ -2873,6 +2873,24 @@ class MailPriority:
             self.oldest[key] = (oldest, row[1])
         return oldest is None or oldest > self.horizon
 
+    def _delta_due(self, state: Mapping[str, Any] | None) -> bool:
+        """Whether a held folder's delta is due: its round is current (a deltaLink, no
+        frontier) and it was last read over :data:`FRESH_SECONDS` ago. Whatever its
+        senders or status: a notification-heavy folder's new mail is read with every
+        other folder's, and so is a folder still incomplete only for what lies behind its
+        deltaLink (``history`` all backfilling its older mail, attachments deferred),
+        else the history bands (millions of messages while ``history`` all backfills)
+        starve its new mail for days (2026-11-02: 156 backfilling folders unread since
+        30 Oct). A visit reads the delta before anything else; reaching its deltaLink
+        stamps ``last_complete_at`` even when the backfill then runs on, so the later of
+        the two stamps is when its new mail was last read."""
+        if state is None or not state["delta_url"] or state["next_url"]:
+            return False
+        if state["status"] != "complete" and terminal_reason(state["reason"]):
+            return False
+        due = _stamp(self.store._clock() - timedelta(seconds=FRESH_SECONDS))
+        return max(state["last_run_at"] or "", state["last_complete_at"] or "") < due
+
     def key(self, unit: tuple[str, str]) -> tuple[int, int]:
         """(band, mailbox rank) of a unit as its folder stands now."""
         mailbox_id, _folder = unit
@@ -2882,11 +2900,13 @@ class MailPriority:
                 and state["status"] != "complete":
             return LAST, rank
         folder_id = state["folder_id"] if state is not None else None
+        complete = state is not None and state["status"] == "complete"
+        if self._delta_due(state):
+            return FRESH_DUE, rank
         if (mailbox_id, folder_id) in self.bulk:
             return BULK, rank
-        if state is not None and state["status"] == "complete":
-            due = _stamp(self.store._clock() - timedelta(seconds=FRESH_SECONDS))
-            return (FRESH_DUE if (state["last_run_at"] or "") < due else FRESH), rank
+        if complete:
+            return FRESH, rank
         first = mailbox_id in self.first
         if self._recent(state, folder_id):
             return (FIRST_RECENT if first else OTHER_RECENT), rank
@@ -4065,7 +4085,7 @@ class MailCapture:
                         # This folder's turn is over: the run reads the other folders'
                         # pages, then comes back to this cursor (run()).
                         store.save_folder(mailbox_id, folder_key, status="incomplete",
-                                          reason=TURN)
+                                          reason=TURN, last_run_at=store.now())
                         return {**result, "status": "incomplete", "complete": False,
                                 "reason": TURN}
                 raise SourceUnavailable("graph listing invalid: delta stream ended "
@@ -4140,7 +4160,7 @@ class MailCapture:
 
         def stop(reason: str) -> dict[str, Any]:
             store.save_folder(mailbox_id, folder_key, status="incomplete", reason=reason,
-                              **({} if reason == TURN else {"last_run_at": store.now()}))
+                              last_run_at=store.now())
             return {**result, "status": "incomplete", "complete": False, "reason": reason}
 
         def exhausted() -> str | None:

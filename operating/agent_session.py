@@ -20,6 +20,7 @@ scoreboard's path without importing the evaluation side.
 from __future__ import annotations
 
 import argparse
+import copy
 from dataclasses import dataclass, field
 import json
 import os
@@ -31,7 +32,8 @@ import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
-from operating import tool_results
+from operating import handle_aliases, tool_results
+from operating.handle_aliases import Aliases
 from operating.agent_environment import agent_environment
 from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY, _JSON_FENCE,
                                        answer_candidate, answer_problems, canonical,
@@ -60,16 +62,28 @@ MAX_RESULT_CHARS = 200_000
 # states only those the gate returns (``answer_gate_record`` records what the gate
 # returned in the session; ``gate_final_reply`` withholds the rest from the reply).
 ANSWER_GATE_RULE = (
-    "Before the json block, submit your answer's claims to the Workbench's answer gate: call "
-    "plx.case_get with only {\"answer\": {\"claims\": [{\"text\": \"<one sentence>\", "
-    "\"citations\": [\"<handle a tool returned>\"], \"value_claims\": [{\"value\": "
-    "<the value>, \"citation\": \"<one of its citations>\", \"field\": "
-    "\"row.<column>\", \"quote\": \"<its quote>\", \"role\": \"<its quantity_role>\", "
-    "\"unit\": \"<its unit>\"}]}], \"unknowns\": [\"<a value the question asks for that no record "
-    "holds>\"], \"text\": \"<your answer text>\"}}. A count or sum you computed over cited "
-    "records is one value claim, never a bare value: {\"value\": <the result>, \"op\": "
+    "Before the json block, submit your answer to the Workbench's answer gate: call "
+    "plx.case_get with only {\"answer\": {\"text\": \"<your answer text>\", \"claims\": "
+    "[{\"name\": \"<snake_case answer value name>\", \"citation\": \"<handle a tool "
+    "returned>\", \"field\": \"row.<column>\"}], \"unknowns\": [\"<a value the question "
+    "asks for that no record holds>\"], \"question\": \"<the question as asked, "
+    "verbatim>\", \"gaps\": [<only a conflicting_sources gap or a gap about a whole "
+    "source, as the answer block gives it>]}} (the question's own identifiers need no "
+    "citation in your text; its figures do). One claim per answer value, written once: "
+    "a claim citing one record field gives no \"value\" (the gate reads it from that "
+    "field, as this reader may see it now, and states it as recorded), so write no claim "
+    "sentence and do not copy the value; on free text or a page (row.body_text, "
+    "row.content_text, text) give instead \"quote\": the passage as written that states "
+    "the fact (a figure there also gives \"value\": the figure as printed). Add \"role\", "
+    "\"unit\", \"currency\" or \"lead\": true only where the rules above call for them. "
+    "A decision with outcome \"answered\" ends "
+    "the session: the app renders your answer from that submission (its claims, text, "
+    "each unknown as a gap, and gaps), so submit it complete. A count or sum you computed "
+    "over cited "
+    "records is one value claim, never a bare value: {\"name\": ..., \"value\": "
+    "<the result>, \"op\": "
     "\"count\" or \"sum\", \"of\": [{\"citation\": <each record's handle>, \"field\": "
-    "\"row.<column>\" (sum only)}]}, the claim citing those handles. An expression over "
+    "\"row.<column>\" (sum only)}]}. An expression over "
     "figures printed in cited texts is one value claim too: {\"value\": <the result>, "
     "\"op\": \"expression\", \"expression\": \"x0 - x1\", \"of\": [{\"citation\": "
     "<handle>, \"field\": \"text\", \"value\": \"<the figure as printed>\", \"quote\": "
@@ -87,13 +101,24 @@ ANSWER_GATE_RULE = (
     "the refused ones once: fix them and submit again. text_check.uncovered lists numbers "
     "of your text no passing claim states (or a value it writes negated): add each as a "
     "cited claim and value, or drop it from the text; text_check.unchecked lists words no "
-    "claim of their sentence states. The final decision's reply.text is your answer text "
-    "without what no passed claim backs: use it. A gate call refused before the gate "
+    "claim of their sentence states. Give every value claim the name of the answer value "
+    "it states (\"name\", snake_case; a calculation's name on its one value claim): the "
+    "app builds the answer's values from the claims the gate passes, under those names, "
+    "and its text from the text you submitted, so you never write them a second time. "
+    "A gate call refused before the gate "
     "(InputValidationError: its input is not valid JSON) decided nothing: correct its "
     "JSON (one object, every bracket closed once) and call the gate again.")
 
 
 ANSWER_GATE_TOOL = "plx.case_get"
+
+# The final message after the gate's decision: every token of it is written while the
+# reader waits (measured: a median 15 s from the last tool result to the reply), so the
+# prose is short and the json block is the answer.
+REPLY_RULE = (
+    "Once the gate has decided, write your final message at once: at most four short "
+    "sentences of prose (no headings, no bullet lists, no restated gaps), then the json "
+    "block.")
 
 
 def answer_gate_record(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -290,6 +315,14 @@ def _gate_results(events: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any
     record field): then the agent replaced that value, the earlier decision no longer
     stands and none is in force (the host told the agent so, a repair turn:
     ``answer_gate.CLEARED_BY_CONTRADICTION``)."""
+    event, refused = _deciding_event(events)
+    return (event.get("result") if event is not None else None), refused
+
+
+def _deciding_event(events: Sequence[Mapping[str, Any]]
+                    ) -> tuple[Mapping[str, Any] | None, list[Any]]:
+    """(the gate call whose decision is in force at the session's end, as
+    ``_gate_results`` reads it, or None; the refused claims of every submission)."""
     from operating import answer_gate
     last, refused = None, []
     for event in events:
@@ -300,11 +333,11 @@ def _gate_results(events: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any
             readable = not event.get("is_error") and isinstance(result, Mapping) \
                 and isinstance(result.get("claims"), list)
             if readable:
-                last = result
+                last = event
                 refused += list(result.get("unsupported_claims") or [])
             elif last is not None and isinstance(arguments["answer"], Mapping) \
                     and answer_gate.contradicted_claims(
-                        last, arguments["answer"].get("claims")):
+                        last["result"], arguments["answer"].get("claims")):
                 last = None
     return last, refused
 
@@ -395,9 +428,13 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
                               "refused_by_gate": len(refused), "sentences": 0,
                               "removed_sentences": 0, "unbacked": []}
 
+    # A name a tool returned verbatim (a record number, a customer or file name) is a
+    # name in the reply, never a figure (``answer_gate.returned_names``).
+    names = answer_gate.returned_names(events, skip_tools=(ANSWER_GATE_TOOL,))
+
     def screen(text: Any, withheld: Sequence[str] = ()) -> dict[str, Any]:
         reply = answer_gate.final_reply(text, claims, unsupported=refused, question=question,
-                                        withheld=withheld)
+                                        withheld=withheld, names=names)
         report["sentences"] += reply["sentences"]
         report["removed_sentences"] += reply["removed_sentences"]
         report["unbacked"] = list(dict.fromkeys(report["unbacked"] + reply["unbacked"]))[
@@ -670,13 +707,27 @@ def allowed_tools(catalog: Sequence[Mapping[str, Any]], *, case_tools: bool = Fa
 GATE_REFUSAL = "tool_not_allowed"
 
 
+def _host_process(server: Sequence[str], env: Mapping[str, str] | None, cwd: str | None, *,
+                  own_group: bool) -> subprocess.Popen:
+    """The host's MCP server for one gate (stdio pipes; ``own_group``: its own process
+    group, killed whole when the gate stops it)."""
+    return subprocess.Popen(list(server), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            text=True, bufsize=1, cwd=cwd,
+                            env=None if env is None else dict(env),
+                            start_new_session=own_group)
+
+
 def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                stdin: Any = None, stdout: Any = None, timing: Path | None = None,
                budget: "deep.Budget | None" = None, budget_log: Path | None = None,
                clock: Callable[[], float] = time.time,
                env: Mapping[str, str] | None = None, cwd: str | None = None,
                at_end: Callable[[Callable[..., Any]], None] | None = None,
-               client_end: Callable[[], None] | None = None) -> int:
+               client_end: Callable[[], None] | None = None,
+               aliases: "Aliases | None" = None,
+               child: "subprocess.Popen | None" = None,
+               prelude: Callable[[Callable[..., Any]], None] | None = None,
+               early: "EarlyStart | None" = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
@@ -693,23 +744,42 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     ``at_end``: called once the client's stream ends, before the host is stopped, with
     ``ask(name, arguments, seconds)``, which sends one ``tools/call`` of an allowed tool to
     the same host session and returns its result (None: refused, no answer in time), so
-    the host may still submit to the session's own gate (``host_submission``). A client
+    the host may still submit to the session's own gate (``host_submission``).
+    ``aliases`` (``operating.handle_aliases``): the session's short handle aliases: each
+    forwarded call's result reaches the client with its handles aliased, and each call's
+    arguments reach the host with the aliases expanded; a call naming an alias this
+    session never minted is refused (``UNKNOWN_ALIAS``), never forwarded. A client
     that went away is never written to again; ``client_end`` is called once the client's
     requests still open are answered (at most ``HOST_SUBMIT_SECONDS``), before
     ``at_end``, so the client can end. The host is stopped (its stdin closed, its
-    process group killed after ``HOST_EXIT_SECONDS``) when the gate ends."""
+    process group killed after ``HOST_EXIT_SECONDS``) when the gate ends. ``child``: the
+    host's server already started from ``server`` (``HostGate`` starts it before the
+    session, so its start-up runs while Claude Code starts), else started here.
+    ``prelude``: called once, in its own thread, as soon as the client's
+    ``notifications/initialized`` has reached the host, with ``ask`` (as ``at_end``'s):
+    the host's own reads in the client's session before its first call (``HostGate``'s
+    prefetch). ``early`` (``EarlyStart``): the host was initialized and read from before
+    the client connected; once it is done, its lines not yet read go to the client, the
+    client's ``initialize`` is answered with the host's own answer to it and its
+    ``notifications/initialized`` is not forwarded (the host is initialized once)."""
     import threading
     allowed, inbound = frozenset(allowed), stdin or sys.stdin
+    # The host's output is read where the early start reads it (its one reader), even
+    # when the host answered no early initialize and the client's goes to it.
+    reader = early
+    if early is not None:
+        early.done.wait()
+        if early.init_result is None:
+            early = None    # the host answered no initialize: the client's goes to it
     outbound = stdout or sys.stdout
-    child = subprocess.Popen(list(server), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                             text=True, bufsize=1, cwd=cwd,
-                             env=None if env is None else dict(env),
-                             start_new_session=at_end is not None)
+    if child is None:
+        child = _host_process(server, env, cwd, own_group=at_end is not None)
     lock, listing, calls = threading.Lock(), set(), set()
     noted: dict[str, Any] = {}   # forwarded call -> the budget note its result carries
     asked: dict[str, list[Any]] = {}   # the host's own call -> [event, its reply]
     gone = threading.Event()   # the client cannot be written to
     waiting: set[str] = set()  # the client's requests forwarded and not yet answered
+    aliased: set[str] = set()  # forwarded tools/call whose result the client reads aliased
 
     def note(entry: Mapping[str, Any]) -> None:
         if timing is None:
@@ -734,7 +804,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             note({"event": "end", "id": message.get("id")})
 
     def pump() -> None:
-        for line in child.stdout:
+        for line in (reader.lines() if reader is not None else child.stdout):
             try:
                 message = json.loads(line)
             except ValueError:
@@ -747,14 +817,50 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 result["tools"] = [tool for tool in result.get("tools") or []
                                    if isinstance(tool, Mapping) and tool.get("name") in allowed]
             key = json.dumps(message.get("id"))
+            if reader is not None and key in reader.ids and "method" not in message:
+                continue    # a late answer to the host's own early request
             if key in asked and "method" not in message:
                 asked[key][1] = message
                 asked[key][0].set()
                 note({"event": "end", "id": message.get("id")})
                 continue
+            if aliases is not None and key in aliased and "method" not in message:
+                aliased.discard(key)
+                result = handle_aliases.shorten_result(aliases, result)
+                message = {**message, "result": result}
             if budget is not None and "id" in message and key in noted:
+                if _timed_out(result):
+                    # the host stopped the call at its limit (``call_limits``)
+                    with lock:
+                        budget.timed_out += 1
+                        summary = budget.summary()
+                    if budget_log is not None:
+                        with lock, budget_log.open("a", encoding="utf-8") as out:
+                            out.write(json.dumps(summary) + "\n")
                 message = {**message, "result": deep.with_note(result, noted.pop(key))}
             emit(message)
+    writing = threading.Lock()   # one line at a time to the host (the client's, ``ask``'s)
+
+    def send(message: Mapping[str, Any]) -> None:
+        with writing:
+            child.stdin.write(json.dumps(message) + "\n")
+            child.stdin.flush()
+
+    def ask(name: str, arguments: Mapping[str, Any], seconds: float) -> Any:
+        if name not in allowed or child.poll() is not None:
+            return None
+        with lock:
+            ident = f"plx-host-{len(asked) + 1}"
+            key = json.dumps(ident)
+            asked[key] = [threading.Event(), None]
+        note({"event": "start", "id": ident, "name": name, "arguments": dict(arguments)})
+        try:
+            send({"jsonrpc": "2.0", "id": ident, "method": "tools/call",
+                  "params": {"name": name, "arguments": dict(arguments)}})
+        except (OSError, ValueError):
+            return None
+        return asked[key][1] if asked[key][0].wait(seconds) else None
+
     relay = threading.Thread(target=pump, daemon=True)
     relay.start()
     for line in inbound:
@@ -764,7 +870,20 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             continue
         if not isinstance(message, dict):
             continue
+        if early is not None and message.get("method") == "initialize" and "id" in message:
+            emit({"jsonrpc": "2.0", "id": message["id"], "result": early.init_result})
+            continue
+        if early is not None and message.get("method") == "notifications/initialized":
+            continue
         params = message.get("params") if isinstance(message.get("params"), Mapping) else {}
+        unknown_aliases: list[str] = []
+        if aliases is not None and message.get("method") == "tools/call" \
+                and "arguments" in params:
+            # The agent's aliases become the handles they stand for before anything reads
+            # the call (the timing line, the budget, the host).
+            params = {**params, "arguments": aliases.expand(params["arguments"],
+                                                            unknown_aliases)}
+            message = {**message, "params": params}
         if message.get("method") == "tools/call" and "id" in message:
             calls.add(json.dumps(message["id"]))
             note({"event": "start", "id": message["id"], "name": params.get("name"),
@@ -776,6 +895,15 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 emit({"jsonrpc": "2.0", "id": message["id"], "result": {
                     "content": [{"type": "text", "text": json.dumps(
                         {"ok": False, "error": GATE_REFUSAL})}], "isError": True}})
+            continue
+        if unknown_aliases:
+            if "id" in message:
+                emit({"jsonrpc": "2.0", "id": message["id"], "result": {
+                    "content": [{"type": "text", "text": json.dumps(
+                        {"ok": False, "error": handle_aliases.UNKNOWN_ALIAS,
+                         "aliases": list(dict.fromkeys(unknown_aliases))[:20],
+                         "detail": "cite only a handle or alias a tool returned in this "
+                                   "session"})}], "isError": True}})
             continue
         if message.get("method") == "tools/call" and budget is not None and budget.active:
             with lock:
@@ -800,25 +928,12 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if "id" in message and "method" in message:
             with lock:
                 waiting.add(json.dumps(message["id"]))
-        child.stdin.write(json.dumps(message) + "\n")
-        child.stdin.flush()
-
-    def ask(name: str, arguments: Mapping[str, Any], seconds: float) -> Any:
-        if name not in allowed or child.poll() is not None:
-            return None
-        ident = f"plx-host-{len(asked) + 1}"
-        key = json.dumps(ident)
-        asked[key] = [threading.Event(), None]
-        note({"event": "start", "id": ident, "name": name, "arguments": dict(arguments)})
-        try:
-            child.stdin.write(json.dumps({"jsonrpc": "2.0", "id": ident,
-                                          "method": "tools/call", "params": {
-                                              "name": name,
-                                              "arguments": dict(arguments)}}) + "\n")
-            child.stdin.flush()
-        except (OSError, ValueError):
-            return None
-        return asked[key][1] if asked[key][0].wait(seconds) else None
+                if aliases is not None and message.get("method") == "tools/call":
+                    aliased.add(json.dumps(message["id"]))
+        send(message)
+        if prelude is not None and message.get("method") == "notifications/initialized":
+            threading.Thread(target=prelude, args=(ask,), daemon=True).start()
+            prelude = None
 
     if at_end is not None or client_end is not None:
         # The client's open requests are answered before it is let go.
@@ -855,11 +970,276 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
 HOST_EXIT_SECONDS = 10
 
 
+# The host's reads before a session's first turn (``HostGate`` prefetch): each call's bound,
+# the wait for all of them before the task is handed to the session anyway (without what
+# was not read), and the largest result shown in the task (a longer one is read by the
+# agent itself).
+PREFETCH_CALL_SECONDS = 20
+PREFETCH_WAIT_SECONDS = 30
+PREFETCH_MAX_CHARS = 40_000
+# The follow-up reads (``fast_answer.follow_reads``) start only this long after the
+# first reads began: a slow host feeds the task sooner, and the session reads the rest.
+PREFETCH_FOLLOW_SECONDS = 10
+
+
 # How long the host waits for the session's end to hand it the host's own submission, and
 # how long that one gate call may take.
 # Bounded so the host's own submission adds at most about 20 s to an Ask.
 HOST_SUBMIT_WAIT_SECONDS = 20
 HOST_SUBMIT_SECONDS = 20
+
+
+class EarlyStart:
+    """The host's own MCP session start, before its client connects (``HostGate``): its
+    ``initialize`` and ``notifications/initialized`` sent as soon as the host process is
+    started, then its first reads (``request``), so they run while Claude Code starts
+    rather than after it has connected. One reader of the host's output: lines no request
+    took wait for the gate (``lines``); ``ids``: the requests made here, whose late
+    answers the gate drops. ``done`` is set when the reads are over (``finish``);
+    ``init_result``: the host's answer to its initialize, None when it gave none."""
+
+    INIT_ID = "plx-host-init"
+
+    def __init__(self, child: "subprocess.Popen", clock: Callable[[], float] = time.monotonic
+                 ) -> None:
+        import queue
+        import threading
+        self.child, self.clock = child, clock
+        self.queue: "queue.Queue[str | None]" = queue.Queue()
+        self.held: list[str] = []
+        self.ids: set[str] = set()
+        self.done = threading.Event()
+        self.init_result: Any = None
+        self._n = 0
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        try:
+            for line in self.child.stdout:
+                self.queue.put(line)
+        except (OSError, ValueError):
+            pass
+        self.queue.put(None)
+
+    def lines(self) -> Iterable[str]:
+        yield from self.held
+        self.held = []
+        while True:
+            line = self.queue.get()
+            if line is None:
+                return
+            yield line
+
+    def _send(self, message: Mapping[str, Any]) -> bool:
+        try:
+            self.child.stdin.write(json.dumps(message) + "\n")
+            self.child.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _await(self, ident: str, seconds: float) -> Any:
+        import queue
+        ends = self.clock() + seconds
+        while (left := ends - self.clock()) > 0:
+            try:
+                line = self.queue.get(timeout=left)
+            except queue.Empty:
+                break
+            if line is None:
+                self.queue.put(None)
+                break
+            try:
+                message = json.loads(line)
+            except ValueError:
+                message = None
+            if isinstance(message, dict) and message.get("id") == ident \
+                    and "method" not in message:
+                return message
+            self.held.append(line)
+        return None
+
+    def initialize(self, seconds: float) -> bool:
+        from operating.mcp_server import PROTOCOL_VERSION
+        self.ids.add(json.dumps(self.INIT_ID))
+        if not self._send({"jsonrpc": "2.0", "id": self.INIT_ID, "method": "initialize",
+                           "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                      "clientInfo": {"name": "plx-host-prefetch",
+                                                     "version": "1"}}}):
+            return False
+        reply = self._await(self.INIT_ID, seconds)
+        result = reply.get("result") if isinstance(reply, Mapping) else None
+        if not isinstance(result, Mapping):
+            return False
+        if not self._send({"jsonrpc": "2.0", "method": "notifications/initialized"}):
+            return False
+        self.init_result = dict(result)
+        return True
+
+    def request(self, name: str, arguments: Mapping[str, Any], seconds: float) -> Any:
+        """``serve_gate``'s ``ask``: one ``tools/call`` to the host, its reply or None."""
+        self._n += 1
+        ident = f"plx-host-early-{self._n}"
+        self.ids.add(json.dumps(ident))
+        if not self._send({"jsonrpc": "2.0", "id": ident, "method": "tools/call",
+                           "params": {"name": name, "arguments": dict(arguments)}}):
+            return None
+        return self._await(ident, seconds)
+
+
+# A started host waits this long for its reader's next session (``HostSpares``), and at
+# most this many wait at once (one per reader, the least recently started stopped first).
+SPARE_SECONDS = 300.0
+SPARE_MOST = 4
+
+
+@dataclass
+class Spare:
+    """A host's MCP server started before its session (``HostSpares``): the process and
+    the file its tool calls read their submit deadline from (``call_limits``)."""
+    child: "subprocess.Popen"
+    deadline: Path
+    directory: Path
+    expires: float
+
+    def set_deadline(self, at: float) -> None:
+        tmp = self.deadline.with_suffix(".tmp")
+        tmp.write_text(f"{at:.3f}", encoding="utf-8")
+        os.replace(tmp, self.deadline)
+
+    def stop(self) -> None:
+        if self.child.poll() is None:
+            try:
+                self.child.stdin.close()
+            except OSError:
+                pass
+            _kill_group(self.child)
+        try:
+            self.child.wait(HOST_EXIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        self.release()
+
+    def release(self) -> None:
+        import shutil
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+
+class HostSpares:
+    """The host start-up taken off the next Ask's path: after a reader's session, the same
+    reader's host server is started again (its own fresh single-use ticket), and the
+    reader's next session takes it already past its start-up (imports, the reader's
+    grant, the store's generation opened). A spare is keyed by everything its process was
+    started with (the reader's identity, the command, the environment but the ticket and
+    the deadline) and is only ever taken by a session of exactly that key: one reader's
+    host never serves another, and each spare serves one session only (its session state
+    is never reused). An expired or exited spare is stopped, never taken; the session then
+    starts its host as before. A spare that finds a newer projection generation reopens
+    it on its first call (``CaseHostTools.request``)."""
+
+    def __init__(self, *, seconds: float = SPARE_SECONDS, most: int = SPARE_MOST,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        import threading
+        self.seconds, self.most, self.clock = seconds, most, clock
+        self._lock = threading.Lock()
+        self._held: dict[str, Spare] = {}
+
+    def take(self, key: str) -> Spare | None:
+        with self._lock:
+            spare = self._held.pop(key, None)
+        if spare is None:
+            return None
+        if spare.expires <= self.clock() or spare.child.poll() is not None:
+            spare.stop()
+            return None
+        return spare
+
+    def start(self, key: str, command: Sequence[str], env: Mapping[str, str],
+              cwd: str | None) -> None:
+        from operating import call_limits
+        stale: list[Spare] = []
+        with self._lock:
+            now = self.clock()
+            for held_key, held in list(self._held.items()):
+                if held.expires <= now or held.child.poll() is not None:
+                    stale.append(self._held.pop(held_key))
+            if key in self._held:
+                spare = None
+            else:
+                while len(self._held) >= self.most:
+                    oldest = min(self._held, key=lambda k: self._held[k].expires)
+                    stale.append(self._held.pop(oldest))
+                directory = Path(tempfile.mkdtemp(prefix="plx-host-spare-"))
+                deadline = directory / "deadline"
+                env = {name: value for name, value in env.items()
+                       if name != call_limits.DEADLINE_ENV}
+                try:
+                    child = _host_process(command, {**env, call_limits.DEADLINE_FILE_ENV:
+                                                    str(deadline)}, cwd, own_group=True)
+                except OSError:
+                    directory.rmdir()
+                    child = None
+                spare = None if child is None else Spare(child, deadline, directory,
+                                                         now + self.seconds)
+                if spare is not None:
+                    self._held[key] = spare
+        if spare is not None:
+            import threading
+            timer = threading.Timer(self.seconds, self._expire, args=(key, spare))
+            timer.daemon = True
+            timer.start()
+        for held in stale:
+            held.stop()
+
+    def _expire(self, key: str, spare: Spare) -> None:
+        with self._lock:
+            if self._held.get(key) is not spare:
+                return
+            del self._held[key]
+        spare.stop()
+
+    def close(self) -> None:
+        with self._lock:
+            held, self._held = list(self._held.values()), {}
+        for spare in held:
+            spare.stop()
+
+
+SPARES = HostSpares()
+
+
+def _close_spares() -> None:
+    SPARES.close()
+
+
+import atexit  # noqa: E402 - the spares stop with the process that started them
+atexit.register(_close_spares)
+
+
+def spare_key(host: Any, command: Sequence[str], cwd: Any, env: Mapping[str, str]
+              ) -> str | None:
+    """``HostSpares``' key of a host started with ``command``, ``cwd`` and ``env`` for
+    ``host``'s reader, or None when ``host`` names no reader (``spare_identity``): its
+    hosts are never kept."""
+    from operating import call_limits
+    identity = getattr(host, "spare_identity", None)
+    named = identity() if callable(identity) else None
+    if named is None:
+        return None
+    ticket = getattr(host, "ticket_env", None)
+    kept = {name: value for name, value in env.items() if name not in (
+        ticket, call_limits.DEADLINE_ENV, call_limits.DEADLINE_FILE_ENV)}
+    return json.dumps([named, list(command), None if cwd is None else str(cwd),
+                       sorted(kept.items())], sort_keys=True, default=str)
+
+
+# Tools that read the client's own MCP capabilities or identity (sampling, elicitation):
+# a session allowed one is never started early (``EarlyStart``), so the host learns
+# them from the client itself.
+def _client_bound(allowed: Iterable[str]) -> bool:
+    from operating import kind_confirmation, playbook_tools
+    bound = set(playbook_tools.TOOL_NAMES) | {kind_confirmation.TOOL["name"]}
+    return any(name in bound for name in allowed)
 
 
 class HostGate:
@@ -873,10 +1253,27 @@ class HostGate:
 
     def __init__(self, allowed: Sequence[str], server: Mapping[str, Any], work: Path, *,
                  log: Path, timing: Path | None = None,
-                 budget: "deep.Budget | None" = None, budget_log: Path | None = None
-                 ) -> None:
+                 budget: "deep.Budget | None" = None, budget_log: Path | None = None,
+                 aliases: Aliases | None = None,
+                 prefetch: Sequence[tuple[str, Mapping[str, Any]]] = (),
+                 follow: Callable[[list[tuple[str, Mapping[str, Any], Any]]],
+                                  Sequence[tuple[str, Mapping[str, Any]]]] | None = None,
+                 child: "subprocess.Popen | None" = None) -> None:
         import queue
         import threading
+        # ``child``: the host's server already started for this session (``HostSpares``),
+        # of the same command and environment; None: started here.
+        self.aliases = aliases   # the session's handle aliases (``serve_gate``), or None
+        # ``prefetch``: reads the host makes in the session as soon as its client has
+        # initialized, before the session's first turn (``prefetched``, then
+        # ``prefetch_done`` is set); ``follow``: given those reads (name, arguments, their
+        # result as read), the reads made next, one round (``fast_answer.follow_reads``).
+        self.allowed = frozenset(allowed)
+        self.follow = follow
+        self.prefetch = [(name, dict(arguments)) for name, arguments in prefetch
+                         if name in allowed]
+        self.prefetched: list[dict[str, Any]] = []
+        self.prefetch_done = threading.Event()
         self.inbound, self.outbound = Path(work) / "gate.in", Path(work) / "gate.out"
         os.mkfifo(self.inbound, 0o600)
         os.mkfifo(self.outbound, 0o600)
@@ -886,8 +1283,20 @@ class HostGate:
         self._released = threading.Event()   # ``finish`` opened the pipe itself
         command = [server["command"], *server.get("args", [])]
         env = {**agent_environment(os.environ), **(server.get("env") or {})}
+        # The host's server starts now, before the session: its start-up (the reader's
+        # grant, the stores) runs while Claude Code starts, not after it connects. It
+        # reads nothing until the client's first message reaches it through the gate.
+        cwd = None if server.get("cwd") is None else str(server.get("cwd"))
+        self._child = child if child is not None else \
+            _host_process(command, env, cwd, own_group=True)
+        # The first reads start with the host, before Claude Code has connected
+        # (``EarlyStart``), unless the session may call a tool bound to its client.
+        self._early = EarlyStart(self._child) if self.prefetch \
+            and not _client_bound(self.allowed) else None
+        if self._early is not None:
+            threading.Thread(target=self._start_early, daemon=True).start()
         self._thread = threading.Thread(target=self._serve, daemon=True, args=(
-            list(allowed), command, env, server.get("cwd"), log, timing, budget, budget_log))
+            list(allowed), command, env, cwd, log, timing, budget, budget_log))
         self._thread.start()
 
     def client(self) -> dict[str, Any]:
@@ -900,6 +1309,20 @@ class HostGate:
     def _serve(self, allowed: list[str], command: list[str], env: dict[str, str],
                cwd: Any, log: Path, timing: Path | None, budget: Any,
                budget_log: Path | None) -> None:
+        try:
+            self._serve_client(allowed, command, env, cwd, log, timing, budget, budget_log)
+        finally:
+            if not self.served:   # no session connected: the started host is stopped
+                try:
+                    self._child.stdin.close()
+                except OSError:
+                    pass
+                _kill_group(self._child)
+                self._child.wait()
+
+    def _serve_client(self, allowed: list[str], command: list[str], env: dict[str, str],
+                      cwd: Any, log: Path, timing: Path | None, budget: Any,
+                      budget_log: Path | None) -> None:
         import queue
         # Opening the pipes waits for the client (``connect`` opens them in this order).
         if self._released.is_set():
@@ -941,17 +1364,82 @@ class HostGate:
 
         def client_end() -> None:
             outbound.close()   # the client reads its end: it stops
+
+        early = self._early
+        if early is not None:
+            early.done.wait()
         try:
             serve_gate(allowed, command, log, stdin=inbound, stdout=outbound, timing=timing,
                        budget=budget, budget_log=budget_log, env=env,
                        cwd=None if cwd is None else str(cwd), at_end=at_end,
-                       client_end=client_end)
+                       client_end=client_end, aliases=self.aliases, child=self._child,
+                       # not started early: the reads follow the client's start
+                       prelude=self._prelude if self.prefetch and (
+                           early is None or early.init_result is None) else None,
+                       early=early)
         finally:
             for stream in (inbound, outbound):
                 try:
                     stream.close()
                 except OSError:
                     pass
+
+    def _read_one(self, name: str, arguments: Mapping[str, Any], ask: Callable[..., Any],
+                  ends: float) -> None:
+        left = ends - time.monotonic()
+        if left <= 0:
+            return
+        reply = ask(name, arguments, min(PREFETCH_CALL_SECONDS, left))
+        raw = reply.get("result") if isinstance(reply, Mapping) else None
+        if not isinstance(raw, Mapping):
+            return
+        shown = raw if self.aliases is None else \
+            handle_aliases.shorten_result(self.aliases, raw)
+        # the call as the session is shown it: a handle a follow-up read names, aliased
+        self.prefetched.append({"name": name, "arguments": dict(arguments),
+                                "shown_arguments": dict(arguments) if self.aliases is None
+                                else self.aliases.shorten(dict(arguments)),
+                                "raw": raw, "shown": shown})
+
+    def _prelude(self, ask: Callable[..., Any]) -> None:
+        # Every read ends before the task is fed (``PREFETCH_WAIT_SECONDS``): a read
+        # still out then is not shown, and the session makes it itself.
+        started = time.monotonic()
+        ends = started + PREFETCH_WAIT_SECONDS
+        try:
+            for name, arguments in self.prefetch:
+                self._read_one(name, arguments, ask, ends)
+            if self.follow is not None:
+                done = []
+                for entry in self.prefetched:
+                    try:
+                        value = tool_results.result_value(entry["raw"])
+                    except tool_results.ToolResultUnreadable:
+                        continue
+                    done.append((entry["name"], entry["arguments"], value))
+                made = {json.dumps([n, a], sort_keys=True) for n, a, _v in done}
+                try:
+                    more = list(self.follow(done))
+                except Exception:  # noqa: BLE001 - no follow-up reads: the agent reads
+                    more = []
+                for name, arguments in more:
+                    if time.monotonic() - started > PREFETCH_FOLLOW_SECONDS:
+                        break
+                    if name in self.allowed and json.dumps(
+                            [name, dict(arguments)], sort_keys=True) not in made:
+                        self._read_one(name, arguments, ask, ends)
+        finally:
+            self.prefetch_done.set()
+    def _start_early(self) -> None:
+        """``EarlyStart``: the host initialized, then the first reads made, before the
+        client connects; a host that answers no initialize leaves them to the client's
+        start (``prelude``)."""
+        early = self._early
+        try:
+            if early.initialize(LIST_SECONDS):
+                self._prelude(early.request)
+        finally:
+            early.done.set()
 
     def finish(self, submission: Mapping[str, Any] | None) -> Any:
         """Hand the gate the host's own submission (None: none) once the session has
@@ -1007,6 +1495,16 @@ def connect(to: Path, back: Path) -> int:
     return 0
 
 
+def _timed_out(result: Any) -> bool:
+    """Whether a host's tool result is a call stopped at its limit
+    (``call_limits.TIMED_OUT``)."""
+    from operating.call_limits import TIMED_OUT
+    if not isinstance(result, Mapping) or not result.get("isError"):
+        return False
+    return any(isinstance(part, Mapping) and f'"error": "{TIMED_OUT}"' in str(
+        part.get("text") or "") for part in result.get("content") or ())
+
+
 Spawn = Callable[[list[str], str, dict[str, str], int], "tuple[int, str]"]
 
 
@@ -1021,69 +1519,198 @@ MCP_STARTUP_MS = 120_000
 _KILLED_DRAIN_SECONDS = 10
 
 
-def _spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int) -> tuple[int, str]:
-    """Run one session in its own process group. On ``timeout`` the whole group (the
-    session, its gate and the host's MCP server) is killed, so no orphaned server keeps
-    a query running into the next session's time, and ``subprocess.TimeoutExpired``
-    carries the stream read so far (``stdout``) for the transcript."""
-    child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             start_new_session=True)
-    try:
-        stdout, _ = child.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_group(child)
-        try:
-            stdout, _ = child.communicate(timeout=_KILLED_DRAIN_SECONDS)
-        except subprocess.TimeoutExpired:
-            stdout = ""
-        raise subprocess.TimeoutExpired(argv, timeout, output=stdout) from None
-    finally:
-        if child.poll() is None:
-            _kill_group(child)
-            child.wait()
-    return child.returncode, stdout
-
-
-def streaming_spawn(on_line: Callable[[str], None]) -> Spawn:
-    """A ``Spawn`` as ``_spawn`` (own process group, the whole group killed at
-    ``timeout``, ``subprocess.TimeoutExpired`` carrying the stream read so far) that hands
-    each stdout line to ``on_line`` as it arrives, so a caller shows a session's progress
-    while it runs (the app's Ask). ``on_line`` failing never stops the session."""
+def _stream(argv: list[str], cwd: str, env: dict[str, str], timeout: int,
+            on_line: Callable[[str], None] | None = None,
+            stop: Callable[[str], bool] | None = None,
+            feed: Callable[[], str] | None = None) -> tuple[int | None, str]:
+    """Run one session in its own process group, reading its stream line by line. On
+    ``timeout`` the whole group (the session, its gate and the host's MCP server) is
+    killed, so no orphaned server keeps a query running into the next session's time, and
+    ``subprocess.TimeoutExpired`` carries the stream read so far (``stdout``) for the
+    transcript. ``on_line`` gets each line as it arrives (failing never stops the
+    session); once ``stop(line)`` is true the group is killed and the stream read up to
+    and including that line is returned with exit code 0 (``GateEnd``: the session's
+    answer is decided). ``feed``: the session's input, written to its stdin once
+    ``feed()`` returns (it may wait: the session starts meanwhile), then closed."""
     import threading
+    child = subprocess.Popen(argv, cwd=cwd, env=env,
+                             stdin=subprocess.DEVNULL if feed is None else subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             text=True, bufsize=1, start_new_session=True)
+    expired = threading.Event()
+    if feed is not None:
+        def write() -> None:
+            try:
+                child.stdin.write(feed())
+                child.stdin.flush()
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    child.stdin.close()
+                except OSError:
+                    pass
+        threading.Thread(target=write, daemon=True).start()
 
-    def spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int
-              ) -> tuple[int, str]:
-        child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 text=True, bufsize=1, start_new_session=True)
-        expired = threading.Event()
-
-        def stop() -> None:
-            expired.set()
-            _kill_group(child)
-        timer = threading.Timer(timeout, stop)
-        timer.daemon = True
-        timer.start()
-        lines: list[str] = []
-        try:
-            for line in child.stdout:
-                lines.append(line)
+    def expire() -> None:
+        expired.set()
+        _kill_group(child)
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    timer.start()
+    lines: list[str] = []
+    ended = False
+    try:
+        for line in child.stdout:
+            lines.append(line)
+            if on_line is not None:
                 try:
                     on_line(line)
                 except Exception:  # noqa: BLE001 - progress only; the session goes on
                     pass
-            child.wait()
-        finally:
-            timer.cancel()
-            if child.poll() is None:
+            if stop is not None and not expired.is_set() and stop(line):
+                ended = True
                 _kill_group(child)
-                child.wait()
-            child.stdout.close()
-        if expired.is_set():
-            raise subprocess.TimeoutExpired(argv, timeout, output="".join(lines))
-        return child.returncode, "".join(lines)
+                break
+        child.wait()
+    finally:
+        timer.cancel()
+        if child.poll() is None:
+            _kill_group(child)
+            child.wait()
+        child.stdout.close()
+    if expired.is_set() and not ended:
+        raise subprocess.TimeoutExpired(argv, timeout, output="".join(lines))
+    return (0 if ended else child.returncode), "".join(lines)
+
+
+def _spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int, *,
+           stop: Callable[[str], bool] | None = None,
+           feed: Callable[[], str] | None = None) -> tuple[int | None, str]:
+    """Run one session (``_stream``): its own process group, killed whole at ``timeout``
+    (``subprocess.TimeoutExpired`` carrying the stream read so far) or once ``stop``;
+    ``feed``: its input on stdin."""
+    return _stream(argv, cwd, env, timeout, stop=stop, feed=feed)
+
+
+_spawn.stops = _spawn.feeds = True   # type: ignore[attr-defined]
+
+
+def streaming_spawn(on_line: Callable[[str], None]) -> Spawn:
+    """A ``Spawn`` as ``_spawn`` (own process group, the whole group killed at
+    ``timeout`` or once ``stop``, ``subprocess.TimeoutExpired`` carrying the stream read
+    so far) that hands each stdout line to ``on_line`` as it arrives, so a caller shows a
+    session's progress while it runs (the app's Ask). ``on_line`` failing never stops the
+    session."""
+    def spawn(argv: list[str], cwd: str, env: dict[str, str], timeout: int, *,
+              stop: Callable[[str], bool] | None = None,
+              feed: Callable[[], str] | None = None) -> tuple[int | None, str]:
+        return _stream(argv, cwd, env, timeout, on_line=on_line, stop=stop, feed=feed)
+    spawn.stops = spawn.feeds = True   # type: ignore[attr-defined]
     return spawn
+
+
+class GateEnd:
+    """Watches a session's stream (``stop`` of a spawn): true at the line carrying the
+    answer gate's final decision that passed a claim (a ``plx.case_get`` answer-mode
+    result whose outcome is ``answered``). That decision is the answer
+    (``answer_gate.ANSWER_FINAL``: nothing may be added after it), so the session ends
+    there and its reply is rendered from it (``decided_reply``) instead of being written
+    while the reader waits. A repair, an abstention (no claim passed: the session's own
+    reply may still carry values the host submits, ``host_submission``), an error or an
+    unreadable result goes on as before."""
+
+    def __init__(self, server: str = "plx") -> None:
+        self.tool = mcp_tool_name(ANSWER_GATE_TOOL, server)
+        self.calls: set[str] = set()
+        self.ended = False
+
+    def __call__(self, line: str) -> bool:
+        if self.ended:
+            return True
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return False
+        if not isinstance(message, dict):
+            return False
+        content = (message.get("message") or {}).get("content") \
+            if isinstance(message.get("message"), Mapping) else None
+        for block in content if isinstance(content, list) else ():
+            if not isinstance(block, Mapping):
+                continue
+            if message.get("type") == "assistant" and block.get("type") == "tool_use" \
+                    and block.get("name") == self.tool \
+                    and isinstance(block.get("input"), Mapping) \
+                    and "answer" in block["input"]:
+                self.calls.add(str(block.get("id")))
+            elif message.get("type") == "user" and block.get("type") == "tool_result" \
+                    and str(block.get("tool_use_id")) in self.calls \
+                    and not block.get("is_error"):
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = "".join(str(part.get("text") or "") for part in body
+                                   if isinstance(part, Mapping))
+                try:
+                    parsed = json.loads(body) if isinstance(body, str) else body
+                except ValueError:
+                    continue
+                parsed, _note = deep.strip_note(parsed)
+                if isinstance(parsed, Mapping) and parsed.get("outcome") == "answered":
+                    self.ended = True
+        return self.ended
+
+    def cut(self, stdout: str) -> str:
+        """``stdout`` up to and including the line of the final decision (a transport
+        that cannot stop at it, as a test's scripted stream: the same transcript)."""
+        kept = []
+        for line in stdout.splitlines(keepends=True):
+            kept.append(line)
+            if self(line):
+                break
+        return "".join(kept)
+
+
+def decided_reply(events: Sequence[Mapping[str, Any]]) -> str:
+    """The final message of a session that ended at the gate's final decision
+    (``GateEnd``, an ``answered`` one): the answer block (``format``, the decision's
+    ``answerability``, the submission's ``gaps`` and each of the decision's unknowns as a
+    gap, as the app shows the Ask loop's) with no values and no text, which
+    ``written_once`` renders from that decision as it renders the block an agent writes;
+    "" when the session has no final decision."""
+    from operating import answer_gate
+    for event in reversed(events):
+        arguments = event.get("arguments")
+        result = event.get("result")
+        if event.get("type") != "tool_call" or event.get("name") != ANSWER_GATE_TOOL \
+                or not isinstance(arguments, Mapping) or "answer" not in arguments \
+                or event.get("is_error") or not isinstance(result, Mapping):
+            continue
+        if result.get("outcome") != "answered":
+            return ""
+        state = answer_gate.plain((result.get("answerability") or {}).get("state")
+                                  if isinstance(result.get("answerability"), Mapping)
+                                  else None)
+        submitted = arguments.get("answer") if isinstance(arguments.get("answer"),
+                                                          Mapping) else {}
+        gaps = []
+        for gap in submitted.get("gaps") or ():
+            if not isinstance(gap, Mapping) or gap.get("state") not in GAP_STATES \
+                    or not isinstance(gap.get("subject"), str):
+                continue
+            gaps.append({key: gap[key] for key in ("state", "subject", "reason", "concerns")
+                         if isinstance(gap.get(key), str)})
+        said = {gap["subject"] for gap in gaps}
+        for unknown in result.get("unknowns") or ():
+            unknown = answer_gate.plain(unknown)
+            if isinstance(unknown, str) and unknown.strip() and unknown not in said:
+                said.add(unknown)
+                gaps.append({"state": "unknown", "subject": unknown})
+        block = {"format": ANSWER_FORMAT,
+                 "answerability": state if state in ANSWERABILITY else "blocked",
+                 "gaps": gaps}
+        return "```json\n" + json.dumps(block, ensure_ascii=False) + "\n```"
+    return ""
 
 
 def _kill_group(child: subprocess.Popen) -> None:
@@ -1153,16 +1780,59 @@ class ClaudeCodeAgent:
                  timeout: int = 900, extra_args: Sequence[str] = (),
                  case_tools: bool = False, max_turns: int | None = None,
                  spawn: Spawn = _spawn, proposals: bool = False,
-                 budget_seconds: float | None = None, max_steps: int | None = None) -> None:
+                 budget_seconds: float | None = None, max_steps: int | None = None,
+                 lookup_model: str | None = None,
+                 aliases: bool = True, end_at_gate: bool = True,
+                 prefetch: bool = True) -> None:
         """``case_tools``, ``proposals``: the gate's options (``allowed_tools``).
         ``budget_seconds``, ``max_steps``: the session's deep-investigation budget, which
         the tool gate enforces (``deep_investigation.Budget``: research ends
         ``RESERVE_SECONDS`` before ``budget_seconds`` or after ``max_steps`` calls, and the
-        agent submits what it established); None: no budget (``timeout`` alone)."""
+        agent submits what it established); None: no budget (``timeout`` alone).
+        ``lookup_model``: the model a lookup of one named record runs on (``routed``);
+        None: every question runs on ``model``.
+        ``aliases``: the session reads and cites short handle aliases
+        (``operating.handle_aliases``); its transcript and final message are read back with
+        the full handles (``_restored``) before anything checks them.
+        ``end_at_gate``: the session ends at the answer gate's final decision (``GateEnd``)
+        and its final message is rendered from it (``decided_reply``), never written by
+        the model while the reader waits.
+        ``prefetch``: for a question it is told (``for_question``), the host makes the
+        question's first reads (``fast_answer.first_reads``) in the session while Claude
+        Code starts, and the task reaches the session (on stdin) with their results, so
+        its first turn needs no call for them."""
         self.binary, self.model, self.timeout = binary, model, timeout
+        self.lookup_model = lookup_model
         self.extra_args, self.spawn, self.case_tools = list(extra_args), spawn, case_tools
         self.max_turns, self.proposals = max_turns, proposals
         self.budget_seconds, self.max_steps = budget_seconds, max_steps
+        self.aliases = aliases
+        self.end_at_gate = end_at_gate
+        self.prefetch = prefetch
+        self.first_reads: list[tuple[str, dict[str, Any]]] = []
+        self.follow_reads: Callable[..., Any] | None = None
+
+    def for_question(self, question: str) -> "ClaudeCodeAgent":
+        """This agent with the reads ``question`` starts with (``prefetch``); a copy, never
+        changed in place."""
+        if not self.prefetch:
+            return self
+        from operating import fast_answer
+        told = copy.copy(self)
+        told.first_reads = fast_answer.first_reads(question)
+        told.follow_reads = (lambda done: fast_answer.follow_reads(question, done)) \
+            if told.first_reads else None
+        return told
+
+    def routed(self, question: str) -> "ClaudeCodeAgent":
+        """The agent for ``question``: a copy on ``lookup_model`` for a lookup of one named
+        record (``deep_investigation.is_lookup``, the question the short method is asked
+        for), else this agent. Never changed in place: one agent serves parallel runs."""
+        if not self.lookup_model or not deep.is_lookup(question):
+            return self
+        routed = copy.copy(self)
+        routed.model = self.lookup_model
+        return routed
 
     def argv(self, prompt: str, config: str, allowed: Sequence[str] = (),
              refused: Sequence[str] = ()) -> list[str]:
@@ -1207,25 +1877,61 @@ class ClaudeCodeAgent:
                 budget = deep.Budget(started + research if self.budget_seconds is not None
                                      else None, self.max_steps,
                                      ends if self.budget_seconds is not None else None)
+            deadline = None if self.budget_seconds is None else \
+                started + float(self.budget_seconds) - deep.SUBMIT_SECONDS
+            server_env = self._server_env(server, deadline)
+            # The reader's host started after their last session (``HostSpares``) is
+            # taken when this session is its exact key; else it starts now, as before.
+            key = spare_key(host, [server["command"], *server.get("args", [])],
+                            server.get("cwd"), {**agent_environment(os.environ),
+                                                **server_env})
+            spare = SPARES.take(key) if key is not None else None
+            if spare is not None and deadline is not None:
+                spare.set_deadline(deadline)
             # The gate and the host's server run in this process (``HostGate``): Claude
             # Code reaches them through ``connect``, and the session outlives it, so the
             # host can still submit the reply to the session's own answer gate.
-            gate = HostGate(allowed, {**server, "env": {
-                **(server.get("env") or {}),
-                "PYTHONPATH": (server.get("env") or {}).get("PYTHONPATH", str(REPO_ROOT))}},
-                Path(work), log=log, timing=timing, budget=budget,
-                budget_log=budget_log if budget is not None else None)
+            feeds = bool(self.first_reads) and getattr(self.spawn, "feeds", False)
+            try:
+                gate = HostGate(allowed, {**server, "env": server_env},
+                    Path(work), log=log, timing=timing, budget=budget,
+                    budget_log=budget_log if budget is not None else None,
+                    aliases=Aliases() if self.aliases else None,
+                    prefetch=self.first_reads if feeds else (),
+                    follow=self.follow_reads if feeds else None,
+                    child=None if spare is None else spare.child)
+            except BaseException:
+                if spare is not None:
+                    spare.stop()
+                raise
+            feeds = feeds and bool(gate.prefetch)
             config.write_text(json.dumps({"mcpServers": {"plx": gate.client()}}),
                               encoding="utf-8")
             session = Path(work) / "session"
             session.mkdir()
             timed_out, submission, submitted = False, None, None
+            ends = GateEnd() if self.end_at_gate and ANSWER_GATE_TOOL in allowed else None
             try:
                 try:
-                    code, stdout = self.spawn(
-                        self.argv(prompt, str(config), allowed, refused), str(session),
-                        {**agent_environment(os.environ), "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
-                        self.timeout)
+                    argv = self.argv(prompt, str(config), allowed, refused)
+                    options: dict[str, Any] = {}
+                    if feeds:
+                        # The task goes in on stdin once the host's first reads are in.
+                        argv = [argv[0], "-p", *argv[3:], "--input-format", "stream-json"]
+                        options["feed"] = lambda: _fed(prompt, gate)
+                    if ends is not None and getattr(self.spawn, "stops", False):
+                        options["stop"] = ends
+                    spawned = (argv, str(session), {**agent_environment(os.environ),
+                                                    "MCP_TIMEOUT": str(MCP_STARTUP_MS)},
+                               self.timeout)
+                    if options:
+                        code, stdout = self.spawn(*spawned, **options)
+                    else:
+                        code, stdout = self.spawn(*spawned)
+                        if ends is not None:
+                            stdout = ends.cut(stdout)
+                    if ends is not None and ends.ended:
+                        code = 0
                 except subprocess.TimeoutExpired as expired:
                     # The stream read before the timeout stays in the transcript (the
                     # calls made and their results), so a timed-out session says where it
@@ -1234,7 +1940,13 @@ class ClaudeCodeAgent:
                     code, stdout = None, (partial.decode("utf-8", "replace")
                                           if isinstance(partial, bytes) else str(partial))
                     timed_out = True
-                run = parse_stream_json(stdout.splitlines(), catalog)
+                run = _restored(parse_stream_json(stdout.splitlines(), catalog),
+                                gate.aliases)
+                if ends is not None and ends.ended and not timed_out:
+                    # Ended at the gate's final decision: the reply is that decision.
+                    run = AgentRun(run.events, decided_reply(run.events),
+                                   {**run.usage, "is_error": False,
+                                    "subtype": "ended_at_gate"}, run.agent)
                 if not timed_out and ANSWER_GATE_TOOL in allowed:
                     submission = host_submission(run.events, run.final_text)
             finally:
@@ -1246,6 +1958,15 @@ class ClaudeCodeAgent:
             spent = deep.budget_summary(budget_log.read_text(encoding="utf-8").splitlines()
                                         if budget_log.is_file() else [])
             seconds = round(time.time() - started, 1)
+        if spare is not None:
+            spare.release()
+        if key is not None:
+            self._start_spare(host)
+        if gate.prefetched:
+            # The host's first reads happened first, in the same session.
+            run.events[:0] = [_prefetched_event(read) for read in gate.prefetched]
+            for seq, event in enumerate(run.events):
+                event["seq"] = seq
         attach_call_timing(run.events, timed)
         if submission is not None and gate.served:
             run.events.append(_host_event(len(run.events), submission, submitted))
@@ -1257,6 +1978,7 @@ class ClaudeCodeAgent:
                                               if event["name"] not in allowed)
         run.agent["allowed_tools"] = allowed
         run.agent["gate_refused"] = gate_refused
+        run.agent["host_start"] = "spare" if spare is not None else "started"
         if budgeted:
             # The steps the session used against its budget (counts only).
             run.agent["budget"] = {**(spent or {"steps_used": 0, "refused_after_budget": 0}),
@@ -1269,6 +1991,93 @@ class ClaudeCodeAgent:
         # ``record`` holds the final reply to what that gate passed (``gate_final_reply``).
         run.agent["answer_gate"] = answer_gate_record(run.events)
         return run
+
+
+    def _server_env(self, server: Mapping[str, Any], deadline: float | None
+                    ) -> dict[str, str]:
+        """The host server's own environment for one session of this agent."""
+        env = {**(server.get("env") or {}),
+               "PYTHONPATH": (server.get("env") or {}).get("PYTHONPATH", str(REPO_ROOT))}
+        if self.budget_seconds is not None:
+            # Each tool call ends before the submit deadline, within its own limit
+            # (``call_limits``, enforced by the host): no slow call outlives the session.
+            from operating import call_limits
+            env[call_limits.LIMITS_ENV] = "on"
+            if deadline is not None:
+                env[call_limits.DEADLINE_ENV] = f"{deadline:.3f}"
+        return env
+
+    def _start_spare(self, host: Host) -> None:
+        """The reader's host for their next session (``HostSpares``), started now with a
+        fresh ticket; its deadline is set when a session takes it."""
+        server = host.mcp_server()
+        command = [server["command"], *server.get("args", [])]
+        cwd = None if server.get("cwd") is None else str(server.get("cwd"))
+        env = {**agent_environment(os.environ), **self._server_env(server, None)}
+        key = spare_key(host, command, cwd, env)
+        if key is not None:
+            SPARES.start(key, command, env, cwd)
+
+
+PREFETCH_HEADING = (
+    "Read for you in this session before your first turn, as this reader (tool results "
+    "as the tools returned them, the same as any tool result: cite their aliases, and do "
+    "not make these calls again). A plan whose root was ambiguous is also run on its "
+    "first-ranked candidate: check it is the record the question means. Where these "
+    "reads already hold every value the question asks for, submit your answer to the "
+    "gate in your first turn; else read only what they leave open:")
+
+
+def _fed(prompt: str, gate: "HostGate") -> str:
+    """The session's input (``--input-format stream-json``): the task with the results of
+    the host's first reads (``HostGate`` prefetch), once they are in or after
+    ``PREFETCH_WAIT_SECONDS`` (without what was not read by then)."""
+    gate.prefetch_done.wait(PREFETCH_WAIT_SECONDS)
+    shown = []
+    for read in list(gate.prefetched):
+        try:
+            value = tool_results.result_value(read["shown"])
+        except tool_results.ToolResultUnreadable:
+            continue
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        if len(text) > PREFETCH_MAX_CHARS:
+            continue
+        called = read.get("shown_arguments", read["arguments"])
+        shown.append(f"{read['name']} {json.dumps(called, ensure_ascii=False)}"
+                     f" returned:\n{text}")
+    task = prompt if not shown else (prompt + "\n\n" + PREFETCH_HEADING + "\n\n"
+                                     + "\n\n".join(shown))
+    return json.dumps({"type": "user", "message": {"role": "user", "content": task}}) + "\n"
+
+
+def _prefetched_event(read: Mapping[str, Any]) -> dict[str, Any]:
+    """The transcript event of one of the host's first reads (``HostGate`` prefetch), as
+    a stream tool call reads (full handles, the host's own result)."""
+    raw = read["raw"]
+    try:
+        result = _bounded(tool_results.result_value(raw))
+    except tool_results.ToolResultUnreadable:
+        result = {"error": "tool_result_unreadable"}
+    return {"seq": 0, "type": "tool_call", "name": read["name"],
+            "arguments": dict(read["arguments"]), "result": result,
+            "is_error": bool(raw.get("isError")), "prefetched": True}
+
+
+def _restored(run: AgentRun, aliases: Aliases | None) -> AgentRun:
+    """The session as the host reads it: each call's arguments with the aliases the
+    session minted expanded (as the gate expanded them before the host read the call),
+    each result back with its full handles, and the final message with its aliases
+    expanded. An alias the session never minted stays as written: no handle matches it, so
+    nothing it cites passes (fail closed)."""
+    if aliases is None or not len(aliases):
+        return run
+    for event in run.events:
+        if event.get("type") != "tool_call":
+            continue
+        event["arguments"] = aliases.expand(event.get("arguments"))
+        event["result"] = aliases.restore(event.get("result"))
+    run.final_text = aliases.expand(run.final_text)
+    return run
 
 
 def _host_event(seq: int, submission: Mapping[str, Any], reply: Any) -> dict[str, Any]:
@@ -1289,19 +2098,144 @@ def _host_event(seq: int, submission: Mapping[str, Any], reply: Any) -> dict[str
             "is_error": is_error, "submitted_by": HOST_SUBMITTER}
 
 
+def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A submitted value claim (``ANSWER_GATE_RULE``'s shape) as the answer value that
+    states it (the inverse of ``_value_claim``), or None when it is no such value."""
+    value = given.get("value")
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    out: dict[str, Any] = {"name": name, "value": value}
+    if "citation" in given and isinstance(given.get("citation"), str):
+        cite = {"l1_handle": given["citation"],
+                "field_path": given.get("field") if isinstance(given.get("field"), str)
+                else "text"}
+        if isinstance(given.get("quote"), str) and given["quote"].strip():
+            cite["quote"] = given["quote"]
+        out["citations"] = [cite]
+    elif given.get("op") in ("count", "sum", "expression") \
+            and isinstance(given.get("of"), list):
+        inputs = []
+        for item in given["of"]:
+            if not isinstance(item, Mapping) or not isinstance(item.get("citation"), str):
+                return None
+            entry = {"l1_handle": item["citation"],
+                     "field_path": item.get("field") if isinstance(item.get("field"), str)
+                     else "text"}
+            entry.update({key: item[key] for key in ("value", "quote", "unit")
+                          if isinstance(item.get(key), str)})
+            inputs.append(entry)
+        out["calculation"] = {"op": given["op"], "inputs": inputs, **(
+            {"expression": given.get("expression")} if given["op"] == "expression" else {})}
+    else:
+        return None
+    for key, field_name in (("role", "quantity_role"), ("unit", "unit"),
+                            ("currency", "currency")):
+        if isinstance(given.get(key), str) and given[key].strip():
+            out[field_name] = given[key]
+    if answer_problems({"format": ANSWER_FORMAT, "answerability": "partial",
+                        "values": [out]}):
+        return None
+    return out
+
+
+def written_once(final_text: str, events: Sequence[Mapping[str, Any]]) -> str:
+    """The agent's final message with its answer block rendered from the session's gate
+    decision, for an agent that wrote its claims once (to the gate) and ends with only a
+    verdict line and a short block (``format``, ``answerability``, ``gaps``; no
+    ``values``): the block gets ``values`` (each claim the decision in force passed, as its
+    ``answer_values`` entry, under the name its value claim gave, else its claim id; each
+    named value claim of that submission it did not pass as submitted, so the final screen
+    withholds it; each gap's ``concerns`` with no value as a null value) and ``text`` (the
+    text submitted with that decision, else the verdict line). Nothing is decided here:
+    ``gate_final_reply`` screens the result as any reply. Any other message (no block, a
+    block with ``values``) is returned unchanged."""
+    from operating import answer_gate
+    candidate = answer_candidate(final_text)
+    if candidate is None or "values" in candidate:
+        return final_text
+    event, _refused = _deciding_event(events)
+    decision = event.get("result") if event is not None else None
+    submitted = (event.get("arguments") or {}).get("answer") if event is not None else None
+    submitted = submitted if isinstance(submitted, Mapping) else {}
+    names = {answer_gate.plain(claim.get("id")): answer_gate.plain(claim.get("name"))
+             for claim in (decision or {}).get("claims") or () if isinstance(claim, Mapping)}
+    values: list[dict[str, Any]] = []
+    taken: set[str] = set()
+
+    def fresh(name: str) -> str:
+        n, out = 1, name
+        while out in taken:
+            n += 1
+            out = f"{name}_{n}"
+        taken.add(out)
+        return out
+    passed_names = set()
+    for entry in answer_gate.answer_values(decision):
+        name = names.get(entry["claim"])
+        name = name if isinstance(name, str) else str(entry["claim"])
+        passed_names.add(name)
+        values.append({"name": fresh(name), **entry["answer_value"]})
+    for claim in submitted.get("claims") or ():
+        # A flat claim (``answer_gate.CLAIM_KEYS``) is its own value claim.
+        flat = isinstance(claim, Mapping) and "value_claims" not in claim \
+            and "text" not in claim
+        for given in ((claim,) if flat else (claim.get("value_claims") or ())) \
+                if isinstance(claim, Mapping) else ():
+            name = given.get("name") if isinstance(given, Mapping) else None
+            if not isinstance(name, str) or name in passed_names or name in taken:
+                continue
+            stated = _answer_value(fresh(name), given)
+            values.append(stated if stated is not None else {"name": name, "value": None})
+    gaps = [gap for gap in candidate.get("gaps") or () if isinstance(gap, Mapping)]
+    for gap in gaps:
+        concerns = gap.get("concerns")
+        if isinstance(concerns, str) and concerns.strip() and concerns not in taken:
+            values.append({"name": fresh(concerns), "value": None})
+    verdict = " ".join(_JSON_FENCE.sub(" ", final_text).split())
+    text = submitted.get("text") if isinstance(submitted.get("text"), str) \
+        and submitted["text"].strip() else verdict
+    rendered = {"format": ANSWER_FORMAT, "answerability": candidate.get("answerability"),
+                "text": text, "values": values, "gaps": candidate.get("gaps") or []}
+    return "```json\n" + json.dumps(rendered, ensure_ascii=False) + "\n```"
+
+
 def gated_run(agent: Agent, prompt: str, host: Host, question: str) -> AgentRun:
     """``agent.run`` and, for an agent that ``gates_final_reply``, its final message as
     the reply a reader sees and the scorer grades: only the claims the session's answer
     gate passed, the rest withheld and named (``gate_final_reply``); the agent's own
     message stays in ``agent["final_reply"]`` beside it. The one path of ``record`` (the
     scoreboard) and the app's Ask (``operator_api.agent_ask``)."""
+    routed = getattr(agent, "routed", None)
+    agent = routed(question) if routed is not None else agent
+    told = getattr(agent, "for_question", None)
+    agent = told(question) if told is not None else agent
     run = agent.run(prompt, host)
     if getattr(agent, "gates_final_reply", False):
         agent_text = run.final_text
-        run.final_text, reply = gate_final_reply(agent_text, run.events, question)
+        # Written once: an answer block without values is rendered from the gate's
+        # decision (``written_once``), then screened as every reply is.
+        rendered = written_once(agent_text, run.events)
+        run.final_text, reply = gate_final_reply(rendered, run.events, question)
+        if rendered != agent_text:
+            reply = {**reply, "written_once": True}
         run.agent["final_reply"] = {**reply, **({"agent_final_text": agent_text}
-                                                if reply["rewritten"] else {})}
+                                                if reply["rewritten"]
+                                                or rendered != agent_text else {})}
+        if (run.agent.get("budget") or {}).get("cut_short") and run.final_text.strip():
+            run.final_text = research_stopped(run.final_text)
+            run.agent["final_reply"]["research_stopped"] = True
     return run
+
+
+def research_stopped(final_text: str) -> str:
+    """A reply whose research was cut short (``deep_investigation.Budget.cut_short``)
+    saying so plainly, first: the agent's own words when it said it, else
+    ``deep_investigation.STOPPED_LINE`` before its message. Words only, no value: the
+    answer block is unchanged."""
+    prose = _JSON_FENCE.sub(" ", final_text)
+    if deep.STOPPED_WORDS in prose.casefold():
+        return final_text
+    return deep.STOPPED_LINE + "\n\n" + final_text
 
 
 def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLES),
@@ -1394,7 +2328,19 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "entry of its \"answer\" as a value under the entry's name, a property entry with "
         "its citation (l1_handle, field_path) and its unit, quantity_role and currency "
         "(so is a computed entry that carries a citation, such as a price a plan picked), a "
-        "count entry as a calculation {\"op\": \"count\", \"inputs\": its records}, an "
+        "count entry as a calculation {\"op\": \"count\", \"inputs\": its records}, a "
+        "computed entry that carries a \"calculation\" (an expression over the cells it was "
+        "computed from) as that calculation: its value claim to the gate is {\"value\": "
+        "<its value>, \"op\": \"expression\", \"expression\": <its expression>, \"of\": "
+        "[{\"citation\": <each input's l1_handle>, \"field\": <its field_path>, \"value\": "
+        "<its value>}, ...] in order, \"role\": <the entry's name>} with \"currency\": <its "
+        "currency> where it has one and \"unit\": \"percent\" where its unit is %, no quote, "
+        "its claim citing every input's handle, "
+        "and its answer value the same calculation (inputs l1_handle, field_path, value) "
+        "with that currency or unit; say what such a figure is on as its steps say (a "
+        "margin on item cost only, never a landed or net figure), its root's display (the "
+        "record the question names) as a text value with the display's origin citation and "
+        "field, so your text may name that record, an "
         "entry whose check failed or whose value is null as null with a gap; a computed "
         "comparison with no citation (a direction: up, down, flat) is no value: say it in "
         "words in the text beside the cited values it compares (\"went up from x to y\"); "
@@ -1404,24 +2350,32 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         + CONFLICT_REASON + " gap. Its answerability.state is yours. Read further only to fill "
         "a value it left null; a gap about a link the question does not ask about does not "
         "make the answer partial.",
-        deep.method_rule(),
+        deep.method_rule(lookup=deep.is_lookup(question)),
         deep.answer_shape_rule(),
         ANSWER_GATE_RULE,
+        REPLY_RULE,
         "",
         f"Question: {question}",
         *([analysis] if analysis else []),
         "",
-        "End your reply with exactly one fenced ```json block:",
+        "Write each value once: the rules above that say how an answer value is stated "
+        "(its citation, quote, role, unit, currency, calculation) say how you state it in "
+        "its value claim to the answer gate (l1_handle is citation, field_path is field, "
+        "a calculation's inputs are the claim's \"of\"), with the value's name. The "
+        "answer's text (the verdict line, then the bullets) is the \"text\" you submit "
+        "to the gate. Tool results name records by short aliases (@ followed by letters "
+        "and a number): cite an alias exactly as given, in tool calls and claims; it "
+        "stands for that record's full handle.",
+        "After the gate's final decision, end your reply with the verdict line alone, then "
+        "exactly one fenced ```json block with no values and no text (the app renders "
+        "both from the claims the gate passed and the text you submitted):",
         "{\"format\": \"" + ANSWER_FORMAT + "\", "
-        "\"answerability\": \"answerable|partial|blocked\", \"text\": \"<the verdict line, "
-        "then the bullets>\", "
-        "\"values\": [{\"name\": \"<snake_case>\", \"value\": \"<decimal or text, or null>\", "
-        "\"unit\": \"<unit>\", \"quantity_role\": \"<role>\", \"currency\": \"<ISO 4217>\", "
-        "\"citations\": [{\"l1_handle\": \"<handle>\", \"field_path\": \"row.<column>\", "
-        "\"quote\": \"<optional: the passage as written>\"}]}], "
+        "\"answerability\": \"answerable|partial|blocked\", "
         "\"gaps\": [{\"state\": \"<state>\", \"subject\": \"<object type or field>\", "
         "\"reason\": \"<snake_case>\", \"concerns\": \"<name of the value it leaves "
         "null, if any>\"}]}",
+        "A value the gate refused, or one the question asks for that no record holds, is "
+        "null with its gap: give the gap, with \"concerns\" naming the value.",
         f"quantity_role is one of: {roles} (omit it for non-quantities and for a figure on a "
         "page or in free text; unit, currency optional where they do not apply).",
         f"gap state is one of: {gaps}.",
@@ -1506,6 +2460,18 @@ class ReaderHost:
 
     def mcp_server(self) -> dict[str, Any]:
         return self.command("operating.host", "mcp")
+
+    def spare_identity(self) -> list[Any]:
+        """Who and what this host's server serves (``HostSpares``' key, with its command
+        and environment): the reader's identity, the actor kind, and the config file as
+        it is now (a rewritten config starts a new host)."""
+        try:
+            stat = self.config.stat()
+            config = [stat.st_mtime_ns, stat.st_size]
+        except OSError:
+            config = None
+        return [sorted(self._identity.items()), self.actor, str(self.state_dir),
+                str(self.config), config, self.agent]
 
     def tools(self) -> list[dict[str, Any]]:
         """The catalog this reader's server lists (name, read-only annotation): one

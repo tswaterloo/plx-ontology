@@ -111,7 +111,7 @@ from collections.abc import Mapping as _MappingBase
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from functools import lru_cache, partial
+from functools import lru_cache
 import hashlib
 import json
 from itertools import groupby
@@ -615,7 +615,50 @@ _SUBSUMED_RULES: Mapping[str, frozenset[str]] = {
     "beyond-cascade-parent/v2": frozenset({"beyond-cascade-parent/v1"})}
 
 
-class MirrorCaptures:
+class GroupLoad:
+    """``load`` of a capture source's document group (``document_groups``): its
+    ``method`` (one of ``GROUP_LOADS``) over ``args`` (a captured row, its attachments),
+    so a build's document worker that opened the same source again
+    (``ontology.project_parallel.DocumentPool``) reads the group from the same rows."""
+
+    def __init__(self, source: Any, method: str, args: tuple[Any, ...]) -> None:
+        if method not in GROUP_LOADS:
+            raise ProjectionError("group_load_unknown", method)
+        self.source, self.method, self.args = source, method, args
+
+    def __call__(self) -> tuple[list[Any], bool]:
+        return getattr(self.source, self.method)(*self.args)
+
+    def portable(self) -> tuple[str, tuple[Any, ...]]:
+        """(method, args) with every row a plain dict, as a worker is sent them."""
+        def plain(value: Any) -> Any:
+            if isinstance(value, sqlite3.Row):
+                return {name: value[name] for name in value.keys()}
+            if isinstance(value, (list, tuple)):
+                return [plain(item) for item in value]
+            return value
+        return self.method, tuple(plain(arg) for arg in self.args)
+
+
+# The document group loads of the capture sources (``GroupLoad``), named one by one.
+GROUP_LOADS = ("_file_documents", "_message_documents")
+
+
+class Reopenable:
+    """A capture source that remembers how it was opened (its class and constructor
+    arguments, ``opened_with``), so a worker process of a parallel build opens the same
+    source again (``ontology.project_parallel``); the worker then checks that its
+    ``watermark`` equals the build's, so it reads the bytes the build fingerprinted."""
+
+    opened_with: tuple[tuple[Any, ...], dict[str, Any]] | None = None
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+        self = super().__new__(cls)
+        self.opened_with = (args, dict(kwargs))
+        return self
+
+
+class MirrorCaptures(Reopenable):
     """Every retained version of the Portal source mirror, read-only.
 
     Reads the mirror file directly (``mode=ro``, one read transaction) because the
@@ -972,7 +1015,7 @@ class MirrorCaptures:
         return out
 
 
-class MailCaptures:
+class MailCaptures(Reopenable):
     """Every retained message version of the versioned mail capture, read-only
     (``integrations/capture_mail.MailCaptureStore``; source family ``graph_mail``).
 
@@ -1084,16 +1127,21 @@ class MailCaptures:
         self.close()
 
     def describe(self) -> dict[str, Any]:
-        """Freshness facts (no business data): the stalest folder run, the oldest
-        complete round, and whether every folder is complete with no truncated
-        attachment listing (else ``last_full_traversal_at`` is null)."""
+        """Freshness facts (no business data): the stalest run of a folder the capture
+        can read, the oldest complete round, and whether every folder is complete with
+        no truncated attachment listing (else ``last_full_traversal_at`` is null). A
+        folder with a terminal reason (``capture_mail.TERMINAL_REASONS``: no mailbox, not
+        visible, forbidden) is a gap, never read again: it keeps the source partial
+        (``last_full_traversal_at`` null) and leaves the freshness to the folders read."""
+        from integrations.capture_mail import terminal_reason
         folders = self._conn.execute(
-            "SELECT status, last_run_at, last_complete_at FROM folders").fetchall()
+            "SELECT status, reason, last_run_at, last_complete_at FROM folders").fetchall()
         truncated = self._conn.execute(
             "SELECT COUNT(*) FROM messages WHERE superseded_at IS NULL AND "
             "attachments_status IN ('truncated', 'truncated_capped')").fetchone()[0]
         last = self._conn.execute("SELECT MAX(version_id) FROM messages").fetchone()[0]
-        runs = [f["last_run_at"] for f in folders if f["last_run_at"]]
+        runs = [f["last_run_at"] for f in folders
+                if f["last_run_at"] and not terminal_reason(f["reason"])]
         whole = bool(folders) and truncated == 0 and all(
             f["status"] == "complete" and f["last_complete_at"] for f in folders)
         state = {"last_refresh_at": min(runs) if runs else None, "last_capture_id": last,
@@ -1163,7 +1211,8 @@ class MailCaptures:
             elif relation == "attachments":
                 for row in self._conn.execute(
                         f"SELECT a.*, {self._text}, m.message_id, m.recorded_at, "
-                        "m.superseded_at, m.last_seen_at, m.gone, m.record AS message "
+                        "m.superseded_at, m.last_seen_at, m.gone, m.record AS message, "
+                        "m.body_sha256 AS message_body "
                         + self._ATTACHED + " ORDER BY a.mailbox_id, m.message_id, "
                         "a.attachment_id, m.recorded_at"):
                     metadata = json.loads(row["metadata"])
@@ -1173,7 +1222,10 @@ class MailCaptures:
                     # Who sent the message (``sender``): only the document reader asks,
                     # to tell an attachment this mailbox sent itself from one it received
                     # (``ontology.document_fields``). Never projected onto the attachment.
-                    whose = _sender(row["message"]) if sender else {}
+                    # and, for its promise sentences, the carrying message's own words
+                    # (``document_fields.carrier_fields``): its body blob and handle.
+                    whose = ({**_sender(row["message"]), "message_handle": row["message_handle"],
+                              "message_body_sha256": row["message_body"]} if sender else {})
                     yield CapturedRecord(
                         source=self.source, relation=relation,
                         record_key=canonical([row["mailbox_id"], row["message_id"],
@@ -1243,7 +1295,7 @@ class MailCaptures:
                 [(tuple(item), _blob_state(self.blobs, item["content_sha256"]),
                   _blob_state(self.blobs, item["text_sha256"])) for item in attached]
             )).encode("utf-8")).hexdigest()
-            yield key, partial(self._message_documents, row, attached)
+            yield key, GroupLoad(self, "_message_documents", (row, attached))
 
     def _message_documents(self, row: Any, attached: Sequence[Any]
                            ) -> tuple[list[Any], bool]:
@@ -1295,7 +1347,8 @@ class MailCaptures:
 def _sender(record: str) -> dict[str, Any]:
     """The sender provenance of a captured message (its stored ``record``)."""
     message = json.loads(record)
-    return {"message_from": message.get("from"), "mailbox_upn": message.get("mailbox_upn")}
+    return {"message_from": message.get("from"), "mailbox_upn": message.get("mailbox_upn"),
+            "carrier_dated_at": message.get("sent_at") or message.get("received_at")}
 
 
 def attachment_mailboxes(db: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1336,7 +1389,7 @@ def mail_attachment_sender(db: sqlite3.Connection, handle: str, *,
     return {**whose, "mailbox_copies": copies + list(mailboxes)}
 
 
-class SharePointCaptures:
+class SharePointCaptures(Reopenable):
     """Every retained drive-item version of the versioned SharePoint capture, read-only
     (``integrations/capture_sharepoint.SharePointCaptureStore``; source family
     ``sharepoint``).
@@ -1592,7 +1645,7 @@ class SharePointCaptures:
                                               "recorded_at", "superseded_at")],
                 _blob_state(self.blobs, row["content_sha256"]),
                 _blob_state(self.blobs, row["text_sha256"]))).encode("utf-8")).hexdigest()
-            yield key, partial(self._file_documents, row)
+            yield key, GroupLoad(self, "_file_documents", (row,))
 
     def _file_documents(self, row: Any) -> tuple[list[Any], bool]:
         from integrations.captured_text import captured_text
@@ -2948,9 +3001,18 @@ class Projector:
             link = self.links[lid]
             for index, lb in enumerate(link["bindings"]):
                 where = f"{lid}#{index}"
-                if self.scope is not None and not link_ends(lb, self.bindings) <= self.scope:
+                unit = link_unit(lid, index, lb, self.bindings)
+                # A link binding this projector does not project is reported from the
+                # schema alone: by the build emitting its unit, whatever it reads.
+                gaps_only = lb["kind"] not in _PROJECTED_LINK_KINDS or \
+                    lb.get("from_binding") not in self.bindings or \
+                    lb.get("to_binding") not in self.bindings
+                if gaps_only and not self._emits(unit):
                     continue
-                self.report.unit = link_unit(lid, index, lb, self.bindings)
+                if not gaps_only and self.scope is not None and \
+                        not link_ends(lb, self.bindings) <= self.scope:
+                    continue
+                self.report.unit = unit
                 if lb["kind"] not in _PROJECTED_LINK_KINDS:
                     self.report.gap("link_kind_not_projected_here", where)
                     continue
@@ -4182,7 +4244,7 @@ def _bc_company(version: _Version) -> str | None:
 def _predicate(row: Mapping[str, Any], predicate: Mapping[str, Any]) -> bool:
     """A declared row test; the source mirror's predicate semantics (text compare,
     numeric gte/lt, present = non-blank). A null or missing cell satisfies only
-    ``absent``."""
+    ``absent`` and ``not_in`` (true unless the cell holds one of the listed values)."""
     present, cell = _cell(row, predicate["path"])
     op = predicate["op"]
     filled = present and not _blank(cell)
@@ -4190,6 +4252,8 @@ def _predicate(row: Mapping[str, Any], predicate: Mapping[str, Any]) -> bool:
         return filled
     if op == "absent":
         return not filled
+    if op == "not_in":
+        return not filled or _text(cell) not in {_text(item) for item in predicate["value"]}
     if not present or cell is None:
         return False
     value = predicate["value"]
@@ -4262,8 +4326,11 @@ def value_rows(conn: sqlite3.Connection) -> int:
 def open_generation(builder: StoreBuilder) -> None:
     """Tune a generation's connection for a build: a page cache the size of the
     working file's (the generation's indexes take millions of inserts, which the
-    2 MiB default turns into page churn)."""
-    builder.connection.execute(f"PRAGMA cache_size = -{_SCRATCH_CACHE_KIB}")
+    2 MiB default turns into page churn); never below the one the builder chose
+    (``ontology.store.BUILD_CACHE_BYTES``)."""
+    held = builder.connection.execute("PRAGMA cache_size").fetchone()[0]
+    if held >= 0 or -held < _SCRATCH_CACHE_KIB:   # pages, or fewer KiB than the scratch's
+        builder.connection.execute(f"PRAGMA cache_size = -{_SCRATCH_CACHE_KIB}")
 
 
 def finish_generation(builder: StoreBuilder, projector: "Projector",
@@ -4329,7 +4396,7 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
 
 __all__ = ["CAPTURED_RELATIONS", "CAPTURE_SOURCES", "CaptureSource", "CapturedRecord",
            "DEFAULT_BATCH", "ETL_REINSERTED", "MailCaptures", "MirrorCaptures", "PROJECTOR",
-           "RowSample", "STAGES", "SharePointCaptures", "WORK_LAYOUT",
+           "Reopenable", "RowSample", "STAGES", "SharePointCaptures", "WORK_LAYOUT",
            "capture_source", "ProjectionError", "Projector", "binding_unit", "build_store",
            "event_id_of", "finish_generation", "link_ends", "link_unit", "merge_reports",
            "open_generation", "sweep_stale_build_files"]

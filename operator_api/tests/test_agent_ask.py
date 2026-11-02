@@ -181,7 +181,7 @@ class AgentPath(unittest.TestCase):
             m.ASK_EVENTS[name].model_validate(data)
         steps = [data["message"] for (name, data), _ in got if name == "status"]
         self.assertIn("Looking up records", steps)         # each call streamed as it starts
-        self.assertIn("Checking every figure against its source", steps)
+        self.assertIn("Checking the answer against the records", steps)
         reading = next(t for (n, d), t in got if d.get("message") == "Looking up records")
         self.assertLess(reading, got[-1][1] - 0.5)         # ...before the session ended
         # the card runner's prompt, for this reader's own session, then the app's
@@ -214,6 +214,80 @@ class AgentPath(unittest.TestCase):
         self.assertNotIn(status, json.dumps(other))
         self.assertEqual(self.outsider.client.get(
             "/api/source", params={"handle": self.handle}).status_code, 404)
+
+    def test_progress_names_plain_steps_and_the_verdict_comes_before_the_answer(self):
+        """The reader watches the work in plain words (their own identifier, the sources
+        their session was served, the check) and reads the gate-accepted first line before
+        the full answer; a reader whose grant refuses the cited source sees neither."""
+        status = "Overdue"
+        po = "PurchaseOrder:bc.purchase_orders:x-1"
+        lines = [tool_use(1, "plx.object", {"object_id": "Receipt:bc.purchase_receipts:r-9"}),
+                 tool_result(1, {"object_id": "Receipt:bc.purchase_receipts:r-9"}),
+                 tool_use(2, "plx.documents", {"object_id": po,
+                                               "query": "order confirmation"}),
+                 tool_result(2, {"documents": [{"kind": "email", "citation": "x"}]}),
+                 tool_use(3, "plx.around", {"from": po}),
+                 tool_result(3, {"error": "refused"}),
+                 tool_use(4, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(4, decision(self.handle, status,
+                                         text=f"The order status is {status}. Writing "
+                                              "the rest takes a while."))]
+        prose = f"The order status is {status}.\n\n" + answer_block(self.handle, status)
+        self.use(self.ops, lambda on_line: ScriptedSession(on_line, lines, prose, pause=0.4))
+        got = self.ask(self.ops, "What did the supplier confirm for PO 90412?")
+        for (name, data), _ in got:
+            m.ASK_EVENTS[name].model_validate(data)
+        steps = [data["message"] for (name, data), _ in got if name == "status"]
+        for step in ("Finding PO 90412", "Reading Business Central receipts",
+                     "Checking supplier confirmations in mail",
+                     "Checking the answer against the records"):
+            self.assertIn(step, steps)
+        self.assertLess(steps.index("Finding PO 90412"),
+                        steps.index("Reading Business Central receipts"))
+        for step in steps:   # never a tool name, an id, a handle or an argument
+            for internal in ("plx.", "plx_", "://", ":bc.", "x-1", "r-9", "order confirmation"):
+                self.assertNotIn(internal, step)
+        self.assertNotIn("Reading Business Central purchase orders", steps)  # refused read
+        verdicts = [(data, t) for (name, data), t in got if name == "verdict"]
+        self.assertEqual([d["text"] for d, _ in verdicts], [f"The order status is {status}."])
+        names = [name for (name, _), _ in got]
+        self.assertLess(names.index("verdict"), names.index("token"))
+        answer = got[-1][0][1]
+        self.assertTrue(answer["direct_answer"].startswith(verdicts[0][0]["text"]))
+        # the reader the cited source is withheld from: no verdict, no value, anywhere
+        self.use(self.outsider, lambda on_line: ScriptedSession(on_line, lines, prose))
+        other = self.ask(self.outsider, "What did the supplier confirm for PO 90412?")
+        self.assertNotIn("verdict", [name for (name, _), _ in other])
+        self.assertNotIn(status, json.dumps([data for (_, data), _ in other]))
+
+    def test_a_one_record_question_answers_fast_through_the_gate_without_the_agent(self):
+        started = []
+
+        def no_agent(on_line):
+            started.append(on_line)
+            raise RuntimeError("the agent session is not this test's")
+        for served in (self.ops, self.outsider):
+            self.use(served, no_agent)
+        question = "wheres 5447 at? is it late"
+        got = self.ask(self.ops, question)
+        for (name, data), _ in got:
+            m.ASK_EVENTS[name].model_validate(data)
+        self.assertLess(got[-1][1], 10.0)
+        answer = got[-1][0][1]
+        self.assertEqual(answer["outcome"], "partial")       # its lateness is unsettled
+        self.assertIn("can't be settled", answer["direct_answer"])
+        self.assertNotIn("```", answer["direct_answer"])
+        fact = next(f for f in answer["facts"] if "REVISED" in f["text"])
+        self.assertEqual(fact["check"], "passed")             # the gate's passed claim
+        handle = fact["sources"][0]["handle"]
+        self.assertEqual(self.ops.client.get("/api/source", params={"handle": handle})
+                         .status_code, 200)
+        self.assertEqual(started, [])                         # no agent session ran
+        # a reader granted none of it learns nothing: no fast answer, the agent's turn
+        other = self.ask(self.outsider, question)[-1][0][1]
+        self.assertEqual(len(started), 1)
+        self.assertNotIn("REVISED", json.dumps(other))
+        self.assertNotIn(handle, json.dumps(other))
 
     def test_a_session_stopped_at_the_cap_answers_partial_or_still_working(self):
         lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
@@ -813,3 +887,41 @@ class SourcePage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProgressWords(unittest.TestCase):
+    """``ask_progress``: an unknown, failed or empty read names no source; a verdict the
+    reply screen would change is not sent."""
+
+    def test_a_read_that_names_nothing_known_gives_no_source_step(self):
+        from operator_api import ask_progress as p
+        receipt = {"object_id": "Receipt:bc.purchase_receipts:r-1"}
+        self.assertEqual(p.result_step("plx.object", receipt, json.dumps({"ok": 1})),
+                         "Reading Business Central receipts")
+        self.assertIsNone(p.result_step("plx.object", receipt, "{}", is_error=True))
+        self.assertIsNone(p.result_step("plx.object", receipt, json.dumps({"error": "x"})))
+        self.assertIsNone(p.result_step("plx.object", receipt, "not json"))
+        self.assertIsNone(p.result_step("plx.object", {"object_id": "Secret:hr.pay:1"}, "{}"))
+        self.assertIsNone(p.result_step("plx.documents", {}, json.dumps({"documents": []})))
+        self.assertIsNone(p.result_step("plx.unknown", receipt, "{}"))
+        self.assertEqual(p.call_step("plx.unknown"), "Reading records")
+        self.assertEqual(p.result_step("plx.around", {"from": "PurchaseOrder:bc.po:1"},
+                                       json.dumps({"objects": [
+                                           {"object_id": "Receipt:portal.app_receipt:2"},
+                                           {"object_id": "PurchaseOrder:bc.po:1"}]})),
+                         "Reading Portal receipts")
+        self.assertEqual(p.finding_steps("why is PO 90412 late"), ["Finding PO 90412"])
+        self.assertEqual(p.finding_steps("is the soap order late"), [])
+
+    def test_a_verdict_only_from_an_answered_decision_the_screen_keeps(self):
+        from operator_api import ask_progress as p
+        handle = "api://public.app_purchase_order/x@1-1"
+        kept = decision(handle, "Overdue")
+        self.assertEqual(p.verdict(kept, "status?"), "The order status is Overdue.")
+        self.assertIsNone(p.verdict(decision(handle, "Overdue", outcome="repair"), "q"))
+        self.assertIsNone(p.verdict(decision(handle, "Overdue", text="It shipped 999 "
+                                             "totes."), "q"))
+        self.assertIsNone(p.verdict({**kept, "reply": {"text": ""}}, "q"))
+        self.assertEqual(p.citations(kept), [handle])
+        uncited = {**kept, "claims": [{**kept["claims"][0], "citations": []}]}
+        self.assertIsNone(p.citations(uncited))

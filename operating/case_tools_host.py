@@ -136,10 +136,12 @@ from datetime import datetime, timedelta, timezone
 import functools
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
 import threading
+import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from ontology import mentions as mn
@@ -628,6 +630,11 @@ LOOKUP_FILES = 100_000
 # past it the counts are lower bounds (``_captured_documents``).
 UNSEARCHED_GATE = 100
 LOOKUP_ENTRIES = 200_000
+# A query word a captured file's name or folder path must hold to be listed by name
+# (``_name_terms``): letters or digits, this long at least.
+NAME_TERM_MIN = 2
+_NAME_TOKEN = re.compile(r"[^\W_]+")
+_NAME_PART = re.compile(r"[0-9]+|[^\W\d_]+")
 # Graph GETs one live re-read may send: the item's metadata plus at most three pages of
 # its permissions (integrations.graph_read.SharePointReader._permissions).
 REREAD_GETS = 4
@@ -786,13 +793,15 @@ def _file_priors(query: str) -> Callable[[Mapping[str, Any]], float]:
 def _placed(documents: Sequence[dict[str, Any]], added: Sequence[dict[str, Any]],
             prior: Callable[[Mapping[str, Any]], float]) -> list[dict[str, Any]]:
     """The projection's page with the captured files ``added`` (best first) placed in it:
-    each before the first listed document whose cheap prior is lower, else after them.
-    The projection's own order is kept."""
+    each before the first listed document whose cheap prior is lower, or equal and
+    dated earlier (newest first among equals), else after them. The projection's own
+    order is kept."""
     out = list(documents)
     at = 0
     for document in added:
-        mine = prior(document)
-        while at < len(out) and prior(out[at]) >= mine:
+        mine, date = prior(document), str(document.get("date") or "")
+        while at < len(out) and (prior(out[at]) > mine or (
+                prior(out[at]) == mine and str(out[at].get("date") or "") >= date)):
             at += 1
         out.insert(at, document)
         at += 1
@@ -846,6 +855,7 @@ class CaptureCaseHostTools(CaseHostTools):
         self.max_live_rereads, self.max_live_gets = max_live_rereads, max_live_gets
         self.max_capture_age = max_capture_age
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._policy_doubts = 0   # policies decided with an undecidable mailbox check
         if self.sharepoint_capture_dir is not None:
             self.label_reserve = LABEL_RESERVE_BYTES
         self._sharepoint_store: Any = None
@@ -963,6 +973,25 @@ class CaptureCaseHostTools(CaseHostTools):
                 self.sharepoint_capture_dir)
         return self._sharepoint_store
 
+    def policy_inputs(self, actor: Any) -> tuple[tuple, tuple] | None:
+        """``CaseHostTools.policy_inputs`` and the mail and SharePoint capture stores'
+        file states (their mailboxes, drives and recorded ACLs), and how many policies
+        were decided with an undecidable mailbox check (one such is never kept)."""
+        base = super().policy_inputs(actor)
+        if base is None:
+            return None
+        from integrations import capture_mail, capture_sharepoint
+        from .ontology_host import _file_stamp
+        mail = sharepoint = None
+        if self.mail_capture_dir is not None:
+            mail = _file_stamp(Path(self.mail_capture_dir).expanduser()
+                               / capture_mail.STORE_DIR / capture_mail.DB_FILE)
+        if self.sharepoint_capture_dir is not None:
+            sharepoint = _file_stamp(Path(self.sharepoint_capture_dir).expanduser()
+                                     / capture_sharepoint.STORE_DIR / capture_sharepoint.DB_FILE)
+        values, objects = base
+        return values + (mail, sharepoint, self._policy_doubts), objects
+
     def policy_now(self, actor: Any) -> ReadPolicy:
         policy = super().policy_now(actor)
         grants = dict(policy.audiences)
@@ -989,6 +1018,7 @@ class CaptureCaseHostTools(CaseHostTools):
                     ).visible_mailboxes(store, self.runtime.employee_gate(actor), audience)
                 except Exception:  # noqa: BLE001 - undecidable: no mailbox is granted
                     admitted = frozenset()
+                    self._policy_doubts += 1   # transient, maybe: never kept
                 for unit in mail_units:
                     mailbox = unit.partition(":")[2]
                     grants[unit] = principals if check(actor, mailbox) \
@@ -1004,7 +1034,8 @@ class CaptureCaseHostTools(CaseHostTools):
                 grants[unit] = principals if check(actor, unit.partition(":")[2]) \
                     else frozenset()
             units["sharepoint"] = tuple(sharepoint_units)
-        return ReadPolicy(policy.tenant, grants, policy.markings, units)
+        return ReadPolicy(policy.tenant, grants, policy.markings, units,
+                          unrestricted=policy.unrestricted)
 
     @property
     def tools(self) -> ot.OntologyTools:
@@ -1205,9 +1236,10 @@ class CaptureCaseHostTools(CaseHostTools):
             # answer), labelled with its capture time. A row whose capture holds no read,
             # non-empty permission list (this version's or the item's latest) is
             # withheld at any age: an empty recorded list decides nothing.
-            if not all(isinstance(acl, Mapping) and acl.get("status") in _RECORDED_ACL
-                       and isinstance(acl.get("identities"), list) and acl["identities"]
-                       for acl in (view["source_acl"], view["item_source_acl"])):
+            if not self._unrestricted(gated) and not all(
+                    isinstance(acl, Mapping) and acl.get("status") in _RECORDED_ACL
+                    and isinstance(acl.get("identities"), list) and acl["identities"]
+                    for acl in (view["source_acl"], view["item_source_acl"])):
                 self._refused[handle] = (
                     "withheld", "capture_permissions_unknown",
                     "the Workbench's capture holds no permission list for this file, so "
@@ -1236,6 +1268,17 @@ class CaptureCaseHostTools(CaseHostTools):
             "failure": failure, "text_status": row.get("text_status"),
             "content_status": row.get("content_status"), "size": row.get("size")}
         return view
+
+    def _unrestricted(self, gated: Any) -> bool:
+        """The reader's owner-open flag (``employee_permissions.reader_unrestricted``),
+        decided once per tool call and reader (``_CallBound.memo``)."""
+        from .employee_permissions import reader_unrestricted
+        memo = self._call_bound.memo
+        key = ("unrestricted", frozenset(getattr(gated, "principals", ())))
+        if key not in memo:
+            memo[key] = reader_unrestricted(getattr(self.runtime, "employee_gate", None),
+                                            gated)
+        return memo[key]
 
     def _full_read_stale(self, gated: Any, view: Mapping[str, Any]) -> bool:
         """A file past the capture-age bound served on its recorded permissions only under
@@ -1349,6 +1392,10 @@ class CaptureCaseHostTools(CaseHostTools):
                   or {}).get(drive)
         if self._call_bound.search:
             return ("capture", False, "search")   # a search never re-reads live
+        if self._unrestricted(gated):
+            # Owner-open: no live permission re-read; the captured permissions and the
+            # people exclusion (already applied to this version) decide.
+            return ("capture", False, None)
         if reader is None:
             return ("capture", False, None)
         key = (frozenset(gated.principals), view["l1_handle"])
@@ -1864,6 +1911,9 @@ class CaptureCaseHostTools(CaseHostTools):
             return result   # plx.read: its reader labels a captured file itself
         if name in SEARCH_TOOLS and isinstance(arguments, dict):
             result = self._use_case_documents(name, arguments, actor, result)
+        if name == "plx.documents" and isinstance(arguments, dict) \
+                and self.mail_capture_dir is not None:
+            result = self._newer_mail(arguments, actor, result)
         if self.sharepoint_capture_dir is None:
             return self._bounded(name, result) \
                 if "use_case" in result or name in SEARCH_TOOLS else result
@@ -1876,6 +1926,19 @@ class CaptureCaseHostTools(CaseHostTools):
             finally:
                 _SEARCH_HITS.reset(token)
         return self._label(name, result, actor)
+
+    def _newer_mail(self, arguments: Mapping[str, Any], actor: Any,
+                    result: dict[str, Any]) -> dict[str, Any]:
+        """``result`` with the mail captured since the served generation was built that
+        this reader may see (``operating.mail_topup``: the call's read policy grants
+        and this host's per-item mail gate, as for projected mail), each marked
+        ``captured_after_refresh``."""
+        from operating.mail_topup import top_up
+        from integrations.capture_mail import store_exists
+        if not store_exists(Path(self.mail_capture_dir)):
+            return result
+        return top_up(self.tools, arguments, actor, result,
+                      lambda: _mail_store(self.runtime, Path(self.mail_capture_dir)))
 
     def _use_case_documents(self, name: str, arguments: Mapping[str, Any], actor: Any,
                             result: dict[str, Any]) -> dict[str, Any]:
@@ -2079,8 +2142,9 @@ class CaptureCaseHostTools(CaseHostTools):
             return result
         wanted = {(m["identifier_kind"], m["normalized"]) for m in mn.extract(query)
                   if m["normalized"]}
+        terms = _name_terms(query)
         store, audience = self._sharepoint(), self._audience()
-        if not wanted or store is None or audience is None:
+        if not (wanted or terms) or store is None or audience is None:
             return result
         try:
             gated = self.runtime.employee_gate(actor)
@@ -2106,9 +2170,22 @@ class CaptureCaseHostTools(CaseHostTools):
             document = self._mentioning(view, wanted, pages[at])
             if document is not None:
                 matching.append((handle, document))
+        # A file whose name or folder path holds the query's words (a lot number in a
+        # COA's file name, which no grammar reads as an identifier), newest first: the
+        # capture's files the projection does not list yet (captured since it was built)
+        # are found too. Each still passes the per-item gate below before it is listed.
+        texted = {handle for handle, _document in matching}
+        matching.extend(sorted(
+            ((handle, self._named(handle, name, path, modified))
+             for handle, name, path, modified, tokens in lookup.names
+             if handle not in listed and handle not in texted
+             and _names_terms(tokens, terms)),
+            key=lambda pair: str(pair[1]["date"] or ""), reverse=True))
+        found_handles = {handle for handle, _document in matching}
         # No match on the pages read is never absence from the pages not read.
         unsearched = [(lookup.handles[at], why) for at, why in lookup.unsearched
-                      if at not in pages and lookup.handles[at] not in listed]
+                      if at not in pages and lookup.handles[at] not in listed
+                      and lookup.handles[at] not in found_handles]
         found, capped, over_cap, over_bound, over_budget, cited = [], [], 0, 0, 0, 0
         not_read = text_unread = 0
         room = arguments.get("limit", DEFAULT_LIMIT) - len(documents)
@@ -2235,9 +2312,12 @@ class CaptureCaseHostTools(CaseHostTools):
         lookup = _IdentifierLookup(store, gated, audience, state)
         index = store.index(gated, audience, limit=LOOKUP_FILES)
         files = file_index(store) if index["items"] else {}
+        names = file_names(store) if index["items"] else {}
         lookup.truncated, held_entries = index["truncated"], 0
         for item in index["items"]:
             handle = item["l1_handle"]
+            if handle in names:
+                lookup.names.append((handle, *names[handle]))
             entry = files.get(handle)
             if entry is None:
                 continue   # no longer current: the index read the store after the listing
@@ -2264,6 +2344,19 @@ class CaptureCaseHostTools(CaseHostTools):
                 lookup.unsearched.append((at, why))   # scanned pages left for OCR
         self._lookup = lookup
         return lookup
+
+    def _named(self, handle: str, name: Any, path: Any, modified: Any) -> dict[str, Any]:
+        """One captured file as a ``plx.documents`` item found by its name or folder path
+        (no mention: nothing in its text was matched), the path quoted as the snippet."""
+        limit = self.tools.contracts["limits"]["max_untrusted_text_chars"]
+        title = (ot._envelope(name, handle, "row.name", limit)
+                 if isinstance(name, str) and name else None)
+        return {"citation": handle, "kind": "sharepoint_file", "title": title,
+                "date": modified if isinstance(modified, str) and _DATE.match(modified)
+                else None,
+                "snippet": (ot._envelope(path, handle, "row.path", limit)
+                            if isinstance(path, str) and path else title),
+                "mentions": []}
 
     def _mentioning(self, view: Mapping[str, Any], wanted: set[tuple[str, str]],
                     pages: set[int | None] | None = None) -> dict[str, Any] | None:
@@ -2310,6 +2403,8 @@ class _IdentifierLookup:
         self.handles: list[str] = []
         self.entries: dict[tuple[str, str], list[tuple[int, int | None]]] = {}
         self.unsearched: list[tuple[int, Any]] = []
+        # (handle, name, path, last modified, the name's and path's words) per file listed.
+        self.names: list[tuple[str, Any, Any, Any, frozenset[str]]] = []
         self.truncated = False
 
 
@@ -2489,6 +2584,60 @@ def _save_index(path: Path, code: str, files: Mapping[str, Any]) -> None:
             tmp.unlink()
         except OSError:
             pass
+
+
+def _name_terms(query: str) -> list[str]:
+    """The words of ``query`` a captured file's name or folder path must hold to be
+    listed by name, folded: the words holding a digit (a lot, PO or formula number)
+    when there are any, else every word outside ``STOP_WORDS``; none shorter than
+    ``NAME_TERM_MIN``."""
+    from operating.ontology_tools_evidence import STOP_WORDS
+    words = [w.casefold() for w in _NAME_TOKEN.findall(query)
+             if len(w) >= NAME_TERM_MIN]
+    words = [w for w in words if w not in STOP_WORDS]
+    numbered = [w for w in words if any(c.isdigit() for c in w)]
+    return list(dict.fromkeys(numbered or words))
+
+
+def _name_tokens(*texts: Any) -> frozenset[str]:
+    """The folded words of a file's name and path: each letters-and-digits run and its
+    letter and digit runs (``LOT240306`` holds ``lot240306``, ``lot`` and ``240306``)."""
+    out: set[str] = set()
+    for text in texts:
+        if isinstance(text, str):
+            for word in _NAME_TOKEN.findall(text.casefold()):
+                out.add(word)
+                out.update(_NAME_PART.findall(word))
+    return frozenset(out)
+
+
+def _names_terms(tokens: frozenset[str], terms: Sequence[str]) -> bool:
+    """Whether a name's words hold every term: a term with a digit as a whole word (lot
+    240306 is not 1240306), a word as a word's start (spec: specification)."""
+    if not terms:
+        return False
+    for term in terms:
+        if any(c.isdigit() for c in term):
+            if term not in tokens:
+                return False
+        elif not any(token.startswith(term) for token in tokens):
+            return False
+    return True
+
+
+def file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
+    """Every current captured file version of ``store`` (by version handle) with its
+    name, folder path, last modified time and their words (:func:`_name_tokens`), for
+    every reader: no visibility is decided here (the reader's lookup takes the files the
+    store lists for it, and each listed file is gated)."""
+    out: dict[str, tuple[Any, Any, Any, frozenset[str]]] = {}
+    for row in store.db.execute(
+            "SELECT l1_handle, path, json_extract(record, '$.name') AS name, "
+            "json_extract(record, '$.last_modified') AS modified FROM items "
+            "WHERE superseded_at IS NULL"):
+        out[row["l1_handle"]] = (row["name"], row["path"], row["modified"],
+                                 _name_tokens(row["name"], row["path"]))
+    return out
 
 
 def file_index(store: Any) -> dict[str, dict[str, Any]]:
@@ -2887,8 +3036,7 @@ class CaseCaptures:
                     return None
                 if view.get("changed_since") or view.get("relation") != "graph-mail.attachment":
                     raise refused
-                from integrations.capture_mail import call_memo
-                from ontology.project import attachment_mailboxes, mail_attachment_sender
+                from ontology.project import mail_attachment_sender
                 with _mail_store(self.runtime, Path(self.mail_capture_dir)) as store:
                     reader = self.runtime.employee_gate(actor)
                     audience = self.runtime.live.audience
@@ -2903,12 +3051,8 @@ class CaseCaptures:
                         raise refused
                     text = (store.blob(found["text_sha256"]).decode("utf-8")
                             if found["text_status"] == TEXT_OCR else None)
-                    memo = call_memo()   # one call reads the mailboxes once
-                    key = ("attachment_mailboxes", str(store.path))
-                    if memo is not None and key not in memo:
-                        memo[key] = attachment_mailboxes(store.db)
                     whose = mail_attachment_sender(
-                        store.db, handle, mailboxes=None if memo is None else memo[key])
+                        store.db, handle, mailboxes=_attachment_mailboxes(store))
                     if whose is None:
                         raise refused
                     row = {**view["row"], **whose}
@@ -2917,6 +3061,68 @@ class CaseCaptures:
         except (sqlite3.Error, OSError, ValueError, LookupError):
             raise refused from None
         return None
+
+
+# The captured mailboxes holding an attachment (the own party's mailboxes a document's
+# direction is read against), per capture file: read once, then read again in the
+# background every ATTACHMENT_MAILBOXES_SECONDS (the list grows only when a new mailbox is
+# captured, and reading it scans every attachment); a request never waits for that read
+# once it has been made (``prime_attachment_mailboxes`` makes it at start).
+ATTACHMENT_MAILBOXES_SECONDS = 300.0
+_MAILBOXES: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_MAILBOXES_LOCK = threading.Lock()
+_MAILBOXES_READING: set[str] = set()
+
+
+def _read_mailboxes(path: str) -> None:
+    from ontology.project import attachment_mailboxes
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            found = attachment_mailboxes(conn)
+        finally:
+            conn.close()
+        with _MAILBOXES_LOCK:
+            _MAILBOXES[path] = (time.monotonic(), found)
+    except sqlite3.Error:
+        pass   # read again by the next request that needs it
+    finally:
+        with _MAILBOXES_LOCK:
+            _MAILBOXES_READING.discard(path)
+
+
+def _refresh_mailboxes(path: str) -> None:
+    with _MAILBOXES_LOCK:
+        if path in _MAILBOXES_READING:
+            return
+        _MAILBOXES_READING.add(path)
+    threading.Thread(target=_read_mailboxes, args=(path,), name="attachment-mailboxes",
+                     daemon=True).start()
+
+
+def prime_attachment_mailboxes(mail_capture_dir: Any) -> None:
+    """Read the capture's attachment mailboxes now, in the background (a server's start)."""
+    from integrations.capture_mail import DB_FILE, STORE_DIR
+    if mail_capture_dir is not None:
+        path = Path(mail_capture_dir).expanduser() / STORE_DIR / DB_FILE
+        if path.is_file():
+            _refresh_mailboxes(os.path.realpath(path))
+
+
+def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
+    from ontology.project import attachment_mailboxes
+
+    key = os.path.realpath(str(store.path))
+    with _MAILBOXES_LOCK:
+        held = _MAILBOXES.get(key)
+    if held is None:   # never read in this process: read now
+        found = attachment_mailboxes(store.db)
+        with _MAILBOXES_LOCK:
+            _MAILBOXES[key] = (time.monotonic(), found)
+        return found
+    if time.monotonic() - held[0] >= ATTACHMENT_MAILBOXES_SECONDS:
+        _refresh_mailboxes(key)
+    return held[1]
 
 
 def serving_tools(runtime: Any, actor: Any, *, store_path: str | Path | None = None,

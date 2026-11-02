@@ -141,6 +141,12 @@ class EntraAuth:
         return {"mode": self.mode, "dev_login": False}
 
 
+def _ticket_reason(refused: SessionIdentityRefused) -> bool:
+    """Refused for the ticket itself (expired, revoked, malformed, another audience)."""
+    reason = getattr(refused, "reason", "") or ""
+    return reason.startswith("session_ticket_") or reason == "session_expired"
+
+
 class DevAuth:
     """Demo sign-in behind an explicit flag (module doc). ``identity`` resolves the reader
     of a dev session on every request (an employee re-resolves through the resolver, so a
@@ -170,7 +176,7 @@ class DevAuth:
         if self.needs_ticket != bool(ticket):
             raise AuthRequired("dev_ticket_required" if self.needs_ticket
                                else "dev_ticket_not_accepted", 400)
-        reader = self._reader(ticket)
+        reader = self._reader(ticket, signing_in=True)
         token = secrets.token_urlsafe(32)
         now = self.clock()
         with self._lock:
@@ -199,11 +205,17 @@ class DevAuth:
                     del self._sessions[key]
         return False, None
 
-    def _reader(self, ticket: Optional[str]) -> Reader:
+    def _reader(self, ticket: Optional[str], *, signing_in: bool = False) -> Reader:
         try:
             session = (self.ticket_identity(ticket) if self.ticket_identity is not None
                        else self.identity())
-        except SessionIdentityRefused:
+        except SessionIdentityRefused as refused:
+            # An expired, revoked or malformed ticket is the link's fault, not the person's
+            # access: at sign-in the link is refused, later the session has ended (the
+            # reason itself is never returned).
+            if ticket and _ticket_reason(refused):
+                raise (AuthRequired("access_link_refused", 403) if signing_in
+                       else AuthRequired("sign_in_required")) from None
             raise AuthRequired("no_workbench_access", 403) from None
         return Reader(session, self.mode, _display(session), session.email)
 

@@ -93,8 +93,8 @@ function SignIn() {
         <div className="w-full max-w-sm space-y-8">
           <div className="space-y-3 text-center">
             <Logo className="text-lg" />
-            <h1 className="text-2xl font-semibold tracking-tight">Sign in to ask anything</h1>
-            <p className="text-sm text-muted">
+            <h1 className="text-display">Sign in to ask anything</h1>
+            <p className="text-row text-muted">
               Orders, suppliers, customers and lots across Business Central, the Portal, mail, Teams and files — with sources.
             </p>
           </div>
@@ -111,7 +111,7 @@ function SignIn() {
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="h-11 w-full rounded-xl border border-border-strong text-sm font-medium hover:bg-surface-2 cursor-pointer"
+                  className="h-11 w-full rounded-xl border border-border-strong text-row font-medium hover:bg-surface-2 cursor-pointer"
                 >
                   Sign out and use another account
                 </button>
@@ -122,7 +122,7 @@ function SignIn() {
                   type="button"
                   onClick={microsoft}
                   disabled={!entra || busy}
-                  className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-border-strong bg-surface text-sm font-medium text-fg transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
+                  className="flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-border-strong bg-surface text-row font-medium text-fg transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
                 >
                   {busy && entra ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <MicrosoftMark />}
                   Sign in with Microsoft
@@ -137,7 +137,7 @@ function SignIn() {
                     <p className="flex items-center gap-1.5 text-meta font-medium text-warn">
                       <FlaskConical className="size-3.5" aria-hidden /> DEV mode
                     </p>
-                    {note && <p className="text-sm text-muted">{note}</p>}
+                    {note && <p className="text-row text-muted">{note}</p>}
                     <form
                       className="space-y-3"
                       onSubmit={(e) => {
@@ -156,7 +156,7 @@ function SignIn() {
                             autoComplete="off"
                             value={ticket}
                             onChange={(e) => setTicket(e.target.value.replace(/^.*#(?:ticket|access)=/, ""))}
-                            className="h-11 w-full rounded-xl border border-control bg-surface px-3 text-sm focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:outline-none"
+                            className="h-11 w-full rounded-xl border border-control bg-surface px-3 text-row focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:outline-none"
                           />
                         </div>
                       ) : (
@@ -171,7 +171,7 @@ function SignIn() {
                       <button
                         type="submit"
                         disabled={busy || (showTicket && !ticket.trim())}
-                        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent text-sm font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
+                        className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-accent text-row font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
                       >
                         {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
                         Continue with demo sign-in

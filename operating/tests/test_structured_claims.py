@@ -229,7 +229,7 @@ class RenderedQuantityWordTests(unittest.TestCase):
                    "field": "row.qtyplan_c", "role": "planned"},
                   {"id": "m", "value": "1503", "citation": self.HANDLE,
                    "field": "row.qtymfg_c", "role": "manufactured"}]
-        rows = lambda runtime, actor: (lambda handle: self.ROW if handle == self.HANDLE
+        rows = lambda runtime, actor, **_kw: (lambda handle: self.ROW if handle == self.HANDLE
                                        else None)
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
@@ -299,7 +299,7 @@ class OneProseScreenTests(unittest.TestCase):
 
     def gate(self, text, ids, *, claims=None, returned=None):
         session = mock.Mock(case_runtime=None, actor=None)
-        rows = lambda runtime, actor: (lambda handle: {"handle": handle, "revision": "0-1",
+        rows = lambda runtime, actor, **_kw: (lambda handle: {"handle": handle, "revision": "0-1",
                                                        **self.ROWS[handle]}
                                        if handle in self.ROWS else None)
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \

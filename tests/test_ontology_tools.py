@@ -1112,6 +1112,48 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
         self.assertTrue(result["completeness"]["truncated"])
         self.assertIn("scan_cap", [g["reason"] for g in result["gaps"]])
 
+    def test_records_named_by_the_query_are_read_first_and_said_whole_before_a_cap(self):
+        # dev F29-0049 on main-d98492: "Pet Alliance" listed mail attachments first and
+        # stopped at the cap with no word on whether the customer named so was read.
+        def found(cap, named=3, marked=1):
+            s = build()
+            self._mails(s, 6, prefix="n", subject="more acme sprockets")   # words, no name
+            self._mails(s, named, prefix="v", subject="Acme Sprockets")      # named
+            self._mails(s, marked, prefix="s", subject="ACME SPROCKETS", markings='["finance"]')
+            original = ot.TEXT_SCAN_CAP
+            ot.TEXT_SCAN_CAP = cap
+            try:
+                return tools(s).call("plx.find", {"query": "acme  sprockets", "limit": 10},
+                                     SALES)
+            finally:
+                ot.TEXT_SCAN_CAP = original
+
+        for named in (1, 3):
+            cut = found(named + 1, named)
+            self.assertContract("plx.find", cut)
+            ids = [c["object"]["object_id"] for c in cut["candidates"]]
+            self.assertEqual(ids[:named], [f"MailMessage:mail.po_inbox:v{at}"
+                                           for at in range(named)])
+            self.assertNotIn("MailMessage:mail.po_inbox:s0", ids)   # marked: never read
+            # never complete: the cap still cut the words' other records
+            self.assertEqual((cut["completeness"]["total"], cut["completeness"]["reason"],
+                              cut["completeness"]["complete"]), (None, "scan_cap", False))
+            caps = [g for g in cut["gaps"] if g["reason"] == "scan_cap"]
+            self.assertEqual(len(caps), 1)
+            self.assertIn(f"begins with these words ({named})", str(caps[0]))
+        # The cap falls inside the named records: nothing is said of them as whole.
+        inside = found(2, 3)
+        caps = [g for g in inside["gaps"] if g["reason"] == "scan_cap"]
+        self.assertEqual(len(caps), 1)
+        self.assertNotIn("begins with these words", str(caps[0]))
+        # Under the cap nothing is cut and every record is listed, the named first.
+        whole = found(50)
+        self.assertEqual((whole["completeness"]["total"], whole["completeness"]["complete"]),
+                         (9, True))
+        self.assertEqual([c["object"]["object_id"] for c in whole["candidates"]][:3],
+                         [f"MailMessage:mail.po_inbox:v{at}" for at in range(3)])
+        self.assertNotIn("scan_cap", [g["reason"] for g in whole["gaps"]])
+
     def test_filter_listing_uses_the_same_tier_rule_and_drops_no_object(self):
         by_id = {}
         for op in ("absent", "present"):   # between them, every PurchaseOrder
@@ -1193,6 +1235,52 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                          "object_not_found")
         self.assertEqual(ungated.call("plx.find", {"query": "PSI2099001"}, FULL)["status"],
                          "found")  # bc:// records carry no item ACL
+
+    def test_item_decisions_are_kept_for_one_run_only_and_per_reader(self):
+        # A plan run (plx.investigate) or a console request decides an item's ACL once
+        # per reader (ot.run_memo); outside one each call decides afresh, and a
+        # revocation applies to the next run.
+        calls, allowed = [], {"open": True}
+
+        def gate(actor, handle):
+            calls.append((actor, handle))
+            return allowed["open"] or handle != DOC_H
+        t = tools(item_gate=gate)
+        for _ in range(2):
+            self.assertNotIn("error", t.call("plx.object", {"object_id": DOC}, SALES))
+        self.assertGreaterEqual(calls.count((SALES, DOC_H)), 2)
+        del calls[:]
+        with ot.run_memo():
+            for _ in range(3):
+                self.assertNotIn("error", t.call("plx.object", {"object_id": DOC}, SALES))
+            self.assertEqual(calls.count((SALES, DOC_H)), 1)
+            # another reader in the same run is decided for itself, under its own grants
+            other = t.call("plx.object", {"object_id": DOC}, OUTSIDER)
+            self.assertEqual(other["error"]["code"], "object_not_found")
+        allowed["open"] = False
+        with ot.run_memo():
+            self.assertEqual(t.call("plx.object", {"object_id": DOC}, SALES)["error"]["code"],
+                             "object_not_found")
+        # every reader's answers inside a run are the ones it gets outside one
+        allowed["open"] = True
+        for actor in (FULL, SALES, OUTSIDER):
+            for name, arguments in (("plx.find", {"query": "confirmation for blue"}),
+                                    ("plx.object", {"object_id": DOC})):
+                with self.subTest(actor=sorted(actor.principals), tool=name):
+                    outside = without_set(t.call(name, arguments, actor))
+                    with ot.run_memo():
+                        t.call(name, arguments, FULL)   # a fuller reader decided first
+                        inside = without_set(t.call(name, arguments, actor))
+                    self.assertEqual(inside, outside)
+
+    def test_the_result_bound_measures_the_envelope_byte_for_byte(self):
+        for value in ({}, {"a": "é\"\\\n\x01 😀", "b": [1, 2.5, None, True, {"x": "y"}]},
+                      {"t": "ß😀\"\\" * 500, "n": list(range(50))}):
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            envelope = json.dumps({"content": [{"type": "text", "text": text}],
+                                   "structuredContent": value, "isError": False},
+                                  ensure_ascii=False, separators=(",", ":"))
+            self.assertEqual(ot._envelope_bytes(value), len(envelope.encode("utf-8")))
 
     def test_case_runtime_item_gate_denies_on_any_refusal(self):
         class Runtime:

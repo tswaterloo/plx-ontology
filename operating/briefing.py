@@ -513,7 +513,12 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             "hidden_by_type": hidden_by_type or {}, "last_visit": last_visit,
             "checks": checks, "types": types,
             "complete": bool(inbox.get("complete")) and not inbox.get("more"),
-            "not_run": sorted((inbox.get("not_run") or {}).keys())}
+            "not_run": sorted((inbox.get("not_run") or {}).keys()),
+            # checks whose findings are of older data than served now: not listed until
+            # they run over it (``proactive_engine.read_inbox``)
+            "refreshing": list(inbox.get("refreshing") or ()),
+            "checked_on": inbox.get("checked_on")
+            if isinstance(inbox.get("checked_on"), str) else None}
     found["today"] = today_line(found)
     return found
 
@@ -692,9 +697,16 @@ def today_line(briefing: Mapping[str, Any]) -> str:
     hidden = int(briefing.get("hidden") or 0)
     # what the reader can't open is a count only (``HIDDEN_POLICY``), never which kind
     unopened = f"; {hidden} more you can't open" if hidden else ""
+    # checks last run on older data: their findings are held back, never "nothing"
+    behind = (" Some checks are re-running on the latest data"
+              + (f" (last checked {str(briefing['checked_on'])[:10]})"
+                 if briefing.get("checked_on") else "")
+              + ", so more may show shortly.") if briefing.get("refreshing") else ""
     if new:
         lead = "Since your last visit: " if visit else "In the latest check: "
-        return lead + "; ".join(parts(new, True)) + "."
+        return lead + "; ".join(parts(new, True)) + "." + behind
+    if not items and behind:
+        return "Checking against the latest data." + behind
     if not items:
         if hidden:
             return (f"Nothing you can open needs attention; {hidden} more for your team "
@@ -706,7 +718,7 @@ def today_line(briefing: Mapping[str, Any]) -> str:
                for g in briefing.get("groups") or ()} if briefing.get("more") else None)
     return ("Nothing new " + ("since your last visit" if visit else "in the latest check")
             + f"; still open: {at_least}" + "; ".join(parts(items, False, counts))
-            + unopened + ".")
+            + unopened + "." + behind)
 
 
 def digest_text(briefing: Mapping[str, Any], *, first_name: str,

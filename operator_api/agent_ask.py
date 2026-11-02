@@ -47,6 +47,10 @@ ASK_SECONDS = deep.SESSION_SECONDS   # the hard cap of one Ask's session, and it
 MAX_TURNS = deep.MAX_TURNS           # as the scoreboard's sessions
 MAX_STEPS = deep.MAX_STEPS           # tool calls besides the answer gate's
 CATALOG_SECONDS = 3600     # a reader's tool catalog is listed again after this
+# The model an Ask about one named record runs on (``ClaudeCodeAgent.routed``: the
+# questions the short method is asked for); any other question stays on the session's.
+# None: every Ask on the session's model.
+LOOKUP_MODEL: Optional[str] = None
 
 
 # The app's reader is a business user: the words around the answer block say what the
@@ -216,12 +220,12 @@ class AgentAsk:
     def __init__(self, *, state_dir: Path | None = None, host_config: Path | None = None,
                  secret: str | None = None, seconds: float = ASK_SECONDS,
                  claude_bin: str = "claude", model: str | None = None,
-                 max_turns: int = MAX_TURNS,
+                 max_turns: int = MAX_TURNS, lookup_model: str | None = LOOKUP_MODEL,
                  host_for: Callable[[Any], Any] | None = None,
                  agent_for: Callable[[Callable[[str], None]], Any] | None = None) -> None:
         self.state_dir, self.host_config, self.secret = state_dir, host_config, secret
         self.seconds, self.claude_bin, self.model = seconds, claude_bin, model
-        self.max_turns = max_turns
+        self.max_turns, self.lookup_model = max_turns, lookup_model
         self._host_for, self._agent_for = host_for, agent_for
 
     @classmethod
@@ -275,7 +279,8 @@ class AgentAsk:
         return runner.ClaudeCodeAgent(binary=self.claude_bin, model=self.model,
                                       timeout=int(self.seconds), max_turns=self.max_turns,
                                       spawn=runner.streaming_spawn(on_line),
-                                      budget_seconds=self.seconds, max_steps=MAX_STEPS)
+                                      budget_seconds=self.seconds, max_steps=MAX_STEPS,
+                                      lookup_model=self.lookup_model)
 
     def read_source(self, session: Any, handle: str, text_offset: int = 0
                     ) -> dict[str, Any]:
@@ -311,13 +316,19 @@ class AgentAsk:
             context: str = "") -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
-        each tool call starts, ``("gate", {"outcome": ...})`` as each gate decision
-        returns."""
+        each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
+        comes back (``step``: its plain-words step, ``ask_progress.result_step``, or None);
+        ``("gate", {"outcome", "verdict", "citations"})`` as each gate decision returns
+        (``verdict``: an ``answered`` decision's first sentence, ``ask_progress.verdict``;
+        ``citations``: what its passed claims cite, for the caller to decide for the
+        reader before showing it)."""
         from operating import agent_session as runner
+        from . import ask_progress as progress
 
         host = self.host_for(session)   # ReaderRefused first: no process for a non-employee
         started = time.monotonic()
-        pending: dict[str, str] = {}
+        pending: dict[str, tuple[str, Any]] = {}
+        refused: list[Any] = []
 
         def on_line(line: str) -> None:
             message = json.loads(line) if line.strip().startswith("{") else {}
@@ -330,20 +341,32 @@ class AgentAsk:
                     raw = str(block.get("name") or "")
                     name = raw.split("__", 2)[-1].replace("_", ".", 1) if raw.startswith(
                         "mcp__") else raw
-                    pending[str(block.get("id"))] = name
+                    pending[str(block.get("id"))] = (name, block.get("input"))
                     emit("call", {"tool": name})
-                elif kind == "user" and block.get("type") == "tool_result" \
-                        and pending.pop(str(block.get("tool_use_id")), None) \
-                        == runner.ANSWER_GATE_TOOL:
+                elif kind == "user" and block.get("type") == "tool_result":
+                    name, arguments = pending.pop(str(block.get("tool_use_id")), ("", None))
+                    if name != runner.ANSWER_GATE_TOOL:
+                        if name:
+                            emit("result", {"tool": name, "step": progress.result_step(
+                                name, arguments, block.get("content"),
+                                block.get("is_error"))})
+                        continue
                     body = block.get("content")
                     if isinstance(body, list):
                         body = "".join(str(part.get("text") or "") for part in body
                                        if isinstance(part, Mapping))
                     try:
-                        outcome = (json.loads(body) or {}).get("outcome")
+                        parsed = json.loads(body) or {}
+                        outcome = parsed.get("outcome")
                     except (TypeError, ValueError, AttributeError):
-                        outcome = None
-                    emit("gate", {"outcome": outcome if isinstance(outcome, str) else None})
+                        parsed, outcome = {}, None
+                    told = None
+                    if isinstance(parsed, Mapping) and not block.get("is_error"):
+                        refused.extend(parsed.get("unsupported_claims") or ())
+                        told = progress.verdict(parsed, question, refused)
+                    emit("gate", {"outcome": outcome if isinstance(outcome, str) else None,
+                                  "verdict": told, "citations": progress.citations(parsed)
+                                  if told else None})
 
         try:
             # ``context``: what the app read for the agent before the session (a tool

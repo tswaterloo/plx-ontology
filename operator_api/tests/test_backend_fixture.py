@@ -188,6 +188,32 @@ class FixtureBackend(unittest.TestCase):
         quick = self.ops.client.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}",
                                     params={"quick": 1}).json()
         self.assertEqual(quick["object_id"], body["object_id"])
+        # each slow section is its own call, by number or whole id, and carries exactly
+        # what the full page shows for it (the full page is the quick read with them)
+        parts = {"late": ("late_lines",), "people": ("people",),
+                 "landed_cost": ("landed_cost",),
+                 "trail": ("trail", "not_found", "proposals")}
+        for ref in (case_fixtures.PO_NUMBER, quote(body["object_id"], safe="")):
+            for name, fields in parts.items():
+                got = self.ops.client.get(f"/api/object-section/{name}/PurchaseOrder/{ref}")
+                self.assertEqual(got.status_code, 200, (name, got.text))
+                section = m.ObjectSection.model_validate(got.json()).model_dump(mode="json")
+                self.assertEqual((section["object_id"], section["section"]),
+                                 (body["object_id"], name))
+                for field in fields:
+                    self.assertEqual(section[field], body[field], (name, field))
+                if name == "late" and section["status"] is not None:
+                    self.assertEqual(section["status"], body["status"])
+        self.assertIsNotNone(body["trail"])
+        # the drafts come with the trail, as built from the whole page (its late lines
+        # and trail): the app, which merges the sections into the quick read, shows them
+        from operator_api import proposals
+        drafts = proposals.for_page(m.ObjectPage.model_validate(body))
+        self.assertEqual([m.Proposal.model_validate(p) for p in body["proposals"]], drafts)
+        # an unknown section is refused before anything is read
+        self.assertEqual(self.ops.client.get(
+            f"/api/object-section/secrets/PurchaseOrder/{case_fixtures.PO_NUMBER}"
+        ).status_code, 422)
 
     def test_a_po_page_and_answer_carry_its_trail_each_step_opening_for_the_reader(self):
         body = self.ops.client.get(
@@ -228,11 +254,18 @@ class FixtureBackend(unittest.TestCase):
                              ("/api/home", None), ("/api/briefing", None),
                              (f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}", None),
                              ("/api/object/PurchaseOrder/" + po["object_id"], None),
+                             *((f"/api/object-section/{name}/PurchaseOrder/{ref}", None)
+                               for name in m.PAGE_SECTIONS
+                               for ref in (case_fixtures.PO_NUMBER,
+                                           quote(po["object_id"], safe=""))),
                              ("/api/source", {"handle": handle})):
             response = out.get(path, params=params)
             self.assertIn(response.status_code, (200, 404), (path, response.text))
             bodies.append(response.text)
         self.assertEqual(out.get("/api/source", params={"handle": handle}).status_code, 404)
+        for name in m.PAGE_SECTIONS:   # no section of a record they cannot see is read
+            self.assertEqual(out.get(f"/api/object-section/{name}/PurchaseOrder/"
+                                     + quote(po["object_id"], safe="")).status_code, 404)
         for body in bodies:
             for secret in secrets_:
                 self.assertNotIn(json.dumps(secret)[1:-1], body, body[:300])
@@ -328,6 +361,9 @@ class FixtureBackend(unittest.TestCase):
                 break
         self.assertEqual(len(seen), total)
         self.assertEqual(len(set(seen)), total)   # one line per order, none twice
+        # the list states the same data cut-off as Home
+        self.assertIsNotNone(home["freshness"]["as_of"])
+        self.assertEqual(page["as_of"], home["freshness"]["as_of"])
         self.assertEqual(seen[:len(home["needs_attention"]["late_pos"])],
                          [p["object_id"] for p in home["needs_attention"]["late_pos"]])
         # read (and kept) for ops first: the outsider still sees none of it
@@ -702,7 +738,12 @@ class HomeFreshnessTest(unittest.TestCase):
         self.assertEqual(home["Portal"].as_of, "2026-10-30T15:08:15Z")
         self.assertEqual(home["Portal"].age_seconds, 51105)   # 14 h 11 min
         self.assertIsNone(home["Email"].as_of)   # no capture time: never said fresh
-        self.assertEqual(backend.freshness().as_of, "2026-10-29T10:15:03Z")
+        # one data cut-off for every screen: the newest capture served, and a source read
+        # over a day before it named beside it, never folded into it (demo-ready: Home
+        # said 29 Oct from Teams while the late list said 1 Nov)
+        self.assertEqual(backend.freshness().as_of, "2026-10-31T05:00:00Z")
+        self.assertEqual(backend.freshness().label,
+                         "Data as of 31 Oct 2026 05:00 UTC; Teams to 29 Oct")
         # past the bound the same source is stale on Home too (fails closed)
         tight = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
                                     freshness_bounds={"portal_api": 3400.0},
@@ -804,6 +845,31 @@ class LateListCountTest(unittest.TestCase):
                     # "12 of 34 shown": the rest are a "show all" away (GET /api/late)
                     self.assertIn(f"{shown} of {total} shown", answer.direct_answer)
                     self.assertEqual(answer.list_total, total)
+
+    def test_no_late_order_is_said_only_when_the_late_rule_ran_over_the_data_served(self):
+        """Live repro (gen 7, 2026-11-02): the inbox's late-PO findings were of the previous
+        generation (held back, ``refreshing``) and the answer said "No purchase order you
+        can see is late", against 23 late in the data. Behind or not run, the rule's list is
+        unknown and the answer says so; run over this data, none late is said."""
+        from types import SimpleNamespace
+        fake = SimpleNamespace(freshness=lambda _base: m.Freshness())
+        base = {"status": "read", "run_at": "2026-11-01T08:14:36Z", "gaps": []}
+        for inbox, said in (
+                ({**base, "refreshing": ["late_or_unconfirmed_po"],
+                  "checked_on": "2026-11-01T08:14:36Z"},
+                 "The late-order check is being re-run on the newest data (last checked "
+                 "2026-11-01), so I can't list late purchase orders yet."),
+                ({**base, "not_run": {"late_or_unconfirmed_po": "blocked"}},
+                 "The late-order check did not run on the newest data, so I can't list "
+                 "late purchase orders yet."),
+                ({**base, "refreshing": ["late_order"]},
+                 "No purchase order you can see is late as of 2026-11-01."),
+                (base, "No purchase order you can see is late as of 2026-11-01.")):
+            answer = be.late_answer(fake, None, m.AskRequest(question="late pos?"), inbox, [],
+                                    "c1", lambda: 0)
+            self.assertEqual(answer.direct_answer, said)
+            self.assertEqual(answer.outcome, "answered" if said.startswith("No ")
+                             else "not_found")
 
     def test_the_true_total_past_the_inbox_page(self):
         # The count stopped at the inbox's first page (100)
@@ -962,6 +1028,13 @@ class LateRowAndSameNameTests(unittest.TestCase):
             ("2026-06-24", None, None),
             ("2026-06-24", None, None),
             (None, ("5000000", "USD"), "10x its history")])   # no 30 February
+        # "no supplier confirmation found" only when none is linked at all; a late order
+        # with a link (firm, a lead, or one this reader can't see) says nothing here
+        for g, kind in zip(inbox["gaps"], ("late_po", "late_po", "conflicting_x",
+                                           "unconfirmed_po")):
+            g["kind"] = kind
+        rows, _ = be.attention_items(inbox, {})
+        self.assertEqual([r.confirmation for r in rows], [None, None, None, "none_found"])
 
 
     PORTAL = 'Customer:portal.app_customer:{"id":"fm-cust-89"}'

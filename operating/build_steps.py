@@ -15,6 +15,11 @@ serves. The steps, each writing into the generation being built
   (``ontology.mentions.store_mention_links``);
 * ``reviews``: a person's accept / reject link decisions as ``reviewed`` /
   ``contradicted`` links (``ontology.reviews.link_step``);
+* ``sender_corroboration``: a document-field link (``SupplierConfirmation.confirms``) whose
+  number the document or its carrying message names, sent from a distinctive domain of
+  the target's own supplier, as a ``corroborated`` link beside the lead, and the carrying
+  message's own subject/body number as a ``lead`` (``ontology.sender_corroboration``;
+  after ``mentions`` and ``reviews``, so a rejected link is never raised);
 * ``text_index``: the words of captured document text ``plx.find`` searches
   (``ontology.text_index.store_text_index``).
 * ``twins``: a Portal-BC purchase-order pair the schema joins only on the number text,
@@ -66,6 +71,7 @@ from ontology import reviews
 from ontology.identity_scoring import twin_step, your_reference_step
 from ontology.document_fields import store_document_links
 from ontology.mentions import store_mention_links
+from ontology.sender_corroboration import sender_corroboration_step
 from ontology.text_index import store_text_index
 
 from . import kind_confirmation
@@ -207,6 +213,7 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
         "confirmations": confirmations,
         "document_fields": document_fields, "mentions": mentions,
         "reviews": reviews.link_step(review_store, tenant),
+        "sender_corroboration": sender_corroboration_step,
         "text_index": store_text_index, "twins": twin_step,
         "your_reference": your_reference_step}.items()}
 

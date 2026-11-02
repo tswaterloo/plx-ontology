@@ -12,6 +12,17 @@ One HTTPS link, two local processes behind Caddy:
 everything else goes to the web app. Both are same-origin, which the API's
 session cookie (`Path=/api`, `SameSite=Strict`) and its Origin check require.
 
+**Which origins may POST** (sign-in, Ask, feedback): the page's own origin only, i.e. an
+`Origin` whose host equals the host the browser addressed. That host is
+`X-Forwarded-Host` when the proxy in front set one (Caddy, which keeps `Host` and sets the
+same value; or the app's own `/api` rewrite under `next start`, which sends the API's
+loopback address as `Host` and the browser's as `X-Forwarded-Host`), else `Host`. A
+cross-site page cannot set that header (no CORS preflight is granted), so nothing else is
+trusted; a header naming several hosts is ignored. `--allowed-origin` adds one exact origin
+and is not needed in either topology. The session cookie is `Secure`: serve the app over
+HTTPS (Caddy); plain-http access (e.g. `http://<tailscale-ip>:3000` from a phone) needs
+`--insecure-cookie` and is for demos on a trusted network only.
+
 The units are **not enabled** by the build. Nothing here writes to a PLX system.
 
 ## One-time setup (owner, with sudo)

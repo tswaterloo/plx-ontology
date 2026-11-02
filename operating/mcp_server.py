@@ -43,7 +43,7 @@ from . import playbook_tools
 from . import ontology_tools_aggregate, ontology_tools_evidence, ontology_tools_process
 from . import meeting_agenda, ontology_tools_changes, ontology_tools_investigate
 from . import ontology_tools_traverse
-from . import action_tools, agent_definitions, answer_gate, tool_results
+from . import action_tools, agent_definitions, answer_gate, call_limits, tool_results
 from .agent_definitions import AgentDefinition, AgentRun
 from . import case_tools_host
 from .case_tools_host import PageNotRead, PagedRead
@@ -276,16 +276,27 @@ def _served_pages(result: dict[str, Any], window: dict[str, Any] | None
 
 
 # Every capture store the item permission read of one call opens (``_permission_reads``)
-# waits for writers' locks within this one budget, shared (seconds).
+# waits for writers' locks within this one budget, shared (seconds); a store opened once it
+# is spent still waits up to ``PERMISSION_READ_FLOOR`` for a lock. Reading the stores takes
+# time of its own (the live SharePoint capture's ~90,000 items: 1-2.3 s under load,
+# 2026-11-02), which is no lock wait: it never fails the read.
 PERMISSION_READ_TIMEOUT = 2.0
-# Why a call's tool evidence was not kept (``EVIDENCE_META_KEY``, on that call's answer): a
-# SharePoint store that records no permission positions, or an item permission read that
-# failed (any error, a lock past the budget included).
+PERMISSION_READ_FLOOR = 0.05
+# Why a call's evidence that an item's permissions gate was not kept (``EVIDENCE_META_KEY``,
+# on that call's answer): a SharePoint store that records no permission positions, or an
+# item permission read that failed (any error, a lock past the budget included). Evidence
+# no item permission gates (Portal, BC, mail records) is kept: the projection generation
+# and the reader's grant it was read under were decided.
 PERMISSIONS_UNRECORDED = "permissions_unrecorded"
 PERMISSIONS_UNREADABLE = "permissions_unreadable"
 EVIDENCE_META_KEY = "plx/session_evidence"
+# The bytes that note adds to an answer's ``_meta`` at most (both reasons are as long).
+_UNKEPT_NOTE_BYTES = len(json.dumps({EVIDENCE_META_KEY: {
+    "kept": False, "reason": PERMISSIONS_UNREADABLE}}, separators=(",", ":"))) - 1
 # An evidence handle of a source with item permission reads that names no item of it.
 _UNMAPPED = ("?",)
+# The prefix of an unrestricted reader's evidence scope (``_evidence_scope``).
+UNRESTRICTED_SCOPE = "unrestricted:"
 
 
 def _evidence_scope(meta: dict[str, Any], policy: Any) -> str:
@@ -295,62 +306,163 @@ def _evidence_scope(meta: dict[str, Any], policy: Any) -> str:
     grant = [policy.tenant, *(sorted((key, sorted(principals))
                                      for key, principals in mapping.items())
                               for mapping in (policy.audiences, policy.markings))]
-    return hashlib.sha256(json.dumps([sorted(meta.items()), grant]).encode()).hexdigest()
+    digest = hashlib.sha256(json.dumps([sorted(meta.items()), grant]).encode()).hexdigest()
+    # An unrestricted reader's evidence binds to no item permission (``_bind``): the scope
+    # says so, so evidence kept under one never carries over to a restricted grant.
+    return UNRESTRICTED_SCOPE + digest if getattr(policy, "unrestricted", False) is True \
+        else digest
 
 
-def _permission_reads(runtime: Any, host: Any) -> dict[tuple[str, ...], str]:
-    """Per item whose recorded permissions decide what a reader is served and cited, the
-    digest of those permissions: each drive item of the SharePoint capture of the case
-    runtime's ``CaseCaptures`` and of the host (``SharePointCaptureStore
-    .item_permissions``), each conversation of the case runtime's Teams capture (its
-    ``unit_acl``; one past ``capture_store.UNIT_ACL_MAX_AGE`` digests apart, as it no longer
-    decides). A permission re-read that changes nothing for an item leaves its digest
-    (a routine capture run keeps the evidence); one that changes an item moves that item
-    only. Every store is read within one busy timeout shared by all of them
+class _ItemPermissions:
+    """The item permissions one call is read under (``_permission_reads``): each Teams
+    conversation's membership (``unit_acl``) read whole, and each SharePoint capture held
+    at one snapshot (a read transaction begun before the call: what a writer commits after
+    is not in it) whose drive items are digested only when asked (``digests``: the items
+    session evidence names, not the live capture's ~90,000, a scan of which took 1-5 s
+    under load, 2026-11-02, before every call). A capture not in WAL mode, whose open read
+    would hold its writer, is read whole at once instead. ``close`` ends the snapshots; a
+    read after it raises (its caller drops what any item gates)."""
+
+    def __init__(self, *, unrestricted: bool = False) -> None:
+        self.units: dict[tuple[str, ...], str] = {}
+        # Per SharePoint capture, in folder order: a store held in its snapshot, or its
+        # item permissions read whole.
+        self.sharepoint: list[Any] = []
+        self.closed = False
+        self._whole: dict[tuple[str, ...], str] | None = None
+        # An unrestricted reader's call (``EmployeeEntitlement.unrestricted``): nothing is
+        # read and no evidence binds to an item permission (``MCPServer._bind``).
+        self.unrestricted = unrestricted
+
+    def digests(self, keys: Iterable[tuple[str, ...]]) -> dict[tuple[str, ...], str]:
+        """The digest of each of ``keys`` (``_permission_reads`` keys) at the snapshot; an
+        item no capture holds has no entry."""
+        if self.closed:
+            raise RuntimeError("item_permissions_closed")
+        keys = set(keys)
+        wanted = {key[1:] for key in keys if key[0] == "sharepoint" and len(key) == 3}
+        out: dict[tuple[str, ...], str] = {}
+        for source in self.sharepoint if wanted else ():
+            items = (source.pinned_item_permissions(wanted) if not isinstance(source, dict)
+                     else {item: source[item] for item in wanted if item in source})
+            for (drive_id, item_id), digest in items.items():
+                key = ("sharepoint", drive_id, item_id)
+                out[key] = digest if key not in out else hashlib.sha256(
+                    (out[key] + digest).encode()).hexdigest()
+        out.update((key, self.units[key]) for key in keys if key in self.units)
+        return out
+
+    def whole(self) -> dict[tuple[str, ...], str]:
+        """The digest of every SharePoint drive item at the snapshot (a scan of every item:
+        only when any change at all decides, ``_whole_decides``)."""
+        if self.closed:
+            raise RuntimeError("item_permissions_closed")
+        if self._whole is None:
+            out: dict[tuple[str, ...], str] = {}
+            for source in self.sharepoint:
+                items = source if isinstance(source, dict) else \
+                    source.pinned_item_permissions(None)
+                for (drive_id, item_id), digest in items.items():
+                    key = ("sharepoint", drive_id, item_id)
+                    out[key] = digest if key not in out else hashlib.sha256(
+                        (out[key] + digest).encode()).hexdigest()
+            self._whole = out
+        return self._whole
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        for source in self.sharepoint:
+            if not isinstance(source, dict):
+                try:
+                    source.end_permission_read()
+                finally:
+                    source.close()
+
+
+def _permission_reads(runtime: Any, host: Any) -> _ItemPermissions:
+    """The item permissions whose recorded state decides what a reader is served and
+    cited, per item a digest (``_ItemPermissions.digests``): each drive item of the
+    SharePoint capture of the case runtime's ``CaseCaptures`` and of the host
+    (``SharePointCaptureStore.item_permissions``), each conversation of the case runtime's
+    Teams capture (its ``unit_acl``; one past ``capture_store.UNIT_ACL_MAX_AGE`` digests
+    apart, as it no longer decides). A permission re-read that changes nothing for an item
+    leaves its digest (a routine capture run keeps the evidence); one that changes an item
+    moves that item only. Every store is read within one busy timeout shared by all of them
     (``PERMISSION_READ_TIMEOUT``). A SharePoint store that records no permission positions
-    raises ``CaptureError("permissions_unrecorded")``; any other failure raises as it is."""
+    raises ``CaptureError("permissions_unrecorded")``; any other failure raises as it is.
+    The caller closes what it returns."""
     from integrations import capture_sharepoint, capture_store, capture_teams
     deadline = monotonic() + PERMISSION_READ_TIMEOUT
 
     def remaining() -> float:
-        left = deadline - monotonic()
-        if left <= 0:
-            raise TimeoutError("permission_read_timeout")
-        return left
+        # A lock wait past it fails (SQLite's busy timeout); the time a read took does not.
+        return max(deadline - monotonic(), PERMISSION_READ_FLOOR)
 
     folders = {Path(folder).expanduser().resolve() for folder in (
         getattr(runtime.captures, "sharepoint_capture_dir", None),
         getattr(host, "sharepoint_capture_dir", None)) if folder is not None}
-    reads: dict[tuple[str, ...], str] = {}
-    for folder in sorted(folders):
-        if not capture_sharepoint.store_exists(folder):
-            continue
-        store = capture_sharepoint.SharePointCaptureStore.open_read_only(
-            folder, timeout=remaining())
-        try:
-            items = store.item_permissions(timeout=remaining())
-        finally:
-            store.close()
-        for (drive_id, item_id), digest in items.items():
-            key = ("sharepoint", drive_id, item_id)
-            reads[key] = digest if key not in reads else hashlib.sha256(
-                (reads[key] + digest).encode()).hexdigest()
-    database = Path(runtime.state_dir) / capture_teams.STORE_DIR / capture_teams.DB_FILE
-    if database.is_file():
-        conn = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=remaining())
-        try:
-            now = datetime.now(timezone.utc)
-            for kind, unit, acl, recorded in conn.execute(
-                    "SELECT kind, unit, acl, recorded_at FROM unit_acl"):
-                # A membership past the store's serving bound decides nothing: its digest
-                # moves when it crosses it (what was served under it is dropped).
-                fresh = capture_store.capture_decides(recorded, now,
-                                                      capture_store.UNIT_ACL_MAX_AGE)
-                reads[("unit", kind, unit)] = hashlib.sha256(
-                    (acl if fresh else "stale:" + acl).encode()).hexdigest()
-        finally:
-            conn.close()
+    reads = _ItemPermissions()
+    try:
+        for folder in sorted(folders):
+            if not capture_sharepoint.store_exists(folder):
+                continue
+            store = capture_sharepoint.SharePointCaptureStore.open_read_only(
+                folder, timeout=remaining())
+            try:
+                wal = str(store.db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+                if wal != "wal":
+                    reads.sharepoint.append(store.item_permissions(timeout=remaining()))
+                    store.close()
+                    continue
+                store.begin_permission_read(timeout=remaining())
+            except BaseException:
+                store.close()
+                raise
+            reads.sharepoint.append(store)
+        database = Path(runtime.state_dir) / capture_teams.STORE_DIR / capture_teams.DB_FILE
+        if database.is_file():
+            conn = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True,
+                                   timeout=remaining())
+            try:
+                now = datetime.now(timezone.utc)
+                for kind, unit, acl, recorded in conn.execute(
+                        "SELECT kind, unit, acl, recorded_at FROM unit_acl"):
+                    # A membership past the store's serving bound decides nothing: its
+                    # digest moves when it crosses it (what was served under it is dropped).
+                    fresh = capture_store.capture_decides(recorded, now,
+                                                          capture_store.UNIT_ACL_MAX_AGE)
+                    reads.units[("unit", kind, unit)] = hashlib.sha256(
+                        (acl if fresh else "stale:" + acl).encode()).hexdigest()
+            finally:
+                conn.close()
+    except BaseException:
+        reads.close()
+        raise
     return reads
+
+
+def _evidence_items(evidence: dict[str, Any]) -> tuple[set[tuple[str, ...]], bool]:
+    """The items (``_permission_reads`` keys) whose permissions gate some session evidence
+    (``_drop_changed``'s handles), and whether a change to any item at all decides some of
+    it (``_drop_changed``): a complete count (an item granted since may join its group) or
+    a handle of an item-gated source naming no item of it."""
+    from integrations import capture_store
+    kinds = {kind.scheme: kind for kind in map(capture_store.source_kind,
+                                               capture_store.source_kinds()) if kind.unit_acl}
+    handles: set[Any] = set(evidence["handles"])
+    for entry in evidence["counts"]:
+        handles.update(entry["records"])
+    for key in evidence["currencies"]:
+        handles.add(key[0])
+    for cited in evidence["currency_citations"].values():
+        handles.add(cited[0])
+    for entry in evidence.get("texts", {}).values():
+        handles.update(entry["handles"])
+    items = {_permission_item(handle, kinds) for handle in handles}
+    whole = _UNMAPPED in items or any(entry["complete"] for entry in evidence["counts"])
+    return {item for item in items if item is not None and item != _UNMAPPED}, whole
 
 
 def _unkept_reason(exc: BaseException) -> str:
@@ -380,12 +492,13 @@ def _permission_item(handle: Any, kinds: dict[str, Any]) -> tuple[str, ...] | No
     return ("unit", kind.name, kind.unit(path))
 
 
-def _drop_changed(evidence: dict[str, Any], changed: set[tuple[str, ...]]) -> None:
-    """Drop from session evidence what the items whose permissions changed (``changed``)
-    gate: a count listing a record of one, a money cell of one or whose currency was read
-    on one, its handles and what was served of its texts (a handle of such a source
-    naming no item counts as changed). No count left is
-    complete: a grant since may add a record to its group (a lower bound now)."""
+def _drop_changed(evidence: dict[str, Any], changed: set[tuple[str, ...]] | None) -> None:
+    """Drop from session evidence what the items whose permissions changed (``changed``;
+    None: every item, as when their permissions could not be read) gate: a count listing a
+    record of one, a money cell of one or whose currency was read on one, its handles and
+    what was served of its texts (a handle of such a source naming no item counts as
+    changed). No count left is complete: a grant since may add a record to its group (a
+    lower bound now)."""
     from integrations import capture_store
     kinds = {kind.scheme: kind for kind in map(capture_store.source_kind,
                                                capture_store.source_kinds()) if kind.unit_acl}
@@ -394,7 +507,8 @@ def _drop_changed(evidence: dict[str, Any], changed: set[tuple[str, ...]]) -> No
     def affected(handle: Any) -> bool:
         if handle not in seen:
             item = _permission_item(handle, kinds)
-            seen[handle] = item is not None and (item == _UNMAPPED or item in changed)
+            seen[handle] = item is not None and (changed is None or item == _UNMAPPED
+                                                 or item in changed)
         return seen[handle]
 
     counts = evidence["counts"]
@@ -444,29 +558,52 @@ _VALUE_CLAIMS = {"type": "array", "maxItems": 40, "items": {
 _WRITES = {"readOnlyHint": False, "destructiveHint": False}
 # A final answer for ``plx.case_get``'s answer mode (``answer_gate.gate_answer``); the gate
 # bounds and re-validates everything, this only bounds what a client may send.
+MAX_ASKED_QUESTION_CHARS = 4000
 _ANSWER = {"type": "object", "additionalProperties": False, "required": ["claims"],
            "properties": {
+               # A claim: one answer value (``answer_gate.CLAIM_KEYS``: name, citation,
+               # field, the value the gate may read itself) or the older text,
+               # citations and value_claims; the gate validates either.
                "claims": {"type": "array", "maxItems": answer_gate.MAX_CLAIMS, "items": {
-                   "type": "object", "additionalProperties": False, "required": ["text"],
+                   "type": "object", "additionalProperties": False,
                    "properties": {
                        "text": {"type": "string", "minLength": 1,
                                 "maxLength": answer_gate.MAX_CLAIM_CHARS},
                        "citations": {"type": "array", "items": _CITATION,
                                      "maxItems": answer_gate.MAX_CITATIONS_PER_CLAIM},
-                       "value_claims": {"type": ["array", "null"], "maxItems": 40}}}},
+                       "value_claims": {"type": ["array", "null"], "maxItems": 40},
+                       **{key: {} for key in sorted(answer_gate.CLAIM_KEYS)}}}},
                "unknowns": {"type": "array", "maxItems": answer_gate.MAX_UNKNOWNS,
                             "items": {"type": "string", "minLength": 1,
                                       "maxLength": answer_gate.MAX_UNKNOWN_CHARS}},
                # The answer's prose as the client will state it: its numbers, dates and
                # words are checked against the passing claims (``answer_gate.check_text``).
                "text": {"type": "string", "minLength": 1,
-                        "maxLength": answer_gate.MAX_TEXT_CHARS}}}
+                        "maxLength": answer_gate.MAX_TEXT_CHARS},
+               # The question as the asker gave it: only its identifiers (the one
+               # grammar's, ``answer_gate.asker_given``) need no citation in the text;
+               # it backs no figure and no claim.
+               "question": {"type": "string", "minLength": 1,
+                            "maxLength": MAX_ASKED_QUESTION_CHARS},
+               # The answer's gaps as its answer block gives them: the session may end at
+               # the gate's final decision, its reply rendered from this submission
+               # (``agent_session.GateEnd``). They back nothing; an unresolved source
+               # conflict among them makes the answer partial (``answerability``).
+               "gaps": {"type": "array", "maxItems": answer_gate.MAX_UNKNOWNS, "items": {
+                   "type": "object", "additionalProperties": False,
+                   "required": ["state", "subject"],
+                   "properties": {
+                       "state": {"type": "string", "maxLength": 40},
+                       "subject": {"type": "string",
+                                   "maxLength": answer_gate.MAX_UNKNOWN_CHARS},
+                       "reason": {"type": "string", "maxLength": 120},
+                       "concerns": {"type": ["string", "null"], "maxLength": 120}}}}}}
 
 TOOLS: tuple[dict[str, Any], ...] = (
     # Case runtime; every call acts as the session
     # actor, under the host-configured source-mirror audience. Specs stay near the
     # contract's 600-character description budget (2026-10-03-host-tool-budget).
-    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews; 0 releases, optional handoff note); another session's active claim refuses claims and writes case_claimed_until:<expires_at>. case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
+    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews; 0 releases, optional handoff note); another session's active claim refuses claims and writes (case_claimed_until:<expires_at>). case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
      "inputSchema": _schema({"question": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "roots": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}, "maxItems": 20},
                              "audience": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "minItems": 1, "maxItems": 50},
@@ -493,7 +630,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                                                      "contract_id": {"type": "string", "minLength": 1, "maxLength": 80}}}},
                             ["case_id"]),
      "annotations": _WRITES},
-    {"name": "plx.case_compute", "description": "Deterministic Decimal arithmetic recorded on a case. inputs maps names to {citation, field (row.<column>), unit} or {literal (integer or decimal string), unit}. A source unit contract may fix a cited column's unit (a contradicting unit is refused) and its quantity role (planned, manufactured, filled, ...; or declare role). Different roles never combine unless relations declares {left, op, right, as}; the result type follows the expression tree and each as must fit it (quantity_label_inconsistent). expression: + - * / and parentheses; unit: the result unit, checked by unit algebra. Float literals are refused. No business write.",
+    {"name": "plx.case_compute", "description": "Deterministic Decimal arithmetic recorded on a case. inputs maps names to {citation, field (row.<column>), unit} or {literal (integer or decimal string), unit}. A source unit contract may fix a cited column's unit (a contradicting unit is refused) and its quantity role (planned, manufactured, filled, ...; or declare role). Different roles never combine unless relations declares {left, op, right, as}; the result type follows the expression tree and each as must fit it (quantity_label_inconsistent). expression: + - * / ( ); unit: the result unit, checked by unit algebra. Float literals are refused. No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "inputs": {"type": "object", "minProperties": 1, "maxProperties": 20},
                              "expression": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -506,7 +643,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                                                 "as": {"type": "string"}}}}},
                             ["case_id", "inputs", "expression", "unit"]),
      "annotations": _WRITES},
-    {"name": "plx.case_record_gap", "description": "Record a visible unknown on a case: missing, why, who_can_answer and state (absent_in_source, inaccessible, stale, not_ingested, unknown). Cite the api:// rows the text derives from (a reader who cannot resolve them all sees it withheld). property names what is missing in plx.schema terms: <Type>.<property>, <Type>.<link> or <Type> (up to 5 of one type). absent_in_source needs property and cited rows: each row is re-read and every field that can carry the property is checked; a held or unreadable value refuses the gap (record unknown or inaccessible). No business write.",
+    {"name": "plx.case_record_gap", "description": "Record a visible unknown on a case: missing, why, who_can_answer and state (absent_in_source, inaccessible, stale, not_ingested, unknown). Cite the api:// rows the text derives from (withheld from a reader who cannot resolve them all). property names what is missing in plx.schema terms: <Type>.<property>, <Type>.<link> or <Type> (up to 5 of one type). absent_in_source needs property and cited rows: each row is re-read, every field that can carry the property checked; a held or unreadable value refuses the gap (record unknown or inaccessible). No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "missing": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "why": {"type": "string", "minLength": 1, "maxLength": 4000},
@@ -540,7 +677,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "max_staleness": _STALENESS},
                             ["case_id"]),
      "annotations": _WRITES},
-    {"name": "plx.case_get", "description": "Without case_id: newest-first summaries of visible cases (status, limit). With case_id: one case as the actor may see it: findings (withheld when a citation no longer resolves; citation_content_changed if its content changed), calculations, gaps, proposals, verifications, links, timeline, hash-chain integrity, citation statuses. Too large: a summary; section pages a part (offset/limit); 'header' gives question and outcome; 'claims' re-checks claims now. A full read adds 'journal' (new findings). answer alone gates your final answer (claims citing handles this session returned; text: your prose; text_check: what no claim states): state only claims it returns; repair: fix refused ones once. Writes nothing.",
+    {"name": "plx.case_get", "description": "Without case_id: newest-first summaries of visible cases (status, limit). With case_id: one case as the actor may see it: findings (withheld when a citation no longer resolves; citation_content_changed if it changed), calculations, gaps, proposals, verifications, links, timeline, hash-chain integrity, citation statuses. Too large: a summary; section pages a part (offset/limit); 'header' gives question and outcome; 'claims' re-checks claims now. A full read adds 'journal' (new findings). answer alone gates your final answer (claims citing handles this session returned; text: your prose; text_check: what no claim states): state only claims it returns; repair: fix refused ones once. Writes nothing.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "status": {"type": "string", "enum": ["open", "closed"]},
                              "include_citation_status": {"type": "boolean"},
@@ -554,7 +691,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "outcome": {"type": "string", "minLength": 1, "maxLength": 4000}},
                             ["case_id", "outcome"]),
      "annotations": _WRITES},
-    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Pass exactly one of: inbox_name (a PDF the operator placed in originals-inbox/<principal>/ on the host; its audience is exactly that principal; the file is consumed); drive_id + item_id (a SharePoint PDF read as the session actor, GET-only, permissions checked first, under max_bytes, re-gated on every read); citation + reason (an attached original read again as a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes are kept with their SHA-256, cited original://<id>[#page=<n>]; OCR text is machine-read. Records a cited fact finding. No business write.",
+    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Pass exactly one of: inbox_name (a PDF the operator put in the host's originals-inbox/<principal>/; audience: exactly that principal; the file is consumed); drive_id + item_id (a SharePoint PDF read as the session actor, GET-only, permissions checked first, under max_bytes, re-gated on every read); citation + reason (re-read as a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes kept with their SHA-256, cited original://<id>[#page=<n>]; OCR text is machine-read. Records a cited fact finding. No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "inbox_name": {"type": "string", "minLength": 1, "maxLength": 200},
                              "inbox_principal": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -973,6 +1110,17 @@ def _home_answer(inbox: dict[str, Any], kinds: tuple[str, ...], limit: Any,
             detail = f"built at {run_at}: {'; '.join(stale_why)}. {detail}"
         inbox_gaps.append(ontology_tools._gap(state, why, "gap inbox", detail))
 
+    # The late list (Home's): one line per late order, every one the inbox holds; exact
+    # when the inbox is current, read whole, and the late rule itself ran to the end and
+    # decided every order (``late_exact``: an unknown status or a missing due date is never
+    # late by the one late-list rule, so it leaves the count exact; another rule cut short
+    # or unjudged says nothing about lateness)
+    late_kinds = not kinds or bool(set(kinds) & set(LATE_PO_KINDS))
+    late = dict.fromkeys(g["object_id"] for g in gaps if type(g.get("days_late")) is int
+                         and g["kind"] in LATE_PO_KINDS)
+    late_complete = (said is None and inbox.get("late_exact") is True and not inbox_more
+                     and not unrecognized)
+
     def build(page: list[dict[str, Any]]) -> dict[str, Any]:
         more = inbox_more or len(page) < len(gaps)
         complete = (said is None and bool(inbox.get("complete")) and not more
@@ -994,6 +1142,8 @@ def _home_answer(inbox: dict[str, Any], kinds: tuple[str, ...], limit: Any,
                 "rules": rules,
                 "scanned": int(inbox.get("scanned") or 0), "unrecognized": unrecognized,
                 "returned": len(page), "more": more,
+                **({"late_orders": {"count": len(late), "complete": late_complete}}
+                   if late_kinds else {}),
                 "gaps": [{**gap, "rank": rank} for rank, gap in enumerate(page, 1)],
                 "hint": "Your open gaps from the scheduled proactive engine, highest priority "
                         "first. Read a gap's object with plx.object or run a question family "
@@ -1609,13 +1759,19 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     (``operating.fast_answer``, code's own reads) both decide through it."""
     # The client's prose is checked as stated (``check_text``), never used as the
     # Ask's ``{id}`` templates.
-    claims_only = {key: value for key, value in answer.items() if key != "text"} \
+    claims_only = {key: value for key, value in answer.items()
+                   if key not in ("text", "question", "gaps")} \
         if isinstance(answer, dict) else answer
+    # The question as the client says it was asked: its identifiers are the asker's
+    # (``answer_gate.asker_given``), never a figure or a claim's backing. The host's
+    # final screen (``agent_session.gate_final_reply``) uses the question it posed.
+    asked = answer.get("question") if isinstance(answer, dict) and isinstance(
+        answer.get("question"), str) else ""
     gated = answer_gate.gate_answer(claims_only, server, seen=seen, returned=returned,
-                                    may_repair=may_repair, unread=unread)
+                                    may_repair=may_repair, unread=unread, read_values=True)
     repairing = gated["outcome"] == "repair"
     text = {"text_check": answer_gate.check_text(answer["text"], gated["claims"], server,
-                                                 returned)} \
+                                                 returned, question=asked)} \
         if isinstance(answer, dict) and "text" in answer else {}
     # The final reply (``answer_gate.final_reply``, every answer path's): the
     # submitted text and unknowns without what no passed claim backs, the withheld
@@ -1623,10 +1779,11 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     reply = None if repairing or not isinstance(answer, dict) else \
         answer_gate.final_reply(answer.get("text", ""), gated["claims"],
                                 unsupported=gated["unsupported"],
-                                unknowns=gated["unknowns"])
+                                unknowns=gated["unknowns"], question=asked)
     # A final decision says its answerability (``answer_gate.answerability``): a
     # passed claim, a document's stated gap included, is never a blocked answer.
-    state = answer_gate.answerability(gated)
+    state = answer_gate.answerability(gated, answer.get("gaps") if isinstance(answer, dict)
+                                      else ())
     final = {} if reply is None else {"answerability": {"state": state},
                                      "instruction": " ".join(
         [answer_gate.ANSWER_FINAL]
@@ -1757,12 +1914,22 @@ class MCPServer:
         # under (``_evidence_scope``) and bound item by item to the captures' item
         # permissions read before it (``_permission_reads``, ``_items``); ``_read_scope``:
         # the scope and item permissions of the last ontology read. ``_unkept``: why this
-        # call's evidence is not kept (an item permission read that failed), on its answer.
+        # call's evidence an item gates is not kept (an item permission read that failed),
+        # on its answer.
         self._evidence = _session_evidence()
         self._scope: str | None = None
+        # ``_items``: the digest of each item session evidence names, at the snapshot it
+        # was last compared or kept at; ``_open_reads``: the snapshots this call holds.
         self._items: dict[tuple[str, ...], str] = {}
-        self._read_scope: tuple[str, dict[tuple[str, ...], str]] | None = None
+        # Every Teams conversation's membership digest, and every SharePoint item's (None
+        # while no kept evidence needs it), at the last comparison (``_bind``).
+        self._units: dict[tuple[str, ...], str] = {}
+        self._whole: dict[tuple[str, ...], str] | None = None
+        self._read_scope: tuple[str, _ItemPermissions | None] | None = None
+        self._open_reads: list[_ItemPermissions] = []
         self._unkept: str | None = None
+        # The session reader's owner-open flag (``_unrestricted``); None: not decided yet.
+        self._owner: bool | None = None
         # This call's readable text content (``mcp_portfolio``'s answers), for a client
         # only: the structured content stays the full result.
         self._text: str | None = None
@@ -1923,7 +2090,12 @@ class MCPServer:
                 # their own, SELF_ENVELOPING_TOOLS); host code gets the result as built.
                 self._unkept = None
                 self._text = None
-                with writing_as(self._claim_holder):
+                # The tool's own time limit (``call_limits``: on for an agent's budgeted
+                # session; never the answer gate's): plx.investigate stops within it with
+                # its partial chain, any other call is interrupted at it.
+                limit = None if host_code else call_limits.limit_for(name)
+                arguments = call_limits.clamp_arguments(name, arguments, limit)
+                with writing_as(self._claim_holder), call_limits.bounded(limit):
                     built = self._call(name, arguments)
                 escalation = run.record(name, error=False, host_code=host_code,
                                         escalation=self._escalation(name, built))
@@ -1960,9 +2132,16 @@ class MCPServer:
                     if self._unkept is not None:
                         payload["_meta"][EVIDENCE_META_KEY] = {"kept": False,
                                                                "reason": self._unkept}
-                    if _envelope_size(payload) <= MAX_RESULT_BYTES:
+                    # Keeping the result's evidence may find its item permissions
+                    # unreadable (``_bind``): room for that note is left.
+                    spare = _UNKEPT_NOTE_BYTES if self._unkept is None \
+                        and name in GENERIC_TOOLS else 0
+                    if _envelope_size(payload) + spare <= MAX_RESULT_BYTES:
                         self._note_returned(name, arguments, built,
                                             None if host_code else value)
+                        if self._unkept is not None:
+                            payload["_meta"][EVIDENCE_META_KEY] = {
+                                "kept": False, "reason": self._unkept}
                         return _result(request_id, payload)
                 return _result(request_id, _tool_error(
                     self._cleared_note(name, arguments)
@@ -1972,6 +2151,10 @@ class MCPServer:
                 return _result(request_id, _tool_error(self._cleared_note(name, arguments) + (
                     str(exc) if host_code else _client_error(str(exc), name,
                                                              self._argument_names(name)))))
+            except call_limits.ToolTimedOut:
+                run.record(name, error=True, host_code=host_code)
+                return _result(request_id, _tool_error(call_limits.timed_out_text(
+                    name, limit)))
             except Exception:
                 run.record(name, error=True, host_code=host_code)
                 return _result(request_id, _tool_error(self._cleared_note(name, arguments)
@@ -1979,6 +2162,7 @@ class MCPServer:
             finally:
                 _TO_CLIENT.reset(to_client)
                 _TOOL.reset(tool)
+                self._close_reads()
         return _error(request_id, -32601, "Method not found")
 
     def _note_returned(self, name: str, arguments: dict[str, Any], result: Any,
@@ -2006,6 +2190,44 @@ class MCPServer:
                 del handles[next(iter(handles))]
             if name == "plx.read":
                 self._note_texts(shown)
+        if not self._owner_open(*self._read_scope) and (
+                self._read_scope[1] is None or not self._keep_items(self._read_scope[1])):
+            # The item permissions this call read under are undecided: of what it
+            # returned, only what no item permission gates is kept (``_unkept`` says so).
+            _drop_changed(self._evidence, None)
+
+    @staticmethod
+    def _owner_open(scope: str | None, reads: _ItemPermissions | None) -> bool:
+        """Whether ``reads`` were skipped for an unrestricted reader and the scope this
+        call's evidence is kept under was decided for one too (``_evidence_scope``): then
+        nothing is bound to, or dropped for, an item permission. A grant that changed in
+        between (one says unrestricted, the other not) is neither: undecided, so what any
+        item gates is dropped as for a failed read (fail closed)."""
+        return reads is not None and reads.unrestricted and isinstance(scope, str) \
+            and scope.startswith(UNRESTRICTED_SCOPE)
+
+    def _keep_items(self, reads: _ItemPermissions) -> bool:
+        """Note, of each item the kept evidence names that ``_items`` lacks (what this call
+        returned), its digest at the snapshot this call read under (taken before it), and
+        every item's when a change to any decides kept evidence (``_evidence_items``), so a
+        change since is seen at the next comparison (``_bind``); False when they cannot be
+        read (the caller drops what any item gates)."""
+        if reads.unrestricted:
+            # Skipped for an unrestricted reader, but this call's scope is not one
+            # (``_owner_open``): nothing was read, so nothing binds (fail closed).
+            self._unkept, self._owner = PERMISSIONS_UNREADABLE, None
+            return False
+        named, whole = _evidence_items(self._evidence)
+        try:
+            added = reads.digests(named - self._items.keys())
+            if whole and self._whole is None:
+                self._whole = reads.whole()
+        except Exception as exc:  # noqa: BLE001 - an undecided read binds nothing (fail closed)
+            self._unkept = _unkept_reason(exc)
+            return False
+        self._items = {key: digest for key, digest in self._items.items() if key in named}
+        self._items.update(added)
+        return True
 
     def _note_texts(self, shown: Any) -> None:
         """Keep how much of each text a ``plx.read`` result served this session's reader
@@ -2120,34 +2342,86 @@ class MCPServer:
         self._last_decision = {"outcome": gated["outcome"], "claims": gated["claims"]}
         return result
 
-    def _bind(self, scope: str, items: dict[tuple[str, ...], str]) -> None:
-        """Bring the kept evidence to ``scope`` and the item permissions ``items``: another
+    def _bind(self, scope: str, reads: _ItemPermissions | None) -> None:
+        """Bring the kept evidence to ``scope`` and the item permissions ``reads``: another
         scope starts empty; what an item gates whose permissions differ from those the
-        evidence was kept under is dropped (``_drop_changed``), the rest kept."""
+        evidence was kept under is dropped and, when any item's changed, no count is left
+        complete (``_drop_changed``), the rest kept. Read are the items kept evidence names,
+        every Teams conversation's membership and, only while a change to any item decides
+        kept evidence (``_evidence_items``), every SharePoint item. ``reads`` None, or one
+        that cannot be read (the item permission read failed): what any item gates is
+        dropped, the rest kept (F29 gen 7: a timed-out read emptied the session's evidence
+        and the gate refused claims on Portal records the session had read)."""
         if scope != self._scope:
-            self._scope, self._items, self._evidence = scope, items, _session_evidence()
+            self._scope, self._evidence = scope, _session_evidence()
+            self._items, self._whole = {}, None
+            self._units = {} if reads is None else dict(reads.units)
             return
-        changed = {key for key in self._items.keys() | items.keys()
-                   if self._items.get(key) != items.get(key)}
-        if changed:
-            _drop_changed(self._evidence, changed)
-        self._items = items
-
-    def _item_reads(self, host: Any) -> dict[tuple[str, ...], str] | None:
-        """``_permission_reads`` now, or None when it fails (any error: nothing read then
-        is kept; why is on the call's answer, ``_unkept``)."""
+        if self._owner_open(scope, reads):
+            return   # unrestricted: no item permission gates this reader's evidence
         try:
-            return _permission_reads(self.case_runtime, host)
+            if reads is None or reads.unrestricted:
+                self._owner = None   # the grant moved: decided again next call
+                raise LookupError()
+            named, whole = _evidence_items(self._evidence)
+            keys = self._items.keys() | named
+            now = reads.digests(keys)
+            changed = {key for key in keys if self._items.get(key) != now.get(key)}
+            other = reads.units != self._units
+            items = reads.whole() if whole else None
+            other = other or (whole and items != self._whole)
+        except Exception as exc:  # noqa: BLE001 - undecided: binds nothing (fail closed)
+            if reads is not None:
+                self._unkept = _unkept_reason(exc)
+            _drop_changed(self._evidence, None)
+            return   # nothing an item gates is left bound to the items read before
+        if changed or other:
+            _drop_changed(self._evidence, changed)
+        self._items, self._units, self._whole = now, dict(reads.units), items
+
+    def _item_reads(self, host: Any) -> _ItemPermissions | None:
+        """``_permission_reads`` now (closed when the call ends), or None when it fails (any
+        error: nothing an item gates read then is kept; why is on the call's answer,
+        ``_unkept``). For an unrestricted reader (``_unrestricted``) nothing is read."""
+        if self._unrestricted():
+            reads = _ItemPermissions(unrestricted=True)
+            self._open_reads.append(reads)
+            return reads
+        try:
+            reads = _permission_reads(self.case_runtime, host)
         except Exception as exc:  # noqa: BLE001 - an undecided read binds nothing (fail closed)
             self._unkept = _unkept_reason(exc)
             return None
+        self._open_reads.append(reads)
+        return reads
+
+    def _unrestricted(self) -> bool:
+        """The session reader's owner-open flag (``EmployeeEntitlement.unrestricted``, the
+        entitlement the employee gate resolved for this actor), decided once per session;
+        anything undecidable: False (the item permissions are read as for anyone). Each
+        call's read policy must agree (``_owner_open``); when it does not, the flag is
+        decided again at the next call."""
+        from .employee_permissions import reader_unrestricted
+        if self._owner is None:
+            self._owner = reader_unrestricted(getattr(self.case_runtime, "employee_gate",
+                                                      None), self.actor)
+        return self._owner
+
+    def _close_reads(self) -> None:
+        """End the snapshots of the item permission reads this session holds open."""
+        while self._open_reads:
+            try:
+                self._open_reads.pop().close()
+            except Exception:  # noqa: BLE001 - closing a read decides nothing
+                pass
 
     def _returned(self) -> dict[str, Any]:
         """The tool evidence the case paths check claims against: what this session was
         returned under the projection generation and grant in force now, less what an item
         gates whose permissions were re-read with a change since. A newer generation, a
-        changed grant or an item permission read that cannot be decided now starts empty:
-        a count of another generation, grant or item permissions is no count of now."""
+        changed grant or a scope that cannot be decided now starts empty: a count of
+        another generation or grant is no count of now. An item permission read that
+        cannot be decided now drops what any item gates (``_bind``)."""
         scope = items = None
         if self.ontology is not None:   # else no ontology tool has returned anything
             host = self.ontology
@@ -2159,16 +2433,23 @@ class MCPServer:
                 scope = None
             if scope is not None:
                 items = self._item_reads(host)
-        if scope is None or items is None:
-            self._scope, self._items, self._evidence = None, {}, _session_evidence()
-        else:
-            self._bind(scope, items)
+        try:
+            if scope is None:
+                self._scope, self._items, self._evidence = None, {}, _session_evidence()
+                self._units, self._whole = {}, None
+            else:
+                self._bind(scope, items)
+        finally:
+            if items is not None:
+                self._open_reads.remove(items)
+                items.close()
         evidence = self._evidence
         return {"counts": list(evidence["counts"]), "currencies": dict(evidence["currencies"]),
                 "currency_citations": dict(evidence["currency_citations"])}
 
     def close(self) -> None:
         """End of session: release the case host's store and working directory."""
+        self._close_reads()
         if self.ontology is not None:
             self.ontology.close()
         self._read = None
@@ -2340,10 +2621,9 @@ class MCPServer:
                     # Rebuilt if the host rebuilt its tools (a newer generation).
                     self._read = (tools, PagedRead(host.evidence, self.case_runtime))
                 result = self._read[1].call(arguments, gated)
-            # The policy this call read under (host.call decided it for this call).
-            if reads is not None:
-                self._read_scope = (_evidence_scope(host.store_meta(), host.tools.policy),
-                                    reads)
+            # The policy this call read under (host.call decided it for this call);
+            # undecided item permissions (None) keep only what no item gates.
+            self._read_scope = (_evidence_scope(host.store_meta(), host.tools.policy), reads)
         return result
 
     @staticmethod
@@ -2824,12 +3104,17 @@ class MCPServer:
                 answer = arguments["answer"]
                 # A malformed answer is refused, never gated (it would spend the repair).
                 if not isinstance(answer, dict) or not isinstance(answer.get("claims"), list) \
-                        or set(answer) - {"claims", "unknowns", "text"} \
+                        or set(answer) - {"claims", "unknowns", "text", "question", "gaps"} \
                         or not isinstance(answer.get("unknowns", []), list) \
+                        or not isinstance(answer.get("gaps", []), list) \
+                        or not all(isinstance(gap, dict) for gap in answer.get("gaps", [])) \
                         or not isinstance(answer.get("text", "-"), str) \
-                        or not 0 < len(answer.get("text", "-")) <= answer_gate.MAX_TEXT_CHARS:
-                    raise InputError(
-                        "answer_invalid: {claims: [...], unknowns?: [...], text?: '...'}")
+                        or not 0 < len(answer.get("text", "-")) <= answer_gate.MAX_TEXT_CHARS \
+                        or not isinstance(answer.get("question", "-"), str) \
+                        or not 0 < len(answer.get("question", "-")) \
+                        <= MAX_ASKED_QUESTION_CHARS:
+                    raise InputError("answer_invalid: {claims: [...], unknowns?: [...], "
+                                     "text?: '...', question?: '...', gaps?: [{...}]}")
                 return self._answer(arguments["answer"])
             if "case_id" not in arguments:
                 # Listing mode: newest-first summaries of the visible cases.

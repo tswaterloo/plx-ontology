@@ -145,9 +145,12 @@ class HostRegistrationTests(ActTestCase):
         self.assertEqual(host.tools.registered, frozenset({ACT}))
         listed = {tool["name"] for tool in host.server.handle(
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]}
-        # The listed set is exactly the declared set; plx.act holds the slot of the two
-        # retired action tools.
-        self.assertEqual(listed, set(mcp_server.CASE_RUNTIME_TOOLS))
+        # The listed set is exactly the declared set (the default agent's: the case tools
+        # and plx.changes, since 72300d8acf); plx.act holds the slot of the two retired
+        # action tools.
+        from operating import ontology_tools_changes
+        self.assertEqual(listed, set(mcp_server.CASE_RUNTIME_TOOLS)
+                         | set(ontology_tools_changes.TOOL_NAMES))
         self.assertIn(ACT, listed)
         self.assertFalse({"plx.action_get", "plx.action_propose"} & listed)
         self.assertEqual(self.ok(host, ACT, {"mode": "status", "case_id": self.ok(

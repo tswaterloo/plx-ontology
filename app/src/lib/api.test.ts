@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ask, getObject, getSource, setTokenProvider } from "./api";
+import { ask, getObject, getObjectSection, getSource, mergeSection, setTokenProvider } from "./api";
 import { ApiError } from "./errors";
-import type { AskEvent } from "./types";
+import type { AskEvent, ObjectPage, ObjectSection } from "./types";
 
 function streamResponse(chunks: string[], status = 200): Response {
   const enc = new TextEncoder();
@@ -80,6 +80,38 @@ describe("getObject", () => {
     vi.stubGlobal("fetch", f);
     await getObject("PurchaseOrder", "../../auth/logout");
     expect((f.mock.calls[0] as unknown[])[0]).toBe("/api/object/PurchaseOrder/..%2F..%2Fauth%2Flogout");
+  });
+});
+
+describe("page sections", () => {
+  it("fails closed on an unknown section, type or id without calling the API, and encodes the id", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await expect(getObjectSection("hidden" as never, "PurchaseOrder", "1")).rejects.toBeInstanceOf(ApiError);
+    await expect(getObjectSection("people", "../me", "1")).rejects.toBeInstanceOf(ApiError);
+    await expect(getObjectSection("people", "PurchaseOrder", "")).rejects.toBeInstanceOf(ApiError);
+    expect(f).not.toHaveBeenCalled();
+    await getObjectSection("trail", "PurchaseOrder", "../../auth/logout");
+    expect((f.mock.calls[0] as unknown[])[0]).toBe("/api/object-section/trail/PurchaseOrder/..%2F..%2Fauth%2Flogout");
+  });
+
+  it("merges each section into its own record only, as the full page carries it", () => {
+    const page = { object_id: "PO:1", status: { state: "open", text: "Open", sources: [] }, late_lines: [], not_found: [{ what: "Receipt" }] } as unknown as ObjectPage;
+    const late = { object_id: "PO:1", section: "late", applies: true, status: { state: "late", text: "Late by 3 days", sources: [] }, late_lines: [{ line: "L1", sources: [] }] } as unknown as ObjectSection;
+    const merged = mergeSection(page, late);
+    expect(merged.status.state).toBe("late");
+    expect(merged.late_lines).toHaveLength(1);
+    // a late check that established nothing keeps the quick read's status
+    expect(mergeSection(page, { ...late, status: null }).status.state).toBe("open");
+    // a section of another record changes nothing
+    expect(mergeSection(page, { ...late, object_id: "PO:2" })).toBe(page);
+    const trail = { object_id: "PO:1", section: "trail", applies: true, late_lines: [], trail: null, not_found: [{ what: "Receipt (2 messages mention it)" }] } as unknown as ObjectSection;
+    expect(mergeSection(page, trail).not_found?.[0].what).toMatch(/mention/);
+    expect(mergeSection(page, { ...trail, not_found: null }).not_found).toBe(page.not_found);
+    // the page's drafts come with its trail section
+    const drafts = [{ id: "chase:PO:1", kind: "vendor_chase", title: "Chase", sent: false }];
+    expect(mergeSection(page, { ...trail, proposals: drafts } as unknown as ObjectSection).proposals).toEqual(drafts);
+    expect(mergeSection(page, trail).proposals).toBe(page.proposals);
   });
 });
 

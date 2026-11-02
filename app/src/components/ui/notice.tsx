@@ -48,3 +48,18 @@ export function ErrorNotice({
     </div>
   );
 }
+
+export const BUSY_RETRY = "The Workbench is busy answering other questions. This will try again by itself in a few seconds.";
+
+/**
+ * A load that failed: a busy server is a calm notice that tries again by itself (once,
+ * after `after` ms); anything else is the plain error with its retry.
+ */
+export function LoadProblem({ message, busy, onRetry, after = 20_000, className }: { message: string; busy?: boolean; onRetry: () => void; after?: number; className?: string }) {
+  React.useEffect(() => {
+    if (!busy) return;
+    const t = setTimeout(onRetry, after);
+    return () => clearTimeout(t);
+  }, [busy, onRetry, after]);
+  return <ErrorNotice message={busy ? BUSY_RETRY : message} onRetry={onRetry} tone={busy ? "notice" : "error"} className={className} />;
+}

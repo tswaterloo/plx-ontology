@@ -89,7 +89,7 @@ from integrations.captured_text import (ContainerReading, byte_pinned, captured_
                                         container_members, member_handle)
 from ontology.identifiers import copy_key
 from ontology.mentions import Document, TextField, file_text_fields
-from ontology.project import (CAPTURED_RELATIONS, MEMBER_RELATION, CapturedRecord,
+from ontology.project import (Reopenable, CAPTURED_RELATIONS, MEMBER_RELATION, CapturedRecord,
                               ProjectionError, RowSample, _Relations, _file_marks,
                               _sampled, _watermark, begin_snapshot)
 from ontology.store import canonical
@@ -216,7 +216,7 @@ def member_documents(handle: str, row: Mapping[str, Any], blobs: str | Path, *,
                                          {"content_sha256": member.sha256}))
 
 
-class TeamsCaptures:
+class TeamsCaptures(Reopenable):
     """Every retained channel- and chat-message version of a Teams capture store file,
     read-only."""
 

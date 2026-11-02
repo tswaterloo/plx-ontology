@@ -131,7 +131,7 @@ class FakeDrive:
                 "webUrl": f"https://{SP_HOST}/sites/Quality/Shared%20Documents"
                           + quote(self.path(drive, iid)),
                 "createdDateTime": "2026-01-05T10:00:00Z",
-                "lastModifiedDateTime": "2026-01-07T22:30:00Z",
+                "lastModifiedDateTime": item.get("modified", "2026-01-07T22:30:00Z"),
                 "parentReference": {"driveId": drive, "id": item["parent"],
                                     "path": f"/drives/{drive}/root:"
                                             + ("" if parent == "/" else quote(parent))},

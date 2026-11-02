@@ -22,4 +22,12 @@ describe("Home headline", () => {
     expect(headline(home(5, "unavailable"), null)).toBeNull();
     expect(headline(null, null)).toBeNull();
   });
+
+  it("never says nothing is late while the checks are re-running on newer data", () => {
+    const na = { status: "read", late_total: 0, late_pos: [], refreshing: true, checked_on: "2026-11-01T08:14:36+00:00" };
+    const h = headline({ greeting_name: "V", examples: [], recent_questions: [], needs_attention: na } as unknown as HomeResponse, brief([]));
+    expect(h?.text).toBe("Checking today's list against the latest data.");
+    expect(h?.sub).toMatch(/re-running on the latest data \(last checked 1 Nov\)/);
+    expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("Checking today's list against the latest data.");
+  });
 });

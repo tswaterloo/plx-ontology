@@ -99,7 +99,7 @@ class ProfitAskTests(unittest.TestCase):
                       "in Business Central, so this overstates true margin.",
                       answer["direct_answer"])
         self.assertIn("Worst SO-101: revenue 90.00 CAD, item cost 135.00 CAD, loss on item "
-                      "cost only 45.00 CAD. Why: Item FG-9", answer["direct_answer"])
+                      "cost only 45.00 CAD (-50.00%). Why: Item FG-9", answer["direct_answer"])
         self.assertIn("Suggested next step: Review the price for Northwind Test Foods on item "
                       "FG-9", answer["direct_answer"])
         facts = [f["text"] for f in answer["facts"]]
@@ -273,6 +273,71 @@ class ProfitAskTests(unittest.TestCase):
                          "Did you mean Northwind Test Foods (C-50)?")
         self.assertIsNone(answer["profitability"])
 
+    def test_an_order_asked_about_leads_with_its_margin_and_why(self):
+        """No customer named: the order's own customer, led by the order, its why against
+        the same item's other order; an order older than the default period widens it."""
+        _names, answer = self.ask(View(self), "Why did SO-102 lose money?")
+        direct = answer["direct_answer"]
+        self.assertTrue(direct.startswith(
+            "Order SO-102: revenue 60.00 CAD, item cost 80.00 CAD, loss on item cost only "
+            "20.00 CAD (-33.33%). Why: Item FG-9 (Synthetic tube) lost 20.00 CAD"), direct)
+        self.assertIn("against SO-101 (2026-09-05, the next order with it)", direct)
+        self.assertIn("Northwind Test Foods is not profitable in the last 12 months", direct)
+        self.assertLess(direct.index("Why:"), direct.index("Northwind Test Foods is"))
+        self.assertIn("By product, worst first: item FG-9 (Synthetic tube): margin on item "
+                      "cost only -65.00 CAD (-43.33%) on 14 PCS over 2 orders", direct)
+        profit = answer["profitability"]
+        self.assertEqual(profit["breakdown"]["order"]["label"], "SO-102")
+        self.assertEqual([p["item"] for p in profit["products"]],
+                         ["item FG-9 (Synthetic tube)", "item FG-1 (Synthetic jar)"])
+        self.assertTrue(all(p["sources"] for p in profit["products"]))
+        _names, older = self.ask(View(self), "what margin did we make on SO-105")
+        self.assertTrue(older["direct_answer"].startswith(
+            "Order SO-105: revenue 30.00 CAD, item cost 4.00 CAD, margin on item cost only "
+            "26.00 CAD (86.67%)."), older["direct_answer"])
+        self.assertEqual(older["profitability"]["period_start"], "2024-03-01")
+        # an order number naming no order goes on (the fast path or the agent answers)
+        backend = self.backend(View(self))
+        steps = backend._profit_ask(self.reader(), m.AskRequest(
+            question="why did SO-999 lose money"), "c1", lambda: 0)
+        with self.assertRaises(StopIteration) as done:
+            while True:
+                next(steps)
+        self.assertIsNone(done.exception.value)
+
+    def test_the_order_and_customer_pages_carry_the_margin_and_its_why(self):
+        """The ``margin`` page section: a BC sales order's page leads with that order's
+        breakdown and why; its customer's page ranks every order; any other record has no
+        margin section (nothing read)."""
+        view = View(self)
+        backend = be.WorkspaceBackend(lambda session: view, data_label="isolated-fixture",
+                                      today=lambda: TODAY)
+        self.addCleanup(view.close)
+        found = view._call("plx.find", {"query": "SO-102", "object_type": "SalesOrder"})
+        order = next(c["object"]["object_id"] for c in found["candidates"]
+                     if c["object"]["object_id"].split(":")[1].startswith("bc."))
+        page = SimpleNamespace(object_id=order, type="SalesOrder", label="SO-102")
+        section = be.read_section(backend, view, page, "margin")
+        self.assertTrue(section.applies)
+        got = section.profitability
+        self.assertEqual(got.breakdown.order.label, "SO-102")
+        self.assertEqual(got.breakdown.margin.amount, "-20.00")
+        self.assertTrue(any("the next order with it" in d for d in got.breakdown.drivers))
+        merged = be.merged(m.ObjectPage.model_construct(), section)
+        self.assertEqual(merged.profitability.breakdown.order.label, "SO-102")
+        customer = view.world.customer("C-50")
+        section = be.read_section(backend, view, SimpleNamespace(
+            object_id=customer, type="Customer", label="Northwind Test Foods"), "margin")
+        self.assertEqual(section.profitability.margin.amount, "-41.00")
+        self.assertEqual(section.profitability.breakdown.order.label, "SO-101")
+        calls = view.calls
+        other = be.read_section(backend, view, SimpleNamespace(
+            object_id="PurchaseOrder:bc.purchase_orders:x", type="PurchaseOrder",
+            label="PO9001"), "margin")
+        self.assertFalse(other.applies)
+        self.assertIsNone(other.profitability)
+        self.assertEqual(view.calls, calls)
+
     def test_no_customer_found_goes_on_and_several_are_offered_never_merged(self):
         backend = self.backend(View(self))
         steps = backend._profit_ask(self.reader(), m.AskRequest(
@@ -318,3 +383,21 @@ class ProfitAskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SameNamedCustomerTests(unittest.TestCase):
+    def test_a_same_named_card_without_orders_is_no_choice_beside_one_with_them(self):
+        """One company's cards of a name: the one with orders is the customer; a card whose
+        orders the reader may not see, or whose read failed, stays a choice; none with
+        orders: every card is offered."""
+        def view(results):
+            return SimpleNamespace(_call=lambda name, args: results[args["from"]])
+        cards = [{"object_id": f"Customer:bc.customers:{{\"id\":\"{i}\"}}"} for i in range(3)]
+        ids = [c["object_id"] for c in cards]
+        orders = {"objects": [{"object_id": "SalesOrder:x", "display": "SO1"}]}
+        self.assertEqual(be.with_orders(view({ids[0]: {}, ids[1]: orders, ids[2]: {}}), cards),
+                         [cards[1]])
+        self.assertEqual(be.with_orders(view({ids[0]: {"withheld": {"bc": 2}},
+                                              ids[1]: orders,
+                                              ids[2]: {"error": {"code": "x"}}}), cards), cards)
+        self.assertEqual(be.with_orders(view({i: {} for i in ids}), cards), cards)

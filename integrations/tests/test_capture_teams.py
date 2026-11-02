@@ -77,6 +77,8 @@ class FakeTeamsGraph:
         # A member's visibleHistoryStartDateTime (default: the whole history; None: absent).
         self.history: dict[str, str | None] = {}
         self.seq = 0
+        # Messages are stamped 10 minutes apart from here (a test may move it to now).
+        self.epoch = datetime(2026, 10, 1, tzinfo=timezone.utc)
         self.roots: dict[str, dict[str, dict]] = {GENERAL: {}, PRIVATE: {}}
         self.changed: dict[str, dict[str, int]] = {GENERAL: {}, PRIVATE: {}}
         self.replies: dict[tuple[str, str], list[dict]] = {}
@@ -102,7 +104,7 @@ class FakeTeamsGraph:
 
     def _stamp(self) -> str:
         self.seq += 1
-        moment = datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(minutes=10 * self.seq)
+        moment = self.epoch + timedelta(minutes=10 * self.seq)
         return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     def message(self, message_id: str, text: str, *, channel: str | None = None,

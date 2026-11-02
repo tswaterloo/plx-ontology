@@ -150,6 +150,16 @@ What it decides
   is per that row's quantity unit; the value names the cell it borrowed from). A blank or
   unreadable cell is that cell's gap (a PDF text layer that puts each cell on its own line
   yields no items, never guesses). A line-items row is checked by its cell count only.
+* **Line promises** (a profile's ``line_promises``): a confirmation that promises each
+  item its own date (one item 01/17, another 01/31: the document-level field is then
+  ``conflicting_values``) is read per item block (:func:`_line_promises`): below an item
+  table header (an item and a quantity word), a line starting with the supplier's line
+  number (larger than the last) and the item's text with a code opens a block, which
+  runs to the next block, a total line or the page end, and goes on below the next
+  page's repeated header. Each declared date field labelled on a line of the block is
+  that block's value (two dates its ``several_values``), cited by its own span, beside
+  the line number, the item text and the codes it writes. Which order line a block
+  promises is decided at read time on firm evidence only (``operating/line_promises.py``).
 * **Table cells** (a field's ``cell``: ``rows`` labels x ``columns`` headers): a form that
   states a quantity per row of a table (a shop-floor sheet's Filling and Total rows under
   QTY (EA)) is read by the same scanner. Below a cell header naming one of the field's
@@ -287,6 +297,7 @@ Stdlib only (the PDF reader is the extractor's optional ``pypdf``).
 from __future__ import annotations
 
 import contextlib
+from contextvars import ContextVar
 from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -400,12 +411,14 @@ def profiles() -> dict[str, Any]:
                 raise ValueError(f"document_field_compare_invalid:{rule['field']}")
         if "line_items" in profile:
             _check_line_items(profile["line_items"], profile["id"], data["vocabularies"])
+        if "line_promises" in profile:
+            _check_line_promises(profile["line_promises"], profile)
     return data
 
 
 _PROFILE_KEYS = {"id", "object_type", "noun", "description", "titles", "title_alone",
                  "number_field", "not_issued_by_own_party", "fields", "attests",
-                 "line_items"}
+                 "line_items", "line_promises"}
 # identifier_kind, quantity_role, count, description, property, marking (and a profile's
 # noun): how the schema loader names, types and marks the field's property
 # (ontology/schema.py derive_document_types); the reader ignores them.
@@ -719,6 +732,29 @@ def _currency(pre: str | None, post: str | None, declared: tuple[str, ...]
     return None, "currency_unknown", "none", []
 
 
+# Per separator ('/', '.', '-'), the order every unambiguous numeric date of the document
+# being read writes (``month_first`` 01/17/2023, ``day_first`` 17/01/2023): one writer
+# keeps one order per form, so it reads that document's ambiguous ones (11/04/2024). A
+# separator whose dates show both orders, or none, has no order.
+_DATE_ORDER: ContextVar[Mapping[str, str]] = ContextVar("plx_document_date_order", default={})
+_NUMERIC_DATE_ANYWHERE = re.compile(r"(?<![\d./-])(\d{1,2})([./-])(\d{1,2})\2(\d{4})(?![\d./-])")
+
+
+def date_order(text: str) -> dict[str, str]:
+    """separator -> ``month_first`` or ``day_first`` when every numeric date of ``text``
+    written with that separator that only one order reads (a part above 12) is read in
+    that order; a separator with no such date, or dates of both orders, is left out (an
+    ambiguous date written with it stays unread)."""
+    orders: dict[str, set[str]] = {}
+    for m in _NUMERIC_DATE_ANYWHERE.finditer(text):
+        a, b = int(m[1]), int(m[3])
+        if a > 12 >= b >= 1:
+            orders.setdefault(m[2], set()).add("day_first")
+        elif b > 12 >= a >= 1:
+            orders.setdefault(m[2], set()).add("month_first")
+    return {sep: next(iter(found)) for sep, found in orders.items() if len(found) == 1}
+
+
 def _date(raw: str) -> tuple[str | None, str | None]:
     raw = raw.strip()
     try:
@@ -730,7 +766,13 @@ def _date(raw: str) -> tuple[str | None, str | None]:
                 return date(year, b, a).isoformat(), None
             if b > 12 >= a:
                 return date(year, a, b).isoformat(), None
-            return (None, "date_ambiguous") if a != b else (date(year, a, b).isoformat(), None)
+            if a == b:
+                return date(year, a, b).isoformat(), None
+            order = _DATE_ORDER.get().get(next(c for c in raw if c in "./-"))
+            if order is None:
+                return None, "date_ambiguous"
+            return (date(year, a, b) if order == "month_first" else date(year, b, a)
+                    ).isoformat(), None
         if (m := _NAMED_DATE.match(raw)):
             day, month, year = (m[1], m[2], m[3]) if m[1] else (m[5], m[4], m[6])
             number = _MONTHS.get(month[:3].lower())
@@ -1551,6 +1593,141 @@ def _line_items(spec: Mapping[str, Any], rows: list[_TableRow], convention: str 
     return items, gaps
 
 
+# ---- per-line promises (a profile's ``line_promises``)
+
+# A block's first line: the supplier's line number (``10``, ``01``, ``1.001``), then the
+# item's own text with a word of three letters ('8.000 AH' or '145.12 KG' is a quantity)
+# and a code (:data:`_BLOCK_CODE`: '90 Moyal Court' is an address line).
+_BLOCK_START = re.compile(r"^[ \t]*(\d{1,4}(?:\.\d{1,3})?)[ \t]+(\S.*?)\s*$")
+_BLOCK_WORD = re.compile(r"[^\W\d_]{3,}")
+_BLOCK_END = re.compile(r"^[ \t]*(?:sub[ -]?)?total\b", re.IGNORECASE)
+# A date a labelled line of a block states: ISO, numeric with its year, or a named month
+# with its year ('July 17, 2026', '17 Jul 2026').
+_BLOCK_DATE = (r"(\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{4}|"
+               r"\d{1,2}[ \t-]+[A-Za-z]{3,9}\.?,?[ \t-]+\d{4}|"
+               r"[A-Za-z]{3,9}\.?[ \t]+\d{1,2},?[ \t]+\d{4})(?![\d/.-]\d)")
+# A code the block's first line writes: a token with a digit, four characters or more,
+# that is no number with separators (a quantity or price: '4,770.00', '190.000').
+_BLOCK_CODE = re.compile(r"(?<!\S)(?=[^\s]*\d)(?![\d.,()%]+(?!\S))[^\s]{4,}(?!\S)|"
+                         r"(?<!\S)\d{5,}(?!\S)")
+MAX_LINE_PROMISES = MAX_LINE_ITEMS
+
+
+def _check_line_promises(spec: Mapping[str, Any], profile: Mapping[str, Any]) -> None:
+    """``line_promises``: the date fields read per item block are date fields of the
+    profile, the header words name an item and a quantity column, and every code label is
+    text."""
+    _known_keys(spec, {"fields", "header_words", "code_labels"},
+                f"line_promises:{profile['id']}")
+    kinds = {f["name"]: f["kind"] for f in profile["fields"]}
+    words = spec.get("header_words") or {}
+    _known_keys(words, {"item", "quantity"}, f"line_promises:{profile['id']}")
+    if not spec.get("fields") or any(kinds.get(f) != "date" for f in spec["fields"]) or \
+            not words.get("item") or not words.get("quantity") or \
+            not all(isinstance(w, str) and w.strip() for w in (
+                *words["item"], *words["quantity"], *spec.get("code_labels", ()))):
+        raise ValueError(f"document_field_line_promises_invalid:{profile['id']}")
+
+
+@functools.lru_cache(maxsize=16)
+def _promise_patterns(profile_id: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Per date field of a profile's ``line_promises``: its labels at a line or column
+    start, then ``:``/``#`` (spaces around it) and a date."""
+    profile = _profile(profile_id)
+    specs = {f["name"]: f for f in profile["fields"]}
+    out = []
+    for name in profile["line_promises"]["fields"]:
+        labels = sorted(specs[name]["labels"], key=len, reverse=True)
+        alternatives = "|".join(r"[ \t]+".join(map(re.escape, label.split()))
+                                for label in labels)
+        out.append((name, re.compile(r"(?:^|\t|  )[ \t]*(?:" + alternatives
+                                     + r")[ \t]*[:#]?[ \t]*" + _BLOCK_DATE, re.IGNORECASE)))
+    return tuple(out)
+
+
+def _block_header(line: str, words: Mapping[str, Any]) -> bool:
+    """An item table's header line: it names an item column and a quantity column."""
+    found = set(re.findall(r"[^\W\d_]+", line.casefold()))
+    return bool(found & {w.casefold() for w in words["item"]}) and \
+        bool(found & {w.casefold() for w in words["quantity"]})
+
+
+def _line_promises(profile: Mapping[str, Any], pages: list[tuple[int | None, str]],
+                   cite: Callable[..., dict[str, Any]]
+                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The promise dates a document states per item (module docstring, *Line promises*):
+    below an item table's header line (an item and a quantity column named), each line
+    starting with the supplier's line number, a larger one than the block before, and
+    the item's text with a code opens a block up to the next block, a total line or the
+    page end; a block cut by a page break goes on below that page's repeated header. Per block, each
+    date field of ``line_promises`` written on a line of the block after one of its labels
+    is that block's value (one date, however often written; two different dates are its
+    gap ``several_values``, an ambiguous one ``date_ambiguous``); its first line gives
+    the line number, its text and the codes written there (a token with a digit), plus
+    the value after a ``code_labels`` label in the block. Only blocks stating a date are
+    kept. More than :data:`MAX_LINE_PROMISES` blocks is the gap ``too_long`` and none."""
+    spec = profile["line_promises"]
+    patterns = _promise_patterns(profile["id"])
+    code_labels = sorted(spec.get("code_labels", ()), key=len, reverse=True)
+    code_re = re.compile(r"^[ \t]*(?:" + "|".join(
+        r"[ \t]+".join(map(re.escape, label.split())) for label in code_labels)
+        + r")[ \t]*[:#]?[ \t]*(\S+)", re.IGNORECASE) if code_labels else None
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    last: Decimal | None = None
+    for page, page_text in pages:
+        in_items = False
+        offset = 0
+        for line in page_text.splitlines(keepends=True):
+            start, body = offset, line.rstrip("\r\n")
+            offset += len(line)
+            if not in_items:
+                in_items = _block_header(body, spec["header_words"])
+                continue
+            if _BLOCK_END.match(body):
+                in_items, current = False, None
+                continue
+            m = _BLOCK_START.match(body)
+            if m and _BLOCK_WORD.search(m[2]) and _BLOCK_CODE.search(m[2]) and \
+                    (last is None or Decimal(m[1]) > last):
+                last = Decimal(m[1])
+                current = {"line": m[1], "text": m[2],
+                           "codes": list(dict.fromkeys(_BLOCK_CODE.findall(m[2]))),
+                           "citation": cite(page, page_text, start + m.start(1),
+                                            start + m.end(2)), "_reads": {}}
+                blocks.append(current)
+                if len(blocks) > MAX_LINE_PROMISES:
+                    return [], [{"field": "line_promises", "reason": "too_long",
+                                 "citations": [current["citation"]]}]
+            if current is None:
+                continue
+            if code_re is not None and (c := code_re.match(body)):
+                current["codes"] = list(dict.fromkeys([*current["codes"], c[1]]))
+            for name, pattern in patterns:
+                for d in pattern.finditer(body):
+                    current["_reads"].setdefault(name, []).append(
+                        (d[1], cite(page, page_text, start + d.start(), start + d.end())))
+        current = current if in_items else None   # a page break suspends the block
+    out = []
+    for block in blocks:
+        reads = block.pop("_reads")
+        if not reads:
+            continue
+        for name, found in reads.items():
+            parsed = [(_date(raw), c) for raw, c in found]
+            days = {day for (day, _), _ in parsed if day is not None}
+            citations = [c for _, c in parsed]
+            if any(day is None for (day, _), _ in parsed):
+                gap = next(g for (day, g), _ in parsed if day is None) or "unreadable"
+                block[name] = {"value": None, "gap": gap, "citations": citations}
+            elif len(days) == 1:
+                block[name] = {"value": next(iter(days)), "citations": citations}
+            else:
+                block[name] = {"value": None, "gap": "several_values", "citations": citations}
+        out.append(block)
+    return out, []
+
+
 def _line_item(columns: Mapping[str, Mapping[str, Any]], raw: Mapping[str, str],
                cited: Mapping[str, dict], convention: str | None, declared: tuple[str, ...]
                ) -> dict[str, dict[str, Any]]:
@@ -1942,7 +2119,17 @@ def _own_issued(profile: Mapping[str, Any], head: str,
 def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None
             ) -> dict[str, Any]:
     """:func:`extract_fields` of one reading of a document
-    (``integrations.captured_text``) whose file has the provenance signal ``issued``."""
+    (``integrations.captured_text``) whose file has the provenance signal ``issued``; an
+    ambiguous numeric date is read in the document's own date order (:func:`date_order`)."""
+    token = _DATE_ORDER.set(date_order("\n".join(t for _, t in read.pages)))
+    try:
+        return _fields_read(read, l1_handle, issued)
+    finally:
+        _DATE_ORDER.reset(token)
+
+
+def _fields_read(read: CapturedText, l1_handle: str | None, issued: str | None = None
+                 ) -> dict[str, Any]:
     digest, text_digest = read.source_sha256, read.text_sha256
     status, method, mime, ocr = read.status, read.method, read.mime_type, read.ocr_pages
     # The column rule (:func:`_table_rows`) reads only OCR pages whose text says it is
@@ -2141,6 +2328,11 @@ def _fields(read: CapturedText, l1_handle: str | None, issued: str | None = None
         result["line_items"], item_gaps = _line_items(profile["line_items"], table_rows,
                                                       convention, declared, read_by)
         result["gaps"].extend(item_gaps)
+    if "line_promises" in profile:
+        found, promise_gaps = _line_promises(profile, pages, cite)
+        if found:
+            result["line_promises"] = found
+        result["gaps"].extend(promise_gaps)
     split = [(c["page"], c["start"], c["end"]) for field in result["fields"].values()
              if field.get("gap") == SPLIT_AT_GAP for c in field["citations"]]
     for page, page_text in pages:
@@ -2288,6 +2480,7 @@ def resolve_citation(content: bytes | None, citation: Mapping[str, Any], *, mime
 # --------------------------------------------------------------------------- projection
 
 MAX_FIELDS = 1024
+_OWN_SIGNAL = object()   # :func:`_documents`: no signal given, it reads it from ``received``
 _FIELDS: ReadingMemo[dict[str, Any] | None] = ReadingMemo(MAX_FIELDS, lambda _found: 1)
 
 
@@ -2314,12 +2507,13 @@ class KeptFields:
 
     KEEP_BUILDS = 3
     _BATCH = 500
+    TABLE = "fields"
 
     def __init__(self, path: str | Path, code: str) -> None:
         import os
         import sqlite3
 
-        self.code, self._pending = code, 0
+        self.code, self._pending, self.path = code, 0, Path(path)
         os.close(os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600))
         os.chmod(path, 0o600)
         self._db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
@@ -2345,6 +2539,24 @@ class KeptFields:
             self._db.execute("BEGIN")
             self._pending = 0
 
+    @staticmethod
+    def _key(key: Any) -> str | None:
+        try:
+            return json.dumps(list(key))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def decode(value: str) -> dict[str, Any] | None:
+        """A kept value's fields."""
+        return json.loads(value)
+
+    @staticmethod
+    def encode(found: dict[str, Any] | None) -> str | None:
+        """The value fields are kept as; None when they do not read back equal."""
+        text = json.dumps(found, sort_keys=True)
+        return text if json.loads(text) == found else None
+
     def get(self, key: Any) -> tuple[dict[str, Any] | None] | None:
         try:
             name = json.dumps(list(key))
@@ -2354,14 +2566,32 @@ class KeptFields:
                 return None
             self._db.execute("UPDATE fields SET used = ? WHERE key = ?", (self.build, name))
             self._wrote()
-            return (json.loads(row[1]),)
+            return (self.decode(row[1]),)
         except Exception:  # noqa: BLE001 - an unreadable entry is a miss
             return None
 
+    def flush(self) -> None:
+        """Commit what is kept so far, so another process's reader sees it."""
+        self._db.execute("COMMIT")
+        self._db.execute("BEGIN")
+        self._pending = 0
+
+    def absorb(self, used: Any, kept: Any) -> None:
+        """A parallel build worker's hits (``used``) and new entries (``kept``: key and
+        encoded value), recorded by this, the file's one writer
+        (``ontology.project_parallel``)."""
+        for name in used:
+            self._db.execute("UPDATE fields SET used = ? WHERE key = ?", (self.build, name))
+            self._wrote()
+        for name, text in kept:
+            self._db.execute("INSERT OR REPLACE INTO fields VALUES (?, ?, ?, ?)",
+                             (name, self.code, text, self.build))
+            self._wrote()
+
     def put(self, key: Any, found: dict[str, Any] | None) -> None:
         try:
-            text = json.dumps(found, sort_keys=True)
-            if json.loads(text) != found:
+            text = self.encode(found)
+            if text is None:
                 return
             self._db.execute("INSERT OR REPLACE INTO fields VALUES (?, ?, ?, ?)",
                              (json.dumps(list(key)), self.code, text, self.build))
@@ -2415,7 +2645,7 @@ def _fields_of(key: tuple[str, str, str, str | None, str | None, bool],
 
 
 def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
-               received: Received | None = None
+               received: Received | None = None, issued: Any = _OWN_SIGNAL
                ) -> Iterator[tuple[Member | None, dict[str, Any] | None,
                                CapturedText | None, str | None]]:
     """The documents of one captured file (``row``: its bytes' digest, type, name, the
@@ -2431,7 +2661,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
     name = row.get("name") if isinstance(row.get("name"), str) else ""
     if not isinstance(digest, str) or not isinstance(mime, str):
         return
-    issued = _issued_by(row, received)
+    if issued is _OWN_SIGNAL:   # else the signal :func:`_issued_by` gave for ``received``
+        issued = _issued_by(row, received)
     reading = captured_text(blobs, row) if read else None
     # Fields kept between builds are served only while what they were read from is on
     # disk (as a kept reading is): a file gone reads as gone.
@@ -2461,31 +2692,182 @@ def captured(records: Iterable[Any], blobs: str | Path) -> Iterator[Any]:
     a document whose bytes are missing, unreadable or of no single class yields
     nothing. One reading per distinct (bytes, MIME type, name, OCR text), shared with
     the mention documents and resolve (``integrations.captured_text``)."""
+    records = list(records)   # a forward is told from its received copy (*Direction*)
+    received = _received(rec.row for rec in records)
+    signals = [_issued_by(rec.row, received) for rec in records]
+    from ontology import project_parallel
+
+    pool = project_parallel.DOCUMENTS
+    if pool is not None:   # parsed by a build's worker processes, in this order
+        yield from pool.captured(records, signals, blobs)
+        return
+    for rec, issued in zip(records, signals):
+        yield from captured_one(rec, blobs, issued)
+
+
+def captured_one(rec: Any, blobs: str | Path, issued: str | None) -> Iterator[Any]:
+    """The ``documentFields`` records of one captured file record ``rec`` (:func:`captured`),
+    ``issued`` its provenance signal (:func:`_issued_by` over every record read with it)."""
     from ontology.project import CapturedRecord
     from ontology.store import canonical
 
-    records = list(records)   # a forward is told from its received copy (*Direction*)
-    received = _received(rec.row for rec in records)
-    for rec in records:
-        row = rec.row
-        for member, found, _, _ in _documents(row, blobs, received=received):
-            if found is None or found["status"] != "classified":
+    row = rec.row
+    for member, found, _, _ in _documents(row, blobs, issued=issued):
+        if found is None or found["status"] != "classified":
+            continue
+        handle = byte_pinned(rec.l1_handle, row["content_sha256"])
+        source_key, cited, cited_digest = (
+            (rec.record_key, handle, row["content_sha256"]) if member is None else
+            (canonical([rec.record_key, member.path]),
+             member_handle(handle, member.path, member.sha256), member.sha256))
+        out = _record_row(source_key, found, cited, cited_digest)
+        carrier = carrier_fields(found["profile"], row, blobs) if member is None else None
+        if carrier is not None:
+            out["carrier"] = carrier
+        yield CapturedRecord(
+            source=rec.source, relation=RELATION,
+            record_key=canonical([source_key, found["profile"]]), row=out,
+            l1_handle=cited, field_prefix="row",
+            digest=sha256(canonical(out).encode("utf-8")).hexdigest(),
+            recorded_at=rec.recorded_at, superseded_at=rec.superseded_at,
+            last_seen_at=rec.last_seen_at, audience_key=rec.audience_key,
+            missing_from_source_since=rec.missing_from_source_since,
+            removals=rec.removals)
+
+
+# ---- the carrying message's own words (a mail attachment's message body)
+
+CARRIER_FIELD_PATH = "row.body_text"
+# The profiles whose carrying message is read, and the fields its sentences may state:
+# field -> the cue phrases (a promise of that kind: arrival, or shipment) a date follows
+# in the same sentence. Vocabulary only: no case value belongs here.
+CARRIER_CUES: Mapping[str, Mapping[str, tuple[str, ...]]] = {
+    "supplier_confirmation": {
+        "delivery_date": (
+            r"eta", r"estimated time of arrival", r"estimated arrival(?: date)?",
+            r"arrival date", r"(?:estimated |expected )?delivery date",
+            r"will (?:be )?deliver(?:ed|ing)?", r"will (?:be )?arriv(?:e|ed|ing)",
+            r"(?:is|are|be) delivering", r"delivering", r"to be delivered",
+            r"(?:is|are) (?:scheduled|expected|due) to (?:arrive|be delivered)",
+            r"(?:is|are) due (?:in|on)"),
+        "ship_date": (
+            r"etd", r"estimated time of departure", r"(?:estimated )?ship(?:ping|ment)? date",
+            r"(?:estimated )?ship[- ]?out date", r"(?:cargo )?ready date",
+            r"will (?:be )?(?:ship(?:ped|ping)?|dispatch(?:ed|ing)?)",
+            r"(?:is|are|be) shipping", r"to be (?:shipped|dispatched)",
+            r"(?:is|are) (?:scheduled|expected|due) to (?:ship|be shipped)",
+            r"(?:will be )?ready to ship(?: on| by)?")}}
+_CARRIER_MONTH = (r"(?P<mon>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|"
+                  r"july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+                  r"dec(?:ember)?)")
+# A date a sentence writes: ISO, numeric with its year, or a named month with or without
+# its year ('Aug. 17th', 'August 17, 2026', '12th March', 'Oct 8').
+_CARRIER_DATE = (r"(?P<date>\d{4}-\d{2}-\d{2}|\d{1,2}[./-]\d{1,2}[./-]\d{4}|"
+                 r"(?P<d1>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?" + _CARRIER_MONTH.replace(
+                     "mon", "m1") + r"\.?(?:,?\s+(?P<y1>\d{4}))?|" + _CARRIER_MONTH.replace(
+                     "mon", "m2") + r"\.?\s+(?P<d2>\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(?P<y2>\d{4}))?)"
+                 r"(?![\d/.-]\d)")
+# The words between a cue and its date: no sentence end, no question, at most 60 characters.
+_CARRIER_GAP = r"(?:[^.!?\n]|\.(?=\d)){0,60}?"
+_NEGATION = re.compile(r"\b(?:not|no longer|cannot|unable|n't)\b|n't\b", re.IGNORECASE)
+# How far a year-less date may lie before the message date and still be in its year (a
+# date the vendor writes days before or after the message); earlier is next year's.
+CARRIER_PAST_DAYS = 60
+
+
+@functools.lru_cache(maxsize=None)
+def _carrier_patterns(profile_id: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    return tuple((name, re.compile(r"\b(?P<cue>" + "|".join(cues) + r")\b\s*:?\s*"
+                                   + _CARRIER_GAP + _CARRIER_DATE, re.IGNORECASE))
+                 for name, cues in CARRIER_CUES.get(profile_id, {}).items())
+
+
+def _carrier_day(m: re.Match[str], dated: date | None) -> str | None:
+    """The ISO day a carrier date match writes; a named date without its year is read in
+    the message's year (the next year when that day lies more than
+    :data:`CARRIER_PAST_DAYS` before the message), and not at all without a message date."""
+    if m["m1"] is None and m["m2"] is None:
+        return _date(m["date"])[0]
+    day, month = (m["d1"], m["m1"]) if m["m1"] else (m["d2"], m["m2"])
+    year = m["y1"] or m["y2"]
+    number = _MONTHS[month[:3].lower()]
+    try:
+        if year:
+            return date(int(year), number, int(day)).isoformat()
+        if dated is None:
+            return None
+        found = date(dated.year, number, int(day))
+        if (dated - found).days > CARRIER_PAST_DAYS:
+            found = date(dated.year + 1, number, int(day))
+        return found.isoformat()
+    except ValueError:
+        return None
+
+
+def carrier_promises(profile_id: str, text: str, dated: date | None
+                     ) -> dict[str, dict[str, Any]]:
+    """The fields of :data:`CARRIER_CUES` the sender's own sentences of a message body
+    ``text`` state (quoted history, questions and negated sentences never), each a
+    machine-read lead: one date (however often written) is the value, cited by every span
+    stating it; several different dates are the gap ``several_values`` (a partial or a
+    revision the text does not order), never one of them; none is ``not_stated``."""
+    quoted = mentions.QuotedRanges(text)
+    out: dict[str, dict[str, Any]] = {}
+    for name, pattern in _carrier_patterns(profile_id):
+        days: dict[str, list[dict[str, Any]]] = {}
+        for m in pattern.finditer(text):
+            start, end = m.start(), m.end()
+            if quoted.overlaps(start, end):
                 continue
-            handle = byte_pinned(rec.l1_handle, row["content_sha256"])
-            source_key, cited, cited_digest = (
-                (rec.record_key, handle, row["content_sha256"]) if member is None else
-                (canonical([rec.record_key, member.path]),
-                 member_handle(handle, member.path, member.sha256), member.sha256))
-            out = _record_row(source_key, found, cited, cited_digest)
-            yield CapturedRecord(
-                source=rec.source, relation=RELATION,
-                record_key=canonical([source_key, found["profile"]]), row=out,
-                l1_handle=cited, field_prefix="row",
-                digest=sha256(canonical(out).encode("utf-8")).hexdigest(),
-                recorded_at=rec.recorded_at, superseded_at=rec.superseded_at,
-                last_seen_at=rec.last_seen_at, audience_key=rec.audience_key,
-                missing_from_source_since=rec.missing_from_source_since,
-                removals=rec.removals)
+            line_start = max(text.rfind("\n", 0, start), text.rfind(". ", 0, start) + 1, 0)
+            stop = re.compile(r"[.!?\n]").search(text, end)
+            if stop is not None and stop.group(0) == "?":
+                continue   # a question asks for a date, never states one
+            if _NEGATION.search(text[line_start:end]):
+                continue
+            day = _carrier_day(m, dated)
+            if day is not None:
+                days.setdefault(day, []).append(
+                    {"field_path": CARRIER_FIELD_PATH, "start": start, "end": end,
+                     "text": text[start:end]})
+        if len(days) == 1:
+            (day, cites), = days.items()
+            out[name] = {"kind": "date", "value": day, "read_by": "carrier_text",
+                         "citations": cites}
+        else:
+            out[name] = {"kind": "date", "value": None, "citations": [
+                c for cites in days.values() for c in cites][:4],
+                "gap": "several_values" if days else "not_stated"}
+    return out
+
+
+def carrier_fields(profile_id: str, row: Mapping[str, Any], blobs: str | Path
+                   ) -> dict[str, Any] | None:
+    """What the message carrying a classified mail attachment ``row`` states of its
+    profile's :data:`CARRIER_CUES` fields (:func:`carrier_promises`), cited to that
+    message's version (``message``: its ``l1_handle`` and ``row.body_text``; each field's
+    citations a character span of it), or None:
+    no cues for the profile, no message (a SharePoint file, a container member), its
+    body not captured or unreadable, or a sender of the own party (a colleague's words,
+    a forward: never the supplier's promise). The message and its attachment are one
+    mailbox's: one audience."""
+    if profile_id not in CARRIER_CUES or not isinstance(row.get("message_handle"), str):
+        return None
+    sender = mentions.mail_domain(row.get("message_from"))
+    own = {d for d in (_domain(row.get("mailbox_upn")),
+                       *(n.lower() for n in profiles()["own_parties"]["names"] if "." in n))
+           if d}
+    if sender is None or any(mentions.domain_under(sender, d) for d in own):
+        return None
+    from integrations.captured_text import read_blob
+    content = read_blob(blobs, row.get("message_body_sha256"))
+    if content is None:
+        return None
+    dated = _when(row.get("carrier_dated_at"))
+    # one level below ``carrier`` (a cited field path is row and at most three names)
+    return {"message": {"l1_handle": row["message_handle"], "field_path": CARRIER_FIELD_PATH},
+            **carrier_promises(profile_id, content.decode("utf-8", errors="replace"),
+                               None if dated is None else dated.date())}
 
 
 # The kind of a file whose class was never read (``stages``): its type, else its suffix.
@@ -2667,7 +3049,9 @@ def _record_row(source_key: str, found: Mapping[str, Any], handle: str, digest: 
         for k, v in item.items() if k != "citations"}
         for name, item in evidence["fields"].items()}
     return {"source_key": source_key, "profile": found["profile"], "document": handle,
-            "content_sha256": digest, "tier": TIER, "fields": fields, "evidence": evidence}
+            "content_sha256": digest, "tier": TIER, "fields": fields, "evidence": evidence,
+            **({"line_promises": evidence["line_promises"]}
+               if evidence.get("line_promises") else {})}
 
 
 def _pinned(handle: Any) -> tuple[str, str, str] | None:

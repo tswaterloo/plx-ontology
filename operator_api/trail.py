@@ -135,11 +135,53 @@ class Mapper:
                                    else None))
         return out, hidden
 
+    def promise(self, raw: Optional[Mapping[str, Any]], decided: Mapping[str, Any]
+                ) -> Optional[m.VendorPromise]:
+        """The supplier's promise for this reader: a line whose confirmation the reader
+        can't open is dropped and counted (never named), and then the order's roll-up
+        (decided over every line) is not stated; a document-level date whose
+        confirmation the reader can't open (or that cites none) is not stated (fail
+        closed). None without a promise."""
+        if not raw:
+            return None
+        lines, hidden = [], 0
+        for row in raw.get("lines") or ():
+            handle = row.get("handle")
+            source = self.source(handle, decided) if isinstance(handle, str) else None
+            if source is None:
+                hidden += 1
+                continue
+            lines.append(m.PromiseLine(
+                line=_ref(row["line"], row.get("label"), self.url),
+                promised_date=row.get("promised_date"), state=row["state"],
+                days_late=row.get("days_late"), matched_by=row.get("matched_by"),
+                source=source))
+        handle = raw.get("handle")
+        source = self.source(handle, decided) if isinstance(handle, str) else None
+        per_line = bool(raw.get("per_line"))
+        # the roll-up stands only on what this reader opens: every listed line (per line),
+        # or the cited confirmation (document level)
+        shown = (not hidden and bool(lines)) if per_line else source is not None
+        if not shown and not lines:
+            return None
+        return m.VendorPromise(
+            link=raw["link"], state=raw["state"] if shown else "undetermined",
+            promised_date=raw.get("promised_date") if shown else None,
+            days_late=raw.get("days_late") if shown else None,
+            measured_against=raw.get("measured_against") if shown else None,
+            complete=bool(raw.get("complete", True)) and not hidden, source=source,
+            per_line=per_line, lines=lines, lines_hidden=hidden,
+            lines_unmatched=int(raw.get("lines_unmatched") or 0))
+
     def po(self, raw: Mapping[str, Any]) -> m.PoTrail:
         handles = [s.get("handle") for s in raw.get("steps") or ()]
         eta = raw.get("eta") or None
         action = raw.get("next_action") or None
+        vendor = raw.get("vendor_promise") or None
         handles += [(eta or {}).get("handle"), (action or {}).get("contact_handle")]
+        if vendor:
+            handles += [vendor.get("handle")] + [ln.get("handle")
+                                                 for ln in vendor.get("lines") or ()]
         decided = self.decide(h for h in handles if isinstance(h, str))
         steps, hidden = self.steps(raw.get("steps") or (), decided)
         hidden += int(raw.get("hidden") or 0)
@@ -158,7 +200,8 @@ class Mapper:
                     # nothing of mail, files or Teams is withheld from this reader by its
                     # item permissions: no "you can't open" caveat
                     text = NOT_FOUND_ALL_READ
-                eta_model = m.EtaCheck(state=eta["state"], text=text[:300], source=source)
+                eta_model = m.EtaCheck(state=eta["state"], text=text[:300], source=source,
+                                       promise=self.promise(vendor, decided))
         action_model = None
         if action:
             handle = action.get("contact_handle")

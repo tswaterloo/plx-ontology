@@ -29,6 +29,7 @@ from ontology.schema import load_schema
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_process as op
+from operating import process_lateness as pl
 from operating import ontology_tools_traverse as tt
 from tests import test_ontology_tools_process as tp
 
@@ -44,9 +45,12 @@ def setUpModule():
 
 # --------------------------------------------------------------------------- fixture
 
-def sage_po(s, key="sage-1", due="2099-01-15", number="PO100001"):
+def sage_po(s, key="sage-1", due="2099-01-15", number="PO100001", complete=None,
+            complete_markings="[]"):
     po = s.obj(f"PurchaseOrder:portal.sage_po_header:{key}", "sage_bronze")
     s.val(po, "po_number", "identifier", number)
+    if complete is not None:
+        s.val(po, "sage_is_complete", "text", complete, markings=complete_markings)
     if due:
         s.event("PurchaseOrder.sage_expected", po, due)
     return po
@@ -148,6 +152,37 @@ class Base(tp.Mixin, unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- due dates
+
+class SageHistoryTests(Base):
+    """A Sage PO Sage records as complete (iscomplete 1) is a
+    historical record, not judged; one Sage shows open, or any other value, stays
+    undetermined."""
+
+    def test_a_complete_sage_po_is_historical_not_judged_and_cited(self):
+        s = tp.Store()
+        done = sage_po(s, due="2099-01-15", complete="1")
+        entry = self.late(s, done)
+        self.assertEqual((entry["state"], entry["late"], entry["reasons"], entry["chain"]),
+                         ("not_applicable", False, ["historical_sage"], "historical_sage"))
+        (because,) = entry["because"]
+        self.assertEqual((because["reason"], [v["property"] for v in because["values"]]),
+                         ("historical_sage", ["sage_is_complete"]))
+        self.assertNotIn("gap", entry)
+        for value in ("0", "5", "", "yes"):
+            s = tp.Store()
+            other = sage_po(s, due="2099-01-15", complete=value)
+            entry = self.late(s, other)
+            self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
+                             ("undetermined", None, "status_unknown"), value)
+
+    def test_a_reader_who_cannot_read_iscomplete_gets_no_historical_verdict(self):
+        s = tp.Store()
+        done = sage_po(s, complete="1", complete_markings='["finance"]')
+        self.assertEqual(self.late(s, done)["reasons"], ["historical_sage"])
+        sales = self.late(s, done, SALES)
+        self.assertEqual((sales["state"], sales["late"]), ("undetermined", None))
+        self.assertNotIn("historical_sage", json.dumps(sales))
+
 
 class DueDateTests(Base):
     def test_a_po_whose_only_due_date_is_sage_exparrival_is_late_after_it(self):
@@ -327,7 +362,362 @@ class PromiseTests(Base):
         self.assertNotIn("promised_date", entry)
         self.assertIn("confirmation_lead_only", entry["reasons"])
         self.assertFalse({"no_confirmation", "no_confirmation_found"} & set(entry["reasons"]))
+        # the lead's date is stated only as a possible vendor promise, never judged:
+        # nowhere else in the entry
+        vendor = entry.pop("vs_vendor_promise")
         self.assertNotIn("2099-01-20", json.dumps(entry))
+        self.assertEqual((vendor["basis"], vendor["link"], vendor["state"], vendor["late"],
+                          vendor["promised_date"]),
+                         ("possible_vendor_promise", "unconfirmed_link", "not_judged", None,
+                          "2099-01-20"))
+        self.assertNotIn("days_late", vendor)
+
+    def test_a_po_number_match_alone_is_its_own_reason_never_a_confirmation_lead(self):
+        """Live 2026-11-02: 337 POs read "confirmation lead only" where no confirmation was
+        reached at all, only a twin joined by the PO-number text (a lead). Each is its own
+        reason; a confirmation behind that lead twin is never followed nor stated."""
+        s = tp.Store()
+        po = portal_po(s)
+        fm_twin(s, po, "2099-01-15")
+        loose = bc_po(s, key="bc-loose")
+        s.link("PurchaseOrder.same_record_as", po, loose, tier="lead", kind="text_match")
+        confirm(s, loose, "behind", "2099-01-20", "2099-01-02")
+        entry = self.late(s, po)
+        self.assertIn("po_number_match_only", entry["reasons"])
+        self.assertNotIn("confirmation_lead_only", entry["reasons"])
+        self.assertNotIn("vs_vendor_promise", entry)
+        self.assertNotIn("2099-01-20", json.dumps(entry))
+        # a confirmation lead beside it is the confirmation lead, never the number match
+        confirm(s, po, "a", "2099-01-22", "2099-01-02", tier="lead")
+        entry = self.late(s, po)
+        self.assertIn("confirmation_lead_only", entry["reasons"])
+        self.assertNotIn("po_number_match_only", entry["reasons"])
+
+
+class VendorPromiseTests(Base):
+    """Beside our verdict, the order against the vendor's own
+    confirmed date, labelled as the vendor's promise, never our due date."""
+
+    def vendor(self, s, po, actor=STAFF):
+        entry = self.late(s, po, actor)
+        return entry, entry.get("vs_vendor_promise")
+
+    def test_open_with_no_due_date_is_judged_against_the_confirmed_promise_only(self):
+        s = tp.Store()
+        po = portal_po(s)
+        confirm(s, po, "a", "2099-01-20", "2099-01-02")
+        confirm(s, po, "b", "2099-01-28", "2099-01-08", binding=FILES)
+        entry, vendor = self.vendor(s, po)
+        # our verdict is unchanged: no requested-by date, so none is stated
+        self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
+                         ("undetermined", None, "no_due_date"))
+        # against the vendor's latest (revised) promise: today 2099-02-01 is 4 days past
+        self.assertEqual((vendor["basis"], vendor["link"], vendor["state"], vendor["late"],
+                          vendor["promised_date"], vendor["days_late"],
+                          vendor["measured_against"], vendor["measured_on"]),
+                         ("vendor_promise", "confirmed", "late", True, "2099-01-28", 4,
+                          "today", "2099-02-01"))
+        self.assertEqual([v["value"] for v in vendor["values"]], ["2099-01-28"])
+        self.assertTrue(vendor["values"][0]["citation"]["l1_handle"])
+        # the document sources carry item-level permissions: a later one may be unseen
+        self.assertIs(vendor["complete"], False)
+
+    def test_the_suppliers_own_message_states_a_promise_a_ship_date_never_one(self):
+        """The arrival date the supplier's carrying message states
+        (SupplierConfirmation.promised_in_mail) is a promise like the document's; a ship
+        date (ship_promised) is never judged as an arrival promise."""
+        s = tp.Store()
+        po = portal_po(s)
+        sc = confirm(s, po, "a", None, "2099-01-02")
+        s.event("SupplierConfirmation.ship_promised", sc, "2099-01-10")
+        entry, vendor = self.vendor(s, po)
+        self.assertNotIn("vs_vendor_promise", entry)
+        self.assertNotIn("promised_date", entry)
+        self.assertNotIn("2099-01-10", json.dumps(entry))
+        s.event("SupplierConfirmation.promised_in_mail", sc, "2099-01-25")
+        entry, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["basis"], vendor["state"], vendor["promised_date"],
+                          vendor["days_late"]),
+                         ("vendor_promise", "late", "2099-01-25", 7))
+        self.assertEqual([v["property"] for v in vendor["values"]], ["promised_in_mail"])
+
+    def test_received_or_not_yet_due_against_the_promise(self):
+        s = tp.Store()
+        po = portal_po(s, status="Complete", ordered=("10", "10"))
+        fm_twin(s, po, "2099-01-15")
+        confirm(s, po, "a", "2099-01-20", "2099-01-02")
+        receipt(s, po, "rc-1", "2099-01-18")
+        entry, vendor = self.vendor(s, po)
+        self.assertEqual((entry["state"], entry["days_late"]), ("late", 3))   # our date
+        self.assertEqual((vendor["state"], vendor["late"], vendor["measured_against"],
+                          vendor["measured_on"]),
+                         ("on_time", False, "received", "2099-01-18"))
+        receipt(s, po, "rc-2", "2099-01-25")
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["days_late"]), ("late", 5))
+        s = tp.Store()
+        po = portal_po(s, expected="2099-03-01")
+        confirm(s, po, "a", "2099-02-20", "2099-01-02")
+        entry, vendor = self.vendor(s, po)
+        self.assertEqual((entry["state"], vendor["state"], vendor["late"]),
+                         ("not_due", "not_due", False))
+        self.assertNotIn("days_late", vendor)
+
+    def test_disagreeing_promises_or_no_promise_state_no_vendor_verdict(self):
+        s = tp.Store()
+        po = portal_po(s)
+        confirm(s, po, "a", "2099-01-20", "2099-01-02")
+        confirm(s, po, "b", "2099-01-28", None)
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["late"], vendor["reason"]),
+                         ("undetermined", None, "promises_disagree"))
+        self.assertNotIn("promised_date", vendor)
+        s = tp.Store()
+        po = portal_po(s)
+        fm_twin(s, po, "2099-01-15")
+        self.assertIsNone(self.vendor(s, po)[1])
+        # cancelled or not issued: nothing is due, no promise is judged
+        s = tp.Store()
+        po = portal_po(s, status="Cancel")
+        confirm(s, po, "a", "2099-01-20", "2099-01-02")
+        self.assertIsNone(self.vendor(s, po)[1])
+
+    def test_a_restricted_reader_sees_no_marked_promise_confirmed_or_possible(self):
+        for tier in ("corroborated", "lead"):
+            s = tp.Store()
+            po = portal_po(s)
+            confirm(s, po, "a", "2099-01-20", "2099-01-02", tier=tier, markings='["finance"]')
+            staff, vendor = self.vendor(s, po)
+            self.assertEqual(vendor["promised_date"], "2099-01-20", tier)
+            result = self.run_process(s, po, SALES)
+            self.assertNotIn("2099-01-20", json.dumps(result), tier)
+            (sales,) = result["lateness"]
+            self.assertNotIn("vs_vendor_promise", sales, tier)
+
+    def test_one_ten_and_sixty_lead_confirmations_give_one_possible_promise(self):
+        for n in (1, 10, 60):
+            s = tp.Store()
+            po = portal_po(s)
+            fm_twin(s, po, "2099-01-15")
+            for i in range(n):   # the same promise in many documents, the last revised
+                confirm(s, po, f"c{i}", "2099-01-20" if i < n - 1 or n == 1 else "2099-01-26",
+                        f"2099-01-{1 + i % 20:02d}" if i < n - 1 else "2099-01-25",
+                        tier="lead")
+            started = time.monotonic()
+            entry, vendor = self.vendor(s, po)
+            self.assertLess(time.monotonic() - started, 10, n)
+            self.assertEqual((entry["state"], entry["days_late"]), ("late", 17), n)
+            self.assertEqual((vendor["basis"], vendor["promised_date"]),
+                             ("possible_vendor_promise",
+                              "2099-01-20" if n == 1 else "2099-01-26"), n)
+            self.assertEqual(len(vendor["values"]), 1, n)
+            self.assertEqual(len(json.dumps(vendor)) < 2000, True, n)
+
+
+def block(line_no, text, arrival=None, ship=None, codes=()):
+    """One item block of a confirmation's ``line_promises`` (document_fields)."""
+    out = {"line": line_no, "text": text, "codes": list(codes),
+           "citation": {"page": 1, "start": 0, "end": 5, "text": line_no}}
+    for name, day in (("delivery_date", arrival), ("ship_date", ship)):
+        if day is not None:
+            out[name] = ({"value": day, "citations": []} if day != "several" else
+                         {"value": None, "gap": "several_values", "citations": []})
+    return out
+
+
+def lined(s, po, key, blocks, markings="[]", tier="corroborated", document_date="2099-01-02"):
+    sc = confirm(s, po, key, None, document_date, tier=tier)
+    s.val(sc, "line_promises", "json", json.dumps(blocks) if not isinstance(blocks, str)
+          else blocks, markings=markings)
+    return sc
+
+
+def described(s, po, key, description, ordered="10", received="0", code=None,
+              binding="portal.app_purchase_order_line", line_type=None):
+    pol = line(s, po, key, ordered, received, binding=binding)
+    if description is not None:
+        s.val(pol, "description", "text", description)
+    if code is not None:
+        s.val(pol, "item_code", "text", code)
+    if line_type is not None:
+        s.val(pol, "line_type", "text", line_type)
+    return pol
+
+
+class LinePromiseTests(Base):
+    """A confirmation promising each item its own date (a Mettler
+    order confirmation read "conflicting" and gave no date) judges each order line
+    against its own promise, matched on firm evidence only; the order is late when any
+    open line is past its own promised arrival."""
+
+    def vendor(self, s, po, actor=STAFF):
+        entry = self.late(s, po, actor)
+        return entry, entry.get("vs_vendor_promise")
+
+    def test_each_line_is_judged_against_its_own_promise_and_rolls_up(self):
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        a = described(s, po, "l-a", "SevenExcellence pH/Cond meter S470")
+        b = described(s, po, "l-b", "Cond. stand. 5 µs/cm, 250mL")
+        sc = lined(s, po, "a", [
+            block("10", "SevenExcellence® pH/Cond meter S470 30046252 1 EA 4,770.00",
+                  "2099-01-20", "2099-01-16", ["30046252"]),
+            block("110", "Cond. stand. 5 µs/cm, 250mL 30094617 1 EA 191.00",
+                  "2099-03-01", "2099-02-25", ["30094617"])])
+        entry, vendor = self.vendor(s, po)
+        # today 2099-02-01: line a is 12 days past its own promise, so the order is late
+        self.assertEqual((vendor["basis"], vendor["per_line"], vendor["state"], vendor["late"],
+                          vendor["promised_date"], vendor["days_late"], vendor["lines_judged"],
+                          vendor["lines_unmatched"]),
+                         ("vendor_promise", True, "late", True, "2099-01-20", 12, 2, 0))
+        self.assertEqual([(ln["line"], ln["state"], ln["promised_date"], ln["matched_by"])
+                          for ln in vendor["lines"]],
+                         [(a, "late", "2099-01-20", "description"),
+                          (b, "not_due", "2099-03-01", "description")])
+        self.assertEqual(vendor["lines"][0]["values"][0]["citation"]["l1_handle"],
+                         s.handles[sc][0])
+        self.assertNotIn("2099-02-25", json.dumps(entry))   # a ship date is never judged
+        # once line a's promise has not passed either, the order is not due
+        s.conn.execute("UPDATE object_values SET value = replace(value, '2099-01-20', "
+                       "'2099-02-15') WHERE property = 'line_promises'")
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["late"], vendor["promised_date"]),
+                         ("not_due", False, "2099-02-15"))
+        # a received line is no open line: an open one past its promise decides
+        s.conn.execute("UPDATE object_values SET value = '10' WHERE object_id = ? AND "
+                       "property = 'received_quantity'", (a,))
+        _, vendor = self.vendor(s, po)
+        self.assertEqual(vendor["state"], "not_due")
+
+    def test_no_firm_evidence_keeps_the_date_at_document_level_flagged_unmatched(self):
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        # two lines of one description: which block is whose is no firm evidence
+        described(s, po, "l-a", "InLab Storage Solution")
+        described(s, po, "l-b", "InLab Storage Solution")
+        lined(s, po, "a", [block("10", "InLab Storage Solution 30111142 2 EA", "2099-01-20"),
+                           block("20", "pH buffer 4-7-10 63056116 1 CAR", "2099-03-01")])
+        entry, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["late"], vendor["reason"],
+                          vendor["unmatched_dates"]),
+                         ("undetermined", None, "line_promises_unmatched",
+                          ["2099-01-20", "2099-03-01"]))
+        self.assertNotIn("per_line", vendor)
+        self.assertNotIn("promised_date", vendor)
+        # one line matched and not due, one open line matched to nothing: undetermined
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        described(s, po, "l-a", "InLab Storage Solution")
+        described(s, po, "l-b", "Service")   # one word, no digit: too generic
+        lined(s, po, "a", [block("10", "InLab Storage Solution 30111142 2 EA", "2099-03-01"),
+                           block("20", "Service plan 2 visits 90000001", "2099-01-20")])
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["per_line"], vendor["state"], vendor["reason"],
+                          vendor["lines_unmatched"], vendor["unmatched_dates"]),
+                         (True, "undetermined", "line_promises_partial", 1, ["2099-01-20"]))
+
+    def test_item_code_matches_a_bc_item_line_and_a_contrary_description_blocks_it(self):
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        a = described(s, po, "l-a", None, code="R-0714", line_type="Item")
+        described(s, po, "l-b", None, code="1200", line_type="Account")   # a G/L account
+        lined(s, po, "a", [block("01", "996442 Hydrolite 5 green 190.000 KG", "2099-01-25",
+                                 codes=["996442", "R-0714"]),
+                           block("02", "Freight 1200 charge", "2099-01-26", codes=["1200"])])
+        _, vendor = self.vendor(s, po)
+        self.assertEqual([(ln["line"], ln["matched_by"]) for ln in vendor["lines"]],
+                         [(a, "item_code")])
+        self.assertEqual((vendor["state"], vendor["days_late"], vendor["lines_unmatched"]),
+                         ("late", 7, 1))
+        # its description names the other block: code and description disagree, no match
+        s.val(a, "description", "text", "Freight 1200 charge")
+        _, vendor = self.vendor(s, po)
+        self.assertNotIn("per_line", vendor)
+        self.assertEqual(vendor["reason"], "line_promises_unmatched")
+
+    def test_unreadable_line_promises_or_none_keep_the_document_level_promise(self):
+        for raw in ("not json", json.dumps({"line": "10"}), json.dumps([{"line": "10"}]),
+                    json.dumps([block("10", "InLab Storage Solution 3011 2 EA",
+                                      ship="2099-01-10")])):
+            s = tp.Store()
+            po = portal_po(s, ordered=None)
+            described(s, po, "l-a", "InLab Storage Solution")
+            sc = lined(s, po, "a", raw)
+            s.event("SupplierConfirmation.promised", sc, "2099-01-25")
+            _, vendor = self.vendor(s, po)
+            self.assertEqual((vendor["state"], vendor["promised_date"], vendor["days_late"]),
+                             ("late", "2099-01-25", 7), raw)
+            self.assertNotIn("per_line", vendor, raw)
+        # a line whose blocks of two documents disagree undated is undetermined
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        described(s, po, "l-a", "InLab Storage Solution")
+        lined(s, po, "a", [block("10", "InLab Storage Solution 3011", "several")])
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["lines"][0]["reason"]),
+                         ("undetermined", "promises_disagree"))
+
+    def test_received_in_full_is_late_only_when_the_last_receipt_passed_every_promise(self):
+        s = tp.Store()
+        po = portal_po(s, status="Complete", ordered=None)
+        described(s, po, "l-a", "InLab Storage Solution", received="10")
+        described(s, po, "l-b", "Cond probe InLab 741-ISM", received="10")
+        lined(s, po, "a", [block("10", "InLab Storage Solution 3011", "2099-01-17"),
+                           block("20", "Cond probe InLab 741-ISM 30014094", "2099-01-31")])
+        receipt(s, po, "rc-1", "2099-01-20")
+        _, vendor = self.vendor(s, po)
+        # line a may have come on 01-17: which line came last is not read
+        self.assertEqual((vendor["state"], vendor["reason"]),
+                         ("undetermined", "line_promises_partial"))
+        receipt(s, po, "rc-2", "2099-02-03")
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["state"], vendor["promised_date"], vendor["days_late"],
+                          vendor["measured_against"]),
+                         ("late", "2099-01-31", 3, "received"))
+
+    def test_a_restricted_reader_sees_no_marked_line_promise(self):
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        described(s, po, "l-a", "InLab Storage Solution")
+        lined(s, po, "a", [block("10", "InLab Storage Solution 3011", "2099-01-20")],
+              markings='["finance"]')
+        _, vendor = self.vendor(s, po)
+        self.assertEqual(vendor["state"], "late")
+        result = self.run_process(s, po, SALES)
+        self.assertNotIn("2099-01-20", json.dumps(result))
+        self.assertNotIn("vs_vendor_promise", result["lateness"][0])
+
+    def test_a_lead_confirmation_states_per_line_dates_never_judged(self):
+        s = tp.Store()
+        po = portal_po(s, ordered=None)
+        a = described(s, po, "l-a", "InLab Storage Solution")
+        lined(s, po, "a", [block("10", "InLab Storage Solution 3011", "2099-01-20")],
+              tier="lead")
+        _, vendor = self.vendor(s, po)
+        self.assertEqual((vendor["basis"], vendor["state"], vendor["late"],
+                          [(ln["line"], ln["state"], ln["promised_date"])
+                           for ln in vendor["lines"]]),
+                         ("possible_vendor_promise", "not_judged", None,
+                          [(a, "not_judged", "2099-01-20")]))
+        self.assertNotIn("days_late", json.dumps(vendor))
+
+    def test_one_ten_and_sixty_lines_each_matched_once(self):
+        for n in (1, 10, 60):
+            s = tp.Store()
+            po = portal_po(s, ordered=None)
+            for i in range(n):
+                described(s, po, f"l-{i:02d}", f"Item number {i:03d}")
+            lined(s, po, "a", [block(str(10 * (i + 1)), f"Item number {i:03d} 300{i:05d} 1 EA",
+                                     "2099-01-20" if i == n - 1 else "2099-03-01")
+                               for i in range(n)])
+            started = time.monotonic()
+            _, vendor = self.vendor(s, po)
+            self.assertLess(time.monotonic() - started, 10, n)
+            self.assertEqual((vendor["state"], vendor["days_late"], vendor["lines_judged"],
+                              vendor["lines_unmatched"], len(vendor["lines"])),
+                             ("late", 12, n, 0, min(n, 5)), n)
+            self.assertEqual(vendor["lines"][0]["line"],
+                             f"PurchaseOrderLine:portal.app_purchase_order_line:l-{n - 1:02d}")
 
 
 # --------------------------------------------------------------------------- receipts
@@ -1016,25 +1406,29 @@ class LatePoPlanTests(unittest.TestCase):
             dated = [e for e in entries if not e["name"].startswith("open_line_undated")]
             undated = [e for e in entries if e["name"].startswith("open_line_undated")]
             open_lines = sum(1 for i in range(n) if i % 3 != 2)
-            # the process lists at most 10 lines, open ones first: the rest is a stated gap
-            self.assertEqual(len(dated) + len(undated), min(open_lines + 1, 10), n)
-            if open_lines + 1 > 14:
-                self.assertIn("lines_truncated", {g["reason"] for g in out["gaps"]}, n)
+            # the process lists at most MAX_LINES lines, open ones first: the rest is a
+            # stated gap and pages through plx.around
+            self.assertEqual(len(dated) + len(undated), min(open_lines + 1, pl.MAX_LINES), n)
+            if open_lines + 1 > pl.MAX_LINES:   # the cut counts every line, received too
+                self.assertIn(f"{n + 1 - pl.MAX_LINES} of {n + 1} lines are not listed",
+                              json.dumps(out["gaps"]), n)
             else:
                 self.assertEqual(len(dated), open_lines, n)
             self.assertEqual({e["value"] for e in dated}, {"2099-01-10"})
             handles = [c["citation"]["l1_handle"] for e in dated for c in e["cells"]
                        if c["property"] == "bc_expected_receipt_date"]
             self.assertEqual(len(set(handles)), len(dated), n)   # one record per entry
-            if n < 10:   # open BC lines come first: the Portal one is listed only when it fits
+            if open_lines < pl.MAX_LINES:   # open BC lines first: the Portal one only if it fits
                 self.assertEqual([e["value"] for e in undated], ["partial"], n)
                 self.assertTrue(all(c["citation"]["l1_handle"] for c in undated[0]["cells"]))
 
     def test_a_decided_late_po_with_lines_cut_states_the_cut_as_an_unknown(self):
-        # 11 to 14 open lines (no page cap): the verdict is decided, the process lists 10,
-        # and the answer code states from the plan says how many lines it does not list
+        # more open lines than MAX_LINES (no page cap): the verdict is decided, the process
+        # lists MAX_LINES, and the answer code states from the plan says how many lines it
+        # does not list
         from operating import plan_answer
-        for n in (10, 11, 14):
+        cap = pl.MAX_LINES
+        for n in (cap, cap + 1, 14):
             s = tp.Store()
             po = bc_po(s, fully_received="false", expected=None)
             for i in range(n):
@@ -1047,10 +1441,10 @@ class LatePoPlanTests(unittest.TestCase):
             self.assertIsNotNone(stated, n)
             lines = {c["citation"] for c in stated["claims"]
                      if c["field"].endswith("expected_receipt_date")}   # one per line
-            self.assertEqual(len(lines), min(n, 10), n)
-            cut = [u for u in stated["unknowns"] if f"{n - 10} of {n} lines are not listed" in u]
-            self.assertEqual(len(cut), 1 if n > 10 else 0, (n, stated["unknowns"]))
-            if n > 10:
+            self.assertEqual(len(lines), min(n, cap), n)
+            cut = [u for u in stated["unknowns"] if f"{n - cap} of {n} lines are not listed" in u]
+            self.assertEqual(len(cut), 1 if n > cap else 0, (n, stated["unknowns"]))
+            if n > cap:
                 self.assertNotEqual(out["answerability"]["state"], "answerable", n)
 
 # --------------------------------------------------------------------------- cardinality
@@ -1069,8 +1463,13 @@ class CardinalityTests(Base):
             self.assertLess(time.monotonic() - started, 20, n)
             self.assertEqual((entry["state"], entry["days_late"]), ("late", 22), n)
             listed = [ln["line"] for ln in entry["lines"]]
-            self.assertEqual(len(listed), min(n, 10), n)
+            self.assertEqual(len(listed), min(n, pl.MAX_LINES), n)
             self.assertEqual(len(set(listed)), len(listed), n)
+            # every line is counted however few are listed (Decimal text, one unit)
+            self.assertEqual((entry["quantities"]["lines"], entry["quantities"]["by_state"],
+                              entry["quantities"].get("ordered"),
+                              entry["quantities"].get("received")),
+                             (n, {"partial": n}, str(10 * n), str(5 * n)), n)
             self.assertTrue(all(ln["state"] == "partial" for ln in entry["lines"]), n)
             self.assertEqual(entry["values"][0]["property"], "expected", n)  # governing first
             self.assertEqual(len(entry["values"]), min(1 + 2 * n, 10), n)
@@ -1078,7 +1477,7 @@ class CardinalityTests(Base):
                 self.assertEqual([v["property"] for v in entry["values"]],
                                  ["expected", "promised", "received"])
             truncated = {g["reason"] for g in entry.get("gaps", ())}
-            self.assertEqual("lines_truncated" in truncated, n > 10, n)
+            self.assertEqual("lines_truncated" in truncated, n > pl.MAX_LINES, n)
             self.assertEqual("values_truncated" in truncated, 1 + 2 * n > 10, n)
             self.assertEqual(entry.get("promised_date"), "2099-01-20", n)
 

@@ -4,21 +4,24 @@ import { ArrowRight, Bookmark, BookmarkCheck, Check, CheckSquare, ChevronDown, D
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { getObject } from "@/lib/api";
+import { getObject, getObjectSection, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { ApiError, plainError } from "@/lib/errors";
+import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import { groupLinked, groupRelated, groupTimeline, productionSteps, recordHead, type RecordHead, type StatSpec, type Thread } from "@/lib/record";
 import { lateness, recordState, STATUS_CLASS } from "@/lib/status";
 import { toggleSaved, useSaved } from "@/lib/saved";
-import type { Conflict, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, Source, TimelineEvent, Tone } from "@/lib/types";
+import type { Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, NotFoundSection, SourceLine } from "./answer-parts";
+import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
+import { EtaCard } from "./eta-confirmed";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
+import { ProposalCards } from "./proposal-cards";
 import { EvidenceDrawer, SourceChips } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 import { KeyFacts } from "./ui/key-facts";
-import { ErrorNotice } from "./ui/notice";
-import { Skeleton, SkeletonStats } from "./ui/skeleton";
+import { LoadProblem } from "./ui/notice";
+import { Skeleton, SkeletonLines, SkeletonStats } from "./ui/skeleton";
 import { Stat, StatRow } from "./ui/stat";
 import { StatusBadge } from "./ui/status-badge";
 
@@ -559,6 +562,62 @@ function AoSteps({ obj }: { obj: ObjectPage }) {
   );
 }
 
+/** The margin and its why: an order's own margin, verdict and why first (its line breakdown
+ * below), or why it has none ("No valid cost in BC"); a customer's profitability; a customer
+ * whose figures come from Sage says they are before credit notes, with no margin. */
+function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null | undefined; order: boolean; objectId: string; revenue: CustomerAmount[] }) {
+  const own = order && p?.breakdown && p.breakdown.order.object_id === objectId ? p.breakdown : null;
+  const ownRow = order && !own ? (p?.orders ?? []).find((o) => o.order.object_id === objectId && !o.margin) : undefined;
+  if (!p && !revenue.some((r) => r.system === "Sage")) return null;
+  return (
+    <Card data-testid="margin">
+      <CardHeader>
+        <CardTitle>{order ? "Margin and why" : "Profitability"}</CardTitle>
+        {p && <span>{p.margin_basis ?? "on item cost only"}</span>}
+      </CardHeader>
+      <CardBody className="space-y-4">
+        {!p ? (
+          <SageMargin amounts={revenue} />
+        ) : own ? (
+          <>
+            <MarginHeadline b={own} />
+            <CostBreakdown breakdown={own} />
+            <p className="text-meta text-muted">
+              Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
+            </p>
+          </>
+        ) : ownRow ? (
+          <NoMargin order={ownRow} />
+        ) : (
+          <ProfitabilityView p={p} />
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+const SECTION_WORDS: Record<SectionName, string> = { late: "lateness", people: "people", landed_cost: "landed cost", trail: "how we know", margin: "margin" };
+
+/** "lateness, people and how we know": the sections named in reading order. */
+export function sectionWords(names: ReadonlySet<SectionName>): string {
+  const words = PAGE_SECTIONS.filter((n) => names.has(n)).map((n) => SECTION_WORDS[n]);
+  return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+
+/** A section's card shape while it is read (its own call after the quick first read). */
+function SectionSkeleton({ name, title, lines }: { name: SectionName; title: string; lines: number }) {
+  return (
+    <Card data-testid={`section-loading-${name}`}>
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+      </CardHeader>
+      <CardBody>
+        <SkeletonLines lines={lines} label={`Checking ${SECTION_WORDS[name]}`} />
+      </CardBody>
+    </Card>
+  );
+}
+
 /** The page's own source for the key-facts line: the first fact's. */
 function pageSource(obj: ObjectPage): Source | undefined {
   return (obj.facts ?? []).find((f) => f.sources.length)?.sources[0];
@@ -596,30 +655,52 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const [obj, setObj] = useState<ObjectPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [conflictsOpen, setConflictsOpen] = useState(false);
+  // The sections still being read, and those that could not be read.
+  const [pending, setPending] = useState<ReadonlySet<SectionName>>(new Set());
+  const [failed, setFailed] = useState<ReadonlySet<SectionName>>(new Set());
   const saved = useSaved();
   const load = useCallback(() => {
-    // A quick first read (the record, its timeline and links) shows at once; the full
-    // read (lateness, landed cost, people, how we know) replaces it when ready.
+    // The quick first read (the record, its timeline and links) shows at once; each slow
+    // section (lateness, people, landed cost, how we know, margin) is its own call after it, a
+    // skeleton in its place until it lands.
     const c = new AbortController();
     setError(null);
     setNotFound(false);
     setObj(null);
-    let full = false;
+    setPending(new Set());
+    setFailed(new Set());
     getObject(type, id, c.signal, true)
       .then((first) => {
-        if (!full && !c.signal.aborted) setObj(first);
-        if (first.complete !== false) full = true;
-      })
-      .catch(() => undefined);
-    getObject(type, id, c.signal)
-      .then((page) => {
-        full = true;
-        setObj(page);
+        if (c.signal.aborted) return;
+        setObj(first);
+        if (first.complete !== false) return;
+        // the margin is a customer's or a sales order's only
+        const names = PAGE_SECTIONS.filter((n) => n !== "margin" || first.type === "Customer" || first.type === "SalesOrder");
+        setPending(new Set(names));
+        for (const name of names) {
+          getObjectSection(name, first.type, first.object_id, c.signal)
+            .then((sec) => {
+              if (!c.signal.aborted) setObj((o) => (o ? mergeSection(o, sec) : o));
+            })
+            .catch(() => {
+              if (!c.signal.aborted) setFailed((f) => new Set(f).add(name));
+            })
+            .finally(() => {
+              if (c.signal.aborted) return;
+              setPending((p) => {
+                const n = new Set(p);
+                n.delete(name);
+                return n;
+              });
+            });
+        }
       })
       .catch((e) => {
         if (c.signal.aborted) return;
         if (e instanceof ApiError && e.status === 404) setNotFound(true);
+        setBusy(noticeKind(e) === "busy");
         const msg = plainError(e);
         setError(/took too long/.test(msg) ? `This ${typeLabel(type).toLowerCase()} is taking too long to gather. Try again in a minute, or ask about it instead.` : msg);
       });
@@ -636,16 +717,16 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const isSaved = saved.some((s) => s.key === key);
 
   if (error && !obj && notFound && missing)
-    return <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 xl:px-8">{missing}</div>;
+    return <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">{missing}</div>;
   if (error && !obj)
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 xl:px-8">
-        <ErrorNotice message={error} onRetry={load} />
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
+        <LoadProblem message={error} busy={busy} onRetry={load} />
       </div>
     );
   if (!obj)
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 xl:px-8">
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
         <ObjectSkeleton type={type} label={routeLabel} />
       </div>
     );
@@ -653,6 +734,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const head = recordHead(obj);
   const isPo = obj.type === "PurchaseOrder";
   const isCustomer = obj.type === "Customer";
+  const isSalesOrder = obj.type === "SalesOrder";
   const isSupplier = obj.type === "Supplier" || obj.type === "Vendor";
   const isAo = obj.type === "AssemblyOrder" || obj.type === "ManufacturingOrder";
   const conflicts = obj.conflicts ?? [];
@@ -663,7 +745,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const lines = isSupplier ? [] : (obj.late_lines ?? []).filter((l) => !/^PO number:/i.test(l.line));
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6 xl:px-8">
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
       <div className="space-y-6 animate-fade-in">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 space-y-1.5">
@@ -698,7 +780,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
               </p>
             )}
             {isCustomer && <SameName obj={obj} />}
-            {head.lead && (
+            {head.lead && !head.badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase()) && (
               <p className={cn("max-w-[760px] text-answer", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-fg")} data-testid="object-lead">
                 {head.lead}
               </p>
@@ -731,9 +813,17 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
           </div>
         </header>
 
-        {obj.complete === false && (
+        {pending.size > 0 && (
           <p className="flex items-center gap-2 text-meta text-muted" role="status" data-testid="checking">
-            <Loader2 className="size-4 animate-spin" aria-hidden /> Checking lateness, people and how we know…
+            <Loader2 className="size-4 animate-spin" aria-hidden /> Checking {sectionWords(pending)}…
+          </p>
+        )}
+        {pending.size === 0 && failed.size > 0 && (
+          <p className="text-meta text-muted" role="status" data-testid="checks-failed">
+            Could not finish checking {sectionWords(failed)}.{" "}
+            <button type="button" onClick={load} className="text-accent hover:underline cursor-pointer">
+              Try again
+            </button>
           </p>
         )}
         {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
@@ -748,19 +838,26 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           <div className="min-w-0 space-y-4 lg:col-span-2">
-            {(isPo || isAo) && <WhoToChase obj={obj} head={head} />}
+            {isPo && (pending.has("trail") ? <SectionSkeleton name="trail" title="ETA confirmed?" lines={2} /> : <EtaCard eta={obj.trail?.trails?.[0]?.eta} />)}
+            {(isPo || isAo) && (pending.has("trail") ? <SectionSkeleton name="trail" title="Who to chase" lines={2} /> : <WhoToChase obj={obj} head={head} />)}
+            <ProposalCards proposals={obj.proposals} />
             {!isCustomer && conflicts.map((c, i) => <ConflictCard key={i} conflict={c} />)}
             {isAo && <AoSteps obj={obj} />}
             {isSupplier && <SupplierOrders obj={obj} />}
             {obj.customer && <CustomerCard c={obj.customer} fallbackOrders={salesOrders} />}
-            <LinesTable lines={lines} />
-            <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} />
-            {obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />}
+            {(isCustomer || isSalesOrder) && (pending.has("margin") ? <SectionSkeleton name="margin" title="Margin" lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
+            {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Late lines" lines={3} /> : <LinesTable lines={lines} />}
+            {isPo && pending.has("trail") ? <SectionSkeleton name="trail" title="How we know" lines={4} /> : <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} />}
+            {pending.has("landed_cost") ? (
+              isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={3} />
+            ) : (
+              obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
+            )}
             <Linked items={obj.linked ?? []} />
             <Activity events={obj.timeline ?? []} />
           </div>
           <div className="min-w-0 space-y-4">
-            <Card data-testid="summary">
+            {(head.keyFacts.some((k) => k.value) || src) && <Card data-testid="summary">
               <CardHeader>
                 <CardTitle>Key facts</CardTitle>
               </CardHeader>
@@ -773,8 +870,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
                   source={src ? <SourceLine source={src} record={head.title} /> : undefined}
                 />
               </CardBody>
-            </Card>
-            <People people={obj.people ?? []} />
+            </Card>}
+            {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={3} /> : <People people={obj.people ?? []} />}
             <RelatedCard refs={otherRelated} />
           </div>
         </div>

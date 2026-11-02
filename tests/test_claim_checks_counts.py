@@ -64,6 +64,52 @@ class CountClaimTests(unittest.TestCase):
         self.assertTrue(now["passed"], now["failures"])
         self.assertEqual(checked(now)[0]["bound"], "exact")
 
+    def test_a_count_of_a_completely_listed_set_is_exact(self):
+        # 2026-11-02 run: plx.around listed both open orders of a vendor (complete, no
+        # gap) and plx.aggregate counted its set (no property: no value rows cited), yet
+        # "2 open purchase orders" was refused as a lower bound.
+        def listing(handles, **over):
+            done = {"complete": True, "truncated": False, "next_cursor": None,
+                    "returned": len(handles), "total": len(handles)}
+            done.update(over.pop("completeness", {}))
+            return {"set": "set:s1", "completeness": done, "gaps": [],
+                    "withheld": {"objects": None, "properties": None,
+                                 "reason": "marking_and_audience"},
+                    "objects": [{"object_id": f"o{n}", "display": {"origin": {
+                        "citation": h, "field_path": "row.id"}, "untrusted_text": "x"}}
+                        for n, h in enumerate(handles)], **over}
+
+        bare = {**count_result(self.handles), "groups": [{
+            "key": {}, "value": "3", "inputs": 0, "markings": []}]}
+        members = {"set": "set:s1", "measure": {"op": "count"}}
+
+        def returned(around, aggregate=bare, call=members):
+            into = claim_checks.returned_evidence("plx.around", {}, around)
+            return claim_checks.returned_evidence("plx.aggregate", call, aggregate, into)
+
+        exact = self.check("3 receipts.", returned=returned(listing(self.handles)))
+        self.assertTrue(exact["passed"], exact["failures"])
+        self.assertEqual(checked(exact)[0]["bound"], "exact")
+        # Anything short of a whole listing of that set, or a count that is not of its
+        # members, keeps the count a lower bound.
+        gap = {"state": "unknown", "reason": "marking_withheld", "subject": "x"}
+        for name, evidence in (
+                ("paged", returned(listing(self.handles, completeness={
+                    "complete": False, "truncated": True, "next_cursor": "c1"}))),
+                ("gap", returned(listing(self.handles, gaps=[gap]))),
+                ("one missing", returned(listing(self.handles[:2],
+                                                 completeness={"total": 3}))),
+                ("other set", returned(listing(self.handles, set="set:s2"))),
+                ("grouped", returned(listing(self.handles),
+                                     call={**members, "group_by": ["status"]})),
+                ("value differs", returned(listing(self.handles), aggregate={
+                    **bare, "groups": [{**bare["groups"][0], "value": "4"}]})),
+                ("aggregate partial", returned(listing(self.handles),
+                                               aggregate={**bare, "partial": True}))):
+            with self.subTest(name):
+                self.assertEqual(codes(self.check("3 receipts.", returned=evidence)),
+                                 ["claim_count_lower_bound"])
+
     def test_each_exact_restatement_of_a_lower_bound_count_is_checked(self):
         # Item 2: a passing claim of the same number covers one occurrence, not all.
         first = self.handles[0]

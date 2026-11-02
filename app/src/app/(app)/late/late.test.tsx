@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LatePo } from "@/lib/types";
 import LatePage from "./page";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 const row = (n: number): LatePo => ({
   object_id: `PurchaseOrder:${n}`, label: `PO ${100000 + n}`, reason: "late", open_url: `/object/PurchaseOrder/${n}`, sources: [],
@@ -35,6 +38,24 @@ describe("late list", () => {
     expect(new Set(rows().map((r) => r.textContent)).size).toBe(n);
     expect(f).toHaveBeenCalledTimes(Math.ceil(n / 100));
     expect(screen.getByTestId("late-all-count")).toHaveTextContent(n === 1 ? "1 order" : `${n} orders`);
+    // the page leads with the verdict and the why: how many, the oldest, and how long
+    const head = screen.getByTestId("late-header");
+    expect(head).toHaveTextContent(n === 1 ? "1 purchase order is late" : `${n} purchase orders are late`);
+    expect(head).toHaveTextContent(`Oldest: PO ${100000 + n} from ${n % 3 === 0 ? "DSM" : "Acme"}, ${n === 1 ? "1 day" : `${n} days`} past its date`);
+  });
+
+  it("a busy server is a calm notice that tries again by itself", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let calls = 0;
+    const ok = serve(3);
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (++calls === 1 ? new Response(JSON.stringify({ error: { code: "busy", message: "x" } }), { status: 503 }) : ok(url))));
+    render(<LatePage />);
+    const notice = await screen.findByTestId("server-notice");
+    expect(notice).toHaveTextContent("try again by itself");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await vi.advanceTimersByTimeAsync(21_000);
+    await screen.findByTestId("late-table");
+    expect(rows()).toHaveLength(3);
   });
 
   it("filters by supplier, days late and value band, and sorts by a column", async () => {
@@ -57,7 +78,7 @@ describe("late list", () => {
     expect(rows().slice(0, 6).map((r) => r.cells[4].textContent)).toEqual([
       "$9,000.00 CAD", "$5,000.00 CAD", "$1,000.00 CAD", "$11,000.00 USD", "$7,000.00 USD", "$3,000.00 USD",
     ]);
-    expect(rows()[6].cells[4]).toHaveTextContent("Not shown");
+    expect(rows()[6].cells[4]).toHaveTextContent("No value");
     expect(screen.getByRole("columnheader", { name: /Value/ })).toHaveAttribute("aria-sort", "descending");
   });
 });

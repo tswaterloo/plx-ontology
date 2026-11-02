@@ -1066,6 +1066,15 @@ class ProseTests(unittest.TestCase):
                       [LINE], [vc("1140", LINE, "row.id", "identifier")])
         self.assertTrue(result["passed"])
         self.assertEqual(result["leads"], 1)
+        # A claim naming no role on an id-shaped column is that identifier too ("Order
+        # 1000096354 shipped on ..."): a lead, never an untyped shipped count.
+        result = gate("Whether order line 1140 was produced by other assembly orders.",
+                      [LINE], [vc("1140", LINE, "row.id")])
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["leads"], 1)
+        # Only an id-shaped column: an untyped quantity column still blocks the word.
+        result = gate("The MO produced 1.", [MO], [vc("1", MO, "row.qty_sample")])
+        self.assertEqual(codes(result), ["claim_wording_role_unverified"])
         # A negated word asserts no type.
         self.assertTrue(gate("1509 units, not produced yet.", [ITEM], honest[:1])["passed"])
 
@@ -1483,6 +1492,11 @@ class TextValueClaimTests(unittest.TestCase):
         # A negated type word types no number: "not yet produced" says nothing produced.
         self.assertTrue(gate("Not yet produced: 1509 planned.", [ITEM],
                              [vc("1509", ITEM, "row.quantity", "planned")])["passed"])
+        # "not fully produced" negates the same way; un-negated it still blocks.
+        self.assertTrue(gate("Not fully produced: 1509 planned.", [ITEM],
+                             [vc("1509", ITEM, "row.quantity", "planned")])["passed"])
+        self.assertFalse(gate("Fully produced: 1509 planned.", [ITEM],
+                              [vc("1509", ITEM, "row.quantity", "planned")])["passed"])
 
 
 class AoCaseClaimTests(unittest.TestCase):
@@ -2837,6 +2851,72 @@ class AskClaimFormTests(unittest.TestCase):
         self.assertEqual(codes(check("Received 40.", vc("40", RCPT_LINE, "row.quantity"))),
                          ["claim_wording_role_unverified"])
 
+    def test_a_tools_exact_count_past_its_citation_cap_or_homes_late_list_binds_a_count(self):
+        """Live-ops gap: "how many ... are late / on hold / expiring": a count of more members
+        than one answer cites (plx.aggregate's citation cap) or Home's late-list total is
+        the tool's exact, reader-trimmed count; a claim citing records it lists binds to
+        it. Nothing else does: another gap, fewer listed records than the cap, a record
+        it does not list, an incomplete late list, a count as known at another time."""
+        from operating import ontology_tools_aggregate as oa
+        self.assertEqual(claim_checks.MAX_COUNT_CITATIONS, oa.MAX_CITATIONS)
+        rows = dict(receipt(index) for index in range(120))
+        handles = list(rows)
+        listed = handles[:oa.MAX_CITATIONS]
+        capped_gap = {"state": "unknown", "reason": "citations_capped", "subject": "members"}
+        other_gap = {"state": "unknown", "reason": "cross_system_twins", "subject": "m"}
+        claim = op("120", "count", [{"citation": h} for h in listed[:10]])
+        for name, entry, bound in (
+                ("capped", aggregate_count(listed, value=120, gaps=[capped_gap]), "exact"),
+                ("capped and another gap", aggregate_count(
+                    listed, value=120, gaps=[capped_gap, other_gap]), None),
+                ("fewer than the cap", aggregate_count(listed[:49], value=120,
+                                                       gaps=[capped_gap]), None),
+                ("partial", aggregate_count(listed, value=120, gaps=[capped_gap],
+                                            partial=True), None)):
+            with self.subTest(entry=name):
+                result = gate("120 receipts.", listed[:10], [claim], rows=rows,
+                              calculations=(), returned=entry)
+                if bound:
+                    self.assertTrue(result["passed"], result["failures"])
+                    self.assertEqual(checked(result)[0]["bound"], bound)
+                else:
+                    self.assertEqual(codes(result), ["claim_value_mismatch"])
+        unlisted = op("120", "count", [{"citation": handles[100]}])
+        self.assertEqual(codes(gate("120 receipts.", [handles[100]], [unlisted], rows=rows,
+                                    calculations=(), returned=aggregate_count(
+                                        listed, value=120, gaps=[capped_gap]))),
+                         ["claim_value_mismatch"])
+
+        def home(count, complete, page, **arguments):
+            gaps = [{"rank": n + 1, "kind": "late_po", "object_id": f"PurchaseOrder:p:{n}",
+                     "days_late": 3, "citations": [page[n]]} for n in range(len(page))]
+            # a gap of no late order is no member of the late list
+            gaps.append({"rank": len(page) + 1, "kind": "receipt_without_qc",
+                         "object_id": "Receipt:r:x", "citations": [handles[119]]})
+            return claim_checks.returned_evidence("plx.find", {"query": "late pos",
+                                                               **arguments}, {
+                "status": "home", "home": {"late_orders": {"count": count,
+                                                           "complete": complete},
+                                           "gaps": gaps}})
+        page = handles[:10]
+        late = op("75", "count", [{"citation": h} for h in page[:4]])
+        result = gate("75 late orders.", page, [late], rows=rows, calculations=(),
+                      returned=home(75, True, page))
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual(checked(result)[0]["bound"], "exact")
+        for name, returned in (("incomplete", home(75, False, page)),
+                               ("as known then", home(75, True, page,
+                                                      as_known_at="2026-01-01T00:00:00Z")),
+                               ("another total", home(76, True, page))):
+            with self.subTest(home=name):
+                self.assertEqual(codes(gate("75 late orders.", page, [late], rows=rows,
+                                            calculations=(), returned=returned)),
+                                 ["claim_value_mismatch"])
+        qc = op("75", "count", [{"citation": handles[119]}])
+        self.assertEqual(codes(gate("75 late orders.", [handles[119]], [qc], rows=rows,
+                                    calculations=(), returned=home(75, True, page))),
+                         ["claim_value_mismatch"])
+
     def test_a_count_is_exact_only_when_a_complete_count_entry_binds_it(self):
         """An Ask that saw 12 receipts and cited 8 must not
         pass "8 receipts"; a count is exact only over a complete count a tool returned."""
@@ -3022,6 +3102,57 @@ class AskClaimFormTests(unittest.TestCase):
         # Received plus ordered combine into no type (as a recorded calculation's do).
         self.assertEqual(codes(gate("90.", both, [mixed_roles], rows=BC_ROWS,
                                     calculations=())), ["claim_role_mismatch"])
+
+    def test_a_margin_and_its_percent_hold_over_cited_revenue_and_ledger_cost(self):
+        """A margin over cited revenue and booked ledger cost (signed negative) is an
+        expression in the revenue's currency; its percent is the share margin / revenue
+        x 100, the revenue standing in part and whole. Anything else stays refused."""
+        line = bc("salesInvoiceLines", "sil-1")
+        entry = bc("itemLedgerEntries", "ile-1")
+        rows = {line: bc_view(line, id="sil-1", amountExcludingTax="672"),
+                entry: bc_view(entry, id="ile-1", costAmountActual="-191.04")}
+        handles = [line, entry]
+        returned = {"counts": [], "currencies": {}}
+        claim_checks.returned_evidence("plx.object", {}, {"values": [
+            money(line, "row.amountExcludingTax", "CAD"),
+            money(entry, "row.costAmountActual", "CAD")]}, returned)
+        inputs = [{"citation": line, "field": "row.amountExcludingTax", "value": "672"},
+                  {"citation": entry, "field": "row.costAmountActual", "value": "-191.04"}]
+        margin = {"value": "480.96", "op": "expression", "expression": "x0 + x1",
+                  "of": inputs, "role": "order_margin", "currency": "CAD"}
+        share = {"value": "71.57", "op": "expression",
+                 "expression": "round_to_cents((x0 + x1) / x0)", "of": inputs,
+                 "role": "order_margin_pct", "unit": "percent"}
+
+        def run(text, claims, given=returned):
+            return gate(text, handles, claims, rows=rows, calculations=(), returned=given)
+        result = run("Margin 480.96 CAD on item cost only, 71.57% of revenue.", [margin, share])
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual([c.get("unit_basis") for c in checked(result)],
+                         [None, "calculation"])
+        for name, claims, text, want in (
+                ("wrong percent", [{**share, "value": "71.58"}], "71.58%.",
+                 ["claim_value_mismatch"]),
+                ("unrounded percent", [{**share, "expression": "(x0 + x1) / x0"}], "71.57%.",
+                 ["claim_value_mismatch"]),
+                ("another currency", [{**margin, "currency": "USD"}], "480.96 USD.",
+                 ["claim_currency_mismatch"]),
+                ("no tool returned the currency", [margin], "480.96 CAD.",
+                 ["claim_currency_mismatch"])):
+            with self.subTest(case=name):
+                self.assertEqual(codes(run(text, claims, None if name.startswith("no tool")
+                                           else returned)), want)
+        # A share is a part over a whole: the part must name a figure the whole does not
+        # (no x0 / x0 builds 100), only a percent claim may repeat across the quotient,
+        # a percent is a quotient (never a sum scaled by 100) and no money.
+        for bad in ({**share, "expression": "x0 / x0", "of": inputs[:1]},
+                    {**share, "unit": None, "role": "share"},
+                    {**share, "expression": "round_to_cents(x0 / (x0 + x1))"},
+                    {**share, "expression": "x0 + x1"},
+                    {**share, "currency": "CAD"}):
+            bad = {k: v for k, v in bad.items() if v is not None}
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                claim_checks.parse_value_claims([bad], handles, [])
 
 
 RRO_PAGE = "original://rro#page=8"

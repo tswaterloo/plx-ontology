@@ -322,8 +322,10 @@ def _bind(words: Sequence[Any], stemmed: Sequence[str],
 
     def at(stems_set: set[tuple[str, ...]]) -> list[int]:
         return [i for i in range(len(stemmed)) for stems in stems_set
-                if list(stemmed[i:i + len(stems)]) == list(stems)]
+                if list(stemmed[i:i + len(stems)]) == list(stems) and not _basis(stemmed, i)]
     mine, theirs = at(own), at(others)
+    if not mine:
+        return None
     best = None
     for start, end, number, percent in quantities:
         index = next((i for i, w in enumerate(words) if w.start() >= start), len(words))
@@ -337,8 +339,29 @@ def _bind(words: Sequence[Any], stemmed: Sequence[str],
 
 
 def _has_label(stemmed: Sequence[str], stems: Sequence[str]) -> bool:
-    return any(stemmed[i:i + len(stems)] == list(stems)
+    return any(stemmed[i:i + len(stems)] == list(stems) and not _basis(stemmed, i)
                for i in range(len(stemmed) - len(stems) + 1))
+
+
+def _figure_words() -> list[list[str]]:
+    from evals.live_ops_keys import LABELS
+    return [stems for group in LABELS.values() for label in group
+            if (stems := [scoring._stem(w) for w in scoring._WORD.findall(scoring._fold(label))])]
+
+
+def _basis(stemmed: Sequence[str], i: int) -> bool:
+    """Whether the label word at ``i`` names the basis of the figure word before it, not a
+    figure of its own: "margin on item cost only 1,743.51" (the cost is what the margin is
+    taken on, the figure is the margin's), "profit on sales 12%": a figure word
+    (``evals.live_ops_keys.LABELS``), ``on``, at most one word, then this one."""
+    for gap in (1, 2):
+        on = i - gap
+        if on < 1 or stemmed[on] != "on":
+            continue
+        if any(on - len(stems) >= 0 and list(stemmed[on - len(stems):on]) == stems
+               for stems in _figure_words()):
+            return True
+    return False
 
 
 def exact_count(fact: Mapping[str, Any]) -> bool:
@@ -387,12 +410,35 @@ def _names_something(clause: str, start: int) -> bool:
         w in MONTH_WORDS for w in before))
 
 
-def asserted(text: Any, form: str) -> bool:
+# Words that set what follows them against the answer's own claim ("a system date rather
+# than a vendor confirmation"): the form after them is the thing denied, never asserted.
+CONTRAST = re.compile(r"\b(?:rather than|instead of|as opposed to|other than|in place of|"
+                      r"unlike)\b")
+# Where a negator still reaches a forbidden form: the part of its clause up to a comma or an
+# "and" ("no confirmation, and the vendor confirmed delivery" still asserts the delivery).
+_SCOPE = re.compile(r",|\band\b")
+_QUOTES = re.compile(r"[\"“”«»]")
+
+
+def denied(clause: str, start: int) -> bool:
+    """Whether a form found at ``start`` of a folded ``clause`` is not the answer's own
+    claim: a negator anywhere before it in its scope ("does not show a date the vendor
+    confirmed"), a contrast before it in its scope, or the form inside quotation marks (a
+    phrase named, not said)."""
+    head = _SCOPE.split(clause[:start])[-1]
+    if scoring.NEGATORS & set(scoring._WORD.findall(head)) or CONTRAST.search(head):
+        return True
+    return len(_QUOTES.findall(clause[:start])) % 2 == 1
+
+
+def asserted(text: Any, form: str, claim_aware: bool = False) -> bool:
     """Whether ``text`` asserts ``form`` (its words in a row, each by its stem): in a clause
     that does not leave the matter open (``HEDGES``, ``UNDECIDED``) and with no negator in
     the ``evals.score.NEGATION_WINDOW`` words before it (a negator inside the form is the
     form's own: ``not late``). "Whether it is late cannot be decided" asserts neither
-    ``late`` nor ``on time``."""
+    ``late`` nor ``on time``. ``claim_aware`` (a forbidden form, ``contradicts``): also not
+    where the form is ``denied`` in its clause, so only the answer's own claim of it
+    contradicts the key."""
     if not isinstance(text, str):
         return False
     words = [scoring._stem(w) for w in scoring._WORD.findall(
@@ -409,8 +455,11 @@ def asserted(text: Any, form: str) -> bool:
                 continue
             outside = stems[:i] + stems[i + len(words):]
             before = [m.group(0) for m in found[max(0, i - scoring.NEGATION_WINDOW):i]]
-            if not (HEDGES & set(outside)) and not (scoring.NEGATORS & set(before)):
-                return True
+            if (HEDGES & set(outside)) or (scoring.NEGATORS & set(before)):
+                continue
+            if claim_aware and denied(clause, found[i].start()):
+                continue
+            return True
     return False
 
 
@@ -467,7 +516,8 @@ def contradicted(fact: Mapping[str, Any], text: str, answer_values: Sequence[Map
         if _judged(fact, figures)[1]:
             found.append("number_off")
     if kind in ("claim", "absent"):
-        if any(asserted(text, form) for form in fact.get("contradicts") or ()):
+        if any(asserted(text, form, claim_aware=True)
+               for form in fact.get("contradicts") or ()):
             found.append("contradicting_claim")
     if kind == "set" and fact.get("pattern"):
         allowed = {_norm(form) for member in fact["members"] for form in member}
@@ -480,7 +530,8 @@ def contradicted(fact: Mapping[str, Any], text: str, answer_values: Sequence[Map
         if named - allowed - asked:
             found.append("extra_member")
     if kind == "message":
-        if any(asserted(text, form) for form in fact.get("contradicts") or ()):
+        if any(asserted(text, form, claim_aware=True)
+               for form in fact.get("contradicts") or ()):
             found.append("contradicting_claim")
     if kind == "absent" and fact.get("nothing_exists") and claims_made:
         found.append("record_asserted")

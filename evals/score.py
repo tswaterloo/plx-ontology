@@ -2622,7 +2622,13 @@ NEGATORS = frozenset({"no", "not", "never", "none", "nothing", "neither", "nor",
                       "cannot", "nobody", "nowhere", "lacks", "lacking", "absent"})
 NEGATION_WINDOW = 4
 POLARITIES = ("positive", "negative")
-_CLAUSE = re.compile(r"[.;:!?\n]+|\b(?:but|however|although|though|whereas|while)\b")
+# A full stop ends a clause only before a space or the end, closing marks (``**``, ``)``,
+# ``]``, a quote) between: inside a name or token (an e-mail address, a decimal,
+# ``CO.,LTD``) it does not, so ``stephen@petrasoap.com``, ``15.5075`` and ``NINGBO
+# SOMEWANG PACKAGING CO.,LTD`` are one fact each, while ``**Price not shown.** Acme`` is
+# two clauses.
+_CLAUSE = re.compile(r"(?:[;:!?\n]|\.(?=[*_)\]\"'’”]*(?:\s|$)))+|"
+                     r"\b(?:but|however|although|though|whereas|while)\b")
 _WORD = re.compile(r"[^\W_]+")
 
 

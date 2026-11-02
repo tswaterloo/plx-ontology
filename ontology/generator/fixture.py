@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Mapping, Sequence
 
+from ontology.project import Reopenable
+
 T0 = "2026-01-01T00:00:00.000000Z"
 T1 = "2026-01-02T00:00:00.000000Z"
 _BC_COMPANIES = ("bc_manufacturing", "bc_distribution")
@@ -135,6 +137,8 @@ def _row(spec: Mapping[str, Any], i: int, version: int) -> dict[str, Any] | None
             _put(row, predicate["path"], value)
         elif op == "in":
             _put(row, predicate["path"], value[0])
+        elif op == "not_in":
+            _put(row, predicate["path"], None)
         elif op == "prefix":
             _put(row, predicate["path"], f"{value}{ident}")
         elif op == "gte":
@@ -151,16 +155,19 @@ def _row(spec: Mapping[str, Any], i: int, version: int) -> dict[str, Any] | None
     return row
 
 
-class SyntheticCaptures:
+class SyntheticCaptures(Reopenable):
     """A ``CaptureSource`` of ``rows`` generated records per relation, streamed. In the
     ``changed`` relations record 3 holds other text (its keys and link values too, so
-    its identity and links move): a capture that changed."""
+    its identity and links move): a capture that changed. Its records are a function of
+    its arguments alone, which its ``watermark`` names (a parallel build's worker opens
+    it again from them)."""
 
     def __init__(self, schema: Any, source: str, rows: int,
                  changed: Sequence[str] = ()) -> None:
         self.source = source
         self.rows = rows
         self.changed = frozenset(changed)
+        self._digest = getattr(schema, "digest", None)
         self._specs: dict[str, list[dict[str, Any]]] = {}
         for spec in _paths(schema).values():
             if spec["binding"]["source"] == source:
@@ -200,6 +207,11 @@ class SyntheticCaptures:
 
     def describe(self) -> dict[str, Any]:
         return {"generation": "synthetic", "relations": {}}
+
+    def watermark(self) -> list[Any] | None:
+        if self._digest is None:
+            return None
+        return ["synthetic", self.source, self.rows, sorted(self.changed), self._digest]
 
 
 def is_synthetic(l1_handle: Any) -> bool:

@@ -140,7 +140,10 @@ class RecordAndReplayTests(Temp):
                      "a claim it refused stays as an unknown",
                      "keeps each value with only the quote, unit and currency the gate "
                      "checked, and withholds a value whose role the gate did not check",
-                     '"quote": "<its quote>", "role": "<its quantity_role>"',
+                     # the lean claim: the gate reads a cell's value; a quote on free
+                     # text, a role where the rules call for one
+                     'give instead "quote": the passage as written',
+                     'Add "role", "unit", "currency"',
                      "never dropped"):
             self.assertIn(rule, runner.ANSWER_GATE_RULE)
         self.assertIn("never an unknown and never makes the answer partial", prompt)
@@ -986,6 +989,96 @@ class ClaudeCodeAgentTests(Temp):
                 time.sleep(0.1)
             else:
                 self.fail("the session's child outlived the timeout")
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups")
+    def test_the_session_ends_at_the_gate_decision_that_passed_a_claim(self):
+        # Measured live (ask-speed-2): after the gate's final decision the model still
+        # wrote a final message the reply never uses (a median 4.7 s of 27 s). The
+        # session is stopped at the line carrying an answered decision, its process
+        # group killed; a repair, an abstention, an error or a case read goes on.
+        from operating import agent_session as sess
+        gate = runner.mcp_tool_name("plx.case_get")
+
+        def use(n, arguments):
+            return {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": f"g{n}", "name": gate, "input": arguments}]}}
+
+        def result(n, body, is_error=False):
+            return {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"g{n}", "is_error": is_error,
+                 "content": [{"type": "text", "text": json.dumps(body)}]}]}}
+        answer = {"answer": {"claims": [{"text": "x"}]}}
+        going_on = [use(0, answer), result(0, {"outcome": "repair"}),
+                    use(1, answer), result(1, {"error": "x"}, is_error=True),
+                    use(2, {"case_id": "c"}), result(2, {"outcome": "answered"}),
+                    use(3, answer), result(3, {"outcome": "abstained"})]
+        decided = [use(4, answer), result(4, {"outcome": "answered", "claims": [{}]})]
+        after = {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Prose the reader never waits for."}]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "child.pid"
+            lines = [json.dumps(line) for line in going_on + decided + [after]]
+            script = (f"import subprocess, sys, time; "
+                      f"c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+                      f"open({str(pidfile)!r}, 'w').write(str(c.pid)); "
+                      f"[print(l, flush=True) for l in {lines!r}]; time.sleep(60)")
+            started = time.monotonic()
+            ends = sess.GateEnd()
+            code, out = runner._spawn([sys.executable, "-c", script], tmp,
+                                      dict(os.environ), 30, stop=ends)
+            self.assertLess(time.monotonic() - started, 20)
+            self.assertEqual(code, 0)
+            self.assertTrue(ends.ended)
+            self.assertEqual(out.splitlines(), lines[:-1])
+            child = int(pidfile.read_text())
+            for _ in range(50):
+                try:
+                    with open(f"/proc/{child}/stat") as stat:
+                        if stat.read().split()[2] == "Z":
+                            break
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("the session's child outlived the gate's decision")
+        # A transport that cannot stop (a scripted stream): the same cut.
+        ends = sess.GateEnd()
+        self.assertEqual(ends.cut("\n".join(lines)).splitlines(), lines[:-1])
+        nothing = sess.GateEnd()
+        self.assertEqual(nothing.cut("\n".join(lines[:8])).splitlines(), lines[:8])
+        self.assertFalse(nothing.ended)
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups")
+    def test_the_host_starts_before_the_session_and_never_outlives_an_unserved_gate(self):
+        # The host's start-up (a reader's grant, the stores) ran only once Claude Code
+        # had connected; it now runs while Claude Code starts. A gate no session ever
+        # connects to stops the host it started.
+        from operating import agent_session as sess
+        with tempfile.TemporaryDirectory() as tmp:
+            started = Path(tmp) / "started"
+            script = (f"import os, sys, time; open({str(started)!r}, 'w').write(str(os.getpid())); "
+                      f"[None for _ in sys.stdin]; time.sleep(60)")
+            gate = sess.HostGate(["plx.find"], {"command": sys.executable, "args": ["-c", script]},
+                                 Path(tmp), log=Path(tmp) / "refused.jsonl")
+            for _ in range(100):
+                if started.exists() and started.read_text():
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("the host did not start before a session connected")
+            self.assertFalse(gate.served)
+            pid = int(started.read_text())
+            self.assertIsNone(gate.finish(None))
+            for _ in range(50):
+                try:
+                    with open(f"/proc/{pid}/stat") as stat:
+                        if stat.read().split()[2] == "Z":
+                            break
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("the started host outlived its unserved gate")
 
     def test_case_tools_option_never_allows_an_action_tool(self):
         catalog = [{"name": "plx.find", "read_only": True},

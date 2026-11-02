@@ -304,6 +304,63 @@ def plan_read() -> Any:
         _PLAN_READ.reset(token)
 
 
+# The reader decisions kept for one plan run (``run_memo``), by kind; None outside a run.
+_RUN_MEMO: ContextVar[dict[Any, dict[Any, Any]] | None] = ContextVar("plx_run_memo",
+                                                                    default=None)
+
+
+@contextmanager
+def run_memo() -> Any:
+    """One plan run (``plx.investigate``): every primitive call made inside it is the same
+    reader's, under the policy the host decided for the run's one tool call, so a reader
+    decision one of its calls made (an item's ACL re-check, whether a mention is
+    ambiguous for this reader) is the decision for every other (``run_memo_for``). A
+    run inside a run shares the outer run's. Nothing is kept past the run."""
+    if _RUN_MEMO.get() is not None:
+        yield
+        return
+    token = _RUN_MEMO.set({})
+    try:
+        yield
+    finally:
+        _RUN_MEMO.reset(token)
+
+
+def run_memo_for(kind: Any) -> dict[Any, Any] | None:
+    """The decisions of ``kind`` kept for the plan run in progress (``run_memo``); None
+    outside a run (each call decides afresh)."""
+    memo = _RUN_MEMO.get()
+    return None if memo is None else memo.setdefault(kind, {})
+
+
+def reader_grants(owner: Any, policy: Any, actor: Actor, all_keys: Sequence[str]
+                  ) -> tuple[tuple[str, ...], frozenset[str], tuple[str, ...], tuple[str, ...]]:
+    """(the audience keys of ``all_keys`` ``actor`` may read, the markings it holds, the
+    store marking sets those cover, its granted source families) under ``policy``: what
+    every tool call's scope is made of. Decided once per plan run or request
+    (``run_memo``) for the same policy object and the same store keys; else each call."""
+    kept = run_memo_for(("reader_grants", id(owner), actor))
+    if kept is not None:
+        hit = kept.get("grants")
+        if hit is not None and hit[0] is policy and (hit[1] is all_keys
+                                                     or hit[1] == all_keys):
+            return hit[2]
+    keys = tuple(k for k in all_keys if policy.may_read(actor, k))
+    held = policy.held_markings(actor)
+    sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
+    out = (keys, held, sets, policy.granted_sources(actor))
+    if kept is not None:
+        kept["grants"] = (policy, all_keys, out)   # holds both: no id is reused
+    return out
+
+
+@functools.lru_cache(maxsize=32)
+def encoded_list(values: tuple[str, ...]) -> str:
+    """``values`` as the JSON list a query's ``json_each`` parameter takes (a reader's
+    audience keys run to thousands, and every call's scope passes them)."""
+    return json.dumps(list(values))
+
+
 def result_limit(limits: Mapping[str, Any]) -> int:
     """The byte bound of one result: ``limits.max_result_bytes``, or PLAN_READ_SCALE times
     it for a plan's own read (``plan_read``)."""
@@ -311,13 +368,34 @@ def result_limit(limits: Mapping[str, Any]) -> int:
     return base * PLAN_READ_SCALE if _PLAN_READ.get() else base
 
 
+@functools.lru_cache(maxsize=4)
+def _bc_company_dropped(report_text: Any) -> dict[str, int] | None:
+    """binding -> versions the build dropped for an unknown BC company, from a
+    ``build_report`` text (parsed once per report: every object read asks); None when
+    it does not parse."""
+    try:
+        report = json.loads(report_text)
+    except (TypeError, ValueError):
+        return None
+    dropped: dict[str, int] = {}
+    for gap in report.get("gaps", ()) if isinstance(report, dict) else ():
+        if isinstance(gap, dict) and gap.get("code") == "bc_company_unknown" \
+                and isinstance(gap.get("where"), str) and isinstance(gap.get("count"), int):
+            dropped[gap["where"]] = dropped.get(gap["where"], 0) + gap["count"]
+    return dropped
+
+
+_ENVELOPE_FIXED = len('{"content":[{"type":"text","text":}],"structuredContent":,"isError":false}')
+
+
 def _envelope_bytes(value: Mapping[str, Any]) -> int:
     """Size of the tools/call result as the case host builds it (JSON text content
-    plus structuredContent), the figure ``max_result_bytes`` bounds."""
+    plus structuredContent), the figure ``max_result_bytes`` bounds. The value is
+    serialized once: the envelope is its JSON text twice (once as a JSON string) around
+    fixed ASCII, so its size is those parts' sizes, byte for byte the envelope's."""
     text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return len(json.dumps({"content": [{"type": "text", "text": text}],
-                           "structuredContent": value, "isError": False},
-                          ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    return (_ENVELOPE_FIXED + len(text.encode("utf-8"))
+            + len(json.dumps(text, ensure_ascii=False).encode("utf-8")))
 
 
 # --------------------------------------------------------------------------- time
@@ -504,10 +582,17 @@ class ReadPolicy:
     audiences: Mapping[str, frozenset[str]]
     markings: Mapping[str, frozenset[str]] = field(default_factory=dict)
     units: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # The reader this policy was decided for is unrestricted (owner full-read over every
+    # source and marking, ``EmployeeEntitlement.unrestricted``): the item permission
+    # checks of the consumers pass through (the people exclusion still decides). Set only
+    # by the host's policy resolution (``ontology_host.case_host_policy``).
+    unrestricted: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.tenant, str) or not self.tenant.strip():
             raise ValueError("read_policy_tenant_required")
+        if not isinstance(self.unrestricted, bool):
+            raise ValueError("read_policy_unrestricted_invalid")
         clean: dict[str, frozenset[str]] = {}
         for pattern, principals in dict(self.audiences).items():
             if (not isinstance(pattern, str) or not pattern or "*" in pattern[:-1]
@@ -602,9 +687,16 @@ class _Scope:
     sources: tuple[str, ...]
     at: dt.datetime
 
+    @functools.cached_property
+    def _encoded(self) -> tuple[str, str, str]:
+        # once per scope: a reader's audience keys run to thousands, and every query of
+        # the call passes them
+        return (encoded_list(self.audience_keys), encoded_list(self.marking_sets),
+                _format_time(self.at))
+
     def params(self, **extra: Any) -> dict[str, Any]:
-        return dict(extra, aud=json.dumps(list(self.audience_keys)),
-                    marks=json.dumps(list(self.marking_sets)), at=_format_time(self.at))
+        aud, marks, at = self._encoded
+        return dict(extra, aud=aud, marks=marks, at=at)
 
     def holds(self, markings: Iterable[str]) -> bool:
         return set(markings) <= self.held
@@ -633,6 +725,7 @@ class StoreReader:
         # every L9 table over this reader (``TraverseTools._store_cached``).
         self.facts: tuple[tuple[int, int], dict[Any, Any]] | None = None
         self._audiences: tuple[tuple[int, int], tuple[str, ...]] | None = None
+        self._meta: tuple[tuple[int, int], dict[str, str]] | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> "StoreReader":
@@ -640,8 +733,15 @@ class StoreReader:
         return cls(sqlite3.connect(uri, uri=True, check_same_thread=False))
 
     def meta(self) -> dict[str, str]:
-        return {row["key"]: row["value"]
-                for row in self.conn.execute("SELECT key, value FROM store_meta")}
+        """The store's ``store_meta`` rows, kept until the store changes (the stamp of
+        ``audience_keys``): every tool call reads them, the build report among them."""
+        with self.lock:
+            stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
+                     self.conn.total_changes)
+            if self._meta is None or self._meta[0] != stamp:
+                self._meta = (stamp, {row["key"]: row["value"] for row in
+                                      self.conn.execute("SELECT key, value FROM store_meta")})
+            return dict(self._meta[1])
 
     def audience_keys(self) -> list[str]:
         """Every audience key of the store's objects (no reader's grants applied), kept
@@ -1928,10 +2028,9 @@ class OntologyTools:
         return moment
 
     def _scope(self, actor: Actor, at: dt.datetime) -> _Scope:
-        keys = tuple(k for k in self.store.audience_keys() if self.policy.may_read(actor, k))
-        held = self.policy.held_markings(actor)
-        sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
-        return _Scope(actor, keys, held, sets, self.policy.granted_sources(actor), at)
+        keys, held, sets, granted = reader_grants(self, self.policy, actor,
+                                                  self.store.audience_keys())
+        return _Scope(actor, keys, held, sets, granted, at)
 
     def _item_allowed(self, actor: Actor, handle: str) -> bool:
         scheme = handle.split("://", 1)[0] if isinstance(handle, str) else ""
@@ -1939,10 +2038,16 @@ class OntologyTools:
             return True
         if self.item_gate is None:
             return False
+        kept = run_memo_for(("item_allowed", id(self), actor))
+        if kept is not None and handle in kept:
+            return kept[handle]
         try:
-            return self.item_gate(actor, handle) is True
+            allowed = self.item_gate(actor, handle) is True
         except Exception:  # noqa: BLE001 - a failing re-check denies
-            return False
+            allowed = False
+        if kept is not None:
+            kept[handle] = allowed
+        return allowed
 
     def _store_meta(self) -> dict[str, str]:
         try:
@@ -1957,16 +2062,11 @@ class OntologyTools:
         ``bc_company_unknown``), so a reader is never shown fewer versions silently.
         The report counts per binding, so the gap carries no count and does
         not claim which versions are this object's."""
-        try:
-            report = json.loads((store_meta if store_meta is not None
-                                 else self._store_meta()).get("build_report", ""))
-        except ValueError:
+        text = (store_meta if store_meta is not None
+                else self._store_meta()).get("build_report", "")
+        dropped = _bc_company_dropped(text)
+        if dropped is None:
             return []
-        dropped: dict[str, int] = {}
-        for gap in report.get("gaps", ()) if isinstance(report, dict) else ():
-            if isinstance(gap, dict) and gap.get("code") == "bc_company_unknown" \
-                    and isinstance(gap.get("where"), str) and isinstance(gap.get("count"), int):
-                dropped[gap["where"]] = dropped.get(gap["where"], 0) + gap["count"]
         out = []
         for object_id in object_ids:
             parts = object_id.split(":", 2)
@@ -2957,7 +3057,7 @@ class OntologyTools:
         tail = ([m.object_id for m in repeated] + [m.object_id for m in ranked])[-2:]
         resume = (scan_cursor(0, scan_position, prior + total, tail)
                   if query is None and scan_position is not None else None)
-        if scan_truncated:
+        if scan_truncated and not any(g.get("reason") == "scan_cap" for g in gaps):
             gaps.append(_gap("unknown", "scan_cap", f"query:{' '.join((query or object_type or '').split())}"[:700],
                              "the search stopped at its scan cap; narrow it with object_type, "
                              "identifier_kind or filters" if query is not None else
@@ -3090,9 +3190,17 @@ class OntologyTools:
         visible = self._visible_versions(scope, {m.object_id for m in whole_matches})
         notes: list[dict] = []
         if not visible and kind_filter is None:
-            text, text_truncated = self._text_matches(scope, query, keys, object_type)
+            text, text_truncated, named = self._text_matches(scope, query, keys, object_type)
             matches.extend(text)
             truncated = truncated or text_truncated
+            if text_truncated and named:
+                notes.append(_gap(
+                    "unknown", "scan_cap", f"query:{' '.join(query.split())}"[:700],
+                    f"the search stopped at its scan cap, after every record whose name "
+                    f"is or begins with these words ({named}) was read: they are listed "
+                    f"first; other records holding the words may be cut; narrow it with "
+                    f"object_type, identifier_kind or filters"))
+
         if self.grammar is None:
             notes.append(_gap("unknown", "grammar_unavailable", "identifier grammar",
                               "typed identifier parsing is off; only literal and text matches ran"))
@@ -3337,9 +3445,11 @@ class OntologyTools:
                       row["l1_handle"], row["field_path"])
 
     def _text_matches(self, scope: _Scope, query: str, keys: Sequence[_Key],
-                      object_type: str | None) -> tuple[list[_Match], bool]:
+                      object_type: str | None) -> tuple[list[_Match], bool, int | None]:
         """Text matches over readable rows only, from the word index (store layout v8):
-        display values first, then the captured text of documents (``chunk_text``), then
+        the display values that name the query (``_names_query``: its words, whole and
+        in order, from the value's first word; ranked first, ``exact``), then other
+        display values, then the captured text of documents (``chunk_text``), then
         every other text value; an object a pass matched is not matched again by a later
         one. SQL has already applied audience, markings and time before its batch limit;
         the item ACL is then re-checked per object, and only readable objects count toward
@@ -3357,7 +3467,7 @@ class OntologyTools:
         tokens = _text_tokens(query, [k for k in keys if (k.kind, k.normalized)
                                       not in text_only])
         if not tokens:
-            return [], False
+            return [], False, None
         needle = " ".join(tokens)
 
         def names_all(text: Any) -> bool:
@@ -3381,8 +3491,12 @@ class OntologyTools:
         terms = query_terms(tokens)
         if terms is None:
             # A word the index splits or drops: nothing is claimed absent.
-            return hybrid or [], True
+            return hybrid or [], True, None
         words = " AND ".join('"' + term.replace('"', '""') + '"*' for term in terms)
+        # The query's words, each whole (the index keeps no positions, so no phrase): the
+        # rows of a value that may name it (``_names_query`` decides) before any other.
+        phrase = " AND ".join('"' + term.replace('"', '""') + '"' for term in terms)
+        asked_name = _name_words(query)
         typed = None
         if self.schema is not None:
             typed = [f"{tid}.{prop}" for tid, props in self.schema.display().items()
@@ -3390,6 +3504,8 @@ class OntologyTools:
         # One batch reads past the cap: each index query merges the words' whole row lists.
         batch = TEXT_SCAN_CAP + 1
         passes: list[tuple[str, Callable[[int], list[sqlite3.Row]]]] = [
+            ("display_name", lambda after: self.store.text_matches(scope, phrase, typed, after,
+                                                                   batch)),
             ("display_text", lambda after: self.store.text_matches(scope, words, typed, after,
                                                                    batch)),
             ("document_text", lambda after: self.store.chunk_matches(scope, words, object_type,
@@ -3410,8 +3526,21 @@ class OntologyTools:
         out: list[_Match] = list(hybrid or ())
         objects: set[str] = {m.object_id for m in out}
         scanned = 0
+        named: set[str] = set()
+
+        def cut() -> tuple[list[_Match], bool, int | None]:
+            # The records named by the query were all read before the cut (the name pass
+            # finished): the agent is told so, never that the search was complete.
+            return out, True, (len(named) if named and named_done else None)
+
+        named_done = False
         try:
             for reason, fetch in passes:
+                if reason == "display_text":
+                    # the name pass read its own rows: the word passes keep their budget
+                    named_done, scanned = True, 0
+                naming, reason = reason == "display_name", (
+                    "display_text" if reason == "display_name" else reason)
                 earlier, after = set(objects), 0
                 while rows := fetch(after):
                     after = rows[-1]["row_no"]
@@ -3425,6 +3554,8 @@ class OntologyTools:
                                 chunk_text(row["body"]) if reason == "document_text"
                                 else row["value"]):
                             continue
+                        if naming and not _names_query(row["value"], asked_name):
+                            continue
                         match = None if version is None or row["object_id"] in earlier else (
                             _chunk_match(row, version, needle, tokens)
                             if reason == "document_text" else _value_text_match(row, reason,
@@ -3433,14 +3564,17 @@ class OntologyTools:
                                              and row["object_id"] in objects):
                             continue
                         if row["object_id"] not in objects and len(objects) >= TEXT_SCAN_CAP:
-                            return out, True
+                            return cut()
+                        if naming:
+                            match.exact = True   # named by the query: ranked first
+                            named.add(row["object_id"])
                         objects.add(row["object_id"])
                         out.append(match)
                     if scanned >= SCAN_ROW_BUDGET:
-                        return out, True
+                        return cut()
         except sqlite3.OperationalError:
-            return out, True   # a query the index cannot read is no proof of absence
-        return out, False
+            return out, True, None   # a query the index cannot read proves no absence
+        return out, False, None
 
     def _hybrid_matches(self, scope: _Scope, query: str, needle: str,
                         object_type: str | None) -> list[_Match] | None:
@@ -4607,6 +4741,18 @@ def _index_row_ok(row: Mapping[str, Any], *, binding_key: str = "binding_id",
             and (kind_key is None or bool(_NAME.match(row[kind_key] or "")))
             and bool(_OBJECT_ID.match(row["object_id"] or ""))
             and bool(_HANDLE.match(row["l1_handle"] or "")))
+
+
+def _name_words(text: Any) -> list[str]:
+    """The words of ``text``, case folded, punctuation and spacing apart."""
+    return re.findall(r"[^\W_]+", text.casefold()) if isinstance(text, str) else []
+
+
+def _names_query(value: Any, asked: Sequence[str]) -> bool:
+    """Whether a display ``value`` names the query (its words ``asked``): the value's words
+    are the query's, or begin with them ("Pet Alliance" names "PET ALLIANCE INC.")."""
+    held = _name_words(value)
+    return bool(asked) and held[:len(asked)] == list(asked)
 
 
 def _value_text_match(row: Mapping[str, Any], reason: str, needle: str) -> _Match | None:

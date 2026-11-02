@@ -637,8 +637,8 @@
   "paths": {
    "type": "array",
    "minItems": 1,
-   "maxItems": 4,
-   "description": "Alternative paths from the root (union). [] = the root itself. At most eight hops: a Portal MO reaches a BC-only PO of a component item through its FM twin, the component, the item, the item's Portal and BC records, the BC line (each hop's frontier is capped, MAX_EVIDENCE).",
+   "maxItems": 12,
+   "description": "Alternative paths from the root (union), at most twelve: a PO's receipts directly, through its FileMaker QC receiving log and through the receipt headers naming its items, each from the PO and its twins. [] = the root itself. At most eight hops: a Portal MO reaches a BC-only PO of a component item through its FM twin, the component, the item, the item's Portal and BC records, the BC line (each hop's frontier is capped, MAX_EVIDENCE).",
    "items": {
     "type": "array",
     "items": {

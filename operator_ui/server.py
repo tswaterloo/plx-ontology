@@ -34,6 +34,7 @@ import sys
 from typing import Any, Protocol
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from operating import display_numbers
 from operator_ui import objective_box
 from operator_ui.home import home
 
@@ -191,7 +192,9 @@ def make_server(host: str = "127.0.0.1", port: int = 0, *, case_workspace: Any =
 
         def _send(self, status: int, value: Any) -> None:
             self._answered = (status, value)
-            data = json.dumps(value, ensure_ascii=False, allow_nan=False,
+            # Every number shown at the source's precision (operating.display_numbers), one
+            # rule for cards, answers and the app API; the stores keep the exact value.
+            data = json.dumps(display_numbers.for_display(value), ensure_ascii=False, allow_nan=False,
                               separators=(",", ":"), default=str).encode("utf-8")
             self._headers(status, "application/json; charset=utf-8", len(data))
             self.wfile.write(data)

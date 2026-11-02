@@ -352,9 +352,13 @@ class AnswerGateTests(unittest.TestCase):
     (``gate_final_reply``)."""
 
     def submitted(self, given, calls=()):
+        # The agent's own final message, screened (``end_at_gate`` off: a session that
+        # goes on past an answered decision; ``evals.tests.test_runner`` and
+        # ``test_answer_gate_one_path`` hold the session that ends there).
         item = fx.item()
         agent = runner.ClaudeCodeAgent(spawn=session(given if isinstance(given, str)
-                                                     else fx.final_text(given), calls))
+                                                     else fx.final_text(given), calls),
+                                       end_at_gate=False)
         transcript = runner.record(item, agent, GateHost())
         return transcript, sc.score(item, transcript)
 

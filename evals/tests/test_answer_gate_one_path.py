@@ -54,6 +54,25 @@ def _label(n):
     return (_label(n // 26) if n >= 26 else "") + "abcdefghijklmnopqrstuvwxyz"[n % 26]
 
 
+def _path_of(value, wanted, path=()):
+    """The first key path in ``value`` at which the string ``wanted`` stands, or None."""
+    if value == wanted:
+        return path
+    items = value.items() if isinstance(value, dict) else enumerate(value) \
+        if isinstance(value, list) else ()
+    for key, item in items:
+        found = _path_of(item, wanted, path + (key,))
+        if found is not None:
+            return found
+    return None
+
+
+def _at(value, path):
+    for key in path:
+        value = value[key]
+    return value
+
+
 def _wrong(value):
     """A value the record does not state for that field."""
     return value + "Wrong"
@@ -182,11 +201,18 @@ class OneGateTests(unittest.TestCase):
             from evals.tests.test_runner import _stream
             return 0, _stream(final, client.calls)
 
-        agent = runner.ClaudeCodeAgent(spawn=spawn, max_turns=8)
+        # A session that goes on past its answered decision (``end_at_gate`` off): the
+        # gate's own verdicts on every submission it makes.
+        agent = runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, end_at_gate=False)
         transcript = runner.record(self.item, agent, host, evidence_label="injected-transport",
                                    run_pin=self.pin_for(self.item))
         self.assertIn("plx.case_get", transcript["agent"]["allowed_tools"])
-        first, repaired, again = seen["gated"]
+        # The agent read its gate results with short handle aliases; the transcript holds
+        # them as the host decided them, full handles, and so does the Ask loop.
+        self.assertTrue(all("://" not in c for gated in seen["gated"]
+                            for claim in gated["claims"] for c in claim["citations"]))
+        first, repaired, again = [_plain(event["result"]) for event in transcript["events"]
+                                  if event["name"] == "plx.case_get"]
         # Ask: read, the refused answer, one repair, the repaired answer; same server.
         answers = [bad, good]
         requests = []
@@ -232,13 +258,16 @@ class OneGateTests(unittest.TestCase):
         # The host submits a reply the session never submitted (AL-02, GP-08, PS-10 on
         # rank3) to the session's own gate: kept only as that gate decides, on the
         # evidence that session read, never past it.
-        for name, submitted, stated, kept, read in (
+        # ``end_at_gate``: the session ends at an answered decision (``GateEnd``), its
+        # reply rendered from that decision; else the agent's final message is screened.
+        for end, (name, submitted, stated, kept, read) in [(end, case) for end in (False, True)
+                                                           for case in (
                 ("refused, restated", [_wrong(value)] * 2, _wrong(value), False, True),
                 ("passed", [value], value, True, True),
                 ("never submitted, host passes it", [], value, True, True),
                 ("never submitted, host refuses it", [], _wrong(value), False, True),
-                ("never submitted, never read", [], value, False, False)):
-            with self.subTest(name):
+                ("never submitted, never read", [], value, False, False))]:
+            with self.subTest(name, end_at_gate=end):
                 final = fx.final_text({
                     "format": sc.ANSWER_FORMAT, "answerability": "answerable",
                     "text": "The record states it.", "gaps": [],
@@ -263,7 +292,8 @@ class OneGateTests(unittest.TestCase):
                     return 0, _stream(final, client.calls)
 
                 transcript = runner.record(
-                    self.item, runner.ClaudeCodeAgent(spawn=spawn, max_turns=8),
+                    self.item, runner.ClaudeCodeAgent(spawn=spawn, max_turns=8,
+                                                      end_at_gate=end),
                     self.host(), evidence_label="injected-transport",
                     run_pin=self.pin_for(self.item))
                 stated_value = transcript["answer"]["values"][0]
@@ -279,7 +309,11 @@ class OneGateTests(unittest.TestCase):
                 if kept and not submitted:
                     self.assertEqual((stated_value["value"], reply["withheld"]), (value, []))
                 elif kept:
-                    self.assertEqual(transcript["final_text"], final)
+                    if end:   # the message written after the decision is never read
+                        self.assertEqual(transcript["usage"]["subtype"], "ended_at_gate")
+                        self.assertNotEqual(transcript["final_text"], final)
+                    else:
+                        self.assertEqual(transcript["final_text"], final)
                     self.assertEqual((stated_value["value"], stated_value["citations"]),
                                      (value, cite))
                     self.assertFalse(reply["rewritten"])
@@ -298,6 +332,348 @@ class OneGateTests(unittest.TestCase):
                     score = sc.score(self.item, transcript)
                     self.assertNotIn("unsupported_assertion", score["codes"])
                     self.assertFalse(sc.confident_unsupported(score))
+
+    def test_an_identifier_the_question_gives_needs_no_citation_and_nothing_else_passes(self):
+        # Live-ops dev run: "when did order 1000088999 ship" -> the reply's one sentence
+        # "Sales order 1000088999 shipped on ..." was dropped: the gate never saw the
+        # question, so the asked order number read as an unchecked figure. The answer
+        # mode takes the question; only its identifiers are the asker's.
+        server = self.in_process(self.host())
+        handle, field, value = self.record(server)
+        session = agent_loop._Session(server)
+        session.ids = iter(range(1 << 20, 1 << 30))   # ids apart from ``record``'s session
+        prose = f"Order 1000088999 states {value}. Ticket TASK-928 states {value}."
+        for question, kept in (
+                ("when did order 1000088999 ship and where is TASK-928", 2),
+                ("when did order 1000088999 ship", 1),
+                ("", 0),
+                # a bare number of the question is a figure, never an identifier
+                ("are 1000088999 units of TASK-928 shipped", 1)):
+            with self.subTest(question=question):
+                answer = {"claims": [self.claim(handle, field, value)], "text": prose,
+                          **({"question": question} if question else {})}
+                result, is_error = session.call("plx.case_get", {"answer": answer})
+                self.assertFalse(is_error, result)
+                reply = _plain(result)["reply"]["text"]
+                said = [line for line in reply.splitlines()
+                        if line != answer_gate.WITHHELD_STATEMENTS]
+                stated = [s for s in re.split(r"(?<=\.) ", " ".join(said)) if s]
+                self.assertEqual(len([s for s in stated if s.endswith(f"states {value}.")
+                                      and not s.startswith(f"{field}")]),
+                                 kept, reply)
+                self.assertEqual(answer_gate.WITHHELD_STATEMENTS in reply, kept < 2, reply)
+        # a question that is no string is refused before the gate (no repair spent)
+        result, is_error = session.call("plx.case_get", {"answer": {
+            "claims": [self.claim(handle, field, value)], "question": 7}})
+        self.assertTrue(is_error or "answer_invalid" in json.dumps(result), result)
+
+    def test_written_once_with_aliases_renders_only_what_the_gate_passed(self):
+        # Write once: the agent reads and cites short handle aliases, submits named value
+        # claims to the gate once and ends with a verdict line and a block with no values;
+        # the scored reply is rendered from the gate's decision with full handles. A
+        # refused named claim is withheld, an alias the session never minted is refused.
+        host = self.host()
+        server = self.in_process(host)
+        handle, field, value = self.record(server)
+        reader = agent_loop._Session(self.in_process(host))
+        reader.call("plx.find", {"query": self.item["root"]["identifier"]})
+        full, _ = reader.call("plx.read", {"citation": handle})
+        path = _path_of(full, handle)
+        self.assertIsNotNone(path)
+        final = ("The record states it.\n" + fx.final_text({
+            "format": sc.ANSWER_FORMAT, "answerability": "answerable", "gaps": [
+                {"state": "unknown", "subject": "date", "reason": "not_in_record",
+                 "concerns": "date"}]}))
+        gaps = [{"state": "unknown", "subject": "date", "reason": "not_in_record",
+                 "concerns": "date"}]
+        for end in (False, True):
+            with self.subTest(end_at_gate=end):
+                self.written_once(host, handle, field, value, path, final, gaps, end)
+
+    def written_once(self, host, handle, field, value, path, final, gaps, end):
+        seen = {}
+
+        def spawn(argv, cwd, env, timeout):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            client = _Client(server, env)
+            try:
+                found, _ = client.call("plx.find", {"query": self.item["root"]["identifier"]})
+                read, _ = client.call("plx.read", {"citation": handle})
+                shown = json.dumps([found, read])
+                seen["full_handles_shown"] = handle in shown
+                # the alias the read gives where the host's own read gives the handle
+                alias = _at(read, path)
+                self.assertRegex(alias, r"^@[A-Z]{3}[0-9]+$")
+                seen["alias"] = alias
+                again, is_error = client.call("plx.read", {"citation": alias})
+                seen["alias_read"] = not is_error
+                foreign = "@" + ("QQQ" if not alias.startswith("@QQQ") else "XXX") + "1"
+                seen["foreign"] = client.call("plx.read", {"citation": foreign})
+                seen["gate"] = _plain(client.call("plx.case_get", {"answer": {
+                    "claims": [
+                        # the lean shape: the gate reads the value from the cell
+                        {"name": "stated", "citation": alias, "field": field},
+                        {"text": "The record states another value.", "citations": [alias],
+                         "value_claims": [{"name": "wrong_one", "value": _wrong(value),
+                                           "citation": alias, "field": field}]}],
+                    "unknowns": ["the order's delivery date"],
+                    "text": f"The record states {value}.", "gaps": gaps}})[0])
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            return 0, _stream(final, client.calls)
+
+        transcript = runner.record(self.item, runner.ClaudeCodeAgent(
+            spawn=spawn, max_turns=8, end_at_gate=end), host,
+            evidence_label="injected-transport", run_pin=self.pin_for(self.item))
+        self.assertFalse(seen["full_handles_shown"])        # the agent saw aliases only
+        self.assertTrue(seen["alias_read"])
+        body, is_error = seen["foreign"]
+        self.assertTrue(is_error)
+        self.assertEqual(body["error"], "unknown_handle_alias")
+        gate = seen["gate"]
+        self.assertEqual(gate["outcome"], "answered", json.dumps(gate)[:1500])
+        self.assertEqual([c.get("name") for c in gate["claims"]], ["stated"])
+        self.assertEqual(gate["claims"][0]["citations"], [seen["alias"]])
+        reply = transcript["agent"]["final_reply"]
+        self.assertTrue(reply["written_once"])
+        if end:
+            # ended at the answered decision: the final message is never read, the
+            # submission's gaps are the answer's
+            self.assertEqual(transcript["usage"]["subtype"], "ended_at_gate")
+            self.assertNotIn("The record states it.\n", reply["agent_final_text"])
+            self.assertEqual(transcript["answer"]["gaps"][:1], gaps)
+            # each unknown the gate kept is shown as a gap, as the app shows the Ask loop's
+            self.assertIn({"state": "unknown", "subject": "the order's delivery date"},
+                          transcript["answer"]["gaps"])
+        else:
+            self.assertEqual(reply["agent_final_text"], final)
+        values = {v["name"]: v for v in transcript["answer"]["values"]}
+        self.assertEqual(set(values), {"stated", "wrong_one", "date"})
+        self.assertEqual((values["stated"]["value"], values["stated"]["citations"]),
+                         (value, [{"l1_handle": handle, "field_path": field}]))
+        self.assertIsNone(values["wrong_one"]["value"])
+        self.assertIsNone(values["date"]["value"])
+        self.assertEqual(reply["withheld"], ["wrong_one"])
+        self.assertEqual(transcript["answer"]["answerability"], "partial")
+        self.assertIn(f"The record states {value}.", transcript["answer"]["text"])
+        self.assertNotIn(seen["alias"], transcript["final_text"])
+        self.assertNotIn(_wrong(value), transcript["final_text"])
+        self.assertNotIn(seen["alias"], json.dumps(transcript["events"]))
+        score = sc.score(self.item, transcript)
+        self.assertNotIn("unsupported_assertion", score["codes"])
+
+    def test_the_first_reads_are_made_in_the_session_before_its_first_turn(self):
+        # Measured (ask-speed-2): every agent-path session spent its first turn on the
+        # same reads (the named record found, its plan run). The host makes them in the
+        # session while Claude Code starts, and the task reaches the session on stdin
+        # with their results, aliased; a claim citing one of them passes the session's
+        # gate (the reads are the session's own evidence), and the transcript holds them
+        # first, with full handles.
+        from unittest import mock
+        from operating import agent_session, fast_answer
+        host = self.host()
+        server = self.in_process(host)
+        handle, field, value = self.record(server)
+        reader = agent_loop._Session(self.in_process(host))
+        query = {"query": self.item["root"]["identifier"]}
+        full, _ = reader.call("plx.find", query)
+        path = _path_of(full, handle)
+        self.assertIsNotNone(path)
+        seen = {}
+
+        def spawn(argv, cwd, env, timeout, *, feed=None, stop=None):
+            seen["argv"] = argv
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            # The host reads before the client has connected (``EarlyStart``): the task
+            # with its reads is ready while Claude Code is still starting.
+            started = time.monotonic()
+            task = json.loads(feed())["message"]["content"]
+            seen["fed_before_connect"] = time.monotonic() - started
+            client = _Client(server, env)   # its initialize answered by the gate
+            try:
+                seen["task"] = task
+                shown = task.split(agent_session.PREFETCH_HEADING, 1)[1]
+                found = json.loads(shown.split(" returned:\n", 1)[1].split("\n\n", 1)[0])
+                alias = _at(found, path)
+                seen["alias"] = alias
+                seen["gate"] = _plain(client.call("plx.case_get", {"answer": {
+                    "claims": [{"text": "The record states the value.", "citations": [alias],
+                                "value_claims": [{"name": "stated", "value": value,
+                                                  "citation": alias, "field": field}]}],
+                    "text": f"The record states {value}."}})[0])
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            lines = []
+            for line in _stream("Written after the decision.", client.calls).splitlines():
+                lines.append(line)
+                if stop(line):      # the session is stopped at the answered decision
+                    break
+            return 0, "\n".join(lines)
+        spawn.feeds = spawn.stops = True
+
+        def follow(question, done):
+            # a follow-up read made from what the first read returned (full handles); a
+            # tool the session may not call is never made
+            seen["done"] = [(name, arguments) for name, arguments, _result in done]
+            cited = sorted(agent_loop.evidence_handles("plx.find", done[0][2]))
+            return [("plx.read", {"citation": cited[0]}),
+                    ("plx.case_close", {"case_id": "x", "outcome": "y"})]
+
+        with mock.patch.object(fast_answer, "first_reads",
+                               lambda question: [("plx.find", query)]), \
+                mock.patch.object(fast_answer, "follow_reads", follow):
+            transcript = runner.record(self.item, runner.ClaudeCodeAgent(spawn=spawn,
+                                                                         max_turns=8),
+                                       host, evidence_label="injected-transport",
+                                       run_pin=self.pin_for(self.item))
+        argv = seen["argv"]
+        self.assertEqual(argv[1:2], ["-p"])
+        self.assertEqual(argv[argv.index("--input-format") + 1], "stream-json")
+        self.assertNotIn(seen["task"].split("\n\n" + agent_session.PREFETCH_HEADING)[0], argv)
+        self.assertRegex(seen["alias"], r"^@[A-Z]{3}[0-9]+$")
+        self.assertNotIn(handle, seen["task"])          # the session sees aliases only
+        self.assertEqual(seen["gate"]["outcome"], "answered", json.dumps(seen["gate"])[:800])
+        first = transcript["events"][0]
+        self.assertEqual((first["name"], first["arguments"], first["prefetched"]),
+                         ("plx.find", query, True))
+        self.assertIn(handle, json.dumps(first["result"]))
+        self.assertEqual(seen["done"], [("plx.find", query)])
+        self.assertLess(seen["fed_before_connect"], 20)
+        follow_up = transcript["events"][1]
+        self.assertEqual((follow_up["name"], follow_up["prefetched"]), ("plx.read", True))
+        self.assertNotIn("plx.case_close", [e["name"] for e in transcript["events"]])
+        self.assertEqual(seen["task"].count(" returned:\n"), 2)
+        self.assertEqual([e["seq"] for e in transcript["events"]],
+                         list(range(len(transcript["events"]))))
+        values = {v["name"]: v for v in transcript["answer"]["values"]}
+        self.assertEqual((values["stated"]["value"], values["stated"]["citations"]),
+                         (value, [{"l1_handle": handle, "field_path": field}]))
+        score = sc.score(self.item, transcript)
+        self.assertNotIn("unsupported_assertion", score["codes"])
+
+    def gated_session(self, seen, *, connect_first=False):
+        """An injected Claude Code: reads its task (``feed``), connects, cites the first
+        read's alias for ``seen["claim"]`` and records the gate's outcome. ``connect_first``:
+        it connects before its task is in (as Claude Code starts its MCP servers)."""
+        from operating import agent_session
+
+        def spawn(argv, cwd, env, timeout, *, feed=None, stop=None):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            client = _Client(server, env) if connect_first else None
+            task = json.loads(feed())["message"]["content"]
+            client = client or _Client(server, env)
+            try:
+                shown = task.split(agent_session.PREFETCH_HEADING, 1)[1]
+                found = json.loads(shown.split(" returned:\n", 1)[1].split("\n\n", 1)[0])
+                alias = _at(found, seen["path"])
+                _handle, field, value = seen["claim"]
+                seen.setdefault("gates", []).append(_plain(client.call("plx.case_get", {
+                    "answer": {"claims": [{
+                        "text": "The record states the value.", "citations": [alias],
+                        "value_claims": [{"name": "stated", "value": value,
+                                          "citation": alias, "field": field}]}],
+                        "text": f"The record states {value}."}})[0])["outcome"])
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            lines = []
+            for line in _stream("Written after the decision.", client.calls).splitlines():
+                lines.append(line)
+                if stop(line):
+                    break
+            return 0, "\n".join(lines)
+        spawn.feeds = spawn.stops = True
+        return spawn
+
+    def prepared(self, host):
+        server = self.in_process(host)
+        handle, field, value = self.record(server)
+        query = {"query": self.item["root"]["identifier"]}
+        full, _ = agent_loop._Session(self.in_process(host)).call("plx.find", query)
+        return {"claim": (handle, field, value), "path": _path_of(full, handle),
+                "query": query}
+
+    def test_a_host_that_never_answers_its_early_initialize_reads_after_the_client(self):
+        # The host's early start (``EarlyStart``) gets no initialize answer: the first
+        # reads are made once the client has initialized (the gate's prelude), the task
+        # still reaches the session with them, and the session's gate passes a claim
+        # citing one. Nothing waits past LIST_SECONDS for the host's silence.
+        from unittest import mock
+        from operating import agent_session, fast_answer
+        host = self.host()
+        seen = self.prepared(host)
+        served = host.mcp_server
+
+        def deaf():   # the host never sees the host's own initialize
+            server = served()
+            drop = ("import subprocess,sys\n"
+                    "c=subprocess.Popen(sys.argv[1:],stdin=subprocess.PIPE,text=True)\n"
+                    "for l in iter(sys.stdin.readline, ''):\n"
+                    "    if agent_session_init not in l:\n"
+                    "        c.stdin.write(l);c.stdin.flush()\n"
+                    "c.stdin.close();sys.exit(c.wait())\n").replace(
+                        "agent_session_init", repr(agent_session.EarlyStart.INIT_ID))
+            return {**server, "args": ["-c", drop, server["command"], *server["args"]]}
+
+        started = time.monotonic()
+        with mock.patch.object(host, "mcp_server", deaf), \
+                mock.patch.object(agent_session, "LIST_SECONDS", 2.0), \
+                mock.patch.object(fast_answer, "first_reads",
+                                  lambda question: [("plx.find", seen["query"])]), \
+                mock.patch.object(fast_answer, "follow_reads", lambda q, done: []):
+            transcript = runner.record(
+                self.item, runner.ClaudeCodeAgent(
+                    spawn=self.gated_session(seen, connect_first=True), max_turns=8),
+                host, evidence_label="injected-transport", run_pin=self.pin_for(self.item))
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(seen["gates"], ["answered"])
+        first = transcript["events"][0]
+        self.assertEqual((first["name"], first["arguments"], first["prefetched"]),
+                         ("plx.find", seen["query"], True))
+
+    def test_a_readers_next_session_takes_their_started_host_and_no_one_elses(self):
+        # After a session, the reader's host is started again (``HostSpares``); the
+        # reader's next session takes it, its first reads and gate as before. Another
+        # reader never takes it, and a spare is taken once.
+        from unittest import mock
+        from operating import agent_session, fast_answer
+        host = self.host()
+        seen = self.prepared(host)
+
+        class Named:
+            ticket_env = None
+
+            def __init__(self, reader):
+                self.reader = reader
+
+            def spare_identity(self):
+                return [self.reader]
+
+            def __getattr__(self, name):
+                return getattr(host, name)
+
+        spares = agent_session.HostSpares(seconds=120, most=2)
+        self.addCleanup(spares.close)
+        runs = []
+        with mock.patch.object(agent_session, "SPARES", spares), \
+                mock.patch.object(fast_answer, "first_reads",
+                                  lambda question: [("plx.find", seen["query"])]), \
+                mock.patch.object(fast_answer, "follow_reads", lambda q, done: []):
+            for reader in ("a", "a", "b", "a"):
+                agent = runner.ClaudeCodeAgent(spawn=self.gated_session(seen), max_turns=8)
+                ran = agent.for_question("q").run("Answer the question.", Named(reader))
+                runs.append(ran.agent["host_start"])
+                self.assertTrue(ran.events[0]["prefetched"])
+        self.assertEqual(runs, ["started", "spare", "started", "spare"])
+        self.assertEqual(seen["gates"], ["answered"] * 4)
+        # one spare per reader is left; none of them exited
+        self.assertEqual(len(spares._held), 2)
+        self.assertTrue(all(s.child.poll() is None for s in spares._held.values()))
 
     def test_every_answer_path_gives_the_reply_of_the_one_final_reply_function(self):
         # The same answer through the MCP host's answer mode, the eval's scored reply and
@@ -395,6 +771,57 @@ class OneGateTests(unittest.TestCase):
                 self.assertEqual(len(texts) + gated["dropped"], count)
                 self.assertEqual(gated["outcome"], "abstained" if count == 1 else "answered")
 
+    def test_a_claim_leaves_its_value_to_the_gate_read_from_its_cell(self):
+        # Ask speed (lean submission): a claim naming one record field gives no value;
+        # the gate reads it from the cell it re-reads for the check, so the agent writes
+        # each value once (in its text) and the text is checked against the cell itself.
+        server = self.in_process(self.host())
+        handle, field, value = self.record(server)
+        session = agent_loop._Session(server)
+        session.call("plx.read", {"citation": handle})
+        returned = server._returned()
+        for count in (1, 10, 60):
+            with self.subTest(count=count):
+                claims = [{"name": f"value_{_label(n)}", "citation": handle, "field": field}
+                          if n != count // 2 else
+                          {"name": "missing", "citation": handle, "field": "row.no_such_column"}
+                          for n in range(count)]
+                gated = answer_gate.gate_answer({"claims": claims}, server, seen={handle},
+                                                returned=returned, may_repair=False,
+                                                read_values=True)
+                kept = min(count, answer_gate.MAX_CLAIMS)
+                wanted = [n for n in range(kept) if n != count // 2]
+                self.assertEqual([c.get("name") for c in gated["claims"]],
+                                 [f"value_{_label(n)}" for n in wanted])
+                self.assertEqual({v["value"] for c in gated["claims"]
+                                  for v in c["value_claims"]}, {value} if wanted else set())
+                self.assertEqual(len(gated["claims"]) + gated["dropped"], count)
+        # The text is still checked against the cell: a figure no passing claim states is
+        # uncovered, as before.
+        result, _gated, _repairing = mcp_server.answer_decision(
+            {"claims": [{"name": "stated", "citation": handle, "field": field}],
+             "text": f"The record states {value}, and 4711 more."}, server,
+            seen={handle}, returned=returned, may_repair=False, repairs_left=0, unread=None)
+        self.assertEqual(result["outcome"], "answered")
+        self.assertEqual([u["value"] for u in result["text_check"]["uncovered"]], ["4711"])
+        # Fail closed: never a value for a handle the session was not returned (nothing
+        # read), free text without its quote, a bad name or a key the gate does not know.
+        for claim, reason in (
+                ({"name": "x", "citation": handle, "field": field}, None),
+                ({"name": "x", "citation": handle, "field": "row.body_text"},
+                 "claim_states_no_value"),
+                ({"name": "Not a name!", "citation": handle, "field": field},
+                 "claim_invalid"),
+                ({"name": "x", "citation": handle, "field": field, "said": value},
+                 "claim_invalid")):
+            with self.subTest(claim=claim):
+                gated = answer_gate.gate_answer(
+                    {"claims": [claim]}, server, seen=set() if reason is None else {handle},
+                    returned=returned, may_repair=False, read_values=True)
+                self.assertEqual(gated["claims"], [])
+                self.assertEqual([u["reason"] for u in gated["unsupported"]],
+                                 [reason or "cites_what_this_run_did_not_return"])
+
     def test_an_unknown_or_malformed_answer_fails_closed(self):
         server = self.in_process(self.host())
         handle, field, value = self.record(server)
@@ -423,6 +850,35 @@ class OneGateTests(unittest.TestCase):
         self.assertEqual([u["reason"] for u in gated["unsupported"]],
                          ["cites_what_this_run_did_not_return"])
         self.assertNotIn(handle, json.dumps(gated["repair"]))
+
+
+class HostSparesTests(unittest.TestCase):
+    def test_an_expired_or_exited_spare_is_stopped_never_taken(self):
+        import sys
+        from operating import agent_session
+        now = [0.0]
+        spares = agent_session.HostSpares(seconds=10, most=2, clock=lambda: now[0])
+        self.addCleanup(spares.close)
+        wait = [sys.executable, "-c", "import sys; sys.stdin.read()"]
+        spares.start("k", wait, dict(os.environ), None)
+        self.assertIsNone(spares.take("other"))     # another key never takes it
+        now[0] = 11.0
+        expired = spares._held["k"]
+        self.assertIsNone(spares.take("k"))
+        self.assertIsNotNone(expired.child.poll())
+        self.assertFalse(expired.directory.exists())
+        spares.start("k", [sys.executable, "-c", "pass"], dict(os.environ), None)
+        spares._held["k"].child.wait(30)
+        self.assertIsNone(spares.take("k"))         # exited: the session starts its own
+        for key in ("a", "b", "c"):                 # at most ``most``, oldest stopped
+            now[0] += 1
+            spares.start(key, wait, dict(os.environ), None)
+        self.assertEqual(sorted(spares._held), ["b", "c"])
+        taken = spares.take("c")
+        self.assertIsNone(taken.child.poll())
+        taken.set_deadline(123.5)
+        self.assertEqual(taken.deadline.read_text(encoding="utf-8"), "123.500")
+        taken.stop()
 
 
 class OneGateSourceTests(unittest.TestCase):

@@ -197,6 +197,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1073,22 +1074,29 @@ def _in_process(build: Callable[[], Any], env: Mapping[str, str]) -> Any:
     ``live_host_identity_refused:<reason>`` when it refused the identity, else
     ``ask_session_refused``; its message is read for that code only."""
     env = {key: value for key, value in env.items() if key != "PYTHONPATH"}
-    saved = {key: os.environ.get(key) for key in env}
-    errors = io.StringIO()
-    os.environ.update(env)
-    try:
-        with contextlib.redirect_stderr(errors):
-            return build()
-    except SystemExit:
-        refused = IDENTITY_REFUSED.search(errors.getvalue().encode("utf-8", "replace"))
-        raise runner.RunnerError(f"live_host_identity_refused:{refused.group(1).decode()}"
-                                 if refused else "ask_session_refused") from None
-    finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+    # The environment and sys.stderr are the process's: two start-ups at once (the
+    # scoreboard's workers) would start with each other's single-use ticket, or none once
+    # the other restored it, and swallow each other's messages. One at a time.
+    with _IN_PROCESS_LOCK:
+        saved = {key: os.environ.get(key) for key in env}
+        errors = io.StringIO()
+        os.environ.update(env)
+        try:
+            with contextlib.redirect_stderr(errors):
+                return build()
+        except SystemExit:
+            refused = IDENTITY_REFUSED.search(errors.getvalue().encode("utf-8", "replace"))
+            raise runner.RunnerError(f"live_host_identity_refused:{refused.group(1).decode()}"
+                                     if refused else "ask_session_refused") from None
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+_IN_PROCESS_LOCK = threading.Lock()
 
 
 def agent_session(host: Any) -> tuple[Any, Any]:

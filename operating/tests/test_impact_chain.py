@@ -12,7 +12,7 @@ isolated-fixture.
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -29,7 +29,8 @@ from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 from operating import proactive_engine as pe
-from ontology.tests.test_po_lateness import bc_po, confirm, fm_twin, line, portal_po
+from ontology.tests.test_po_lateness import (bc_po, block, confirm, fm_twin, line, lined,
+                                             portal_po)
 from tests import test_ontology_tools_process as tp
 
 CONTRACTS = tp.CONTRACTS
@@ -81,7 +82,7 @@ def priced_lines(s, so, key, *, lines=(("1000.00", "100"), ("250.00", "10")), qt
 def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_status="CONFIRMED",
                   ao_status="Committed", value="1250.50", key="ic",
                   planned="2099-01-15", promise="2099-01-20", margin=None, posted=None,
-                  bc_root=False, copy_status=None):
+                  bc_root=False, copy_status=None, po=None, description=None):
     """late PO -> line -> Portal item = FM packaging <- component -> FM AO <- allocation(s)
     -> FM order line -> FM order = Portal order (required date, finance-marked total).
     ``margin``: ``priced_lines`` keyword arguments for each Portal order (None: no lines).
@@ -90,7 +91,9 @@ def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_sta
     at lead (``bc_company_not_known``), as the live BC purchase orders do. ``bc_root``: the
     late order is that BC purchase order itself (its line's expected date ``planned``).
     ``copy_status``: the AO also has a Portal manufacturing-order copy (its twin) whose
-    status is this one, as an MO-FM migration snapshot keeps the status it was copied with."""
+    status is this one, as an MO-FM migration snapshot keeps the status it was copied with.
+    ``po``: the chain leaves this purchase order (already made) through a new line of its
+    own, described ``description`` (``ids["line"]``)."""
     if bc_root:
         # live shape (flagship probe 2026-10-27): an open BC order dated only by its open
         # line's expectedReceiptDate, the Portal order its number matches capped at lead
@@ -102,8 +105,12 @@ def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_sta
         s.link("PurchaseOrder.same_record_as", lead, ids["po"], tier="lead",
                kind="same_record")
     else:
-        ids = {"po": late_po(s, key, planned, promise), "orders": [], "portal_orders": []}
+        ids = {"po": po or late_po(s, key, planned, promise), "orders": [],
+               "portal_orders": []}
         pol = line(s, ids["po"], f"{key}-1", "100", "0")
+    ids["line"] = pol
+    if description is not None:
+        s.val(pol, "description", "text", description)
     item = s.obj(f"Product:portal.app_product:p-{key}")
     if posted is None:
         s.link("PurchaseOrderLine.for_item", pol, item)
@@ -200,7 +207,7 @@ class PlanTests(unittest.TestCase):
         handler = table_of(store, policy=policy)["plx.investigate"]["handler"]
         args = {"family": "F16", "root": root}
         out = handler(args, actor)
-        answer = []
+        first, answer = out, []
         while True:
             self.assertEqual(validate(out, CONTRACTS["tools"]["plx.investigate"]["output"],
                                       root=CONTRACTS), [], json.dumps(out)[:3000])
@@ -210,7 +217,8 @@ class PlanTests(unittest.TestCase):
             if not cursor or out["completeness"].get("reason") != "answer_paged":
                 break
             out = handler({**args, "cursor": cursor}, actor)
-        out = {**out, "answer": answer}
+        # the first page lists the gaps (a later page says gaps_on_page 1)
+        out = {**out, "answer": answer, "gaps": first["gaps"]}
         return out, {e["name"]: e for e in answer}
 
     def test_the_stored_plan_validates_and_is_family_f15(self):
@@ -359,6 +367,31 @@ class PlanTests(unittest.TestCase):
         names = {e["name"] for e in out["answer"]}
         self.assertIn("impact_1", names)
         self.assertNotIn("impact_value_1", names)
+
+    def test_the_scan_counts_each_undetermined_verdict_by_its_own_reason(self):
+        # a reader who may not read the PO's lateness inputs gets an undetermined verdict:
+        # the scan names it by the entry's gap reason, an unread or failed call by name
+        s = tp.Store()
+        ids = chain_fixture(s)
+        st = pe._Store(store_file(s, tempfile.mkdtemp()))
+        try:
+            table = table_of(s)
+            call = lambda tool, args: table[tool]["handler"](args, SALES)   # noqa: E731
+            answer = call("plx.process", {"from": ids["po"], "process": "po_delivery_window"})
+            (entry,) = answer["lateness"]
+            self.assertEqual(entry["state"], "undetermined")
+            found = ic.scan(st, call)
+
+            def failing(tool, args):
+                if tool == "plx.process":
+                    raise RuntimeError("unread")
+                return call(tool, args)
+            unread = ic.scan(st, failing)
+        finally:
+            st.close()
+        self.assertEqual(found["lateness_undetermined_by_reason"], {entry["gap"]["reason"]: 1})
+        self.assertEqual(found["lateness_by_state"], {"undetermined": 1})
+        self.assertEqual(unread["lateness_undetermined_by_reason"], {"process_unread": 1})
 
     def test_closed_orders_and_realized_assembly_orders_put_nothing_at_risk(self):
         # FileMaker's status decides over a Portal copy's (a stale MO-FM snapshot), both ways
@@ -713,6 +746,167 @@ class ScanAndProactiveTests(unittest.TestCase):
                      and "app_sales_order" not in aud)
         self.assertEqual([g for g in no_so["gaps"] if g["kind"] == "order_at_risk"], [])
 
+    def per_line_fixture(self, s, *, received_b=False):
+        """One PO not late by its requested-by date (2099-03-01) and with no document-level
+        promise, two lines each feeding its own customer order (required 2099-02-20); one
+        confirmation promises each item its own date: line a 2099-02-25 (after the order's
+        need), line b 2099-02-10 (before it)."""
+        a = chain_fixture(s, key="pa", planned="2099-03-01", promise=None,
+                          required="2099-02-20", description="InLab Storage Solution")
+        b = chain_fixture(s, key="pb", po=a["po"], required="2099-02-20",
+                          description="Cond probe InLab 741-ISM")
+        if received_b:
+            s.conn.execute("UPDATE object_values SET value = '100' WHERE object_id = ? AND "
+                           "property = 'received_quantity'", (b["line"],))
+        sc = lined(s, a["po"], "per", [
+            block("10", "InLab Storage Solution 3011", "2099-02-25"),
+            block("20", "Cond probe InLab 741-ISM 30014094", "2099-02-10")])
+        return a, b, sc
+
+    def test_a_customer_order_is_at_risk_when_the_line_feeding_it_is_promised_late(self):
+        s = tp.Store()
+        a, b, sc = self.per_line_fixture(s)
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+        try:
+            found = ic.scan(st, self.caller(s, STAFF))
+        finally:
+            st.close()
+        # the document-level reading has no promise (the PO is neither late nor at risk):
+        # only line a's own promise puts its order at risk, by 5 days; line b's does not
+        days = {o.key: o.days for o in found["assessment"].orders}
+        self.assertEqual(days, {a["portal_orders"][0]: 5, b["portal_orders"][0]: -10})
+        (risky,) = found["assessment"].at_risk
+        self.assertEqual((risky.worst_chain.line, risky.material.isoformat()),
+                         (a["line"], "2099-02-25"))
+        self.assertIn("for its line (matched by description)", risky.material_how)
+        # the engine's gap carries the evidence trail: the confirmation's cited per-item
+        # date (its own group), the line, its match and the dates
+        inbox = pe.inbox_path(path)
+        s.conn.execute("INSERT INTO objects VALUES (?,?,?,?,?,?,?)",
+                       ("Message:fx:1", "Message", "fx", '["1"]', "mail:box-b", tp.T0, None))
+        path = store_file(s, self.dir.name)
+        pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF))
+
+        def read(may_read):
+            return [g for g in pe.read_inbox(
+                inbox, path, reader="r", may_read=may_read,
+                held=tp.POLICY.held_markings(STAFF),
+                decide=lambda handles: {h: None for h in handles})["gaps"]
+                if g["kind"] == "order_at_risk"]
+        (gap,) = read(lambda aud: tp.POLICY.may_read(STAFF, aud) or aud == "mail:box-b")
+        self.assertEqual(gap["object_id"], a["portal_orders"][0])
+        self.assertEqual(gap["event"], {"days": 5, "orders_affected": 1, "line": a["line"],
+                                        "matched_by": "description",
+                                        "line_promised": "2099-02-25",
+                                        "required": "2099-02-20",
+                                        "caveat": "later_promise_may_exist"})
+        self.assertIn(s.handles[sc][0], gap["citations"])
+        # a mailed confirmation's promises are never proven complete (item permissions,
+        # plx.process's promises_unproven): even the run's reader may miss a later one, so
+        # every reader is told so; a reader without the mailbox is too, never which one
+        self.assertTrue(gap["summary"].endswith("(a later promise you cannot see may exist)"))
+        (gap,) = read(lambda aud: tp.POLICY.may_read(STAFF, aud))
+        self.assertTrue(gap["summary"].endswith("(a later promise you cannot see may exist)"))
+        self.assertNotIn("box-b", json.dumps(gap))
+        # one who may not open the confirmation never sees the claim resting on it
+        self.assertEqual(read(lambda aud: tp.POLICY.may_read(STAFF, aud)
+                              and aud != "api:documentFields"), [])
+
+    def test_a_received_line_puts_nothing_at_risk_and_malformed_lines_fail_closed(self):
+        s = tp.Store()
+        a, b, _sc = self.per_line_fixture(s, received_b=True)
+        # line b received but promised after its order's need: nothing at risk through it
+        s.conn.execute("UPDATE object_values SET value = replace(value, '2099-02-10', "
+                       "'2099-02-28') WHERE property = 'line_promises'")
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+        try:
+            found = ic.scan(st, self.caller(s, STAFF))
+        finally:
+            st.close()
+        self.assertEqual([o.key for o in found["assessment"].at_risk], [a["portal_orders"][0]])
+        self.assertEqual(found["orders_excluded"]["line_not_late"], 1)
+        # a per-line answer that is malformed (unknown state or basis, no date or an
+        # uncited one, a lead's) is not read: the document-level reading stands
+        cite = {"citation": {"l1_handle": "h"}, "value": "2099-02-25"}
+        good = {"line": "L", "matched_by": "description", "state": "not_due",
+                "promised_date": "2099-02-25", "values": [cite]}
+        vendor = {"basis": "vendor_promise", "per_line": True, "lines": [good]}
+        self.assertEqual(set(ic.line_promises_of(vendor)), {"L"})
+        for bad in ({"state": "maybe"}, {"matched_by": "position"}, {"promised_date": "soon"},
+                    {"values": []}, {"values": [{**cite, "value": "2099-02-24"}]}):
+            self.assertEqual(ic.line_promises_of({**vendor, "lines": [{**good, **bad}]}), {},
+                             bad)
+        self.assertEqual(ic.line_promises_of({**vendor, "basis": "possible_vendor_promise"}),
+                         {})
+        verdict = ic.Late("po", "not_due", measured=date(2099, 2, 1), at_risk=False,
+                          lines=ic.line_promises_of(vendor))
+        self.assertEqual(verdict.material("L")[0], date(2099, 2, 25))
+        self.assertEqual(verdict.material("other"), (None, "not_due"))
+
+    def test_per_line_cardinality_no_order_lost_or_duplicated(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                s = tp.Store()
+                first = chain_fixture(s, key=f"c{n}-0", planned="2099-03-01", promise=None,
+                                      required="2099-02-20", description="Item number 000")
+                ids = [first] + [chain_fixture(s, key=f"c{n}-{i}", po=first["po"],
+                                               required="2099-02-20",
+                                               description=f"Item number {i:03d}")
+                                 for i in range(1, n)]
+                # every line promised after its order's need, by i + 1 days
+                lined(s, first["po"], f"per{n}", [
+                    block(str(10 * (i + 1)), f"Item number {i:03d} 300{i:05d}",
+                          (date(2099, 2, 21) + timedelta(days=i)).isoformat())
+                    for i in range(n)])
+                path = store_file(s, self.dir.name)
+                st = pe._Store(path)
+                try:
+                    started = time.monotonic()
+                    found = ic.scan(st, self.caller(s, STAFF))
+                    elapsed = time.monotonic() - started
+                finally:
+                    st.close()
+                    path.unlink()
+                days = {o.key: o.days for o in found["assessment"].at_risk}
+                # the per-line answer lists 5 lines (latest promise first): the rest keep
+                # the document-level reading, which has no promise: never claimed
+                listed = min(n, 5)
+                self.assertEqual(len(days), listed)
+                self.assertEqual(sorted(days.values()), list(range(n - listed + 1, n + 1)))
+                self.assertLess(elapsed, 30)
+
+    def test_an_engine_reader_blind_to_a_lateness_source_does_not_judge_orders_at_risk(self):
+        # live 2026-11-02: the engine read as the capture principal without its BC grant got
+        # every BC-twinned PO undetermined (0 late, 201 undetermined) and reported a clean
+        # run; a run principal lacking any source a lateness verdict rests on is blocked,
+        # and the gaps a full reader found stay open
+        s = tp.Store()
+        chain_fixture(s, orders=1, required="2099-01-20")
+        path = store_file(s, self.dir.name)
+        inbox = pe.inbox_path(path)
+        full = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
+                      reader_may_read=lambda key: tp.POLICY.may_read(STAFF, key))
+        self.assertEqual(full["detectors"]["orders_at_risk"], "complete")
+        self.assertEqual(full["gaps_by_kind"]["order_at_risk"], 1)
+        st = pe._Store(path)
+        try:
+            held = {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+            lacking = next(k for k in pe._lateness_audiences(st) if k in held
+                           and k.startswith(pe._DECIDING_AUDIENCES))
+        finally:
+            st.close()
+        blind = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
+                       reader_may_read=lambda key: key != lacking)
+        self.assertEqual(blind["detectors"]["orders_at_risk"], "blocked")
+        self.assertEqual(blind["detector_reasons"]["orders_at_risk"],
+                         ["reader_lacks_lateness_access"])
+        with sqlite3.connect(inbox) as conn:
+            states = [r[0] for r in conn.execute(
+                "SELECT state FROM gaps WHERE kind = 'order_at_risk'")]
+        self.assertEqual(states, ["open"])
+
     def test_a_late_po_on_the_home_list_shows_its_margin_only_to_finance_readers(self):
         """One late PO feeding two orders: ``po_impact`` ("affects 2 sales orders", no money)
         for every reader who may open the chain, ``po_impact_margin`` (the margin at stake)
@@ -1002,3 +1196,185 @@ class ScanAndProactiveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def planned_on(s, ao, day, event_type="AssemblyOrder.scheduled"):
+    """An assembly order's planned-date event, qualified as the order (the projection's
+    shape)."""
+    s.n += 1
+    handle, lineage = s.handles[ao]
+    eid = f"ev-{s.n}"
+    s.conn.execute(
+        "INSERT INTO events(event_id, event_type, time_basis, time, l1_handle, field_path, "
+        "digest, lineage, markings, recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (eid, event_type, "planned", day, handle, "row.datescheduled", tp._h(eid), lineage,
+         "[]", tp.T0))
+    s.conn.execute("INSERT INTO event_objects VALUES (?,?,?)", (eid, ao, "order"))
+    return handle
+
+
+def demand_fixture(s, *, key="dm", orders=1, required="2099-01-25", ordered=None,
+                   so_status="Open", aos=(("Allocated", ("2099-01-20",)),)):
+    """late PO -> line -> item = FM packaging <- component -> FM AO(s) with no allocation,
+    each making one finished product (AssemblyOrder.makes) whose Portal twin ``orders``
+    open Portal orders' lines sell: the chain to each order exists only as an item-demand
+    lead. ``aos``: (status, planned dates) per assembly order consuming the late item."""
+    ids = {"po": late_po(s, key), "orders": [], "aos": []}
+    pol = line(s, ids["po"], f"{key}-1", "100", "0")
+    item = s.obj(f"Product:portal.app_product:p-{key}")
+    s.link("PurchaseOrderLine.for_item", pol, item)
+    pack = s.obj(f"Product:portal.fm_packaging:pk-{key}", "fm_bronze")
+    s.link("Product.same_record_as", item, pack, kind="same_record")
+    fp = s.obj(f"Product:portal.fm_finished_product:fp-{key}", "fm_bronze")
+    fg = s.obj(f"Product:portal.app_product:fg-{key}")
+    s.link("Product.same_record_as", fg, fp, kind="same_record")
+    for i, (status, days) in enumerate(aos):
+        comp = s.obj(f"AssemblyOrderComponent:portal.fm_assembly_order_item:c-{key}-{i}",
+                     "fm_bronze")
+        s.link("AssemblyOrderComponent.uses_item", comp, pack)
+        ao = s.obj(f"AssemblyOrder:portal.fm_assembly_order:ao-{key}-{i}", "fm_bronze")
+        s.val(ao, "status", "text", status)
+        s.link("AssemblyOrderComponent.component_of", comp, ao)
+        s.link("AssemblyOrder.makes", ao, fp)
+        for day in days:
+            planned_on(s, ao, day)
+        ids["aos"].append(ao)
+    for n in range(orders):
+        so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n:03d}")
+        if required is not None:
+            s.val(so, "required_date", "date", required)
+        if ordered is not None:
+            s.val(so, "order_date", "date", ordered)
+        if so_status is not None:
+            s.val(so, "status", "text", so_status)
+        sl = s.obj(f"SalesOrderLine:portal.app_sales_order_line:sl-{key}-{n:03d}")
+        s.link("SalesOrderLine.line_of", sl, so)
+        s.link("SalesOrderLine.for_item", sl, fg)
+        ids["orders"].append(so)
+    return ids
+
+
+class DemandLeadTests(unittest.TestCase):
+    """The item-demand lead: an order reached only through it is labelled lead, never firm;
+    an unknown or ambiguous input gives no lead."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
+    def scan(self, s):
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+        table = table_of(s)
+        try:
+            return ic.scan(st, lambda tool, args: table[tool]["handler"](args, STAFF),
+                           samples=100)
+        finally:
+            st.close()
+            path.unlink()
+
+    def test_an_order_reached_only_by_item_and_date_is_a_labelled_lead(self):
+        s = tp.Store()
+        ids = demand_fixture(s)
+        found = self.scan(s)
+        self.assertEqual(found["orders_at_risk_by_tier"], {"firm": 0, "lead": 1})
+        (sample,) = found["samples"]
+        self.assertEqual((sample["tier"], sample["basis"]), ("lead", ic.INFERRED))
+        self.assertEqual(sample["order"], ids["orders"][0])
+        # every hop it crossed is a recorded firm link; the pairing alone is inferred
+        self.assertTrue(all(link["tier"] == "verified" for link in sample["links"]))
+        self.assertIn("AssemblyOrder.makes", [link["link_type"] for link in sample["links"]])
+        # the firm link is still reported missing, as a lead only
+        self.assertIn("link_lead_only", found["broken_by_reason"])
+        self.assertNotIn("assembly_order_not_linked_to_order_line", found["broken_by_reason"])
+
+    def test_a_firm_allocation_wins_and_the_allocated_order_gets_no_lead(self):
+        s = tp.Store()
+        ids = chain_fixture(s, orders=1, required="2099-01-25", ao_status="Allocated")
+        fp = s.obj("Product:portal.fm_finished_product:fp-firm", "fm_bronze")
+        s.link("AssemblyOrder.makes", ids["ao"], fp)
+        planned_on(s, ids["ao"], "2099-01-20")
+        sl = s.obj("SalesOrderLine:portal.app_sales_order_line:sl-firm")
+        other = s.obj("SalesOrder:portal.app_sales_order:so-other")
+        s.val(other, "required_date", "date", "2099-01-25")
+        s.link("SalesOrderLine.line_of", sl, other)
+        s.link("SalesOrderLine.for_item", sl, fp)
+        found = self.scan(s)
+        self.assertEqual(found["orders_at_risk_by_tier"], {"firm": 1, "lead": 0})
+        self.assertEqual(found["demand_leads"], 0)
+
+    def test_unknown_or_ambiguous_inputs_give_no_lead(self):
+        cases = {
+            "outside_window": dict(required="2099-06-30"),
+            "closed_order": dict(so_status="Closed"),
+            "realized_ao": dict(aos=(("Realized", ("2099-01-20",)),)),
+            "two_planned_dates": dict(aos=(("Allocated", ("2099-01-20", "2099-01-22")),)),
+            "no_planned_date": dict(aos=(("Allocated", ()),)),
+            "no_order_status": dict(so_status=None),
+            "made_waiting_to_ship": dict(so_status="READY_TO_SHIP"),
+            "no_order_date_at_all": dict(required=None),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                s = tp.Store()
+                demand_fixture(s, **kwargs)
+                found = self.scan(s)
+                self.assertEqual(found["orders_affected"], 0)
+                self.assertEqual(found["demand_leads"], 0)
+
+    def test_an_order_with_no_required_date_is_paired_by_its_order_date_and_not_at_risk(self):
+        s = tp.Store()
+        ids = demand_fixture(s, required=None, ordered="2099-01-05")
+        found = self.scan(s)
+        self.assertEqual(found["demand_leads"], 1)
+        self.assertEqual(found["orders_affected_by_tier"], {"firm": 0, "lead": 1})
+        # reachable, but no days at risk without a required date
+        self.assertEqual(found["orders_at_risk"], 0)
+        (order,) = found["assessment"].orders
+        self.assertEqual((order.key, order.why_null),
+                         (ids["orders"][0], "order_required_date_not_recorded"))
+
+    def test_the_assembly_order_planned_nearest_the_required_date_is_the_one_paired(self):
+        s = tp.Store()
+        ids = demand_fixture(s, aos=(("Allocated", ("2099-01-24",)),
+                                     ("Allocated", ("2098-12-01",))))
+        found = self.scan(s)
+        self.assertEqual(found["demand_leads"], 1)
+        (sample,) = found["samples"]
+        records = {link["from"] for link in sample["links"]} | {
+            link["to"] for link in sample["links"]}
+        self.assertIn(ids["aos"][0], records)
+        self.assertNotIn(ids["aos"][1], records)
+
+    def test_cardinality_no_lead_order_lost_or_duplicated(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                s = tp.Store()
+                ids = demand_fixture(s, orders=n)
+                started = time.monotonic()
+                found = self.scan(s)
+                self.assertLess(time.monotonic() - started, 30)
+                keys = [o.key for o in found["assessment"].at_risk]
+                self.assertEqual(sorted(keys), sorted(ids["orders"]))
+                self.assertEqual(found["orders_at_risk_by_tier"], {"firm": 0, "lead": n})
+
+    def test_the_proactive_gap_says_lead_and_never_ranks_it_high(self):
+        s = tp.Store()
+        demand_fixture(s, required="2099-01-10")   # material 2099-02-01: 22 days at risk
+        path = store_file(s, self.dir.name)
+        inbox = pe.inbox_path(path)
+        table = table_of(s)
+        pe.run(path, inbox, date(2099, 2, 1),
+               call=lambda tool, args: table[tool]["handler"](args, STAFF))
+        with sqlite3.connect(inbox) as conn:
+            rows = conn.execute("SELECT summary FROM gaps WHERE kind = 'order_at_risk'"
+                                ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0][0].startswith("Lead, not firm: "))
+        gaps = pe.read_inbox(inbox, path, reader=pe.reader_key(STAFF),
+                             may_read=lambda aud: tp.POLICY.may_read(STAFF, aud),
+                             held=tp.POLICY.held_markings(STAFF),
+                             decide=lambda handles: {h: None for h in handles})["gaps"]
+        (gap,) = [g for g in gaps if g["kind"] == "order_at_risk"]
+        self.assertEqual(gap["follow_up"]["priority"], "medium")
+        self.assertIn("inferred by item and date", gap["follow_up"]["why"])

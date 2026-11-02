@@ -379,7 +379,7 @@ import re
 import shutil
 import sqlite3
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology.mentions import cited_page, is_paged_file
 from ontology.types import Actor
@@ -1130,6 +1130,13 @@ class SharePointCaptureStore:
                               (drive_id, root_path)).fetchone()
         return None if row is None or row[0] is None else dict(row)
 
+    _PERMISSION_ROWS = (
+        "SELECT i.drive_id, i.item_id, i.version_id, i.l1_handle, i.resources, i.source_acl, "
+        "i.removed_reason, i.superseded_at, c.security_class FROM items i "
+        "LEFT JOIN drive_classes c ON c.drive_id = i.drive_id ")
+    # Past this many items asked, one scan of every item is cheaper than a lookup each.
+    PERMISSION_LOOKUPS_MAX = 2000
+
     def item_permissions(self, *, timeout: float | None = None) -> dict[tuple[str, str], str]:
         """Per captured drive item (drive id, item id), the digest of what decides who may
         read any of its versions (:meth:`_row_visible`): every version's handle, path keys,
@@ -1140,27 +1147,56 @@ class SharePointCaptureStore:
         that records no permission positions (no ``root_permissions``, a store from before
         permission re-reads) raises ``CaptureError("permissions_unrecorded")``: its item
         permissions are of no known re-read."""
+        self.begin_permission_read(timeout=timeout)
+        try:
+            return self.pinned_item_permissions(None)
+        finally:
+            self.end_permission_read()
+
+    def begin_permission_read(self, *, timeout: float | None = None) -> None:
+        """Begin the read transaction :meth:`pinned_item_permissions` reads in: every read
+        until :meth:`end_permission_read` sees the store as it was now, whatever a writer
+        commits meanwhile (``timeout``: the busy timeout, seconds). A store that records no
+        permission positions raises ``CaptureError("permissions_unrecorded")`` (the
+        transaction ended)."""
         if timeout is not None:
             self.db.execute(f"PRAGMA busy_timeout = {max(0, int(timeout * 1000))}")
-        digests: dict[tuple[str, str], Any] = {}
+        self.db.execute("BEGIN")
+        try:
+            # The first read fixes the snapshot.
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                               "name='root_permissions'").fetchone() is None:
+                raise CaptureError("permissions_unrecorded")
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def end_permission_read(self) -> None:
+        self.db.rollback()
+
+    def pinned_item_permissions(self, items: Iterable[tuple[str, str]] | None
+                                ) -> dict[tuple[str, str], str]:
+        """:meth:`item_permissions` within the read :meth:`begin_permission_read` began,
+        of the drive items ``items`` only (None: every item); an item not captured has no
+        entry."""
+        wanted = None if items is None else set(items)
         cursor = self.db.cursor()
         cursor.row_factory = None   # plain tuples: one row per captured version
-        cursor.execute("BEGIN")
-        try:
-            if cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
-                              "name='root_permissions'").fetchone() is None:
-                raise CaptureError("permissions_unrecorded")
-            for drive_id, item_id, *version in cursor.execute(
-                    "SELECT i.drive_id, i.item_id, i.version_id, i.l1_handle, i.resources, "
-                    "i.source_acl, i.removed_reason, i.superseded_at, c.security_class "
-                    "FROM items i LEFT JOIN drive_classes c ON c.drive_id = i.drive_id "
-                    "ORDER BY i.drive_id, i.item_id, i.version_id"):
-                digest = digests.get((drive_id, item_id))
-                if digest is None:
-                    digest = digests[(drive_id, item_id)] = sha256()
-                digest.update(repr(version).encode())   # str, int and None: unambiguous
-        finally:
-            self.db.rollback()
+        if wanted is None or len(wanted) > self.PERMISSION_LOOKUPS_MAX:
+            rows: Iterable[tuple[Any, ...]] = cursor.execute(
+                self._PERMISSION_ROWS + "ORDER BY i.drive_id, i.item_id, i.version_id")
+        else:
+            rows = (row for key in sorted(wanted) for row in cursor.execute(
+                self._PERMISSION_ROWS + "WHERE i.drive_id = ? AND i.item_id = ? "
+                "ORDER BY i.version_id", key).fetchall())
+        digests: dict[tuple[str, str], Any] = {}
+        for drive_id, item_id, *version in rows:
+            if wanted is not None and (drive_id, item_id) not in wanted:
+                continue
+            digest = digests.get((drive_id, item_id))
+            if digest is None:
+                digest = digests[(drive_id, item_id)] = sha256()
+            digest.update(repr(version).encode())   # str, int and None: unambiguous
         return {key: digest.hexdigest() for key, digest in digests.items()}
 
     @staticmethod

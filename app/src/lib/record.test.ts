@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { missingText } from "@/components/answer-parts";
-import { factMap, groupLinked, groupRelated, groupTimeline, isBlocked, recordHead } from "./record";
+import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, recordHead } from "./record";
 import type { ObjectPage, Source } from "./types";
 
 const bc = (field: string): Source => ({ system: "BC", handle: "bc://production/c/purchaseOrders/1@e", label: "BC production", fields: { [field]: "x" } });
@@ -40,8 +40,9 @@ describe("record page head", () => {
     expect(h.counterpart?.label).toBe("DSM");
     expect(h.subline).toBeNull();
     expect(h.lead).toBe("130 days late. DSM hasn't confirmed a date, and 1 of 18 kg has arrived.");
-    expect(h.badges.map((b) => b.label)).toEqual(["130 days late", "No confirmed date"]);
-    for (const b of h.badges) expect(b.label.split(" ").length).toBeLessThanOrEqual(3);
+    expect(h.badges.map((b) => b.label)).toEqual(["130 days late", "No supplier confirmation found"]);
+    // the lateness badge stays short; the ETA pill says the supplier's confirmation in full (it wraps)
+    expect(h.badges[0].label.split(" ").length).toBeLessThanOrEqual(3);
     expect(h.stats.map((s) => [s.label, s.value])).toEqual([
       ["Total", "$1,993.33"],
       ["Needed by", "24 Jun 2026"],
@@ -133,5 +134,15 @@ describe("plain words for gaps and money in prose", () => {
     expect(proseMoney("a total of 14,611.33 CAD due")).toBe("a total of $14,611.33 CAD due");
     // a bare number or a PO number is never money
     expect(proseMoney("PO 106093 has 10000 units")).toBe("PO 106093 has 10000 units");
+  });
+});
+
+describe("factValue", () => {
+  it("writes a fact's date like every other date and leaves anything else", () => {
+    expect(factValue("Oct 28, 2026")).toBe("28 Oct 2026");
+    expect(factValue("2026-06-24")).toBe("24 Jun 2026");
+    expect(factValue("P-008864")).toBe("P-008864");
+    expect(factValue("25,113.600 USD")).toBe("$25,113.60 USD");
+    expect(factValue("Foo 28, 2026")).toBe("Foo 28, 2026");
   });
 });

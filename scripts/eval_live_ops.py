@@ -38,6 +38,7 @@ keys are the captures' own rows, never an answer.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from collections import defaultdict
 import hashlib
 import json
@@ -46,11 +47,13 @@ import re
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from types import SimpleNamespace
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import quote
 
 from evals import live_ops
@@ -60,7 +63,7 @@ from evals import partition
 from evals import runner
 from evals import score as scoring
 from evals.oracle import po_lateness
-from evals.oracle.source import canonical
+from evals.oracle.source import canonical, instant
 
 ROOT = Path(__file__).resolve().parents[1]
 CARDS = ROOT / "evals" / "live_ops" / "cards.json"
@@ -154,6 +157,33 @@ def mirror_rows(db: Path, relations: Sequence[str],
                     f"SELECT key_json, {body}, capture_id FROM row_current WHERE {where}",
                     args)]
         return out, generation
+    finally:
+        conn.close()
+
+
+def mirror_versions(db: Path, relations: Sequence[str]
+                    ) -> dict[str, dict[str, list[tuple[datetime, dict]]]]:
+    """relation -> the row's citation without its capture (as ``mirror_rows`` writes it)
+    -> every version the mirror captured of it (superseded and current), each with the
+    UTC instant the capture that first held it finished; read-only. A version whose
+    capture has no finish time is left out (never held at a time)."""
+    conn = _ro(db)
+    try:
+        out: dict[str, dict[str, list[tuple[datetime, dict]]]] = {}
+        for relation in relations:
+            held = out.setdefault(relation, {})
+            for key, row, finished in conn.execute(
+                    "SELECT v.key_json, v.row_json, c.finished_at FROM ("
+                    "SELECT key_json, row_json, capture_id FROM row_version WHERE relation = ? "
+                    "UNION ALL SELECT key_json, row_json, capture_id FROM row_current "
+                    "WHERE relation = ?) v JOIN capture c ON c.capture_id = v.capture_id",
+                    (relation, relation)):
+                at = instant(finished)
+                if at is None:
+                    continue
+                prefix = f"api://{relation}/{quote(canonical(json.loads(key)), safe='')}"
+                held.setdefault(prefix, []).append((at, json.loads(row)))
+        return out
     finally:
         conn.close()
 
@@ -403,13 +433,17 @@ def sharepoint_files(state: Path) -> list[dict[str, Any]]:
 
 def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Current messages from or to a customer's own domain (its BC customers.email, a
-    domain no other customer and no public mailbox provider shares), read-only."""
+    domain no other customer and no public mailbox provider shares), read-only. A customer
+    is its name case-folded: "CITY OF MISSISSAUGA" and "City of Mississauga" are one
+    customer with each card's domain, and its messages are listed under each spelling."""
     owners: dict[str, set[str]] = defaultdict(set)
+    spellings: dict[str, set[str]] = defaultdict(set)
     for record in customers:
         email = str(record["fields"].get("email") or "")
         name = str(record["fields"].get("displayName") or "").strip()
         if "@" in email and name:
-            owners[email.rsplit("@", 1)[-1].strip().casefold()].add(name)
+            owners[email.rsplit("@", 1)[-1].strip().casefold()].add(name.casefold())
+            spellings[name.casefold()].add(name)
     domains = {d: next(iter(n)) for d, n in owners.items()
                if len(n) == 1 and d not in PUBLIC_DOMAINS}
     if not db.is_file() or not domains:
@@ -428,9 +462,10 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
             if len(hit) != 1:
                 continue
             identity = scoring.record_identity(handle)
-            out.append({"handle": handle, "message_id": identity[1] if identity else message_id,
-                        "customer": next(iter(hit)), "subject": row.get("subject"),
-                        "at": row.get("received_at")})
+            out.extend({"handle": handle, "message_id": identity[1] if identity else message_id,
+                        "customer": name, "subject": row.get("subject"),
+                        "at": row.get("received_at")}
+                       for name in sorted(spellings[next(iter(hit))]))
         return out
     finally:
         conn.close()
@@ -448,7 +483,8 @@ def load_world(state: Path, now: datetime | None = None) -> tuple[keys.World, di
                        mail=mail, named_in_text=in_text, named_in_values=in_values,
                        teams=teams_messages(state), mc=mc_tasks(state),
                        sharepoint=sharepoint_files(state),
-                       customer_mail=customer_mail(state / MAIL_CAPTURE, clients))
+                       customer_mail=customer_mail(state / MAIL_CAPTURE, clients),
+                       portal_versions=mirror_versions(state / MIRROR, keys.PORTAL_VERSIONED))
     return world, {"portal_api": mirror_gen, "bc": bc_gen, "graph_mail": mail_gen}
 
 
@@ -701,28 +737,326 @@ def grade(pairs: Sequence[tuple[Mapping, Mapping]], out: Path, reader: str,
                      "justified": result.get("justified"), "codes": result["codes"],
                      "facts": [{k: f[k] for k in ("id", "stated", "evidenced", "contradicted")}
                                for f in result["facts"]],
-                     "answer_ms": ((transcript.get("timing") or {}).get("answer_ms"))})
+                     "answer_ms": ((transcript.get("timing") or {}).get("answer_ms")),
+                     "routed": (transcript.get("agent") or {}).get("routed", "agent")})
     return rows
+
+
+def routing(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per route (the app's profit route, fast path, agent): runs, outcomes graded the
+    same way, median latency; and the share answered without a Claude session."""
+    import statistics
+    out: dict[str, Any] = {}
+    for route in ("profit", "fast_path", "agent"):
+        mine = [r for r in rows if r.get("routed", "agent") == route]
+        times = [r["answer_ms"] for r in mine if isinstance(r.get("answer_ms"), (int, float))]
+        outcomes: dict[str, int] = {}
+        for r in mine:
+            outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
+        out[route] = {"runs": len(mine), "outcomes": outcomes,
+                      "median_ms": round(statistics.median(times)) if times else None}
+    total = len(rows)
+    out["share_without_claude"] = round((out["fast_path"]["runs"] + out["profit"]["runs"])
+                                        / total, 4) if total else None
+    return out
 
 
 def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[Any] = (),
            evidence_label: str, code_sha: str | None = None) -> dict[str, Any]:
-    ran = [r for r in rows if r["outcome"] not in ("not_run", "no_key")]
-    by_split = {name: live_ops.summary([r for r in ran if r["split"] == name])
+    # An item with no key today is counted beside the rate in every summary (``no_key``,
+    # outside ``graded``): a withdrawn key shrinks the denominator, never silently.
+    scored = [r for r in rows if r["outcome"] != "not_run"]
+    ran = [r for r in scored if r["outcome"] != "no_key"]
+    totals = live_ops.summary(scored)
+    by_split = {name: live_ops.summary([r for r in scored if r["split"] == name])
                 for name in ("dev", "held_out")}
+
+    def line(s: Mapping[str, Any]) -> str:
+        rate = "n/a" if s["correct_rate"] is None else f"{100 * s['correct_rate']:.1f}%"
+        return (f"{s['correct']}/{s['graded']} correct ({rate}), {s['false']} false; "
+                f"{s['no_key']} with no key, not in the denominator")
     return {"format": REPORT_FORMAT, "reader": reader, "evidence_label": evidence_label,
             "code_sha": code_sha, "items": len(rows),
+            "headline": {"all": line(totals), **{n: line(s) for n, s in by_split.items()}},
             "no_key": sum(r["outcome"] == "no_key" for r in rows),
             "not_run": sum(r["outcome"] == "not_run" for r in rows),
-            "totals": live_ops.summary(ran), "by_split": by_split,
+            "totals": totals, "by_split": by_split,
+            "routing": routing(ran),
             "cards": [{k: r.get(k) for k in ("card", "item_id", "split", "family", "outcome",
-                                             "justified", "codes", "answer_ms")}
+                                             "justified", "codes", "answer_ms", "routed")}
                       for r in rows], "notes": list(notes)}
+
+
+class RoutedAgent:
+    """The app's routing for one question (``operator_api.backend``'s Ask), decided by the
+    app's own ``ask_shortcut``: a margin question takes the app's profit route
+    (``WorkspaceBackend.profit_job`` over the reader's own session: the answer Vince reads,
+    its facts' cited records as the answer's values); then the deterministic fast answer
+    (``operating.fast_answer``); the wrapped ``agent`` only when neither serves or both
+    decline. The run records ``agent["routed"]`` (``profit``, ``fast_path`` or ``agent``)
+    and, for the agent, why the routes before it did not answer (``agent["declined"]``).
+    A session that cannot start goes to the agent. A list of late purchase orders takes
+    the app's late-list route (``WorkspaceBackend.late_job``: the reader's gap inbox, as
+    Home shows it); the app never sends it on, so neither does the scoreboard."""
+
+    def __init__(self, agent: Any, question: str, *, session: Callable[[Any], Any] | None = None,
+                 fast: Any = None) -> None:
+        self.agent, self.question = agent, question
+        self._session, self._fast = session, fast
+        self._fast_ran = False
+
+    @property
+    def gates_final_reply(self) -> bool:   # a fast answer is gated already
+        return False if self._fast_ran else bool(getattr(self.agent, "gates_final_reply", False))
+
+    def run(self, prompt: str, host: Any) -> Any:
+        declined: list[str] = []
+        route = self._shortcut()
+        if route == "profit":
+            ran = self._profit(host, declined)
+            if ran is not None:
+                self._fast_ran = True
+                return ran
+        elif route == "late_list":
+            ran = self._late(host, declined)
+            if ran is not None:
+                self._fast_ran = True
+                return ran
+        fast = self._fast
+        if fast is None:
+            from operating import fast_answer as fast
+        ran = None
+        if fast.serves(self.question):
+            try:
+                _session_host, server = self._open(host)
+                why: list[str] = []
+                ran = fast.answer(self.question, fast.Reads.of_server(server), why) \
+                    if self._fast is None else fast.answer(
+                        self.question, fast.Reads.of_server(server))
+                declined += [f"fast_path:{code}" for code in why[-1:]]
+            except Exception as error:  # noqa: BLE001 - any failure here: the agent answers
+                declined.append(f"fast_path_unavailable:{type(error).__name__}")
+                ran = None
+        if ran is not None:
+            self._fast_ran = True
+            return runner.AgentRun(events=list(ran.events), final_text=ran.final_text,
+                                   usage={}, agent={"routed": "fast_path",
+                                                    "intent": ran.intent,
+                                                    "final_reply": dict(ran.reply)})
+        # The question's first reads, as the app's Ask makes them (``gated_run``).
+        told = getattr(self.agent, "for_question", None)
+        agent = told(self.question) if told is not None else self.agent
+        result = agent.run(prompt, host)
+        result.agent["routed"] = "agent"
+        if declined:
+            result.agent["declined"] = declined
+        return result
+
+    def _open(self, host: Any) -> tuple[Any, Any]:
+        session = self._session
+        if session is None:
+            from scripts import eval_real_agent as real
+            session = real.agent_session
+        return session(host)
+
+    def _shortcut(self) -> str | None:
+        from operator_api import backend as be
+        from operator_api import models as m
+        return be.ask_shortcut(m.AskRequest(question=self.question))
+
+    def _profit(self, host: Any, declined: list[str]) -> Any:
+        """The app's profit route for the question, as the reader: None when it names no
+        customer or order the reader can find, or answers with a did-you-mean (the app
+        then shows choices: no answer), as the app's Ask goes on from it."""
+        from operating import fast_answer as fa
+        from operator_api import backend as be
+        from operator_api import models as m
+        try:
+            _session_host, server = self._open(host)
+            reads = fa.Reads.of_server(server)
+            view = AppView(reads)
+            backend = be.WorkspaceBackend(lambda _session: view, data_label="live-captures")
+            started = time.monotonic()
+            request = m.AskRequest(question=self.question)
+            job = backend.profit_job(request, "eval", lambda: int(
+                (time.monotonic() - started) * 1000))
+            payload = None if job is None else job(view)
+        except Exception as error:  # noqa: BLE001 - as the app: the next route answers
+            declined.append(f"profit_unavailable:{type(error).__name__}")
+            return None
+        if payload is None:
+            declined.append("profit:no_customer")
+            return None
+        if payload.did_you_mean:
+            # The app shows the choices and nothing else: what Vince reads is a question back.
+            return runner.AgentRun(events=list(reads.events), final_text=profit_text(
+                payload, reads.events), usage={}, agent={"routed": "profit",
+                                                         "did_you_mean": len(payload.did_you_mean)})
+        return runner.AgentRun(events=list(reads.events),
+                               final_text=profit_text(payload, reads.events), usage={},
+                               agent={"routed": "profit", "outcome": payload.outcome})
+
+
+    def _late(self, host: Any, declined: list[str]) -> Any:
+        """The app's late-list route for the question, as the reader: the late purchase
+        orders of the reader's gap inbox (``WorkspaceBackend.late_job``), the answer Vince
+        reads. None only when the reader's session cannot start (the app would show its
+        error; the scoreboard lets the next route answer and records why)."""
+        from operating import fast_answer as fa
+        from operator_api import backend as be
+        from operator_api import models as m
+        try:
+            _session_host, server = self._open(host)
+            reads = fa.Reads.of_server(server)
+            view = AppView(reads)
+            backend = be.WorkspaceBackend(lambda _session: view, data_label="live-captures")
+            started = time.monotonic()
+            payload = backend.late_job(m.AskRequest(question=self.question), "eval", lambda: int(
+                (time.monotonic() - started) * 1000))(view)
+        except Exception as error:  # noqa: BLE001 - recorded; the next route answers
+            declined.append(f"late_list_unavailable:{type(error).__name__}")
+            return None
+        return runner.AgentRun(events=list(reads.events),
+                               final_text=late_text(payload, reads.events), usage={},
+                               agent={"routed": "late_list", "outcome": payload.outcome})
+
+
+class AppView:
+    """A reader's workspace as the app's Ask jobs use it (``operator_ui.object_workspace``'s
+    view and ``HostAccess``), over the reader's eval session (``fast_answer.Reads``): every
+    tool call is the session's, recorded as a transcript event, and each cited record is
+    decided for the reader by the console's own rule (``HostAccess._decide``)."""
+
+    def __init__(self, reads: Any) -> None:
+        self.reads = reads
+        self.access = self
+        self.actor = reads.actor
+        # the store the reader's host answers from: the gap inbox is read beside it
+        self.store_status = SimpleNamespace(store_path=getattr(reads.host, "store_path", None))
+        self._memo: dict[str, Any] = {}
+
+    def gap_inbox(self, *, limit: int | None = None) -> dict[str, Any]:
+        """The reader's gap inbox as the app's workspace reads it
+        (``ObjectWorkspace.gap_inbox``: the inbox beside the store, trimmed by this
+        reader's grant and per-item decision)."""
+        from operator_ui.object_workspace import ObjectWorkspace
+        return ObjectWorkspace.gap_inbox(self, limit=limit)  # type: ignore[arg-type]
+
+    def grant(self) -> tuple[Callable[[str], bool], frozenset[str]]:
+        """(may this reader read an audience key, the markings it holds), from the policy
+        its tool calls are decided by, as ``HostAccess.grant``; inside ``_request``."""
+        reads = self.reads
+        policy = reads.host.policy_now(reads._gated)
+        return (lambda key: policy.may_read(reads._gated, key)), \
+            frozenset(policy.held_markings(reads._gated))
+
+    def _call(self, name: str, arguments: dict) -> dict[str, Any]:
+        from operating.fast_answer import Unanswerable
+        try:
+            return self.reads.call(name, arguments)
+        except Unanswerable:
+            # the console's tools answer a refused call with its error (``_call``)
+            last = self.reads.events[-1] if self.reads.events else {}
+            result = last.get("result")
+            return dict(result) if isinstance(result, Mapping) else {
+                "error": {"code": "tool_execution_failed"}}
+
+    def _request(self) -> Any:
+        return self.reads.request()
+
+    def _base(self) -> dict[str, Any]:
+        return {}
+
+    def _can_open(self, handle: str) -> bool:
+        return False   # no console here to open it in
+
+    def decide(self, handles: Iterable[str]) -> dict[str, Any]:
+        from operator_ui.object_workspace import HostAccess
+        reads = self.reads
+        gated = reads._gated
+        todo = [h for h in dict.fromkeys(handles) if h not in self._memo]
+        if todo:
+            policy = reads.host.policy_now(gated)
+            item_gate = getattr(reads.host.tools, "item_gate", None)
+            for handle in todo:
+                self._memo[handle] = HostAccess._decide(handle, gated, policy, item_gate)
+        return {h: self._memo[h] for h in handles}
+
+
+def late_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
+    """The late-list route's answer as the scoreboard grades an answer: the words Vince
+    reads and, as the answer's values, each late order's name as the session served it
+    (``plx.object``'s display) where a fact cites that record. Nothing the app did not show
+    is added."""
+    cited = {s.handle for f in payload.facts for s in f.sources}
+    values: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in events:
+        if event.get("name") != "plx.object" or event.get("is_error"):
+            continue
+        display = ((event.get("result") or {}).get("object") or {}).get("display") or {}
+        origin = display.get("origin") if isinstance(display, Mapping) else None
+        text = display.get("untrusted_text") if isinstance(display, Mapping) else None
+        if not isinstance(origin, Mapping) or not isinstance(text, str) \
+                or origin.get("citation") not in cited or origin["citation"] in seen:
+            continue
+        seen.add(origin["citation"])
+        values.append({"name": f"late_purchase_order_{len(values) + 1}", "value": text,
+                       "citations": [{"l1_handle": origin["citation"],
+                                      "field_path": origin.get("field_path")}]})
+    return app_text(payload, values)
+
+
+def app_text(payload: Any, values: Sequence[Mapping[str, Any]]) -> str:
+    """An app answer (``AnswerPayload``) as an answer the scoreboard grades: its direct
+    answer, then each fact not already in it, with ``values`` in the answer block."""
+    text = "\n".join([payload.direct_answer] + [f"- {f.text}" for f in payload.facts
+                                                if f.text not in payload.direct_answer])
+    block = {"format": "plx-eval-answer/v1",
+             "answerability": {"answered": "answerable", "partial": "partial"}.get(
+                 payload.outcome, "blocked"),
+             "text": text, "values": list(values), "gaps": []}
+    return text + "\n\n```json\n" + json.dumps(block, ensure_ascii=False) + "\n```"
+
+
+def profit_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
+    """The profit route's answer as the scoreboard grades an answer: the words Vince reads
+    (the direct answer, then each fact) and, as the answer's values, every checked input
+    (``plx.investigate`` answer entries that passed their claim check) on a record a fact
+    cites as its source, cited to its field. Nothing the app did not show is added."""
+    cited = {s.handle for f in payload.facts for s in f.sources}
+    values: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in events:
+        if event.get("name") != "plx.investigate" or event.get("is_error"):
+            continue
+        for entry in (event.get("result") or {}).get("answer") or ():
+            citation = entry.get("citation") if isinstance(entry, Mapping) else None
+            if entry.get("check") != "passed" or not isinstance(citation, Mapping) \
+                    or citation.get("l1_handle") not in cited:
+                continue
+            value = entry.get("value")
+            if isinstance(value, Mapping):
+                value = value.get("untrusted_text", value.get("value"))
+            key = (citation["l1_handle"], str(citation.get("field_path")))
+            if not isinstance(value, (str, int, float)) or key in seen:
+                continue
+            seen.add(key)
+            out = {"name": f"{entry.get('name')}_{len(values) + 1}", "value": str(value),
+                   "citations": [{"l1_handle": citation["l1_handle"],
+                                  "field_path": citation.get("field_path")}]}
+            for extra in ("currency", "unit", "quantity_role"):
+                if isinstance(entry.get(extra), str):
+                    out[extra] = entry[extra]
+            values.append(out)
+    return app_text(payload, values)
 
 
 def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
               make_host: Callable[[], Any], *, out_dev: Path, out_held: Path | None,
-              evidence_label: str, workers: int, budget_seconds: float) -> None:
+              evidence_label: str, workers: int, budget_seconds: float,
+              agent_only: bool = False, fast: Any = None,
+              session: Callable[[Any], Any] | None = None) -> None:
     deadline = time.monotonic() + budget_seconds
 
     def one(pair: tuple[Mapping, Mapping]) -> None:
@@ -731,7 +1065,9 @@ def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
             return
         out = out_dev if item["split"] == "dev" else out_held
         try:
-            runner.run_items([item], agent, lambda _item: make_host(), out=out,
+            routed = agent if agent_only else RoutedAgent(
+                agent, item["question"]["text"], session=session, fast=fast)
+            runner.run_items([item], routed, lambda _item: make_host(), out=out,
                              evidence_label=evidence_label)
         except runner.RunnerError as error:
             print(json.dumps({"item": item["id"], "runner_error": str(error)[:80]}),
@@ -743,10 +1079,11 @@ def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
 
 def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          make_host: Callable[[], Any] | None = None,
-         environ: Mapping[str, str] | None = None, world: keys.World | None = None) -> int:
-    """``agent``, ``make_host``, ``world`` (tests): an injected agent, host and world."""
+         environ: Mapping[str, str] | None = None, world: keys.World | None = None,
+         fast: Any = None, session: Callable[[Any], Any] | None = None) -> int:
+    """``agent``, ``make_host``, ``world``, ``fast``, ``session`` (tests): an injected
+    agent, host, world, fast-answer module and session opener."""
     from operating import deep_investigation as deep
-    from scripts import eval_case_cards as cards_run
     from scripts import eval_real_agent as real
 
     parser = argparse.ArgumentParser(prog="python3 -m scripts.eval_live_ops",
@@ -777,11 +1114,32 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
             sub.add_argument("--max-steps", type=int, default=deep.MAX_STEPS)
             sub.add_argument("--claude-bin", default="claude")
             sub.add_argument("--model")
+            sub.add_argument("--lookup-model",
+                             help="the model a lookup of one named record runs on")
             sub.add_argument("--reader-env", default=real.READER_ENV)
             sub.add_argument("--host-config")
+            sub.add_argument("--live-host-config",
+                             help="the reader's own live host config (default "
+                                  "$PLX_EVAL_LIVE_HOST_CONFIG): the run reads with exactly "
+                                  "its grants, from a temporary copy deleted after the run")
+            sub.add_argument("--offline-directory", action="store_true",
+                             help="with --live-host-config: no live Entra directory read")
             sub.add_argument("--eval-principal", action="store_true")
+            sub.add_argument("--agent-only", action="store_true",
+                             help="send every question to the agent (skip the app's fast path)")
     args = parser.parse_args(argv)
     environ = os.environ if environ is None else environ
+    with contextlib.ExitStack() as cleanup:
+        return _main(args, environ, cleanup, agent=agent, make_host=make_host, world=world,
+                     fast=fast, session=session)
+
+
+def _main(args: argparse.Namespace, environ: Mapping[str, str],
+          cleanup: contextlib.ExitStack, *, agent: Any, make_host: Any, world: Any,
+          fast: Any, session: Any) -> int:
+    from scripts import eval_case_cards as cards_run
+    from scripts import eval_owner_host as owner_host
+    from scripts import eval_real_agent as real
     try:
         if _inside_git(args.dev_dir):
             raise ValueError("dev_dir_inside_a_git_work_tree")
@@ -812,6 +1170,18 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
                 identity, _kind, problem = cards_run.run_reader(environ, args)
                 if problem is not None:
                     raise ValueError(f"reader_refused:{problem}")
+                live = args.live_host_config or environ.get(owner_host.LIVE_HOST_CONFIG_ENV)
+                if live:
+                    # The reader's own live config, its grants unchanged; never the eval
+                    # principal and never beside another config.
+                    if identity is None or args.host_config:
+                        raise ValueError("live_host_config_needs_a_named_reader_alone")
+                    args.work_dir.mkdir(parents=True, exist_ok=True)
+                    temp = cleanup.enter_context(tempfile.TemporaryDirectory(
+                        prefix=".live-host-", dir=args.work_dir))
+                    args.host_config = str(owner_host.from_live(
+                        Path(live), Path(temp) / "config", identity,
+                        offline_directory=args.offline_directory))
                 make_host, part = cards_run.live_host(environ, args, identity)
                 if part is not None:
                     raise ValueError(f"host_blocked:{part.get('error_code')}")
@@ -824,10 +1194,10 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
                 agent = runner.ClaudeCodeAgent(
                     binary=args.claude_bin, model=args.model, timeout=args.timeout,
                     max_turns=args.max_turns, budget_seconds=args.session_budget or None,
-                    max_steps=args.max_steps or None)
+                    max_steps=args.max_steps or None, lookup_model=args.lookup_model)
             run_items(pairs, agent, make_host, out_dev=out_dev, out_held=out_held,
                       evidence_label=evidence_label, workers=args.workers,
-                      budget_seconds=args.budget_seconds)
+                      budget_seconds=args.budget_seconds, agent_only=args.agent_only, fast=fast, session=session)
         if args.command == "rescore" and args.rekey_state:
             fresh_world, _gens = load_world(args.rekey_state, now=run_moment(pairs))
             pairs = rekey(pairs, fresh_world,

@@ -294,6 +294,13 @@ export function conflictSentence(c: Conflict): string {
   return `${field[0].toUpperCase()}${field.slice(1)}: ${parts.join("; ")}.`;
 }
 
+/** A bare amount in a money field reads "25,113.60", never "25113.600"; anything else as given. */
+export function conflictValue(c: Conflict, value: string): string {
+  const v = withoutFloatNoise(value);
+  if (!/amount|total|price|cost|value/i.test(c.field) || !/^-?\d+(?:\.\d+)?$/.test(v.trim())) return v;
+  return Number(v).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 /**
  * Systems that disagree, in suspect violet (a data problem, not a business one): one row per
  * system with its value and source, the value we use marked "Used", and plain words when we
@@ -319,7 +326,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
                 {valueSystem(v.source)}
               </th>
               <td className="py-2 pr-3 font-semibold tabular-nums">
-                {withoutFloatNoise(v.value)}
+                {conflictValue(conflict, v.value)}
                 {used === v && (
                   <span className="ml-2 inline-flex h-5 items-center rounded-md border border-ok-line bg-ok-soft px-1.5 text-label text-ok">Used</span>
                 )}
@@ -347,16 +354,38 @@ function whyUsed(why: string): string {
   const w = readable(why);
   if (/trusted here|declared precedence/i.test(w)) {
     const m = /with the (.+?) record, which is trusted here/i.exec(w);
-    return m ? `We use the ${m[1].replace(/^Portal ar customer$/i, "AR")} record for this field.` : "We use the other record for this field.";
+    return m ? `We use the ${m[1].replace(/^Portal ar customer$/i, "AR").replace(/^Portal oe order header$/i, "Sage order")} record for this field.` : "We use the other record for this field.";
   }
   return w;
 }
 
 const WEEK = 7 * 24 * 3600;
+const DAY_MS = 24 * 3600 * 1000;
 
 /**
- * One grey line: "Data as of 29 Oct, 6:34 a.m.". Per-system times are in its tooltip.
- * Amber appears only when a source this view relied on (`used`) is over a week old.
+ * The sources read more than a day before the data cut-off (`freshness.as_of`), oldest
+ * first, as "Email and Teams to 30 Oct" (one date per group), or null when none is.
+ */
+export function behindCutOff(freshness: Freshness | null | undefined, now?: Date): string | null {
+  const cut = Date.parse(freshness?.as_of ?? "");
+  if (Number.isNaN(cut)) return null;
+  const behind = (freshness?.sources ?? [])
+    .filter((s) => s.as_of && cut - Date.parse(s.as_of) > DAY_MS)
+    .sort((a, b) => Date.parse(a.as_of ?? "") - Date.parse(b.as_of ?? ""));
+  if (behind.length === 0) return null;
+  const byDay = new Map<string, string[]>();
+  for (const s of behind) {
+    const day = formatDate(s.as_of, { short: true, now });
+    byDay.set(day, [...(byDay.get(day) ?? []), SYSTEM_LABEL[s.system] ?? s.system]);
+  }
+  return [...byDay].map(([day, names]) => `${names.join(" and ")} to ${day}`).join(" · ");
+}
+
+/**
+ * One grey line: "Data as of 1 Nov, 6:40 p.m." (the data cut-off, the same on every
+ * screen), then any source read over a day before it ("Email and Teams to 30 Oct").
+ * Per-system times are in its tooltip. Amber appears only when a source this view
+ * relied on (`used`) is over a week old.
  */
 export function FreshnessLabel({
   freshness,
@@ -374,10 +403,12 @@ export function FreshnessLabel({
     .map((s) => `${SYSTEM_LABEL[s.system] ?? s.system}: ${formatDateTime(s.as_of, now)}`)
     .join(" · ");
   const old = sources.filter((s) => s.stale && (s.age_seconds ?? 0) > WEEK && (used ?? []).includes(s.system));
+  const behind = behindCutOff(freshness, now);
   return (
     <div className="space-y-1" data-testid="freshness">
       <p className="text-meta text-muted" title={detail || undefined}>
         {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
+        {freshness.as_of && behind ? <span data-testid="freshness-behind"> · {behind}</span> : null}
       </p>
       {old.length > 0 && (
         <p className="inline-flex items-center gap-1.5 text-meta text-risk" data-testid="freshness-old">

@@ -44,6 +44,7 @@ MESSAGES = {
                           "sign in again.",
     "dev_ticket_required": "This demo sign-in needs the access link you were given.",
     "dev_ticket_not_accepted": "This demo sign-in does not take an access link.",
+    "access_link_refused": "This access link has expired or is not valid. Ask for a new one.",
     "dev_login_not_served": "Demo sign-in is off. Sign in with Microsoft.",
     "not_found": "We couldn't find that, or you don't have access to it.",
     "invalid_request": "That request wasn't understood. Check it and try again.",
@@ -69,6 +70,29 @@ def _incident(error: BaseException, where: str) -> str:
 def sse(event: str, payload: Any) -> str:
     data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def origin_allowed(origin: str, headers: Any, allowed_origins: frozenset[str]) -> bool:
+    """A browser POST's ``Origin`` is the page's own origin: the host the browser
+    addressed, or one named with ``--allowed-origin``.
+
+    The host the browser addressed is ``X-Forwarded-Host`` when a proxy in front set one,
+    else ``Host``. Both deployed fronts are on the app's own host and set it from the
+    browser's ``Host``: Caddy (``/api/*`` to the API, Host kept) and the Next.js rewrite
+    of ``next start``/``next dev`` (Host becomes the API's loopback address, the browser's
+    goes to ``X-Forwarded-Host``). A cross-site page cannot forge it: a browser sends no
+    custom header cross-origin without a CORS preflight, and the API grants none. A
+    header listing several hosts is not trusted (fail closed to ``Host``).
+    """
+    if origin in allowed_origins:
+        return True
+    netloc = urlsplit(origin).netloc
+    if not netloc:
+        return False   # "null" and other opaque origins
+    forwarded = (headers.get("x-forwarded-host") or "").strip()
+    if forwarded and "," not in forwarded:
+        return netloc.lower() == forwarded.lower()
+    return netloc.lower() == (headers.get("host") or "").strip().lower()
 
 
 def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = frozenset(),
@@ -123,8 +147,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         started = time.perf_counter()
         origin = request.headers.get("origin")
         if origin is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
-            host = request.headers.get("host") or ""
-            if origin not in allowed_origins and urlsplit(origin).netloc != host:
+            if not origin_allowed(origin, request.headers, allowed_origins):
                 return problem("origin_refused", 403)
         try:
             response = await call_next(request)
@@ -195,7 +218,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     ask_doc = {
         200: {"description": "Server-sent events. Each event's `event:` is its name and "
                              "`data:` one JSON object: understanding (UnderstandingEvent), "
-                             "status (StatusEvent), sources (SourcesEvent), token "
+                             "status (StatusEvent: a plain-words progress step), sources "
+                             "(SourcesEvent), verdict (VerdictEvent: the answer's first "
+                             "line once the answer gate accepts it), token "
                              "(TokenEvent), answer (AnswerPayload, last), error (ErrorBody, "
                              "last).",
               "content": {"text/event-stream": {"schema": {
@@ -298,6 +323,23 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         except (KeyError, LookupError):
             return problem("not_found", 404)
         return JSONResponse(page.model_dump(mode="json"))
+
+    @app.get("/api/object-section/{section}/{object_type}/{object_id:path}",
+             response_model=m.ObjectSection, tags=["object"],
+             responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
+    def object_section(section: Literal["late", "people", "landed_cost", "trail", "margin"],
+                       object_type: str, object_id: str,
+                       who: Reader = Depends(reader)) -> Response:
+        """One slow section of a record's page (late check, people, landed cost, how we
+        know), read after its quick first read and merged into it. Not found reads the
+        same as a record the reader cannot see."""
+        if len(object_type) > 60 or len(object_id) > 700 or not object_id:
+            return problem("invalid_request", 422)
+        try:
+            out = backend.object_section(who, object_type, object_id, section)
+        except (KeyError, LookupError):
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"))
 
     @app.get("/api/source", response_model=m.SourceView, tags=["object"],
              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})

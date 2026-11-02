@@ -44,14 +44,22 @@ class OwnerEvalHostTest(unittest.TestCase):
 
     def test_the_generated_host_resolves_the_named_reader_as_owner_and_nobody_else(self):
         code, printed, errors = generate(self.out)
-        self.assertEqual((code, errors), (0, ""))
+        # No error; without --full-read the host reads the directory, and the missing Graph
+        # credentials are said up front (names only).
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(errors)["warning"], "entra_directory_needs_graph_credentials")
         for value in CLAIMS.values():   # the reader's claims are never printed
             self.assertNotIn(value.lower(), printed.lower())
+            self.assertNotIn(value.lower(), errors.lower())
         config = HostConfig.from_file(self.out / "host.json")   # loads as the host loads it
         self.assertEqual(config.employee_policy, (self.out / "employee_policy.json").resolve())
         doc = json.loads((self.out / "host.json").read_text("utf-8"))
+        # The owner holds every marking the live-ops key grades it as holding: none fewer
+        # (a fact the key calls visible would be hidden), none more.
+        from evals.live_ops import READERS
         self.assertEqual(check_marking_grants(doc["marking_grants"]),
-                         {"finance": frozenset(tool.OWNER_PRINCIPALS)})
+                         {m: frozenset(tool.OWNER_PRINCIPALS)
+                          for m in READERS["vince"]["markings"]})
         policy = ep.EmployeePermissionPolicy.from_file(self.out / "employee_policy.json")
         resolver = ep.EmployeePermissionResolver(
             policy, ep.PortalAccessSnapshot(self.out / "portal_access.json"))
@@ -109,6 +117,52 @@ class OwnerEvalHostTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             tool.build(CLAIMS, role="purchasing", full_read=True)
 
+    def test_a_full_read_eval_host_reads_no_directory_and_resolves_the_same_grants(self):
+        """A scoreboard host (--full-read) needs no Entra directory read, so it runs without
+        Graph credentials; the directory changes none of a generated reader's principals,
+        clearance, full-read grant or markings (its policy gates no principal by Entra), so
+        switching it off changes nothing the reader may read. A reader without full read
+        keeps it (its item ACLs match the groups it reads) and is told what it needs."""
+        from operating.agent_session import GRAPH_ENV
+
+        def directory(_principal):
+            return ep.EntraDirectoryRead(
+                "read", OID, user_principal_name=CLAIMS["email"], mail=CLAIMS["email"],
+                department="Quality", group_ids=frozenset({OTHER}), source="graph://users",
+                job_title="President", read_at="2026-11-02T00:00:00Z")
+        for kwargs in ({"full_read": True}, {}, {"role": "quality"}, {"role": "purchasing"}):
+            with self.subTest(**kwargs):
+                files = tool.build(CLAIMS, **kwargs)
+                self.assertEqual(files["host.json"]["entra_directory"],
+                                 not kwargs.get("full_read"))
+                out = self.tmp / ("r-" + "-".join(map(str, kwargs.values())))
+                tool.write(out, files)
+                policy = ep.EmployeePermissionPolicy.from_file(out / "employee_policy.json")
+                snapshot = ep.PortalAccessSnapshot(out / "portal_access.json")
+                off = ep.EmployeePermissionResolver(policy, snapshot).resolve(
+                    ep.EmployeePrincipal(TID, OID))
+                on = ep.EmployeePermissionResolver(policy, snapshot, directory=directory
+                                                   ).resolve(ep.EmployeePrincipal(TID, OID))
+                self.assertIsNone(off.denied_reason)
+                self.assertIsNone(on.denied_reason)
+                self.assertEqual((off.actor.principals, off.actor.clearance,
+                                  off.full_read_code(), off.file_clearance,
+                                  off.qc_document_reader),
+                                 (on.actor.principals, on.actor.clearance,
+                                  on.full_read_code(), on.file_clearance,
+                                  on.qc_document_reader))
+        with contextlib.redirect_stdout(io.StringIO()) as printed, \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(tool.main(["--out", str(self.tmp / "fr"), "--full-read"],
+                                       environ=ENV), 0)
+        self.assertFalse(json.loads(printed.getvalue())["entra_directory"])
+        self.assertEqual(errors.getvalue(), "")
+        fake = {**ENV, **{name: "x" for name in GRAPH_ENV}}   # present: nothing to say
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(tool.main(["--out", str(self.tmp / "on")], environ=fake), 0)
+        self.assertEqual(errors.getvalue(), "")
+
     def test_a_department_member_is_routed_by_its_department_never_as_an_admin(self):
         from operating.briefing import Routing
         for role, (principals, marking) in tool.ROLES.items():
@@ -164,6 +218,72 @@ class OwnerEvalHostTest(unittest.TestCase):
             self.assertEqual((code, printed), (2, ""))
             self.assertEqual(json.loads(errors), {"error": "ValueError"})
             self.assertFalse(self.out.exists())
+
+
+class LiveHostConfigTest(unittest.TestCase):
+    """``from_live``: an eval run reads with exactly the reader's own live host config."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp))
+        self.live = self.tmp / "live"
+        with contextlib.redirect_stdout(io.StringIO()):
+            tool.main(["--out", str(self.live), "--full-read"], environ=ENV)
+        doc = json.loads((self.live / "host.json").read_text("utf-8"))
+        owners = list(tool.OWNER_PRINCIPALS)
+        doc["marking_grants"] = {m: owners for m in ("finance", "purchasing_prices",
+                                                     "quality_controlled", "l5", "pii")}
+        doc["entra_directory"] = True   # the live owner host reads its Entra directory
+        (self.live / "host.json").write_text(json.dumps(doc), "utf-8")
+        self.doc = doc
+
+    def test_the_run_config_is_the_live_one_its_files_read_in_place(self):
+        out = self.tmp / "run"
+        path = tool.from_live(self.live / "host.json", out, CLAIMS, offline_directory=True)
+        self.assertEqual(sorted(p.name for p in out.iterdir()), ["host.json"])  # no copies
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        doc = json.loads(path.read_text("utf-8"))
+        self.assertEqual(doc["marking_grants"], self.doc["marking_grants"])   # every grant
+        self.assertFalse(doc["entra_directory"])
+        config, live = HostConfig.from_file(path), HostConfig.from_file(self.live / "host.json")
+        for name in ("sources", "marking_grants", "tenant", *tool_paths()):  # as the live host
+            self.assertEqual(getattr(config, name, None), getattr(live, name, None), name)
+        self.assertEqual(config.employee_policy, (self.live / "employee_policy.json").resolve())
+        self.assertEqual(set(config.marking_grants), set(self.doc["marking_grants"]))
+        kept = tool.from_live(self.live / "host.json", self.tmp / "run2", CLAIMS)
+        self.assertTrue(json.loads(kept.read_text("utf-8"))["entra_directory"])
+
+    def test_an_offline_run_is_refused_when_the_directory_gates_a_principal(self):
+        """Switching the directory off would drop a principal gated by an Entra group:
+        the run would not read with the reader's own grants, so it is refused."""
+        policy_path = self.live / "employee_policy.json"
+        policy = json.loads(policy_path.read_text("utf-8"))
+        policy["principals"]["staff:quality"]["entra_groups"] = [OTHER]
+        policy_path.write_text(json.dumps(policy), "utf-8")
+        with self.assertRaises(ValueError) as caught:
+            tool.from_live(self.live / "host.json", self.tmp / "gated", CLAIMS,
+                           offline_directory=True)
+        self.assertEqual(str(caught.exception), "offline_directory_changes_principals")
+        self.assertFalse((self.tmp / "gated").exists())
+        kept = tool.from_live(self.live / "host.json", self.tmp / "kept", CLAIMS)
+        self.assertTrue(json.loads(kept.read_text("utf-8"))["entra_directory"])
+
+    def test_another_reader_or_a_broken_config_is_refused_and_nothing_written(self):
+        for claims, config, code in (
+                ({**CLAIMS, "entraObjectId": OTHER}, self.live / "host.json",
+                 "reader_not_the_live_host_config_reader"),
+                ({**CLAIMS, "entraTenantId": OTHER}, self.live / "host.json",
+                 "reader_not_the_live_host_config_reader"),
+                (CLAIMS, self.tmp / "absent.json", "live_host_config_unreadable")):
+            with self.subTest(code=code), self.assertRaises(ValueError) as caught:
+                tool.from_live(config, self.tmp / "refused", claims)
+            self.assertEqual(str(caught.exception), code)
+            self.assertFalse((self.tmp / "refused").exists())
+
+
+def tool_paths():
+    from operating.host import _PATHS
+    return _PATHS
 
 
 if __name__ == "__main__":

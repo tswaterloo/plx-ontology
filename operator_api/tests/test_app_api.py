@@ -143,6 +143,71 @@ class AuthEveryRoute(unittest.TestCase):
                            headers={"Origin": "http://testserver"})
         self.assertEqual(same.status_code, 200)
 
+    def test_the_apps_origin_posts_through_the_proxy_in_front(self):
+        # next start's /api rewrite: Host is the API's loopback address, the browser's host
+        # arrives as X-Forwarded-Host (Caddy keeps Host and sets the same header).
+        client = signed_in()
+        proxied = {"Host": "127.0.0.1:8796", "X-Forwarded-Host": "127.0.0.1:3097"}
+        ok = client.post("/api/ask", json={"question": "late?"},
+                         headers={**proxied, "Origin": "http://127.0.0.1:3097"})
+        self.assertEqual(ok.status_code, 200)
+        caddy = {"Host": "plx.example.ts.net", "X-Forwarded-Host": "plx.example.ts.net"}
+        self.assertEqual(client.post("/api/ask", json={"question": "late?"}, headers={
+            **caddy, "Origin": "https://plx.example.ts.net"}).status_code, 200)
+        for origin, headers in (
+                ("https://evil.example", proxied),                       # foreign page
+                ("http://127.0.0.1:8796", proxied),                      # Host, not the app
+                ("http://127.0.0.1:3097", {"Host": "127.0.0.1:8796"}),   # no proxy header
+                ("http://127.0.0.1:3097", {"Host": "127.0.0.1:8796",     # several hosts
+                                           "X-Forwarded-Host": "127.0.0.1:3097, evil"}),
+                ("null", proxied)):
+            refused = client.post("/api/ask", json={"question": "late?"},
+                                  headers={**headers, "Origin": origin})
+            self.assertEqual(refused.status_code, 403, (origin, headers))
+            self.assertEqual(refused.json()["error"]["code"], "origin_refused")
+
+
+class AccessLink(unittest.TestCase):
+    """The access-link sign-in (#ticket=): a refused link says so, an ended one signs out."""
+
+    def test_a_link_signs_in_and_a_refused_one_says_why(self):
+        from operating.session_identity import SessionIdentityRefused
+        from operator_api.server import mock_ticket
+        fixture = fixture_identity("plx", ["staff:demo"])
+        check = mock_ticket("good-ticket-0123456789", fixture)
+        state = {"expired": False, "denied": False}
+
+        def identity(ticket):
+            if state["expired"]:
+                raise SessionIdentityRefused("session_ticket_expired")
+            if state["denied"]:
+                raise SessionIdentityRefused("employee_not_active")
+            return check(ticket)
+
+        client = TestClient(create_app(MockBackend(), DevAuth(ticket_identity=identity, mode="mock"),
+                                       secure_cookie=False), base_url="http://testserver")
+        proxied = {"Host": "127.0.0.1:8796", "X-Forwarded-Host": "127.0.0.1:3097",
+                   "Origin": "http://127.0.0.1:3097"}
+        wrong = client.post("/api/auth/dev-login", json={"ticket": "not-the-ticket"}, headers=proxied)
+        self.assertEqual((wrong.status_code, wrong.json()["error"]["code"]), (403, "access_link_refused"))
+        self.assertEqual(client.post("/api/auth/dev-login", json={}, headers=proxied).json()[
+            "error"]["code"], "dev_ticket_required")
+        ok = client.post("/api/auth/dev-login", json={"ticket": "good-ticket-0123456789"},
+                         headers=proxied)
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertIn("HttpOnly", ok.headers["set-cookie"])
+        self.assertIn("samesite=strict", ok.headers["set-cookie"].lower())
+        self.assertEqual(client.get("/api/me").status_code, 200)
+        # the ticket ends: the session has ended (401, sign in again), not "no access"
+        state["expired"] = True
+        ended = client.get("/api/me")
+        self.assertEqual((ended.status_code, ended.json()["error"]["code"]), (401, "sign_in_required"))
+        # a refusal that is the person's access stays "no Workbench access"
+        state.update(expired=False, denied=True)
+        denied = client.post("/api/auth/dev-login", json={"ticket": "good-ticket-0123456789"},
+                             headers=proxied)
+        self.assertEqual((denied.status_code, denied.json()["error"]["code"]), (403, "no_workbench_access"))
+
 
 class BindRefusals(unittest.TestCase):
     def test_dev_and_mock_bind_loopback_or_tailscale_only(self):
@@ -263,6 +328,8 @@ class MockMatchesOpenapi(unittest.TestCase):
             ("GET", "/api/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412", None, None,
              "ObjectPage"),
             ("GET", "/api/object/PurchaseOrder/90412", None, None, "ObjectPage"),
+            *(("GET", f"/api/object-section/{name}/PurchaseOrder/90412", None, None,
+               "ObjectSection") for name in m.PAGE_SECTIONS),
             ("GET", "/api/source", {"handle": "bc://demo/purchaseOrders/90412"}, None,
              "SourceView"),
             ("POST", "/api/feedback", None, {"answer_id": answer_id, "rating": -1,
@@ -272,7 +339,10 @@ class MockMatchesOpenapi(unittest.TestCase):
             response = client.request(method, path, params=params, json=body)
             self.assertEqual(response.status_code, 200, (path, response.text))
             self.assertEqual(conforms(response.json(), component(name)), [], path)
-            route = path if path in SPEC["paths"] else "/api/object/{object_type}/{object_id}"
+            route = path if path in SPEC["paths"] else \
+                "/api/object-section/{section}/{object_type}/{object_id}" \
+                if path.startswith("/api/object-section/") \
+                else "/api/object/{object_type}/{object_id}"
             declared = SPEC["paths"][route][method.lower()]["responses"]["200"]
             self.assertEqual(declared["content"]["application/json"]["schema"],
                              component(name), path)

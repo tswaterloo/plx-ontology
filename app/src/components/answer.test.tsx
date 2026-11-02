@@ -97,6 +97,16 @@ describe("ConflictCard", () => {
     expect(card).toHaveTextContent("Copied nightly from BC.");
   });
 
+  it("reads a Sage order total as money and the table by its plain name", () => {
+    const sage = { ...bc, system: "Portal" as const, handle: "api://portal.sage_oe_order_header/8041409", label: "Portal Oe order header" };
+    render(<ConflictCard conflict={{ field: "total_amount", values: [{ value: "25113.600", source: sage, trusted: true, why: "" }, { value: "19881.6", source: { ...sage, handle: "api://portal.app_sales_order/x", label: "Portal Sales order" }, trusted: false, why: "" }] }} />);
+    const card = screen.getByTestId("conflict-card");
+    expect(card).toHaveTextContent("25,113.60");
+    expect(card).toHaveTextContent("19,881.60");
+    expect(card).not.toHaveTextContent(/Oe order header/i);
+    expect(card).toHaveTextContent("Sage order");
+  });
+
   it("never claims a trusted value when none is marked", () => {
     render(<ConflictCard conflict={{ field: "date", values: [{ value: "a", source: bc, trusted: false, why: "" }, { value: "b", source: bc, trusted: false, why: "" }] }} />);
     expect(screen.queryByText("Used")).toBeNull();
@@ -187,6 +197,22 @@ describe("AnswerCard", () => {
     expect(screen.getByTestId("checked-list")).toHaveTextContent("Mission Control");
   });
 
+  it("states the data cut-off and names each source read over a day before it", () => {
+    const cut = {
+      as_of: "2026-11-01T22:40:07Z",
+      sources: [
+        { system: "BC" as const, as_of: "2026-11-01T22:40:07Z", age_seconds: 70000, stale: false },
+        { system: "Portal" as const, as_of: "2026-11-01T21:42:45Z", age_seconds: 74000, stale: false },
+        { system: "Email" as const, as_of: "2026-10-30T15:11:10Z", age_seconds: 270000, stale: true },
+        { system: "Teams" as const, as_of: "2026-10-30T14:18:31Z", age_seconds: 317000, stale: true },
+      ],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: cut } }} />);
+    expect(screen.getByTestId("freshness")).toHaveTextContent(/^Data as of 1 Nov/);
+    expect(screen.getByTestId("freshness-behind")).toHaveTextContent("Teams and Email to 30 Oct");
+    expect(screen.getByTestId("freshness-behind")).not.toHaveTextContent("Portal");
+  });
+
   it("never repeats the full-read label on a card: the page says it once", () => {
     const full = { ...answer, access_label: "Viewing with full-read access" };
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: full }} />);
@@ -238,6 +264,33 @@ describe("AnswerCard", () => {
     );
     expect(screen.queryByTestId("did-you-mean")).toBeNull();
     expect(screen.getByTestId("answer-card")).not.toHaveTextContent(/entity mapping/i);
+  });
+
+  it("lists the plain-words steps and shows the verdict before the answer streams", () => {
+    render(
+      <AnswerCard
+        turn={{ id: "t", question: "q", phase: "thinking", streamed: "", steps: ["Reading your question", "Finding PO 90412", "Checking supplier confirmations in mail"], verdict: "PO 90412 is 12 days late." }}
+      />,
+    );
+    const progress = screen.getByTestId("progress");
+    expect(progress).toHaveTextContent("Finding PO 90412");
+    expect(progress).toHaveTextContent("Checking supplier confirmations in mail");
+    expect(screen.getByTestId("verdict")).toHaveTextContent("PO 90412 is 12 days late.");
+  });
+
+  it("marks the early verdict as not confirmed when the answer errors or is stopped", () => {
+    for (const error of ["Something went wrong on our side. Try again.", "Stopped. Ask again whenever you're ready."]) {
+      const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "error", streamed: "", steps: [], verdict: "PO 90412 is 12 days late.", error }} />);
+      const shown = screen.getByTestId("direct-answer");
+      expect(shown).toHaveTextContent(/^Early reading, not confirmed/);
+      expect(shown).toHaveTextContent("PO 90412 is 12 days late.");
+      expect(shown).toHaveClass("text-muted");
+      expect(screen.getByTestId("answer-card")).toHaveTextContent(error.startsWith("Stopped") ? "Stopped." : "This answer didn't finish.");
+      unmount();
+    }
+    // while it is still being worked out, and once it lands, the line carries no such mark
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "thinking", streamed: "", steps: [], verdict: "PO 90412 is 12 days late." }} />);
+    expect(screen.queryByTestId("early-reading")).toBeNull();
   });
 
   it("shows streamed text with a busy state before the answer lands", () => {
@@ -455,42 +508,41 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     expect(buttons[0]).toHaveTextContent("last picked");
   });
 
-  it("shows the quick read first, then the full page with the customer's figures", async () => {
+  it("paints the quick read first, a skeleton per slow section, and merges each section as it lands", async () => {
     const base = {
-      object_id: "Customer:a", type: "Customer", label: "Diversified", summary: "Customer",
-      status: { state: "read", text: "Read", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" },
+      object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1", summary: "Supplier X",
+      status: { state: "open", text: "Open", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" },
     };
-    let release: (r: Response) => void = () => undefined;
-    const fullDone = new Promise<Response>((r) => (release = r));
+    const held: Record<string, (r: Response) => void> = {};
+    const calls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string) =>
-        String(url).includes("quick=1")
-          ? new Response(JSON.stringify({ ...base, complete: false }), { status: 200 })
-          : fullDone,
-      ),
+      vi.fn(async (url: string) => {
+        calls.push(String(url));
+        if (String(url).includes("quick=1")) return new Response(JSON.stringify({ ...base, complete: false }), { status: 200 });
+        const name = /object-section\/([a-z_]+)\//.exec(String(url))?.[1] ?? "?";
+        return new Promise<Response>((r) => (held[name] = r));
+      }),
     );
-    render(<ObjectView type="Customer" id="Customer:a" />);
-    expect(await screen.findByTestId("checking")).toBeInTheDocument();
-    release(
-      new Response(
-        JSON.stringify({
-          ...base,
-          complete: true,
-          customer: {
-            revenue: [{ label: "Invoiced (excluding tax)", period: "last 12 months (since 2025-11-01)", money: { amount: "549477.34", currency: "CAD" }, count: 12, system: "BC", sources: [] }],
-            orders_total: 14, open_orders: 1,
-            open_list: [{ object_id: "SalesOrder:1", label: "S-ORD101150", open_url: "/object/SalesOrder/1", date: "2026-07-29", status: "Open", sources: [] }],
-            recent_orders: [], contacts: [], also_in: [], not_established: ["Contacts: none captured for this customer's record"],
-          },
-        }),
-        { status: 200 },
-      ),
+    render(<ObjectView type="PurchaseOrder" id="1" />);
+    expect(await screen.findByTestId("object-title")).toHaveTextContent("PO 1");
+    expect(screen.getByTestId("checking")).toHaveTextContent("lateness, people, landed cost and how we know");
+    for (const name of ["late", "people", "landed_cost", "trail"]) expect(screen.getAllByTestId(`section-loading-${name}`).length).toBeGreaterThan(0);
+    // each section is its own call, for the record the quick read resolved
+    expect(calls.filter((u) => u.startsWith("/api/object-section/")).sort()).toEqual(
+      ["landed_cost", "late", "people", "trail"].map((n) => `/api/object-section/${n}/PurchaseOrder/PurchaseOrder%3A1`),
     );
-    expect(await screen.findByTestId("revenue")).toHaveTextContent("549,477.34");
+    const section = (name: string, extra: object) => new Response(JSON.stringify({ object_id: "PurchaseOrder:1", section: name, applies: true, late_lines: [], ...extra }), { status: 200 });
+    held.people(section("people", { people: [{ name: "Dana Ortiz", role: "buyer", sources: [] }] }));
+    expect(await screen.findByTestId("people")).toHaveTextContent("Dana Ortiz");
+    expect(screen.queryByTestId("section-loading-people")).toBeNull();
+    expect(screen.getByTestId("checking")).toHaveTextContent("lateness, landed cost and how we know");
+    held.late(section("late", { status: { state: "late", text: "Late by 3 days", sources: [] } }));
+    held.landed_cost(section("landed_cost", { landed_cost: null }));
+    held.trail(new Response(JSON.stringify({ code: "not_found", message: "" }), { status: 404 }));
+    expect(await screen.findByTestId("checks-failed")).toHaveTextContent("Could not finish checking how we know");
     expect(screen.queryByTestId("checking")).toBeNull();
-    expect(screen.getByTestId("open-orders")).toHaveTextContent("S-ORD101150");
-    expect(screen.getByTestId("customer")).toHaveTextContent("Contacts: none captured");
+    expect(document.querySelector("[data-testid^='section-loading-']")).toBeNull();
   });
 });
 
@@ -562,5 +614,15 @@ describe("AnswerCard: the analyst's shape", () => {
   it("follow-up chips do nothing while another question is running", () => {
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: shaped }} />);
     for (const b of within(screen.getByTestId("follow-ups")).getAllByRole("button")) expect(b).toBeDisabled();
+  });
+});
+
+describe("answer prose", () => {
+  it("spaces PO numbers one way and says the late sentence once, short", async () => {
+    const { prose } = await import("./answer-card");
+    expect(prose("PO100095: 111 days late. An open purchase order needed by 2026-07-14 has no supplier confirmation")).toBe(
+      "PO 100095: 111 days late, needed by 14 Jul 2026; no supplier confirmation",
+    );
+    expect(prose("See PO 4809 and SO77120.")).toBe("See PO 4809 and SO 77120.");
   });
 });

@@ -11,9 +11,14 @@ lateness verdict, never re-decided here) the walk follows the links a source rec
     <- AssemblyOrderAllocation.allocates - allocation - AssemblyOrderAllocation.for_order_line
     -> order line - SalesOrderLine.line_of -> customer order (and its twins).
 
-Only links at a firm tier (verified, reviewed, corroborated) count; a lead-tier link
-(``stored_by_text_join``, ``lead``) is the typed gap ``link_lead_only`` and a contradicted
-one is no link. Nothing is joined by a shared code, date or amount. Where the next link of a
+Only links at a firm tier (verified, reviewed, corroborated) make a firm chain; a lead-tier
+link (``stored_by_text_join``, ``lead``) is the typed gap ``link_lead_only`` and a contradicted
+one is no link. Where no firm link ties an assembly order to an order line, two lead routes
+may still reach an order, each chain labelled lead with its basis (``Chain.basis``), never
+firm: the item-demand inference (``infer_demand``: the assembly order makes the item an
+open order's line sells and is planned nearest its required date) and an AO packet document
+mentioning both (``AssemblyOrderPacket`` lead links). An order reached by a firm chain is
+firm and its days come from firm chains only (``Order.tier``). Where the next link of a
 chain is not recorded the chain stops at a typed gap (``BREAKS``) that names the source that
 would hold it; ``absent_in_source`` only when the walk was complete and the reader's scope
 covers the link types, else ``unknown``.
@@ -26,7 +31,16 @@ Per affected customer order (an order cluster: an order and its recorded twins):
   ``operating.po_status.lateness_verdict``, applied by ``plx.process``; not decided here)
   is at risk at the supplier's latest promise (revised, else the one promised date). Any
   other verdict puts no order at risk; an ``undetermined`` one, or an at-risk one with no
-  promise date, is the gap ``lateness_undetermined``.
+  promise date, is the gap ``lateness_undetermined``. **Per line**: where ``plx.process``
+  judged the order per line (a confirmation a firm link joins promised each item its own
+  date, ``vs_vendor_promise.per_line``), a chain is walked per PO line and the line it
+  leaves through decides by its own promise (``Late.material``): an open order's material
+  date is the later of that line's promise and the day measured, so a customer order is
+  at risk when the specific line feeding it is promised after its required date; a chain
+  through a received line, or one not promised late on an order not late or at risk by
+  its document-level reading, puts nothing at risk (``line_not_late``). A line with no
+  promise of its own keeps the document-level reading. The verdict's ``complete`` false
+  (a later promise the run's reader cannot see may exist) is kept (``unseen_promise``).
 * **days at risk** = material date + recorded lead time - the order's required (promised)
   date, the worst over the POs that feed it. No source the Workbench reads records an
   assembly lead time, so it counts 0 with the gap ``assembly_lead_time_not_recorded`` and
@@ -73,6 +87,7 @@ verdict asked of ``plx.process`` per PO). Evidence label of fixture runs:
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -120,6 +135,32 @@ ORDER_LINE = "SalesOrderLine.line_of"
 ORDER_TWIN = "SalesOrder.same_record_as"
 LINK_TYPES = (*PO_TWINS, PO_LINE, LINE_ITEM, *ITEM_TWINS, USES_ITEM, COMPONENT_OF, AO_TWIN,
               AO_LINE, ALLOCATES, ALLOCATION_LINE, ORDER_LINE, ORDER_TWIN)
+# Lead routes from an assembly order no firm link ties to an order line, each chain labelled
+# lead (never firm): the item-demand inference (the finished item it makes, AssemblyOrder.
+# makes, is the item an open order's line sells, SalesOrderLine.for_item, and its planned
+# date is the one nearest that order's required date, within INFER_WINDOW_DAYS) and an AO
+# packet document that mentions both the assembly order and a sales order or its customer PO.
+AO_MAKES = "AssemblyOrder.makes"
+PACKET_OF = "AssemblyOrderPacket.packet_of"
+PACKET_ORDER = "AssemblyOrderPacket.for_sales_order"
+LEAD_ROUTE_TYPES = (AO_MAKES, PACKET_OF, PACKET_ORDER)
+FIRM = "firm"
+INFERRED = "inferred_by_item_and_date"
+MENTIONED = "mentioned_in_document"
+CHAIN_BASES = {
+    FIRM: "recorded links at a firm tier",
+    INFERRED: "lead, inferred by item and date (not a recorded link): an open assembly order "
+              "makes the item this order's line sells and is planned nearest the order's "
+              "required date",
+    MENTIONED: "lead, a document mentions the assembly order and this order (not a recorded "
+               "link)",
+}
+INFER_WINDOW_DAYS = 90
+# An order a lead may pair with must state an open status: none of these (closed, or made
+# and waiting only to ship, so no open assembly order is still making it).
+NOT_AWAITING_SUPPLY = CLOSED_ORDER | {"ready_to_ship", "ready to ship", "released"}
+# The planned date of an assembly order, by the first event type that dates it.
+PLANNED_EVENTS = ("AssemblyOrder.scheduled", "AssemblyOrder.portal_scheduled_start")
 # Margin at stake: an order's lines (ORDER_LINE reversed), the item each sells and its twins.
 LINE_SELLS = "SalesOrderLine.for_item"
 MARGIN_LINK_TYPES = (ORDER_LINE, LINE_SELLS, *ITEM_TWINS, ORDER_TWIN)
@@ -289,6 +330,18 @@ class Edge:
                 f"link {self.link_id})")
 
 
+@dataclass(frozen=True)
+class LinePromise:
+    """One order line's own promised arrival as ``plx.process`` judged it per line
+    (``vs_vendor_promise`` with ``per_line``: a confirmation a firm link joins promised
+    each item its own date, the line matched to its item on firm evidence)."""
+    line: str
+    promised: date | None        # None: the line's promises disagree
+    matched_by: str              # item_code or description
+    state: str                   # the per-line state plx.process gave it
+    cites: tuple[Any, ...] = ()  # the confirmation's cited per-item value(s)
+
+
 @dataclass
 class Late:
     """One purchase order's lateness verdict as ``plx.process`` stated it."""
@@ -302,9 +355,54 @@ class Late:
     promised: date | None = None
     inputs: list[str] = field(default_factory=list)   # answer entries (plan) it rests on
     cites: list[Any] = field(default_factory=list)    # cited values (scan) it rests on
+    why: str | None = None   # the entry's gap reason (an undetermined verdict's, by name)
+    # per line: the order line id -> its own promise (``LinePromise``), when plx.process
+    # judged the order per line against a confirmed link's per-item promises
+    lines: dict[str, LinePromise] = field(default_factory=dict)
+    # the run's reader may not see every promise: a later one may exist (the vendor
+    # verdict's ``complete`` false)
+    unseen_promise: bool = False
 
-    def material(self) -> tuple[date | None, str]:
-        """(the date the material can be in, how it was read); None: not at risk."""
+    def own_promise(self, line: str | None) -> LinePromise | None:
+        """The line's own promise when it decides the line's material date (an open
+        order judged per line), else None."""
+        own = self.lines.get(line) if line is not None else None
+        if own is None or self.state not in ("late", "not_due") or self.received is not None:
+            return None
+        return own if own.state == "received" or own.promised is not None else None
+
+    def rests_on_promise(self, line: str | None = None) -> bool:
+        """Whether the material date (of ``line``) is a supplier's promise (a later one
+        would move it), not a receipt or the day measured."""
+        when, _ = self.material(line)
+        own = self.own_promise(line)
+        if when is None or (own is not None and own.promised is None):
+            return False
+        if own is not None:
+            return when == own.promised
+        if self.state == "not_due":
+            return True
+        return self.received is None and self.revised is not None and when == self.revised
+
+    def material(self, line: str | None = None) -> tuple[date | None, str]:
+        """(the date the material can be in, how it was read); None: not at risk.
+        ``line``: the order line a chain leaves the PO through. Its own promise (per line)
+        decides for an open order: the later of that promise and the day measured (a line
+        not received is not in before today), and nothing for a line received; a line
+        with no promise of its own (unmatched, its promises disagreeing, or not listed)
+        keeps the order's document-level reading."""
+        own = self.own_promise(line)
+        if own is not None:
+            if own.state == "received":
+                return None, "its line is received"
+            if own.promised is not None:
+                when = max(d for d in (own.promised, self.measured) if d is not None)
+                basis = own.matched_by.replace("_", " ")
+                how = (f"supplier promise {own.promised.isoformat()} for its line (matched "
+                       f"by {basis})" if when == own.promised else
+                       f"not received as of {when.isoformat()}; its line promised "
+                       f"{own.promised.isoformat()} (matched by {basis})")
+                return when, how
         if self.state == "late":
             if self.received is not None:
                 return self.received, f"received {self.received.isoformat()}"
@@ -329,6 +427,27 @@ class Chain:
     order: str                 # the order cluster's key (its least object id)
     edges: list[Edge]
     records: list[str]
+    basis: str = FIRM          # FIRM, or a lead basis (INFERRED, MENTIONED)
+    refs: list[str] = field(default_factory=list)   # l1 handles a lead basis rests on
+    line: str | None = None    # the PO line the chain leaves the order through
+    days: int | None = None    # its days at risk (``assess``)
+
+    @property
+    def tier(self) -> str:
+        return "firm" if self.basis == FIRM else "lead"
+
+
+@dataclass(frozen=True)
+class Demand:
+    """One item-demand inference: an open assembly order record and an order line it may
+    supply (``path``: the recorded links AO -makes-> item (-twin-> item) <-for_item- line;
+    ``records``: the items between; ``refs``: the planned date's citation handles)."""
+    line: str
+    path: tuple[Edge, ...]
+    records: tuple[str, ...]
+    planned: date
+    required: date
+    refs: tuple[str, ...]
 
 
 @dataclass
@@ -351,10 +470,29 @@ class Order:
     material: date | None = None
     material_how: str = ""
     why_null: str | None = None
+    worst_chain: Chain | None = None   # the chain its days come from
 
     @property
     def at_risk(self) -> bool:
         return self.days is not None and self.days > 0
+
+    def chain_of(self, po: str) -> Chain:
+        """The chain from ``po`` with the most days at risk (several when the order is
+        fed through several lines of a PO judged per line)."""
+        if self.worst_chain is not None and self.worst_chain.po == po:
+            return self.worst_chain
+        found = [c for c in self.chains if c.po == po]
+        return max(found, key=lambda c: -10**9 if c.days is None else c.days)
+
+    @property
+    def tier(self) -> str:
+        """firm when a firm chain reaches the order, else lead."""
+        return "firm" if any(c.tier == "firm" for c in self.chains) else "lead"
+
+    @property
+    def basis(self) -> str:
+        bases = {c.basis for c in self.chains}
+        return FIRM if FIRM in bases else min(bases) if bases else FIRM
 
 
 @dataclass
@@ -370,6 +508,12 @@ class Assessment:
     @property
     def at_risk(self) -> list[Order]:
         return [o for o in self.orders if o.at_risk]
+
+    def by_tier(self, orders: Sequence[Order] | None = None) -> dict[str, int]:
+        out = {"firm": 0, "lead": 0}
+        for order in self.orders if orders is None else orders:
+            out[order.tier] += 1
+        return out
 
     @property
     def broken_share(self) -> str | None:
@@ -389,6 +533,10 @@ class Graph:
         self.lead_out: set[tuple[str, str]] = set()
         self.lead_in: set[tuple[str, str]] = set()
         self.lead_ends: dict[tuple[str, str], set[str]] = {}   # (type, end) -> other ends
+        self.lead_fwd: dict[tuple[str, str], list[Edge]] = {}
+        self.lead_rev: dict[tuple[str, str], list[Edge]] = {}
+        # assembly order record -> its item-demand inferences (``infer_demand``)
+        self.demand: dict[str, list[Demand]] = {}
         seen: set[str] = set()
         for edge in edges:
             if edge.link_type not in link_types or edge.link_id in seen:
@@ -402,7 +550,9 @@ class Graph:
                 self.lead_in.add((edge.link_type, edge.to))
                 self.lead_ends.setdefault((edge.link_type, edge.frm), set()).add(edge.to)
                 self.lead_ends.setdefault((edge.link_type, edge.to), set()).add(edge.frm)
-        for table in (self.out, self.inn):
+                self.lead_fwd.setdefault((edge.link_type, edge.frm), []).append(edge)
+                self.lead_rev.setdefault((edge.link_type, edge.to), []).append(edge)
+        for table in (self.out, self.inn, self.lead_fwd, self.lead_rev):
             for key in table:
                 table[key].sort(key=lambda e: (e.frm, e.to, e.link_id))
 
@@ -442,10 +592,13 @@ class Graph:
         return sorted(self.twins(link_type, oid)[0])
 
 
-def walk(po: str, graph: Graph) -> tuple[list[Chain], list[Break], bool]:
+def walk(po: str, graph: Graph, per_line: bool = False
+         ) -> tuple[list[Chain], list[Break], bool]:
     """Every chain from ``po`` to a customer order over recorded links (one per order
-    cluster, the first path in id order), and a typed break where a chain stops."""
-    chains: dict[str, Chain] = {}
+    cluster, the first path in id order; ``per_line``: one per order cluster and PO line,
+    for an order whose lines have their own promises), and a typed break where a chain
+    stops."""
+    chains: dict[Any, Chain] = {}
     breaks: dict[tuple[str, str], Break] = {}
     cut = False
 
@@ -509,22 +662,127 @@ def walk(po: str, graph: Graph) -> tuple[list[Chain], list[Break], bool]:
                             for sol, e in found:
                                 order_lines.append((sol, [*base, *apath, e_alloc, e],
                                                     [*arec, alloc, sol]))
+                    # (order line or None, edges, records, basis, refs, order when no line)
+                    reached: list[tuple[str | None, list[Edge], list[str], str,
+                                        list[str], str | None]] = [
+                        (sol, spath, srecords, FIRM, [], None)
+                        for sol, spath, srecords in order_lines]
                     if not order_lines and not allocated:   # else the allocation's break
-                        stop("assembly_order_not_linked_to_order_line", ao, AO_LINE, True)
-                    for sol, spath, srecords in order_lines:
-                        orders = graph.fwd(ORDER_LINE, sol)
-                        if not orders:
-                            stop("order_line_not_linked_to_order", sol, ORDER_LINE, True)
+                        for a, apath in sorted(ao_twins.items()):
+                            arec = [*brecords, *([a] if a != ao else [])]
+                            for d in graph.demand.get(a, ()):
+                                reached.append((d.line, [*base, *apath, *d.path],
+                                                [*arec, *d.records, d.line], INFERRED,
+                                                list(d.refs), None))
+                            for e_pkt in graph.lead_rev.get((PACKET_OF, a), ()):
+                                for e_so in graph.lead_fwd.get((PACKET_ORDER, e_pkt.frm), ()):
+                                    reached.append((None, [*base, *apath, e_pkt, e_so],
+                                                    [*arec, e_pkt.frm], MENTIONED, [],
+                                                    e_so.to))
+                        stop("assembly_order_not_linked_to_order_line", ao, AO_LINE, True,
+                             lead_twin=bool(reached))
+                    for sol, spath, srecords, basis, refs, direct in reached:
+                        if sol is None:
+                            orders = [(direct, None)]
+                        else:
+                            orders = graph.fwd(ORDER_LINE, sol)
+                            if not orders:
+                                stop("order_line_not_linked_to_order", sol, ORDER_LINE, True)
                         for so, e_so in orders:
-                            key = graph.cluster(ORDER_TWIN, so)[0]
-                            if key in chains:
+                            order_key = graph.cluster(ORDER_TWIN, so)[0]
+                            key = (order_key, pol) if per_line else order_key
+                            held = chains.get(key)
+                            # a firm chain replaces a lead one; else the first is kept
+                            if held is not None and (held.basis == FIRM or basis != FIRM):
                                 continue
-                            if len(chains) >= MAX_CHAINS:
+                            if held is None and len(chains) >= MAX_CHAINS:
                                 cut = True
                                 continue
-                            chains[key] = Chain(po, key, [*spath, e_so],
-                                                list(dict.fromkeys([po, *srecords, so])))
+                            chains[key] = Chain(
+                                po, order_key,
+                                [*spath, *([e_so] if e_so is not None else [])],
+                                list(dict.fromkeys([po, *srecords, so])), basis, refs, pol)
     return list(chains.values()), list(breaks.values()), cut
+
+
+def infer_demand(graph: Graph, *, planned: Mapping[str, Sequence[tuple[date, str, str]]],
+                 required: Mapping[str, Sequence[tuple[date, str]]],
+                 order_status: Mapping[str, Sequence[Any]],
+                 assembly_status: Mapping[str, Sequence[Any]],
+                 ordered: Mapping[str, Sequence[tuple[date, str]]] | None = None,
+                 window: int = INFER_WINDOW_DAYS) -> dict[str, list[Demand]]:
+    """The item-demand leads (``Graph.demand``): per open order line no firm link ties to an
+    assembly order, the open assembly order(s) making the item it sells (``AO_MAKES``, then
+    the item's firm twins) whose planned date is nearest the order's required date and at
+    most ``window`` days from it (ties: each). Only an assembly order that is open (the
+    strongest-authority status, ``_assembly_closed``), has no firm order line or allocation
+    of its own, makes one item cluster and has one planned date (``planned``: object id ->
+    [(date, event type, l1 handle)], the first of ``PLANNED_EVENTS`` that dates it), and an
+    order that states a status, none of them ``NOT_AWAITING_SUPPLY`` (an order with no
+    readable status is never paired), and one date: its required date, else (none recorded)
+    its order date (``ordered``). Every hop is a recorded firm
+    link; the pairing alone is inferred, so each chain over it is lead, never firm."""
+    supply: dict[str, list[tuple[str, str, Edge, date, tuple[str, ...]]]] = {}
+    seen: set[str] = set()
+    for ao in sorted({frm for (kind, frm) in graph.out if kind == AO_MAKES}):
+        if ao in seen:
+            continue
+        cluster = graph.cluster(AO_TWIN, ao)
+        seen.update(cluster)
+        if _assembly_closed([s for m in cluster for s in assembly_status.get(m, ())]):
+            continue
+        if any(graph.fwd(AO_LINE, m) or graph.rev(ALLOCATES, m) for m in cluster):
+            continue
+        dates: dict[date, list[str]] = {}
+        for kind in PLANNED_EVENTS:
+            for m in cluster:
+                for when, etype, handle in planned.get(m, ()):
+                    if etype == kind and isinstance(when, date):
+                        dates.setdefault(when, []).append(handle)
+            if dates:
+                break
+        if len(dates) != 1:
+            continue
+        ((when, handles),) = dates.items()
+        made = [(m, item, e) for m in cluster for item, e in graph.fwd(AO_MAKES, m)]
+        keys = {graph.cluster(ITEM_TWINS, item)[0] for _m, item, _e in made}
+        if len(keys) != 1:
+            continue
+        m, item, e_makes = made[0]
+        supply.setdefault(keys.pop(), []).append((m, item, e_makes, when, tuple(handles)))
+    out: dict[str, list[Demand]] = {}
+    for key, offers in sorted(supply.items()):
+        paths = {item: graph.twins(ITEM_TWINS, item)[0] for _m, item, _e, _w, _h in offers}
+        for t in sorted(paths[offers[0][1]]):
+            for line, e_sell in graph.rev(LINE_SELLS, t):
+                if graph.rev(AO_LINE, line) or graph.rev(ALLOCATION_LINE, line):
+                    continue   # its supply is recorded
+                for so, _e in graph.fwd(ORDER_LINE, line):
+                    members = graph.cluster(ORDER_TWIN, so)
+                    said = [word.lower() for x in members for v in order_status.get(x, ())
+                            if (word := _text(v)) is not None]
+                    if not said or any(w in NOT_AWAITING_SUPPLY for w in said):
+                        continue
+                    due = {d for x in members for d, _r in required.get(x, ())} or {
+                        d for x in members for d, _r in (ordered or {}).get(x, ())}
+                    if len(due) != 1:
+                        continue
+                    (due_on,) = due
+                    near = [(abs((o[3] - due_on).days), o) for o in offers
+                            if t in paths[o[1]] and abs((o[3] - due_on).days) <= window]
+                    if not near:
+                        continue
+                    best = min(d for d, _o in near)
+                    for _d, (m, item, e_makes, w, handles) in (p for p in near
+                                                                if p[0] == best):
+                        twin_path = paths[item][t]
+                        ends = [x for e in twin_path for x in (e.frm, e.to)]
+                        demand = Demand(line, (e_makes, *twin_path, e_sell),
+                                        tuple(dict.fromkeys([item, *ends])), w, due_on,
+                                        handles)
+                        if demand not in out.get(m, ()):
+                            out.setdefault(m, []).append(demand)
+    return out
 
 
 def _text(value: Any) -> str | None:
@@ -584,7 +842,8 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
     ``required``: order object id -> [(required date, its reference)]; ``order_status``:
     object id -> readable status texts; ``assembly_status``: object id -> readable statuses,
     each a text or (text, lineage) (``_assembly_closed``)."""
-    excluded = {"po_not_late": 0, "order_closed": 0, "assembly_order_closed": 0}
+    excluded = {"po_not_late": 0, "order_closed": 0, "assembly_order_closed": 0,
+                "line_not_late": 0}
     considered: list[str] = []
     undetermined: list[str] = []
     breaks: list[Break] = []
@@ -594,6 +853,10 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
     for po in sorted(late):
         verdict = late[po]
         material, how = verdict.material()
+        if material is None and verdict.state in ("late", "not_due"):
+            # per line: a line promised after its order's need may put an order at risk
+            material = next((m for m in (verdict.material(lid)[0] for lid in
+                                         sorted(verdict.lines)) if m is not None), None)
         if verdict.state == "undetermined" or verdict.state not in (
                 "late", "on_time", "not_due", "not_applicable") \
                 or ((verdict.state == "late" or verdict.at_risk is True)
@@ -605,7 +868,7 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
             excluded["po_not_late"] += 1
             continue
         considered.append(po)
-        found, stops, capped = walk(po, graph)
+        found, stops, capped = walk(po, graph, per_line=bool(verdict.lines))
         cut = cut or capped
         breaks.extend(stops)
         for chain in found:
@@ -619,6 +882,11 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
             members = graph.cluster(ORDER_TWIN, chain.order)
             if _closed([s for m in members for s in order_status.get(m, ())], CLOSED_ORDER):
                 excluded["order_closed"] += 1
+                continue
+            if verdict.material(chain.line)[0] is None:
+                # judged per line: the line this chain leaves through is received, or its
+                # own promise is not late while the order's document-level reading is not
+                excluded["line_not_late"] += 1
                 continue
             chains += 1
             order = orders.setdefault(chain.order, Order(chain.order, members, []))
@@ -634,11 +902,12 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
             order.why_null = "order_required_dates_disagree"
             continue
         (order.required,) = dates
-        for chain in order.chains:
-            material, how = late[chain.po].material()
-            days = (material - order.required).days   # lead time: none recorded (0)
+        for chain in [c for c in order.chains if c.tier == "firm"] or order.chains:
+            material, how = late[chain.po].material(chain.line)
+            # lead time: none recorded (0)
+            days = chain.days = (material - order.required).days
             if order.days is None or days > order.days:
-                order.days, order.worst = days, chain.po
+                order.days, order.worst, order.worst_chain = days, chain.po, chain
                 order.material, order.material_how = material, how
     ranked = sorted(orders.values(), key=lambda o: (
         o.days is None, -(o.days if o.days is not None else 0), o.key))
@@ -1051,7 +1320,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     entries: list[dict[str, Any]] = []
     shown = 0
     for n, order in enumerate(found.orders, start=1):
-        chain = next((c for c in order.chains if c.po == order.worst), order.chains[0])
+        chain = order.worst_chain or order.chains[0]
         verdict = late[chain.po]
         steps = [CHAIN_STEP.format(po=chain.po, order=order.key)]
         steps += [f"crossed {e.cited()}{posted_company(e, objects)}" for e in chain.edges]
@@ -1211,7 +1480,31 @@ def _store_edges(st: Any) -> list[Edge]:
                                            f"{row['to_object']}"),
                  row["link_type"], row["from_object"], row["to_object"], row["tier"],
                  row.get("markings") or "[]")
-            for row in st.links(LINK_TYPES + (LINE_SELLS,), FIRM_TIERS + LEAD_TIERS)]
+            for row in st.links(LINK_TYPES + (LINE_SELLS,) + LEAD_ROUTE_TYPES,
+                                FIRM_TIERS + LEAD_TIERS)]
+
+
+def store_planned(st: Any, object_ids: Sequence[str], *, restricted: bool = False
+                  ) -> dict[str, list[tuple[date, str, str]]]:
+    """Assembly order id -> its current planned-date events [(date, event type, l1 handle)]
+    (``PLANNED_EVENTS``). ``restricted``: a reader's scan, where only an unmarked event is
+    read (the engine's own run reads every one; its gaps cite each at its markings)."""
+    out: dict[str, list[tuple[date, str, str]]] = {}
+    ids = sorted(set(object_ids))
+    for i in range(0, len(ids), 500):
+        rows = st.conn.execute(
+            "SELECT eo.object_id, e.event_type, e.time, e.l1_handle, e.markings "
+            "FROM event_objects eo JOIN events e ON e.event_id = eo.event_id "
+            "WHERE eo.object_id IN (SELECT value FROM json_each(?)) AND eo.qualifier = 'order' "
+            "AND e.event_type IN (SELECT value FROM json_each(?)) AND e.superseded_at IS NULL "
+            "ORDER BY eo.object_id, e.event_type, e.l1_handle",
+            (json.dumps(ids[i:i + 500]), json.dumps(list(PLANNED_EVENTS))))
+        for oid, etype, when, handle, markings in rows:
+            day = _day(when)
+            if day is None or (restricted and markings not in (None, "[]")):
+                continue
+            out.setdefault(oid, []).append((day, etype, handle))
+    return out
 
 
 def _verdict(po: str, answer: Any) -> Late:
@@ -1220,14 +1513,55 @@ def _verdict(po: str, answer: Any) -> Late:
     entry = next((e for e in entries or () if isinstance(e, Mapping)
                   and e.get("root") == po), None)
     if entry is None or "error" in (answer or {}):
-        return Late(po, "undetermined")
+        error = answer.get("error") if isinstance(answer, Mapping) else None
+        code = error.get("code") if isinstance(error, Mapping) else None
+        return Late(po, "undetermined", why=f"process_error:{code}" if isinstance(code, str)
+                    and code.isidentifier() else "no_lateness_entry")
     cites = [v for v in entry.get("values") or ()
              if isinstance(v, Mapping) and isinstance(v.get("citation"), Mapping)]
     state = entry.get("state") if isinstance(entry.get("state"), str) else None
+    vendor = entry.get("vs_vendor_promise")
+    vendor = vendor if isinstance(vendor, Mapping) else {}
     return Late(po, state, _day(entry.get("governing_date")), _day(entry.get("measured_on")),
                 _day(entry.get("revised_date")), _day(entry.get("received_date")),
                 at_risk=entry["at_risk"] if isinstance(entry.get("at_risk"), bool) else None,
-                promised=_day(entry.get("promised_date")), cites=cites)
+                promised=_day(entry.get("promised_date")), cites=cites,
+                why=_reason(entry.get("gap")), lines=line_promises_of(vendor),
+                unseen_promise=vendor.get("complete") is False)
+
+
+LINE_STATES = frozenset({"late", "not_due", "on_time", "received", "undetermined"})
+MATCH_BASES = frozenset({"item_code", "description"})
+
+
+def line_promises_of(vendor: Mapping[str, Any]) -> dict[str, LinePromise]:
+    """The per-line promises of a ``vs_vendor_promise`` judged per line on a confirmed
+    link (a lead's are never judged: none). A listed line that is malformed (an unknown
+    state or match basis, a date that is no date, a dated line without its cited value)
+    is not read: that line keeps the document-level reading (fails closed)."""
+    if vendor.get("basis") != "vendor_promise" or vendor.get("per_line") is not True:
+        return {}
+    out: dict[str, LinePromise] = {}
+    for ln in vendor.get("lines") or ():
+        if not isinstance(ln, Mapping) or not isinstance(ln.get("line"), str) \
+                or ln.get("state") not in LINE_STATES \
+                or ln.get("matched_by") not in MATCH_BASES:
+            continue
+        day = _day(ln.get("promised_date"))
+        cites = tuple(v for v in ln.get("values") or ()
+                      if isinstance(v, Mapping) and isinstance(v.get("citation"), Mapping)
+                      and _day(v.get("value")) == day)
+        if ln.get("promised_date") is not None and (day is None or not cites):
+            continue
+        out[ln["line"]] = LinePromise(ln["line"], day, ln["matched_by"], ln["state"], cites)
+    return out
+
+
+def _reason(gap: Any) -> str | None:
+    """A gap's reason name (a lower-case identifier), else None."""
+    reason = gap.get("reason") if isinstance(gap, Mapping) else None
+    return reason if isinstance(reason, str) and reason.isidentifier() \
+        and reason == reason.lower() else None
 
 
 def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int = 500,
@@ -1254,7 +1588,31 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
     (``investigate_landed_values``; None: only the recorded unit cost is used)."""
     graph = Graph((e for e in _store_edges(st)
                    if visible is None or (e.frm in visible and e.to in visible)),
-                  LINK_TYPES + (LINE_SELLS,))
+                  LINK_TYPES + (LINE_SELLS,) + LEAD_ROUTE_TYPES)
+    sales = {oid: entry for oid, entry in st.values(
+        ("SalesOrder",), ("required_date", "order_date", "status", "fm_status",
+                          "bc_status")).items()
+        if visible is None or oid in visible}
+    aos = {oid: entry for oid, entry in st.values(("AssemblyOrder",), ("status",)).items()
+           if visible is None or oid in visible}
+    required = {oid: [(d, row["l1_handle"]) for row in entry["props"].get("required_date", ())
+                      if (d := _day(row.get("value"))) is not None]
+                for oid, entry in sales.items()}
+    statuses = {oid: [row.get("value") for p in ("status", "fm_status", "bc_status")
+                      for row in entry["props"].get(p, ())] for oid, entry in sales.items()}
+    ao_statuses = {oid: [(row.get("value"), row.get("lineage"))
+                         for row in entry["props"].get("status", ())]
+                   for oid, entry in aos.items()}
+    makers = {frm for (kind, frm) in graph.out if kind == AO_MAKES}
+    open_makers = [m for m in makers if not _assembly_closed(
+        [s for t in graph.cluster(AO_TWIN, m) for s in ao_statuses.get(t, ())])]
+    open_makers = sorted({t for m in open_makers for t in graph.cluster(AO_TWIN, m)})
+    graph.demand = infer_demand(
+        graph, planned=store_planned(st, open_makers, restricted=visible is not None),
+        required=required, order_status=statuses, assembly_status=ao_statuses,
+        ordered={oid: [(d, row["l1_handle"]) for row in entry["props"].get("order_date", ())
+                       if (d := _day(row.get("value"))) is not None]
+                 for oid, entry in sales.items()})
     pos = sorted({e.to for es in graph.inn.values() for e in es if e.link_type == PO_LINE})
     roots: list[str] = []
     seen: set[str] = set()
@@ -1279,20 +1637,7 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             late[po] = _verdict(po, call("plx.process", {"from": po,
                                                          "process": "po_delivery_window"}))
         except Exception:  # noqa: BLE001 - one unread verdict is undetermined, never late
-            late[po] = Late(po, "undetermined")
-    sales = {oid: entry for oid, entry in st.values(
-        ("SalesOrder",), ("required_date", "status", "fm_status", "bc_status")).items()
-        if visible is None or oid in visible}
-    aos = {oid: entry for oid, entry in st.values(("AssemblyOrder",), ("status",)).items()
-           if visible is None or oid in visible}
-    required = {oid: [(d, row["l1_handle"]) for row in entry["props"].get("required_date", ())
-                      if (d := _day(row.get("value"))) is not None]
-                for oid, entry in sales.items()}
-    statuses = {oid: [row.get("value") for p in ("status", "fm_status", "bc_status")
-                      for row in entry["props"].get(p, ())] for oid, entry in sales.items()}
-    ao_statuses = {oid: [(row.get("value"), row.get("lineage"))
-                         for row in entry["props"].get("status", ())]
-                   for oid, entry in aos.items()}
+            late[po] = Late(po, "undetermined", why="process_unread")
     found = assess(late, graph, required=required, order_status=statuses,
                    assembly_status=ao_statuses)
     by_reason: dict[str, int] = {}
@@ -1350,12 +1695,22 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             "pos_checked": len(late), "pos_not_checked": max(0, len(roots) - bound),
             "pos_not_reaching_assembly": unconsumed,
             "lateness_undetermined": len(found.undetermined),
+            # why each undetermined verdict is (the entry's gap reason), by count
+            "lateness_undetermined_by_reason": dict(sorted(Counter(
+                late[po].why or ("verdict_undated" if late[po].state in ("late", "not_due")
+                                 else "unstated")
+                for po in found.undetermined).items())),
+            "lateness_by_state": dict(sorted(Counter(
+                str(v.state) for v in late.values()).items())),
             "chains_found": found.chains, "chains_broken": len(found.breaks),
             "broken_share_percent": found.broken_share,
             "broken_by_reason": dict(sorted(by_reason.items())),
             "top_missing_links": [r for r, _n in sorted(by_reason.items(),
                                                          key=lambda p: (-p[1], p[0]))][:3],
             "orders_affected": len(found.orders), "orders_at_risk": len(found.at_risk),
+            "orders_affected_by_tier": found.by_tier(),
+            "orders_at_risk_by_tier": found.by_tier(found.at_risk),
+            "demand_leads": sum(len(v) for v in graph.demand.values()),
             "orders_excluded": dict(found.excluded),
             "orders_with_value": with_value,
             "value_at_risk": {c: _dec_str(v) for c, v in sorted(totals.items())},
@@ -1580,8 +1935,9 @@ def missing_links(stopped: Mapping[str, Container[str]]) -> list[dict[str, Any]]
 
 def sample(order: Order) -> dict[str, Any]:
     """One chain as cited links (object ids, link types and link ids; never source text)."""
-    chain = next((c for c in order.chains if c.po == order.worst), order.chains[0])
+    chain = order.worst_chain or order.chains[0]
     return {"po": chain.po, "order": order.key, "days_at_risk": order.days,
+            "tier": chain.tier, "basis": chain.basis,
             "links": [{"link_type": e.link_type, "from": e.frm, "to": e.to, "tier": e.tier,
                        "link_id": e.link_id} for e in chain.edges]}
 
@@ -1591,7 +1947,7 @@ def headline(orders_at_risk: int, late_pos: int) -> str:
 
 
 __all__ = ["ENGINE", "PLAN_ENGINES", "BREAKS", "MISSING", "DAYS_AT_RISK_BASIS", "MARGIN_BASIS",
-           "Edge", "Figure", "Graph", "Late", "Margin", "assess", "walk", "plan_check",
+           "Edge", "Figure", "Graph", "Late", "LinePromise", "Margin", "line_promises_of", "assess", "walk", "plan_check",
            "posted_company", "ranked_orders", "CHAIN_STEP", "PO_TWINS", "ITEM_TWINS",
            "plan_run", "scan", "scan_margins", "po_impacts", "store_margin_values",
            "object_margin_values", "missing_links", "headline", "order_value", "order_margin",

@@ -75,6 +75,44 @@ def late_po(s, *, confirmations=(("a", "2099-01-20", "2099-01-05"),
 
 
 class PoTrailTests(unittest.TestCase):
+    def test_a_per_line_promise_gives_each_line_its_date_verdict_label_and_citation(self):
+        s = tp.Store()
+        po = pl.portal_po(s, ordered=None)
+        a = pl.described(s, po, "l-a", "SevenExcellence pH/Cond meter S470")
+        b = pl.described(s, po, "l-b", "Cond. stand. 5 µs/cm, 250mL")
+        sc = pl.lined(s, po, "a", [
+            pl.block("10", "SevenExcellence® pH/Cond meter S470 30046252 1 EA 4,770.00",
+                     "2099-01-20", "2099-01-16", ["30046252"]),
+            pl.block("110", "Cond. stand. 5 µs/cm, 250mL 30094617 1 EA 191.00",
+                     "2099-03-01", "2099-02-25", ["30094617"])])
+        got = et.po_trail(reader(s), po)["vendor_promise"]
+        # today 2099-02-01: line a is 12 days past its own promise, b is not due
+        self.assertEqual((got["link"], got["per_line"], got["state"], got["days_late"],
+                          got["promised_date"], got["measured_against"]),
+                         ("confirmed", True, "late", 12, "2099-01-20", "today"))
+        self.assertEqual([(x["line"], x["state"], x["promised_date"], x["days_late"])
+                          for x in got["lines"]],
+                         [(a, "late", "2099-01-20", 12), (b, "not_due", "2099-03-01", None)])
+        # each line's date cites the confirmation; each line is named by its own record
+        self.assertEqual({x["handle"] for x in got["lines"]}, {s.handles[sc][0]})
+        self.assertEqual([x["label"] for x in got["lines"]],
+                         ["SevenExcellence pH/Cond meter S470", "Cond. stand. 5 µs/cm, 250mL"])
+        self.assertNotIn("2099-02-25", json.dumps(got))   # a ship date is never a promise
+        # a reader who may not read the marked promises sees no line and no date of them
+        s2 = tp.Store()
+        po2 = pl.portal_po(s2, ordered=None)
+        pl.described(s2, po2, "l-a", "SevenExcellence pH/Cond meter S470")
+        pl.lined(s2, po2, "a", [pl.block("10", "SevenExcellence® pH/Cond meter S470 "
+                                         "30046252 1 EA 4,770.00", "2099-01-20",
+                                         "2099-01-16", ["30046252"])],
+                 markings='["finance"]')
+        hidden = et.po_trail(reader(s2, CLERK), po2)
+        self.assertNotIn("2099-01-20", json.dumps(hidden["vendor_promise"]))
+        self.assertFalse((hidden["vendor_promise"] or {}).get("lines"))
+        staff = et.po_trail(reader(s2), po2)   # the order itself is read by both
+        self.assertEqual((hidden["state"], staff["vendor_promise"]["state"]),
+                         (staff["state"], "late"))
+
     def test_a_late_po_reads_due_issue_promises_follow_ups_and_the_verdict_in_order(self):
         s = tp.Store()
         po = late_po(s)
@@ -84,8 +122,17 @@ class PoTrailTests(unittest.TestCase):
         trail = et.po_trail(reader(s), po)
         kinds = [x["kind"] for x in trail["steps"]]
         self.assertEqual(kinds, ["due_date", "po_issued", "confirmation", "revision",
-                                 "follow_up", "follow_up", "verdict"])
-        due, issued, conf, rev, ours, theirs, verdict = trail["steps"]
+                                 "follow_up", "follow_up", "verdict", "verdict"])
+        due, issued, conf, rev, ours, theirs, verdict, vendor = trail["steps"]
+        # beside our verdict, never in its place: the order against the vendor's own
+        # latest (revised) promise, labelled as the vendor's, cited to that confirmation
+        self.assertEqual(vendor["title"],
+                         "Against the vendor's promise (not our due date): late, open on "
+                         "2099-02-01, 4 days past the vendor's promised 2099-01-28 (a later "
+                         "promise you cannot see may exist).")
+        self.assertEqual((vendor["handle"], vendor["check"]),
+                         (rev["handle"], "computed_from_cited_records"))
+        self.assertEqual(trail["vendor_verdict"], vendor["title"])
         self.assertEqual((due["title"], due["governs"]), ("Requested by 2099-01-15", True))
         self.assertTrue(due["handle"].startswith("api://public.generated_purchase_order/"))
         self.assertEqual((issued["at"], issued["title"]), ("2099-01-02", "PO issued"))

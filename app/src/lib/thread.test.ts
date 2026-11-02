@@ -20,6 +20,17 @@ const answer: Answer = {
 const base: Turn = { id: "t", question: "why late", phase: "thinking", streamed: "" };
 
 describe("applyEvent", () => {
+  it("keeps each progress step once, in order, and the verdict before the words", () => {
+    let t = base;
+    for (const message of ["Reading your question", "Finding PO 90412", "Finding PO 90412", "Reading Business Central receipts"])
+      t = applyEvent(t, { event: "status", data: { step: "reading", message, elapsed_ms: 1 } });
+    expect(t.steps).toEqual(["Reading your question", "Finding PO 90412", "Reading Business Central receipts"]);
+    t = applyEvent(t, { event: "verdict", data: { text: "PO 90412 is 12 days late." } });
+    expect(t).toMatchObject({ phase: "thinking", verdict: "PO 90412 is 12 days late." });
+    t = applyEvent(t, { event: "answer", data: answer });
+    expect(t).toMatchObject({ phase: "done", answer });
+  });
+
   it("streams tokens, then replaces them with the final answer", () => {
     let t = applyEvent(base, { event: "token", data: { text: "PO " } });
     t = applyEvent(t, { event: "token", data: { text: "5280" } });

@@ -27,6 +27,7 @@ from ontology.tests.test_project_bc import FULL, READER, BcWorld
 from operating import ontology_tools as ot
 from operating import ontology_tools_investigate as oi
 from operating import ontology_tools_traverse as tt
+from operating import answer_gate, claim_checks, mcp_server
 from operating import order_margin as om
 
 CONTRACTS = ot.load_contracts()
@@ -257,6 +258,62 @@ class OrderMarginTests(unittest.TestCase):
         self.assertIsNone(got["order_margin"]["value"])
         self.assertIn("credit_memo_line_unattributed", charge["answerability"]["reasons"])
 
+    def gate(self, result: dict, entry: dict, value=None) -> dict:
+        """``entry``'s calculation submitted to the claim gate as the prompt says: an
+        expression value claim named after the entry, in its currency (a percent in its
+        unit), over this reader's re-read rows and what the result returned as money."""
+        calc = entry["calculation"]
+        claim = {"value": value or entry["value"], "op": "expression",
+                 "expression": calc["expression"], "role": entry["name"],
+                 "of": [{"citation": i["l1_handle"], "field": i["field_path"],
+                         "value": i["value"]} for i in calc["inputs"]]}
+        claim.update({"unit": "percent"} if entry.get("unit") == "%"
+                     else {"currency": entry["currency"]})
+        handles = list(dict.fromkeys(i["l1_handle"] for i in calc["inputs"]))
+        returned = claim_checks.returned_evidence("plx.investigate", {}, result)
+        rows = resolver(self.world)
+        return claim_checks.check_items(
+            [{"id": "A", "texts": [], "value_claims": claim_checks.parse_value_claims(
+                [claim], handles, []),
+              "citations": [{"handle": h, "status": "resolved"} for h in handles]}],
+            rows=lambda handle: rows(handle, FULL), returned=returned)
+
+    def test_each_order_total_is_a_gate_checked_expression_over_its_cited_cells(self):
+        """The margin (amount and percent on price, on item cost only) is a claim the answer
+        gate recomputes from the cited invoice, credit memo and ledger cells, never a figure
+        it cannot check; a wrong figure over the same cells is refused."""
+        for number, want in (("SO-3", ("20", "8", "12", "60")),
+                             ("SO-5", ("40", "17.12", "22.88", "57.2"))):
+            result = self.ask(tb.CO[0], number)
+            got = self.computed(result)
+            names = ("order_margin_revenue", "order_margin_booked_cost", "order_margin",
+                     "order_margin_margin_pct")
+            for name, value in zip(names, want):
+                with self.subTest(order=number, total=name):
+                    self.assertEqual(got[name]["value"], value)
+                    checked = self.gate(result, got[name])
+                    self.assertTrue(checked["passed"], checked["failures"])
+                    wrong = self.gate(result, got[name], value=f"{value}1")
+                    self.assertEqual([f["code"] for f in wrong["failures"]],
+                                     ["claim_value_mismatch"])
+            # As the MCP boundary shows it to a model: the calculation stays typed (no
+            # envelope around its op), the result still matches its contract, and its
+            # cells are evidence this session returned, so a claim may cite them.
+            shown = mcp_server._firewall(result, "plx.investigate")
+            self.assertEqual(validate(shown, CONTRACTS["tools"]["plx.investigate"]["output"],
+                                      root=CONTRACTS, limit=3), [])
+            seen = answer_gate.evidence_handles("plx.investigate", shown)
+            calc = self.computed(shown)["order_margin_margin_pct"]["calculation"]
+            self.assertEqual(calc["op"], "expression")
+            self.assertTrue({i["l1_handle"] for i in calc["inputs"]} <= seen)
+        # SO-5 nets its credit memo: the revenue subtracts the memo line's cell.
+        revenue = self.computed(self.ask(tb.CO[0], "SO-5"))["order_margin_revenue"]
+        self.assertIn("-", revenue["calculation"]["expression"])
+        # A total the engine does not state has no calculation either.
+        charge = self.computed(self.ask(tb.CO[0], "SO-6"))["order_margin"]
+        self.assertIsNone(charge["value"])
+        self.assertNotIn("calculation", charge)
+
     def test_an_unattributable_or_uncaptured_credit_memo_is_a_typed_gap(self):
         # SO-7's customer has a posted credit memo naming no invoice: never netted, never
         # ignored; the figures stand net of the attributable memos (none) beside the gap.
@@ -386,6 +443,34 @@ class OrderMarginTests(unittest.TestCase):
         bare = self.ask(tb.CO[0], "SO-3")
         self.assertEqual({k: bare[k] for k in ("answer", "gaps", "answerability")},
                          {k: family[k] for k in ("answer", "gaps", "answerability")})
+
+    def test_unit_claims_hold_for_a_reader_of_every_marking_the_units_records_carry(self):
+        """The employee grant: finance only, the BC family partial (another company's G/L
+        failed). Every record of the posted and credit units carries at most finance, so the
+        per-unit claims prove an order BC no longer serves whole and its memos read: the
+        oracle's figures, no capture gap. A reader without finance, from whom the
+        finance-marked item ledger is withheld, gets no proven line set and no figure."""
+        world = self.failing_world((tb.CO[1], "generalLedgerEntries"))
+        finance = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {READER}, "api:*": {READER}},
+                                markings={"finance": {READER}})
+        world.tools(finance)
+        self.open_world(world)
+        result = self.ask(tb.CO[0], "SO-20")
+        self.assertEqual(result["answerability"], {"state": "answerable", "reasons": []})
+        reading = oracle_world.reading(BcReads(oracle_world.RecordPort(self.records, tb.CO[0])),
+                                       "SO-20", book="manufacturing")
+        self.assertEqual([self.computed(result)[k]["value"] for k in (
+            "order_margin_revenue", "order_margin_booked_cost", "order_margin")],
+            [reading["total"][k] for k in oracle_world.FIGURES])
+        self.assertNotIn("credit_memos_not_captured",
+                         self.ask(tb.CO[0], "SO-3")["answerability"]["reasons"])
+        world.tools(ot.ReadPolicy(tenant="plx", audiences=finance.audiences,
+                                  markings={"pii": {READER}}))
+        self.open_world(world)
+        hidden = self.ask(tb.CO[0], "SO-20")
+        self.assertIn("order_lines_incomplete", hidden["answerability"]["reasons"])
+        self.assertIn("withheld_by_permission", hidden["answerability"]["reasons"])
+        self.assertIsNone(self.computed(hidden)["order_margin"]["value"])
 
     def test_a_partial_credit_memo_unit_keeps_the_gap_for_its_company_only(self):
         """The credit memo lines of the first company did not finish; the second company's

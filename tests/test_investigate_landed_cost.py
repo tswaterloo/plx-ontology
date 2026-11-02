@@ -808,9 +808,10 @@ class CannedHostTests(unittest.TestCase):
                     if not result["completeness"]["next_cursor"]:
                         break
                     arguments = dict(arguments, cursor=result["completeness"]["next_cursor"])
-                if "error" in result:
-                    self.assertEqual((result["error"]["code"], pages),
-                                     ("result_too_large", []), (count, padding))
+                # past the result limit the answer is never refused: the gaps no page
+                # has room for are summarised in one gaps_truncated gap
+                self.assertNotIn("error", result, (count, padding))
+                if any(g["reason"] == oi.GAPS_CUT for g in pages[0]["gaps"]):
                     break
                 where: dict = {}
                 for index, page in enumerate(pages):
@@ -835,7 +836,7 @@ class CannedHostTests(unittest.TestCase):
                     if any(where[n] != where[name] for n in own):
                         split.append((count, padding))
             else:
-                self.fail(f"{count} line(s): no padding reached the result limit")
+                self.fail(f"{count} line(s): no padding reached the result limit")  # noqa
             self.assertTrue(split, f"{count} line(s): no padding needed a split line")
 
     def test_a_failed_or_truncated_step_is_never_answerable_or_complete(self):

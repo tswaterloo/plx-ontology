@@ -6,4 +6,5 @@ next-env.d.ts
 test-results/
 playwright-report/
 e2e/screenshots/*.png
+e2e/screenshots/demo-walk/
 !e2e/screenshots/README.md

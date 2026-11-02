@@ -1299,8 +1299,9 @@ class Host:
 
     def _proactive(self) -> dict[str, Any]:
         """The full scheduled engine run (``proactive_engine.refresh``) over the built
-        projection, as the capture principal (``_actor``), inside the cycle lock after the
-        build, with the live readers the host's sessions build (``_live_readers``), within
+        projection, as the capture principal (``_actor``) granted what it captured
+        (``engine_readers``: the Portal mirror audience and the capture audience, BC
+        included), inside the cycle lock after the build, within
         ``proactive_engine.REFRESH_BUDGET_SECONDS``: counts and enums only, never raising."""
         from integrations.source_mirror import AudienceMap
         from . import case_workspace_live as live
@@ -1310,7 +1311,9 @@ class Host:
 
         def scheduled(as_of: Any, budget: Any) -> Mapping[str, Any]:
             runtime = live.offline_runtime(self.state_dir, self.config.mirror_audience,
-                                           self.config.tenant, live=self._live_readers(),
+                                           self.config.tenant,
+                                           live=engine_readers(self.config,
+                                                               self._live_readers()),
                                            environ=self.environ)
             try:
                 return proactive_engine.refresh(
@@ -2979,6 +2982,24 @@ def _served_captures(host: Host) -> tuple[Path | None, Path | None, Path | None]
     return (host.config.live_audience,
             host.state_dir if capture_mail.store_exists(host.state_dir) else None,
             host.state_dir if capture_sharepoint.store_exists(host.state_dir) else None)
+
+
+def engine_readers(config: HostConfig, readers: Any = None) -> Any:
+    """What the proactive engine and the vendor-mail pass read as: the capture principal,
+    whose findings every employee's inbox and briefing are trimmed from per reader
+    (``proactive_engine.read_inbox``). Its verdicts (a PO's lateness rests on its BC twin's
+    lines and dates) need every source it captured, so it is granted the capture audience
+    (BC, mail, SharePoint, MC), not the Portal mirror audience alone: ``readers`` (the
+    host's live readers) when a live audience is configured, else the capture audience's
+    grants with no reader built (nothing is requested of a source; no credential is
+    read). Neither configured: None (the Portal mirror only; the engine says so,
+    ``reader_lacks_lateness_access``)."""
+    if readers is not None or config.capture_audience is None:
+        return readers
+    from integrations.live_source_guard import LiveSourceAudience
+    from .case_runtime import LiveReaders
+
+    return LiveReaders(LiveSourceAudience.from_file(config.capture_audience))
 
 
 def live_sources(host: Host) -> list[str]:

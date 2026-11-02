@@ -67,7 +67,7 @@ describe("EvidenceTrailCard", () => {
     await userEvent.click(within(steps[2]).getByRole("button"));
     expect(await screen.findByTestId("evidence-drawer")).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
-    expect(within(card).getByTestId("eta-check")).toHaveTextContent("Date confirmed");
+    expect(within(card).getByTestId("eta-check")).toHaveTextContent("Confirmed by supplier");
     const action = within(card).getByTestId("next-action");
     expect(action).toHaveTextContent("ask the vendor (Bob <bob@vendor.example>) for a new date");
     expect(action).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
@@ -123,7 +123,7 @@ describe("EvidenceTrailCard", () => {
     expect(within(table).getByRole("link", { name: "PO 300001" })).toHaveAttribute("href", "/object/PurchaseOrder/1");
     expect(table).toHaveTextContent("17 d late");
     expect(screen.getByTestId("trail-gaps")).toHaveTextContent("A purchase order line for Cap 20mm on AO 11231: not found on record");
-    expect(screen.getByTestId("eta-check")).toHaveTextContent("No confirmed date");
+    expect(screen.getByTestId("eta-check")).toHaveTextContent("No supplier confirmation found");
     expect(screen.getByTestId("eta-check")).toHaveTextContent("No vendor confirmation found");
     expect(screen.queryByTestId("next-action")).toBeNull();
     expect(screen.queryByTestId("trail-hidden")).toBeNull();
@@ -166,7 +166,7 @@ describe("EvidenceTrailCard", () => {
 
   it("says plainly when the ETA is not determined", () => {
     render(<EvidenceTrailCard trail={{ ...trail, trails: [{ ...po, eta: { state: "not_determined", text: "Not determined: this purchase order has more dates than were read." } }] }} />);
-    expect(screen.getByTestId("eta-check")).toHaveTextContent("Date unknown");
+    expect(screen.getByTestId("eta-check")).toHaveTextContent("Supplier confirmation not determined");
     expect(screen.getByTestId("eta-check")).toHaveTextContent("Not determined: this purchase order has more dates than were read.");
   });
 

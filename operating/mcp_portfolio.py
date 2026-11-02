@@ -706,7 +706,12 @@ def home_text(home: Mapping[str, Any], gaps: Sequence[Mapping[str, Any]] = ()) -
             + ("; stale, so newer gaps are not listed" if home["stale"] else "") + ".",
             *(f"Gap: {g['reason']}." for g in gaps
               if isinstance(g.get("reason"), str) and _SNAKE.fullmatch(g["reason"])),
-            "Rules not complete: " + (rule_words or "none") + "."]
+            "Rules not complete: " + (rule_words or "none") + ".",
+            *([f"Late purchase orders on your late list: "
+               f"{'' if home['late_orders']['complete'] else 'at least '}"
+               f"{home['late_orders']['count']} (every late order, not only those listed "
+               f"below; cite the listed ones in a count of them)."]
+              if isinstance(home.get("late_orders"), Mapping) else [])]
     items = []
     for gap in home["gaps"]:
         # The gap's summary is source text (an envelope in the JSON): never echoed.

@@ -379,6 +379,112 @@ class PermissionTests(SharePointHostCase):
         self.assertIn("as recorded at that capture", self.labels(recorded)[scan]["detail"])
 
 
+    def test_an_unrestricted_reader_is_served_without_a_live_permission_re_read(self):
+        """Owner-open: a reader holding the owner full-read
+        grant (``employee_permissions.reader_unrestricted``) reads a cited file from the
+        capture with no live item-permission re-read (decided once per call); the same
+        reader without it re-reads live (the test above)."""
+        from unittest import mock
+        from operating import employee_permissions
+        scan = self.handle(SCAN)
+        server = self.server(EMPLOYEE, live_drive=True)
+        requests = self.transport.requests_sent
+        with mock.patch.object(employee_permissions, "reader_unrestricted",
+                               return_value=True) as decided:
+            read = self.ok(server, "plx.read", {"citation": scan})
+        self.assertEqual(read["status"], "resolved")
+        self.assertIn(SCAN_PO, json.dumps(read))
+        self.assertEqual(self.transport.requests_sent, requests)   # nothing sent live
+        # Decided once for the session's evidence and once for this call's gate.
+        self.assertEqual(decided.call_count, 2)
+        # Without the flag, the same read re-reads live.
+        self.ok(server, "plx.read", {"citation": scan})
+        self.assertGreater(self.transport.requests_sent, requests)
+
+
+class NamedFileTests(SharePointHostCase):
+    """A file named for a lot (a COA whose name holds the lot number, which no grammar
+    reads as an identifier) is found by that number or by the words of its name and
+    folder, newest first, also when it was captured after the projection was built;
+    only files the reader may see are listed and a number inside a longer one is no
+    match."""
+
+    scanned = False
+    LOT = "240306"
+
+    def seed(self):
+        drive = seeded_drive()
+        drive.file("01LOTNEW", f"{self.LOT} - Supplier COA.pdf", "01LOTS",
+                   acl=(RICARDO, SALES))
+        drive.items[f"{DRIVE}:01LOTNEW"]["modified"] = "2026-03-02T09:00:00Z"
+        drive.file("01LOTOLD", f"Spec sheet LOT{self.LOT}.pdf", "01AOS", acl=(RICARDO, SALES))
+        drive.items[f"{DRIVE}:01LOTOLD"]["modified"] = "2025-11-20T09:00:00Z"
+        drive.file("01LOTHID", f"{self.LOT} supplier pricing.pdf", "01AOS", acl=(RICARDO,))
+        drive.file("01NEAR", f"1{self.LOT} other.pdf", "01AOS", acl=(RICARDO, SALES))
+        return drive
+
+    def listed(self, actor, query, **server):
+        answer = self.ok(self.server(actor, **server), "plx.documents",
+                         {"query": query, "sources": ["sharepoint"]})
+        return answer, [d["citation"] for d in answer["documents"]]
+
+    def test_a_lot_number_finds_the_files_named_for_it_newest_first_for_the_reader(self):
+        new, old = self.handle("01LOTNEW"), self.handle("01LOTOLD")
+        for projection in (False, True):
+            answer, cited = self.listed(EMPLOYEE, self.LOT, projection=projection)
+            self.assertEqual(cited, [new, old], projection)
+            text = json.dumps(answer)
+            for hidden in ("01LOTHID", "supplier pricing", "01NEAR", "other.pdf"):
+                self.assertNotIn(hidden, text)
+            self.assertEqual(answer["documents"][0]["title"]["untrusted_text"],
+                             f"{self.LOT} - Supplier COA.pdf")
+        _answer, cited = self.listed(EMPLOYEE, f"COA for lot {self.LOT}", projection=False)
+        self.assertEqual(cited, [new, old])
+        snippet = _answer["documents"][0]["snippet"]
+        self.assertEqual(snippet["origin"]["field_path"], "row.path")
+        self.assertIn("/AOs/Lots/", snippet["untrusted_text"])
+        # A phrase of the name and its folder, without the number.
+        _answer, cited = self.listed(EMPLOYEE, "supplier coa lots", projection=False)
+        self.assertEqual(cited, [new])
+        # The reader with the item permission sees the restricted one too; one with
+        # nothing sees nothing, not even a count.
+        _answer, cited = self.listed(QUALITY, self.LOT, projection=False)
+        self.assertIn(self.handle("01LOTHID"), cited)
+        outsider, cited = self.listed(OUTSIDER, self.LOT, projection=False)
+        self.assertEqual(cited, [])
+        self.assertNotIn("Supplier", json.dumps(outsider))
+
+    def test_a_file_captured_after_the_projection_is_found_by_name_once(self):
+        # The capture moves on after the projection was built (a later walk): a file
+        # named for the lot is listed from the capture, gated, never twice.
+        self.drive.file("01LOTLATE", f"COA {self.LOT} retest.pdf", "01LOTS",
+                        acl=(RICARDO, SALES))
+        self.drive.items[f"{DRIVE}:01LOTLATE"]["modified"] = "2026-04-01T09:00:00Z"
+        self.capture.run(self.capture_scope())
+        answer, cited = self.listed(EMPLOYEE, self.LOT)
+        self.assertEqual(cited[0], self.handle("01LOTLATE"))
+        self.assertEqual(len(cited), len(set(cited)))
+        self.assertIn(self.handle("01LOTNEW"), cited)
+        self.assertIn("capture:sharepoint", answer["searched"]["scopes"])
+        self.assertNotIn(self.handle("01LOTHID"), cited)
+
+    def test_many_files_named_for_one_number_are_cut_never_lost_or_doubled(self):
+        for count in (1, 10, 60):
+            number = f"77{count:04d}"
+            for at in range(count):
+                self.drive.file(f"01N{count}X{at}", f"{number} part {at}.pdf", "01LOTS",
+                                acl=(RICARDO, SALES))
+            self.capture.run(self.capture_scope())
+            answer, cited = self.listed(EMPLOYEE, number, projection=False)
+            self.assertEqual(len(cited), len(set(cited)), count)
+            self.assertEqual(len(cited), min(count, 10), count)
+            if count > 10:
+                self.assertFalse(answer["completeness"]["complete"])
+                self.assertIn("scan_cap", [g["reason"] for g in answer["gaps"]])
+            else:
+                self.assertEqual(answer["completeness"]["returned"], count)
+
+
 class RevokedHistoryTests(SharePointHostCase):
     """A revocation captured after an older version (the seeded text file; no OCR)."""
 
@@ -786,6 +892,59 @@ class SessionEvidenceItemPermissionTests(SharePointHostCase):
                          [(handle, "row.name") for handle in sorted(files[:2])])
         self.assertEqual([(entry["records"], entry["complete"])   # one per count read
                           for entry in returned["counts"]], [(files[:2], False)] * 2)
+
+    def test_a_revocation_committed_while_a_call_runs_is_seen_at_the_next_call(self):
+        """Each call reads its evidence's items at a snapshot taken before it: a SharePoint
+        permission re-read that revokes a file while the count listing it runs (after the
+        snapshot, before the call ends) drops what the file gates at the next comparison,
+        as when every call read every item before it."""
+        server = self.server(QUALITY)
+        real = server.ontology.call
+        revoke = [True]
+
+        def revoking(name, arguments, actor):
+            out = real(name, arguments, actor)
+            if name == "plx.aggregate" and revoke.pop():
+                self.drive.items[f"{DRIVE}:01FILEC"]["acl"] = [SALES]
+                self.assertTrue(self.capture.run(scope())["complete"])
+            return out
+
+        with mock.patch.object(server.ontology, "call", revoking):
+            files, count = self.counting(server)
+            self.assertNotIn(EVIDENCE_META_KEY, count()["_meta"])
+            returned = server._returned()
+        self.assertEqual(sorted(returned["currencies"]),
+                         [(handle, "row.name") for handle in sorted(files[:2])])
+        self.assertEqual([(entry["records"], entry["complete"])
+                          for entry in returned["counts"]], [(files[:2], False)])
+
+    def test_a_call_reads_only_the_items_its_evidence_names(self):
+        """Without a complete count (which any item's change decides), a call and the
+        answer gate read the items the session's evidence names, never every item of the
+        capture (the live one's ~90,000: 1-5 s a call under load); a revocation of one of
+        them is still seen at the next call."""
+        server = self.server(QUALITY)
+        files = [self.handle(item) for item in ("01FILEA", "01FILEB")]
+        asked: list = []
+        pinned = SharePointCaptureStore.pinned_item_permissions
+
+        def recorded(store, items):
+            asked.append(None if items is None else set(items))
+            return pinned(store, items)
+
+        with mock.patch.object(SharePointCaptureStore, "pinned_item_permissions", recorded):
+            for handle in files:
+                self.assertEqual(self.ok(server, "plx.read", {"citation": handle})["status"],
+                                 "resolved")
+            self.assertEqual(set(files) & set(server._evidence["handles"]), set(files))
+            self.drive.items[f"{DRIVE}:01FILEB"]["acl"] = [SALES]
+            self.assertTrue(self.capture.run(scope())["complete"])
+            server._returned()
+        self.assertEqual(set(files) & set(server._evidence["handles"]), {files[0]})
+        self.assertTrue(asked)
+        self.assertNotIn(None, asked)
+        self.assertTrue(all(items <= {(DRIVE, "01FILEA"), (DRIVE, "01FILEB")}
+                            for items in asked), asked)
 
     def test_a_store_that_records_no_permission_positions_keeps_nothing_and_says_why(self):
         server = self.server(QUALITY)
@@ -2134,10 +2293,13 @@ class LiveCheckModuleTests(unittest.TestCase):
         from operating import case_tools_host
         files_cut = mock.patch.object(case_tools_host, "LOOKUP_FILES", 1)
         entries_cut = mock.patch.object(case_tools_host, "LOOKUP_ENTRIES", 0)
-        # Two questions: the file name carries the first one's identifier only.
+        # Two questions: the file name carries the first one's identifier only. Without
+        # the capture's page lookup the projection still lists the packet for both (its
+        # name, or its indexed text holding the identifier as written: no record holds
+        # it), each without a page-cited mention.
         for name, patch, expected in (
-                (f"packet {SCAN_PO}.pdf", unpaged, {"unpaged_mention": 1, "no_document": 1}),
-                ("packet-scan.pdf", unpaged, {"no_document": 2}),
+                (f"packet {SCAN_PO}.pdf", unpaged, {"unpaged_mention": 2}),
+                ("packet-scan.pdf", unpaged, {"unpaged_mention": 2}),
                 ("packet-scan.pdf", refused, {"withheld": 2}),
                 ("packet-scan.pdf", files_cut, {"scan_cap": 2}),
                 ("packet-scan.pdf", entries_cut, {"scan_cap": 2})):

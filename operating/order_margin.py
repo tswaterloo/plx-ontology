@@ -91,7 +91,7 @@ Evidence label of fixture runs: ``isolated-fixture``; nothing here reads a sourc
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
@@ -507,9 +507,13 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             steps.append(f"margin % on price = margin / revenue x 100 = "
                          f"{_dec_str(values['margin_pct'])}")
         digest = _sha(_canon({"lines": [t[4] for t in totals], "steps": steps}))
+        calculations = _calculations([t[5] for t in totals], _dec_str(values["margin_pct"])
+                                     if "margin_pct" in values else None)
         for entry, key in zip(out_totals, total_names):
             if key in values:
                 entry.update(value=_dec_str(values[key]), steps=list(steps), digest=digest)
+                if key in calculations:
+                    entry["calculation"] = calculations[key]
                 if key == "margin_pct":
                     entry["unit"] = "%"
                 else:
@@ -876,7 +880,79 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
                   digest=_sha(_canon({"margin": margin["steps"], "revenue": revenue["digest"],
                                       "cost": cost["digest"]})))
     out["figures"] = (label, total_revenue, booked, currency,
-                      [revenue["digest"], cost["digest"]])
+                      [revenue["digest"], cost["digest"]],
+                      _cells(run, [(1, r["amount"]) for r in rows],
+                             [(-1, r["amount"]) for r in credited_rows],
+                             [(1, e["cost"]) for e in entries + back]))
+    return out
+
+
+def _cells(run: _Run, revenue: Sequence[tuple[int, Mapping[str, Any]]],
+           credit: Sequence[tuple[int, Mapping[str, Any]]],
+           cost: Sequence[tuple[int, Mapping[str, Any]]]) -> dict[str, list] | None:
+    """A line's cited cells by part (``revenue``, ``credit``, ``cost``), each ``(sign,
+    l1_handle, field_path, figure)`` as the source holds it: revenue and ledger cost (BC
+    signs a shipment's cost negative, a return's positive) add into the margin, a credit
+    subtracts. None when a figure is a person's correction (no cell states it) or an entry
+    carries no citation: the gate recomputes only what cited cells hold."""
+    out: dict[str, list] = {}
+    for part, given in (("revenue", revenue), ("credit", credit), ("cost", cost)):
+        out[part] = []
+        for sign, entry in given:
+            cite = entry.get("citation")
+            value = run.amount(entry)
+            if person_correction(entry) is not None or value is None \
+                    or not isinstance(cite, Mapping) or not isinstance(
+                        cite.get("l1_handle"), str) or not isinstance(cite.get("field_path"), str):
+                return None
+            out[part].append((sign, cite["l1_handle"], cite["field_path"], _dec_str(value)))
+    return out
+
+
+# An order total's calculation lists at most this many cited cells (an expression of the
+# claim gate holds at most ``claim_checks.MAX_OP_INPUTS`` and ``MAX_EXPRESSION_CHARS``).
+MAX_CALCULATION_CELLS = 40
+
+
+def _calculations(lines: Sequence[Mapping[str, list] | None], margin_pct: str | None
+                  ) -> dict[str, dict[str, Any]]:
+    """The order totals as expressions over the cited cells the lines read (the claim
+    gate's ``op: expression``, recomputed from the cells it re-reads for the reader):
+    ``revenue`` = invoice line amounts - credit memo line amounts; ``booked_cost`` = -(the
+    ledger costs, signed by BC); ``margin`` = revenue + ledger costs; ``margin_pct`` =
+    round_to_cents(margin / revenue), a percent (its claim's unit). None of them when a
+    line has no cells or the cells pass ``MAX_CALCULATION_CELLS``; no ``margin_pct`` when
+    the gate's half-up cent would differ from the engine's figure."""
+    if not lines or any(cells is None for cells in lines):
+        return {}
+    revenue = [c for cells in lines for c in cells["revenue"] + cells["credit"]]
+    cost = [c for cells in lines for c in cells["cost"]]
+    if not revenue or not cost or len(revenue) + len(cost) > MAX_CALCULATION_CELLS:
+        return {}
+    inputs = [{"l1_handle": h, "field_path": f, "value": v} for _s, h, f, v in revenue + cost]
+
+    def terms(cells: Sequence[tuple], start: int, negate: bool = False) -> str:
+        out = ""
+        for at, (sign, *_rest) in enumerate(cells):
+            sign = -sign if negate else sign
+            out += ("-" if sign < 0 else "+" if out else "") + f"x{start + at}"
+        return out.replace("+", " + ").replace("-", " - ").strip()
+    whole = terms(revenue, 0)
+    part = terms(cost, len(revenue))
+    margin = f"{whole} + {part}"   # every cost cell signs +1: BC signs the cost itself
+    shared = {"op": "expression"}
+    out = {"revenue": {**shared, "expression": whole, "inputs": inputs[:len(revenue)]},
+           "booked_cost": {**shared, "expression": terms(cost, 0, negate=True),
+                           "inputs": inputs[len(revenue):]},
+           "margin": {**shared, "expression": margin, "inputs": inputs}}
+    if margin_pct is not None:
+        figures = {f"x{at}": Decimal(given["value"]) for at, given in enumerate(inputs)}
+        top = sum(sign * figures[f"x{at}"] for at, (sign, *_r) in enumerate(revenue + cost))
+        bottom = sum(sign * figures[f"x{at}"] for at, (sign, *_r) in enumerate(revenue))
+        if bottom != 0 and (top * 100 / bottom).quantize(
+                Decimal("0.01"), ROUND_HALF_UP) == Decimal(margin_pct):
+            out["margin_pct"] = {**shared, "expression": f"round_to_cents(({margin}) / "
+                                 f"({whole}))", "inputs": inputs}
     return out
 
 

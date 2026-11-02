@@ -5,8 +5,10 @@ import Link from "next/link";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { formatDate, objectHref, readable, recordLabel, safeHref, SYSTEM_LABEL } from "@/lib/format";
-import { eta as etaStatus, lateness, STATUS_CLASS, type Status } from "@/lib/status";
+import { etaShown, promiseLate } from "@/lib/eta";
+import { lateness, STATUS_CLASS, type Status } from "@/lib/status";
 import type { EtaCheck, EvidenceTrail, MaterialRow, NextAction, PoTrail, Source, TrailStep } from "@/lib/types";
+import { EtaPill } from "./eta-confirmed";
 import { EvidenceDrawer } from "./source-chip";
 import { StatusBadge } from "./ui/status-badge";
 
@@ -232,14 +234,16 @@ function Steps({ steps, label }: { steps: TrailStep[]; label: string }) {
 }
 
 export function EtaBadge({ eta }: { eta: EtaCheck }) {
-  const shown = etaStatus(eta.state);
+  const shown = etaShown(eta);
   const [open, setOpen] = useState(false);
   if (!shown) return null;
-  const src = eta.source;
+  const src = eta.promise?.source ?? eta.source;
+  const late = eta.promise ? promiseLate(eta.promise, eta.promise.link) : null;
   return (
     <div className="flex flex-wrap items-center gap-2 text-row" data-testid="eta-check">
-      <StatusBadge shown={shown} />
-      <span className="text-muted">{stepWords(eta.text)}</span>
+      <EtaPill shown={shown} />
+      <EtaPill shown={late} />
+      {!eta.promise && <span className="text-muted">{stepWords(eta.text)}</span>}
       {src && (src.handle || safeHref(src.open_url)) && (
         <>
           <button type="button" onClick={() => setOpen(true)} className="text-meta font-medium text-accent hover:underline cursor-pointer">

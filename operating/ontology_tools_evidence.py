@@ -142,6 +142,7 @@ from collections import Counter, OrderedDict
 import contextlib
 import contextvars
 import datetime as dt
+import functools
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -172,7 +173,10 @@ TIER_ORDER = tt.TIER_ORDER
 _TIER_RANK = {tier: index for index, tier in enumerate(TIER_ORDER)}
 NEVER_AUTHORITY = tt.NEVER_AUTHORITY
 # Audience-key prefixes (store_ddl docstring) of document records and their source family.
-DOCUMENT_FAMILIES = {"mail": "graph_mail", "sharepoint": "sharepoint", "original": "original"}
+DOCUMENT_FAMILIES = {"mail": "graph_mail", "sharepoint": "sharepoint", "original": "original",
+                     "teams": "teams"}
+# Searched when a call names no sources: Teams messages only when asked for (``sources``).
+DEFAULT_DOCUMENT_SOURCES = ("graph_mail", "sharepoint", "original")
 _FAMILY_OF_SOURCE = {source: prefix for prefix, source in DOCUMENT_FAMILIES.items()}
 # The document families the projection holds (an original is in the originals store): their
 # value-cell spans narrow a word search (``_text_hits``), read when a host opens the store.
@@ -229,7 +233,8 @@ _WITHHELD_KIND_TEXT = {
 # The L1 handle scheme of each document family the projection holds versions of.
 _SCHEME_OF_FAMILY = {"mail": "graph-mail", "sharepoint": "sharepoint"}
 _KIND_OF_SCHEME = {"graph-mail": "email", "sharepoint": "sharepoint_file",
-                   "original": "original"}
+                   "original": "original", "teams-chat": "teams_message",
+                   "teams-channel": "teams_message"}
 # Identifier mentions (plus one per text) of original texts one process keeps.
 TEXT_MENTIONS_BOUND = 100_000   # about 1 KB each
 _DECIMAL = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?$")
@@ -1588,7 +1593,7 @@ class EvidenceTools:
             offset, at = ot._read_cursor(arguments["cursor"], fingerprint)
             cursor_mode = ot._cursor_mode(arguments["cursor"])
             pinned = (at, False)
-        sources = list(arguments.get("sources") or ("graph_mail", "sharepoint", "original"))
+        sources = list(arguments.get("sources") or DEFAULT_DOCUMENT_SOURCES)
         participant = arguments.get("participant")
         tenant: frozenset[str] | None = None
         if participant is not None:
@@ -2218,6 +2223,16 @@ class EvidenceTools:
                     if hits:
                         out |= hits
                         relaxed.append(word)
+        if pairs and not out:
+            # An identifier no visible record holds (a PO not projected yet, a number a
+            # chat names): the documents whose text holds it as written, word by word
+            # ("PO#5040" holds PO and 5040), so a document naming it is never missed for
+            # want of a record to link it to.
+            literal = self._literal_words(query)
+            if literal:
+                hits, more = self._document_text_hits(scope, literal, families, snippets)
+                out |= hits
+                cut |= more
         if not prose and out and ranks is not None:
             # A query naming an identifier is answered by it, never by search's other
             # hits; with hybrid search on, its order ranks the documents already found.
@@ -2225,6 +2240,18 @@ class EvidenceTools:
             for rank, object_id in enumerate(hybrid, start=1):
                 ranks.setdefault(object_id, rank)
         return out, pairs, bare, cut, relaxed
+
+    def _literal_words(self, query: str) -> list[str]:
+        """The words of the identifiers the grammar finds in ``query`` as written (the
+        bare token when it finds none), each once."""
+        try:
+            mentions = self.base.grammar.find_identifiers(query)
+        except Exception:  # noqa: BLE001 - a text the grammar refuses names nothing
+            mentions = []
+        texts = [m.text for m in mentions if isinstance(getattr(m, "text", None), str)] \
+            or [t for t in (self._bare(query),) if t]
+        words = [w for text in texts for w in re.findall(r"[^\W_]+", text)]
+        return list(dict.fromkeys(words))[:6]
 
     def _mention_pairs(self, query: str) -> list[tuple[str, str]]:
         """(kind, normalized) of each identifier mention the grammar finds in ``query``."""
@@ -2923,13 +2950,68 @@ def capped_gaps(capped: Sequence[dict[str, Any]], scope: str, what: str
     return out
 
 
+@functools.lru_cache(maxsize=1)
+def compact_date_columns() -> frozenset[tuple[str, str]]:
+    """(relation, column) of every Portal mirror column the ontology schema reads with its
+    ``yyyymmdd_date`` parser (Sage's compact dates, ``ontology/project.py``), as a
+    property or an event time; none when the schema does not load (values shown as held)."""
+    try:
+        from ontology.schema import load_schema
+        schema = load_schema()
+    except Exception:  # noqa: BLE001 - no schema: every value is shown as the source holds it
+        return frozenset()
+    sources = [source for spec in schema.object_types.values()
+               for prop in spec.get("properties") or () for source in prop.get("sources") or ()]
+    sources += [event["time"] for event in schema.event_types.values()
+                if isinstance(event.get("time"), Mapping)]
+    out = set()
+    for source in sources:
+        if source.get("parser") != "yyyymmdd_date" or not source.get("path"):
+            continue
+        _type, binding = schema.bindings.get(source.get("binding"), (None, {}))
+        if binding.get("source") == "portal_api" and binding.get("relation"):
+            out.add((binding["relation"], source["path"]))
+    return frozenset(out)
+
+
+_COMPACT_DATE = re.compile(r"(\d{4})(\d{2})(\d{2})")
+
+
+def compact_date(value: Any, handle: str, path: str) -> str | None:
+    """The ISO date (``2018-07-10``) a Portal mirror row's compact date (``20180710``) is,
+    when the schema reads its column as one (``compact_date_columns``), else None (a zero
+    date, Sage's empty one, and anything not a calendar day stay as held)."""
+    if not (isinstance(handle, str) and handle.startswith("api://")) \
+            or isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    relation = handle[len("api://"):].split("/", 1)[0]
+    parts = path.split(".")
+    column = (parts[1] if len(parts) == 2 and parts[0] == "row" else
+              parts[2] if len(parts) == 3 and parts[0] == "rows" else None)
+    if column is None or (relation, column) not in compact_date_columns():
+        return None
+    match = _COMPACT_DATE.fullmatch(str(value).strip())
+    if match is None:
+        return None
+    try:
+        return dt.date(int(match[1]), int(match[2]), int(match[3])).isoformat()
+    except ValueError:
+        return None
+
+
 def field_value(value: Any, handle: str, path: str, document: bool, limit: int) -> Any:
     """A row value in the plx.read ``fields`` shape. Numbers, booleans and nulls of a
     structured row stay typed (numbers as Decimal text); every string, every nested
-    value and every field of a document citation is an untrusted_text envelope."""
+    value and every field of a document citation is an untrusted_text envelope. A column
+    the schema reads as a compact date (Sage's ``20180710``) is shown as its ISO date, as
+    the projection reads it (``compact_date``): a claim of that date holds on the cell
+    (``claim_checks``), and a reply never states the compact form."""
     field_path = path if ot._FIELD_PATH.match(path) else None
     if value is None or isinstance(value, bool) and not document:
         return value
+    iso = compact_date(value, handle, path)
+    if iso is not None:
+        return _envelope(iso, handle, field_path, limit)
     if document:
         text = value if isinstance(value, str) else json.dumps(value, sort_keys=True,
                                                                default=str)

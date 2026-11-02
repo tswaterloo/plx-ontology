@@ -13,6 +13,6 @@ describe("operator_api contract", () => {
   it("the ask stream's events are the ones the app handles", () => {
     const spec = JSON.parse(readFileSync(fileURLToPath(new URL("../../../operator_api/openapi.json", import.meta.url)), "utf8"));
     const events = spec.paths["/api/ask"].post.responses["200"].content["text/event-stream"].schema["x-sse-events"];
-    expect(Object.keys(events).sort()).toEqual(["answer", "error", "sources", "status", "token", "understanding"]);
+    expect(Object.keys(events).sort()).toEqual(["answer", "error", "sources", "status", "token", "understanding", "verdict"]);
   });
 });

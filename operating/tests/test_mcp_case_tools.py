@@ -25,7 +25,7 @@ from integrations.tests.test_source_mirror import BASE, KEY, Clock, FakeWorkbenc
 from integrations.workbench_read_api import WorkbenchReadApiClient
 from ontology.core import Actor, ValidationError
 from operating.case_runtime import CASE_RUNTIME_DIR, CaseRuntime, CaseRuntimeUnavailable
-from operating import case_context_tools, source_reads
+from operating import case_context_tools, ontology_tools_changes, source_reads
 from operating.tests.firewall_view import as_text, client_result
 from operating import agent_loop
 from operating.tests import test_agent_loop as loop_tests
@@ -147,6 +147,11 @@ class CaseToolsTestCase(unittest.TestCase):
         return case_id, citation
 
 
+# What a session with no agent named lists: its default agent's tools, the case tools
+# plus plx.changes (listed to the act agent since 72300d8acf).
+DEFAULT_AGENT_TOOLS = set(CASE_RUNTIME_TOOLS) | set(ontology_tools_changes.TOOL_NAMES)
+
+
 class ToolListingTests(CaseToolsTestCase):
     def test_tool_family_is_listed_with_honest_annotations(self):
         server = self.server(OPS, self.runtime())
@@ -159,7 +164,7 @@ class ToolListingTests(CaseToolsTestCase):
             if name in CASE_WRITE_TOOLS:
                 self.assertFalse(tools[name]["annotations"]["destructiveHint"], name)
         propose = tools["plx.case_propose"]["description"]
-        self.assertIn("never dispatched", propose)
+        self.assertIn("never approved or dispatched", propose)
         self.assertIn("writes no business system", propose)
         for name in ("plx.schema", "plx.find", "plx.object"):
             self.assertTrue(tools[name]["annotations"]["readOnlyHint"], name)
@@ -1106,7 +1111,7 @@ class ConfigurationTests(CaseToolsTestCase):
         server = self.server(OPS, self.runtime())
         listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         self.assertEqual({tool["name"] for tool in listed["result"]["tools"]},
-                         set(CASE_RUNTIME_TOOLS))
+                         DEFAULT_AGENT_TOOLS)
         self.assertFalse(hasattr(server, "platform"))
         refused = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                                  "params": {"name": "plx.search",
@@ -1143,7 +1148,7 @@ class ConfigurationTests(CaseToolsTestCase):
         replies = [json.loads(line) for line in done.stdout.splitlines()]
         self.assertEqual(replies[0]["result"]["instructions"], CASE_ONLY_INSTRUCTIONS)
         self.assertEqual({tool["name"] for tool in replies[1]["result"]["tools"]},
-                         set(CASE_RUNTIME_TOOLS))
+                         DEFAULT_AGENT_TOOLS)
         # The case runtime and the host's fixture/live label (operating.session_identity).
         self.assertEqual(sorted(path.name for path in state.iterdir()),
                          [CASE_RUNTIME_DIR, "session-state-label.json"])

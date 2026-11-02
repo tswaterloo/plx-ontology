@@ -68,7 +68,8 @@ def _shape(object_id: str) -> str:
 
 def sample_of(sample: Mapping[str, Any]) -> dict[str, Any]:
     """One chain as the shapes of the links it crossed (no keys, ids or values)."""
-    return {"days_at_risk": sample.get("days_at_risk"),
+    return {"days_at_risk": sample.get("days_at_risk"), "tier": sample.get("tier"),
+            "basis": sample.get("basis"),
             "links": [{"link_type": link.get("link_type"), "tier": link.get("tier"),
                        "from": _shape(link.get("from", "")), "to": _shape(link.get("to", "")),
                        "cited": bool(link.get("link_id"))}
@@ -192,7 +193,8 @@ def check_impact(host: Any, *, scan: int, budget_seconds: float | None) -> dict[
                 "top_missing_links", "orders_affected", "orders_at_risk", "orders_excluded",
                 "orders_with_value", "value_at_risk", "days_at_risk_basis", "truncated",
                 "late_pos_with_full_chain", "late_pos_with_partial_chain",
-                "orders_with_margin", "margin_at_stake", "margin_not_stated_by_reason"):
+                "orders_with_margin", "margin_at_stake", "margin_not_stated_by_reason",
+                "orders_affected_by_tier", "orders_at_risk_by_tier", "demand_leads"):
         report[key] = found[key]
     relations = link_relations()
     report["missing_links"] = [

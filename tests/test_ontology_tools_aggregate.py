@@ -607,6 +607,79 @@ class AggregateTests(_Base):
         self.assertEqual(out["error"]["code"], "handle_expired")
 
 
+class FilterCountTests(_Base):
+    """Live-ops gap ("how many lots are on hold", "batches expiring before X"): an exact
+    count of every object of a type matching plx.find's filters, with no scan cap and only
+    what this reader may read; the claim gate binds a count past the citation cap."""
+
+    def lines(self, count, prefix="z"):
+        for i in range(count):
+            oid = f"PurchaseOrderLine:portal.app_purchase_order_line:{prefix}{i:03d}"
+            self.store.obj(oid)
+            self.store.val(oid, "description", "text", "widget" if i % 2 else "gadget")
+
+    def count(self, filters, actor=STAFF, **measure):
+        return self.call("plx.aggregate", {"object_type": "PurchaseOrderLine",
+                                           "filters": filters,
+                                           "measure": {"op": "count", **measure}}, actor)
+
+    def test_counts_every_match_past_the_scan_cap_n_1_10_60_and_binds_a_count_claim(self):
+        from operating import claim_checks
+        widget = [{"property": "description", "op": "eq", "value": "widget"}]
+        made = 0
+        for n in (1, 10, 60):
+            with self.subTest(n=n), mock.patch.object(ot, "FILTER_SCAN_CAP", 7):
+                self.lines(2 * n - made, prefix=f"n{n}_")
+                made = 2 * n
+                out = self.count(widget)
+                [group] = out["groups"]
+                self.assertEqual(group["value"], str(n))   # 2n lines, n widgets
+                self.assertFalse(out["partial"])
+                self.assertTrue(out["completeness"]["complete"])
+        # Measured on a property every member carries, each counted record is cited: past
+        # the citation cap a sample with its gap, still bound exact by the claim gate.
+        out = self.count(widget, property="description")
+        [group] = out["groups"]
+        self.assertEqual(group["value"], "60")
+        self.assertEqual(len(group["inputs_citations"]), oa.MAX_CITATIONS)
+        self.assertEqual({g["reason"] for g in out["gaps"]}, {"citations_capped"})
+        entry = claim_checks.returned_evidence(
+            "plx.aggregate", {"object_type": "PurchaseOrderLine", "filters": widget,
+                              "measure": {"op": "count", "property": "description"}},
+            out)["counts"][0]
+        self.assertTrue(entry["complete"])
+        self.assertEqual(entry["value"], "60")
+
+    def test_only_what_the_reader_may_read_is_counted_and_withheld_values_are_partial(self):
+        ordered = [{"property": "ordered_quantity", "op": "gte", "value": "1"}]
+        staff, sales = self.count(ordered), self.count(ordered, SALES)
+        # L5 sits in BC, which sales may not read: never counted, never named
+        self.assertEqual(staff["groups"][0]["value"], "5")
+        self.assertEqual(sales["groups"][0]["value"], "4")
+        self.assertNotIn(self.store.handles[L5][0], json.dumps(sales))
+        # a filtered value withheld from the reader decides nothing: no exact count
+        priced = self.count([{"property": "unit_price", "op": "gte", "value": "0"}], SALES)
+        self.assertTrue(priced["partial"])
+        self.assertFalse(priced["completeness"]["complete"])
+        self.assertIn("marking_withheld", {g["reason"] for g in priced["gaps"]})
+        self.assertEqual(self.count([{"property": "unit_price", "op": "gte", "value": "0"}])[
+            "groups"][0]["value"], "2")
+
+    def test_unknown_inputs_fail_closed(self):
+        widget = [{"property": "description", "op": "eq", "value": "widget"}]
+        for arguments, code in (
+                ({"object_type": "NoSuchType", "filters": widget}, "unknown_object_type"),
+                ({"object_type": "PurchaseOrderLine",
+                  "filters": [{"property": "no_such", "op": "eq", "value": "x"}]},
+                 "unknown_property"),
+                ({"object_type": "PurchaseOrderLine"}, "invalid_input"),
+                ({"set": self.set_of(STAFF, L1), "object_type": "PurchaseOrderLine",
+                  "filters": widget}, "invalid_input")):
+            with self.subTest(arguments=arguments):
+                out = self.call("plx.aggregate", {**arguments, "measure": {"op": "count"}})
+                self.assertEqual(out["error"]["code"], code)
+
+
 class CompareTests(_Base):
     def cmp(self, left, right, actor=STAFF, **extra):
         return self.call("plx.compare", dict({"left": left, "right": right}, **extra), actor)

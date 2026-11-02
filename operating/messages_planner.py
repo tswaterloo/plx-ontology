@@ -100,6 +100,7 @@ DECISION_TOOLS = {
                              "of": {"type": "array", "items": {"type": "object"}},
                              "expression": {"type": "string"},
                              "quote": {"type": "string"},
+                             "name": {"type": "string"},
                              "lead": {"type": "boolean"}},
                              "required": ["id", "value"]}},
                          "text": {"type": "string"},

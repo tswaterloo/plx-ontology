@@ -52,7 +52,7 @@ describe("friendly URLs", () => {
     params = { ref: "106093" };
     render(<FriendlyRecord kind="po" />);
     expect(await screen.findByTestId("object-title")).toHaveTextContent("106093");
-    expect(f.mock.calls.map((c) => c[0])).toContain("/api/object/PurchaseOrder/106093");
+    expect(f.mock.calls.map((c) => c[0])).toContain("/api/object/PurchaseOrder/106093?quick=1");
     f.mockClear();
     params = { ref: "PurchaseOrder%3Abc.purchase_orders%3A%7B%7D" };
     expect(() => render(<FriendlyRecord kind="po" />)).toThrow("NEXT_NOT_FOUND");

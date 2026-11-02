@@ -98,6 +98,7 @@ Stdlib only (``fcntl``: POSIX).
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 import fcntl
@@ -110,7 +111,7 @@ import secrets
 import shutil
 import sqlite3
 import time
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH, ETL_REINSERTED,
                               POST_PROJECT, SHARD_BUCKETS, CaptureSource, Normalizer,
@@ -451,8 +452,11 @@ def _shard_prints(the_plan: Plan, pinned: Mapping[str, Any],
     shards (``shard_count`` of the records naming an object): the fingerprint of the
     records of each shard's objects, with what its source says it does not hold of the
     relation. ``held``: the last build's (same code); a binding whose relation
-    fingerprint is the one held takes its prints and is not read."""
+    fingerprint is the one held takes its prints and is not read. The bindings over one
+    relation of a source are read in one pass of its records (each record read once, not
+    once per binding: a derived relation is read from captured documents)."""
     out: dict[str, dict[str, Any]] = {}
+    passes: dict[tuple[str, str], list[str]] = {}
     for bid in sorted(the_plan.isolated):
         tid, b = the_plan.bindings[bid]
         relation, print_ = b["relation"], fingerprints.get(bid)
@@ -461,21 +465,42 @@ def _shard_prints(the_plan: Plan, pinned: Mapping[str, Any],
             continue
         kept = (held or {}).get(bid) or {}
         if kept.get("relation") == print_ and isinstance(kept.get("prints"), list):
-            out[bid] = kept
             continue
+        passes.setdefault((b["source"], relation), []).append(bid)
+    read: dict[str, tuple[list[Any], int]] = {}
+    for (name, relation), bids in passes.items():
+        source = pinned[name]
         gap = getattr(source, "capture_gap", None)
         whole = getattr(source, "whole_scopes", None)
         state = canonical([gap(relation) if callable(gap) else None,
                            sorted(whole(relation)) if callable(whole) else None])
-        buckets = [hashlib.sha256(state.encode("utf-8")) for _ in range(SHARD_BUCKETS)]
-        count = 0
+        reading = []
+        for bid in bids:
+            tid, b = the_plan.bindings[bid]
+            buckets = [hashlib.sha256(state.encode("utf-8")) for _ in range(SHARD_BUCKETS)]
+            reading.append((bid, tid, b, buckets, [0]))
         for rec in source.records([relation])[relation]:
-            key = binding_key(b, rec.row)
-            if key is None:   # names no object: the binding's own unit (its whole print)
-                continue
-            count += 1
-            buckets[object_bucket(object_id_of(tid, bid, key))].update(
-                repr(_fingerprint_cells(rec)).encode("utf-8") + b"\n")
+            line = None
+            for bid, tid, b, buckets, count in reading:
+                key = binding_key(b, rec.row)
+                if key is None:   # names no object: the binding's own unit (its whole print)
+                    continue
+                count[0] += 1
+                if line is None:
+                    line = repr(_fingerprint_cells(rec)).encode("utf-8") + b"\n"
+                buckets[object_bucket(object_id_of(tid, bid, key))].update(line)
+        for bid, _tid, _b, buckets, count in reading:
+            read[bid] = (buckets, count[0])
+    for bid in sorted(the_plan.isolated):
+        _, b = the_plan.bindings[bid]
+        print_ = fingerprints.get(bid)
+        if pinned.get(b["source"]) is None or print_ is None:
+            continue
+        kept = (held or {}).get(bid) or {}
+        if bid not in read:   # held: its prints taken, not read
+            out[bid] = kept
+            continue
+        buckets, count = read[bid]
         shards = shard_count(count, kept.get("shards"))
         if shards < 2:
             continue
@@ -837,7 +862,8 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                      reuse: bool = False,
                      before_seed: Callable[[Path], None] | None = None,
                      on_stage: Callable[[str, int, int], None] | None = None,
-                     space: Callable[[Mapping[str, Any]], None] | None = None) -> Generation:
+                     space: Callable[[Mapping[str, Any]], None] | None = None,
+                     workers: int | None = None) -> Generation:
     """Build the next generation of ``state_dir`` from ``sources`` under ``schema`` and
     commit it (``CURRENT``). ``previous``: the generation to reuse unchanged units from
     (default: the committed one; None = a cold build). ``reuse``: when no unit changed
@@ -848,8 +874,11 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
     the space estimate of a mode (:func:`space_need`, now that the changed units are known;
     ``estimates``: every mode's) before anything is written; it may raise (a caller's disk
     guard), and the build then tries the other mode (module docstring, "Mode"). Every other
-    argument is ``build_store``'s. Raises ``ProjectionError("generation_build_in_progress")``
-    while another build holds the state directory; on any failure the committed generation
+    argument is ``build_store``'s. ``workers``: the processes a cold build projects with
+    (``ontology.project_parallel``; None: ``PLX_BUILD_WORKERS`` or the CPUs, and serial
+    under ``MIN_CAPTURE_BYTES`` of captures; 1: serial). Raises
+    ``ProjectionError("generation_build_in_progress")`` while another build holds the
+    state directory; on any failure the committed generation
     is left as it was."""
     state = Path(state_dir)
     (state / "generations").mkdir(parents=True, exist_ok=True)
@@ -865,20 +894,25 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
         options = {"normalizer": normalizer if normalizer is not None else
                    _default_normalizer(), "as_known_at": as_known_at, "clock": clock,
                    "batch_size": batch_size, "post_project": post_project,
-                   "checkpoint": checkpoint, "on_stage": on_stage}
+                   "checkpoint": checkpoint, "on_stage": on_stage, "workers": workers}
         # The readings of captured files (PDF text and the like) are kept beside the
         # generations, so a build reads only the files no build read before
         # (``integrations.captured_text.KeptReadings``).
+        # Documents are parsed by worker processes once the build engages them (``_build``:
+        # a build that projects in parallel by choice; ``project_parallel.DocumentPool``).
         with kept_readings(state / READINGS), \
-                kept_fields(state / FIELDS, derivation_code()):
+                kept_fields(state / FIELDS, derivation_code()), \
+                _document_pool(workers) as parse:
             try:
                 generation = _build(state, schema, sources, base, reuse=reuse,
-                                    before_seed=before_seed, space=space, **options)
+                                    before_seed=before_seed, space=space, parse=parse,
+                                    **options)
             except _Unattributed:
                 # A report entry outside every unit (a projection hook that names none):
                 # the rows are right but the report of a partial build would not be, so
                 # this build is cold, and so are the next ones until that is fixed.
-                generation = _build(state, schema, sources, None, space=space, **options)
+                generation = _build(state, schema, sources, None, space=space, parse=parse,
+                                    **options)
         if generation.mode != "reused":
             _prune(state, generation.id)
     generation.seconds["total"] = round(time.monotonic() - started, 3)
@@ -896,7 +930,8 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
            on_stage: Callable[[str, int, int], None] | None = None,
            reuse: bool = False,
            before_seed: Callable[[Path], None] | None = None,
-           space: Callable[[Mapping[str, Any]], None] | None = None) -> Generation:
+           space: Callable[[Mapping[str, Any]], None] | None = None,
+           workers: int | None = None, parse: Any = None) -> Generation:
     started = time.monotonic()
     the_plan = plan(schema)
     context = _sha(canonical({
@@ -911,11 +946,20 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     pinned, fingerprints, marks = _pin(sources, the_plan,
                                        units.get("watermarks") if same_code else None)
     seconds = {"fingerprint": round(time.monotonic() - started, 3)}
+    if parse is not None:
+        parse.engaged = _parallel_count(workers, marks) > 1
+        relations: dict[str, set[str]] = {}
+        for _, b in the_plan.bindings.values():
+            relations.setdefault(b["source"], set()).add(b["relation"])
+        parse.know({name: pinned[name] for name in relations if name in pinned}, marks,
+                   relations)
     started = time.monotonic()
     sharded = _shard_prints(the_plan, pinned, fingerprints,
                             units.get("shards") if same_code else None) \
         if the_plan.acyclic else {}
     the_plan = with_shards(the_plan, {b: s["shards"] for b, s in sharded.items()})
+    if parse is not None:   # its workers' memory is the projection's until the steps
+        parse.close()
     seconds["fingerprint.shards"] = round(time.monotonic() - started, 3)
     started = time.monotonic()
     keys = {unit: _sha(context + canonical({b: fingerprints.get(b) for b in sorted(deps)}))
@@ -964,13 +1008,23 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                           seed=base.store if incremental else None) as builder:
             seed = builder.seed_mode
             seconds["project.seed"] = round(time.monotonic() - laid, 3)
+            builder.digest_workers = _digest_workers(workers)
             open_generation(builder)
             if incremental:
                 laid = time.monotonic()
                 _identifier_rows(builder.connection, the_plan, dirty, "before")
                 _seed_delete(builder.connection, the_plan, schema, dirty)
                 seconds["project.seed_delete"] = round(time.monotonic() - laid, 3)
-            projector.project_into(builder)
+            parallel = None
+            if not incremental:
+                parallel = _project_parallel(builder, schema, pinned, marks, the_plan,
+                                             sharded, units, workers, directory, seconds,
+                                             normalizer=normalizer, as_known_at=as_known_at,
+                                             batch_size=batch_size, checkpoint=checkpoint)
+            if parallel is None or "unavailable" in parallel:
+                projector.project_into(builder)
+            else:
+                work_peak[0] = parallel["result"].work_peak
             if incremental:
                 laid = time.monotonic()
                 _identifier_rows(builder.connection, the_plan, dirty, "after")
@@ -986,8 +1040,9 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             unattributed = projector.report.unattributed
             if unattributed and incremental:
                 raise _Unattributed(unattributed)
-            parts = {unit: (projector.report.parts[unit].as_dict()
-                            if unit in projector.report.parts else _EMPTY)
+            projected = (parallel["result"].parts if parallel and "result" in parallel
+                         else {u: p.as_dict() for u, p in projector.report.parts.items()})
+            parts = {unit: projected.get(unit, _EMPTY)
                      if unit in dirty else units["fragments"].get(unit, _EMPTY)
                      for unit in sorted(keys)}
             seconds["project"] = round(time.monotonic() - started, 3)
@@ -997,8 +1052,10 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             # and samples are order-independent).
             committed = False
             try:
+                # A parallel build has only its units' parts (every entry is in one).
+                merged = incremental or (parallel is not None and "result" in parallel)
                 report = finish_generation(
-                    builder, projector, merge_reports(parts.values()) if incremental
+                    builder, projector, merge_reports(parts.values()) if merged
                     else projector.report.as_dict(), post_project=_timed(post_project, seconds),
                     clock=clock)
                 committed = True
@@ -1020,6 +1077,9 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             "shards": sharded,
             # The token this build's step memos are valid under (``BuildContext``).
             "build_token": token,
+            # How the projection ran: workers and each task's seconds (the next cold
+            # build starts the longest first), or why it ran serially.
+            "parallel": _parallel_record(parallel, units),
             # Measured, for the next build's space estimate (``space_need``).
             "bytes": {"store": (directory / "store.sqlite").stat().st_size,
                       "work_peak": work_peak[0], "mode": "incremental" if incremental
@@ -1037,6 +1097,89 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                       mode=mode, units=len(keys), units_rebuilt=len(dirty),
                       bindings_read=len(scope) if scope is not None else len(the_plan.bindings),
                       seconds=seconds, seed=seed, need=need, digest=digested)
+
+
+def _project_parallel(builder: StoreBuilder, schema: Any, pinned: Mapping[str, Any],
+                      marks: Mapping[str, Any], the_plan: Plan,
+                      sharded: Mapping[str, Any], units: Mapping[str, Any] | None,
+                      workers: int | None, directory: Path, seconds: dict[str, float], *,
+                      normalizer: Any, as_known_at: Any, batch_size: int,
+                      checkpoint: Callable[[], None] | None) -> dict[str, Any] | None:
+    """A cold build's projection by worker processes (``ontology.project_parallel``):
+    ``{"result": ...}`` when it projected every unit into ``builder``; ``{"unavailable":
+    reason}`` when it could not (``builder`` then holds no row and the caller projects
+    serially); None when the build is serial by choice (one worker, or small captures
+    with no count asked for)."""
+    from ontology import project_parallel as par
+
+    count = _parallel_count(workers, marks)
+    if count < 2:
+        return None
+    hints = ((units or {}).get("parallel") or {}).get("seconds") or {}
+    started = time.monotonic()
+    try:
+        result = par.project(builder, schema=schema, sources=pinned, marks=marks,
+                             the_plan=the_plan, normalizer=normalizer,
+                             as_known_at=as_known_at, batch_size=batch_size,
+                             shards={b: s["shards"] for b, s in sharded.items()},
+                             scratch_dir=directory, count=count, hints=hints,
+                             checkpoint=checkpoint)
+    except par.ParallelUnavailable as why:
+        builder.restart()
+        return {"unavailable": str(why)}
+    seconds["project.parallel"] = round(time.monotonic() - started, 3)
+    seconds["project.parallel_merge"] = result.merge_seconds
+    return {"result": result}
+
+
+def _parallel_count(workers: int | None, marks: Mapping[str, Any]) -> int:
+    """The worker processes a build projects and parses with
+    (``ontology.project_parallel.workers``); 1 (serial) when no count is asked for
+    (``workers`` or ``PLX_BUILD_WORKERS``) and its captures are small
+    (``MIN_CAPTURE_BYTES``): starting the workers costs more than they save."""
+    from ontology import project_parallel as par
+
+    count = par.workers(workers)
+    if workers is None and os.environ.get(par.WORKERS_ENV) in (None, "") \
+            and par.capture_bytes(marks) < par.MIN_CAPTURE_BYTES:
+        return 1
+    return count
+
+
+@contextlib.contextmanager
+def _document_pool(workers: int | None) -> Iterator[Any]:
+    """``project_parallel.document_pool`` with the build's worker count; None when that
+    count is refused (the projection refuses it first) or one."""
+    from ontology import project_parallel as par
+
+    count = _digest_workers(workers)
+    if count < 2:
+        yield None
+        return
+    with par.document_pool(count) as pool:
+        yield pool
+
+
+def _digest_workers(workers: int | None) -> int:
+    """The processes a full content digest at the commit may use: the build's worker
+    count (``ontology.project_parallel.workers``); one when that count is refused (a cold
+    build's projection refuses it first)."""
+    from ontology import project_parallel as par
+
+    try:
+        return par.workers(workers)
+    except ProjectionError:
+        return 1
+
+
+def _parallel_record(parallel: dict[str, Any] | None, units: Mapping[str, Any] | None
+                     ) -> dict[str, Any]:
+    if parallel is None:   # serial by choice, or an incremental build: hints kept
+        return {"seconds": ((units or {}).get("parallel") or {}).get("seconds") or {}}
+    if "unavailable" in parallel:
+        return {"unavailable": parallel["unavailable"]}
+    result = parallel["result"]
+    return {"workers": result.workers, "seconds": dict(sorted(result.seconds.items()))}
 
 
 class BuildContext:

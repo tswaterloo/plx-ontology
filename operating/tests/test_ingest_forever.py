@@ -52,6 +52,9 @@ FAKE = textwrap.dedent("""
                           "message": "mailbox alice@example.com unreachable"}),
               file=sys.stderr)
         sys.exit(1)
+    if mode == "crash":   # an uncaught exception: a traceback, no JSON line
+        import sqlite3
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: alice@example.com")
     if mode == "stdout_refusal":   # integrations.mc_sources: the code on stdout
         print(json.dumps({"ok": False, "error_class": "CaptureError",
                           "error": "invalid_handles"}, indent=1))
@@ -248,12 +251,18 @@ class IngestModeTest(unittest.TestCase):
         self.assertFalse(self.ran("mail"))
 
     def test_failing_source_does_not_stop_the_cycle(self) -> None:
-        table = fake_table(self.script, "broken", "hung", "mail")
+        table = fake_table(self.script, "broken", "hung", "mail", "crashed")
         config = self.config({"broken": {"mode": "fail"},
-                              "hung": {"mode": "hang", "timeout_seconds": 1}, "mail": {}})
+                              "hung": {"mode": "hang", "timeout_seconds": 1}, "mail": {},
+                              "crashed": {"mode": "crash"}})
         report, text = self.run_cycle(config, table)
         states = {n: o["state"] for n, o in report["sources"].items()}
-        self.assertEqual(states, {"broken": "failed", "hung": "failed", "mail": "captured"})
+        self.assertEqual(states, {"broken": "failed", "hung": "failed", "mail": "captured",
+                                  "crashed": "failed"}, report["sources"]["mail"])
+        # A child dead of an uncaught exception is named by its class, never its message.
+        crashed = report["sources"]["crashed"]["capture"]
+        self.assertEqual((crashed["error_code"], crashed["exit_code"]),
+                         ("uncaught:IntegrityError", 1))
         self.assertEqual(report["state"], "failed")   # as the host's own failed source
         broken = report["sources"]["broken"]
         self.assertEqual((broken["capture"]["error_code"], broken["capture"]["http_status"],
@@ -266,10 +275,12 @@ class IngestModeTest(unittest.TestCase):
         self.assertFalse(alive(pid))
         self.assertNotIn("@", text)
         self.assertNotIn("unreachable", text)
+        self.assertNotIn("UNIQUE constraint", text)
         self.assertEqual(self.ledger("SELECT source, generation, error FROM source_state "
                                      "ORDER BY source"),
-                         [("broken", 0, "SourceUnavailable"), ("hung", 0, "child_timeout"),
-                          ("mail", 1, None)])
+                         [("broken", 0, "SourceUnavailable"),
+                          ("crashed", 0, "uncaught:IntegrityError"),
+                          ("hung", 0, "child_timeout"), ("mail", 1, None)])
         self.assertEqual(json.loads(self.ledger("SELECT parts FROM source_blocked WHERE "
                                                 "source='broken'")[0][0])[0]["source"],
                          "fake-source")
@@ -1293,7 +1304,7 @@ class LiveCycleRepairTest(unittest.TestCase):
                          (20, 5000))   # the largest walk bounds the scope accepts
         # Teams: the census reaches every chat (the largest cap; past it, it rotates).
         teams = json.loads(Path(config.sources["teams"]["scope"]).read_text())
-        self.assertEqual(teams["census"]["max_chats"], 5000)
+        self.assertEqual(teams["census"]["max_chats"], 100000)
 
 if __name__ == "__main__":
     unittest.main()

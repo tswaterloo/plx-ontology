@@ -40,7 +40,9 @@ OPEN_PORTAL_SO = frozenset({"Open", "OPEN", "READY_TO_SHIP"})
 ACCEPTED_QUOTE = frozenset({"ACCEPTED", "Accepted", "WON"})
 RECENT_DAYS = 365
 _NAME = re.compile(r"^[A-Za-z][A-Za-z .'-]{1,40}$")
-SO_TOKEN = r"S-ORD\d{3,8}|SO\d{3,8}|SO-\d{3,8}"
+# A whole BC sales order number (S-ORD101164, SO100104, SO-1001, a draft DSO100025), never
+# the "SO100025" inside "DSO100025": a member written whole is no extra member.
+SO_TOKEN = r"(?<![A-Z0-9-])(?:S-ORD|D?SO-?)\d{3,8}(?!\d)"
 TASK_TOKEN = r"TASK-\d{1,6}"
 
 
@@ -397,7 +399,7 @@ def sage_order_shipped(world: lk.World) -> list[lk.Candidate]:
 # SharePoint, Mission Control
 
 def _latest(messages: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    dated = [m for m in messages if m.get("at") and not lk.AUTOMATIC.match(
+    dated = [m for m in messages if m.get("at") and not lk.AUTOMATIC.search(
         str(m.get("subject") or ""))]
     if not dated:
         return None
@@ -426,14 +428,20 @@ def customer_last_mail(world: lk.World) -> list[lk.Candidate]:
 
 
 def teams_po_discussion(world: lk.World) -> list[lk.Candidate]:
-    """The latest Teams message (chat or channel) naming a Portal PO number."""
-    numbers = {re.sub(r"\D", "", str(i["row"].get("po_number") or "")):
-               str(i["row"].get("po_number")) for i in world.rows(PO)}
+    """The latest Teams message (chat or channel) naming a Portal PO number, as
+    ``lk.po_mention_key`` names it: ``PO-7001`` names ``PO#7001``; ``PO2-FM87`` is named
+    only whole, its digits alone (``PO-287``) are another order's."""
+    keyed: dict[str, str] = {}
+    for row in world.rows(PO):
+        number = str(row["row"].get("po_number") or "").strip()
+        key = lk.po_mention_key(number)
+        if key:
+            keyed[key] = number
     by_po: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for message in world.teams:
-        for digits in lk._ids_named(str(message.get("text") or "")):
-            if digits in numbers:
-                by_po[numbers[digits]].append(message)
+        for key in lk.po_mentions(str(message.get("text") or "")):
+            if key in keyed:
+                by_po[keyed[key]].append(message)
     out = []
     for number, messages in by_po.items():
         last = _latest(messages)
@@ -450,20 +458,26 @@ def teams_po_discussion(world: lk.World) -> list[lk.Candidate]:
 
 
 def sharepoint_lot_file(world: lk.World) -> list[lk.Candidate]:
-    """The one SharePoint file whose name holds a released lot's number (a COA, a
-    receiving document)."""
+    """The one SharePoint file whose name holds a released lot's number and says it is a
+    document of that lot (``operating.fast_answer.lot_document_name``: a COA, a
+    receiving document), never a file that only shares the number."""
     lots = {lot for lot, _day, _c in lk._released_lots(world)
             if len(lot) >= 6 and not re.fullmatch(r"(?:19|20)\d{6}", lot)}
+    from operating.fast_answer import lot_document_name
     by_lot: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in world.sharepoint:
-        for token in re.findall(r"[A-Za-z0-9-]{6,}", str(item.get("name") or "")):
-            if token in lots:
+        name = str(item.get("name") or "")
+        for token in dict.fromkeys(re.findall(r"[A-Za-z0-9-]{6,}", name)):
+            # the product's rule: the name says it is a document of that lot, not only
+            # a number it shares (an R&D formula's, a screenshot's time)
+            if token in lots and lot_document_name(name, token):
                 by_lot[token].append(item)
     return [lk.Candidate(lot, "Lot", {"lot": lot}, [
         lk._fact("document", "lot_file", [files[0]["handle"]], ("sharepoint",),
                  quote=str(files[0].get("name"))[:300], mail=True)],
         ["sharepoint capture: current items whose file name holds the lot number as a "
-         "token; released lots of receipt_raw_material"], "the one file named for the lot")
+         "token and a lot-document word (lot_document_name); released lots of "
+         "receipt_raw_material"], "the one file named for the lot")
         for lot, files in by_lot.items() if len(files) == 1]
 
 

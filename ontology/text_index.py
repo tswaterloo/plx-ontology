@@ -39,7 +39,7 @@ from contextlib import closing
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from ontology.mention_memo import document_key
-from ontology.mentions import Document, cited_page, source_document_groups
+from ontology.mentions import Document, cited_page, read_ahead, source_document_groups
 from ontology.store import StoreError, markings_text
 from ontology.store_ddl import TEXT_TOKENIZER
 
@@ -150,10 +150,35 @@ def _text_facts(document: Document) -> dict[str, Any]:
                        if isinstance(text, str) and text.strip()]}
 
 
+def _pieces(text: str) -> list[tuple[int, str, bytes]]:
+    """(start, text, stored body) of each chunk of a field's indexed ``text``."""
+    return [(start, piece, zlib.compress(piece.encode("utf-8"), 6))
+            for start, piece in chunks(text[:FIELD_CAP])]
+
+
+def document_chunks(document: Document) -> tuple[dict[str, Any], dict[tuple[str, str], Any]]:
+    """What the step derives from a document alone (a build's document workers derive it
+    ahead, ``ontology.project_parallel.DocumentPool``): its facts (:func:`_text_facts`) and,
+    per own field (citation, field path) the step would write, the chunks it writes
+    (:func:`_pieces` of :func:`_field_text`; None for a text it does not chunk)."""
+    out: dict[tuple[str, str], Any] = {}
+    for citation, field_path, text in _fields(document):
+        if (citation, field_path) not in out:   # the field ``_field_text`` reads
+            out[(citation, field_path)] = _pieces(text) if isinstance(text, str) else None
+    return _text_facts(document), out
+
+
 def _memo_code() -> str:
     """What a kept entry of the index's facts was derived under: this module's source."""
     from pathlib import Path
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _holds_texts(memo: Any, group: str, code: str) -> bool:
+    """Whether the memo holds the text facts of every document of ``group`` (marking
+    nothing used)."""
+    keys = memo.peek_group(group)
+    return keys is not None and all(memo.peek_text(key, code) for key in keys)
 
 
 def store_text_index(builder: Any, projector: Any, *,
@@ -218,16 +243,26 @@ def store_text_index(builder: Any, projector: Any, *,
                         writes.append((key, index, facts))
         return more, writes, keys
 
-    for group, load in groups:
+    # In a build with document workers a group whose text facts the memo does not hold
+    # whole is read ahead here, the workers chunking its documents meanwhile (measured on a
+    # mail and SharePoint subset: 7.3 s here against 19.5 s read by the workers, whose
+    # documents, text and chunks this process then unpickles).
+    ahead = read_ahead(groups, "text", (lambda group: _holds_texts(memo, group, code))
+                       if memo is not None else None, remote=False)
+    for group, load, read in ahead:
         kept = memo.group(group) if memo is not None and group is not None else None
         facts_of = [memo.text(key, code) for key in kept] if kept is not None else None
         loaded: list[Document] | None = None
+        derived: list[Any] | None = None
         if facts_of is None or any(facts is None for facts in facts_of):
             facts_of = None
         more, writes, keys = plan(facts_of) if facts_of is not None else ({}, [None], set())
         if writes:   # a field written again (or nothing kept): the group's text is read
-            loaded, remembered = load()
-            fresh = [_text_facts(document) for document in loaded]
+            loaded, remembered, derived = read if read is not None else (*load(), None)
+            derived = [None if d is None else d.get() for d in derived] \
+                if derived is not None else [None] * len(loaded)
+            fresh = [_text_facts(document) if found is None else found[0]
+                     for document, found in zip(loaded, derived)]
             if fresh != facts_of:
                 facts_of = fresh
                 more, writes, keys = plan(facts_of)
@@ -241,7 +276,10 @@ def store_text_index(builder: Any, projector: Any, *,
             counts[name] += amount
         seen |= keys
         for (citation, field_path, object_id), index, facts in writes:
-            body = _field_text(loaded[index], citation, field_path)[:FIELD_CAP]
+            pieces = derived[index][1].get((citation, field_path)) \
+                if derived[index] is not None else None
+            if pieces is None:
+                pieces = _pieces(_field_text(loaded[index], citation, field_path))
             held = previous.get((citation, field_path, object_id))
             if held is not None:
                 _delete_field(conn, held[0])
@@ -250,10 +288,10 @@ def store_text_index(builder: Any, projector: Any, *,
                 "document_kind, sender_class, markings, text_digest) VALUES "
                 "(?, ?, ?, ?, ?, ?, ?, ?)", (object_id, citation, field_path,
                                              *facts)).lastrowid
-            for start, piece in chunks(body):
+            for start, piece, stored in pieces:
                 chunk_id = conn.execute(
                     "INSERT INTO text_chunks (field_id, start, body) VALUES (?, ?, ?)",
-                    (field_id, start, zlib.compress(piece.encode("utf-8"), 6))).lastrowid
+                    (field_id, start, stored)).lastrowid
                 conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
                              (chunk_id, piece))
     for key, (field_id, _facts) in previous.items():
@@ -267,4 +305,4 @@ def store_text_index(builder: Any, projector: Any, *,
 
 
 __all__ = ["CHUNK_CHARS", "CHUNK_OVERLAP", "FIELD_CAP", "FORMAT", "VECTOR", "chunk_text",
-           "chunks", "query_terms", "store_text_index"]
+           "chunks", "document_chunks", "query_terms", "store_text_index"]

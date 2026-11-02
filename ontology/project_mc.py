@@ -42,7 +42,7 @@ from urllib.parse import unquote
 
 from integrations.capture_store import FORMAT, REMOVALS_COLUMN, make_handle, removals_of
 from integrations.mc_sources import COLLECTIONS, KIND, MC_KIND, audience_key
-from ontology.project import (CapturedRecord, ProjectionError, _Relations, _file_marks,
+from ontology.project import (Reopenable, CapturedRecord, ProjectionError, _Relations, _file_marks,
                               _watermark, begin_snapshot)
 
 SOURCE = KIND
@@ -54,7 +54,7 @@ _DOCUMENT_FIELDS = {"tasks": ("mc_task", ("title", "description")),
                     "knowledge": ("knowledge_entry", ("title", "snippet"))}
 
 
-class McCaptures:
+class McCaptures(Reopenable):
     """Every retained version of an MC capture store file, read-only."""
 
     source = SOURCE

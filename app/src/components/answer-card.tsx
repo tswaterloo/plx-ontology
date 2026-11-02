@@ -14,13 +14,19 @@ import { CheckedList, ConflictCard, conflictField, Disclosure, FactList, Freshne
 import { ProfitabilityView } from "./cost-breakdown";
 import { EvidenceTrailCard, trailNextAction, trailStepCount } from "./evidence-trail";
 import { Feedback } from "./feedback";
+import { ProposalCards } from "./proposal-cards";
 import { Inlines, RichText } from "./rich-text";
 import { SourceChips } from "./source-chip";
 import { ErrorNotice } from "./ui/notice";
 import { Skeleton } from "./ui/skeleton";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
-const prose = (s: string) => proseMoney(readable(s));
+/** Answer prose as the app writes it: money as money, every PO/SO number spaced one way
+ * ("PO100095" -> "PO 100095"), and the late-order sentence said once, short. */
+export const prose = (s: string) =>
+  proseMoney(readable(s))
+    .replace(/\b(PO|SO)(?=\d{3,}\b)/g, "$1 ")
+    .replace(/(\d+ days? late)\. An open purchase order needed by (.+?) has no supplier confirmation/g, "$1, needed by $2; no supplier confirmation");
 
 export type TurnPhase = "thinking" | "streaming" | "done" | "error";
 
@@ -30,6 +36,10 @@ export interface Turn {
   phase: TurnPhase;
   understanding?: Understanding;
   status?: string;
+  /** The plain-words progress steps so far ("Finding PO 90412", "Reading Business Central receipts"). */
+  steps?: string[];
+  /** The answer's first line, sent once the answer gate accepted it (before the full answer). */
+  verdict?: string;
   sourcesFound?: number;
   streamed: string;
   answer?: Answer;
@@ -145,16 +155,27 @@ function useElapsed(on: boolean): number {
 function Progress({ turn }: { turn: Turn }) {
   const elapsed = useElapsed(true);
   const understood = (turn.understanding?.entities ?? []).filter((e) => e.resolved && !e.ambiguous).map((e) => recordLabel(e.resolved!.type, e.resolved!.label));
+  // the work's own steps, in plain words, each once; the latest is the one in progress
+  const work = (turn.steps ?? []).filter((t) => t !== "Reading your question" && t !== "Writing the answer").map((t) => readable(t).replace(/…$/, ""));
+  const writing = turn.phase === "streaming" || !!turn.verdict;
+  const found = turn.sourcesFound ? ` (${plural(turn.sourcesFound, "source")} found)` : "";
   const steps: { label: string; state: "done" | "active" | "todo" }[] = [
     {
       label: turn.understanding ? (understood.length ? `Understood: ${understood.slice(0, 2).join(", ")}` : "Understood the question") : "Reading your question",
-      state: turn.understanding ? "done" : "active",
+      state: turn.understanding || work.length ? "done" : "active",
     },
-    {
-      label: `${turn.status ? readable(turn.status).replace(/…$/, "") : "Checking the records and messages you can open"}${turn.sourcesFound ? ` (${plural(turn.sourcesFound, "source")} found)` : ""}`,
-      state: turn.phase === "streaming" ? "done" : turn.understanding ? "active" : "todo",
-    },
-    { label: "Writing the answer", state: turn.phase === "streaming" ? "active" : "todo" },
+    ...(work.length
+      ? work.map((label, i) => ({
+          label: i === work.length - 1 ? `${label}${writing ? "" : "…"}${found}` : label,
+          state: (i < work.length - 1 || writing ? "done" : "active") as "done" | "active",
+        }))
+      : [
+          {
+            label: `Checking the records and messages you can open${found}`,
+            state: (writing ? "done" : turn.understanding ? "active" : "todo") as "done" | "active" | "todo",
+          },
+        ]),
+    { label: "Writing the answer", state: writing ? "active" : "todo" },
   ];
   return (
     <div className="space-y-1" role="status" aria-live="polite" data-testid="progress">
@@ -365,8 +386,13 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
   const refs = subjects.length ? subjects : understood;
   const ambiguous = (u?.entities ?? []).filter((e) => e.ambiguous && (e.candidates ?? []).filter((c) => !internalType(c.type)).length > 1);
   const primary = subjects[0] ?? null;
-  const { text, missing: missingSaid } = missingLine((a ? a.direct_answer : turn.streamed) ?? "");
+  // before the words stream, the gate-accepted first line stands in for the answer
+  const shownText = a ? a.direct_answer : turn.streamed || turn.verdict || "";
+  const { text, missing: missingSaid } = missingLine(shownText ?? "");
   const { lead, rest, composed } = splitAnswer(text, primary);
+  // the answer stopped or failed before it landed: what was shown early (the first line or
+  // streamed words) was never confirmed, so it is muted and said as such beside the error
+  const unfinished = !a && turn.phase === "error";
   // a source of the answer's one subject is named by it ("PO 106093"), not by its system
   const record = (s: Source): string | null => {
     if (subjects.length !== 1) return null;
@@ -403,8 +429,19 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
       {busy && <Progress turn={turn} />}
 
       {composed || lead.length > 0 ? (
-        <div className="break-words text-answer text-fg" data-testid="direct-answer">
-          {composed ? <p>{composed}</p> : <RichText blocks={lead} map={prose} />}
+        <div className={cn("break-words text-answer", unfinished ? "text-muted" : "text-fg")} data-testid="direct-answer" data-unconfirmed={unfinished || undefined}>
+          {unfinished && (
+            <p className="mb-1 text-meta font-medium text-muted" data-testid="early-reading">
+              Early reading, not confirmed
+            </p>
+          )}
+          {!a && !turn.streamed && turn.verdict ? (
+            <p data-testid="verdict">{prose(turn.verdict)}</p>
+          ) : composed ? (
+            <p>{composed}</p>
+          ) : (
+            <RichText blocks={lead} map={prose} />
+          )}
           {turn.phase === "streaming" && <span className="ml-0.5 inline-block h-5 w-[2px] translate-y-1 bg-accent animate-blink" aria-hidden />}
         </div>
       ) : turn.phase === "thinking" ? (
@@ -489,6 +526,11 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             {steps > 0 && (
               <Disclosure label={`How we know (${plural(steps, "step")})`} testId="how-we-know">
                 <EvidenceTrailCard trail={a.trail} bare showNext={false} />
+              </Disclosure>
+            )}
+            {(a.proposals ?? []).length > 0 && (
+              <Disclosure label={`Proposed follow-ups (${(a.proposals ?? []).length})`} testId="answer-proposals">
+                <ProposalCards proposals={a.proposals} />
               </Disclosure>
             )}
           </div>

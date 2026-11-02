@@ -192,6 +192,22 @@ class DocumentMemo:
         self._used("groups", key)
         return found[0]
 
+    def peek_group(self, key: str) -> list[str] | None:
+        """:meth:`group`, marking nothing used (a read ahead of a step's own reads)."""
+        found = self._get("groups", key, None)
+        return found[0] if found is not None and isinstance(found[0], list) else None
+
+    def peek_text(self, key: str, code: str) -> bool:
+        """Whether :meth:`text` holds document ``key`` under ``code`` (marking nothing)."""
+        return self._get("texts", key, code) is not None
+
+    def holds_group(self, key: str, code: str) -> bool:
+        """Whether :meth:`group` and :meth:`mentions` hold every document of group ``key``
+        under ``code`` (marking nothing used: a read ahead of the step's own reads)."""
+        found = self.peek_group(key)
+        return found is not None and all(
+            self._get("mentions", document, code) is not None for document in found)
+
     def keep_group(self, key: str, documents: Sequence[str]) -> None:
         self._put("groups", key, list(documents))
 

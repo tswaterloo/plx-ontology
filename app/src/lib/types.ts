@@ -24,12 +24,14 @@ export type Intent = Understanding["intent"];
 export type StatusEvent = S["StatusEvent"];
 export type SourcesEvent = S["SourcesEvent"];
 export type TokenEvent = S["TokenEvent"];
+export type VerdictEvent = S["VerdictEvent"];
 export type Answer = S["AnswerPayload"];
 export type Profitability = S["Profitability"];
 export type CostBreakdownView = S["CostBreakdown"];
 export type CostLine = S["CostLine"];
 export type CostSource = S["CostSource"];
 export type OrderMargin = S["OrderMargin"];
+export type ProductMargin = S["ProductMargin"];
 export type ApiErrorBody = S["ErrorBody"];
 export type AskRequest = S["AskRequest"];
 export type HistoryTurn = S["HistoryTurn"];
@@ -50,6 +52,8 @@ export type OrderRow = S["OrderRow"];
 export type AtRiskItem = S["AtRisk"];
 export type RecentQuestion = S["RecentQuestion"];
 export type ObjectPage = S["ObjectPage"];
+export type ObjectSection = S["ObjectSection"];
+export type SectionName = ObjectSection["section"];
 export type ObjectStatus = S["ObjectStatus"];
 export type TimelineEvent = S["TimelineEvent"];
 export type LinkedItem = S["LinkedItem"];
@@ -61,6 +65,8 @@ export type EvidenceTrail = S["EvidenceTrail"];
 export type PoTrail = S["PoTrail"];
 export type TrailStep = S["TrailStep"];
 export type EtaCheck = S["EtaCheck"];
+export type VendorPromise = S["VendorPromise"];
+export type PromiseLine = S["PromiseLine"];
 export type NextAction = S["NextAction"];
 export type MaterialRow = S["MaterialRow"];
 export type TrailGap = S["TrailGap"];
@@ -79,8 +85,12 @@ export type AskEvent =
   | { event: "understanding"; data: Understanding }
   | { event: "status"; data: StatusEvent }
   | { event: "sources"; data: SourcesEvent }
+  | { event: "verdict"; data: VerdictEvent }
   | { event: "token"; data: TokenEvent }
   | { event: "answer"; data: Answer }
   | { event: "error"; data: ApiErrorBody };
 
 export type Tone = "neutral" | "good" | "warn" | "bad" | "info";
+export type Proposal = S["Proposal"];
+export type ProposedChange = S["ProposedChange"];
+export type DraftFigure = S["DraftFigure"];

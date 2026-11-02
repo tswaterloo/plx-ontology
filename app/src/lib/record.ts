@@ -4,7 +4,8 @@
 // is recomputed that the server did not state; an unknown value is left out, never guessed.
 
 import { currencyCode, formatDate, formatMoney, plural, readable, recordLabel, typeLabel } from "./format";
-import { eta as etaStatus, lateness, recordState, type Shown, type Status } from "./status";
+import { etaShown as etaHeadline } from "./eta";
+import { lateness, recordState, type Shown, type Status } from "./status";
 import type { Fact, LinkedItem, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
 
 export interface RecordFact {
@@ -131,7 +132,7 @@ function poHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     : /^(?:late|on_time|not_due)$/.test(obj.status?.state ?? "")
       ? lateness(obj.status.state, obj.status.state === "late" && statusDays ? Number(statusDays) : null)
       : null;
-  const etaShown = trail?.eta ? etaStatus(trail.eta.state) : null;
+  const etaShown = trail?.eta ? etaHeadline(trail.eta) : null;
   const got = receivedOf(trail);
   const needed = neededBy(trail);
   const currency = get(f, "currency");
@@ -364,6 +365,22 @@ function joinWords(xs: string[]): string {
   return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** A fact's date written any way ("Oct 28, 2026", "2026-10-28") reads like every other date ("28 Oct 2026"). */
+export function factValue(value: string): string {
+  const v = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return formatDate(v) || v;
+  if (/^-?[\d,]+\.\d+\s[A-Z]{3}$/.test(v)) return moneyText(v) ?? value; // "25,113.600 USD" -> "$25,113.60 USD"
+  const m = /^([A-Za-z]{3})[a-z]*\.? (\d{1,2}), (\d{4})$/.exec(v);
+  const mon = m ? MONTHS.indexOf(m[1].toLowerCase()) : -1;
+  if (!m || mon < 0) return value;
+  return formatDate(`${m[3]}-${String(mon + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}`) || value;
+}
+
+/** Row keys a person never reads: surrogate ids and sync stamps ("Ord uniq", "Row version"). */
+const INTERNAL_FACT = /(?:^|_)(?:\w*uniq|guid|row_?version|etag|system_id|last_modified_date_time)$/i;
+
 /** Every other type: its status sentence, its facts as key facts. */
 function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   const s = obj.status && !/not_established|^read$/.test(obj.status.state) ? { status: recordState(obj.status.state), label: shortState(obj.status.state) } : null;
@@ -373,7 +390,10 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     lead: fallbackLead(obj),
     badges: s && s.label ? [s] : [],
     stats: [],
-    keyFacts: [...f.values()].filter((x) => x.label.toLowerCase() !== "name").slice(0, 6).map((x) => ({ label: x.label, value: x.value })),
+    keyFacts: [...f.values()]
+      .filter((x) => x.label.toLowerCase() !== "name" && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
+      .slice(0, 6)
+      .map((x) => ({ label: x.label, value: factValue(x.value) })),
     askLabel: recordLabel(obj.type, obj.label),
   };
 }

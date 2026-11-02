@@ -114,10 +114,17 @@ class VocabularyTest(unittest.TestCase):
                 self.assertEqual(ps.record({"status": ["Pending"]}, gold, fm),
                                  ps.PoStatus(ps.UNKNOWN, reason="quantities_unknown"))
 
-    def test_a_sage_only_po_is_unknown_never_open(self):
-        for value in (None, 0, 1, "1", "5"):
+    def test_a_sage_po_complete_in_sage_is_historical_and_any_other_is_unknown(self):
+        # iscomplete 1 (with linescmpl >= lines on every captured header): a closed
+        # historical record, never judged; 0 (open in Sage), null or a value never seen
+        # stays unknown, never open
+        for value in (1, "1", " 1 "):
+            self.assertEqual(ps.sage(value), ps.PoStatus(ps.CLOSED, ps.HISTORICAL_SAGE))
+            self.assertEqual(ps.combine([ps.sage(value)]),
+                             ps.PoStatus(ps.CLOSED, ps.HISTORICAL_SAGE))
+        for value in (None, 0, "0", "5", True, "", "yes", 1.5):
             status = ps.sage(value)
-            self.assertEqual(status, ps.PoStatus(ps.UNKNOWN, reason="sage_unmapped"))
+            self.assertEqual(status, ps.PoStatus(ps.UNKNOWN, reason="sage_unmapped"), value)
             self.assertNotEqual(ps.combine([status]).cls, ps.OPEN)
         self.assertEqual(ps.header_class("Complete", "sage"), ps.UNMAPPED)
         self.assertEqual(ps.header_class("DRAFT", "sage"), ps.UNMAPPED)
@@ -169,7 +176,9 @@ class VocabularyTest(unittest.TestCase):
         self.assertEqual(ps.record({"fm_status": ["B.Order"]}, partial).reason,
                          "quantities_unknown")
         self.assertEqual(ps.record({"fm_status": ["Cancel"]}, None).cls, ps.CLOSED)
-        self.assertEqual(ps.record({"sage_is_complete": ["1"]}, [("5", "5", "ea")]).reason,
+        self.assertEqual(ps.record({"sage_is_complete": ["1"]}, [("5", "5", "ea")]),
+                         ps.PoStatus(ps.CLOSED, ps.HISTORICAL_SAGE))
+        self.assertEqual(ps.record({"sage_is_complete": ["0"]}, [("5", "5", "ea")]).reason,
                          "sage_unmapped")
         self.assertEqual(ps.record({"status": ["Pending", "Cancel"]}, partial).reason,
                          "status_disputed")
@@ -598,6 +607,8 @@ class VocabularySummaryTest(unittest.TestCase):
         self.assertEqual(out["sage_iscomplete"], {
             "0": {"lines_open": 1}, "1": {"lines_complete": 1, "lines_open": 1},
             "_null_": {"unknown": 1}})
+        # a complete Sage header with open lines would reverse the historical mapping
+        self.assertEqual(out["sage_complete_lines_open"], 1)
 
     def test_an_incomplete_line_scan_decides_no_quantity(self):
         heads, lines = self.world()
@@ -753,6 +764,9 @@ class LiveCheckTest(unittest.TestCase):
                          {"open": 0, "closed": 3, "draft": 1, "unknown": 5})
         self.assertEqual(summary["sage_iscomplete"],
                          {"0": {"lines_open": 1}, "1": {"lines_complete": 1}})
+        self.assertEqual(summary["sage_complete_lines_open"], 0)
+        broken = {**summary, "sage_complete_lines_open": 1}
+        self.assertTrue(lv.check_expectations(self.spec, code, broken))
         self.assertNotIn("PO30000", text)   # counts and enums only
         self.assertNotIn("po-v", text)
         recorded = lv._recorded(self.spec, summary)

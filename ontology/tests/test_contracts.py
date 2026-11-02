@@ -606,6 +606,7 @@ class ToolContractsReject(unittest.TestCase):
             "subject", "detail", "note", "message", "hint", "normalized", "link_id", "event_id",
             "unit", "next_cursor", "sources", "scopes", "queries", "description", "events",
             "steps",  # plx.investigate computed entries: the engine's arithmetic, no source text
+            "expression",  # plx.investigate plan calculations: the engine's arithmetic over input handles
             "who_can_answer",  # plx.investigate gaps: engine answerers, schema binding owners
             "text",  # plx.process stage reading: the engine's plain words for the typed state
             "basis",  # plx.process gap/outcome: the schema's lineage rules and code refs

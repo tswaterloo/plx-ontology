@@ -4,12 +4,15 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getLateList } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { plainError } from "@/lib/errors";
-import { formatDate, formatMoney, objectHref, plural, safeHref } from "@/lib/format";
+import { noticeKind, plainError } from "@/lib/errors";
+import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref } from "@/lib/format";
 import { DAY_BANDS, inDayBand, matches, sortLate, supplierCounts, VALUE_BANDS, type DayBand, type LateFilter, type SortKey, type ValueBand } from "@/lib/late";
 import type { LatePo } from "@/lib/types";
+import { EtaPill } from "@/components/eta-confirmed";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
-import { ErrorNotice } from "@/components/ui/notice";
+import { listShown } from "@/lib/eta";
+import { LoadProblem } from "@/components/ui/notice";
+import { PageHeader } from "@/components/ui/page-header";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const PAGE = 100;
@@ -20,13 +23,37 @@ function hrefOf(po: LatePo): string {
 }
 
 function Value({ po }: { po: LatePo }) {
-  if (!po.amount) return <span className="text-muted">Not shown</span>;
+  if (!po.amount)
+    return (
+      <span className="text-muted" title="No value on this order">
+        <span aria-hidden>—</span>
+        <span className="sr-only">No value</span>
+      </span>
+    );
   const shown = formatMoney(po.amount.amount, po.amount.currency);
   if (!po.amount_suspect) return <>{shown}</>;
   return (
     <span title={`Check the data: ${po.amount_suspect}`} className="text-muted">
       {shown} <span className="text-warn">(check)</span>
     </span>
+  );
+}
+
+/** The row's "ETA confirmed?" answer, linking to the order's own check (firm or lead, and its date). */
+function ListEta({ po, className, linked = false }: { po: LatePo; className?: string; linked?: boolean }) {
+  const shown = listShown(po);
+  if (!shown)
+    return linked ? (
+      <Link href={hrefOf(po)} className="whitespace-nowrap text-meta text-muted hover:text-accent hover:underline">
+        Check on the PO
+      </Link>
+    ) : null;
+  const pill = <EtaPill shown={shown} className={className} testId="late-eta" />;
+  if (!linked) return pill;
+  return (
+    <Link href={hrefOf(po)} className="hover:opacity-80" title="Open the order's confirmation check">
+      {pill}
+    </Link>
   );
 }
 
@@ -49,6 +76,7 @@ export default function LatePage() {
   const [total, setTotal] = useState<number | null>(null);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<LateFilter>({ supplier: null, days: "all", value: "all" });
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "days", desc: false });
 
@@ -74,7 +102,9 @@ export default function LatePage() {
       }
       setItems(all);
     })().catch((e) => {
-      if (!c.signal.aborted) setError(plainError(e));
+      if (c.signal.aborted) return;
+      setBusy(noticeKind(e) === "busy");
+      setError(plainError(e));
     });
     return () => c.abort();
   }, []);
@@ -86,13 +116,34 @@ export default function LatePage() {
   const filtered = filter.supplier !== null || filter.days !== "all" || filter.value !== "all";
   const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
 
+  const oldest = useMemo(() => sortLate(items, "days", false)[0], [items]);
+  const unconfirmed = useMemo(() => items.filter((p) => listShown(p)).length, [items]);
+  const verdict =
+    error ? "Late purchase orders" : total === null ? null : items.length === 0 ? "Nothing is late." : `${total} purchase ${total === 1 ? "order is" : "orders are"} late`;
+  const why =
+    total === null || error || items.length === 0
+      ? null
+      : [
+          oldest && typeof oldest.days_late === "number" ? `Oldest: ${recordLabel("PurchaseOrder", oldest.label)}${oldest.supplier ? ` from ${oldest.supplier}` : ""}, ${plural(oldest.days_late, "day")} past its date` : null,
+          unconfirmed > 0 ? `${unconfirmed} with no supplier confirmation` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") + ".";
+
   return (
-    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
+      <PageHeader
+        className="mb-6"
+        eyebrow="Late orders"
+        testId="late-header"
+        title={verdict ?? <Skeleton className="h-[30px] w-72 max-w-full sm:h-[34px]" />}
+        sub={why}
+      />
       <Card data-testid="late-all">
         <CardHeader>
-          <CardTitle>Late purchase orders</CardTitle>
+          <CardTitle>{filtered ? "Matching orders" : "Every late order"}</CardTitle>
           {total !== null && (
-            <span className="text-xs text-muted" data-testid="late-all-count">
+            <span className="text-meta text-muted tabular-nums" data-testid="late-all-count">
               {filtered ? `${shown.length} of ${items.length} match` : plural(items.length, "order")}
               {total > items.length ? ` · ${total - items.length} more not read` : ""}
               {asOf ? ` · as of ${formatDate(asOf)}` : ""}
@@ -101,7 +152,7 @@ export default function LatePage() {
         </CardHeader>
         <CardBody>
           {error ? (
-            <ErrorNotice message={error} onRetry={load} />
+            <LoadProblem message={error} busy={busy} onRetry={load} />
           ) : total === null ? (
             <div className="space-y-2" role="status" aria-label="Loading">
               <Skeleton className="h-10" />
@@ -109,7 +160,7 @@ export default function LatePage() {
               <Skeleton className="h-10" />
             </div>
           ) : items.length === 0 ? (
-            <p className="text-sm text-muted">No late purchase orders you can see.</p>
+            <p className="py-6 text-center text-row text-muted">No purchase order you can see is past its date. New late orders show here as soon as Business Central has them.</p>
           ) : (
             <>
               <div className="mb-4 flex flex-wrap items-center gap-2" data-testid="late-filters">
@@ -123,7 +174,7 @@ export default function LatePage() {
                       onClick={() => setFilter((f) => ({ ...f, days: b.id }))}
                       className={cn("rounded-lg border border-border px-2.5 py-1 text-meta cursor-pointer", filter.days === b.id ? "bg-surface-2 font-medium text-fg" : "text-muted hover:bg-surface-2")}
                     >
-                      {b.label} {dayCount(b.id)}
+                      {b.label} <span className="tabular-nums text-muted">{dayCount(b.id)}</span>
                     </button>
                   ))}
                 </div>
@@ -161,8 +212,8 @@ export default function LatePage() {
                 <span className="text-meta text-muted">Values are in each order&apos;s own currency.</span>
               </div>
               {shown.length === 0 ? (
-                <p className="text-sm text-muted" data-testid="late-none-match">
-                  No late order matches these filters.
+                <p className="py-6 text-center text-row text-muted" data-testid="late-none-match">
+                  No late order matches these filters. Pick &ldquo;Every supplier&rdquo; or another band to widen it.
                 </p>
               ) : (
                 <>
@@ -178,6 +229,9 @@ export default function LatePage() {
                             </button>
                           </th>
                         ))}
+                        <th scope="col" className="px-2">
+                          ETA confirmed?
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -185,14 +239,17 @@ export default function LatePage() {
                         <tr key={po.object_id} className="h-11 border-b border-border last:border-0 hover:bg-surface-2" data-testid="late-row">
                           <td className="px-2 font-medium">
                             <Link href={hrefOf(po)} className="hover:underline">
-                              {po.label}
+                              {recordLabel("PurchaseOrder", po.label)}
                             </Link>
                           </td>
                           <td className="px-2">{po.supplier ?? <span className="text-muted">Not shown</span>}</td>
                           <td className="whitespace-nowrap px-2 tabular-nums">{po.due_date ? formatDate(po.due_date) : <span className="text-muted">Not shown</span>}</td>
-                          <td className="whitespace-nowrap px-2 text-right font-semibold tabular-nums text-bad">{po.days_late ?? "—"}</td>
+                          <td className="whitespace-nowrap px-2 text-right font-medium tabular-nums text-late">{po.days_late ?? "—"}</td>
                           <td className="whitespace-nowrap px-2 text-right tabular-nums">
                             <Value po={po} />
+                          </td>
+                          <td className="px-2">
+                            <ListEta po={po} linked />
                           </td>
                         </tr>
                       ))}
@@ -201,15 +258,16 @@ export default function LatePage() {
                   <ul className="-mx-2 divide-y divide-border sm:hidden">
                     {shown.map((po) => (
                       <li key={po.object_id}>
-                        <Link href={hrefOf(po)} className="block rounded-lg px-2 py-2.5 hover:bg-surface-2">
-                          <span className="flex items-center justify-between gap-2 text-sm font-medium">
+                        <Link href={hrefOf(po)} className="block rounded-lg px-2 py-3 hover:bg-surface-2">
+                          <span className="flex items-center justify-between gap-2 text-row font-medium">
                             <span className="min-w-0 truncate">
-                              {po.label}
+                              {recordLabel("PurchaseOrder", po.label)}
                               {po.supplier ? <span className="font-normal text-muted"> · {po.supplier}</span> : null}
                             </span>
                             <span className="shrink-0 tabular-nums text-bad">{po.days_late ?? "—"} days</span>
                           </span>
-                          <span className="block truncate text-xs text-muted">
+                          {listShown(po) && <ListEta po={po} className="mt-1" />}
+                          <span className="mt-0.5 block truncate text-meta text-muted tabular-nums">
                             {[po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : null, po.amount ? formatMoney(po.amount.amount, po.amount.currency) + (po.amount_suspect ? " (check)" : "") : null].filter(Boolean).join(" · ") || po.reason}
                           </span>
                         </Link>

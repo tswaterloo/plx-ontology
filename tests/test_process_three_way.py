@@ -297,6 +297,12 @@ class PurchaseThreeWayTests(_Base):
                       "difference 40; tolerance 0.0001", qty["note"])
         self.assertEqual({v["quantity_role"] for v in qty["values"]}, {"ordered", "received"})
         self.assertEqual({v["value"] for v in qty["values"]}, {"100", "60"})
+        # Live-ops gap ("received vs ordered"): the figures the note states are fields,
+        # each role's sum and the shortfall (ordered minus received), so an answer states
+        # ordered, received and shortfall per item first.
+        self.assertEqual((qty["sums"], qty["difference"], qty["unit"]),
+                         (["100", "60"], "40", "each"))
+        self.assertEqual(checks[("received", "invoiced")]["difference"], "0")
         self.assertIs(checks[("received", "invoiced")]["agree"], True)
         self.assertEqual(st["gl_posting"]["missing"]["state"], "absent_in_source")
         self.assertEqual(answer.result["current_stage"], "gl_posting")
@@ -1020,6 +1026,7 @@ class SalesFulfilmentTests(_Base):
         ship = checks[("ordered", "shipped")]
         self.assertIsNone(ship["agree"])
         self.assertNotIn("difference 4", ship["note"])
+        self.assertFalse({"sums", "difference", "unit"} & set(ship))   # undecided: none
         self.assertNotIn("twin system", ship["note"])
         (gap,) = [g for g in answer.result["gaps"] if g["reason"] == "header_without_lines"]
         self.assertEqual(gap["subject"], "shipped")

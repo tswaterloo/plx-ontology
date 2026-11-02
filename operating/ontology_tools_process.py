@@ -80,7 +80,11 @@ with a full traversal that finished by ``as_known_at``, and the build report nam
 incomplete capture of that binding. Only the capture's own record of a finished full
 traversal counts, never a row count; a partial, stale, unknown or malformed entry
 leaves the hop as before. A stale family stays unproven whatever its relations say,
-and a BC hop still needs a family or scoped claim.
+and a BC hop needs a family or scoped claim,
+or its relation whole in
+every captured company: the relation entry complete and every ``company=`` claim on it
+complete, which is how a
+hop from a non-BC record (a Portal purchase order to its BC twin) is proven.
 
 A visible record whose status says "not done" proves a stage not reached on its
 own; "every record done" (Portal's every()) needs the same proof that no hidden
@@ -308,6 +312,7 @@ from operating.ontology_tools import (  # L8: one reader, policy, visibility, se
     _known_at,
     _markings,
     _parse_time,
+    unit_out,
     _source_of,
     _to_ms,
     _value_out,
@@ -851,6 +856,12 @@ class _PathResult:
     edges: list[tuple[str, str]] = field(default_factory=list)  # counted (from, to) per hop
     leads: list[tuple[str, str]] = field(default_factory=list)  # uncounted (from, to) rows
     lineless: set[str] = field(default_factory=set)  # last-hop records reaching no record
+    # (``_paths`` with ``side``) lineless records whose own reference (a forward last hop)
+    # names none, each with the records it was reached from (``via``); ``named_by``: the
+    # records a reverse last hop reaches one from (a reached record names them)
+    nameless: set[str] = field(default_factory=set)
+    via: dict[str, set[str]] = field(default_factory=dict)
+    named_by: set[str] = field(default_factory=set)
     # object id -> attribution state of every record a counted edge reaches, at any hop
     counted: dict[str, str] = field(default_factory=dict)
     # object id -> attribution state along the best chain (``_paths`` with ``side``)
@@ -1378,13 +1389,21 @@ class ProcessTools:
         limit = result_limit(self.base.limits)
         blocked = [item for item in result["stages"] if item.get("blockers")]
         risky = [item for item in result["stages"] if item.get("risks")]
-        while _envelope_bytes(result) > limit and (listed or result["quantity_checks"] or risky
-                                                    or blocked or result.get("conflicts")):
+        # a lateness entry's listed lines (every line stays counted in its quantities, the
+        # rest page through plx.around): cut before an answer is refused as too large
+        lined = [entry for entry in result.get("lateness", ()) if entry.get("lines")]
+        while _envelope_bytes(result) > limit and (listed or result["quantity_checks"] or lined
+                                                    or risky or blocked
+                                                    or result.get("conflicts")):
             cut["size"] = True
             if listed:
                 listed -= 1
             elif result["quantity_checks"]:
                 result["quantity_checks"].pop()
+            elif lined:
+                lined[-1]["lines"].pop()
+                if not lined[-1]["lines"]:
+                    del lined.pop()["lines"]
             elif risky:
                 risky[-1]["risks"].pop()
                 if not risky[-1]["risks"]:
@@ -2478,6 +2497,7 @@ class ProcessTools:
                 continue
             frontier = {oid: root_version}
             states = {oid: _OK}
+            came: list[tuple[str, str]] = []  # the previous hop's counted edges
             applicable = True
             useful = self._useful(path, final_bindings)
             for index, hop in enumerate(path):
@@ -2493,8 +2513,16 @@ class ProcessTools:
                     if index == len(path) - 1:
                         # a header that contributes no line is never a zero quantity
                         fed |= {src for src, _ in step.edges}
-                        out.lineless |= {h for h in frontier
-                                         if states.get(h, _OK) not in _DROPPED}
+                        kept = {h for h in frontier if states.get(h, _OK) not in _DROPPED}
+                        out.lineless |= kept
+                        if hop["direction"] == "forward":
+                            out.nameless |= kept
+                            for h in kept:
+                                out.via.setdefault(h, set()).update(
+                                    {a for a, b in came if b == h} if index else {oid})
+                        else:
+                            out.named_by |= {src for src, _ in step.edges}
+                    came = step.edges
                     states = self._step_states(ctx, side, hop, step, states)
                     for rid, state in states.items():
                         out.counted[rid] = _better(out.counted.get(rid), state)
@@ -2515,6 +2543,7 @@ class ProcessTools:
                 for rid in frontier:
                     out.states[rid] = _better(out.states.get(rid), states.get(rid, _OK))
         out.lineless -= fed
+        out.nameless -= fed
         return out
 
     def _countable(self, path: Sequence[Mapping[str, Any]], start: str, floor: str,
@@ -2652,6 +2681,7 @@ class ProcessTools:
         rows = [r for r in rows if ctx.row_visible(r) and self._evidence_ok(ctx, r)]
         ends = ctx.visible([r[other] for r in rows] + list(anchors))
         by_reader = self._company_by_reader(ctx, hop["link"], link, rows)
+        cache: dict[str, str | None] = {}
         reached: dict[str, Any] = {}
         for row in rows:
             target = row[other]
@@ -2667,6 +2697,12 @@ class ProcessTools:
             if verdict is not None and verdict != AMBIGUOUS:
                 tier = verdict  # the one company is proven for this reader: its ceiling
             tier = _link_tier(row, ends, tier)
+            if tier == "corroborated" and row["binding_kind"] == "mention" and \
+                    not self._corroboration_readable(ctx, row, cache):
+                # a mention link counts at its corroborated tier only for a reader of every
+                # record its corroboration cites (``ontology.mentions.reader_view``, the one
+                # rule plx.around serves): to any other it is the lead its mention is
+                tier = "lead"
             if _TIER_RANK[tier] > floor_rank:
                 out.proven = False
                 out.reasons.append(
@@ -2765,6 +2801,19 @@ class ProcessTools:
                 else:
                     out[r["link_id"]] = (lb["tier_ceiling"], "")
         return out
+
+    def _corroboration_readable(self, ctx: _Ctx, row: Mapping[str, Any],
+                                cache: dict[str, str | None]) -> bool:
+        """Whether this reader sees every record the corroborating features of a stored
+        corroborated link cite (``ontology.mentions.corroboration_objects``)."""
+        from ontology.mentions import corroboration_objects
+        try:
+            reason = json.loads(row["reason"])
+        except (TypeError, ValueError):
+            return False
+        cited = corroboration_objects(self.base.store.conn,
+                                      reason if isinstance(reason, list) else [], cache)
+        return cited is not None and set(ctx.visible(sorted(cited))) >= cited
 
     def _evidence_ok(self, ctx: _Ctx, row: Mapping[str, Any]) -> bool:
         try:
@@ -2887,9 +2936,21 @@ class ProcessTools:
 
     @staticmethod
     def _relation_complete(ctx: _Ctx, source: str, bid: str, relation: str) -> bool:
-        """A Portal binding whose own relation was fully traversed by ``ctx.at``, is not
-        stale, and whose capture the build report does not call incomplete."""
-        finished = ctx.relations.get((source, relation)) if source == "portal_api" else None
+        """A Portal or BC binding whose own relation was fully traversed by ``ctx.at``, is
+        not stale, and whose capture the build report does not call incomplete. A BC
+        relation is whole only per company:
+        its entry is complete only when every
+        captured company's unit of the set is settled (``ontology/project_bc.describe``),
+        and it also needs a ``company=`` claim on the relation with every such claim
+        complete; the relation entry alone (no claims, or one company's unit not settled)
+        proves nothing."""
+        if source == "bc":
+            whole = [c for c in ctx.claims.get(relation, ()) if c.anchors is None]
+            if not whole or not all(c.complete for c in whole):
+                return False
+        elif source != "portal_api":
+            return False
+        finished = ctx.relations.get((source, relation))
         return finished is not None and finished <= ctx.at and not any(
             g["where"] == bid and g["code"] == "source_capture_incomplete" for g in ctx.report)
 
@@ -3313,6 +3374,9 @@ class ProcessTools:
                         f"gap {m['gap']['reason']} '{m['role']} <item>'" for m in measured)
                         + "; " + item["note"].removeprefix(f"{group}: "))[:600]
                 if item is not None:
+                    if item["agree"] is None:   # undecided: no figure stated as settled
+                        for key in ("sums", "difference", "unit"):
+                            item.pop(key, None)
                     out.append({"check": check["id"], "group": group or None, "item": item,
                                 "finding": item["agree"] is False})
         return out, conflicts, unproven, item_gaps
@@ -3999,7 +4063,15 @@ class ProcessTools:
                     text += (f"; {self._pending(ctx, side, group)} on {role} records in "
                              f"progress (not yet {role}): open work, not a shortage claim")
             agree, verdict = _quantity_verdict(cmp, roles, sums, unit)
-            return finish(agree, f"{text}; {verdict}")
+            item = finish(agree, f"{text}; {verdict}")
+            # The figures the note states, as fields: each role's sum and the first minus
+            # the second (ordered vs received: the shortfall), so an answer states them.
+            if len(sums) == 2:
+                item.update(sums=[_fmt(total) for total in sums],
+                            difference=_fmt(sums[0] - sums[1]))
+                if unit_out(unit) is not None:   # only a unit token, never prose
+                    item["unit"] = unit_out(unit)
+            return item
         currencies = {c for side in parsed for _, _, c in side}
         if None in currencies or len(currencies) > 1:
             return finish(None, "currencies differ or are unknown "

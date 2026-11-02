@@ -214,6 +214,7 @@ class PriceDenominatorTests(unittest.TestCase):
     """A unit price is per one unit (the schema's money_measure and per_unit*)."""
 
     RATES = {("SalesOrderLine", "unit_price"), ("SalesInvoiceLine", "unit_price"),
+             ("SalesInvoiceLine", "unit_cost"),
              ("SalesCreditMemoLine", "unit_price"),
              ("PurchaseOrderLine", "unit_price"), ("PurchaseOrderLine", "fm_item_cost"),
              ("PurchaseOrderLine", "bc_direct_unit_cost"), ("ReceiptLine", "bc_unit_cost"),

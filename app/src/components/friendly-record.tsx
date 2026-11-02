@@ -8,7 +8,10 @@ import { safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { ObjectView } from "./object-view";
 import { arrange, sharedName } from "./ask-box";
-import { Card, CardBody } from "./ui/card";
+import { ArrowRight } from "lucide-react";
+import { Card } from "./ui/card";
+import { PageHeader } from "./ui/page-header";
+import { Skeleton } from "./ui/skeleton";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
 export const FRIENDLY_TYPE = {
@@ -61,29 +64,38 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
   }, [type, refText]);
   const kind = typeLabel(type).toLowerCase();
   return (
-    <Card data-testid="friendly-chooser">
-      <CardBody>
-        {found === null ? (
-          <p className="text-meta text-muted" role="status">Looking for {kind} “{refText}”…</p>
-        ) : found.length === 0 ? (
-          <p className="text-answer">No {kind} “{refText}” that you can open.</p>
-        ) : (
-          <>
-            <p className="text-answer">{found.length > 1 ? `${sharedName(found.length, type)}.` : `One ${kind} is named “${refText}”.`}</p>
-            <ul className="mt-3 divide-y divide-border">
-              {found.map((s) => (
-                <li key={s.object_id} className="py-2">
-                  <Link href={safeHref(s.open_url) ?? "/"} className="text-accent hover:underline">
-                    {s.label} →
-                  </Link>
-                  {s.facts || s.systems.length ? <span className="text-meta text-muted"> {[s.facts, s.systems.join(" and ")].filter(Boolean).join(" · ")}</span> : null}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </CardBody>
-    </Card>
+    <div className="space-y-6" data-testid="friendly-chooser">
+      <PageHeader
+        eyebrow={typeLabel(type)}
+        title={found === null ? <Skeleton className="h-[30px] w-72 max-w-full sm:h-[34px]" /> : found.length === 0 ? `No ${kind} “${refText}” that you can open.` : found.length > 1 ? `${sharedName(found.length, type)}.` : `One ${kind} is named “${refText}”.`}
+        sub={
+          found === null ? (
+            <span role="status">Looking for {kind} “{refText}”…</span>
+          ) : found.length === 0 ? (
+            "Check the number or name, or search for it above."
+          ) : found.length > 1 ? (
+            "Pick the one you mean. Records that only share a name are never merged."
+          ) : null
+        }
+      />
+      {found && found.length > 0 && (
+        <Card>
+          <ul className="divide-y divide-border">
+            {found.map((s) => (
+              <li key={s.object_id}>
+                <Link href={safeHref(s.open_url) ?? "/"} className="group flex items-center justify-between gap-4 px-4 py-3 hover:bg-surface-2 sm:px-5">
+                  <span className="min-w-0">
+                    <span className="block truncate text-row font-medium group-hover:underline">{s.label}</span>
+                    {s.facts || s.systems.length ? <span className="block truncate text-meta text-muted">{[s.facts, s.systems.join(" and ")].filter(Boolean).join(" · ")}</span> : null}
+                  </span>
+                  <ArrowRight className="size-4 shrink-0 text-muted group-hover:text-accent" aria-hidden />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+    </div>
   );
 }
 

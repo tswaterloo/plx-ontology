@@ -627,7 +627,8 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
             if claim["kind"] != "number":
                 raise ValidationError(f"invalid_value_claim_value:{index}")
             if item["op"] == "expression":
-                claim["expression"] = _expression_shape(item, len(claim["of"]), index)
+                claim["expression"] = _expression_shape(
+                    item, len(claim["of"]), index, share=_percent_unit(item.get("unit")))
         elif "citation" in item:
             if item["citation"] not in handles:
                 raise ValidationError(f"value_claim_citation_not_cited:{index}")
@@ -667,7 +668,10 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
         currency = item.get("currency")
         if currency is not None:
             # A sum, or one cited number (not a page figure), states a currency.
+            # An expression over money states its currency too (``_check_expression``);
+            # a percent is no money.
             money = claim.get("op") == "sum" or (
+                claim.get("op") == "expression" and not _percent_unit(claim.get("unit"))) or (
                 claim["kind"] == "number" and claim.get("field") not in (None, PAGE_TEXT))
             if not money or not isinstance(currency, str) or not _CURRENCY.match(currency):
                 raise ValidationError(f"invalid_value_claim_currency:{index}")
@@ -854,7 +858,26 @@ def _repeated_in_term(body: str) -> bool:
     return any(len(seen) > 1 and not all(seen) for seen in rests.values())
 
 
-def _expression_shape(item: Mapping[str, Any], count: int, index: int) -> str:
+def _percent_unit(unit: Any) -> bool:
+    """Whether a claim's ``unit`` names a percent (``percent``, ``pct``)."""
+    return isinstance(unit, str) and _page_unit(unit) == "percent"
+
+
+def _share_parts(body: str) -> tuple[str, str] | None:
+    """(numerator, denominator) of an expression that is one quotient at its top
+    (``(x0 + x1) / x0``), or None."""
+    import ast
+    try:
+        tree = ast.parse(body.strip(), mode="eval").body
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    if not isinstance(tree, ast.BinOp) or not isinstance(tree.op, ast.Div):
+        return None
+    return ast.unparse(tree.left), ast.unparse(tree.right)
+
+
+def _expression_shape(item: Mapping[str, Any], count: int, index: int,
+                      share: bool = False) -> str:
     """An expression claim's ``expression``, shape only: at most ``MAX_EXPRESSION_CHARS``,
     optionally ``round_to_cents(...)`` around the whole, naming each of its ``count``
     inputs ``x0`` ... at least once and nothing else, with no number of its own (every
@@ -877,7 +900,20 @@ def _expression_shape(item: Mapping[str, Any], count: int, index: int) -> str:
     names = set(named)
     if re.search(r"[A-Za-z_]", rest) or names - {f"x{n}" for n in range(count)}:
         raise ValidationError(f"value_claim_expression_name:{index}")
-    if len(named) != len(names) and _repeated_in_term(body):
+    parts = _share_parts(body) if share else None
+    if share and parts is None:
+        # A percent states a share: a figure over a whole, never a sum scaled by 100.
+        raise ValidationError(f"value_claim_expression_percent:{index}")
+    if parts is not None:
+        # A percent claim states a share, ``N / D`` x 100: the part over its whole, where
+        # the whole may hold figures the part holds too (margin over revenue: (x0 + x1) /
+        # x0). Each side is judged on its own, and the part names a figure the whole
+        # does not, so no x0 / x0 builds a constant 100.
+        top, bottom = (EXPRESSION_INPUT.findall(part) for part in parts)
+        if any(len(side) != len(set(side)) and _repeated_in_term(part)
+               for side, part in zip((top, bottom), parts)) or not set(top) - set(bottom):
+            raise ValidationError(f"value_claim_expression_repeated_input:{index}")
+    elif len(named) != len(names) and _repeated_in_term(body):
         raise ValidationError(f"value_claim_expression_repeated_input:{index}")
     if len(names) != count:
         raise ValidationError(f"value_claim_expression_unused_input:{index}")
@@ -1215,8 +1251,10 @@ def _moved_on(resolved: Mapping[str, Any], fields: Sequence[str], evidence: "_Ev
     if view is None or _changed(view):
         return None, ("the cited revision is no longer the source's current one and no "
                       "current revision of it can be read now")
+    cited = resolved.get("revision") if isinstance(resolved.get("revision"), Mapping) \
+        else resolved    # a gate view keeps the superseded row only as ``revision``
     for field in fields:
-        (had, before), (has, now) = dig(resolved, field), dig(view, field)
+        (had, before), (has, now) = dig(cited, field), dig(view, field)
         if not had or not has or before != now:
             shown = json.dumps(now, default=str)[:120] if has else "absent"
             return None, (f"the cited {field} changed since this revision: it is now "
@@ -1614,6 +1652,7 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
             return _fail(out, "claim_currency_mismatch", problem)
     contract = evidence.contract(handle, resolved, field)
     pinned = contract.get("role") if contract else None
+    contracted = contract is not None
     if contract and contract.get("schema") and role is None:
         # The schema types a BC column; a claim that names no role states an untyped value
         # (no type word of its text is verified by it), as it did before the schema did.
@@ -1633,9 +1672,14 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
     else:
         # An untyped claim types no prose: an identifier only on an id-shaped column (a
         # caller cannot call a quantity column's value an identifier to silence a word).
+        # A claim naming no role on an id-shaped column no contract types (``number``,
+        # ``ordnumber``, ``po_number``) is that identifier too: "Order 1000096354 shipped"
+        # is an order number beside a type word, a lead, never an untyped shipped count.
         basis = "untyped"
+        id_column = bool(_ID_COLUMN.match(field.rsplit(".", 1)[-1]))
         quantity_type = role if role in OTHER_ROLES and (
-            role != "identifier" or _ID_COLUMN.match(field.rsplit(".", 1)[-1])) else None
+            role != "identifier" or id_column) else (
+            "identifier" if role is None and id_column and not contracted else None)
     known = None
     if contract and contract.get("unit") is not None:
         known = contract["unit"]
@@ -1770,6 +1814,7 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
         values[f"x{number}"] = (figure, unit)
     rounded = ROUND_TO_CENTS.match(claim["expression"])
     body = rounded.group(1) if rounded else claim["expression"]
+    share = _percent_unit(claim.get("unit"))
     problem = _mixed_marks(marks, body)
     if problem is not None:
         return _fail(out, "claim_unit_mismatch", problem)
@@ -1787,7 +1832,7 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
         # repeat in (``_repeated_in_term``); x0 / x1 over one figure read twice is not.
         same = EXPRESSION_INPUT.sub(lambda m: aliases.get(m.group(0), m.group(0)), body)
         first = next(iter(aliases))
-        if _repeated_in_term(same):
+        if _repeats_badly(same, share):
             return _fail(out, "claim_value_mismatch", (
                 f"value_claim_expression_repeated_input: input {first} reads the figure "
                 f"input {aliases[first]} reads, so the expression, multiplied out, counts "
@@ -1803,6 +1848,13 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
             f"value_claim_expression_repeated_input: the result does not change with "
             f"input {inert}, which the expression names more than once, so it cancels "
             "itself; name each input once, or only where it applies (x0 * x1 + x0 * x2)"))
+    if share:
+        # A percent claim is the share its expression computes, x 100 (round_to_cents
+        # rounds the percent): a part over a whole in one unit and currency.
+        if unit != parse_unit("1"):
+            return _fail(out, "claim_unit_mismatch", "a percent is a share of figures in "
+                         f"one unit; the expression is in {format_unit(unit)}")
+        value = value * 100
     if rounded:
         value = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if to_decimal(claim["value"]) != value:
@@ -1811,13 +1863,30 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
     if claim.get("role") in QUANTITY_ROLES:
         return _fail(out, "claim_role_unverified", "an expression over figures of a text has "
                      f"no quantity type, so the claimed {claim['role']} cannot be verified")
-    if "unit" in claim:
+    if "currency" in claim:
+        problem = _currency_problem(claim, handles, evidence)
+        if problem is not None:
+            return _fail(out, "claim_currency_mismatch", problem)
+    if share:
+        out["unit_basis"] = "unverified" if unverified else "calculation"
+    elif "unit" in claim:
         if parse_unit(claim["unit"]) != unit:
             return _fail(out, "claim_unit_mismatch",
                          f"the expression is in {format_unit(unit)} by its inputs' units, the "
                          f"claim says {claim['unit']}")
         out["unit_basis"] = "unverified" if unverified else "calculation"
     return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None}
+
+
+def _repeats_badly(body: str, share: bool) -> bool:
+    """``_repeated_in_term`` of an expression, a percent claim's share (``N / D``) judged
+    side by side as ``_expression_shape`` judges it."""
+    parts = _share_parts(body) if share else None
+    if parts is None:
+        return _repeated_in_term(body)
+    top, bottom = (EXPRESSION_INPUT.findall(part) for part in parts)
+    return any(_repeated_in_term(part) for side, part in zip((top, bottom), parts)
+               if len(side) != len(set(side))) or not set(top) - set(bottom)
 
 
 def _inert_repeat(body: str, values: Mapping[str, tuple[Decimal, Any]],
@@ -2010,26 +2079,154 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
     if not isinstance(result, Mapping) or "error" in result:
         return into
     _money_values(result, into["currencies"], into.setdefault("currency_citations", {}),
-                  max_cells)
+                  max_cells, into.setdefault("currency_conflicts", set()))
+    if tool == "plx.investigate":
+        _engine_currencies(result.get("answer"), into, max_cells)
     if tool == "plx.investigate":
         _lead_cells(result.get("answer"), into.setdefault("leads", {}), max_cells)
+    if tool == "plx.find" and isinstance(result.get("home"), Mapping):
+        _home_late_count(result["home"], arguments, into)
+        return into
+    if tool == "plx.around":
+        _note_listing(arguments, result, into)
+        return into
     measure = arguments.get("measure") if isinstance(arguments, Mapping) else None
     if tool != "plx.aggregate" or not isinstance(measure, Mapping) \
             or measure.get("op") != "count":
         return into
-    whole = (result.get("partial") is False and not result.get("gaps")
+    # A count whose only gap is the citation cap (more members than one answer cites) is
+    # still the tool's exact count: it lists a sample of its records, all distinct.
+    gaps = [gap for gap in result.get("gaps") or () if isinstance(gap, Mapping)]
+    capped = bool(gaps) and all(gap.get("reason") == CITATIONS_CAPPED for gap in gaps)
+    whole = (result.get("partial") is False and (not gaps or capped)
+             and len(gaps) == len(result.get("gaps") or ())
              and not {"refused", "withheld"} & set(result)
              and (result.get("completeness") or {}).get("complete") is True)
     now = "as_known_at" not in arguments
+    # A count of a set's members (no property, no grouping) cites no value rows: its
+    # records are those the complete listing that issued the set showed (``_note_listing``).
+    listed = (into.get("listings") or {}).get(arguments.get("set")) \
+        if not measure.get("property") and not arguments.get("group_by") else None
     for group in result.get("groups") or ():
         if not isinstance(group, Mapping):
             continue
         records = [cite.get("l1_handle") for cite in group.get("inputs_citations") or ()
                    if isinstance(cite, Mapping)]
-        distinct = now and to_decimal(group.get("value")) == len(records) == len(set(records))
+        if not records and listed is not None and group.get("key") == {} \
+                and to_decimal(group.get("value")) == len(listed):
+            records = list(listed)
+        value = to_decimal(group.get("value"))
+        unique = len(records) == len(set(records))
+        distinct = now and unique and (value == len(records) or (
+            capped and value is not None and len(records) == MAX_COUNT_CITATIONS
+            and value > len(records)))
         into["counts"].append({"value": group.get("value"), "records": records,
                                "distinct": distinct, "complete": whole and distinct})
     return into
+
+
+MAX_LISTINGS = 32   # complete set listings one session keeps for count claims (newest)
+
+
+def _note_listing(arguments: Any, result: Mapping[str, Any], into: dict[str, Any]) -> None:
+    """A ``plx.around`` answer that lists every member of the set it issues, as known now:
+    the set handle and each member's record (its display value's citation), kept so a
+    ``plx.aggregate`` count of that set binds to those records. Kept only when the answer
+    is complete on its first page (no cursor, not truncated, every member listed once,
+    ``total`` equal to the listed count) with no gap and no withheld member counted, and
+    names no ``as_known_at``; anything else keeps nothing (the count stays a lower bound)."""
+    handle = result.get("set")
+    done = result.get("completeness")
+    objects = result.get("objects")
+    if not isinstance(handle, str) or not isinstance(done, Mapping) \
+            or not isinstance(objects, list) or not objects \
+            or (isinstance(arguments, Mapping)
+                and ("as_known_at" in arguments or arguments.get("cursor"))):
+        return
+    withheld = result.get("withheld")
+    if done.get("complete") is not True or done.get("truncated") is not False \
+            or done.get("next_cursor") is not None or done.get("total") != len(objects) \
+            or result.get("gaps") or (isinstance(withheld, Mapping)
+                                      and withheld.get("objects")):
+        return
+    records: list[str] = []
+    for obj in objects:
+        origin = ((obj.get("display") or {}).get("origin") or {}) \
+            if isinstance(obj, Mapping) else {}
+        cite = origin.get("citation") if isinstance(origin, Mapping) else None
+        if not isinstance(cite, str) or not cite:
+            return
+        records.append(cite)
+    if len(set(records)) != len(records):
+        return
+    listings = into.setdefault("listings", {})
+    listings.pop(handle, None)
+    listings[handle] = tuple(records)
+    while len(listings) > MAX_LISTINGS:
+        listings.pop(next(iter(listings)))
+
+
+# The aggregate's citation cap (``ontology_tools_aggregate.MAX_CITATIONS``) and the gap it
+# states past it: a count group listing that many records under that gap alone counts more.
+MAX_COUNT_CITATIONS = 50
+CITATIONS_CAPPED = "citations_capped"
+
+
+def _home_late_count(home: Mapping[str, Any], arguments: Any, into: dict[str, Any]) -> None:
+    """plx.find home mode's late purchase orders (``home.late_orders``: the distinct orders
+    of the reader's late list, Home's) as a count entry: complete only when the home answer
+    says the count is complete and lists one record per late order on its page, none twice
+    (the first citation of each late order's gap, a sample when the list is longer than
+    the page). A call naming ``as_known_at`` counts nothing now."""
+    late = home.get("late_orders")
+    if not isinstance(late, Mapping) or type(late.get("count")) is not int \
+            or (isinstance(arguments, Mapping) and "as_known_at" in arguments):
+        return
+    seen: dict[str, str] = {}
+    for gap in home.get("gaps") or ():
+        if not isinstance(gap, Mapping) or type(gap.get("days_late")) is not int:
+            continue
+        cites = gap.get("citations")
+        oid = gap.get("object_id")
+        if isinstance(oid, str) and oid not in seen and isinstance(cites, list) and cites \
+                and isinstance(cites[0], str):
+            seen[oid] = cites[0]
+    records = list(seen.values())
+    unique = len(records) == len(set(records)) and len(records) <= late["count"]
+    into["counts"].append({"value": str(late["count"]), "records": records,
+                           "distinct": unique,
+                           "complete": unique and late.get("complete") is True})
+
+
+def _engine_currencies(answer: Any, into: dict[str, Any], limit: int | None) -> None:
+    """A plan engine's money total over cited cells (``plx.investigate`` ``calculation``
+    of a ``computed`` entry with a ``currency``): each cell is money in the currency the
+    engine read for it from the cited document (a blank code read as its book's local
+    currency), so the cell takes it where no tool stated one. Two engines stating two
+    currencies for one cell state none (``currency_conflicts``), and a cell a tool
+    stated another currency for keeps the conflict rule."""
+    out = into["currencies"]
+    conflicts = into.setdefault("currency_conflicts", set())
+    for entry in answer if isinstance(answer, list) else ():
+        calculation = entry.get("calculation") if isinstance(entry, Mapping) else None
+        currency = entry.get("currency") if isinstance(entry, Mapping) else None
+        if entry.get("kind") != "computed" or not isinstance(calculation, Mapping) \
+                or not isinstance(currency, str) or not _CURRENCY.match(currency):
+            continue
+        for cite in calculation.get("inputs") or ():
+            if not isinstance(cite, Mapping) or not isinstance(cite.get("l1_handle"), str) \
+                    or not isinstance(cite.get("field_path"), str):
+                continue
+            key = (cite["l1_handle"], cite["field_path"])
+            if key in conflicts or (key not in out and limit is not None
+                                    and len(out) >= limit):
+                continue
+            held = out.get(key)
+            if held is None or held == currency:
+                out[key] = currency
+            else:
+                out[key] = None
+                conflicts.add(key)
 
 
 def _lead_cells(answer: Any, leads: dict[tuple[str, str], bool], limit: int | None) -> None:
@@ -2051,7 +2248,8 @@ def _lead_cells(answer: Any, leads: dict[tuple[str, str], bool], limit: int | No
 
 def _money_values(node: Any, out: dict[tuple[str, str], str | None],
                   cites: dict[tuple[str, str], tuple[str, str]],
-                  limit: int | None = None) -> None:
+                  limit: int | None = None,
+                  conflicts: set[tuple[str, str]] | None = None) -> None:
     def key_of(cite: Any) -> tuple[str, str] | None:
         if isinstance(cite, Mapping) and isinstance(cite.get("l1_handle"), str) \
                 and isinstance(cite.get("field_path"), str):
@@ -2062,6 +2260,8 @@ def _money_values(node: Any, out: dict[tuple[str, str], str | None],
         key = key_of(cite)
         if key is not None and (key in out or limit is None or len(out) < limit):
             code = currency if isinstance(currency, str) and _CURRENCY.match(currency) else None
+            if conflicts is not None and code is not None and out.get(key) not in (None, code):
+                conflicts.add(key)   # two results state two currencies: never one of them
             out[key] = code if out.get(key, code) == code else None
             if key_of(source) is not None:   # the record the currency was read on
                 cites[key] = key_of(source)
@@ -2071,11 +2271,12 @@ def _money_values(node: Any, out: dict[tuple[str, str], str | None],
         if "currency" in node and isinstance(node.get("inputs_citations"), list):
             for cite in node["inputs_citations"]:
                 note(cite, node["currency"])
+
         for value in node.values():
-            _money_values(value, out, cites, limit)
+            _money_values(value, out, cites, limit, conflicts)
     elif isinstance(node, list):
         for value in node:
-            _money_values(value, out, cites, limit)
+            _money_values(value, out, cites, limit, conflicts)
 
 
 def _sum_calculation(claim: Mapping[str, Any], handles: Sequence[str],
@@ -3469,6 +3670,8 @@ _STOP_WORDS = frozenset({"and", "but", "or", "nor", "while", "whereas", "against
                          "vs", "versus", "compared", "exceeds", "exceeded", "exceeding",
                          "minus", "plus"})
 _NEGATIONS = frozenset({"not", "never", "no"})
+# A word between a negation and a type word that keeps it negated ("not fully received").
+_NEGATED_THROUGH = frozenset({"longer", "yet", "fully", "completely", "entirely"})
 _WORD_TOKEN = re.compile(
     r"(?P<num>" + NUMBER.pattern + r")|(?P<word>[A-Za-z_][A-Za-z0-9_']*)|(?P<open>\()"
     r"|(?P<stop>[\n;!?)\[\],]|\.(?=\s|$)|^\s*[-*]\s)", re.M)
@@ -3547,9 +3750,10 @@ def wording_check(text: str, claims: Sequence[Mapping[str, Any]],
             if lower in _STOP_WORDS:
                 tokens.append({"t": "stop", "sent": sentence})
                 continue
-            # "not produced", and "no longer" / "not yet produced": no type word.
+            # "not produced", and "no longer" / "not yet" / "not fully received": no
+            # type word.
             negated = bool(tokens) and (tokens[-1].get("lower") in _NEGATIONS or (
-                tokens[-1].get("lower") in ("longer", "yet") and len(tokens) > 1
+                tokens[-1].get("lower") in _NEGATED_THROUGH and len(tokens) > 1
                 and tokens[-2].get("lower") in _NEGATIONS))
             tokens.append({"t": "word", "text": word, "lower": lower, "sent": sentence,
                            "typed": None if negated else _TYPE_WORDS.get(lower)})

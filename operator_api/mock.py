@@ -16,7 +16,9 @@ import time
 from typing import Any, Iterator
 from urllib.parse import quote
 
-from . import models as m, presentation
+from operating.answer_gate import _sentences
+
+from . import ask_progress, models as m, presentation, proposals
 from .auth import Reader
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
@@ -52,6 +54,8 @@ OBJECTS: list[dict[str, Any]] = [
      "sublabel": "Ridgeway Labels · due 3 Nov · at risk", "aliases": ["90455"]},
     {"object_id": "SalesOrder:demo:77120", "type": "SalesOrder", "label": "SO 77120",
      "sublabel": "Glow Botanicals · ships 6 Nov", "aliases": ["77120"]},
+    {"object_id": "SalesOrder:demo:77131", "type": "SalesOrder", "label": "SO 77131",
+     "sublabel": "Glow Botanicals · invoiced 20 Oct", "aliases": ["77131"]},
     {"object_id": "Supplier:demo:maple-leaf", "type": "Supplier",
      "label": "Maple Leaf Soapworks", "sublabel": "Supplier · Ontario, Canada",
      "aliases": ["maple leaf", "soapworks", "canadian soap"]},
@@ -115,6 +119,173 @@ NO_HIDDEN = m.Hidden(count=0, by_owner=[], message=None)
 PO_REF = m.ObjectRef(object_id="PurchaseOrder:demo:90412", type="PurchaseOrder",
                      label="PO 90412", open_url=obj_url("PurchaseOrder",
                                                         "PurchaseOrder:demo:90412"))
+
+def _line(line_id: str, label: str) -> m.ObjectRef:
+    oid = f"PurchaseOrderLine:demo:{line_id}"
+    return m.ObjectRef(object_id=oid, type="PurchaseOrderLine", label=label,
+                       open_url=obj_url("PurchaseOrderLine", oid))
+
+
+# The supplier promised each item its own date (a firm link: the confirmation names the
+# PO and comes from the supplier's domain); one line is past its promise, one is not.
+PROMISE_90412 = m.VendorPromise(
+    link="confirmed", state="late", promised_date="2026-10-24", days_late=5,
+    measured_against="today", source=MAIL, per_line=True,
+    lines=[m.PromiseLine(line=_line("90412-10000", "Line 10000 · BAR-LAV-100 Lavender soap "
+                                    "bar 100 g"), promised_date="2026-10-24", state="late",
+                         days_late=5, matched_by="item_code", source=MAIL),
+           m.PromiseLine(line=_line("90412-20000", "Line 20000 · BOX-GIFT-6 Gift box of 6"),
+                         promised_date="2026-11-04", state="not_due",
+                         matched_by="description", source=MAIL)])
+
+CONTACT = "Jordan Lee <jordan.lee@mapleleaf.example>"
+PO_TRAIL = m.EvidenceTrail(kind="purchase_order", title="Why PO 90412 is late", trails=[
+    m.PoTrail(
+        subject=m.ObjectRef(object_id="PurchaseOrder:demo:90412", type="PurchaseOrder",
+                            label="PO 90412",
+                            open_url=obj_url("PurchaseOrder", "PurchaseOrder:demo:90412")),
+        state="late", days_late=12,
+        verdict="12 days late: due 2026-10-17, nothing received.",
+        eta=m.EtaCheck(state="confirmed", text="Yes: the vendor confirmed 2026-11-04 "
+                       "(revised 1 time).", source=MAIL, promise=PROMISE_90412),
+        steps=[m.TrailStep(kind="due_date", title="Requested by 2026-10-17", source=PO_ROW,
+                           detail="the governing requested-by date",
+                           check="read_from_record"),
+               m.TrailStep(kind="due_date", title="Expected on a line by 2026-10-17",
+                           source=PO_LINE, check="read_from_record"),
+               m.TrailStep(kind="po_issued", at="2026-09-26", title="PO issued",
+                           source=PO_ROW, check="read_from_record"),
+               m.TrailStep(kind="revision", at="2026-10-21",
+                           title="Promise revised from 2026-10-17 to 2026-11-04",
+                           source=MAIL, check="read_from_record"),
+               m.TrailStep(kind="follow_up", at="2026-10-21",
+                           title="Email from the vendor side: Delay on lavender bars",
+                           source=MAIL, check="lead", sender=CONTACT),
+               m.TrailStep(kind="follow_up", at="2026-10-27",
+                           title="Email we sent: Can you confirm 4 November?",
+                           source=MAIL2, check="lead"),
+               m.TrailStep(kind="verdict", at="2026-10-29",
+                           title="12 days late: due 2026-10-17, nothing received.",
+                           source=PO_ROW, check="computed_from_cited_records")],
+        next_action=m.NextAction(text="The promise moved once, to 2026-11-04: confirm it "
+                                      "still holds with the vendor.", rule="promise_moved",
+                                 contact=CONTACT, contact_source=MAIL))])
+
+H_PO_88 = "bc://demo/purchaseOrders/90388"
+H_MAIL_55 = "graph-mail://demo/messages/msg-5602"
+PO_88 = src("BC", H_PO_88, "BC purchase order 90388", fields={
+    "Expected Receipt Date": "2026-10-24"})
+LEAD_MAIL = src("Email", H_MAIL_55, "Email from ridgeway-print.example, 28 Oct",
+                quote_text="Re: labels for order 90455 - we expect to dispatch around "
+                           "6 November.", hours=4)
+
+
+def _po_trail(oid: str, label: str, *, state: str, days: int | None, verdict: str,
+              eta: m.EtaCheck, steps: list[m.TrailStep]) -> m.EvidenceTrail:
+    ref = m.ObjectRef(object_id=oid, type="PurchaseOrder", label=label,
+                      open_url=obj_url("PurchaseOrder", oid))
+    return m.EvidenceTrail(kind="purchase_order", title=f"How we know: {label}", trails=[
+        m.PoTrail(subject=ref, state=state, days_late=days, verdict=verdict, eta=eta,
+                  steps=steps)])
+
+
+TRAILS = {
+    "PurchaseOrder:demo:90388": _po_trail(
+        "PurchaseOrder:demo:90388", "PO 90388", state="late", days=5,
+        verdict="5 days late: due 2026-10-24, nothing received.",
+        eta=m.EtaCheck(state="no_confirmation_found", text="No vendor confirmation found "
+                       "in the mail, files and records searched."),
+        steps=[m.TrailStep(kind="due_date", title="Requested by 2026-10-24", source=PO_88,
+                           check="read_from_record")]),
+    "PurchaseOrder:demo:90455": _po_trail(
+        "PurchaseOrder:demo:90455", "PO 90455", state="not_due", days=None,
+        verdict="Not late yet: open on 2026-10-29, due by 2026-11-03.",
+        eta=m.EtaCheck(state="lead_only", text="Lead only: a document that looks like a "
+                       "confirmation names this PO, but its link to the PO is not "
+                       "confirmed, so its date does not count.", source=LEAD_MAIL,
+                       promise=m.VendorPromise(link="unconfirmed_link", state="not_judged",
+                                               promised_date="2026-11-06",
+                                               source=LEAD_MAIL)),
+        steps=[m.TrailStep(kind="lead", at="2026-10-28", title="A message names this PO "
+                           "and a dispatch date", source=LEAD_MAIL, check="lead")]),
+}
+
+# A customer order's materials: the assembly made for SO 77120 consumes PO 90412's bars.
+_ref = lambda kind, oid, label: m.ObjectRef(object_id=oid, type=kind, label=label,  # noqa: E731
+                                            open_url=obj_url(kind, oid))
+TRAILS["SalesOrder:demo:77120"] = m.EvidenceTrail(
+    kind="materials", title="Materials for SO 77120, late first", materials=[
+        m.MaterialRow(order=_ref("SalesOrder", "SalesOrder:demo:77120", "SO 77120"),
+                      assembly=_ref("AssemblyOrder", "AssemblyOrder:demo:AO-7712",
+                                    "AO-7712"),
+                      item=_ref("Item", "Item:demo:BAR-LAV-100",
+                                "BAR-LAV-100 Lavender soap bar 100 g"),
+                      po=PO_REF, state="late", days_late=12,
+                      verdict="12 days late: due 2026-10-17, nothing received.")])
+AT_RISK_77120 = m.ObjectStatus(state="at_risk", text="At risk: needs PO 90412's bars, which "
+                               "now arrive 4 Nov; ships 6 Nov", sources=[MAIL2])
+
+# ---- margin (the order's and the customer's, on item cost only) ----------------------
+H_INV = "bc://demo/salesInvoiceLines/SI-55120-10000"
+H_ILE = "bc://demo/itemLedgerEntries/884120"
+INV = src("BC", H_INV, "BC sales invoice SI-55120 line 10000", fields={
+    "Item": "BAR-LAV-100", "Quantity": "120", "Unit Price": "2.20"})
+ILE = src("BC", H_ILE, "BC item ledger entry 884120", fields={
+    "Item": "BAR-LAV-100", "Cost Amount (Actual)": "-260.40"})
+SO_REF = m.ObjectRef(object_id="SalesOrder:demo:77120", type="SalesOrder", label="SO 77120",
+                     open_url=obj_url("SalesOrder", "SalesOrder:demo:77120"))
+SO_NOCOST = m.ObjectRef(object_id="SalesOrder:demo:77131", type="SalesOrder",
+                        label="SO 77131", open_url=obj_url("SalesOrder",
+                                                           "SalesOrder:demo:77131"))
+BREAKDOWN_77120 = m.CostBreakdown(
+    order=SO_REF, date="2026-10-02", revenue=m.Money(amount="264.00", currency="CAD"),
+    booked_cost=m.Money(amount="260.40", currency="CAD"),
+    margin=m.Money(amount="3.60", currency="CAD"), margin_pct="1.36",
+    lines=[m.CostLine(label="item BAR-LAV-100 (Lavender soap bar 100 g)", quantity="120",
+                      unit="PCS", revenue=m.Money(amount="264.00", currency="CAD"),
+                      booked_cost=m.Money(amount="260.40", currency="CAD"),
+                      margin=m.Money(amount="3.60", currency="CAD"), unit_price="2.20",
+                      unit_cost="2.17", sources=[INV, ILE])],
+    cost_sources=[m.CostSource(kind="item_ledger", label="item BAR-LAV-100",
+                               detail="1 entry", amount=m.Money(amount="260.40",
+                                                                currency="CAD"),
+                               sources=[ILE])],
+    drivers=["Item BAR-LAV-100 (Lavender soap bar 100 g) on SO 77120 against SO 76980 "
+             "(2026-06-11, the previous order with it): item cost 2.17 CAD/PCS against "
+             "1.59 CAD/PCS, up 36.5%, which took 69.60 CAD off the margin at 120 PCS; the "
+             "price was unchanged at 2.20 CAD/PCS."],
+    why=["Item cost rose 36.5% (1.59 → 2.17 CAD/PCS) while the price was unchanged: "
+         "−69.60 CAD against SO 76980 (2026-06-11)."])
+
+
+def _profit(customer: m.ObjectRef, *, focus: m.CostBreakdown | None) -> m.Profitability:
+    return m.Profitability(
+        customer=customer, period_start="2025-10-29", period_end="2026-10-29",
+        period="the last 12 months", revenue=m.Money(amount="1840.00", currency="CAD"),
+        booked_cost=m.Money(amount="1512.40", currency="CAD"),
+        margin=m.Money(amount="327.60", currency="CAD"), margin_pct="17.80",
+        orders_in_period=3, orders_counted=2, orders_read=3,
+        ranking="partial: the 2 checked orders only; 1 invoiced order has no cost value in "
+                "BC (SO 77131)",
+        margin_note="Labour and overhead aren't booked in Business Central, so this "
+                    "overstates true margin.",
+        orders=[m.OrderMargin(order=SO_REF, date="2026-10-02",
+                              revenue=m.Money(amount="264.00", currency="CAD"),
+                              booked_cost=m.Money(amount="260.40", currency="CAD"),
+                              margin=m.Money(amount="3.60", currency="CAD"), margin_pct="1.36"),
+                m.OrderMargin(order=SO_NOCOST, date="2026-10-20", gap="cost not valued",
+                              gap_code="COST_NOT_VALUED")],
+        breakdown=focus)
+
+
+GLOW = m.ObjectRef(object_id="Customer:demo:glow", type="Customer", label="Glow Botanicals",
+                   open_url=obj_url("Customer", "Customer:demo:glow"))
+H_SAGE = "sage://demo/salesInvoices/harbor-2026"
+SAGE_INV = src("Sage", H_SAGE, "Sage invoices, Harbor Skin Co", hours=26)
+HARBOR_SUMMARY = m.CustomerSummary(revenue=[m.CustomerAmount(
+    label="Invoiced (excluding tax)", period="last 12 months (since 2025-10-29)",
+    money=m.Money(amount="12480.00", currency="CAD"), count=9, system="Sage",
+    sources=[SAGE_INV])])
 
 CONFLICT_DATE = m.Conflict(field="Expected receipt date", subject="PO 90412", values=[
     m.ConflictValue(value="2026-10-17", source=PO_ROW, trusted=True,
@@ -184,8 +355,49 @@ def _unknown_answer(question: str) -> dict[str, Any]:
             "hidden": NO_HIDDEN, "conflicts": [], "subjects": [], "did_you_mean": []}
 
 
+def _profit_answer(question: str) -> dict[str, Any]:
+    return {
+        "outcome": "partial",
+        "direct_answer": "Glow Botanicals made CAD 327.60 on CAD 1,840.00 over the last 12 "
+                         "months (17.8%), on 2 of its 3 invoiced orders. SO 77120 earned "
+                         "only 1.4% because the soap bar's cost rose 36.5% while its price "
+                         "stayed at 2.20 CAD/PCS.",
+        "facts": [m.Fact(text="SO 77120: CAD 264.00 invoiced against CAD 260.40 booked item "
+                              "cost, a margin of CAD 3.60.", sources=[INV, ILE],
+                         check="expression_matches_inputs")],
+        "not_found": [m.NotFound(what="A booked item cost for SO 77131",
+                                 where_it_would_live="BC item ledger entries for its "
+                                 "shipment (Finance)")],
+        "hidden": NO_HIDDEN, "conflicts": [], "subjects": [GLOW], "did_you_mean": [],
+        "profitability": _profit(GLOW, focus=BREAKDOWN_77120)}
+
+
+def _changed_answer(question: str) -> dict[str, Any]:
+    return {
+        "outcome": "answered",
+        "direct_answer": "Since your last visit: Maple Leaf Soapworks moved PO 90412 to "
+                         "4 November, and we asked them to confirm that date; Purchasing "
+                         "flagged the delay against SO 77120.",
+        "facts": [m.Fact(text="On 21 Oct Maple Leaf Soapworks wrote that the bars will now "
+                              "ship on 4 November.", sources=[MAIL],
+                         check="quote_matches_text"),
+                  m.Fact(text="On 27 Oct we asked them to confirm the 4 November date.",
+                         sources=[MAIL2], check="quote_matches_text"),
+                  m.Fact(text="On 22 Oct Purchasing flagged the delay for the Glow "
+                              "Botanicals order.", sources=[TEAMS],
+                         check="quote_matches_text")],
+        "not_found": [m.NotFound(what="A reply confirming 4 November",
+                                 where_it_would_live="An email from Maple Leaf Soapworks "
+                                 "to Purchasing")],
+        "hidden": NO_HIDDEN, "conflicts": [], "subjects": [PO_REF], "did_you_mean": []}
+
+
 def _pick(question: str) -> tuple[str, Any]:
     q = question.lower()
+    if re.search(r"profit|margin", q):
+        return "how_much", _profit_answer
+    if re.search(r"changed|since (my|our|the) last|what'?s new", q):
+        return "timeline", _changed_answer
     if re.search(r"land|cost|freight|duty", q):
         return "how_much", _landed_answer
     if re.search(r"customer|client", q) and not re.search(r"\d{4,}", q):
@@ -234,18 +446,29 @@ class MockBackend:
             intent=intent, entities=entities, time_frame=None,
             rewrites=["purchase order lavender soap bars Maple Leaf Soapworks late",
                       "PO expected receipt date delay supplier email"])
-        yield "status", m.StatusEvent(step="searching",
-                                      message="Searching BC, the Portal, email and Teams",
-                                      elapsed_ms=ms())
-        self._pause()
+        # The agent path's plain-words steps (``ask_progress``), as the fixture's records
+        # would give them: the record found, the sources read, the check.
+        if entities:
+            steps = [("searching", f"Finding {PO_REF.label}"),
+                     ("reading", "Reading Business Central receipts"),
+                     ("reading", "Checking supplier confirmations in mail")]
+        else:
+            steps = [("searching", "Looking up records")]
+        for step, message in steps:
+            yield "status", m.StatusEvent(step=step, message=message, elapsed_ms=ms())
+            self._pause()
         parts = build(request.question)
         cited = {s.handle: s for f in parts["facts"] for s in f.sources}
         if cited:
             yield "sources", m.SourcesEvent(sources=list(cited.values()))
-        yield "status", m.StatusEvent(step="checking",
-                                      message="Checking every figure against its source",
+        yield "status", m.StatusEvent(step="checking", message=ask_progress.GATE_STEP,
                                       elapsed_ms=ms())
         self._pause()
+        first = next((s for s, _gap in _sentences(parts["direct_answer"]) if s.strip()), "")
+        if parts["facts"] and first:
+            # the gate accepted the answer: its first line before the rest is written
+            yield "verdict", m.VerdictEvent(text=first.strip()[:400])
+            self._pause()
         for word in re.findall(r"\S+\s*", parts["direct_answer"]):
             yield "token", m.TokenEvent(text=word)
         answer_id = secrets.token_hex(12)
@@ -322,7 +545,8 @@ class MockBackend:
             m.LatePo(object_id="PurchaseOrder:demo:90388", label="PO 90388",
                      supplier="Northwind Packaging Ltd", due_date="2026-10-24", days_late=5,
                      open_lines=2, amount=m.Money(amount="2310.50", currency="USD"), reason="Shipper cartons not received; no reply since "
-                     "23 Oct", open_url=obj_url("PurchaseOrder", "PurchaseOrder:demo:90388"),
+                     "23 Oct", confirmation="none_found",
+                     open_url=obj_url("PurchaseOrder", "PurchaseOrder:demo:90388"),
                      sources=[src("BC", "bc://demo/purchaseOrders/90388",
                                   "BC purchase order 90388", fields={
                                       "Expected Receipt Date": "2026-10-24"})])]
@@ -440,8 +664,9 @@ class MockBackend:
         po = obj["object_id"] == "PurchaseOrder:demo:90412"
         status = (m.ObjectStatus(state="late", text="12 days late: due 17 Oct, supplier "
                                  "now ships 4 Nov", sources=[PO_ROW, MAIL]) if po else
+                  AT_RISK_77120 if obj["object_id"] == "SalesOrder:demo:77120" else
                   m.ObjectStatus(state="open", text="Open", sources=[]))
-        return m.ObjectPage(
+        page = m.ObjectPage(
             object_id=obj["object_id"], type=obj["type"], label=obj["label"],
             summary=obj["sublabel"], status=status,
             facts=[m.Fact(text="Supplier: Maple Leaf Soapworks", sources=[PO_ROW]),
@@ -487,10 +712,37 @@ class MockBackend:
             not_found=[m.NotFound(what="Goods receipt", where_it_would_live="A posted BC "
                                   "purchase receipt for PO 90412")] if po else [],
             conflicts=[CONFLICT_DATE] if po else [],
+            trail=PO_TRAIL if po else TRAILS.get(obj["object_id"]),
+            customer=HARBOR_SUMMARY if obj["object_id"] == "Customer:demo:harbor" else None,
+            profitability=_profit(GLOW, focus=BREAKDOWN_77120)
+            if obj["object_id"] in ("Customer:demo:glow", "SalesOrder:demo:77120",
+                                    "SalesOrder:demo:77131") else None,
             hidden=HIDDEN_FINANCE if po else NO_HIDDEN, freshness=FRESH)
+        page.proposals = proposals.for_page(page)   # drafts only: never sent
+        return page
+
+    def object_section(self, reader: Reader, object_type: str, object_id: str,
+                       section: str) -> m.ObjectSection:
+        """The full page's part for ``section``, as the real backend splits it."""
+        page = self.object_page(reader, object_type, object_id)
+        po = page.type == "PurchaseOrder"
+        margin = page.type in ("Customer", "SalesOrder")
+        return m.ObjectSection(
+            object_id=page.object_id, section=section,
+            applies=po or section in ("people", "landed_cost")
+            or (section == "margin" and margin),
+            profitability=page.profitability if section == "margin" else None,
+            status=page.status if section == "late" and po else None,
+            late_lines=page.late_lines if section == "late" else [],
+            people=page.people if section == "people" else None,
+            landed_cost=page.landed_cost if section == "landed_cost" else None,
+            trail=page.trail if section == "trail" else None,
+            not_found=page.not_found if section == "trail" and po else None,
+            proposals=page.proposals if section == "trail" and po else None)
 
     def source(self, reader: Reader, handle: str, text_offset: int) -> m.SourceView:
-        known = {s.handle: s for s in (PO_ROW, PO_LINE, MAIL, MAIL2, PORTAL, TEAMS, FILE)}
+        known = {s.handle: s for s in (PO_ROW, PO_LINE, MAIL, MAIL2, PORTAL, TEAMS, FILE,
+                                         INV, ILE)}
         s = known.get(handle)
         if s is None:
             raise KeyError("source_not_found")

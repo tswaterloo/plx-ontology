@@ -131,7 +131,7 @@ def inbox(n_real, n_test, *, as_of="2026-10-31"):
                      "summary": "An open purchase order has no supplier confirmation",
                      "citations": []})
     labels = {g["object_id"]: f"PO{100000 + i}" for i, g in enumerate(gaps)}
-    suppliers = {g["object_id"]: ("Lorpon Labels (DO NOT USE)" if i >= n_real else "DSM")
+    suppliers = {g["object_id"]: ("Laura TEST" if i >= n_real else "DSM")
                  for i, g in enumerate(gaps)}
     return ({"status": "read", "gaps": gaps, "late_total": len(gaps), "as_of": as_of},
             labels, suppliers)
@@ -154,6 +154,11 @@ class TestRecords(unittest.TestCase):
         for text in ("Lorpon Labels (DO NOT USE)", "Crown Grooming (Do Not Use)", "TEST",
                      "Laura TEST", "UAT-SO100004", "uat-AO-26001A"):
             self.assertTrue(test_records.is_test([text]), text)
+        for party in ("TEST", "Laura TEST"):
+            self.assertTrue(test_records.is_test([], parties=[party]), party)
+        # a supplier or customer card marked (DO NOT USE) is retired, not a test
+        for party in ("Lorpon Labels (DO NOT USE)", "Crown Grooming (Do Not Use)"):
+            self.assertFalse(test_records.is_test(["PO100035"], parties=[party]), party)
         for text in ("CAMBRIDGE MATERIALS TESTING LIMITED", "pH Test Strips", "1UP CARGO",
                      "Test Kitchen Inc", "Testa Foods", "XYZ Lab Test", "Covid test", "S-ORD101148", "PO 5275 UAT-ready",
                      "", None):
@@ -167,7 +172,25 @@ class TestRecords(unittest.TestCase):
         item = {"object_id": "o", "summary": "(DO NOT USE)", "why": "TEST"}
         self.assertFalse(be.briefing_test(item, {"o": "PO100001"}, frozenset(), {"o": "DSM"}))
         self.assertTrue(be.briefing_test(item, {"o": "PO100001"}, frozenset(),
-                                         {"o": "Lorpon Labels (DO NOT USE)"}))
+                                         {"o": "Laura TEST"}))
+        self.assertFalse(be.briefing_test(item, {"o": "PO100001"}, frozenset(),
+                                          {"o": "Lorpon Labels (DO NOT USE)"}))
+
+    def test_a_late_order_with_a_retired_supplier_card_stays_late_and_counted(self):
+        """An open order placed with a supplier whose card is now marked (DO NOT USE) (a
+        FileMaker-era order on a retired BC vendor card) is the business's order: Home and
+        the late answer list and count it, at 1, 10 and 60 orders, none lost."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                box, labels, suppliers = inbox(n, 0)
+                retired = box["gaps"][-1]["object_id"]
+                suppliers[retired] = "Lorpon Labels (DO NOT USE)"
+                shown, labels, suppliers = be.without_tests(box, labels, suppliers)
+                late, _ = be.attention_items(shown, labels, limit=100, suppliers=suppliers)
+                self.assertEqual(len({p.object_id for p in late}), n)
+                self.assertIn(retired, [p.object_id for p in late])
+                self.assertEqual(shown["late_total"], n)
+                self.assertNotIn("tests_hidden", shown)
 
     def test_the_reader_is_told_how_many_test_records_were_left_out(self):
         box, labels, suppliers = inbox(3, 2)

@@ -270,10 +270,10 @@ class DetectorTest(Engine):
         self.assertEqual(summary["detectors"]["card_rules"], "not_configured")
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"confirmation_unsettled": 1, "need_date_disputed": 1,
-                          "no_need_date": 1, "sage_unmapped": 1, "status_missing": 1,
-                          "status_unmapped": 1})
+                          "no_need_date": 1, "status_missing": 1, "status_unmapped": 1})
+        # the Sage PO complete in Sage is a closed historical record, never evaluated
         self.assertEqual(summary["po_lateness"], {
-            "pos": 16, "classes": {"open": 9, "closed": 3, "draft": 1, "unknown": 3},
+            "pos": 16, "classes": {"open": 9, "closed": 4, "draft": 1, "unknown": 2},
             "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2, "undated": 1,
             "open_by_read": 9, "open_other": 4})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
@@ -740,6 +740,84 @@ class InboxTest(Engine):
                          {"state": "failed", "error": "StoreError"})
 
 
+class ServedGenerationTest(Engine):
+    """A new projection generation served after the engine's last run: what the older data
+    found is never listed as current (the record pages read the new data), the read says
+    the checks are re-running and since when; the next run over the new data lists again."""
+
+    def late_ids(self, found: dict) -> set[str]:
+        return {g["object_id"] for g in found["gaps"] if g["kind"] == "unconfirmed_po"}
+
+    def test_a_new_generation_hides_older_findings_until_the_engine_runs_over_it(self):
+        from operating import briefing as bf
+        world, ids = seeded()
+        first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        self.run_engine(world, ids["coverage"], at=first)
+        self.assertIn(ids["unconfirmed"], self.late_ids(self.read()))
+        self.assertFalse(pe.served_behind(self.store))
+        # the next generation: the supplier confirmed on time, so the record page says
+        # "not late"; the engine has not run over it yet
+        world.link("SupplierConfirmation.confirms",
+                   world.obj("SupplierConfirmation", {"delivery_date": "2026-10-09"}),
+                   ids["unconfirmed"])
+        world.build(self.store)
+        self.assertTrue(pe.served_behind(self.store))
+        stale = self.read()
+        self.assertEqual(stale["gaps"], [])           # nothing of the older data is listed
+        self.assertTrue(stale["stale"])
+        self.assertFalse(stale["complete"])
+        self.assertIn("late_or_unconfirmed_po", stale["refreshing"])
+        self.assertEqual(stale["checked_on"], first.isoformat())
+        brief = bf.read(self.inbox, self.store, reader="plx:ops", may_read=everyone,
+                        held=ALL_MARKINGS, decide=admit,
+                        routing=bf.Routing(basis="fixture", everything=True))
+        self.assertEqual((brief["count"], brief["refreshing"] != [], brief["checked_on"]),
+                         (0, True, first.isoformat()))
+        self.assertTrue(brief["today"].startswith("Checking against the latest data."))
+        self.assertIn("last checked 2026-10-19", brief["today"])
+        self.assertNotIn("Nothing", brief["today"])
+        # the engine runs over the served generation: the list is current again, and the
+        # order the new data shows confirmed on time is not on it
+        self.run_engine(world, ids["coverage"], at=first + timedelta(hours=2))
+        fresh = self.read()
+        self.assertFalse(fresh["stale"])
+        self.assertEqual((fresh["refreshing"], fresh["checked_on"]), ([], None))
+        self.assertNotIn(ids["unconfirmed"], self.late_ids(fresh))
+        self.assertIn(ids["overdue_root"], {g["object_id"] for g in fresh["gaps"]})
+        self.assertFalse(pe.served_behind(self.store))
+
+    def test_a_rule_that_fails_on_new_data_keeps_its_older_gaps_unlisted(self):
+        world, ids = seeded()
+        first = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+        self.run_engine(world, ids["coverage"], at=first)
+        world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})   # new data: new digest
+        # the late rule fails over the new data: its older gaps stay stored, never listed
+        with mock.patch.object(pe, "_late_or_unconfirmed_po",
+                               side_effect=RuntimeError("SYNTH")):
+            self.run_engine(world, ids["coverage"], at=first + timedelta(hours=1))
+        shown = self.read()
+        self.assertEqual(self.late_ids(shown), set())
+        self.assertEqual(shown["refreshing"], ["late_or_unconfirmed_po"])
+        self.assertIn("expired_quote", {g["kind"] for g in shown["gaps"]})
+        # stored, not lost: the next run over this data lists it again
+        self.run_engine(world, ids["coverage"], at=first + timedelta(hours=2))
+        self.assertIn(ids["unconfirmed"], self.late_ids(self.read()))
+
+    def test_an_inbox_without_per_rule_records_is_read_by_its_last_full_run(self):
+        world, ids = seeded()
+        self.run_engine(world, ids["coverage"])
+        with sqlite3.connect(self.inbox) as conn:   # as an earlier engine wrote it
+            conn.execute("DELETE FROM meta WHERE key LIKE 'generation:%'")
+        self.assertIn(ids["unconfirmed"], self.late_ids(self.read()))
+        world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})
+        world.build(self.store)
+        found = self.read()
+        self.assertEqual((found["gaps"], found["stale"]), ([], True))
+        with sqlite3.connect(self.inbox) as conn:   # an unreadable record: of no known data
+            conn.execute("INSERT INTO meta VALUES ('generation:expired_quote', '{')")
+        self.assertIn("expired_quote", self.read()["refreshing"])
+
+
 class PermissionTest(Engine):
     """A restricted reader sees no gap whose subject or any evidence group it may not read,
     and its counts cover only what it may read."""
@@ -853,10 +931,11 @@ class PoLatenessTest(Engine):
         shown = {g["object_id"] for g in self.read()["gaps"]}
         self.assertEqual(shown, {outstanding})
         self.assertFalse({complete, fm_only, sage_open, sage_done} & shown)
+        # Sage complete is a closed historical record; Sage open (0) stays unknown
         self.assertEqual(summary["po_lateness"]["classes"],
-                         {"open": 1, "closed": 2, "draft": 0, "unknown": 2})
+                         {"open": 1, "closed": 3, "draft": 0, "unknown": 1})
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
-                         {"sage_unmapped": 2})
+                         {"sage_unmapped": 1})
         status = po_status.read(po_status.StoreSource(pe._Store(self.store)), complete,
                                 AS_OF).status
         self.assertEqual((status.cls, status.code, status.canceled_remainder),
@@ -992,6 +1071,70 @@ def view_quantity_rows(st):
         "v.l1_handle, v.markings FROM objects o JOIN object_values v ON v.object_id = o.object_id "
         "WHERE v.value_type = 'quantity' AND v.superseded_at IS NULL AND NOT "
         + ostore.removed_at_sql("o.object_id"))]
+
+
+class HomeLateCountTest(Engine):
+    """Home's late count (``plx.find`` home ``late_orders``, which Ask's count and the late
+    list say) is the late rule's: exact when that rule ran over the served data and every
+    order it left undecided is one the late-list rule decides is never late."""
+
+    LATE_KINDS = ("late_po", "unconfirmed_po")
+
+    def late_count(self) -> dict:
+        from operating import mcp_server
+        moment = datetime(2026, 10, 19, 7, tzinfo=timezone.utc)
+        return mcp_server._home_answer(self.read(limit=500), self.LATE_KINDS, None, None,
+                                       moment)["home"]["late_orders"]
+
+    def world(self) -> tuple[World, str]:
+        w = World()
+        late = po(w, "Pending", "2026-10-10", lines=(("10", "4"),))
+        po(w, "Revised", "2026-10-01")                                  # unmapped word
+        po(w, "Pending", "2026-10-01", lines=(("10", "UNREAD"),))       # quantities unknown
+        w.obj("PurchaseOrder", {"sage_is_complete": "0", "expected_date": "2026-10-01"})
+        po(w, "Pending")                                                # no due date
+        return w, late
+
+    def test_never_late_skips_and_other_rules_cut_short_leave_the_count_exact(self):
+        w, late = self.world()
+        summary = self.run_engine(w)   # no mirror coverage nor tool caller: rules not run
+        self.assertIn("not_configured", summary["detectors"].values())
+        self.assertEqual(set(summary["not_evaluated"]["late_or_unconfirmed_po"]),
+                         {"status_unmapped", "quantities_unknown", "sage_unmapped",
+                          "no_need_date"})
+        read = self.read(limit=500)
+        self.assertFalse(read["complete"])
+        self.assertTrue(read["late_exact"])
+        self.assertEqual(self.late_count(), {"count": 1, "complete": True})
+        self.assertEqual({g["object_id"] for g in read["gaps"]
+                          if type(g.get("days_late")) is int}, {late})
+
+    def test_an_order_whose_lateness_is_undecided_makes_the_count_a_lower_bound(self):
+        w, _late = self.world()
+        # one order, two records of one rank due 2026-10-03 and 2026-10-25: late or not
+        # is undecided on 2026-10-19, so it may be a late order the count misses
+        w.link("PurchaseOrder.same_record_as", po(w, "Pending", "2026-10-03"),
+               po(w, "Pending", "2026-10-25"))
+        summary = self.run_engine(w)
+        self.assertIn("need_date_disputed", summary["not_evaluated"]["late_or_unconfirmed_po"])
+        self.assertFalse(self.read()["late_exact"])
+        self.assertEqual(self.late_count(), {"count": 1, "complete": False})
+
+    def test_a_late_rule_that_did_not_finish_or_ran_over_older_data_is_not_exact(self):
+        w, _late = self.world()
+        self.run_engine(w, only=("expired_quote",))   # the late rule never ran
+        self.assertFalse(self.read()["late_exact"])
+        self.assertFalse(self.late_count()["complete"])
+
+    def test_unknown_or_unreadable_skips_fail_closed(self):
+        exact = po_status.late_count_exact
+        self.assertTrue(exact({}))
+        self.assertTrue(exact({"no_need_date": 3, "status_disputed": 1, "sage_unmapped": 2}))
+        self.assertTrue(exact({"need_date_disputed": 0}))
+        for bad in ({"need_date_disputed": 1}, {"date_unparseable": 1},
+                    {"a_reason_added_later": 1}, {"no_need_date": -1},
+                    {"no_need_date": "1"}, {"no_need_date": True}, None, [], "{}"):
+            self.assertFalse(exact(bad), bad)
 
 
 class FastReadEquivalenceTest(Engine):

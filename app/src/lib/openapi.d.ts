@@ -215,6 +215,28 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/object-section/{section}/{object_type}/{object_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Object Section
+         * @description One slow section of a record's page (late check, people, landed cost, how we
+         *     know), read after its quick first read and merged into it. Not found reads the
+         *     same as a record the reader cannot see.
+         */
+        get: operations["object_section_api_object_section__section___object_type___object_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/object/{object_type}/{object_id}": {
         parameters: {
             query?: never;
@@ -331,6 +353,11 @@ export type components = {
             outcome: "answered" | "partial" | "not_found" | "abstained" | "refused";
             /** @description A customer's profitability and why an order lost money, when the question asks it (optional: older clients ignore it). */
             profitability?: components["schemas"]["Profitability"] | null;
+            /**
+             * Proposals
+             * @description Follow-up drafts and proposed updates built from the answer's gated trail; never sent or applied.
+             */
+            proposals?: components["schemas"]["Proposal"][];
             /** Question */
             question: string;
             /**
@@ -408,6 +435,11 @@ export type components = {
             acknowledged: number;
             /** As Of */
             as_of?: string | null;
+            /**
+             * Checked On
+             * @description While refreshing: when the checks left out last ran (ISO time).
+             */
+            checked_on?: string | null;
             /** Checks */
             checks?: components["schemas"]["BriefingCheck"][];
             /** Complete */
@@ -473,6 +505,12 @@ export type components = {
             other_teams: number;
             /** Rank Basis */
             rank_basis: string;
+            /**
+             * Refreshing
+             * @description True while some checks' findings are of older data than the records now show: those are left out until the checks re-run on it.
+             * @default false
+             */
+            refreshing: boolean;
             /** Routing Basis */
             routing_basis: string;
             /**
@@ -723,97 +761,74 @@ export type components = {
         };
         /** CostBreakdown */
         CostBreakdown: {
-            /** @default null */
-            booked_cost: components["schemas"]["Money"] | null;
+            booked_cost?: components["schemas"]["Money"] | null;
             /** Cost Sources */
             cost_sources?: components["schemas"]["CostSource"][];
-            /**
-             * Date
-             * @default null
-             */
-            date: string | null;
+            /** Date */
+            date?: string | null;
             /** Drivers */
             drivers?: string[];
             /** Gaps */
             gaps?: components["schemas"]["NotFound"][];
             /** Lines */
             lines?: components["schemas"]["CostLine"][];
-            /** @default null */
-            margin: components["schemas"]["Money"] | null;
-            /**
-             * Margin Pct
-             * @default null
-             */
-            margin_pct: string | null;
+            margin?: components["schemas"]["Money"] | null;
+            /** Margin Pct */
+            margin_pct?: string | null;
             order: components["schemas"]["ObjectRef"];
-            /** @default null */
-            revenue: components["schemas"]["Money"] | null;
+            revenue?: components["schemas"]["Money"] | null;
+            /**
+             * Why
+             * @description The margin's why in one or two plain sentences, e.g. 'Item cost rose 36.4% (1.59 → 2.17 CAD/PCS) while the price was unchanged: −69.00 CAD against <order> (<date>).'; each a driver's own figures.
+             */
+            why?: string[];
         };
         /** CostLine */
         CostLine: {
-            /** @default null */
-            booked_cost: components["schemas"]["Money"] | null;
+            booked_cost?: components["schemas"]["Money"] | null;
             /**
              * Label
              * @description The item, e.g. 'item FG-9 (Tube 50 ml)'.
              */
             label: string;
-            /** @default null */
-            margin: components["schemas"]["Money"] | null;
-            /**
-             * Quantity
-             * @default null
-             */
-            quantity: string | null;
-            /** @default null */
-            revenue: components["schemas"]["Money"] | null;
-            /**
-             * Share Of Cost Pct
-             * @default null
-             */
-            share_of_cost_pct: string | null;
+            margin?: components["schemas"]["Money"] | null;
+            /** Quantity */
+            quantity?: string | null;
+            revenue?: components["schemas"]["Money"] | null;
+            /** Share Of Cost Pct */
+            share_of_cost_pct?: string | null;
             /** Sources */
             sources?: components["schemas"]["Source"][];
-            /**
-             * Unit
-             * @default null
-             */
-            unit: string | null;
+            /** Unit */
+            unit?: string | null;
             /**
              * Unit Cost
              * @description Booked cost per unit, decimal string.
-             * @default null
              */
-            unit_cost: string | null;
+            unit_cost?: string | null;
             /**
              * Unit Price
              * @description Revenue per unit, decimal string.
-             * @default null
              */
-            unit_price: string | null;
+            unit_price?: string | null;
         };
         /** CostSource */
         CostSource: {
-            /** @default null */
-            amount: components["schemas"]["Money"] | null;
-            /**
-             * Detail
-             * @default null
-             */
-            detail: string | null;
+            amount?: components["schemas"]["Money"] | null;
+            /** Detail */
+            detail?: string | null;
             /**
              * Kind
              * @enum {string}
              */
-            kind: "item_ledger" | "credit_memo" | "return" | "material_po" | "quote";
+            kind: "item_ledger" | "sage_cost_of_sales" | "credit_memo" | "return" | "material_po" | "quote";
             /** Label */
             label: string;
             /**
              * Per Unit
              * @description e.g. '$16.00 CAD/PCS goods cost'.
-             * @default null
              */
-            per_unit: string | null;
+            per_unit?: string | null;
             /** Sources */
             sources?: components["schemas"]["Source"][];
         };
@@ -900,6 +915,19 @@ export type components = {
             /** Ok */
             ok: boolean;
         };
+        /**
+         * DraftFigure
+         * @description One figure a proposal states (a PO number, a date, a line's quantity, a contact) and
+         *     the record or message it was read from; every one passed this reader's gate.
+         */
+        DraftFigure: {
+            /** Label */
+            label: string;
+            /** @description Null only for the record's own label, which the page states. */
+            source?: components["schemas"]["Source"] | null;
+            /** Value */
+            value: string;
+        };
         /** EntraConfig */
         EntraConfig: {
             /**
@@ -941,6 +969,8 @@ export type components = {
         };
         /** EtaCheck */
         EtaCheck: {
+            /** @description The supplier's promise and the order (per line when the supplier promised each item its own date) against it; omitted when none is read or the reader can't open the confirmation. */
+            promise?: components["schemas"]["VendorPromise"] | null;
             /** @description The confirmation (or the lead) that says so, when the reader can open it. */
             source?: components["schemas"]["Source"] | null;
             /**
@@ -1047,7 +1077,7 @@ export type components = {
         Freshness: {
             /**
              * As Of
-             * @description Oldest capture an answer relies on (ISO).
+             * @description The data cut-off (ISO): the newest capture the served data holds, the same on every screen. A source read over a day before it is named in the label and keeps its own time in sources.
              */
             as_of?: string | null;
             /**
@@ -1209,6 +1239,11 @@ export type components = {
              * @description Why the total is suspect (shown as a check, never as fact).
              */
             amount_suspect?: string | null;
+            /**
+             * Confirmation
+             * @description none_found: no supplier confirmation is linked to the order. Null: the list's entry does not say (the order's page decides it).
+             */
+            confirmation?: "none_found" | null;
             /** Days Late */
             days_late?: number | null;
             /** Due Date */
@@ -1313,6 +1348,11 @@ export type components = {
             as_of?: string | null;
             /** At Risk */
             at_risk?: components["schemas"]["AtRisk"][];
+            /**
+             * Checked On
+             * @description While refreshing: when the checks left out last ran (ISO time).
+             */
+            checked_on?: string | null;
             /** @description Omitted when the source of the list does not count what it hides. */
             hidden?: components["schemas"]["Hidden"] | null;
             /** Late Pos */
@@ -1322,6 +1362,12 @@ export type components = {
              * @description Every late purchase order this reader may see; late_pos lists the longest late of them.
              */
             late_total?: number | null;
+            /**
+             * Refreshing
+             * @description True while some checks' findings are of older data than the records now show: those are left out until the checks re-run on it.
+             * @default false
+             */
+            refreshing: boolean;
             /**
              * Status
              * @enum {string}
@@ -1403,6 +1449,13 @@ export type components = {
              * @description Omitted when no people plan answered for this record.
              */
             people?: components["schemas"]["Person"][] | null;
+            /** @description A BC customer's or sales order's margin and why (the margin section). */
+            profitability?: components["schemas"]["Profitability"] | null;
+            /**
+             * Proposals
+             * @description Follow-up drafts and proposed updates built from this page's gated facts and trail; never sent or applied.
+             */
+            proposals?: components["schemas"]["Proposal"][];
             /** Related */
             related?: components["schemas"]["ObjectRef"][];
             status: components["schemas"]["ObjectStatus"];
@@ -1426,6 +1479,51 @@ export type components = {
             /** Type */
             type: string;
         };
+        /**
+         * ObjectSection
+         * @description One slow part of a record's page, read after the quick first read (``?quick=1``)
+         *     and merged into it by the app: ``late`` (the late-PO check: ``status`` when it
+         *     establishes one, and ``late_lines``), ``people`` (people on the record),
+         *     ``landed_cost``, ``trail`` (how we know, with the page's ``not_found`` said against
+         *     it), ``margin`` (a BC customer's or sales order's margin and why). The full page (no ``quick``) is the quick read with every section merged.
+         */
+        ObjectSection: {
+            /** Access Label */
+            access_label?: string | null;
+            /**
+             * Applies
+             * @description False: this kind of record has no such section (nothing to show, nothing withheld).
+             * @default true
+             */
+            applies: boolean;
+            landed_cost?: components["schemas"]["LandedCost"] | null;
+            /** Late Lines */
+            late_lines?: components["schemas"]["LateLine"][];
+            /**
+             * Not Found
+             * @description trail: the page's not-found items said against the trail (replace the quick read's); omitted for the other sections.
+             */
+            not_found?: components["schemas"]["NotFound"][] | null;
+            /** Object Id */
+            object_id: string;
+            /** People */
+            people?: components["schemas"]["Person"][] | null;
+            /** @description margin: a BC customer's margin and why, or a BC sales order's (its customer's, led by the order). */
+            profitability?: components["schemas"]["Profitability"] | null;
+            /**
+             * Proposals
+             * @description trail: the page's follow-up drafts and proposed updates, built from the record, its late lines and this trail (replace the quick read's); never sent or applied. Omitted for the other sections.
+             */
+            proposals?: components["schemas"]["Proposal"][] | null;
+            /**
+             * Section
+             * @enum {string}
+             */
+            section: "late" | "people" | "landed_cost" | "trail" | "margin";
+            /** @description late: the record's status as the late-PO check established it (replaces the quick read's); omitted when it established none. */
+            status?: components["schemas"]["ObjectStatus"] | null;
+            trail?: components["schemas"]["EvidenceTrail"] | null;
+        };
         /** ObjectStatus */
         ObjectStatus: {
             /** Sources */
@@ -1437,29 +1535,24 @@ export type components = {
         };
         /** OrderMargin */
         OrderMargin: {
-            /** @default null */
-            booked_cost: components["schemas"]["Money"] | null;
-            /**
-             * Date
-             * @default null
-             */
-            date: string | null;
+            booked_cost?: components["schemas"]["Money"] | null;
+            /** Date */
+            date?: string | null;
             /**
              * Gap
              * @description Why no margin is stated, in words.
-             * @default null
              */
-            gap: string | null;
-            /** @default null */
-            margin: components["schemas"]["Money"] | null;
+            gap?: string | null;
             /**
-             * Margin Pct
-             * @default null
+             * Gap Code
+             * @description The first reason's code, e.g. COST_NOT_VALUED (BC holds no valid cost).
              */
-            margin_pct: string | null;
+            gap_code?: string | null;
+            margin?: components["schemas"]["Money"] | null;
+            /** Margin Pct */
+            margin_pct?: string | null;
             order: components["schemas"]["ObjectRef"];
-            /** @default null */
-            revenue: components["schemas"]["Money"] | null;
+            revenue?: components["schemas"]["Money"] | null;
         };
         /** OrderRow */
         OrderRow: {
@@ -1525,15 +1618,49 @@ export type components = {
              */
             verdict?: string | null;
         };
+        /**
+         * ProductMargin
+         * @description One item's margin over the customer's checked order lines of the period.
+         */
+        ProductMargin: {
+            booked_cost?: components["schemas"]["Money"] | null;
+            /**
+             * Complete
+             * @description False: an invoiced order without a checked margin carries the item, or not every order was read; the figures cover the checked orders only.
+             */
+            complete: boolean;
+            /**
+             * Item
+             * @description The item, e.g. 'item FG-9 (Tube 50 ml)'.
+             */
+            item: string;
+            margin?: components["schemas"]["Money"] | null;
+            /** Margin Pct */
+            margin_pct?: string | null;
+            /**
+             * Orders
+             * @description Checked orders carrying the item.
+             */
+            orders: number;
+            /** Quantity */
+            quantity: string;
+            revenue?: components["schemas"]["Money"] | null;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /** Unit */
+            unit?: string | null;
+            /**
+             * Unit Cost Range
+             * @description Lowest to highest booked unit cost over those orders.
+             */
+            unit_cost_range?: string | null;
+        };
         /** Profitability */
         Profitability: {
-            /** @default null */
-            booked_cost: components["schemas"]["Money"] | null;
-            /** @default null */
-            breakdown: components["schemas"]["CostBreakdown"] | null;
+            booked_cost?: components["schemas"]["Money"] | null;
+            breakdown?: components["schemas"]["CostBreakdown"] | null;
             customer: components["schemas"]["ObjectRef"];
-            /** @default null */
-            margin: components["schemas"]["Money"] | null;
+            margin?: components["schemas"]["Money"] | null;
             /**
              * Margin Basis
              * @description What every margin here covers: item ledger cost only (BC books no labour or overhead).
@@ -1543,19 +1670,12 @@ export type components = {
             /**
              * Margin Note
              * @description The plain line saying what the margin basis leaves out.
-             * @default null
              */
-            margin_note: string | null;
-            /**
-             * Margin Pct
-             * @default null
-             */
-            margin_pct: string | null;
-            /**
-             * @description A suggested next step from the facts only.
-             * @default null
-             */
-            next_action: components["schemas"]["NextAction"] | null;
+            margin_note?: string | null;
+            /** Margin Pct */
+            margin_pct?: string | null;
+            /** @description A suggested next step from the facts only. */
+            next_action?: components["schemas"]["NextAction"] | null;
             /**
              * Orders
              * @description Worst margin first.
@@ -1600,21 +1720,23 @@ export type components = {
             /**
              * Period Basis
              * @description How an order counts in the period.
-             * @default null
              */
-            period_basis: string | null;
+            period_basis?: string | null;
             /** Period End */
             period_end: string;
             /** Period Start */
             period_start: string;
             /**
+             * Products
+             * @description Margin per item over the checked orders, worst first.
+             */
+            products?: components["schemas"]["ProductMargin"][];
+            /**
              * Ranking
              * @description What the ranking covers, e.g. 'partial: worst of the 60 most recent orders; 214 more in the period not read'.
-             * @default null
              */
-            ranking: string | null;
-            /** @default null */
-            revenue: components["schemas"]["Money"] | null;
+            ranking?: string | null;
+            revenue?: components["schemas"]["Money"] | null;
             /**
              * Test Records Hidden
              * @description How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.
@@ -1623,15 +1745,124 @@ export type components = {
             /**
              * Verdict
              * @description Stated only when every invoiced order of the period has a checked margin; null otherwise.
-             * @default null
              */
-            verdict: ("profitable" | "not_profitable") | null;
+            verdict?: ("profitable" | "not_profitable") | null;
             /**
              * Withheld Orders
              * @description Orders whose figures you may not read: a count only, never named.
              * @default 0
              */
             withheld_orders: number;
+        };
+        /**
+         * PromiseLine
+         * @description One order line the supplier promised its own date, matched on firm evidence (the
+         *     line's item code or description), with its verdict against that date.
+         */
+        PromiseLine: {
+            /**
+             * Days Late
+             * @description Days past the supplier's promised date (late only).
+             */
+            days_late?: number | null;
+            line: components["schemas"]["ObjectRef"];
+            /**
+             * Matched By
+             * @description How the confirmation's item was matched to the line: item_code or description.
+             */
+            matched_by?: string | null;
+            /** Promised Date */
+            promised_date?: string | null;
+            /** @description The confirmation that promised the line its date. */
+            source?: components["schemas"]["Source"] | null;
+            /**
+             * State
+             * @description Against the supplier's date for this line: late (open past it), not_due, on_time, received (its receipt date unread), undetermined, or not_judged (a lead).
+             * @enum {string}
+             */
+            state: "late" | "on_time" | "not_due" | "received" | "undetermined" | "not_judged";
+        };
+        /**
+         * Proposal
+         * @description A follow-up draft (email text the person edits, copies or opens in their own mail
+         *     client) or a proposed record update. Never sent and never applied by the Workbench.
+         */
+        Proposal: {
+            /**
+             * Body
+             * @description The draft text; every date and figure in it is one of ``figures``.
+             */
+            body?: string | null;
+            change?: components["schemas"]["ProposedChange"] | null;
+            /**
+             * Contact Note
+             * @description Where the address was found, or that no contact was found.
+             */
+            contact_note?: string | null;
+            /** Email Subject */
+            email_subject?: string | null;
+            /** Figures */
+            figures?: components["schemas"]["DraftFigure"][];
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "vendor_chase" | "customer_heads_up" | "record_update";
+            /**
+             * Missing
+             * @description What the draft could not state from the records, in words.
+             */
+            missing?: string[];
+            /**
+             * Sent
+             * @description Always false: the Workbench never sends or writes; the person does.
+             * @default false
+             * @constant
+             */
+            sent: false;
+            subject: components["schemas"]["ObjectRef"];
+            /** Title */
+            title: string;
+            /**
+             * To
+             * @description The recipient's address, only when a cited source this reader may open states it and the people directory clears it; null when unknown.
+             */
+            to?: string | null;
+            /** To Name */
+            to_name?: string | null;
+        };
+        /**
+         * ProposedChange
+         * @description A record field the evidence shows is out of date: before, after and why. The person
+         *     applies it in the system named; the Workbench writes nothing.
+         */
+        ProposedChange: {
+            /** After */
+            after: string;
+            /** Before */
+            before: string;
+            before_source: components["schemas"]["Source"];
+            /** @description The message or document that states the new value. */
+            evidence: components["schemas"]["Source"];
+            /**
+             * Field
+             * @description The field, in words, e.g. 'Expected receipt date'.
+             */
+            field: string;
+            /**
+             * Record
+             * @description The record to change, e.g. 'PO 90412'.
+             */
+            record: string;
+            /**
+             * System
+             * @enum {string}
+             */
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+            /** Why */
+            why: string;
         };
         /** RecentQuestion */
         RecentQuestion: {
@@ -1896,6 +2127,73 @@ export type components = {
             /** Error Type */
             type: string;
         };
+        /**
+         * VendorPromise
+         * @description The order against the date the supplier promised, beside our requested-by verdict
+         *     and never in its place. ``link`` confirmed: a firm link joins the confirmation to the
+         *     order; unconfirmed_link: a lead whose dates are stated and never judged.
+         */
+        VendorPromise: {
+            /**
+             * Complete
+             * @description False: a later promise this reader cannot see may exist.
+             * @default true
+             */
+            complete: boolean;
+            /**
+             * Days Late
+             * @description Days past the supplier's promised date (late only).
+             */
+            days_late?: number | null;
+            /** Lines */
+            lines?: components["schemas"]["PromiseLine"][];
+            /**
+             * Lines Hidden
+             * @description Promised lines whose confirmation this reader can't open: counted, never named.
+             * @default 0
+             */
+            lines_hidden: number;
+            /**
+             * Lines Unmatched
+             * @description Open lines no promise matched.
+             * @default 0
+             */
+            lines_unmatched: number;
+            /**
+             * Link
+             * @enum {string}
+             */
+            link: "confirmed" | "unconfirmed_link";
+            /**
+             * Measured Against
+             * @description today: the order is open; received: its last receipt.
+             */
+            measured_against?: ("today" | "received") | null;
+            /**
+             * Per Line
+             * @description The supplier promised each item its own date; lines lists the matched lines.
+             * @default false
+             */
+            per_line: boolean;
+            /** Promised Date */
+            promised_date?: string | null;
+            /** @description The confirmation that states the promised date. */
+            source?: components["schemas"]["Source"] | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "late" | "on_time" | "not_due" | "received" | "undetermined" | "not_judged";
+        };
+        /**
+         * VerdictEvent
+         * @description The answer's first line, sent the moment the answer gate accepts it (before the
+         *     full answer): only what that decision passed, every citation decided for the reader.
+         */
+        VerdictEvent: {
+            /** Text */
+            text: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -1918,7 +2216,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent), sources (SourcesEvent), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last). */
+            /** @description Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent: a plain-words progress step), sources (SourcesEvent), verdict (VerdictEvent: the answer's first line once the answer gate accepts it), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2314,6 +2612,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    object_section_api_object_section__section___object_type___object_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                section: "late" | "people" | "landed_cost" | "trail" | "margin";
+                object_type: string;
+                object_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObjectSection"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

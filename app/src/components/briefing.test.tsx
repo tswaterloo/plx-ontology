@@ -27,6 +27,7 @@ const item = (over: Partial<BriefingItem>): BriefingItem => ({
 const briefing: Briefing = {
   status: "read",
   count: 2,
+  refreshing: false,
   counts_exact: true,
   since_visit: false,
   acknowledged: 0,

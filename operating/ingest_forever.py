@@ -534,10 +534,18 @@ def child_env(environ: Mapping[str, str], spec: SourceSpec, state: Path) -> dict
     return env
 
 
+_TRACEBACK = "Traceback (most recent call last):"
+_RAISED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?::|$)")
+
+
 def _stderr_code(stderr: bytes) -> tuple[str | None, int | None]:
     """The error class/code and HTTP status of the last JSON line on stderr; never its
-    message."""
-    for line in reversed(stderr.decode("utf-8", "replace").splitlines()):
+    message. Without one, a child that died of an uncaught exception is named by its
+    class (``uncaught:IntegrityError``, from the traceback's last line, the message cut
+    off): else the ledger says only ``exit_1`` and the cause is lost with the pipe
+    (2026-11-02: Teams exited 1 every run for a day with nothing to tell why)."""
+    lines = stderr.decode("utf-8", "replace").splitlines()
+    for line in reversed(lines):
         try:
             value = json.loads(line)
         except ValueError:
@@ -547,6 +555,14 @@ def _stderr_code(stderr: bytes) -> tuple[str | None, int | None]:
             return (code(value.get("error_code")) or code(value.get("error"))
                     or code(value.get("error_class")),
                     status if type(status) is int and 100 <= status <= 599 else None)
+    if _TRACEBACK in lines:
+        after = [line for line in lines[len(lines) - 1 - lines[::-1].index(_TRACEBACK):]
+                 if line and not line[0].isspace()]
+        # the first unindented line after the frames: the exception's own (a message
+        # running on over more lines is never read)
+        raised = _RAISED.match(after[1]) if len(after) > 1 else None
+        if raised is not None:
+            return code("uncaught:" + raised.group(1).rsplit(".", 1)[-1]), None
     return None, None
 
 

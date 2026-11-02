@@ -27,6 +27,7 @@ Stdlib only.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
 import hashlib
@@ -268,6 +269,10 @@ def _row_text(row: Iterable[Any]) -> str:
 
 
 _CHUNK_OBJECTS = 2000
+# The page cache of a generation's build and of a part of a parallel build (several of
+# which are written at once): an upper bound, taken as the file grows.
+BUILD_CACHE_BYTES = 4 * 1024 ** 3
+PART_CACHE_BYTES = 256 * 1024 ** 2
 
 
 def _object_bounds(conn: sqlite3.Connection, every: int, low: Any = None,
@@ -408,12 +413,12 @@ def _segment_rows(conn: sqlite3.Connection, table: str, order: str,
         yield names, rows
 
 
-def _digest_segments(conn: sqlite3.Connection, table: str, order: str, *,
-                     bounds: tuple[str, str] | None = None, where: str = "",
-                     args: Sequence[Any] = (), only: str | None = None) -> dict[str, str]:
-    """segment -> digest of its rows among those selected (``only``: that segment's)."""
+def _segment_texts(conn: sqlite3.Connection, table: str, order: str,
+                   bounds: tuple[Any, Any] | None, where: str, args: Sequence[Any],
+                   only: str | None) -> Iterator[tuple[bytes, str, bytes]]:
+    """(header, segment, row line) of every selected row of ``table`` in ``order``: what
+    the digest of each segment is fed, in its order."""
     by = _SEGMENT_BY[table]
-    hashes: dict[str, Any] = {}
     header = b""
     column = None
     for names, rows in _segment_rows(conn, table, order, bounds, where, args):
@@ -431,22 +436,183 @@ def _digest_segments(conn: sqlite3.Connection, table: str, order: str, *,
                 segment = row[column] if type(row[column]) is str else ""
             if only is not None and segment != only:
                 continue
-            digest = hashes.get(segment)
-            if digest is None:
-                digest = hashes[segment] = hashlib.sha256(header)
-            digest.update((_row_text(row) + "\n").encode("utf-8"))
+            yield header, segment, (_row_text(row) + "\n").encode("utf-8")
+
+
+def _digest_segments(conn: sqlite3.Connection, table: str, order: str, *,
+                     bounds: tuple[str, str] | None = None, where: str = "",
+                     args: Sequence[Any] = (), only: str | None = None) -> dict[str, str]:
+    """segment -> digest of its rows among those selected (``only``: that segment's)."""
+    hashes: dict[str, Any] = {}
+    for header, segment, line in _segment_texts(conn, table, order, bounds, where, args,
+                                                only):
+        digest = hashes.get(segment)
+        if digest is None:
+            digest = hashes[segment] = hashlib.sha256(header)
+        digest.update(line)
     return {segment: digest.hexdigest() for segment, digest in hashes.items()}
+
+
+# A full digest by worker processes (``content_digest_parts(path=, workers=)``). Each table
+# is cut into ranges of its primary key's leading column(s) (``_CHUNK_KEYS``: the column(s)
+# and the table they are read from), in key order; a worker reads one range through its
+# own read-only connection and returns, per segment, the lines the serial digest feeds
+# that segment's SHA-256 from that range, in order; the build's process feeds them to the
+# segment's digest range by range, in key order. Each segment is fed the same bytes in the
+# same order as by one process: the same digest. Key columns are NOT NULL in the DDL but
+# for a single leading column, whose NULLs sort first (the first range holds them).
+_CHUNK_KEYS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "objects": ("objects", ("object_id",)),
+    "object_removals": ("object_removals", ("object_id",)),
+    "object_versions": ("object_versions", ("object_id",)),
+    "object_values": ("objects", ("object_id",)),
+    "links": ("link_rows", ("link_id",)),
+    "identifiers": ("identifiers", ("identifier_kind", "normalized")),
+    "events": ("events", ("event_id",)),
+    "event_objects": ("event_objects", ("event_id",)),
+}
+# Rows (objects, for the values: a wide packed object holds about 190) per range.
+_CHUNK_ROWS = 20000
+_CHUNK_VALUE_OBJECTS = 400
+# Below this file size a full digest is made by the build's own process.
+DIGEST_PARALLEL_MIN_BYTES = 64 * 1024 * 1024
+
+
+def _chunk_bounds(conn: sqlite3.Connection, table: str) -> list[Any]:
+    """[None, b1, ..., None]: the range bounds of ``table`` (each a key tuple, strictly
+    increasing; None unbounded)."""
+    if table not in _CHUNK_KEYS:
+        return [None, None]
+    source, keys = _CHUNK_KEYS[table]
+    every = _CHUNK_VALUE_OBJECTS if table == "object_values" else _CHUNK_ROWS
+    cols = ", ".join(keys)
+    # Every ``every``-th key, numbered in key order by SQLite itself (one index scan).
+    found = conn.execute(
+        f"SELECT {cols} FROM (SELECT {cols}, row_number() OVER (ORDER BY {cols}) AS n "
+        f"FROM {source}) WHERE n % ? = 1 AND n > 1 ORDER BY {cols}", (every,)).fetchall()
+    bounds: list[Any] = [None]
+    for row in found:
+        if any(item is None for item in row):
+            continue   # a NULL key sorts first: it stays in the first range
+        if len(bounds) > 1 and tuple(row) <= bounds[-1]:
+            continue
+        bounds.append(tuple(row))
+    bounds.append(None)
+    return bounds
+
+
+def _chunk_where(table: str, low: Any, high: Any) -> tuple[str, list[Any]]:
+    keys = _CHUNK_KEYS[table][1]
+    cols = keys[0] if len(keys) == 1 else f"({', '.join(keys)})"
+    marks = "?" if len(keys) == 1 else f"({', '.join('?' for _ in keys)})"
+    where, args = [], []
+    if low is not None:
+        where.append(f"{cols} >= {marks}")
+        args.extend(low)
+    if high is not None:
+        below = f"{cols} < {marks}"
+        if low is None and len(keys) == 1:
+            below = f"({below} OR {keys[0]} IS NULL)"
+        where.append(below)
+        args.extend(high)
+    return (f" WHERE {' AND '.join(where)}" if where else ""), args
+
+
+_READERS: dict[str, sqlite3.Connection] = {}
+
+
+def _digest_chunk(path: str, table: str, order: str, low: Any, high: Any
+                  ) -> tuple[bytes, dict[str, bytes]]:
+    """A worker's part of a full digest: (header, segment -> its lines in order) of the
+    rows of ``table`` in [``low``, ``high``)."""
+    conn = _READERS.get(path)
+    if conn is None:
+        conn = _READERS[path] = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.execute("PRAGMA cache_size = -262144")
+    lines: dict[str, list[bytes]] = {}
+    header = b""
+    if table == "object_values":
+        selected = _segment_texts(conn, table, order,
+                                  (None if low is None else low[0],
+                                   None if high is None else high[0]), "", (), None)
+    elif table in _CHUNK_KEYS:
+        where, args = _chunk_where(table, low, high)
+        selected = _segment_texts(conn, table, order, None, where, args, None)
+    else:
+        selected = _segment_texts(conn, table, order, None, "", (), None)
+    for header, segment, line in selected:
+        lines.setdefault(segment, []).append(line)
+    return header, {segment: b"".join(items) for segment, items in lines.items()}
+
+
+def _parallel_digest_parts(path: Path, conn: sqlite3.Connection, workers: int
+                           ) -> dict[str, str]:
+    """Every part of the content digest of the committed store at ``path``, the rows read
+    and written out as text by ``workers`` processes (comment above ``_CHUNK_KEYS``)."""
+    import concurrent.futures as futures
+    import multiprocessing
+
+    jobs = []
+    for table, order in _TABLE_ORDER:
+        bounds = _chunk_bounds(conn, table)
+        jobs += [(table, order, low, high) for low, high in zip(bounds, bounds[1:])]
+    hashes: dict[tuple[str, str], Any] = {}
+    window = max(2, workers * 3)
+    with main_not_imported(), futures.ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        pending: list[Any] = []
+        at = 0
+        while at < len(jobs) or pending:
+            while at < len(jobs) and len(pending) < window:
+                table, order, low, high = jobs[at]
+                pending.append((table, pool.submit(_digest_chunk, str(path), table, order,
+                                                   low, high)))
+                at += 1
+            table, future = pending.pop(0)
+            header, lines = future.result()
+            for segment, text in lines.items():
+                digest = hashes.get((table, segment))
+                if digest is None:
+                    digest = hashes[(table, segment)] = hashlib.sha256(header)
+                digest.update(text)
+    return {_part(table, segment): digest.hexdigest()
+            for (table, segment), digest in hashes.items()}
+
+
+@contextlib.contextmanager
+def main_not_imported() -> Iterator[None]:
+    """While ``spawn`` workers start: ``spawn`` would import the build's ``__main__`` (a
+    script or ``-m`` module) in each worker, running an unguarded script's top level
+    there. A worker needs nothing of it, so it is not named to them."""
+    main = sys.modules.get("__main__")
+    saved = {name: main.__dict__[name] for name in ("__file__", "__spec__")
+             if main is not None and name in main.__dict__}
+    for name in saved:
+        if name == "__spec__":
+            main.__spec__ = None
+        else:
+            del main.__dict__[name]
+    try:
+        yield
+    finally:
+        main.__dict__.update(saved) if main is not None else None
 
 
 def content_digest_parts(conn: sqlite3.Connection,
                          previous: Mapping[str, str] | None = None,
-                         dirty: Iterable[tuple[str, str]] | None = None) -> dict[str, str]:
+                         dirty: Iterable[tuple[str, str]] | None = None, *,
+                         path: str | Path | None = None, workers: int = 1) -> dict[str, str]:
     """Every part of the content digest (comment above). ``previous`` and ``dirty``: the
     parts of the store this one was seeded from and the segments written since
     (``("object_id", segment)``, ``("link_type", type)``, ``("event_type", type)``;
-    ``("all", "")`` every one): only those are digested again."""
+    ``("all", "")`` every one): only those are digested again. ``path`` and ``workers``
+    (more than one): every part is digested, ``conn``'s rows being committed in the file
+    at ``path``, by that many worker processes (``_parallel_digest_parts``; the same
+    parts)."""
     marks = None if dirty is None else set(dirty)
     if previous is None or marks is None or _ALL in marks:
+        if path is not None and workers > 1:
+            return _parallel_digest_parts(Path(path), conn, workers)
         parts: dict[str, str] = {}
         for table, order in _TABLE_ORDER:
             parts.update({_part(table, segment): digest for segment, digest
@@ -635,9 +801,12 @@ class StoreBuilder:
         "event_objects": ("event_id", "object_id", "qualifier"),
     }
 
-    def __init__(self, target: str | Path, *, seed: str | Path | None = None) -> None:
+    def __init__(self, target: str | Path, *, seed: str | Path | None = None,
+                 foreign_keys: bool = True) -> None:
         """``seed``: start from a byte copy of that committed generation (an
-        incremental build edits it) instead of an empty store."""
+        incremental build edits it) instead of an empty store. ``foreign_keys`` False:
+        a part of a parallel build (:meth:`keep_as_part`), whose links and event objects
+        name objects another part holds; never committed as a generation."""
         self.target = Path(target)
         self.target.parent.mkdir(parents=True, exist_ok=True)
         # Bindings whose values are stored as packed records (schema ``value_storage``;
@@ -651,15 +820,9 @@ class StoreBuilder:
         self.seed_mode: str | None = None
         if seed is not None:
             self.seed_mode = clone_or_copy(seed, self.temp)
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
-            str(self.temp), isolation_level=None)
-        # One self-contained file (no -wal sidecar), so os.replace swaps all of it.
-        self._conn.execute("PRAGMA journal_mode = DELETE")
-        store_ddl.create(self._conn)
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        if self._conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
-            self.abort()
-            raise StoreError("foreign_keys_unavailable")
+        self._part = not foreign_keys
+        self._conn: sqlite3.Connection | None = None
+        self._open(seeded=seed is not None)
         # A seed whose digest parts compose its digest: every segment written from here
         # on is recorded, and only those are digested again at the commit.
         self._seed_parts = self._parts_of_seed() if seed is not None else None
@@ -674,7 +837,33 @@ class StoreBuilder:
         self.digest_mode: str | None = None
         self.digest_segments: int | None = None
         self.seconds: dict[str, float] = {}   # the commit's check and digest (measurement)
+        # Processes a full digest at the commit may use (1: the build's own; a store
+        # under ``DIGEST_PARALLEL_MIN_BYTES`` is always digested by it).
+        self.digest_workers = 1
         self._conn.execute("BEGIN IMMEDIATE")
+
+    def _open(self, *, seeded: bool) -> None:
+        """Connect to the build's file (made empty, or the seed's copy), tuned for the
+        build, with the store's DDL."""
+        self._conn = sqlite3.connect(str(self.temp), isolation_level=None)
+        # One self-contained file (no -wal sidecar), so os.replace swaps all of it. The
+        # file is this build's own until the commit swaps it in (a failed or interrupted
+        # build's is removed, never opened again), so nothing is synced while it is
+        # written: ``commit`` syncs it once, before the swap. An unseeded build keeps its
+        # rollback journal in memory (it holds only the pages of the empty store; a
+        # statement still rolls back, and ``restart`` lays the file down again); a seeded
+        # one on disk (it holds every seed page the build changes). A large page cache: the build writes its tables
+        # and their indexes in key order only within a batch, and with SQLite's default
+        # (2 MB) every insert into a large index reads and writes pages again.
+        self._conn.execute(f"PRAGMA journal_mode = {'DELETE' if seeded else 'MEMORY'}")
+        self._conn.execute("PRAGMA synchronous = OFF")
+        cache = PART_CACHE_BYTES if self._part else BUILD_CACHE_BYTES
+        self._conn.execute(f"PRAGMA cache_size = -{max(2048, cache // 1024)}")
+        store_ddl.create(self._conn)
+        self._conn.execute(f"PRAGMA foreign_keys = {'OFF' if self._part else 'ON'}")
+        if not self._part and self._conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            self.abort()
+            raise StoreError("foreign_keys_unavailable")
 
     def _parts_of_seed(self) -> dict[str, str] | None:
         """The seed's digest parts when they compose its content digest, else None."""
@@ -877,6 +1066,32 @@ class StoreBuilder:
             "INSERT INTO store_meta(key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, text))
 
+    def keep_as_part(self) -> Path:
+        """Commit the rows as they are, unchecked and undigested, close the file and
+        return it: a part of a parallel build its caller merges and removes
+        (``ontology.project_parallel``); only a builder opened with ``foreign_keys``
+        False."""
+        if not self._part:
+            raise StoreError("builder_not_a_part")
+        conn = self.connection
+        conn.execute("COMMIT")
+        conn.close()
+        self._conn = None
+        return self.temp
+
+    def restart(self) -> None:
+        """Drop every row added since an unseeded builder opened (a parallel build that
+        could not finish projects again serially into the same builder)."""
+        if self.seed_mode is not None:
+            raise StoreError("builder_seeded")
+        # The file is laid down again, empty (a parallel merge commits part by part).
+        self.connection.close()
+        self._conn = None
+        self.abort()
+        self._shared = {}
+        self._open(seeded=False)
+        self._conn.execute("BEGIN IMMEDIATE")
+
     def check(self) -> list[str]:
         """Invariant violations of the open generation (empty = sound)."""
         conn = self.connection
@@ -967,7 +1182,16 @@ class StoreBuilder:
             if self._seed_parts is not None:
                 dirty = [tuple(row) for row in conn.execute(
                     "SELECT kind, segment FROM temp.plx_dirty")]
-            parts = content_digest_parts(conn, self._seed_parts, dirty)
+            # The rows are committed to the build's own file before they are digested (the
+            # digest's workers read them there); its digest is added after, in a second
+            # transaction. The file is swapped in only after both.
+            conn.execute("COMMIT")
+            workers = self.digest_workers
+            if workers > 1 and self.temp.stat().st_size < DIGEST_PARALLEL_MIN_BYTES:
+                workers = 1
+            parts = content_digest_parts(conn, self._seed_parts, dirty, path=self.temp,
+                                         workers=workers)
+            conn.execute("BEGIN IMMEDIATE")
             self.digest_mode = "full" if dirty is None or _ALL in dirty else "segments"
             self.digest_segments = len(parts) if self.digest_mode == "full" else len(dirty)
             digest = digest_of_parts(parts)

@@ -394,8 +394,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
                 "three_way_match": 5, "landed_cost": 1, "chain": 0, "commercial_chain": 0,
                 "customer_po_status": 0, "decision_evidence": 0, "impact_chain": 0,
                 "item_lineage": 0, "late_po": 0, "order_margin": 0, "people_on_record": 0,
-                "price_history": 0, "quote_follow_up": 0, "value_provenance": 0,
-                "vendor_replies": 0, "order_quantities": "x"}}}}]}),
+                "price_history": 0, "quote_follow_up": 0, "sage_order_margin": 0,
+                "value_provenance": 0, "vendor_replies": 0, "order_quantities": "x"}}}}]}),
             "utf-8")
         call = le.Caller.__call__
 
@@ -413,7 +413,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
             "order_quantities", "three_way_match", "landed_cost", "chain", "commercial_chain",
             "customer_po_status", "decision_evidence", "impact_chain", "item_lineage",
             "late_po", "order_margin", "people_on_record", "price_history", "quote_follow_up",
-            "value_provenance", "vendor_replies"])
+            "sage_order_margin", "value_provenance", "vendor_replies"])
         self.assertEqual((code, doc["budget_exhausted"]), (1, True))
         self.assertEqual(set(doc["families"]),
                          {"order_quantities", "three_way_match", "landed_cost"})
@@ -424,6 +424,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
             "commercial_chain": 1, "customer_po_status": 1, "decision_evidence": 1,
             "impact_chain": 1, "item_lineage": 1, "late_po": 1, "order_margin": 1,
             "people_on_record": 1, "price_history": 1, "quote_follow_up": 1,
+            "sage_order_margin": 1,
             "value_provenance": 1, "vendor_replies": 1})
         entry = self.verdict(spec, code, doc)
         self.assertEqual(entry["result"], "fail")
@@ -435,8 +436,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(doc["families_run"], [
             "landed_cost", "chain", "commercial_chain", "customer_po_status",
             "decision_evidence", "impact_chain", "item_lineage", "late_po", "order_margin",
-            "people_on_record", "price_history", "quote_follow_up", "value_provenance",
-            "vendor_replies", "order_quantities", "three_way_match"])
+            "people_on_record", "price_history", "quote_follow_up", "sage_order_margin",
+            "value_provenance", "vendor_replies", "order_quantities", "three_way_match"])
         self.assertEqual(set(doc["families_age"].values()), {0})
 
     def test_a_family_bc_holds_no_root_of_is_blocked_and_a_dropped_one_fails(self):

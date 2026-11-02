@@ -602,6 +602,18 @@
           ]
         },
         {
+          "name": "bc_fully_shipped",
+          "value_type": "boolean",
+          "description": "BC sales order fullyShipped: every line shipped (an open order is not).",
+          "sources": [
+            {
+              "binding": "bc.sales_orders",
+              "path": "fullyShipped",
+              "parser": "as_is"
+            }
+          ]
+        },
+        {
           "name": "sage_complete",
           "value_type": "text",
           "description": "Sage OE COMPLETE flag as stored.",
@@ -1256,6 +1268,24 @@
               "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
             }
           ]
+        },
+        {
+          "name": "sage_order_type",
+          "value_type": "text",
+          "description": "Sage O/E order type (OEORDH.TYPE): 1 an active order, 3 standing, 4 a quote; only type 1 is a sales order a margin is computed for.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_order_header",
+              "path": "type",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -1496,9 +1526,10 @@
             },
             {
               "binding": "portal.sage_oe_order_detail",
-              "path": "qtyordered",
+              "path": "origqty",
               "parser": "decimal_text",
-              "unit_from": "ordunit"
+              "unit_from": "ordunit",
+              "note": "Sage's original quantity ordered (origqty), as BC's quantity is; Sage's qtyordered is the quantity still outstanding (outstanding_quantity). On the host mirror (2026-11-02) origqty = qtyordered + qtyshptodt on 168,643 of 179,391 item lines; the rest are lines completed short, over or cancelled."
             },
             {
               "binding": "portal.fm_order_entry_item",
@@ -1579,9 +1610,16 @@
             },
             {
               "binding": "portal.sage_oe_order_detail",
-              "path": "qtyshipped",
+              "path": "qtyshptodt",
               "parser": "decimal_text",
-              "unit_from": "ordunit"
+              "unit_from": "ordunit",
+              "note": "Sage's quantity shipped to date (qtyshptodt), as BC's shippedQuantity is; Sage's qtyshipped is the quantity of the shipment being entered and reads 0 on every line of a completed order.",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "data.sage_cost_fields"
+                }
+              ]
             }
           ],
           "authority": {
@@ -1865,6 +1903,48 @@
             {
               "binding": "portal.app_sales_order_line",
               "path": "description",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "line_type",
+          "value_type": "text",
+          "description": "Sage O/E line type: 1 an item line, 2 a miscellaneous charge.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_order_detail",
+              "path": "linetype",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "outstanding_quantity",
+          "value_type": "decimal",
+          "description": "Sage O/E quantity still to ship on the line, in the line's order unit (ordunit), backorders included (qtyordered: 0 on every line of a completed order, and never 0 where qtybackord is not). A plain number, typed by no quantity role: no role names what is left to ship, and the ordered quantity is origqty (ordered_quantity).",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_order_detail",
+              "path": "qtyordered",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "sage_item_code",
+          "value_type": "text",
+          "description": "The Sage item number of the line as Sage pads it, trimmed; compares an order's invoice lines with its order lines item by item.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_order_detail",
+              "path": "item",
               "parser": "trim"
             }
           ]
@@ -3738,6 +3818,98 @@
             ],
             "note": "BC's own record over the Portal's snapshot of it."
           }
+        },
+        {
+          "name": "currency",
+          "value_type": "text",
+          "description": "Sage O/E invoice (source) currency.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_header",
+              "path": "insourcurr",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "home_currency",
+          "value_type": "text",
+          "description": "Sage home (functional) currency the invoice's costs and postings are in.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_header",
+              "path": "inhomecurr",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "exchange_rate",
+          "value_type": "decimal",
+          "markings": [
+            "finance"
+          ],
+          "description": "Sage posted rate: invoice currency x rate = home currency (ties the AR sales postings).",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_header",
+              "path": "inrate",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "line_count",
+          "value_type": "integer",
+          "description": "Detail lines the Sage invoice holds (invlines).",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_header",
+              "path": "invlines",
+              "parser": "integer_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "invoice_discount",
+          "value_type": "money",
+          "markings": [
+            "finance"
+          ],
+          "description": "Invoice-level discount, allocated to the lines' invdisc.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_header",
+              "path": "invdiscamt",
+              "parser": "decimal_text",
+              "currency_from": "insourcurr",
+              "tax_basis": "excl_tax"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -4008,6 +4180,148 @@
             {
               "binding": "bc.sales_invoice_lines",
               "path": "description",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "line_type",
+          "value_type": "text",
+          "description": "Sage O/E line type: 1 an item line, 2 a miscellaneous charge.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "linetype",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "extended_amount",
+          "value_type": "money",
+          "markings": [
+            "finance"
+          ],
+          "description": "Sage line amount before the invoice discount, excluding tax (sums to the header invitmtot).",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "extinvmisc",
+              "parser": "decimal_text",
+              "currency_from": {
+                "via_link": "SalesInvoiceLine.line_of",
+                "path": "insourcurr"
+              },
+              "tax_basis": "excl_tax"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "invoice_discount_share",
+          "value_type": "money",
+          "markings": [
+            "finance"
+          ],
+          "description": "The line's share of the invoice discount.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "invdisc",
+              "parser": "decimal_text",
+              "currency_from": {
+                "via_link": "SalesInvoiceLine.line_of",
+                "path": "insourcurr"
+              },
+              "tax_basis": "excl_tax"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "unit_cost",
+          "value_type": "money",
+          "markings": [
+            "finance"
+          ],
+          "description": "Sage cost per costing unit in the home currency (cosuntcst); qtyshipped x unitconv / cosuntconv x unit_cost is the cost Sage booked to cost of sales.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "cosuntcst",
+              "parser": "decimal_text",
+              "currency_from": {
+                "via_link": "SalesInvoiceLine.line_of",
+                "path": "inhomecurr"
+              },
+              "tax_basis": "excl_tax",
+              "per_unit_unknown": {
+                "reason": "sage.oe_invoice_detail serves the cost-unit conversion (cosuntconv) but not the costing unit itself, so the unit the cost is per is not named; the line's cost is computed through the two conversions (qtyshipped x unitconv / cosuntconv x cosuntcst), never per a named unit."
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ],
+          "money_measure": "unit_price"
+        },
+        {
+          "name": "cost_unit_conversion",
+          "value_type": "decimal",
+          "description": "Stocking units per Sage costing unit.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "cosuntconv",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "unit_conversion",
+          "value_type": "decimal",
+          "description": "Stocking units per Sage invoice line unit.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "unitconv",
+              "parser": "decimal_text"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "data.sage_cost_fields"
+            }
+          ]
+        },
+        {
+          "name": "sage_item_code",
+          "value_type": "text",
+          "description": "The Sage item number of the line as Sage pads it, trimmed; compares an order's invoice lines with its order lines item by item.",
+          "sources": [
+            {
+              "binding": "portal.sage_oe_invoice_detail",
+              "path": "item",
               "parser": "trim"
             }
           ]
@@ -4860,8 +5174,31 @@
       "name": "for_item",
       "reverse_name": "sales_order_lines",
       "cardinality": "N:1",
-      "description": "The item ordered on a line, per source (gold product_id, Sage item No., BC item No.).",
+      "description": "The item ordered on a line, per source (gold product_id, FileMaker finished product idfp, Sage item No., BC item No.).",
       "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_order_entry_item",
+          "to_binding": "portal.fm_finished_product",
+          "pairs": [
+            {
+              "from": "idfp",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.order_entry_item"
+            },
+            {
+              "kind": "ref",
+              "id": "context.portal.3.2"
+            }
+          ]
+        },
         {
           "kind": "fk",
           "tier_ceiling": "verified",
@@ -6436,7 +6773,7 @@
       "repo": "plx-customer-portal",
       "path": "services/workbench-api/manifest/allowlist.json",
       "commit": "b46934a",
-      "note": "sage.oe_order_detail is served (_sage_pk, orduniq, item, qtyordered, qtyshipped, ordunit, unitprice).",
+      "note": "sage.oe_order_detail is served (_sage_pk, orduniq, item, origqty, qtyordered, qtyshipped, ordunit, unitprice).",
       "lines": "2231"
     },
     "allowlist.sage.oe_order_header": {
@@ -6850,6 +7187,11 @@
       "kind": "workbench_code",
       "path": "ontology/project.py",
       "note": "Projector._per_unit_rule (agreeing): a Sage O/E invoice line's unitprice is per one of the line's unit columns (the Portal prices the Sage order line per ordunit, portal.sage_unitprice_per_ordunit; Sage invoice lines also serve invunit and priceunit, generated/meta/portal_catalog.json). When the three agree after ontology/units.py unit_token the denominator is that unit whichever column prices it; otherwise it stays unknown (price_denominator_unknown). Live-unverified until live check ``ontology.money_units`` records a result."
+    },
+    "data.sage_cost_fields": {
+      "kind": "data_profile",
+      "ref": "devloop/DECISIONS/2026-11-02-sage-cost-fields.md",
+      "note": "Sage O/E rows read against the posted GL (sage.gl_pjd): invoice-line qtyshipped x unitconv / cosuntconv x cosuntcst equals the cost of sales Sage posted for the invoice (68,915 of 68,916 invoices); invnetnotx x inrate equals the sales postings in CAD; invlines counts the detail rows; extinvmisc and invdisc sum to the header totals."
     }
   }
 }

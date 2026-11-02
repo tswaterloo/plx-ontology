@@ -148,6 +148,32 @@ class MirrorChangedSinceTests(CaseToolsTestCase):
         self.assertEqual(self.lot(self.investigate(Actor("plx", OUTSIDER))),
                          ("failed", "claim_uncited"))
 
+    def test_a_value_unchanged_on_the_current_revision_passes_the_answer_gate_there(self):
+        """The mirror moved on elsewhere in the row (the projection behind its capture):
+        the answer gate checks the cited cell on the current revision and passes it there;
+        a plan's own check and every other reader of the stale view still see no row."""
+        self.fake.update(RELATION, 10718, audittimestampmodified="2026-09-29T12:45:00")
+        self.clock.advance(3600)
+        self.rt.mirror.refresh(self.actor, RELATION)
+        current = self.rt.mirror.resolve_citation(self.handle, self.actor)[
+            "current_citation"]
+        self.assertNotEqual(current, self.handle)
+        answered = self.loop(self.actor)
+        self.assertEqual(answered["outcome"], "answered", answered)
+        self.assertEqual([c["check"]["status"] for c in answered["claims"]], ["passed"])
+        self.assertEqual(self.lot(self.investigate(self.actor)),
+                         ("failed", "claim_changed_since"))
+        plan_view = oi.gate_rows(oi.citation_rows(self.rt), self.actor)(self.handle)
+        gate_view = oi.gate_rows(oi.citation_rows(self.rt), self.actor,
+                                 moved_on=True)(self.handle)
+        self.assertNotIn("row", plan_view)
+        self.assertNotIn("revision", plan_view)
+        self.assertNotIn("row", gate_view)
+        self.assertEqual(gate_view["revision"]["row"]["lotno"], "L-1")
+        # an outsider re-reads nothing, moved on or not
+        self.assertIsNone(oi.gate_rows(oi.citation_rows(self.rt), Actor("plx", OUTSIDER),
+                                       moved_on=True)(self.handle))
+
     def test_an_unreadable_supersession_time_fails_closed(self):
         self.supersede()
         real = self.rt.mirror.resolve_citation

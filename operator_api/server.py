@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import Any
 
@@ -34,6 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="browser Origin allowed to POST (default: same host only)")
     parser.add_argument("--insecure-cookie", action="store_true",
                         help="dev/mock over plain http on loopback: cookie without Secure")
+    parser.add_argument("--mock-ticket-env", metavar="VAR",
+                        help="--mock: sign-in takes the access ticket held in this variable "
+                             "(the access-link flow, end to end, over fixtures)")
     parser.add_argument("--mock-step-delay", type=float, default=0.25,
                         help="--mock: seconds between streamed steps (realistic pacing)")
     parser.add_argument("--latency-log", help="append request latency JSON lines here")
@@ -44,6 +48,18 @@ def build_parser() -> argparse.ArgumentParser:
 def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     from .backend import add_arguments
     add_arguments(parser)
+
+
+def mock_ticket(expected: str, identity: Any) -> Any:
+    """The mock's access ticket: exactly ``expected`` opens the fixture identity."""
+    import hmac
+    from operating.session_identity import SessionIdentityRefused
+
+    def check(ticket: str) -> Any:
+        if not hmac.compare_digest(ticket.encode(), expected.encode()):
+            raise SessionIdentityRefused("session_ticket_invalid")
+        return identity()
+    return check
 
 
 def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = None,
@@ -106,8 +122,16 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
 
     if args.mock:
         from .mock import MockBackend
+        identity = fixture_identity("plx", ["staff:demo"])
+        auth = DevAuth(identity, mode="mock")
+        if args.mock_ticket_env:
+            expected = os.environ.get(args.mock_ticket_env) or ""
+            if len(expected) < 16:
+                parser.error(f"--mock-ticket-env: {args.mock_ticket_env} holds no ticket "
+                             "(16 characters at least)")
+            auth = DevAuth(ticket_identity=mock_ticket(expected, identity), mode="mock")
         return start(MockBackend(step_delay=max(0.0, min(args.mock_step_delay, 2.0))),
-                     DevAuth(fixture_identity("plx", ["staff:demo"]), mode="mock"),
+                     auth,
                      {"sign_in_available": True,
                       "message": "Demo data: sign in with the demo button."})
     from .backend import run

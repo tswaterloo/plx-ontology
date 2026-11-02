@@ -8,16 +8,18 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 
 from evals import runner
-from operating import agent_session, deep_investigation as deep
+from operating import agent_session, call_limits, deep_investigation as deep
 
 # A stand-in host: answers each tools/call with a structured result naming the call, as the
 # case host does (structuredContent beside its text).
@@ -96,7 +98,7 @@ class GateBudget(Temp):
         summary = deep.budget_summary(budget_log.read_text().splitlines())
         self.assertEqual(summary, {"steps_used": 4, "max_steps": 2, "refused_after_budget": 3,
                                    "repair_reads": 2, "submissions": 2,
-                                   "grace_calls": 0})
+                                   "grace_calls": 0, "timed_out": 0, "cut_short": True})
 
     def test_research_time_ends_at_the_deadline_and_the_note_counts_down(self):
         now = [1000.0]
@@ -118,29 +120,46 @@ class GateBudget(Temp):
         self.assertEqual(json.loads(results[2]["content"][0]["text"])["spent"], "time")
         self.assertFalse(results[3].get("isError"))
 
-    def test_past_the_research_time_a_few_reads_stay_open_until_the_session_ends(self):
+    def test_past_the_research_time_only_fast_reads_stay_open_and_never_past_the_cap(self):
         """A session slowed by its tools found the map at the deadline and never opened
-        it: past the research time a few calls are still served (the note says to submit
-        after them), then refused; past the session's end none is."""
+        it: past the research time a few plx.read calls are still served (the note says
+        to submit after them); any other tool is refused, and so is a read that could not
+        end before the submit deadline (the app's cap kills the session at its end)."""
         now = [1000.0]
 
         def clock():
             now[0] += 10
             return now[0]
-        calls = [("plx.find", {"query": "a"})] + [("plx.read", {"citation": "x"})] * 4 + [
-            ("plx.case_get", ANSWER)]
+        calls = [("plx.find", {"query": "a"}), ("plx.read", {"citation": "x"}),
+                 ("plx.investigate", {"family": "chain"}), ("plx.read", {"citation": "y"}),
+                 ("plx.read", {"citation": "z"}), ("plx.case_get", ANSWER)]
         results, budget_log = self.gate(calls, deep.Budget(deadline=1015.0, ends_at=1100.0,
                                                            grace_calls=2), clock)
         self.assertEqual([bool(r.get("isError")) for r in results],
-                         [False, False, False, True, True, False])
-        self.assertIn("at most 1 more read of what you already found",
+                         [False, False, True, False, True, False])
+        self.assertIn("at most 1 more plx.read call of what you already found",
                       results[1]["structuredContent"][deep.BUDGET_KEY]["next"])
-        self.assertEqual(deep.budget_summary(budget_log.read_text().splitlines())[
-            "grace_calls"], 2)
+        summary = deep.budget_summary(budget_log.read_text().splitlines())
+        self.assertEqual((summary["grace_calls"], summary["cut_short"]), (2, True))
         now[0] = 1000.0
+        # ends at 1045: a read must start before 1045 - SUBMIT_SECONDS - MIN_SECONDS
         late, _ = self.gate([("plx.read", {"citation": "x"})] * 3, deep.Budget(
-            deadline=1005.0, ends_at=1015.0, grace_calls=5), clock)
+            deadline=1005.0, ends_at=1000.0 + deep.SUBMIT_SECONDS + 15, grace_calls=5),
+            clock)
         self.assertEqual([bool(r.get("isError")) for r in late], [False, True, True])
+
+    def test_at_the_end_of_the_session_the_answer_gate_stays_open(self):
+        """The hand-off: past the session's end and every budget, reads are refused but
+        a submission to the answer gate is forwarded and is never time-limited, so
+        whoever submits last (the agent, or the host on its behalf) reaches the gate."""
+        now = [5000.0]
+        calls = [("plx.read", {"citation": "x"}), ("plx.case_get", ANSWER),
+                 ("plx.case_get", ANSWER)]
+        results, _ = self.gate(calls, deep.Budget(deadline=1000.0, ends_at=1045.0,
+                                                  max_steps=1), lambda: now[0])
+        self.assertEqual([bool(r.get("isError")) for r in results], [True, False, False])
+        self.assertIsNone(call_limits.limit_for("plx.case_get", {
+            call_limits.LIMITS_ENV: "on", call_limits.DEADLINE_ENV: "1"}))
 
     def test_an_unbudgeted_gate_forwards_results_as_the_host_gave_them(self):
         results, budget_log = self.gate([("plx.read", {"citation": "x"})] * 3, None)
@@ -234,14 +253,18 @@ class AgentBudget(Temp):
         source = Path(eval_case_cards.__file__).read_text(encoding="utf-8")
         self.assertIn("default=deep.SESSION_SECONDS", source)
         self.assertIn("default=deep.MAX_STEPS", source)
+        self.assertIn('"--timeout", type=int, default=deep.SESSION_SECONDS', source)
+        self.assertEqual(made.timeout, deep.SESSION_SECONDS)
 
 
 class Task(unittest.TestCase):
     def test_every_task_carries_the_method_and_its_question_analysis(self):
-        question = "whats up w so 61873 last week, is it late"
+        question = "why was so 61873 late last week"
         prompt = agent_session.task_prompt(question, agent_session.UNPINNED,
                                            today=dt.date(2026, 10, 31))
         self.assertIn(deep.method_rule(), prompt)
+        self.assertNotIn(deep.lookup_rule(), prompt)
+        self.assertIn(agent_session.REPLY_RULE, prompt)
         for said in ("Plan first", "expected-answer query", "at least one more targeted "
                      "search", "system of record", "Critique your draft", "what you searched",
                      "where it would live", deep.BUDGET_REFUSAL):
@@ -254,6 +277,43 @@ class Task(unittest.TestCase):
         # the scoreboard's untimed card and the app ask the same task
         self.assertEqual(agent_session.ask_prompt(question),
                          runner.build_prompt(runner.UNPINNED_ITEM, question))
+
+    def test_a_lookup_of_one_named_record_gets_the_short_method(self):
+        """A question about one named record (one identifier, not a why, compare or
+        policy question) is asked with the short method: no written plan, the record and
+        its plan in the first turn, submit once the asked values are cited (measured: the
+        deep method took such questions a median 11 turns). Two records, an open intent,
+        no identifier or anything unreadable keeps the deep method."""
+        for question in ("whats up w so 61873 last week, is it late", "status on PO#10855?",
+                         "who set up PO#5241?", "when does lot 25A0165 expire"):
+            self.assertTrue(deep.is_lookup(question), question)
+            prompt = agent_session.ask_prompt(question)
+            self.assertIn(deep.lookup_rule(), prompt)
+            self.assertNotIn(deep.method_rule(), prompt)
+            for said in ("No written plan", "in one turn", deep.BUDGET_REFUSAL,
+                         "where it would live", agent_session.REPLY_RULE):
+                self.assertIn(said, prompt)
+            self.assertNotIn("Spend the budget", prompt)
+        for question in ("why is PO#4720 late", "compare PO 4720 and PO 4882",
+                         "how many POs are late rn", "open AR for Dandylion Pet INC?",
+                         "", None, 12, "\x00\x01"):
+            self.assertFalse(deep.is_lookup(question), question)
+        self.assertIn(deep.method_rule(), agent_session.ask_prompt("how many POs are late"))
+
+    def test_only_a_lookup_runs_on_the_lookup_model(self):
+        """``lookup_model``: a lookup's session starts on it, every other question on the
+        session's model; the shared agent itself never changes (parallel runs)."""
+        agent = agent_session.ClaudeCodeAgent(model="open-model", lookup_model="fast-model")
+
+        def model(question):
+            argv = agent.routed(question).argv("p", "c")
+            return argv[argv.index("--model") + 1]
+        self.assertEqual(model("status on PO#10855?"), "fast-model")
+        for question in ("why is PO#4720 late", "how many POs are late rn", None):
+            self.assertEqual(model(question), "open-model", question)
+        self.assertEqual(agent.model, "open-model")
+        plain = agent_session.ClaudeCodeAgent(model="open-model")
+        self.assertIs(plain.routed("status on PO#10855?"), plain)
 
     def test_a_pinned_question_is_read_against_its_pin_never_today(self):
         pinned = "Answer as known at 2026-03-04T10:00:00Z (capture generations: a=1)."
@@ -272,6 +332,10 @@ class Task(unittest.TestCase):
         for case in catalog.use_cases:
             self.assertIn(f"{case.id} ({case.title})", hint)
         self.assertIn("\"<id> use case\"", hint)
+        # a question naming an order or PO number gets no catalog: its records answer it
+        for transactional in ("po5447 recieved + qc'd?", "when did PO-00349 come in",
+                              "whats up w so 61873"):
+            self.assertNotIn("use-case catalog", deep.question_analysis(transactional, "p"))
         named = f"In the {catalog.use_cases[0].id} use case: what is still open?"
         self.assertEqual(deep.use_case_hint(named), "")
         self.assertNotIn("use-case catalog", deep.question_analysis(named, "pin"))
@@ -284,6 +348,31 @@ class Task(unittest.TestCase):
         self.assertEqual(deep.use_case_hint("the bottle plan", Broken()), "")
         with self.assertRaises(ucc.CatalogError):
             ucc.load(Path(tempfile.gettempdir()) / "no-such-catalog.json")
+
+    def test_a_count_a_partys_open_orders_or_received_vs_ordered_leads_with_the_answer(self):
+        """Live-ops gaps: counts, a vendor's open POs and received against ordered were
+        answered around the figure. The task names each shape's exact route and that the
+        answer leads with it (the number, the list and its size, ordered/received/
+        shortfall), from the question's words alone; any other question gets none."""
+        for question, hints in (
+                ("how many POs are late", [deep.COUNT_HINT]),
+                ("which batches are on QC hold", [deep.COUNT_HINT]),
+                ("quarantined lots?", [deep.COUNT_HINT]),
+                ("lots expiring before 2026-12-01", [deep.COUNT_HINT]),
+                ("what POs are open for this vendor", [deep.OPEN_ORDERS_HINT]),
+                ("received vs ordered on the PO", [deep.RECEIVED_HINT]),
+                ("what did we get vs what we ordered", [deep.RECEIVED_HINT]),
+                ("when does this lot expire", []),
+                ("status on the PO?", []),
+                ("", []), (None, []), (7, [])):
+            with self.subTest(question=question):
+                self.assertEqual(deep.answer_shape_hints(question), hints)
+        prompt = agent_session.task_prompt("how many POs are late", agent_session.UNPINNED,
+                                           today=dt.date(2026, 10, 31))
+        analysis = prompt[prompt.index("Question analysis"):].split("\n")[0]
+        self.assertIn(deep.COUNT_HINT, analysis)
+        self.assertIn("the answer itself first", deep.method_rule())
+        self.assertIn("in words:", deep.method_rule())
 
     def test_a_price_move_or_a_message_question_is_routed_by_its_own_words(self):
         """A price trend question goes to the price_history plan (a price paid, never an
@@ -322,3 +411,199 @@ class Task(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostCallLimits(unittest.TestCase):
+    """The per-call limit inside the real MCP host (``call_limits``) over the fixture
+    projection store (isolated-fixture): a call past its limit is answered
+    tool_timed_out and the host serves the next call; plx.investigate gets its own time
+    budget under the limit; no call starts past the submit deadline; the answer gate is
+    never limited."""
+
+    def setUp(self):
+        from unittest import mock
+        from integrations.source_mirror import AudienceMap  # noqa: F401 - fixture import
+        from operating.case_runtime import CaseRuntime
+        from operating.mcp_server import META_RESERVE_BYTES, MCPServer, local_client
+        from operating.ontology_host import CaseHostTools
+        from ontology.types import Actor
+        from tests import test_ontology_tools as fixture
+        import sqlite3
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        audience = Path(__file__).resolve().parents[2] / "examples" / \
+            "source_mirror_audience.example.json"
+        runtime = CaseRuntime(root / "state", client=None, audience=audience, tenant="plx")
+        self.addCleanup(runtime.close)
+        path = root / "fixture.sqlite"
+        target = sqlite3.connect(path)
+        fixture.build().conn.backup(target)
+        target.close()
+        actor = Actor("plx", frozenset({"staff:operations"}), "internal")
+        self.host = CaseHostTools(runtime, actor, store_path=path, schema=fixture.SCHEMA,
+                                  grammar=fixture.FixtureGrammar(),
+                                  reserve_bytes=META_RESERVE_BYTES)
+        self.host.tools.clock = lambda: fixture.NOW
+        self.fixture = fixture
+        self.server = MCPServer(case_runtime=runtime, actor=actor, ontology=self.host)
+        self.addCleanup(self.server.close)
+        local_client(self.server, "limits-test")   # initialized
+        self.env = mock.patch.dict(os.environ, {call_limits.LIMITS_ENV: "on"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.seen = []
+        real = self.host.call
+
+        def call(name, arguments, actor):
+            self.seen.append((name, dict(arguments)))
+            if name == "plx.find" and arguments.get("query") == "slow":
+                time.sleep(30)
+            return real(name, arguments, actor)
+        self.host.call = call
+        self.n = 0
+
+    def client(self, name, arguments):
+        self.n += 1
+        reply = self.server.handle({"jsonrpc": "2.0", "id": self.n, "method": "tools/call",
+                                    "params": {"name": name, "arguments": arguments}})
+        return reply["result"]
+
+    def test_a_slow_call_stops_at_its_limit_and_the_next_call_is_served(self):
+        from unittest import mock
+        with mock.patch.dict(call_limits.LIMITS, {"plx.find": 2.5}):
+            started = time.monotonic()
+            slow = self.client("plx.find", {"query": "slow"})
+            took = time.monotonic() - started
+        self.assertLess(took, 10)
+        self.assertTrue(slow["isError"])
+        body = json.loads(slow["content"][0]["text"])
+        self.assertEqual((body["error"], body["tool"], body["limit_seconds"]),
+                         (call_limits.TIMED_OUT, "plx.find", 2.5))
+        self.assertTrue(agent_session._timed_out(slow))
+        after = self.client("plx.object", {"object_id": self.fixture.SO})
+        self.assertFalse(after.get("isError"))
+        self.assertEqual(after["structuredContent"]["object"]["object_id"], self.fixture.SO)
+
+    def test_investigate_gets_a_time_budget_under_its_limit(self):
+        self.client("plx.investigate", {"family": "no_such_family", "root": self.fixture.SO})
+        self.client("plx.investigate", {"family": "no_such_family", "root": self.fixture.SO,
+                                        "time_budget_ms": 1000})
+        budgets = [args.get("time_budget_ms") for name, args in self.seen
+                   if name == "plx.investigate"]
+        room = int((call_limits.LIMITS["plx.investigate"] - call_limits.INVESTIGATE_MARGIN)
+                   * 1000)
+        self.assertEqual(budgets, [room, 1000])   # a smaller budget asked for stands
+
+    def test_no_call_starts_past_the_submit_deadline_but_the_answer_gate_does(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {call_limits.DEADLINE_ENV: str(time.time() + 1)}):
+            late = self.client("plx.object", {"object_id": self.fixture.SO})
+            gate = self.client("plx.case_get", {})
+        self.assertEqual(json.loads(late["content"][0]["text"])["error"],
+                         call_limits.TIMED_OUT)
+        self.assertNotIn("plx.object", [name for name, _ in self.seen])
+        self.assertNotIn(call_limits.TIMED_OUT, json.dumps(gate))
+
+    def test_limits_are_off_unless_the_session_turns_them_on(self):
+        self.assertIsNone(call_limits.limit_for("plx.find", {}))
+        self.assertIsNone(call_limits.limit_for("plx.case_get", {call_limits.LIMITS_ENV: "on"}))
+        self.assertEqual(call_limits.limit_for("plx.unknown_tool",
+                                               {call_limits.LIMITS_ENV: "on"}),
+                         call_limits.DEFAULT_LIMIT)
+        # an unreadable deadline leaves the tool's own limit
+        self.assertEqual(call_limits.limit_for("plx.read", {
+            call_limits.LIMITS_ENV: "on", call_limits.DEADLINE_ENV: "soon"}),
+            call_limits.LIMITS["plx.read"])
+
+
+class StoppedResearch(Temp):
+    def test_a_cut_short_session_says_so_first_and_the_host_gets_the_limits(self):
+        """A session whose call stopped at its limit: the gate counts it, the reply
+        starts by saying research stopped, the answer block is unchanged, and the host
+        process got the limits and the submit deadline."""
+        host_script = self.host
+        seen = {}
+
+        class Host:
+            actor = {"tenant": "plx"}
+
+            def tools(self):
+                return [{"name": n, "read_only": True}
+                        for n in ("plx.read", "plx.find", "plx.case_get")]
+
+            def mcp_server(self):
+                return {"command": sys.executable, "args": [str(host_script)], "env": {}}
+
+        slow_host = self.root / "slow.py"
+        env_seen = self.root / "host-env.json"
+        slow_host.write_text(textwrap.dedent("""
+            import json, os, sys
+            TIMED = %r
+            # the limits this host process was started with
+            with open(%r, "w", encoding="utf-8") as out:
+                json.dump({k: os.environ.get(k) for k in (%r, %r)}, out)
+            for line in sys.stdin:
+                m = json.loads(line)
+                if "id" not in m:
+                    continue
+                name = m["params"]["name"]
+                if name == "plx.find":
+                    r = {"content": [{"type": "text", "text": TIMED}], "isError": True}
+                else:
+                    body = {"outcome": "answered", "claims": [{"text": "c"}],
+                            "unsupported_claims": []}
+                    r = {"content": [{"type": "text", "text": json.dumps(body)}],
+                         "structuredContent": body, "isError": False}
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"],
+                                             "result": r}) + "\\n")
+                sys.stdout.flush()
+        """) % (call_limits.timed_out_text("plx.find", 40), str(env_seen),
+                call_limits.LIMITS_ENV, call_limits.DEADLINE_ENV), encoding="utf-8")
+        host_script = slow_host
+        answer = {"format": "plx-eval-answer/v1", "answerability": "partial",
+                  "text": "Part.", "values": [], "gaps": []}
+
+        def spawn(argv, cwd, env, timeout):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            calls = [("plx.find", {"query": "a"}), ("plx.case_get", ANSWER)]
+            done = subprocess.run([server["command"], *server["args"]],
+                                  env={**env, **server["env"]}, capture_output=True,
+                                  text=True, timeout=60, input=_calls(calls))
+            replies = {m["id"]: m["result"] for m in map(json.loads, done.stdout.splitlines())}
+            lines = []
+            for n, (name, arguments) in enumerate(calls):
+                result = replies[n + 1]
+                body = json.dumps(result["structuredContent"]) if "structuredContent" in \
+                    result else result["content"][0]["text"]
+                lines.append({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": f"t{n}", "name": agent_session.mcp_tool_name(
+                        name), "input": arguments}]}})
+                lines.append({"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": f"t{n}", "content": body,
+                     "is_error": bool(result.get("isError"))}]}})
+            final = "Here is what I found.\n\n```json\n" + json.dumps(answer) + "\n```"
+            lines.append({"type": "result", "subtype": "success", "result": final,
+                          "num_turns": 3, "usage": {}})
+            return 0, "\n".join(json.dumps(line) for line in lines)
+        agent = agent_session.ClaudeCodeAgent(spawn=spawn, budget_seconds=150, max_steps=30)
+        run = agent_session.gated_run(agent, "p", Host(), "q")
+        self.assertEqual((run.agent["budget"]["timed_out"], run.agent["budget"]["cut_short"]),
+                         (1, True))
+        self.assertTrue(run.final_text.startswith(deep.STOPPED_LINE))
+        self.assertTrue(run.agent["final_reply"]["research_stopped"])
+        from operating.answer_contract import parse_answer
+        # the answer block is unchanged: the gate's answered decision ends the session
+        # (``GateEnd``), so its text is the submitted one, not the message written after
+        self.assertEqual(parse_answer(run.final_text)[0]["text"], ANSWER["answer"]["text"])
+        # the host process (served by the host's gate, ``HostGate``) got the limits
+        seen["env"] = json.loads(env_seen.read_text(encoding="utf-8"))
+        self.assertEqual(seen["env"][call_limits.LIMITS_ENV], "on")
+        # every call ends SUBMIT_SECONDS before the session's 150 s
+        self.assertAlmostEqual(float(seen["env"][call_limits.DEADLINE_ENV]) - time.time(),
+                               150 - deep.SUBMIT_SECONDS, delta=10)
+        # the agent's own words stand when it said so itself
+        own = "I stopped researching at the time limit; not yet checked: the receipt."
+        self.assertEqual(agent_session.research_stopped(own), own)

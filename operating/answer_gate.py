@@ -72,11 +72,13 @@ only its reason and codes.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from decimal import Decimal
-from typing import Any, Callable, Mapping, Sequence
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 
 from ontology.json_contract import validate
+from ontology.units import ISO_4217, UOM_ALIASES
 from . import claim_checks
 from .claim_checks import (LEAD_MARK, ORIGINAL_TEXT_FIELDS, PAGE_TEXT,
                            SCHEMA as CLAIM_CHECKS_SCHEMA, check_items, dig, field_label,
@@ -103,8 +105,11 @@ OUTCOMES = ("answered", "repair", "abstained")
 # A structured claim: one value, the L1 handle it was read from and its field (or a count
 # or sum over cited records), optional role, unit, currency, and whether it is a lead.
 CLAIM_KEYS = frozenset({"id", "value", "citation", "field", "role", "unit", "currency",
-                        "op", "of", "lead", "quote", "expression"})
+                        "op", "of", "lead", "quote", "expression", "name"})
 CLAIM_ID = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
+# The answer value name an MCP value claim may carry (``_legacy``): the host renders the
+# reader's answer values from the passed claims under these names.
+VALUE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 MAX_OP_CITATIONS = 100
 # A value resting only on lead-tier links that its claim does not state as a lead.
 LEAD_UNMARKED = "claim_lead_unmarked"
@@ -217,23 +222,23 @@ ANSWERABILITY = ("answerable", "partial", "blocked")
 # ``document_conflicts``): an answer carrying one unresolved is partial (``answerability``).
 # Added to a final decision with a passed claim: a passed claim is a cited answer.
 ANSWER_NOT_BLOCKED = (
-    "A claim passed, so your answer is not blocked: state each passed claim as its "
-    "answer_values entry gives it (add only its name): an expression claim as a "
+    "A claim passed, so your answer is not blocked: give your answerability as this "
+    "decision's answerability.state; it is partial while any value the question asks for "
+    "is an unknown or refused, each null with a gap. Only a client that writes answer "
+    "values itself states each passed claim as its answer_values entry gives it (add only "
+    "its name): an expression claim as a "
     "calculation (op expression, the same expression and inputs, each input's figure as "
     "printed and its quote, no citations), a count or sum claim as a calculation over its "
     "inputs, and only a cited claim as a cited value (a passage a document states as a "
-    "text value), with no role, unit or currency the entry does not carry; give your "
-    "answerability as this decision's answerability.state; it is partial while any value "
-    "the question asks for is an unknown or refused, each null with a gap.")
+    "text value), with no role, unit or currency the entry does not carry.")
 # What a caller is told with every final decision: the answer is what was checked, and
 # nothing written after the check is.
 ANSWER_FINAL = (
     "This is the gate's final decision. Your answer is the claims it returned (claims) and "
     "reply.text, the text you submitted without what no passed claim backs: state "
     "reply.text as your answer text and add no number, name, date or finding after this "
-    "check. State each value as its passed claim states it: that value, citation, field "
-    "and quote, and no quote, role or unit the claim does not carry (one the gate did "
-    "not check withholds the value).")
+    "check. A value is stated only as its passed claim states it (one the gate did not "
+    "check withholds the value).")
 # Added when the final decision refused claims: a refused value is no finding, whatever
 # the answer says around it.
 WITHHOLD_REFUSED = (
@@ -322,7 +327,8 @@ def _typed_handles(value: Any, schema: Any, out: set[str], given: set[str],
 
 def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
                 returned: Mapping[str, Any], may_repair: bool,
-                unread: Callable[[str, str], bool] | None = None) -> dict[str, Any]:
+                unread: Callable[[str, str], bool] | None = None,
+                read_values: bool = False) -> dict[str, Any]:
     """The gated final answer of ``decision`` (``claims``, ``text``, ``unknowns``) for
     ``server``'s session (module doc): ``{"outcome": "answered" | "repair" | "abstained",
     "reason", "claims", "dropped", "unsupported", "unknowns", "checks", "repair", "text",
@@ -332,13 +338,24 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     ``_cited`` for ``shown_unsupported`` only; ``repair`` is the request to the answerer
     (refused claims without citations), or None. ``seen``: the handles tool results
     returned this session as evidence. ``unread(handle, field)``: whether this session
-    was served only part of that text of that record (``UNREAD_PART``)."""
-    claims, dropped, unsupported = _claims(decision, seen)
+    was served only part of that text of that record (``UNREAD_PART``).
+    ``read_values``: a claim citing one record field may leave its value to the gate
+    (``read_value``; an MCP client's submission, ``mcp_server.answer_decision``); else a
+    claim with no value is refused (``claim_states_no_value``)."""
+    reader: list[Callable[[str], Any]] = []
+
+    def read(handle: str) -> Any:
+        # One reader per decision (each cited record read once): the values a claim
+        # leaves to the gate (``read_value``) and the checks read the same rows.
+        if not reader:
+            reader.append(_reader(server))
+        return reader[0](handle)
+    claims, dropped, unsupported = _claims(decision, seen, read if read_values else None)
     raw = decision.get("unknowns") if isinstance(decision, Mapping) else None
     unknowns = [str(u)[:MAX_UNKNOWN_CHARS] for u in raw
                 if isinstance(u, str)][:MAX_UNKNOWNS] if isinstance(raw, list) else []
     checks = None
-    rows = _reader(server) if claims else None
+    rows = read if claims else None
     if claims:
         claims, failed, checks = _check(claims, rows, returned)
         dropped += len(failed)
@@ -597,12 +614,68 @@ def _whole_tokens(text: str, start: int, end: int) -> str | None:
     return text[start:end] if end > start else None
 
 
-def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]:
+def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) -> Any:
+    """``given`` (a structured claim or a value claim) with the ``value`` it leaves to the
+    gate read from the one record field it cites, as this decision's reader re-reads it
+    (the row the check reads; a revision the source moved past: its current one): the
+    cell itself (an integer, a decimal as written, a text or a JSON cell in the check's
+    canonical form, of at most ``MAX_VALUE_CHARS``), or on free text or a page (``text_field``,
+    ``PAGE_TEXT``) the claim's ``quote``, the passage it states. Anything else is left
+    as given, so the claim is refused as before (no value, a citation this session was
+    not returned, a computed value, a list, a long text without a quote, a cell the
+    reader cannot read): a value is never guessed. A written agent states each value
+    once, in its text; the gate then checks that text against the cell itself."""
+    if rows is None or not isinstance(given, Mapping) or "value" in given \
+            or "op" in given or "calculation" in given:
+        return given
+    handle, field = given.get("citation"), given.get("field")
+    if not isinstance(handle, str) or handle not in seen or not isinstance(field, str):
+        return given
+    quote = given.get("quote")
+    if field == PAGE_TEXT or claim_checks.text_field(field):
+        return {**given, "value": quote.strip()} if isinstance(quote, str) \
+            and quote.strip() else given
+    try:
+        resolved = rows(handle)
+    except Exception:  # noqa: BLE001 - an unread cell states nothing (refused as before)
+        return given
+    found, cell = dig(resolved, field) if isinstance(resolved, Mapping) else (False, None)
+    current = resolved.get("current_citation") if isinstance(resolved, Mapping) else None
+    if not found and claim_checks._changed(resolved) and isinstance(current, str) \
+            and current != handle:
+        # A revision the source moved past keeps no cells for this reader: the value is
+        # read on the current revision, and the check (which never passes a moved
+        # revision unless the cell is unchanged there) says what to cite.
+        try:
+            view = rows(current)
+        except Exception:  # noqa: BLE001 - unreadable: refused as before
+            return given
+        found, cell = dig(view, field) if isinstance(view, Mapping) \
+            and not claim_checks._changed(view) else (False, None)
+    if not found or cell is None or isinstance(cell, bool):
+        return given
+    if isinstance(cell, int):
+        return {**given, "value": cell}
+    if isinstance(cell, (float, Decimal)):
+        return {**given, "value": str(cell)}
+    # A JSON cell (a list of recipients) as the check compares it: canonical JSON.
+    text = json.dumps(cell, sort_keys=True, separators=(",", ":"), ensure_ascii=False) \
+        if isinstance(cell, (dict, list)) else str(cell).strip() \
+        if isinstance(cell, str) else ""
+    if text and len(text) <= claim_checks.MAX_VALUE_CHARS:
+        return {**given, "value": text}
+    return given
+
+
+def _claims(decision: Any, seen: set[str], rows: Callable[[str], Any] | None = None
+            ) -> tuple[list[dict], int, list[dict]]:
     """(the claims to check, each one value claim with the handles it cites, its id and
     whether it is stated as a lead; the dropped count; the dropped claims as unsupported:
     text, reason and, under ``_cited``, the strings they cited). A structured claim
-    (``CLAIM_KEYS``) is one claim; a claim in the MCP shape (``text``, ``citations``,
-    ``value_claims``) is one claim per value claim, its text never shown."""
+    (``CLAIM_KEYS``) is one claim; a claim in the MCP shape (``citations``,
+    ``value_claims``, an optional ``text``) is one claim per value claim, its text never
+    shown. A claim citing one record field may leave its ``value`` to the gate
+    (``read_value`` over ``rows``) and carry its answer value's ``name``."""
     kept: list[dict] = []
     dropped, unsupported = 0, []
     claims = decision.get("claims") if isinstance(decision, Mapping) else None
@@ -628,12 +701,13 @@ def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]
         if not isinstance(claim, Mapping):
             dropped += 1
             continue
-        if "text" in claim:
+        if "text" in claim or "value_claims" in claim:
             # Not ``dropped += _legacy(...)``: that reads ``dropped`` before ``refuse``
             # counts a refusal and loses it.
-            textless = _legacy(claim, seen, kept, refuse, fresh)
+            textless = _legacy(claim, seen, kept, refuse, fresh, rows)
             dropped += textless
             continue
+        claim = read_value(claim, seen, rows)
         cid = claim.get("id")
         if cid is None:   # unnamed: the first free c<n>
             cid = fresh("c")
@@ -646,7 +720,11 @@ def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]
                    or not CLAIM_ID.fullmatch(cid)
                    else "id given twice" if cid in ids
                    else "lead is true or false" if not isinstance(claim.get("lead", False),
-                                                                  bool) else None)
+                                                                  bool)
+               else "name is a snake_case answer value name of at most 64 characters"
+               if "name" in claim and (not isinstance(claim["name"], str)
+                                       or not VALUE_NAME.fullmatch(claim["name"]))
+               else None)
         if problem is not None:
             # Fail closed: a key the gate does not know may carry what it cannot check.
             refuse(label, "claim_invalid", cited, detail=problem)
@@ -662,7 +740,7 @@ def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]
         if "value" not in claim:
             refuse(label, "claim_states_no_value", cited)
             continue
-        value_claim = {key: claim[key] for key in claim if key not in ("id", "lead")}
+        value_claim = {key: claim[key] for key in claim if key not in ("id", "lead", "name")}
         try:
             parsed = parse_value_claims([value_claim], handles, [])
         except ValueError as error:
@@ -672,7 +750,8 @@ def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]
         if problem is not None:
             refuse(label, "value_claims_invalid", cited, detail=problem)
             continue
-        kept.append({"id": cid, "citations": handles, "value_claims": parsed,
+        kept.append({"id": cid, **({"name": claim["name"]} if "name" in claim else {}),
+                     "citations": handles, "value_claims": parsed,
                      "lead": claim.get("lead") is True})
     if len(claims) > MAX_CLAIMS:
         dropped += len(claims) - MAX_CLAIMS
@@ -680,11 +759,18 @@ def _claims(decision: Any, seen: set[str]) -> tuple[list[dict], int, list[dict]]
 
 
 def _legacy(claim: Mapping[str, Any], seen: set[str], kept: list[dict],
-            refuse: Callable[..., None], fresh: Callable[[str], str]) -> int:
+            refuse: Callable[..., None], fresh: Callable[[str], str],
+            rows: Callable[[str], Any] | None = None) -> int:
     """A claim in the MCP shape: its value claims as claims of their own (ids
-    ``m<n>``, citing what each value claim cites; refused, listed with the claim's text),
-    or refused whole as before. The dropped count it adds (a claim with no text)."""
+    ``m<n>``, citing what each value claim cites; refused, listed with the claim's text,
+    or without one its value claims' names), or refused whole as before. The dropped
+    count it adds (a claim with neither text nor value claims). A value claim may leave
+    its value to the gate (``read_value``)."""
     text, cites = claim.get("text"), claim.get("citations")
+    if "text" not in claim and isinstance(claim.get("value_claims"), list):
+        text = ", ".join(str(item.get("name")) for item in claim["value_claims"]
+                         if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+                         ) or "value claims"
     if not isinstance(text, str) or not text.strip():
         return 1
     text = text.strip()[:MAX_CLAIM_CHARS]
@@ -699,6 +785,18 @@ def _legacy(claim: Mapping[str, Any], seen: set[str], kept: list[dict],
                else "cites_what_this_run_did_not_return", strings)
         return 0
     raw = claim.get("value_claims")
+    # A value claim may carry the answer value's ``name`` (``VALUE_NAME``): kept beside
+    # the claim, never checked as part of it; a name of any other shape refuses the claim.
+    names: list[Any] = []
+    if isinstance(raw, list):
+        names = [item.get("name") if isinstance(item, Mapping) else None for item in raw]
+        if any(name is not None and (not isinstance(name, str)
+                                     or not VALUE_NAME.fullmatch(name)) for name in names):
+            refuse(text, "value_claims_invalid", strings,
+                   detail="name is a snake_case answer value name of at most 64 characters")
+            return 0
+        raw = [read_value({key: item[key] for key in item if key != "name"}, seen, rows)
+               if isinstance(item, Mapping) else item for item in raw]
     try:
         # Null (a model's "none") is no value claim; any other non-list is malformed.
         value_claims = parse_value_claims([] if raw is None else raw, cited, [])
@@ -713,8 +811,10 @@ def _legacy(claim: Mapping[str, Any], seen: set[str], kept: list[dict],
     if problem is not None:
         refuse(text, "value_claims_invalid", strings, detail=problem)
         return 0
-    for value_claim in value_claims:
-        kept.append({"id": fresh("m"), "lead": claim.get("lead") is True, "said": text,
+    for at, value_claim in enumerate(value_claims):
+        name = names[at] if at < len(names) else None
+        kept.append({"id": fresh("m"), **({"name": name} if name is not None else {}),
+                     "lead": claim.get("lead") is True, "said": text,
                      "citations": list(dict.fromkeys(
                          [value_claim["citation"]] if "citation" in value_claim
                          else [given["citation"] for given in value_claim["of"]])),
@@ -841,7 +941,7 @@ def _shown_value(value: Any) -> str:
 def _reader(server: Any) -> Callable[[str], Any]:
     """The cited records as ``server``'s actor re-reads them now (``gate_rows`` over
     ``citation_rows``), each read once per decision."""
-    read = gate_rows(citation_rows(server.case_runtime), server.actor)
+    read = gate_rows(citation_rows(server.case_runtime), server.actor, moved_on=True)
     cache: dict[str, Any] = {}
 
     def rows(handle: str) -> Any:
@@ -888,11 +988,14 @@ def _check(claims: list[dict], rows: Callable[[str], Any], returned: Mapping[str
                 counts[result["role_basis"]] -= 1
         if problems is not None:
             failed.append({"text": claim.get("said") or f"{claim['id']}: {value_claim['value']}",
+                           **({"name": claim["name"]} if "name" in claim else {}),
                            "reason": "claim_check_failed", "failures": problems,
                            "_cited": claim["citations"]})
             continue
         phrase = _phrase(value_claim, result, _recorded(value_claim, rows), claim["lead"])
-        passed.append({"id": claim["id"], "text": f"{field_label(value_claim)}: {phrase}",
+        passed.append({"id": claim["id"], **({"name": claim["name"]} if "name" in claim
+                                             else {}),
+                       "text": f"{field_label(value_claim)}: {phrase}",
                        "phrase": phrase, "citations": claim["citations"],
                        "value_claims": [_as_written(given, rows)
                                         for given in claim["value_claims"]],
@@ -944,7 +1047,7 @@ UNCHECKED_INSTRUCTION = (
 
 
 def check_text(text: Any, claims: list[dict], server: Any,
-               returned: Mapping[str, Any]) -> dict[str, Any]:
+               returned: Mapping[str, Any], *, question: Any = "") -> dict[str, Any]:
     """Whether the final answer's prose ``text`` states only what the passing ``claims``
     (``gate_answer``'s, already checked) state, by the two checks the real-agent eval's
     scorer runs on the answer text: ``claim_checks.check_items``'s close-outcome check
@@ -954,8 +1057,14 @@ def check_text(text: Any, claims: list[dict], server: Any,
     ``{"value", "code", "detail"}``: ``uncovered`` fails the text (an uncovered number, a
     value written negated); ``unchecked`` lists ``claim_prose_unchecked`` words,
     unverified, never failing (as the scorer counts them). No claim passing leaves every
-    number uncovered. Bounded to ``MAX_TEXT_CHARS``; reads only cited records."""
+    number uncovered. An identifier the ``question`` gives (``asker_given``) is the
+    asker's, never a statement to cover. Bounded to ``MAX_TEXT_CHARS``; reads only cited
+    records."""
     prose = text[:MAX_TEXT_CHARS] if isinstance(text, str) else ""
+    given = asker_given(question)
+    if given:
+        prose = given_blanked(claim_checks.HANDLE.sub(
+            lambda match: " " * len(match.group(0)), prose), given)
     rows = _reader(server)
     report = check_items([{"id": claim["id"], "texts": [],
                            "citations": [{"handle": handle, "status": "resolved"}
@@ -968,6 +1077,17 @@ def check_text(text: Any, claims: list[dict], server: Any,
         prose, [value for claim in claims for value in claim["value_claims"]])
     shown = [{key: failure.get(key) for key in ("code", "value", "detail")}
              for failure in failures]
+    # A percent the reply screen backs as the change between two passed numbers the
+    # text writes (``change_backed``) is no uncovered number here either.
+    passed = {to for claim in claims for value_claim in claim["value_claims"]
+              if (to := claim_checks.to_decimal(plain(value_claim.get("value")))) is not None}
+    stated = [number for written, number in claim_checks.prose_numbers(prose)
+              if not claim_checks._percent_written(written)
+              and (number in passed or abs(number) in passed)]
+    shown = [entry for entry in shown if not (
+        isinstance(entry["value"], str) and claim_checks._percent_written(entry["value"])
+        and (found := claim_checks.prose_numbers(entry["value"]))
+        and change_backed(found[0][0], found[0][1], stated, prose))]
     uncovered = [entry for entry in shown if entry["code"] != claim_checks.PROSE_UNCHECKED]
     unchecked = [entry for entry in shown if entry["code"] == claim_checks.PROSE_UNCHECKED]
     said = [line for line, needed in (
@@ -989,13 +1109,133 @@ STATEMENT_WORD = re.compile(
 MAX_REPLY_CHARS = 20_000
 
 
+# A name the run returned verbatim (``returned_names``): one whitespace-delimited token of
+# prose (or one of its ``/`` parts), its edge punctuation trimmed, that holds a letter and
+# a digit: a record number (SO-FM-388, PO#4925), a product or customer name (SPF50,
+# 1-Shoppe), a folder (01-FORMULAS). Never a figure glued to a unit or time word (50kg,
+# 2PCS, 30-Day), a date, or an amount behind a currency code: those stay statements.
+_NAME_EDGES = "()[]{}<>,;:!?\"'\u201c\u201d\u2018\u2019.*_`"
+_NAME_LETTER_FIRST = re.compile(r"[A-Za-z][A-Za-z0-9#&+._-]*\d[A-Za-z0-9#&+._/-]*")
+_NAME_DIGIT_FIRST = re.compile(r"\d+(?:-[A-Z][A-Za-z]*)+")
+_NAME_UNIT_WORDS = frozenset(
+    "day days week weeks month months year years yr yrs hour hours hr hrs minute minutes "
+    "min mins second seconds sec pack packs pk pc pcs piece pieces count ct unit units ea "
+    "each case cases box boxes pallet pallets gal gallon gallons lb lbs oz kg g mg l ml "
+    "liter liters litre litres ft in cm mm m pt qt percent pct x".split())
+MIN_NAME_CHARS, MAX_NAME_CHARS, MAX_RETURNED_NAMES = 4, 80, 50_000
+MAX_NAME_SCAN_CHARS = 4_000_000
+
+
+def name_token(token: str) -> str | None:
+    """``token`` (edge punctuation trimmed) when it has a name's shape (``_NAME_*``), else
+    None. Fail closed: anything a date, unit, percent or currency reading could take is
+    not a name."""
+    token = token.strip(_NAME_EDGES)
+    if not MIN_NAME_CHARS <= len(token) <= MAX_NAME_CHARS or "%" in token \
+            or not re.search(r"\d", token) or not re.search(r"[A-Za-z]", token):
+        return None
+    if _NAME_DIGIT_FIRST.fullmatch(token):
+        if any(part.lower() in _NAME_UNIT_WORDS or part.lower() in UOM_ALIASES
+               for part in token.split("-")[1:]):
+            return None
+    elif not _NAME_LETTER_FIRST.fullmatch(token):
+        return None
+    head = re.fullmatch(r"([A-Za-z]{3})[ -]?[\d.,]+", token)
+    if head and head.group(1).upper() in ISO_4217:
+        return None   # USD1,200: an amount
+    if claim_checks.written_dates(token) or claim_checks._moment(token):
+        return None
+    return token
+
+
+def _name_tokens(text: str) -> Iterator[str]:
+    """The name tokens of ``text`` (``name_token``): each whitespace token and each of its
+    ``/`` or ``\\`` parts."""
+    for word in text.split():
+        whole = name_token(word)
+        if whole:
+            yield whole
+        if "/" in word or "\\" in word:
+            for part in re.split(r"[/\\]", word):
+                named = name_token(part)
+                if named and named != whole:
+                    yield named
+
+
+# Where a tool result states what the run's own words said, never what a source returned:
+# the answer gate's echo of submitted claims, the searches it ran, the gaps it reports.
+_NOT_RETURNED_KEYS = frozenset({"arguments", "unsupported_claims", "claims", "gaps",
+                                "searched", "queries", "query", "instruction",
+                                "answer", "repair"})
+
+
+def returned_names(events: Sequence[Any], *, skip_tools: Iterable[str] = ()) -> frozenset[str]:
+    """Every name token (``_name_tokens``) a tool result of the session's ``events``
+    returned, as the source wrote it, outside what states the run's own words
+    (``_NOT_RETURNED_KEYS``) and the tools of ``skip_tools`` (the answer gate). Bounded:
+    at most ``MAX_NAME_SCAN_CHARS`` of text read and ``MAX_RETURNED_NAMES`` names kept
+    (fail closed: a name past the bound is not returned). Reads nothing."""
+    skipped = set(skip_tools)
+    names: set[str] = set()
+    budget = MAX_NAME_SCAN_CHARS
+
+    def walk(node: Any) -> None:
+        nonlocal budget
+        if budget <= 0 or len(names) >= MAX_RETURNED_NAMES:
+            return
+        if isinstance(node, str):
+            budget -= len(node)
+            if budget >= 0:
+                for token in _name_tokens(node):
+                    if len(names) < MAX_RETURNED_NAMES:
+                        names.add(token)
+        elif isinstance(node, Mapping):
+            for key, item in node.items():
+                if key not in _NOT_RETURNED_KEYS:
+                    walk(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+
+    for event in events:
+        if not isinstance(event, Mapping) or event.get("type") != "tool_call" \
+                or event.get("name") in skipped or event.get("is_error"):
+            continue
+        result = event.get("result")
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except ValueError:
+                pass
+        walk(result)
+    return frozenset(names)
+
+
+def _names_blanked(prose: str, names: Collection[str], refused: Sequence[Any]) -> str:
+    """``prose`` with each name token (``_name_tokens``) the run returned (``names``)
+    blanked to spaces of its length, unless a refused claim (``refused``) said it: a
+    refused value restated stays a statement."""
+    if not names:
+        return prose
+    said = {token for text in refused if isinstance(text, str)
+            for token in _name_tokens(text)}
+    found = {token for token in _name_tokens(prose) if token in names and token not in said}
+    for token in sorted(found, key=len, reverse=True):
+        prose = re.sub(r"(?<![A-Za-z0-9_#&+-])" + re.escape(token) + r"(?![A-Za-z0-9_#&+-]|[.,]\d)",
+                       lambda m: " " * len(m.group(0)), prose)
+    return prose
+
+
 def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
-             refused: Sequence[Any] = (), percents: Sequence[Any] = ()) -> list[str]:
+             refused: Sequence[Any] = (), percents: Sequence[Any] = (),
+             names: Collection[str] = ()) -> list[str]:
     """The factual statements of a final reply's ``text`` that no passed claim's value
     (``values``) backs, as written, in order and once, by the gate's own tokenisers:
     every number (``claim_checks.prose_numbers``: handles, identifiers and dates apart)
-    whose value no number of ``values`` states, the question's own numbers included (the
-    gate's text check counts them); a number printed as a percent only by a value of
+    whose value no number of ``values`` states, the question's own figures included (the
+    gate's text check counts them), but never an identifier the asker gave
+    (``asker_given``: the question's identifiers by the one grammar, a bare number of the
+    question only as a typed label's value such as ``order 1000091938``); a number printed as a percent only by a value of
     ``percents`` (passed claims in a percent unit), at percent scale: ``100%`` by 100
     percent, never by a unit-less 1 (the gate's percent contract); every label
     (``claim_checks.labels``: ``Q3``, ``P-01234``) as one token, never a figure: backed
@@ -1005,12 +1245,16 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     and the ``question`` does not say; and every record word (``STATEMENT_WORD``) of a
     claim the gate refused (``refused``: its text and values) that no value holds and the
     question does not say, so a refused value reworded is still found. A text value of
-    ``values`` covers what it holds. Plain prose, other words and the question restated
+    ``values`` covers what it holds, and a name the run returned verbatim (``names``,
+    ``returned_names``: SO-FM-388, 1-Shoppe, 01-FORMULAS) is a name, never a figure,
+    unless a refused claim said it (``_names_blanked``); a figure beside it is still one.
+    Plain prose, other words and the question restated
     are not statements. Fail closed: a text that is not a string, or longer than
     ``MAX_REPLY_CHARS``, is one unbacked statement."""
     if not isinstance(text, str) or len(text) > MAX_REPLY_CHARS:
         return ["<reply unreadable>"]
     asked = question.lower() if isinstance(question, str) else ""
+    given = asker_given(question)
     shown = [" ".join(str(value).split()) for value in values
              if isinstance(value, (str, int, float)) and not isinstance(value, bool)]
     numbers = {claim_checks.to_decimal(value) for value in shown} - {None}
@@ -1028,16 +1272,28 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     percent_values = {claim_checks.to_decimal(value) for value in percents
                       if isinstance(value, (str, int)) and not isinstance(value, bool)} - {None}
 
+    stated: list[Decimal] = []   # the passed numbers this text writes (``change_backed``)
+
     def backed_number(written: str, number: Decimal) -> bool:
         # The gate's percent contract (``claim_checks._uncovered``): a printed percent is
         # backed only by a claim in a percent unit, at percent scale (``100%`` by 100
-        # percent; never by a unit-less 1 or 100).
+        # percent; never by a unit-less 1 or 100), or as the change between two passed
+        # numbers the same text writes (``change_backed``).
         if claim_checks._percent_written(written):
-            return abs(number) * 100 in percent_values
+            return abs(number) * 100 in percent_values or change_backed(
+                written, number, stated, text)
         return number in numbers or abs(number) in numbers or \
             claim_checks.rounded_from(number, numbers)
 
+    # The question's own identifiers are given by the asker (``asker_given``): a reply
+    # repeating them states nothing a citation must back.
     prose = " ".join(text.split())
+    if given:   # a handle keeps its characters: only prose outside one is blanked
+        prose = given_blanked(claim_checks.HANDLE.sub(
+            lambda match: " " * len(match.group(0)), prose), given)
+    if names:   # a handle is never a statement (blanked below too), never a name's text
+        prose = _names_blanked(claim_checks.HANDLE.sub(
+            lambda match: " " * len(match.group(0)), prose), names, refused)
     scan = prose
     for value in sorted({value for value in covered if value}, key=len, reverse=True):
         scan = scan.replace(value, " ")
@@ -1051,7 +1307,11 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
             add(label)
     for match in reversed(found):   # each label judged whole above, never its digits
         scan = scan[:match.start()] + " " * len(match.group(0)) + scan[match.end():]
-    for written, number in claim_checks.prose_numbers(scan):
+    written_numbers = claim_checks.prose_numbers(scan)
+    stated += [number for written, number in written_numbers
+               if not claim_checks._percent_written(written)
+               and (number in numbers or abs(number) in numbers)]
+    for written, number in written_numbers:
         if not backed_number(written, number):
             add(written)
     rest = claim_checks.HANDLE.sub(" ", prose)
@@ -1068,6 +1328,66 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
         if token in words and token not in held and token not in asked:
             add(match.group(0))
     return out
+
+
+_UP_WORDS = re.compile(r"\b(?:up|rose|risen|rising|increased?|increases|higher|more)\b", re.I)
+_DOWN_WORDS = re.compile(r"\b(?:down|fell|fallen|falling|dropped|drops?|decreased?|decreases"
+                         r"|lower|less|cheaper)\b", re.I)
+MAX_CHANGE_PAIRS = 12   # passed numbers of one text a change is sought between
+
+
+def change_backed(written: str, fraction: Decimal, stated: Sequence[Decimal],
+                  text: str) -> bool:
+    """Whether a printed percent (``written``; ``fraction``: ``4.20%`` is 0.0420) is the
+    change between
+    two passed numbers the same text writes (``stated``): from ``a`` to ``b``,
+    ``|b - a| / |a| x 100`` rounded half-up to the places the percent is printed with
+    (``4.2%`` one, ``4.20%`` two), the Workbench's arithmetic over checked figures (a
+    plan's price trend said in words: "went up by 4.2% from 12.14 to 12.65"). A text that
+    says the move went up (or down) is backed only by a pair that went that way; one that
+    says both is backed by none. No other percent is (fail closed)."""
+    printed = re.match(r"[-+−]?[\d,]*(?:\.(\d+))?", written.strip())
+    places = len(printed.group(1) or "") if printed else 0
+    percent = (abs(fraction) * 100).quantize(Decimal(1).scaleb(-places))
+    up, down = bool(_UP_WORDS.search(text)), bool(_DOWN_WORDS.search(text))
+    if up and down:
+        return False
+    numbers = list(dict.fromkeys(stated))[:MAX_CHANGE_PAIRS]
+    for a in numbers:
+        for b in numbers:
+            if a == b and percent != 0 or a == 0 or (up and not b > a) \
+                    or (down and not b < a):
+                continue
+            change = (abs(b - a) / abs(a) * 100).quantize(
+                Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+            if change == percent:
+                return True
+    return False
+
+
+def asker_given(question: Any) -> tuple[str, ...]:
+    """The identifiers the question itself names, as the asker wrote them
+    (``query_understanding.asked_identifiers``: the one identifier grammar's mentions, a
+    typed label's value, a bare letters-and-digits token): a reply may repeat them
+    uncited. Never a bare number, amount, quantity, date or year of the question: a
+    figure stays a figure. Empty for anything that is not text or when the reading fails
+    (fail closed: nothing is given)."""
+    try:
+        from .query_understanding import asked_identifiers
+        return asked_identifiers(question) if isinstance(question, str) else ()
+    except Exception:  # noqa: BLE001 - nothing read, nothing given by the asker
+        return ()
+
+
+def given_blanked(text: str, given: Sequence[str]) -> str:
+    """``text`` with each whole-token occurrence of a ``given`` identifier (case folded;
+    never inside a longer token, a decimal or a handle's characters) blanked to spaces of
+    its length, so no tokeniser reads it as a statement."""
+    for token in sorted(set(given), key=len, reverse=True):
+        text = re.sub(r"(?<![A-Za-z0-9_#./])" + re.escape(token)
+                      + r"(?![A-Za-z0-9_]|[.,]\d)", lambda m: " " * len(m.group(0)),
+                      text, flags=re.IGNORECASE)
+    return text
 
 
 # ------------------------------------------------------------------ the final reply
@@ -1136,14 +1456,15 @@ def refused_said(unsupported: Sequence[Any]) -> list[str]:
 
 def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] = (),
                 unknowns: Sequence[Any] = (), question: Any = "",
-                refused: Sequence[str] = (), withheld: Sequence[str] = ()) -> dict[str, Any]:
+                refused: Sequence[str] = (), withheld: Sequence[str] = (),
+                names: Collection[str] = ()) -> dict[str, Any]:
     """The final reply as it may leave every answer path (the Ask, an MCP session's
     answer mode, the real-agent eval): only what the gate passed (``claims``, the passed
     claims of ``gate_answer``), never a refused claim in other words.
 
     Each sentence, list item or line of ``text`` that carries an unbacked statement
-    (``unbacked`` over what the claims state, the question and what ``unsupported`` and
-    ``refused`` said), or that writes a passed value beside a currency other than the one
+    (``unbacked`` over what the claims state, the question, the names the run returned
+    verbatim, ``names``, and what ``unsupported`` and ``refused`` said), or that writes a passed value beside a currency other than the one
     the gate checked with it (``_currencies_as_checked``), is dropped; the rest stays as
     written, without a unit or currency beside a passed value that the gate did not check
     for it (``_unchecked_units_dropped``). A reply whose surviving text
@@ -1171,7 +1492,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
             continue
         sentences += 1
         tokens = unbacked(sentence, backed, question=question, refused=said,
-                          percents=percents)
+                          percents=percents, names=names)
         tokens += [token for token in _denied(sentence, denials) if token not in tokens]
         bare, other = _currencies_as_checked(sentence, marks)
         tokens += [token for token in other if token not in tokens]
@@ -1200,7 +1521,8 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     shown_unknowns, dropped = [], 0
     for unknown in unknowns:
         if isinstance(unknown, str) and not unbacked(unknown, backed, question=question,
-                                                     refused=said, percents=percents):
+                                                     refused=said, percents=percents,
+                                                     names=names):
             shown_unknowns.append(unknown)
         else:
             dropped += 1
@@ -1420,7 +1742,9 @@ def contradicted_claims(decision: Any, submitted: Any) -> list[str]:
     for claim in submitted:
         if not isinstance(claim, Mapping):
             continue
-        for given in claim.get("value_claims") or ():
+        # A flat claim (``CLAIM_KEYS``) is its own value claim.
+        for given in (claim.get("value_claims") or ()) if "value_claims" in claim \
+                or "text" in claim else (claim,):
             if not isinstance(given, Mapping) or "value" not in given:
                 continue
             if "citation" in given:

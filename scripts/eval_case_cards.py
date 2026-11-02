@@ -1151,7 +1151,9 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
                      help="a sample: only these item ids (comma separated, e.g. the "
                           "failing cards of an earlier run; the verifier never sets it)")
     run.add_argument("--budget-seconds", type=float, default=DEFAULT_BUDGET_SECONDS)
-    run.add_argument("--timeout", type=int, default=300, help="one session's timeout")
+    run.add_argument("--timeout", type=int, default=deep.SESSION_SECONDS,
+                     help="one session's hard cap, the app's Ask's (a session the app "
+                          "would stop is never scored as answered)")
     run.add_argument("--max-turns", type=int, default=deep.MAX_TURNS)
     run.add_argument("--session-budget", type=float, default=deep.SESSION_SECONDS,
                      help="one session's deep-investigation budget in seconds, enforced by "

@@ -452,7 +452,7 @@
       ]
     },
     "predicate": {
-      "description": "A row test over one path. present/absent take no value; in takes a list.",
+      "description": "A row test over one path. present/absent take no value; in and not_in take a list (not_in holds on a null or missing cell).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -474,6 +474,7 @@
             "eq",
             "ne",
             "in",
+            "not_in",
             "prefix",
             "present",
             "absent",
@@ -526,7 +527,10 @@
           "if": {
             "properties": {
               "op": {
-                "const": "in"
+                "enum": [
+                  "in",
+                  "not_in"
+                ]
               }
             }
           },

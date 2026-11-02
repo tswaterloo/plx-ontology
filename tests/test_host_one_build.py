@@ -124,7 +124,7 @@ class HostOneBuildTests(HostCase):
         recorded = lv._recorded(spec, document)
         self.assertEqual([sorted(s) for s in recorded["cycles[*].projection.steps"]],
                          [["confirmations", "document_fields", "mentions", "reviews",
-                           "text_index", "twins", "your_reference"]] * 2)
+                           "sender_corroboration", "text_index", "twins", "your_reference"]] * 2)
         steps = document["cycles"][-1]["projection"]["steps"]
         self.assertGreaterEqual(steps["document_fields"]["links"], 1, steps)
 

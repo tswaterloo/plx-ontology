@@ -29,9 +29,10 @@ derives its fulfillment code from the header and the summed line quantities
   readable in one unit, or no ordered quantity at all is **unknown**, with its reason,
   and counted by every reader, never guessed;
 * a BC order reads its own ``status`` (Draft: not issued) and ``fullyReceived``;
-* a Sage order is **unknown** until its ``iscomplete`` values are mapped (the SOP's
-  1-5 enumeration was replaced by a quantity check, @48b6cfc docs/Internal-SOP.md
-  v8.598; the vocabulary check records iscomplete against linescmpl >= lines).
+* a Sage order whose ``iscomplete`` is 1 is **closed** ``HISTORICAL_SAGE``: a completed
+  historical Sage record, never judged for lateness (on every captured header iscomplete 1
+  has linescmpl >= lines and 0 has fewer; the vocabulary check keeps that cross-tab); any
+  other value (0, open in Sage; null; a new value) is **unknown**.
 
 Lateness (Vince): an open PO is **late** once its requested-by
 date has passed and **at risk** while that date has not passed but the supplier's
@@ -101,6 +102,9 @@ CANCELLED_WORDS = frozenset({"CANCEL", "CANCELLED", "CANCELED"})
 CLOSED_WORDS = frozenset({"CLOSED"})
 # Ross: Complete closes whatever was received.
 COMPLETE_WORDS = frozenset({COMPLETE})
+# A Sage header Sage itself says is complete (iscomplete 1): a historical record, closed
+# and never judged for lateness (``sage``).
+HISTORICAL_SAGE = "HISTORICAL_SAGE"
 DRAFT_WORDS = frozenset({"DRAFT"})
 # Issued words: their quantities decide open or closed. The FileMaker words the Portal
 # header holds, the Portal's own codes (a PO the Portal created) and ORDERED, which the
@@ -114,6 +118,31 @@ PAST_ORDERED = frozenset({
 # Why a status is unknown (every reader counts these by name).
 UNKNOWN_REASONS = ("status_missing", "status_unmapped", "quantities_unknown",
                    "nothing_ordered", "sage_unmapped", "status_disputed")
+# The late-list rule's undecided orders that it decides are never late (the one rule the
+# engine's late count, Home, the late list, Ask and the eval oracle ``po_lateness`` share):
+# a status no record settles as open (every ``UNKNOWN_REASONS``: needs check, never late,
+# Sage and an unmapped word decide
+# nothing), no requested-by date (never late, listed apart), and the at-risk-only
+# confirmation skips of an order not yet late. Any other skip (two disputed due dates, an
+# unparseable one, a reason not named here) may hide a late order: the count is not exact.
+NEVER_LATE_SKIPS = frozenset({*UNKNOWN_REASONS, "no_need_date", "confirmation_unsettled",
+                              "confirmation_undated", "promises_disagree"})
+
+
+def late_count_exact(skips: Any) -> bool:
+    """Whether a late count is exact under the one late-list rule given the rule's skips
+    (reason -> count, the engine's ``not_evaluated``): every skip is of a reason the rule
+    decides is never late. Anything unreadable is not exact (fails closed)."""
+    if not isinstance(skips, Mapping):
+        return False
+    for reason, count in skips.items():
+        if type(count) is not int or count < 0:
+            return False
+        if count and reason not in NEVER_LATE_SKIPS:
+            return False
+    return True
+
+
 # Header classes (the process graph's PO stage predicate reads these).
 ISSUED, NOT_ISSUED, IGNORED, UNMAPPED = "issued", "not_issued", "cancelled", "unmapped"
 # Which source a PurchaseOrder property is the status of.
@@ -218,8 +247,14 @@ def bc(status: Any, fully_received: Any) -> PoStatus:
     return PoStatus(CLOSED, RECEIVED) if flag else PoStatus(OPEN)
 
 
-def sage(_iscomplete: Any = None) -> PoStatus:
-    """A Sage purchase order: unknown until its iscomplete values are mapped."""
+def sage(iscomplete: Any = None) -> PoStatus:
+    """A Sage purchase order. ``iscomplete`` 1 is a completed, historical Sage record:
+    closed ``HISTORICAL_SAGE``, never judged for lateness (decision
+    2026-11-02-po-due-dates-vendor-promise-sage-history: on every captured header
+    iscomplete 1 has linescmpl >= lines and 0 has fewer). Anything else (0: Sage shows it
+    open; null or a value never seen) stays unknown (``sage_unmapped``), never open."""
+    if word(iscomplete) == "1":
+        return PoStatus(CLOSED, HISTORICAL_SAGE)
     return PoStatus(UNKNOWN, reason="sage_unmapped")
 
 
@@ -393,6 +428,11 @@ RECEIVES_LINE = "ReceiptLine.receives_line"
 CONFIRMS = "SupplierConfirmation.confirms"
 ORDERED, RECEIVED_QTY = "ordered_quantity", "received_quantity"
 NEED_PROP, PROMISE_PROP, PROMISE_ORDER = "expected_date", "delivery_date", "document_date"
+# Every property a confirmation states its arrival promise in: its document's, and the
+# supplier's own carrying message's (ontology/document_fields.py carrier_fields).
+PROMISE_PROPS = (PROMISE_PROP, "mail_delivery_date")
+# A confirmation's per-item promises (ontology/document_fields.py line_promises).
+LINE_PROMISES = "line_promises"
 # A line's own expected receipt date (BC expectedReceiptDate): the lowest requested-by tier,
 # read only where no header tier holds a date.
 LINE_EXPECTED = "bc_expected_receipt_date"
@@ -579,6 +619,19 @@ def verdict(status: PoStatus | str, need: Need, latest: date | None, today: date
     return UNKNOWN, "need_date_disputed"
 
 
+def vendor_verdict(promise_day: date | None, measured: date | None, against: str
+                   ) -> tuple[str, int | None]:
+    """The order against the vendor's own promised date (never our requested-by date):
+    ``late`` with the days when ``measured`` (the last receipt when fully received, else
+    today) is after it, ``on_time`` (received by it), ``not_due`` (open, the date not
+    passed), ``undetermined`` with no promise or no measured date."""
+    if promise_day is None or measured is None:
+        return "undetermined", None
+    if measured > promise_day:
+        return "late", (measured - promise_day).days
+    return ("on_time" if against == "received" else "not_due"), None
+
+
 @dataclass
 class PoRead:
     """One PO as one reader reads it: its settled identity twins (``members``, the root
@@ -600,6 +653,9 @@ class PoRead:
     # where linked records disagree (``CONFLICT_FIELDS``): both values, each side's cited
     # items and who governs; never one side silently picked
     conflicts: list = field(default_factory=list)
+    # each record as read ``(status values, lines, FM QC log)``, the settled side first:
+    # ``describe`` says in words what they say (an undecided status names them)
+    notes: list = field(default_factory=list)
 
 
 def system_of(object_id: str) -> str:
@@ -608,11 +664,13 @@ def system_of(object_id: str) -> str:
 
 
 def _read_side(source: Any, records: Sequence[str],
-               reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]]
+               reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
+               notes: list | None = None
                ) -> tuple[PoStatus, list, list, bool, dict[str, tuple[Any, list]]]:
     """One side of a PO (its settled twins, or the firm twins linked to them) by the one
     definition: the combined status, its evidence and link marks, whether a part is
-    hidden, and each record's lines as read ``(triples or None, evidence)``."""
+    hidden, and each record's lines as read ``(triples or None, evidence)``. ``notes``:
+    each record's ``record_note`` is appended."""
     fm = [m for m in records if reads[m][0].get("fm_status")]
     statuses, cited, marks, blind = [], [], [], False
     lines_of: dict[str, tuple[Any, list]] = {}
@@ -639,7 +697,84 @@ def _read_side(source: Any, records: Sequence[str],
                     logs.append(found)
                 fm_lines = _one_log(logs)
         statuses.append(record(values, lines, fm_lines))
+        if notes is not None:
+            notes.append((values, lines, fm_lines))
     return combine(statuses), cited, marks, blind, lines_of
+
+
+# The systems a status property is the header word of, as a note names them.
+_SYSTEM_NAME = {"status": "Portal", "fm_status": "FileMaker", "bc_status": "BC",
+                "sage_is_complete": "Sage"}
+# A header word quoted in a note: one short word of letters (the FileMaker, Portal and BC
+# vocabularies); anything else is source text and is named, never quoted.
+_QUOTABLE = re.compile(r"[A-Za-z][A-Za-z._-]{0,15}")
+
+
+def _is_unit(text: Any) -> bool:
+    from operating.injection_guard import is_unit
+    return is_unit(text)
+
+
+def _qty(value: Decimal) -> str:
+    """A quantity as a note shows it: thousands grouped, no trailing zero fraction."""
+    if value == value.to_integral_value():
+        value = value.to_integral_value()
+    return f"{value:,}"
+
+
+def record_note(values: Mapping[str, Sequence[Any]], lines: Any, fm_lines: Any = None) -> str:
+    """What one PO record says, in words: each system's header word (``Portal header
+    Pending``), its lines' received of ordered quantity in one unit, and the FileMaker QC
+    receiving log against the FileMaker items' ordered total. Read from what this reader
+    read (a withheld quantity is "not readable"); never a guess."""
+    parts = []
+    for prop, name in _SYSTEM_NAME.items():
+        words = sorted({str(v).strip() for v in values.get(prop) or () if v is not None})
+        if prop == "bc_status" and values.get("bc_fully_received"):
+            flags = {_flag(v) for v in values["bc_fully_received"]}
+            flag = ("fully received" if flags == {True} else "not fully received"
+                    if flags == {False} else "fully-received flag unreadable")
+        else:
+            flag = None
+        if not words and flag is None:
+            continue
+        said = " / ".join(w if _QUOTABLE.fullmatch(w) else "an unreadable word"
+                          for w in words) or "no word"
+        parts.append(f"{name} header {said}" + (f" ({flag})" if flag else ""))
+    if lines is UNREAD or (lines is not None and not isinstance(lines, list)):
+        parts.append("lines not readable")
+    elif lines is not None:
+        units = {u.strip().upper() if isinstance(u, str) and u.strip() else None
+                 for _w, _g, u in lines if u is not UNREAD}
+        ordered, received = line_totals(lines)
+        if not lines:
+            parts.append("no line recorded")
+        elif ordered is None:
+            parts.append("line quantities not readable in one unit")
+        else:
+            unit = next(iter(units)) if len(units) == 1 else None
+            seeded = fm_lines is not None and received <= EPS
+            parts.append(f"lines received {_qty(received)} of {_qty(ordered)}"
+                         + (f" {unit}" if unit and _is_unit(unit) else "")
+                         + (" (the FileMaker import seeds 0)" if seeded else ""))
+    if fm_lines is UNREAD:
+        parts.append("FileMaker QC log not readable")
+    elif fm_lines is not None:
+        logged = [_number(got) for _w, got, _u in fm_lines if got is not None]
+        fm_ordered, _ = line_totals((want, None, None) for want, _g, _u in fm_lines)
+        qc = sum((n for n in logged if n is not None), Decimal(0))
+        parts.append(("FileMaker QC log records no receipt" if qc <= EPS else
+                      f"FileMaker QC log {_qty(qc)} received")
+                     + (f" against a FileMaker ordered total of {_qty(fm_ordered)}"
+                        if fm_ordered is not None and qc > EPS else ""))
+    return ", ".join(parts) or "no status recorded"
+
+
+def describe(po: "PoRead", limit: int = 400) -> str:
+    """What the PO's records say, record by record (``record_note``), as this reader read
+    them: the evidence an undecided status rests on, so the reason is actionable."""
+    text = "; ".join(dict.fromkeys(record_note(*note) for note in po.notes))
+    return text if len(text) <= limit else text[:limit - 1].rstrip(" ,;") + "…"
 
 
 # A side's receipt state, as the two systems are compared: fully received (a Portal or FM
@@ -782,7 +917,8 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     reads = {t: source.values(t) for t in firm}
     fm_members = [r for r, read in (*mine_reads.items(), *reads.items())
                   if read[0].get("fm_status")]
-    theirs, their_evidence, their_marks, _hidden, their_lines = _read_side(source, firm, reads)
+    theirs, their_evidence, their_marks, _hidden, their_lines = _read_side(source, firm, reads,
+                                                                         out.notes)
     mine_side, their_side = _systems(out.members), _systems(firm)
 
     def side_lines(records: Sequence[str], read: Mapping[str, tuple[Any, list]]
@@ -970,7 +1106,8 @@ def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True
     reads = {m: source.values(m) for m in members}
     out = PoRead(oid, list(members), PoStatus(UNKNOWN, reason="status_missing"),
                  identity_marks=list(identity_marks))
-    out.status, out.evidence, out.marks, hidden, lines_of = _read_side(source, members, reads)
+    out.status, out.evidence, out.marks, hidden, lines_of = _read_side(source, members, reads,
+                                                                       out.notes)
     blind = blind or hidden
     # a firm (``corroborated``) twin is another system's record of this order: its status
     # never joins this PO's, but where the two disagree the conflict is named (``_compare``)
@@ -1050,14 +1187,17 @@ class ContextSource:
                           if ((s.get("due") or {}).get("lateness") or {}).get("lines")), None)
         self.dated: Any = None
         self.promised: Records | None = None
+        self.lines_proven = False
 
     def _reach(self, root_type: str, oid: str, paths: Sequence[Sequence[Mapping]],
-               tid: str, bindings: Iterable[str] | None = None) -> Any:
+               tid: str, bindings: Iterable[str] | None = None,
+               side: Mapping[str, Any] | None = None) -> Any:
         tspec = self.tools.base.schema.object_types.get(tid, {})
         return self.tools._paths(self.ctx, root_type, oid, paths, self.floor,
                                  spec_marks=tspec.get("markings", ()),
                                  final_bindings=set(bindings) if bindings is not None
-                                 else {b["id"] for b in tspec.get("bindings", ())})
+                                 else {b["id"] for b in tspec.get("bindings", ())},
+                                 side=side)
 
     def twins(self, oid: str) -> tuple[list[str], bool, list]:
         """The root and the records its settled identity links join it to (an identity
@@ -1233,6 +1373,8 @@ class ContextSource:
         ctx, op = self.ctx, self.op
         tid = spec["object_type"]
         reach = self._reach(self.graph["root_type"], oid, spec["paths"], tid)
+        # every line of the order is read (the per-line promise roll-up needs all of them)
+        self.lines_proven = bool(reach.proven and not reach.truncated)
         out = []
         for lid in sorted(r for r in reach.records if ctx.obj(r)["object_type"] == tid):
             ordered, ounit, ocited = self._one(lid, spec["ordered"])
@@ -1241,6 +1383,9 @@ class ContextSource:
             if ordered is not None and received is not None and ounit == runit and ordered > 0:
                 line["state"] = ("not_received" if received <= 0 else
                                  "partial" if received < ordered else "received")
+                # the quantities the state was decided from (the caller sums them; never
+                # listed: the line's cited values are)
+                line["_quantity"] = (ordered, max(Decimal(0), received), ounit)
             values = ocited + rcited
             if "expected" in spec and spec["expected"] not in ctx.withheld(lid):
                 rows = [row for row in ctx.values(lid).get(spec["expected"], ())
@@ -1274,15 +1419,25 @@ class ContextSource:
     def records(self, oid: str, spec: Mapping[str, Any]) -> "Records":
         """What one ``promised``/``received`` declaration reaches for a root: the records,
         their dated events (cited), their ``order_by`` date, and whether the read is
-        proven, hidden or reaches a lead only."""
+        proven, hidden or reaches a lead only. ``unnamed``: the records a path passes
+        through whose own reference names none (a FileMaker QC receiving-log row whose
+        ``idreceipt`` names no receipt header) and whose record they hang from is named
+        by none either (no header names the row's PO item, ``Receipt.receives_line``):
+        the dated records may then miss one."""
         from operating.ontology_tools import _markings
 
         ctx, op = self.ctx, self.op
         schema = self.tools.base.schema
         tid = spec["object_type"]
-        reach = self._reach(self.graph["root_type"], oid, spec["paths"], tid)
+        root_type = self.graph["root_type"]
+        reach = self._reach(root_type, oid, spec["paths"], tid, side={})
         out = Records(records=sorted(r for r in reach.records
                                      if ctx.obj(r)["object_type"] == tid))
+        # a root or its twin reaching none is an absence the proof covers, not a gap; a
+        # record naming none is dated by the records naming the one it hangs from
+        out.unnamed = sorted(r for r in reach.nameless
+                             if ctx.obj(r)["object_type"] != root_type
+                             and not reach.via.get(r, set()) & reach.named_by)
         marks = {m for e in spec["event_types"]
                  for m in schema.event_types[e].get("markings", ())}
         out.hidden = not ctx.scope.holds(marks) or op._HIDDEN in reach.causes
@@ -1312,7 +1467,73 @@ class ContextSource:
         out.counted_proven = out.proven or (lead_only and not reach.truncated
                                             and not out.hidden and not uncited)
         out.lead_only = not out.records and not out.hidden and bool(reach.leads)
+        # the records only a lead link reaches (visible to this reader): never counted
+        out.leads = sorted({target for _, target in reach.leads
+                            if target not in out.records
+                            and ctx.obj(target)["object_type"] == tid})
         out.detail = "; ".join(dict.fromkeys(w.text for w in reach.reasons))
+        return out
+
+    def line_promise_blocks(self, records: Sequence[str]
+                            ) -> list[tuple[date | None, str, Mapping[str, Any]]]:
+        """``(document date, confirmation, stored row)`` of each per-item promise value
+        (``SupplierConfirmation.line_promises``) of ``records`` this reader may read: a
+        withheld value is not read. The document date is the ``promised`` declaration's
+        ``order_by`` as :meth:`records` read it."""
+        from operating.line_promises import blocks_of
+
+        ctx, out = self.ctx, []
+        found = self.promised
+        for rid in records:
+            if LINE_PROMISES not in ctx.values(rid) or LINE_PROMISES in ctx.withheld(rid):
+                continue
+            for row in ctx.values(rid)[LINE_PROMISES]:
+                if blocks_of(row["value"]):
+                    out.append((None if found is None else found.order.get(rid), rid, row))
+        return out
+
+    def line_descriptors(self, lids: Sequence[str]) -> dict[str, dict[str, list[str]]]:
+        """Each order line's own item codes and descriptions this reader may read (a BC
+        line's number only when it is an Item line), for :func:`line_promises.match`."""
+        from operating.line_promises import descriptor
+
+        ctx, out = self.ctx, {}
+        for lid in lids:
+            values, withheld = ctx.values(lid), ctx.withheld(lid)
+
+            def read(name: str) -> list[str]:
+                return [] if name in withheld else [
+                    str(r["value"]) for r in values.get(name, ()) if r["value"] not in (None, "")]
+            out[lid] = descriptor(read)
+        return out
+
+    def lead_promises(self) -> list[tuple[Any, date, Any]]:
+        """The promised dates of the confirmations only a lead link reaches (``promises``
+        must have run): ``(document date, day, item)`` each cited as this reader reads
+        it. A lead is never this order's promise; the caller labels these a possible
+        vendor promise. Empty when the promise read is hidden from this reader."""
+        from operating.ontology_tools import _markings
+
+        spec = ((self.stage or {}).get("due") or {}).get("lateness", {}).get("promised")
+        found = self.promised
+        if not spec or found is None or found.hidden or not found.leads:
+            return []
+        ctx, op, out = self.ctx, self.op, []
+        order_by = spec.get("order_by")
+        for _, subject, row in self.tools._visible_events(ctx, found.leads,
+                                                          spec["event_types"]):
+            cite, day = op._cite(row), op._date(row["time"])
+            if cite is None or day is None:
+                continue
+            order = None
+            if order_by and order_by not in ctx.withheld(subject):
+                days = {op._date(r["value"]) for r in ctx.values(subject).get(order_by, ())
+                        if r["value"] is not None}
+                order = next(iter(days)) if len(days) == 1 and None not in days else None
+            out.append((order, day, {
+                "property": row["event_type"].split(".", 1)[1], "value_type": "date",
+                "value": day.isoformat(), "citation": cite,
+                "markings": list(_markings(row["markings"]))}))
         return out
 
     def need_dates(self, oid: str, members: Sequence[str]) -> list[tuple[int, date | None, Any]]:
@@ -1385,6 +1606,10 @@ class Records:
     detail: str = ""
     # proven but for leads: every record a counted link reaches is read (lateness)
     counted_proven: bool = True
+    # records passed through on the way that name no record (``ContextSource.records``)
+    unnamed: list[str] = field(default_factory=list)
+    # records of the declared type only a lead link reaches (reported, never counted)
+    leads: list[str] = field(default_factory=list)
 
 
 # ---- the system store (the proactive engine: every current record, set-based)
@@ -1437,7 +1662,7 @@ class StoreSource:
         self.confirms_of: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for link in st.links((CONFIRMS,)):
             self.confirms_of[link["to_object"]].append(link)
-        self.confirmations = st.values((CONFIRMATION_TYPE,), (PROMISE_PROP, PROMISE_ORDER))
+        self.confirmations = st.values((CONFIRMATION_TYPE,), (*PROMISE_PROPS, PROMISE_ORDER))
 
     def props(self, oid: str) -> dict[str, list[dict[str, Any]]]:
         return (self.pos.get(oid) or {"props": {}})["props"]
@@ -1549,7 +1774,7 @@ class StoreSource:
             orders = {day_of(r["value"]) for r in props.get(PROMISE_ORDER, [])
                       if r["value"] is not None}
             order = next(iter(orders)) if len(orders) == 1 else None
-            for row in props.get(PROMISE_PROP, []):
+            for row in (r for prop in PROMISE_PROPS for r in props.get(prop, [])):
                 day = day_of(row["value"])
                 if day is not None:
                     out.append((order, day, (row, link)))
@@ -1745,12 +1970,12 @@ class ToolSource:
                 return None
             for confirmation in found:
                 values = tool_values(self.call("plx.object", {
-                    "object_id": confirmation, "properties": [PROMISE_PROP, PROMISE_ORDER]}))
+                    "object_id": confirmation, "properties": [*PROMISE_PROPS, PROMISE_ORDER]}))
                 if values is None:
                     return None
                 orders = {day_of(v) for v in values.get(PROMISE_ORDER, []) if v is not None}
                 order = next(iter(orders)) if len(orders) == 1 else None
-                for raw in values.get(PROMISE_PROP, []):
+                for raw in (v for prop in PROMISE_PROPS for v in values.get(prop, [])):
                     day = day_of(raw)
                     if day is not None:
                         out.append((order, day, (confirmation, raw)))
@@ -1911,6 +2136,11 @@ def vocabulary(scans: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
             "unknown" if total is None or done is None
             else "lines_complete" if done >= total else "lines_open"] += 1
     out["sage_iscomplete"] = {value: dict(sorted(c.items())) for value, c in sorted(cross.items())}
+    # ``sage`` closes an iscomplete 1 header as historical: the live check holds this at 0
+    # (a complete header whose lines are open or unreadable reverses that mapping)
+    out["sage_complete_lines_open"] = sum(
+        n for value, c in cross.items() if value == "1"
+        for state, n in c.items() if state != "lines_complete")
     return out
 
 
@@ -1955,11 +2185,12 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
 
 __all__ = ["AT_RISK", "CANCELLED_WORDS", "CLASSES", "CLOSED", "CLOSED_WORDS", "COMPLETE",
            "COMPLETE_WORDS", "ContextSource", "DRAFT", "DRAFT_WORDS", "EPS", "HEADER_PROPS",
-           "ISSUED_WORDS", "LATE", "NEITHER", "Need", "OPEN", "PAST_ORDERED", "PoRead",
-           "PoStatus", "Promise", "StoreSource", "ToolSource", "UNKNOWN", "UNKNOWN_REASONS",
+           "HISTORICAL_SAGE", "ISSUED_WORDS", "LATE", "NEITHER", "Need", "OPEN",
+           "PAST_ORDERED", "PoRead", "PoStatus", "Promise", "StoreSource", "ToolSource",
+           "UNKNOWN", "UNKNOWN_REASONS",
            "UNREAD", "bc", "classify", "clusters", "combine", "header_class",
-           "lateness_verdict", "line_totals", "need_date", "promise", "read", "record",
-           "sage", "verdict", "vocabulary", "word"]
+           "NEVER_LATE_SKIPS", "late_count_exact", "lateness_verdict", "line_totals", "need_date", "promise", "read", "record",
+           "sage", "vendor_verdict", "verdict", "vocabulary", "word"]
 
 
 if __name__ == "__main__":

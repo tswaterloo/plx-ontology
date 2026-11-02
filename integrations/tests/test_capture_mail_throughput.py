@@ -459,6 +459,10 @@ def lane_scope(upns, **kwargs) -> CaptureScope:
                         allowlist=capture_mail.MailScope(upns), **kwargs)
 
 
+class Killed(BaseException):
+    """A capture process ended from outside mid-run (no handler runs)."""
+
+
 class LanesAndPriorityTests(ThroughputCase):
     """Mailboxes captured at once by lanes (one writer to the store), a Retry-After that
     holds only its own mailbox, text read in extraction processes, and The priority mailboxes' recent mail, then the others', then older history, then
@@ -773,6 +777,104 @@ class LanesAndPriorityTests(ThroughputCase):
         self.assertEqual(len(later), 8)
         self.assertLess(max(later.index(m) for m in later if m.startswith("R-")),
                         min(later.index(m) for m in later if m.startswith("N-")))
+    def test_a_held_notification_folder_new_mail_is_read_before_other_mailboxes_backlog(self):
+        # A complete notification-heavy folder's delta, once due, is read in the first band
+        # with every other held folder's, never after the backlog of mailboxes not yet
+        # read (2026-11-02: 30 such folders went unread for three days while the history
+        # bands filled every budget). Every folder a run read, a turn cut included, is
+        # stamped as read then (the source's freshness is its stalest such folder).
+        from datetime import timedelta
+        c, upn_c = self.add_mailbox(3)
+        for m in range(6):
+            self.graph.put(c, f"N-{m}", "CK-1", folder=CUSTOM, sender="alerts@vendor.example",
+                           received=f"2026-0{1 + m}-01T09:00:00Z")
+            self.graph.put(c, f"R-{m}", "CK-1", sender=f"person{m}@outside.example",
+                           received=f"2026-0{1 + m}-02T09:00:00Z")
+        with mock.patch.object(capture_mail, "BULK_SAMPLE", 2):
+            first = self.lane_capture([upn_c], lanes=1, pages_per_turn=1, page_size=1).run(
+                lane_scope([upn_c], history="all", priority={}))
+            self.assertTrue(first["complete"], first["incomplete_reasons"])
+            self.clock.now += timedelta(seconds=capture_mail.FRESH_SECONDS + 60)
+            self.graph.put(c, "N-NEW", "CK-1", folder=CUSTOM, sender="alerts@vendor.example",
+                           received="2026-09-30T09:00:00Z")
+            d, upn_d = self.add_mailbox(4)
+            e, upn_e = self.add_mailbox(5)
+            for m in range(8):
+                for box, tag in ((d, "D"), (e, "E")):
+                    self.graph.put(box, f"{tag}-{m}", "CK-1", sender=f"p{m}@outside.example",
+                                   received=f"2026-0{1 + m}-03T09:00:00Z")
+            before = len(self.stored())
+            started = capture_mail._stamp(self.clock.now)
+            # The run is killed (the host's child timeout) at its first read of mailbox E.
+            graph = self.graph
+
+            def killed(method, url, *rest):
+                if "/messages/delta" in url and e in url:
+                    raise Killed()
+                return graph(method, url, *rest)
+            self.graph = mock.Mock(wraps=graph, side_effect=killed,
+                                   delta_calls=graph.delta_calls)
+            with self.assertRaises(Killed):
+                self.lane_capture([upn_c, upn_d, upn_e], lanes=1, pages_per_turn=1,
+                                  page_size=1).run(
+                    lane_scope([upn_c, upn_d, upn_e], history="all", priority={}))
+            self.graph = graph
+        later = [m for m, _f in self.stored()][before:]
+        self.assertIn("N-NEW", later)             # before the new mailboxes' backlog
+        self.assertLess(len([m for m in later if m.startswith("D-")]), 8)   # one turn
+        # Mailbox D's inbox gave up its turn and the run never came back to it: it is
+        # still stamped as read by this run.
+        inbox = self.store.db.execute(
+            "SELECT reason, last_run_at FROM folders WHERE mailbox_id=? AND "
+            "folder_id='AAMkIN-4='", (d,)).fetchone()
+        self.assertEqual(inbox["reason"], capture_mail.TURN)
+        self.assertGreaterEqual(inbox["last_run_at"] or "", started, dict(inbox))
+
+    def test_a_backfilling_folder_new_mail_is_read_before_other_mailboxes_backlog(self):
+        # A folder whose round reached its deltaLink while ``history`` all still reads its
+        # older mail is incomplete, not complete: its delta, once due, is read in the first
+        # band all the same (2026-11-02: 156 such folders' new mail went unread from 30 Oct
+        # while new mailboxes' recent mail filled every budget).
+        from datetime import timedelta
+        c, upn_c = self.add_mailbox(3)
+        self.graph.put(c, "C-RECENT", "CK-1", received="2026-09-20T09:00:00Z")
+        for m in range(4):
+            self.graph.put(c, f"C-OLD-{m}", "CK-1", received=f"2021-0{1 + m}-01T09:00:00Z")
+        scope_c = lane_scope([upn_c], history="all", priority={})
+        self.lane_capture([upn_c], lanes=1, pages_per_turn=1, page_size=1,
+                          page_budget=2).run(scope_c)
+        inbox = self.store.db.execute(
+            "SELECT * FROM folders WHERE mailbox_id=? AND folder_id='AAMkIN-3='", (c,)
+        ).fetchone()
+        self.assertNotEqual(inbox["status"], "complete", dict(inbox))
+        self.assertTrue(inbox["delta_url"] and inbox["backfill_next_url"], dict(inbox))
+        self.assertIsNone(inbox["next_url"])
+        self.clock.now += timedelta(seconds=capture_mail.FRESH_SECONDS + 60)
+        self.graph.put(c, "C-NEW", "CK-1", received="2026-09-30T09:00:00Z")
+        d, upn_d = self.add_mailbox(4)
+        e, upn_e = self.add_mailbox(5)
+        for m in range(8):
+            for box, tag in ((d, "D"), (e, "E")):
+                self.graph.put(box, f"{tag}-{m}", "CK-1", sender=f"p{m}@outside.example",
+                               received=f"2026-09-0{1 + m}T09:00:00Z")
+        before = len(self.stored())
+        graph = self.graph
+
+        def killed(method, url, *rest):
+            if "/messages/delta" in url and e in url:
+                raise Killed()
+            return graph(method, url, *rest)
+        self.graph = mock.Mock(wraps=graph, side_effect=killed, delta_calls=graph.delta_calls)
+        with self.assertRaises(Killed):
+            self.lane_capture([upn_c, upn_d, upn_e], lanes=1, pages_per_turn=1,
+                              page_size=1).run(
+                lane_scope([upn_c, upn_d, upn_e], history="all", priority={}))
+        self.graph = graph
+        later = [m for m, _f in self.stored()][before:]
+        self.assertIn("C-NEW", later)
+        # Its turn read the delta, not the rest of its backlog ahead of the new mailboxes.
+        self.assertLessEqual(len([m for m in later if m.startswith("C-OLD")]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

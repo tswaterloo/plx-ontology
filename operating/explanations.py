@@ -134,11 +134,13 @@ _CASE_REASON_TEXT = {
 # and a question plan's answerability reasons, as clauses.
 _VERDICT_REASON_TEXT = {
     "not_issued_or_closed": "the order is not issued or is closed",
+    "historical_sage": "a completed historical Sage order, not judged",
     "no_expected_date": "no planned arrival date",
     "expected_dates_disagree": "the planned arrival dates disagree",
     "no_confirmation": "no supplier confirmation",
     "no_confirmation_found": "no supplier confirmation found",
     "confirmation_lead_only": "the supplier confirmation is only a lead",
+    "po_number_match_only": "only a PO-number match, no confirmation linked",
     "no_promised_date": "no promised date",
     "promises_disagree": "the promised dates disagree",
     "promise_slipped": "the promised date slipped",

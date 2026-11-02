@@ -76,7 +76,7 @@ function chaseWho(item: BriefingItem, supplier?: string | null): string | null {
  * numbers (days, money) right-aligned, and the action. The trail opens inline on demand;
  * the next step lives on the record page, never repeated per row.
  */
-export function BriefingRow({ item, latePo, dense = false }: { item: BriefingItem; latePo?: LatePo; dense?: boolean }) {
+export function BriefingRow({ item, latePo, dense = false, position }: { item: BriefingItem; latePo?: LatePo; dense?: boolean; position?: number }) {
   const [open, setOpen] = useState(false);
   const href = safeHref(item.open_url) ?? objectHref(item.object_type, item.object_id);
   const kind = briefingKind(item.event_type, { amountSuspect: !!(item.amount && item.amount_suspect), fallbackLabel: item.label });
@@ -89,7 +89,8 @@ export function BriefingRow({ item, latePo, dense = false }: { item: BriefingIte
   return (
     <li className="py-3" data-testid="briefing-item">
       <div className="flex items-start gap-3">
-        <span className="w-5 shrink-0 pt-0.5 text-right text-meta tabular-nums text-muted">{item.rank}</span>
+        {/* its place in the list as shown: ranks of items left out (tests, other teams) would leave gaps */}
+        <span className="w-5 shrink-0 pt-0.5 text-right text-meta tabular-nums text-muted">{position ?? item.rank}</span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <StatusBadge shown={kind} />
@@ -224,10 +225,10 @@ export function BriefingCounts({ briefing, compact = false }: { briefing: Briefi
   ));
   return (
     <div className="space-y-1 text-meta text-muted" data-testid="briefing-counts">
-      {compact && unchecked.length > 1 ? (
+      {unchecked.length > 1 ? (
         <details>
           <summary className="cursor-pointer hover:text-fg">
-            {unchecked.length} checks didn&apos;t run in full this time
+            {unchecked.length} checks didn&apos;t run in full this time{compact ? "" : ", so this list may be short"}
           </summary>
           <div className="mt-1 space-y-1">{lines}</div>
         </details>
@@ -335,8 +336,8 @@ export function BriefingCard({
         <p className="text-row text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing routed to you needs attention."}</p>
       ) : (
         <ol className="divide-y divide-border">
-          {shownItems.map((i) => (
-            <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} />
+          {shownItems.map((i, n) => (
+            <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} position={n + 1} />
           ))}
         </ol>
       )}

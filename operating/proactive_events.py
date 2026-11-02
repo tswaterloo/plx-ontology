@@ -16,7 +16,13 @@ Set-based detectors (one pass over the store):
   which follows the supplier's promise) whose value superseded within ``REVISION_DAYS``
   of the run's day was earlier than the value now held by the same source field (both
   versions cited, each its own group); or two settled supplier confirmations of one order
-  whose later document promises a later delivery date (both cited);
+  whose later document promises a later delivery date (both cited); or, per order line,
+  two confirmations each promising the line's own item a date (``line_promises``, the
+  line matched on firm evidence by ``operating.line_promises``) whose later document
+  promises that line a later arrival (both confirmations, their dates and the line's
+  matched value cited, the line and its match basis in the event). A confirmation's
+  event tells a reader who may not read every source a promise sits in that a later
+  one it cannot see may exist (``caveat``);
 * ``lot_attention``: a lot whose expiry date falls within ``EXPIRY_DAYS`` of the run's day
   (``lot_near_expiry``), and a batch on quality hold whose status is still active
   (``lot_on_hold``; a closed status is skipped, an unmapped one ``not_evaluated``);
@@ -114,7 +120,10 @@ def _word(row: Mapping[str, Any] | None) -> str:
 # --------------------------------------------------------------------------- eta_slipped
 
 def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
-                settled: Sequence[str], confirming: Sequence[str]) -> dict[str, Any]:
+                settled: Sequence[str], confirming: Sequence[str],
+                caveat: Callable[[Any], None] = lambda _gap: None) -> dict[str, Any]:
+    """``caveat(gap)``: records on a gap resting on supplier promises that a reader who
+    may not read every promise is told a later one may exist (the engine's)."""
     gaps = []
     skipped: Counter = Counter()
     since = (as_of - timedelta(days=REVISION_DAYS)).isoformat()
@@ -178,9 +187,13 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     for link in st.links(["SupplierConfirmation.confirms"], confirming):
         confirms[link["to_object"]].append((link["from_object"], link["markings"]))
     several = {po: c for po, c in confirms.items() if len(c) > 1}
+    revised = len(gaps)   # the source field revisions above rest on no promise read
     if several:
-        found = st.values(["SupplierConfirmation"], ("delivery_date", "document_date"),
+        found = st.values(["SupplierConfirmation"],
+                          ("delivery_date", "document_date", LINE_PROMISES),
                           objects=sorted({c for cs in several.values() for c, _ in cs}))
+        gaps += _line_slips(st, several, found, settled, gap=gap, cites=cites,
+                            skipped=skipped)
         for po, cs in sorted(several.items()):
             dated = []
             for conf, marks in cs:
@@ -189,7 +202,8 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                     props.get("document_date"))
                 if promised is None or issued is None or _day(promised["value"]) is None \
                         or _day(issued["value"]) is None:
-                    skipped["confirmation_undated"] += 1
+                    if not props.get(LINE_PROMISES):   # per item: read by line above
+                        skipped["confirmation_undated"] += 1
                     continue
                 dated.append((_day(issued["value"]), _day(promised["value"]), conf,
                               [promised, issued], marks))
@@ -212,7 +226,91 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                     groups=[cites(earlier[3], earlier[4]), cites(later[3], later[4])],
                     event={"days": days, "date_was": earlier[1].isoformat(),
                            "date_now": later[1].isoformat()}))
+    for made in gaps[revised:]:
+        caveat(made)
     return result(gaps, not_evaluated=skipped)
+
+
+LINE_PROMISES = "line_promises"
+LINE_OWN = ("description", "item_code", "line_type")
+
+
+def _line_slips(st: Any, several: Mapping[str, Sequence[tuple[str, str]]],
+                found: Mapping[str, Any], settled: Sequence[str], *, gap: Callable,
+                cites: Callable, skipped: Counter) -> list[dict[str, Any] | None]:
+    """Per order line: two confirmations of one order, each promising the line's own item
+    a date (``SupplierConfirmation.line_promises``, the line matched to the item on firm
+    evidence only, ``operating.line_promises.match``), the later document promising that
+    line a later arrival. Each event cites both confirmations' per-item promise and
+    document date, and the line's own value it was matched by (each its own group)."""
+    from operating import line_promises as lp
+
+    lines: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for link in st.links(["PurchaseOrderLine.line_of"], settled):
+        if link["to_object"] in several:
+            lines[link["to_object"]].append((link["from_object"], link["markings"]))
+    if not lines:
+        return []
+    own = st.values(["PurchaseOrderLine"], LINE_OWN,
+                    objects=sorted({ln for ls in lines.values() for ln, _ in ls}))
+    out: list[dict[str, Any] | None] = []
+    for po, cs in sorted(several.items()):
+        if not lines.get(po):
+            continue
+        props_of = {ln: (own.get(ln) or {}).get("props") or {} for ln, _ in lines[po]}
+        line_marks = dict(lines[po])
+        descriptors = {ln: lp.descriptor(lambda name, _p=props: [
+            str(r["value"]) for r in _p.get(name, ()) if r.get("value") not in (None, "")])
+            for ln, props in props_of.items()}
+        # line -> [(issued, promised, confirmation, cited rows, link markings, basis)]
+        promised: dict[str, list[tuple[date, date, str, list, str, str]]] = defaultdict(list)
+        for conf, marks in cs:
+            props = (found.get(conf) or {}).get("props") or {}
+            row, issued = _one(props.get(LINE_PROMISES)), _one(props.get("document_date"))
+            if row is None:
+                continue
+            day_issued = _day(issued["value"]) if issued is not None else None
+            blocks = lp.blocks_of(row["value"])
+            if day_issued is None or not blocks:
+                skipped["line_promises_undated"] += 1
+                continue
+            hits, _rest = lp.match(descriptors, blocks)
+            for ln, (index, basis) in hits.items():
+                arrival = blocks[index].get("delivery_date")
+                day = _day(arrival.get("value")) if isinstance(arrival, Mapping) and \
+                    isinstance(arrival.get("value"), str) else None
+                if day is not None:
+                    promised[ln].append((day_issued, day, conf, [row, issued], marks, basis))
+        for ln, dated in sorted(promised.items()):
+            dated.sort(key=lambda d: (d[0], d[2]))
+            for earlier, later in zip(dated, dated[1:]):
+                if later[0] <= earlier[0] or later[1] <= earlier[1]:
+                    continue
+                days = (later[1] - earlier[1]).days
+                # the line's own value it was matched by: the evidence of the match
+                matched = [r for name in (("item_code", "line_type")
+                                          if later[5] == "item_code" else ("description",))
+                           for r in props_of[ln].get(name, ())]
+                basis = later[5].replace("_", " ")
+                out.append(gap(
+                    "eta_slipped", "eta_slipped", po, "PurchaseOrder",
+                    f"{earlier[2]}|{later[2]}|{ln}",
+                    summary=f"The supplier's promised delivery of one line moved later by "
+                            f"{days} days, from {earlier[1]} to {later[1]}",
+                    missing="Whether the new promise for this line still meets the orders "
+                            "it supplies",
+                    why=f"A confirmation of {later[0]} promises {later[1]} for the line "
+                        f"(matched to its item by {basis}); the one of {earlier[0]} promised "
+                        f"{earlier[1]} (both cited).",
+                    priority="high" if days >= 7 else "medium",
+                    about=("PurchaseOrder", "lateness"),
+                    groups=[cites(earlier[3], earlier[4]), cites(later[3], later[4]),
+                            cites(matched, line_marks[ln])],
+                    event={"days": days, "date_was": earlier[1].isoformat(),
+                           "date_now": later[1].isoformat(), "line": ln,
+                           "matched_by": later[5], "confirmation_was": earlier[2],
+                           "confirmation_now": later[2]}))
+    return out
 
 
 # --------------------------------------------------------------------------- lots

@@ -24,10 +24,12 @@ export function Stat({
   testId?: string;
 }) {
   const c = status ? STATUS_CLASS[status] : null;
+  // a long value ("24 Jun 2026") steps down on a phone so it stays on one line
+  const long = typeof value === "string" && value.length > 8;
   const body = (
     <>
       <span className="block text-label uppercase text-muted">{label}</span>
-      <span className={cn("mt-1 block break-words text-stat tabular-nums", c ? c.fg : "text-fg")}>{value}</span>
+      <span className={cn("mt-1 block break-words text-stat tabular-nums", long && "max-sm:text-[20px] max-sm:leading-[26px]", c ? c.fg : "text-fg")}>{value}</span>
       {caption && <span className="mt-0.5 block truncate text-meta text-muted">{caption}</span>}
     </>
   );

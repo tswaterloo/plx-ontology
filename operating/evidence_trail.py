@@ -183,7 +183,8 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
     (never counted or named: the tools trim before counting)."""
     budget = _Budget(seconds)
     out: dict[str, Any] = {"subject": oid, "label": label, "state": None, "late": None,
-                           "days_late": None, "verdict": None, "eta": None, "steps": [],
+                           "days_late": None, "verdict": None, "vendor_verdict": None,
+                           "eta": None, "vendor_promise": None, "steps": [],
                            "hidden": 0, "may_hide": False, "gaps": [],
                            "next_action": None}
     hidden: list[int | None] = []
@@ -316,11 +317,20 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
     steps.append(step("verdict", verdict, at=entry.get("measured_on"),
                       handle=because[0] if because else None,
                       check="computed_from_cited_records", detail=rule))
+    vendor = vendor_sentence(entry.get("vs_vendor_promise"))
+    if vendor is not None:
+        # beside our verdict, never in its place: labelled the vendor's promise
+        steps.append(step("verdict", vendor[0], at=vendor[1], handle=vendor[2],
+                          check="computed_from_cited_records",
+                          detail="The vendor's own promised date, not our requested-by "
+                                 "date; it never replaces it."))
     out.update(state=entry.get("state"), late=entry.get("late"),
                measured_against=entry.get("measured_against"),
                days_late=entry.get("days_late"), verdict=verdict,
+               vendor_verdict=vendor[0] if vendor else None,
                at_risk=entry.get("at_risk"), today=today)
     out["eta"] = eta_check(entry, steps, promises_whole=promises_whole)
+    out["vendor_promise"] = vendor_promise(call, entry.get("vs_vendor_promise"), budget)
     out["steps"] = ordered(steps)[:MAX_STEPS]
     out["hidden"] = sum(h for h in hidden if h)
     out["may_hide"] = any(h is None for h in hidden)
@@ -360,6 +370,9 @@ def verdict_sentence(entry: Mapping[str, Any]) -> tuple[str, str]:
             latest = entry.get("revised_date") or entry.get("promised_date")
             text += f" At risk: the supplier's latest promise ({latest}) is after it."
         return (text, rule)
+    if state == "not_applicable" and "historical_sage" in (entry.get("reasons") or ()):
+        return ("Not judged: a historical Sage purchase order that Sage records as "
+                "complete.", rule)
     if state == "not_applicable":
         return ("Not late: the purchase order is not issued, cancelled or closed, so "
                 "nothing is due.", rule)
@@ -367,6 +380,124 @@ def verdict_sentence(entry: Mapping[str, Any]) -> tuple[str, str]:
     return ("Lateness is not stated: " + str(gap.get("detail") or gap.get("reason")
                                              or "a date it needs is not proven")[:200]
             .rstrip(".") + ".", rule)
+
+
+_VENDOR_UNDETERMINED = {
+    "promises_disagree": "the vendor's documents state different dates",
+    "received_date_unproven": "the receipt dates are not all readable",
+    "receipts_unproven": "no receipt is proven absent",
+    "receipt_coverage_unproven": "a receipt may cover the order",
+    "line_promises_partial": "the vendor promised items their own dates and not every "
+                             "open line is matched to one",
+    "line_promises_unmatched": "the vendor promised items their own dates and none is "
+                               "matched to a line of this order"}
+
+
+def vendor_sentence(found: Any) -> tuple[str, str | None, str | None] | None:
+    """The lateness entry's ``vs_vendor_promise`` as one sentence labelled as the vendor's
+    promise (never our due date), the day it was measured on and the cited promise's
+    handle; a lead-tier promise is a possible vendor promise, its link unconfirmed, never
+    judged. None when the entry states none."""
+    if not isinstance(found, Mapping):
+        return None
+    values = [v for v in found.get("values") or () if isinstance(v, Mapping)]
+    handle = handle_of(values[-1]) if values else None
+    day, on = found.get("promised_date"), found.get("measured_on")
+    if found.get("basis") == "possible_vendor_promise":
+        text = (f"Possible vendor promise (unconfirmed link): {day}. " if day else
+                "Possible vendor promises (unconfirmed link), per item: " + ", ".join(
+                    str(ln.get("promised_date")) for ln in found["lines"]
+                    if ln.get("promised_date")) + ". " if found.get("lines") else
+                "Possible vendor promises (unconfirmed link) state different dates. ")
+        return text + "Not judged: the document's link to this PO is not confirmed.", None, \
+            handle
+    head = "Against the vendor's promise (not our due date): "
+    state, days = found.get("state"), found.get("days_late")
+    if state == "late" and found.get("measured_against") == "received":
+        text = f"late, received on {on}, {days} days after the vendor's promised {day}."
+    elif state == "late":
+        text = f"late, open on {on}, {days} days past the vendor's promised {day}."
+    elif state == "on_time":
+        text = f"on time, received on {on}, by the vendor's promised {day}."
+    elif state == "not_due":
+        text = f"on track, open on {on}, the vendor's promised {day} has not passed."
+    else:
+        why = _VENDOR_UNDETERMINED.get(str(found.get("reason")), "a date it needs is unproven")
+        text = f"not stated: {why}."
+    if found.get("per_line") and state in ("late", "on_time", "not_due"):
+        text = text[:-1] + (" (per line: the vendor promised each item its own date)."
+                            if state != "late" else
+                            " (per line: the line furthest past its own promised date).")
+    if found.get("complete") is False:
+        text = text[:-1] + " (a later promise you cannot see may exist)."
+    return head + text, on, handle
+
+
+VENDOR_STATES = ("late", "on_time", "not_due", "received", "undetermined", "not_judged")
+
+
+def vendor_promise(call: Callable[[str, Mapping[str, Any]], Any], found: Any,
+                   budget: "_Budget") -> dict[str, Any] | None:
+    """The lateness entry's ``vs_vendor_promise`` as fields the app shows beside the ETA
+    check (never in place of our verdict): the link (``confirmed``: a firm link;
+    ``unconfirmed_link``: a lead, its dates stated, never judged), the promised date, the
+    order against it and, per line when the vendor promised each item its own date, each
+    matched line with its own date and verdict. Every date carries its cited value's
+    handle (the app decides each for the reader again); a line's label is read as the
+    reader (``plx.object``), None when it cannot be. None when the entry states none."""
+    if not isinstance(found, Mapping) or found.get("link") not in ("confirmed",
+                                                                    "unconfirmed_link"):
+        return None
+
+    def last_handle(row: Mapping[str, Any]) -> str | None:
+        values = [v for v in row.get("values") or () if isinstance(v, Mapping)]
+        return handle_of(values[-1]) if values else None
+
+    def state_of(row: Mapping[str, Any]) -> str:
+        state = row.get("state")
+        return state if state in VENDOR_STATES else "undetermined"
+
+    days = found.get("days_late")
+    out: dict[str, Any] = {
+        "link": found["link"], "state": state_of(found),
+        "promised_date": day_of(found.get("promised_date")),
+        "days_late": days if isinstance(days, int) and days > 0 else None,
+        "measured_against": found.get("measured_against")
+        if found.get("measured_against") in ("today", "received") else None,
+        "reason": found.get("reason"), "complete": found.get("complete") is not False,
+        "handle": last_handle(found), "per_line": bool(found.get("per_line")), "lines": [],
+        "lines_unmatched": int(found.get("lines_unmatched") or 0)}
+    for row in found.get("lines") or ():
+        if not isinstance(row, Mapping) or not isinstance(row.get("line"), str):
+            continue
+        label = None
+        try:
+            budget.check()
+            card = call("plx.object", {"object_id": row["line"]})
+            if _ok(card):
+                label = text_of((card.get("object") or {}).get("display")) or line_words(card)
+        except TrailCut:
+            pass
+        days = row.get("days_late")
+        out["lines"].append({
+            "line": row["line"], "label": label, "state": state_of(row),
+            "promised_date": day_of(row.get("promised_date")),
+            "days_late": days if isinstance(days, int) and days > 0 else None,
+            "matched_by": row.get("matched_by"), "handle": last_handle(row)})
+    return out
+
+
+def line_words(card: Mapping[str, Any]) -> str | None:
+    """An order line without a display, named by its own cited item code and description
+    ("30046252 · Cond. stand. 5 µs/cm"), as the reader reads them; None without either."""
+    got: dict[str, str] = {}
+    for v in card.get("values") or ():
+        if isinstance(v, Mapping) and v.get("property") in ("item_code", "description"):
+            text = text_of(v.get("value"))
+            if text:
+                got.setdefault(v["property"], text)
+    words = " · ".join(got[k] for k in ("item_code", "description") if k in got)
+    return words[:200] or None
 
 
 def eta_check(entry: Mapping[str, Any], steps: Sequence[Mapping[str, Any]], *,
@@ -404,6 +535,11 @@ def eta_check(entry: Mapping[str, Any], steps: Sequence[Mapping[str, Any]], *,
                 "text": "Lead only: a document that looks like a confirmation names this "
                         "PO, but its link to the PO is not confirmed, so its date does "
                         "not count.", "handle": leads[0]["handle"] if leads else None}
+    if "po_number_match_only" in reasons:
+        return {"state": "not_determined",
+                "text": "Not determined: no vendor confirmation is linked to this PO; the "
+                        "only lead is another order record matching its PO number, not "
+                        "confirmed as the same order, so its documents are not read."}
     if withheld:
         return {"state": "withheld", "text": "A supplier promise exists that you can't "
                                              "open, so the ETA is not shown."}

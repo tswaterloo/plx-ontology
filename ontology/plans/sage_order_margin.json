@@ -1,0 +1,305 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "sage_order_margin",
+ "families": [
+  "F31"
+ ],
+ "title": "Margin of a Sage sales order, item by item: invoiced revenue against the cost Sage booked to cost of sales",
+ "description": "Sage O/E only. Per item of the order: revenue = the invoice lines' extinvmisc less their invdisc share, times the invoice's posted rate inrate (invoice currency into the home currency CAD; 1 when the invoice is in CAD); cost = qtyshipped x unitconv / cosuntconv x cosuntcst, the amount Sage posted to cost of sales for the line; margin = revenue - cost, % on price. Stated only when the order is a type-1 sales order with nothing outstanding (backorders included), every invoice's lines are all read (invlines) and its line discounts sum to its header discount, per item the invoiced quantity equals the shipped-to-date quantity, and every invoiced item line has a non-zero unit cost; else typed gaps and no figure. Miscellaneous charge lines are not goods and stay out (counted). Sage credit notes are not served: every figure is before any credit note (sage_credit_notes_not_served). BC and Portal records never enter a sum.",
+ "root": {
+  "object_types": [
+   "SalesOrder"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "SalesOrder",
+    "property": "order_number"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 50,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "lines",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesOrderLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "required": true
+  },
+  {
+   "id": "line_read",
+   "tool": "plx.object",
+   "from": "lines",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoice.bills",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "invoice_read",
+   "tool": "plx.object",
+   "from": "invoices",
+   "bind": "object_id"
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": "invoices",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "SalesInvoiceLine.line_of",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   }
+  },
+  {
+   "id": "invoice_line_read",
+   "tool": "plx.object",
+   "from": "invoice_lines",
+   "bind": "object_id"
+  }
+ ],
+ "evidence": [
+  {
+   "name": "order_number",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "order_number"
+   ]
+  },
+  {
+   "name": "order_type",
+   "kind": "property",
+   "object_type": "SalesOrder",
+   "properties": [
+    "sage_order_type"
+   ]
+  },
+  {
+   "name": "line_type",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "line_type"
+   ]
+  },
+  {
+   "name": "line_item",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "sage_item_code"
+   ]
+  },
+  {
+   "name": "outstanding",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "outstanding_quantity"
+   ]
+  },
+  {
+   "name": "shipped",
+   "kind": "property",
+   "object_type": "SalesOrderLine",
+   "properties": [
+    "shipped_quantity"
+   ],
+   "quantity_role": "shipped"
+  },
+  {
+   "name": "invoice",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "invoice_number"
+   ]
+  },
+  {
+   "name": "invoice_currency",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "currency"
+   ]
+  },
+  {
+   "name": "home_currency",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "home_currency"
+   ]
+  },
+  {
+   "name": "rate",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "exchange_rate"
+   ]
+  },
+  {
+   "name": "invoice_lines_count",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "line_count"
+   ]
+  },
+  {
+   "name": "invoice_discount",
+   "kind": "property",
+   "object_type": "SalesInvoice",
+   "properties": [
+    "invoice_discount"
+   ]
+  },
+  {
+   "name": "invoice_line_type",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "line_type"
+   ]
+  },
+  {
+   "name": "invoice_item",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "sage_item_code"
+   ]
+  },
+  {
+   "name": "invoiced",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "invoiced_quantity"
+   ],
+   "quantity_role": "invoiced"
+  },
+  {
+   "name": "extended",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "extended_amount"
+   ]
+  },
+  {
+   "name": "discount_share",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "invoice_discount_share"
+   ]
+  },
+  {
+   "name": "unit_cost",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "unit_cost"
+   ]
+  },
+  {
+   "name": "cost_conversion",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "cost_unit_conversion"
+   ]
+  },
+  {
+   "name": "unit_conversion",
+   "kind": "property",
+   "object_type": "SalesInvoiceLine",
+   "properties": [
+    "unit_conversion"
+   ]
+  },
+  {
+   "name": "order",
+   "kind": "select",
+   "step": "root_read",
+   "path": "object.object_id",
+   "reduce": "first",
+   "description": "The order's object: only a Sage O/E order (binding portal.sage_oe_order_header) is computed."
+  },
+  {
+   "name": "order_margin",
+   "kind": "compute",
+   "required": true,
+   "description": "Per item: invoiced revenue (extended amount less the invoice-discount share, times the invoice's posted rate into the home currency) against the cost Sage booked to cost of sales (quantity x unit conversion / cost-unit conversion x unit cost); the order totals and margin % only when the order is a sales order shipped and invoiced in full over invoices read whole.",
+   "engine": "sage_order_margin",
+   "engine_args": {
+    "roles": {
+     "order_number": "order_number",
+     "order_type": "order_type",
+     "line_type": "line_type",
+     "line_item": "line_item",
+     "outstanding": "outstanding",
+     "shipped": "shipped",
+     "invoice": "invoice",
+     "invoice_currency": "invoice_currency",
+     "home_currency": "home_currency",
+     "rate": "rate",
+     "invoice_lines_count": "invoice_lines_count",
+     "invoice_discount": "invoice_discount",
+     "invoice_line_type": "invoice_line_type",
+     "invoice_item": "invoice_item",
+     "invoiced": "invoiced",
+     "extended": "extended",
+     "discount_share": "discount_share",
+     "unit_cost": "unit_cost",
+     "cost_conversion": "cost_conversion",
+     "unit_conversion": "unit_conversion",
+     "order": "order"
+    },
+    "line_link": "SalesOrderLine.line_of",
+    "invoice_link": "SalesInvoice.bills",
+    "bindings": [
+     "portal.sage_oe_order_header"
+    ],
+    "invoice_line_link": "SalesInvoiceLine.line_of"
+   }
+  }
+ ]
+}

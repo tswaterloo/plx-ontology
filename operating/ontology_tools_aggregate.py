@@ -187,6 +187,9 @@ MAX_GROUPS = 200
 MAX_CITATIONS = 50
 MAX_GAPS = 20
 MAX_ROWS = 200
+# Scan segments (each at most ontology_tools.FILTER_SCAN_CAP readable objects) a filter
+# count reads before it says it is incomplete: 200 x 5000 objects of one type.
+MAX_FILTER_SEGMENTS = 200
 NUMERIC = frozenset({"integer", "decimal", "money", "quantity"})
 
 # --------------------------------------------------------------------------- value picking
@@ -730,6 +733,65 @@ class AggregateTools:
                 out[row["near"]] = _merge_reason(out.get(row["near"]), row["reason"])
         return out
 
+    def _filtered_root(self, scope: Any, arguments: Mapping[str, Any], actor: Actor
+                       ) -> tuple[list[str], list[dict]]:
+        """(the members, their gaps) of an ``object_type`` + ``filters`` aggregate: every
+        object of the type whose readable values satisfy every filter (plx.find's filter
+        grammar and matcher, ``OntologyTools._match_filters``), scanned to the end of the
+        type in its segments, so the count has no scan cap. Members are only objects this
+        reader may read (the finder's SQL audience and marking rules and item ACLs, then
+        this tool's own visibility rules again: an object either rule hides is never a
+        member). A record whose filtered value is withheld from the reader is neither
+        matched nor excluded: its gap makes the answer partial, never a smaller exact
+        count; so does a projection this host has not built, or a scan past
+        ``MAX_FILTER_SEGMENTS`` segments."""
+        base = self.base
+        object_type = arguments["object_type"]
+        spec = self.schema.object_types.get(object_type) if self.schema is not None else None
+        if spec is None:
+            raise ToolError("unknown_object_type", f"no object type {object_type}",
+                            "call plx.schema for the declared object types")
+        declared = {p["name"] for p in spec.get("properties", ()) if isinstance(p, Mapping)}
+        unknown = sorted({f["property"] for f in arguments["filters"]} - declared)
+        if unknown:
+            raise ToolError("unknown_property",
+                            f"{object_type} declares no property {', '.join(unknown)}"[:600],
+                            "call plx.schema for the type's properties")
+        filters = base._filters_as_stored(object_type, list(arguments["filters"]))
+        found_scope = base._scope(actor, base._as_known_at(arguments))
+        subject = f"{object_type} matching filters"
+        members: list[str] = []
+        undecided: set[str] = set()
+        gaps: list[dict] = []
+        start, segments = "", 0
+        while True:
+            matches, truncated, unsure, position = base._match_filters(
+                found_scope, object_type, filters, start)
+            members += [match.object_id for match in matches]
+            undecided |= unsure
+            segments += 1
+            if not truncated:
+                break
+            if position is None or position <= start or segments >= MAX_FILTER_SEGMENTS:
+                gaps.append(_gap("unknown", "scan_cap", subject,
+                                 "the filter scan could not reach the end of the type; the "
+                                 "count is not complete"))
+                break
+            start = position
+        if undecided:
+            from operating.ontology_tools import _withheld_filter_gap
+            gaps.append(_withheld_filter_gap(object_type, undecided))
+        if not getattr(base, "projection_built", True):
+            gaps.append(_gap("not_ingested", "projection_not_built", subject,
+                             "this host has no built projection store: nothing is counted"))
+        unique = sorted(set(members))
+        visible = self.walk._visible_ids(scope, unique)
+        if len(visible) != len(unique):
+            gaps.append(_gap("inaccessible", "marking_withheld", subject,
+                             "some matching records the reader can list are not readable "
+                             "under this tool's from-time rule and were not counted"))
+        return [oid for oid in unique if oid in visible], gaps
+
     def _aggregate(self, arguments: Mapping[str, Any], actor: Actor, gate: str
                    ) -> dict[str, Any]:
         scope = self.walk._scope(actor, arguments, gate)
@@ -742,7 +804,13 @@ class AggregateTools:
         if path and not group_by:
             raise ToolError("invalid_input", "path leads to the objects whose properties "
                             "group the measure; name them in group_by")
-        roots, root_gaps = self.walk._root(scope, arguments["set"])
+        if "set" in arguments:
+            if "object_type" in arguments or "filters" in arguments:
+                raise ToolError("invalid_input", "name a set or object_type with filters, "
+                                "never both")
+            roots, root_gaps = self.walk._root(scope, arguments["set"])
+        else:
+            roots, root_gaps = self._filtered_root(scope, arguments, actor)
         gaps = _Gaps()
         gaps.extend(root_gaps)
         # A member its source asserts removed at T is no member then (left out of every

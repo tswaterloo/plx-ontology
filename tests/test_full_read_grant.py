@@ -100,9 +100,21 @@ class FullReadGrantTest(unittest.TestCase):
                         .item_visible(vince.actor, "teams:chat:x", chat))
         self.assertFalse(_EmployeeItemAcl(audience, other, "teams-chat")
                          .item_visible(other.actor, "teams:chat:x", chat))
-        # Finance and price markings: the named reader's principal only.
+        # Every marking for the owner grant (every source, every mailbox: unrestricted);
+        # the named reader's principal only.
+        self.assertTrue(vince.unrestricted())
+        self.assertFalse(other.unrestricted())
         grants = ep.full_read_marking_grants({"finance": frozenset({"staff:x"})}, vince)
         self.assertEqual(grants["finance"], frozenset({"staff:x", "employee:" + VINCE}))
+        from ontology.store_ddl import MARKINGS
+        self.assertEqual({m for m, held in grants.items() if "employee:" + VINCE in held},
+                         set(MARKINGS))
+        # A grant short of a source holds the finance and price markings only.
+        doc = json.loads(json.dumps(self.policy_doc))
+        doc["full_read"][0]["scopes"] = ["finance", "mail", "sharepoint"]
+        narrow = self.resolver(doc).resolve(ep.EmployeePrincipal(TID, VINCE))
+        self.assertFalse(narrow.unrestricted())
+        grants = ep.full_read_marking_grants({"finance": frozenset({"staff:x"})}, narrow)
         self.assertIn("employee:" + VINCE, grants["purchasing_prices"])
         self.assertNotIn("pii", grants)
         self.assertEqual(ep.full_read_marking_grants({"finance": frozenset({"staff:x"})}, other),
@@ -136,6 +148,35 @@ class FullReadGrantTest(unittest.TestCase):
         held = self.resolver(exclusion=PeopleExclusion([VINCE])).resolve(
             ep.EmployeePrincipal(TID, VINCE))
         self.assertIsNone(held.full_read)
+
+    def test_the_unrestricted_owner_never_reads_an_excluded_persons_mailbox_or_files(self):
+        """Owner-open keeps ``PLX_EXCLUDED_PEOPLE_OIDS`` fail-closed: the unrestricted
+        reader opens no mailbox of an excluded person, no file an excluded person created
+        (even under a read permission list that does not name them), no chat they are in;
+        an exclusion that cannot be decided leaves nobody unrestricted."""
+        resolver = self.resolver()
+        vince = resolver.resolve(ep.EmployeePrincipal(TID, VINCE))
+        self.assertTrue(vince.unrestricted())
+        self.assertEqual(self.denial(resolver, VINCE, "graph-mail",
+                                     {"source_acl": mail_acl(EXCLUDED, "gone@example.com")}),
+                         ep.MAILBOX_ACCESS_UNDETERMINED)
+        theirs = dict(SP_RECORD, created_by=EXCLUDED, last_modified_by=BOX)
+        self.assertEqual(self.denial(resolver, VINCE, "sharepoint", theirs),
+                         EMPLOYEE_ACL_DENIED)
+        self.assertIsNone(self.denial(resolver, VINCE, "sharepoint",
+                                      dict(theirs, created_by=BOX)))
+        self.assertFalse(vince.full_read_allows(
+            "teams-chat", {"status": "read", "identities": [BOX, EXCLUDED]}))
+        for guard in (PeopleExclusion([]),
+                      PeopleExclusion(unavailable="excluded_people_unresolved")):
+            held = self.resolver(exclusion=guard).resolve(ep.EmployeePrincipal(TID, VINCE))
+            self.assertFalse(held.unrestricted())
+            gate = ep.EmployeeActorGate(self.resolver(exclusion=guard), "plx")
+            self.assertFalse(ep.reader_unrestricted(
+                gate, Actor("plx", frozenset({"employee:" + VINCE}), "restricted")))
+        # Any failure deciding the flag is no flag.
+        self.assertFalse(ep.reader_unrestricted(
+            SimpleNamespace(entitlement=lambda actor: 1 / 0), object()))
 
     def test_mail_scope_shared_only_reads_only_declared_shared_mailboxes(self):
         doc = json.loads(json.dumps(self.policy_doc))
@@ -218,13 +259,24 @@ class FullReadGrantTest(unittest.TestCase):
     def test_quality_is_not_granted_a_non_qc_grantee_opens_no_batches_qc_document(self):
         access = json.loads(self.access.read_text("utf-8"))
         access["users"][0].update(role="STAFF", accessLevel="L2")   # Vince, not admin/QC
-        resolver = self.resolver(access=access)
+        # A grant short of a source (no Teams): not the owner's, so quality is not granted.
+        doc = json.loads(json.dumps(self.policy_doc))
+        doc["full_read"][0]["scopes"] = ["finance", "mail", "sharepoint"]
+        path = self.tmp / "access-alt.json"
+        path.write_text(json.dumps(access), "utf-8")
+        resolver = ep.EmployeePermissionResolver(
+            ep.EmployeePermissionPolicy.from_json(doc), ep.PortalAccessSnapshot(path),
+            people_exclusion=PeopleExclusion([EXCLUDED]))
         vince = resolver.resolve(ep.EmployeePrincipal(TID, VINCE))
         self.assertIsNotNone(vince.full_read)
         self.assertFalse(vince.qc_document_reader)
         self.assertEqual(self.denial(resolver, VINCE, "sharepoint", QC_RECORD),
                          EMPLOYEE_ACL_DENIED)
         self.assertIsNone(self.denial(resolver, VINCE, "sharepoint", SP_RECORD))
+        # The owner grant (every source: unrestricted) opens it without a QC role.
+        owner = self.resolver(access=access)
+        self.assertFalse(owner.resolve(ep.EmployeePrincipal(TID, VINCE)).qc_document_reader)
+        self.assertIsNone(self.denial(owner, VINCE, "sharepoint", QC_RECORD))
         # The admin grantee (a QC document reader) opens it.
         self.assertIsNone(self.denial(self.resolver(), VINCE, "sharepoint", QC_RECORD))
 
@@ -284,7 +336,8 @@ class FullReadGrantTest(unittest.TestCase):
                 actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
                 host = host_access(runtime, None, actor, markings=("l5",)).host
                 held[oid] = set(host.policy_now(actor).held_markings(actor))
-        self.assertEqual(held[VINCE], {"finance", "purchasing_prices", "l5"})
+        from ontology.store_ddl import MARKINGS
+        self.assertEqual(held[VINCE], set(MARKINGS))   # unrestricted: every marking
         self.assertEqual(held[OTHER], {"l5"})
 
     def test_no_access_caveat_for_a_reader_whose_grant_opens_every_item(self):

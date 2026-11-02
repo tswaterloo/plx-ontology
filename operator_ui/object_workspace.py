@@ -184,6 +184,7 @@ import re
 import sqlite3
 from stat import S_ISREG
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology.types import Actor, ValidationError
@@ -2157,6 +2158,20 @@ def audience_unit(handle: str) -> str | None:
     return kind.unit(path)
 
 
+# A reader's decided ``ReadPolicy`` is kept per session while its inputs are unchanged
+# (``HostAccess._policy``), at most this long, so an input no stamp names still applies
+# within it; KEPT_POLICIES sessions per workspace.
+POLICY_KEPT_SECONDS = 120.0
+KEPT_POLICIES = 8
+
+
+def _same_inputs(held: tuple, now: tuple) -> bool:
+    """``held``'s inputs (values, objects, ...) are ``now``'s: equal values, the very same
+    objects."""
+    return held[0] == now[0] and len(held[1]) == len(now[1]) \
+        and all(a is b for a, b in zip(held[1], now[1]))
+
+
 class HostAccess:
     """One console reader's tools, grants and per-item gates: the case host's.
 
@@ -2181,6 +2196,9 @@ class HostAccess:
         self.session: Any = None
         self._local = threading.local()
         host.pinned = self._pinned_policy
+        # session -> (its policy inputs' values, their objects, until, the policy)
+        self._kept_policies: dict[Any, tuple[tuple, tuple, float, Any]] = {}
+        self._kept_lock = threading.Lock()
 
     def close(self) -> None:
         self.host.close()
@@ -2213,16 +2231,63 @@ class HostAccess:
 
     @contextmanager
     def request(self):
-        """One answer: one grant and one projection generation (``host.request``)."""
+        """One answer: one grant and one projection generation (``host.request``), its
+        reader decisions kept for the answer (``run_memo``). A request inside another is
+        part of the same answer: it keeps the outer one's grant snapshot, generation and
+        decisions (deciding the reader's policy again for each nested part cost a record
+        page's sections a fifth of their time)."""
         previous = getattr(self._local, "state", None)
+        if previous is not None:
+            yield self
+            return
         self._local.state = None
+        from operating.ontology_tools import run_memo
         try:
-            with self.host.request():
+            # one reader under one grant: a reader decision one tool call of the answer
+            # made (an item's ACL re-check, the scope's grants) is every other call's
+            with self.host.request(), run_memo():
                 gated = self._gated()
-                self._local.state = (gated, self.host.policy_now(gated), {})
+                self._local.state = (gated, self._policy(gated), {})
                 yield self
         finally:
             self._local.state = previous
+
+    def _policy(self, gated: Any) -> Any:
+        """The reader's ``ReadPolicy`` now: the one decided for this session while what it
+        is decided from (``host.policy_inputs``: the gated actor and its entitlement's
+        fingerprint, the generation, the audiences, the exclusions, the capture stores'
+        and the knowledge document's files) is unchanged, at most ``POLICY_KEPT_SECONDS``;
+        else decided again (``host.policy_now``) and kept when nothing in it was transient
+        (``host.policy_settled``) and its inputs did not change while it was decided. A
+        host that names no inputs decides it every time. Never shared with another
+        session: each is its own entry."""
+        inputs = getattr(self.host, "policy_inputs", None)
+        before = inputs(gated) if callable(inputs) else None
+        session = self.session
+        try:
+            hash(session)
+        except TypeError:
+            before = None   # a session that cannot key an entry: decided every time
+        if before is not None:
+            with self._kept_lock:
+                held = self._kept_policies.get(session)
+            if held is not None and _same_inputs(held, before) \
+                    and held[2] > time.monotonic():
+                return held[3]
+        policy = self.host.policy_now(gated)
+        settled = getattr(self.host, "policy_settled", None)
+        if before is None or not callable(settled) or settled(gated) is not True:
+            return policy
+        after = inputs(gated)
+        if after is None or not _same_inputs((*before, 0.0, None), after):
+            return policy
+        with self._kept_lock:
+            self._kept_policies.pop(session, None)
+            while len(self._kept_policies) >= KEPT_POLICIES:
+                self._kept_policies.pop(next(iter(self._kept_policies)))
+            self._kept_policies[session] = (*before, time.monotonic() + POLICY_KEPT_SECONDS,
+                                            policy)
+        return policy
 
     def store_meta(self) -> dict[str, str]:
         """``store_meta`` of the projection generation the host answers from."""
@@ -2348,7 +2413,8 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
             markings = {m: frozenset(p) for m, p in policy.markings.items()}
             for marking in held:
                 markings[marking] = markings.get(marking, frozenset()) | principals
-            return ReadPolicy(policy.tenant, policy.audiences, markings, policy.units)
+            return ReadPolicy(policy.tenant, policy.audiences, markings, policy.units,
+                              unrestricted=policy.unrestricted)
 
     host = ConsoleHost(runtime, actor, store_path=store_path,
                        mail_capture_dir=mail_capture_dir,
@@ -2879,6 +2945,12 @@ def _open_store(store_path: Any):
 IDENTITY_SOURCES = ("bc", "portal_api")
 
 
+# How often a store status describing captures still being written is described again,
+# in the background, for the same served generation (the captures' own freshness facts
+# lag by about this; the generation's own checks are never reused across generations).
+CAPTURE_STATUS_SECONDS = 30.0
+
+
 class StoreStatus:
     """The projection store's provenance and freshness against a state directory's
     captures, per source.
@@ -2908,6 +2980,9 @@ class StoreStatus:
         self.mirror_path = mirror_path(state_dir)
         self.opener = opener or self.open_capture
         self._kept: tuple[Any, dict[str, Any]] | None = None
+        self._kept_at = 0.0
+        self._refreshing = threading.Lock()
+        self._refresh_running = False
 
     def open_capture(self, source: str) -> Any:
         """The capture of ``source`` here, opened read only (a context manager)."""
@@ -2935,13 +3010,40 @@ class StoreStatus:
             "built_at", "content_digest", "l1_generations", "source_freshness")),
             tuple(sorted(files.items())))
         kept = self._kept
-        if kept is not None and kept[0] == key:
+        held_now = {source for source, held in files.items() if held[0]}
+        if kept is not None and (kept[0] == key or (
+                kept[0][0] == key[0]
+                and {s for s, held in kept[0][1] if held[0]} == held_now)):
+            # the same generation and the same captures held: a capture still being
+            # written (its file changes every few seconds) is described again in the
+            # background at most every CAPTURE_STATUS_SECONDS, never on a request
+            if kept[0] != key and time.monotonic() - self._kept_at >= CAPTURE_STATUS_SECONDS:
+                self._refresh(meta, key, held_now, set(paths))
             return copy.deepcopy(kept[1])
-        status = self._status(meta, {source for source, held in files.items() if held[0]},
-                              set(paths))
+        status = self._status(meta, held_now, set(paths))
         if not status.get("unreadable_sources"):
-            self._kept = (key, status)
+            self._kept, self._kept_at = (key, status), time.monotonic()
         return copy.deepcopy(status)
+
+    def _refresh(self, meta: Mapping[str, str], key: Any, held: set[str],
+                 families: set[str]) -> None:
+        """Describe the captures again on a thread of its own (one at a time)."""
+        with self._refreshing:
+            if self._refresh_running:
+                return
+            self._refresh_running = True
+        self._kept_at = time.monotonic()
+
+        def run() -> None:
+            try:
+                status = self._status(meta, held, families)
+                if not status.get("unreadable_sources"):
+                    self._kept, self._kept_at = (key, status), time.monotonic()
+            except Exception:  # noqa: BLE001 - the kept status stands until next time
+                pass
+            finally:
+                self._refresh_running = False
+        threading.Thread(target=run, name="store-status", daemon=True).start()
 
     def _status(self, meta: Mapping[str, str], held: set[str],
                 families: set[str]) -> dict[str, Any]:

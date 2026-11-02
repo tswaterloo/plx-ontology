@@ -62,7 +62,9 @@ export function formatMoney(amount: string, currency: string, locale = "en-CA"):
   const neg = a.startsWith("-");
   const [int, frac = ""] = (neg ? a.slice(1) : a).split(".");
   const grouped = int.replace(/^0+(?=\d)/, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  const cents = (frac + "00").slice(0, Math.max(2, frac.length));
+  // exact: trailing zeros past the cents carry no value ("25113.600" -> "25,113.60"), real digits stay
+  const f = frac.replace(/0+$/, "");
+  const cents = (f + "00").slice(0, Math.max(2, f.length));
   const symbol = currencySymbol(code, locale);
   return `${neg ? "-" : ""}${symbol}${grouped}.${cents}${code ? ` ${code}` : ""}`;
 }
@@ -306,6 +308,8 @@ const RECORD_KIND: [RegExp, string][] = [
   [/^sales_?invoices?$/i, "Sales invoice"],
   [/^(?:vendors?|suppliers?|ap_vendor)$/i, "Supplier"],
   [/^ar_customer$/i, "AR record"],
+  [/^oe_?order_?headers?$/i, "Sage order"],
+  [/^oe_?order_?details?$/i, "Sage order line"],
   [/^customers?$/i, "Customer"],
   [/^(?:items?|products?)$/i, "Item"],
   [/^manufacturing_?orders?$/i, "Manufacturing order"],
@@ -329,7 +333,7 @@ export function recordKind(handle: string | null | undefined, label?: string | n
   if (h.startsWith("bc://")) names = h.slice(5).split(/[/@?]/);
   else if (h.startsWith("api://")) {
     const table = (h.slice(6).split("/")[0] ?? "").split(".").pop() ?? "";
-    names = [table, table.replace(/^(?:app|fm|rel|gen)_/, "")];
+    names = [table, table.replace(/^(?:app|fm|rel|gen|sage)_/, "")];
   }
   for (const n of names) {
     const k = kindOf(n);
@@ -342,12 +346,12 @@ export function recordKind(handle: string | null | undefined, label?: string | n
 
 /** "PurchaseOrder" + "106093" -> "PO 106093"; a label that already says what it is stays. */
 export function recordLabel(type: string | null | undefined, label: string): string {
-  const l = label.trim();
+  const l = label.trim().replace(/^(PO|SO)(?=\d)/, "$1 "); // "PO100095" reads as "PO 100095", like the rest
   if (/^\d[\w-]*$/.test(l)) {
     if (/^PurchaseOrder$|^purchase_order$/.test(type ?? "")) return `PO ${l}`;
     if (/^SalesOrder$|^sales_order$/.test(type ?? "")) return `SO ${l}`;
   }
-  return l.replace(/^AO (AO-)/, "$1").replace(/^MO (AO-)/, "MO $1");
+  return l.replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^AO (AO-)/, "$1").replace(/^MO (AO-)/, "MO $1");
 }
 
 /** "9680 USD" / "14,611.33 CAD" in prose -> "$9,680.00 USD": an amount that names its currency reads as money. */

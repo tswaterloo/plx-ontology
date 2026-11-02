@@ -32,7 +32,9 @@ from integrations.source_mirror import AudienceMap
 from integrations.tests import test_capture_teams as tct
 from ontology import schema as schema_loader
 from ontology.project import build_store
+from ontology import mentions
 from ontology.project_graph import TeamsCaptures
+from ontology.text_index import store_text_index
 from ontology.types import Actor
 from operating import claim_checks
 from operating import ontology_tools_investigate as oi
@@ -52,7 +54,9 @@ def runtime(state_dir, live) -> CaseRuntime:
                        people_exclusion=PeopleExclusion.from_env(tct.ENV))
 
 
-class TeamsCitationTests(tct.CaptureCase):
+class TeamsHostCase(tct.CaptureCase):
+    """A Teams capture, its projection and case hosts over them (no tests of its own)."""
+
     def setUp(self) -> None:
         super().setUp()
         self.assertTrue(self.capture.run(tct.scope())["complete"])
@@ -99,6 +103,8 @@ class TeamsCitationTests(tct.CaptureCase):
         self.assertTrue(readable, (actor, handle))
         return True
 
+
+class TeamsCitationTests(TeamsHostCase):
     def test_the_employee_item_acl_serves_only_its_allowlist(self):
         # The store's audience for one employee: an outsider role the file maps to its own
         # address, an employee whose own identity is cos.
@@ -446,3 +452,53 @@ class TeamsCitationTests(tct.CaptureCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TeamsDocumentSearchTests(TeamsHostCase):
+    """plx.documents over Teams messages (sources teams): a phrase and an identifier no
+    projected record holds both find the messages holding them, newest first, each one
+    a message the reader may read; Teams is searched only when asked for."""
+
+    def project(self) -> tuple[Path, dict]:
+        path = Path(self.tmp.name) / "projection.sqlite"
+        if not path.exists():
+            with TeamsCaptures(self.store.path) as captured:
+                self.report = build_store(
+                    path, schema_loader.load_schema(), {"teams": captured},
+                    clock=lambda: dt.datetime.now(dt.timezone.utc),
+                    post_project={"mentions": mentions.store_mention_links,
+                                  "text_index": store_text_index})
+        return path, self.report
+
+    def test_teams_messages_are_found_by_phrase_and_identifier_for_their_readers(self):
+        listed = {}
+        for actor in (tct.MEMBER, tct.COS_ONLY, tct.OUTSIDER, WITHHELD):
+            host = self.host(actor)
+            for query in ("freight quote", "PO12172025"):
+                out = host.call("plx.documents", {"query": query, "sources": ["teams"]},
+                                actor)
+                self.assertNotIn("error", out, out)
+                documents = out["documents"]
+                self.assertEqual(out["searched"]["sources"], ["teams"])
+                cited = [d["citation"] for d in documents]
+                listed.setdefault(actor, set()).update(cited)
+                self.assertEqual({d["kind"] for d in documents} - {"teams_message"}, set())
+                dates = [d["date"] for d in documents]
+                self.assertEqual(dates, sorted(dates, reverse=True), (actor, query))
+                for citation in cited:
+                    self.assertTrue(self.gate(actor, citation), (actor, citation))
+                text = json.dumps(out)
+                if actor != tct.MEMBER:
+                    self.assertNotIn("Board-only", text, actor)
+                if not documents:
+                    self.assertNotIn(tct.SECRET_TEXT, text, actor)
+                    self.assertNotIn("teams-channel://", text, actor)
+        self.assertIn(self.root["citation"], listed[tct.MEMBER])
+        self.assertLessEqual(listed[tct.COS_ONLY], listed[tct.MEMBER])
+        self.assertEqual((listed[tct.OUTSIDER], listed[WITHHELD]), (set(), set()))
+        # Teams is never searched unless asked for.
+        default = self.host(tct.MEMBER).call("plx.documents", {"query": "freight quote"},
+                                             tct.MEMBER)
+        self.assertNotIn("teams", default["searched"]["sources"])
+        self.assertNotIn("teams_message", {d["kind"] for d in default["documents"]})
+

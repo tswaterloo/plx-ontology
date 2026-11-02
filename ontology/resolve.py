@@ -1516,6 +1516,7 @@ class BcLookup:
         self.max_matches = max_matches
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self._companies: dict[Any, tuple[str, list[str], int]] = {}
+        self._refused: set[Any] = set()   # the last listing the audience refused
 
     def describe(self) -> dict[str, Any]:
         return {"generation": f"bc-live-{str(self.reader.environment).lower()}"}
@@ -1536,14 +1537,25 @@ class BcLookup:
             listing, _ = retry_once(lambda: self.reader.companies(gated),
                                     (SourceUnavailable,))
         except NotVisible:
+            self._refused.add(cache_key)
             return ("withheld", [], 0)
         except SourceUnavailable:
+            self._refused.discard(cache_key)
             return ("unreadable", [], 0)
+        self._refused.discard(cache_key)
         ids = [str(item["id"]).lower() for item in listing["items"]
                if isinstance(item.get("id"), str)]
         pinned = [cid for cid in ids if cid in self.books]
         self._companies[cache_key] = ("read", pinned, len(ids) - len(pinned))
         return self._companies[cache_key]
+
+    def listed(self, actor: Any) -> bool:
+        """Whether the last ``companies(actor)`` answer was decided, not transient: a kept
+        successful listing, or the audience's refusal (the audience decides it again the
+        same way); an outage (``unreadable``) or no answer yet is not."""
+        key = (getattr(actor, "tenant", None),
+               tuple(sorted(getattr(actor, "principals", ()) or ())))
+        return key in self._companies or key in self._refused
 
     def probe(self, actor: Any, relation: str, path: str, values: Sequence[str],
               may_read: Callable[[str], bool]) -> list[Probe]:

@@ -22,6 +22,7 @@ const BY_CODE: Record<string, string> = {
   insufficient_scope: "Your sign-in doesn't include Workbench access. Sign out and sign in again.",
   dev_ticket_required: "This demo sign-in needs the access link you were given.",
   dev_ticket_not_accepted: "This demo sign-in doesn't take an access link. Leave it empty.",
+  access_link_refused: "This access link has expired or isn't valid. Ask for a new one.",
   dev_login_not_served: "Demo sign-in is off here. Sign in with Microsoft.",
   not_found: "We couldn't find that, or you don't have access to it.",
   invalid_request: "That request wasn't understood. Try rephrasing it.",

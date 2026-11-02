@@ -114,6 +114,88 @@ class DetectorTest(Case):
         self.assertEqual(found[confirmed]["event"]["days"], 10)
         self.assertEqual(len(found[confirmed]["citations"]), 2)   # both confirmations
 
+    def per_item_world(self, n_lines=2):
+        """One PO whose lines two supplier confirmations (mailbox a) each promise their own
+        dates: line 0 moves 2026-10-01 -> 2026-10-11, every other line moves earlier."""
+        w = World()
+        order = po_with(w)
+        lines = []
+        for i in range(n_lines):
+            ln = w.obj("PurchaseOrderLine", {"description": f"InLab item number {i:03d}"},
+                       audience="api:lines")
+            w.link("PurchaseOrderLine.line_of", ln, order)
+            lines.append(ln)
+        confs = []
+        for issued, first, rest in (("2026-09-01", "2026-10-01", "2026-10-20"),
+                                    ("2026-09-20", "2026-10-11", "2026-10-15")):
+            blocks = [{"line": str(10 * (i + 1)), "text": f"InLab item number {i:03d} 3001{i:04d}",
+                       "codes": [], "delivery_date": {"value": first if i == 0 else rest,
+                                                      "citations": []}}
+                      for i in range(n_lines)]
+            conf = w.obj("SupplierConfirmation", {"document_date": issued,
+                                                  "line_promises": json.dumps(blocks)},
+                         audience="mail:box-a")
+            w.link("SupplierConfirmation.confirms", conf, order)
+            confs.append(conf)
+        return w, order, lines, confs
+
+    def test_eta_slipped_per_line_when_a_later_confirmation_moves_its_promise(self):
+        w, order, lines, confs = self.per_item_world()
+        w.obj("Message", {}, audience="mail:box-b")   # a mailbox some readers may not read
+        summary = self.run_engine(w)
+        self.assertEqual(summary["not_evaluated"].get("eta_slipped", {}), {})
+        (found,) = self.events()["eta_slipped"]
+        self.assertEqual(found["object_id"], order)
+        self.assertEqual(found["event"], {
+            "days": 10, "date_was": "2026-10-01", "date_now": "2026-10-11", "line": lines[0],
+            "matched_by": "description", "confirmation_was": confs[0],
+            "confirmation_now": confs[1]})
+        # both confirmations and the line's matched description, each cited
+        self.assertEqual(len(found["citations"]), 3)
+        self.assertNotIn("cannot see", found["summary"])
+        # a reader without mailbox b is told a later promise may exist, never which mailbox
+        (caveated,) = self.events(may_read=lambda key: key != "mail:box-b")["eta_slipped"]
+        self.assertTrue(caveated["summary"].endswith(
+            "(a later promise you cannot see may exist)"))
+        self.assertEqual(caveated["event"]["caveat"], "later_promise_may_exist")
+        self.assertNotIn("box-b", json.dumps(caveated))
+        # nor does a reader of neither the line nor a confirmation see the event
+        self.assertNotIn("eta_slipped", self.events(may_read=lambda key: key != "api:lines"))
+        self.assertNotIn("eta_slipped", self.events(may_read=lambda key: key != "mail:box-a"))
+
+    def test_eta_slipped_per_line_fails_closed_on_marked_or_unmatched_promises(self):
+        # the later confirmation's per-item promise is marked: a reader without the
+        # marking never sees the event
+        w, order, lines, confs = self.per_item_world()
+        for row in w.rows["object_values"] + w.rows["object_versions"]:
+            if row["object_id"] == confs[1]:
+                row["markings"] = '["purchasing_prices"]'
+        self.run_engine(w)
+        self.assertEqual(len(self.events()["eta_slipped"]), 1)
+        self.assertNotIn("eta_slipped", self.events(held=ALL_MARKINGS))
+        # two lines of one description: which item is whose is no firm evidence, no event
+        w, order, lines, confs = self.per_item_world()
+        for row in w.rows["object_values"]:
+            if row["object_id"] == lines[1] and row["property"] == "description":
+                row["value"] = "InLab item number 000"
+        self.run_engine(w)
+        self.assertNotIn("eta_slipped", self.events())
+
+    def test_eta_slipped_per_line_cardinality(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w, order, lines, confs = self.per_item_world(n)
+                for row in w.rows["object_values"]:   # every line moves later now
+                    if row["object_id"] == confs[1] and row["property"] == "line_promises":
+                        row["value"] = row["value"].replace("2026-10-15", "2026-10-25")
+                started = datetime.now()
+                self.run_engine(w)
+                self.assertLess((datetime.now() - started).total_seconds(), 30)
+                found = self.events()["eta_slipped"]
+                self.assertEqual(sorted(g["event"]["line"] for g in found), sorted(lines))
+                self.assertEqual(sorted(g["event"]["days"] for g in found),
+                                 sorted([10] + [5] * (n - 1)))
+
     def test_lot_near_expiry_and_an_active_batch_on_hold(self):
         w = World()
         soon = w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=10)).isoformat(),

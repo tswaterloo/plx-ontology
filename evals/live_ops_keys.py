@@ -35,6 +35,7 @@ from evals.oracle.keys import FM_PO, FM_PO_ITEM, PO, PO_LINE
 from evals.oracle.source import BcReads, decimal_of, field_value, instant, key_text
 
 BATCH = "public.app_batch_record"
+FM_BATCH = "public.batch"          # FileMaker's batch: the system of record for QC status
 RAW_LOT = "public.receipt_raw_material"
 PORTAL_SO = "public.app_sales_order"
 MO = "public.app_manufacturing_order"
@@ -132,8 +133,12 @@ FORMS: dict[str, dict[str, list[str]]] = {
                  "contradicts": ["on hold", "on-hold", "is held", "not released"]},
 }
 # A message no person wrote (an out-of-office or delivery notice): never "what the vendor said".
-AUTOMATIC = re.compile(r"^\s*(?:automatic reply|auto(?:matic)?[- ]?reply|out of (?:the )?office|"
-                       r"undeliverable|delivery (?:status notification|has failed)|"
+# Its subject says so: an auto-reply or out-of-office anywhere in it ("[Petra] Accounting
+# RE: Concur Auto Reply Statement ..."), a delivery or read notice at its start after any
+# "[tag]" or "RE:"/"FW:" prefixes.
+AUTOMATIC = re.compile(r"\bauto(?:matic)?[- ]?reply\b|\bout of (?:the )?office\b|"
+                       r"^\s*(?:\[[^\]]*\]\s*|\w+\s+(?=re:|fwd?:)|(?:re|fwd?):\s*)*"
+                       r"(?:undeliverable|delivery (?:status notification|has failed)|"
                        r"read:|accepted:|declined:)", re.I)
 
 
@@ -163,6 +168,13 @@ class World:
     mc: Sequence[Mapping[str, Any]] = ()
     sharepoint: Sequence[Mapping[str, Any]] = ()
     customer_mail: Sequence[Mapping[str, Any]] = ()
+    # Every captured version of the rows of a relation a change key compares
+    # (``PORTAL_VERSIONED``): relation -> the row's citation without its ``@`` capture ->
+    # ``[(held_from, row)]``, ``held_from`` the UTC instant the capture holding that version
+    # finished (``scripts.eval_live_ops.mirror_versions``). None: no history was read, so a
+    # Portal row's restamp cannot be told from a change (the change keys make no key then).
+    portal_versions: Mapping[str, Mapping[str, Sequence[tuple[datetime, Mapping[str, Any]]]]] \
+        | None = None
     _cache: dict[str, Any] = field(default_factory=dict)
 
     def rows(self, relation: str) -> Sequence[Mapping[str, Any]]:
@@ -303,7 +315,42 @@ def _fm_vendor_domains(world: World) -> dict[str, set[str]]:
     return out
 
 
+def po_mention_key(number: str) -> str | None:
+    """How a text names PO ``number``: a PO token (``PO#7001``) by any PO token of its
+    digits (``PO-7001``), ``#<digits>``; any other number (``PO2-FM87``) only whole, its
+    letters and digits in order. Its digits alone (``PO-287``) are another order's."""
+    number = str(number or "").strip()
+    if re.fullmatch(PO_TOKEN, number, re.I):
+        return "#" + re.sub(r"\D", "", number)
+    whole = re.sub(r"[^A-Z0-9]", "", number.upper())
+    return whole if re.search(r"\d", whole) else None
+
+
+def po_mentions(text: str) -> set[str]:
+    """Every ``po_mention_key`` a text holds: its PO tokens' digits and its whole
+    letter-and-digit tokens."""
+    return {"#" + d for d in _ids_named(text)} | {
+        re.sub(r"[^A-Z0-9]", "", t.upper())
+        for t in re.findall(r"[A-Za-z0-9#-]*\d[A-Za-z0-9#-]*", text or "")}
+
+
+def _mail_naming(world: World, number: str) -> list[Mapping[str, Any]]:
+    """The captured messages whose subject or preview names PO ``number``
+    (``po_mention_key``)."""
+    if "mail_by_po" not in world._cache:
+        index: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for message in world.mail:
+            for key in po_mentions(f"{message.get('subject')}\n{message.get('preview')}"):
+                index[key].append(message)
+        world._cache["mail_by_po"] = index
+    key = po_mention_key(number)
+    return list(world._cache["mail_by_po"].get(key, ())) if key else []
+
+
 def _named_in_mail(world: World) -> dict[str, list[Mapping[str, Any]]]:
+    """Digits -> the messages holding a PO token of them: every digit run mail may name
+    an order by, for keys that must stay clear of any possible mention (an absence, a
+    number no system holds); never to say which order a message names."""
     if "mail_by_number" not in world._cache:
         index: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for message in world.mail:
@@ -321,7 +368,8 @@ def po_no_vendor_mail(world: World) -> list[Candidate]:
     for group in world.lateness()["late"]:
         digits = {re.sub(r"\D", "", n) for n in group.get("numbers") or []} - {""}
         if not digits or any(by_number.get(d) for d in digits) or any(
-                world.named_in_text(n) for n in group.get("numbers") or []):
+                _mail_naming(world, n) or world.named_in_text(n)
+                for n in group.get("numbers") or []):
             continue
         number = _asked_number(group)
         out.append(Candidate(number, "PurchaseOrder", {"po": number}, [
@@ -339,18 +387,16 @@ def po_vendor_last_mail(world: World) -> list[Candidate]:
     the order: the key is that message, by id, with its subject as the quote."""
     out = []
     domains = _fm_vendor_domains(world)
-    by_number = _named_in_mail(world)
     for item in world.rows(PO):
         row = item["row"]
         number = str(row.get("po_number") or "")
         fm = key_text(field_value(row, "custom_fields.fmGeneratedPoId"))
         vendor = domains.get(fm or "")
-        digits = re.sub(r"\D", "", number)
-        if not vendor or not digits:
+        if not vendor:
             continue
-        mine = [m for m in by_number.get(digits, ())
+        mine = [m for m in _mail_naming(world, number)
                 if str(m.get("from") or "").rsplit("@", 1)[-1].casefold() in vendor
-                and m.get("received_at") and not AUTOMATIC.match(str(m.get("subject") or ""))]
+                and m.get("received_at") and not AUTOMATIC.search(str(m.get("subject") or ""))]
         if not mine:
             continue
         latest = max(mine, key=lambda m: (m["received_at"], m["message_id"]))
@@ -362,8 +408,8 @@ def po_vendor_last_mail(world: World) -> list[Candidate]:
             _fact("message", "last_vendor_message", [latest["handle"]], ("graph-mail",),
                   message_id=latest["message_id"], quote=str(latest.get("subject"))[:300],
                   mail=True, **FORMS["last_vendor_message"])],
-            ["mail capture: messages whose subject or body_preview names the order number, "
-             "from a domain of the FileMaker PO's emailrep/emailcsr, latest received_at"],
+            ["mail capture: messages whose subject or body_preview names the order number "
+             "(a PO token by its digits, any other number whole), from a domain of the FileMaker PO's emailrep/emailcsr, latest received_at"],
             "the vendor's latest captured message naming the order (within 365 days)"))
     return out
 
@@ -407,38 +453,78 @@ def vendor_open_pos(world: World) -> list[Candidate]:
     return out
 
 
+# The Portal ETL bumps ``updated_at`` of every row on each run whether or not a field
+# changed: a Portal row is changed only when a
+# column other than these differs from the version held at ``since``, as ``plx.changes``
+# never counts a restamp.
+PORTAL_STAMPS = frozenset({"updated_at"})
+PORTAL_VERSIONED = (PO, PORTAL_SO)
+
+
 def po_changed(world: World) -> list[Candidate]:
-    """Purchase orders BC or the Portal modified since midnight ET yesterday."""
-    since = _yesterday_start(world)
-    changed: dict[str, list[str]] = defaultdict(list)
-    for record in world.bc_set("purchaseOrders"):
-        moment = instant(record["fields"].get("lastModifiedDateTime"))
-        if moment is not None and moment >= since:
-            changed[str(record["fields"].get("number"))].append(record["citation"])
-    for item in world.rows(PO):
-        moment = instant(item["row"].get("updated_at"))
-        if moment is not None and moment >= since:
-            changed[str(item["row"].get("po_number"))].append(item["citation"])
-    return [_changed("live-ops:po-changed", "PurchaseOrder", changed, "purchase order",
-                     ["BC purchaseOrders.lastModifiedDateTime >= since",
-                      "portal mirror app_purchase_order.updated_at >= since"], since)]
+    """Purchase orders BC modified, or whose Portal row changed or was created, since
+    midnight ET yesterday."""
+    return _changed_family(world, "live-ops:po-changed", "PurchaseOrder", "purchase order",
+                           "purchaseOrders", PO, "po_number")
 
 
 def so_changed(world: World) -> list[Candidate]:
-    """Sales orders BC or the Portal modified since midnight ET yesterday."""
+    """Sales orders BC modified, or whose Portal row changed or was created, since
+    midnight ET yesterday."""
+    return _changed_family(world, "live-ops:so-changed", "SalesOrder", "sales order",
+                           "salesOrders", PORTAL_SO, "order_number")
+
+
+def _changed_family(world: World, identifier: str, object_type: str, noun: str,
+                    entity_set: str, relation: str, number: str) -> list[Candidate]:
     since = _yesterday_start(world)
     changed: dict[str, list[str]] = defaultdict(list)
-    for record in world.bc_set("salesOrders"):
+    for record in world.bc_set(entity_set):
         moment = instant(record["fields"].get("lastModifiedDateTime"))
         if moment is not None and moment >= since:
             changed[str(record["fields"].get("number"))].append(record["citation"])
-    for item in world.rows(PORTAL_SO):
-        moment = instant(item["row"].get("updated_at"))
-        if moment is not None and moment >= since:
-            changed[str(item["row"].get("order_number"))].append(item["citation"])
-    return [_changed("live-ops:so-changed", "SalesOrder", changed, "sales order",
-                     ["BC salesOrders.lastModifiedDateTime >= since",
-                      "portal mirror app_sales_order.updated_at >= since"], since)]
+    for item in world.rows(relation):
+        verdict = portal_changed(world, relation, item, since)
+        if verdict is None:
+            return []   # a restamp cannot be told from a change: no key, never a guess
+        if verdict:
+            changed[str(item["row"].get(number))].append(item["citation"])
+    return [_changed(identifier, object_type, changed, noun,
+                     [f"BC {entity_set}.lastModifiedDateTime >= since",
+                      f"portal mirror {relation}: created_at >= since, or a column other "
+                      f"than {', '.join(sorted(PORTAL_STAMPS))} differs from the version "
+                      "the mirror held at since"], since)]
+
+
+def _unstamped(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in row.items() if k not in PORTAL_STAMPS}
+
+
+def portal_changed(world: World, relation: str, item: Mapping[str, Any],
+                   since: datetime) -> bool | None:
+    """Whether a current Portal row is new or changed since ``since``: created at or after
+    it, or held at ``since`` in a version that differs in a column other than
+    ``PORTAL_STAMPS``. A row the mirror first read after ``since`` that says it was created
+    before is not counted (nothing shows what it was then; ``plx.changes`` counts it
+    ``first_captured_earlier``, never lists it). None: whether it changed needs the
+    versions and none were read."""
+    row = item["row"]
+    created = instant(row.get("created_at"))
+    if created is not None and created >= since:
+        return True
+    stamp = instant(row.get("updated_at"))
+    if stamp is not None and stamp < since:
+        return False   # not written since: neither a change nor a restamp
+    if world.portal_versions is None:
+        return None
+    versions = (world.portal_versions.get(relation) or {}).get(
+        str(item["citation"]).rsplit("@", 1)[0]) or ()
+    held = [(at, version) for at, version in versions if at <= since]
+    if not held:
+        return False
+    newest = max(at for at, _v in held)
+    then = [_unstamped(v) for at, v in held if at == newest]
+    return _unstamped(row) not in then
 
 
 def _changed(identifier: str, object_type: str, changed: Mapping[str, list[str]], noun: str,
@@ -608,8 +694,12 @@ def mo_late_materials(world: World) -> list[Candidate]:
 
 # --------------------------------------------------------------------------- money
 
-def _margins(world: World) -> dict[str, dict[str, Any]]:
-    """Order number -> the order-margin oracle's decided total and the order's customer."""
+def _margins(world: World) -> dict[tuple[str, str], dict[str, Any]]:
+    """(company, order number) -> the order-margin oracle's decided total and the order's
+    customer.
+    An order with a posted invoice that the oracle leaves undecided (or decides with a
+    caveat) is kept as ``{"total": None, "customer": ...}``: a customer total over its
+    customer is not stated (``customer_margin``)."""
     if "margins" in world._cache:
         return world._cache["margins"]
     out: dict[str, dict[str, Any]] = {}
@@ -622,25 +712,49 @@ def _margins(world: World) -> dict[str, dict[str, Any]]:
         for number in sorted({str(r["fields"].get("orderNumber") or "") for r in invoices} - {""}):
             reading = order_margin.reading(BcReads(port), number, book="manufacturing")
             total = reading.get("total") or {}
-            if total.get("reason") != "decided" or reading.get("caveats") \
-                    or not total.get("margin_pct"):
-                continue
             mine = [r for r in records if number in (
                 r["fields"].get("orderNumber"), r["fields"].get("number"))
                     and r["entity_set"] in ("salesOrders", "salesInvoices", "salesShipments")]
             customer = {str(r["fields"].get("customerName") or "") for r in mine} - {""}
-            out[number] = {"total": total, "records": [r["citation"] for r in mine],
-                           "customer": next(iter(customer)) if len(customer) == 1 else None}
+            # the records the figures are summed from are the order's too: its invoices'
+            # lines (revenue) and its shipments' item ledger entries (cost), so an answer
+            # citing the lines of a many-line order cites the order
+            invoice_ids = {r["id"] for r in mine if r["entity_set"] == "salesInvoices"}
+            shipped = {str(r["fields"].get("number")) for r in mine
+                       if r["entity_set"] == "salesShipments"} - {"", "None"}
+            mine += [r for r in records
+                     if (r.get("document_set") == "salesInvoices"
+                         and r.get("document_id") in invoice_ids)
+                     or (r["entity_set"] == "itemLedgerEntries"
+                         and str(r["fields"].get("documentNumber")) in shipped)]
+            entry = {"records": [r["citation"] for r in mine],
+                     "customer": next(iter(customer)) if len(customer) == 1 else None}
+            if total.get("reason") != "decided" or reading.get("caveats") \
+                    or not total.get("margin_pct"):
+                posted = any(r["entity_set"] == "salesInvoices"
+                             and r["fields"].get("orderNumber") == number
+                             and order_margin._word(r["fields"].get("status"))
+                             in order_margin.POSTED for r in mine)
+                if posted:
+                    out[(company, number)] = {**entry, "total": None}
+                continue
+            out[(company, number)] = {**entry, "total": total}
     world._cache["margins"] = out
     return out
 
 
 def order_margin_card(world: World) -> list[Candidate]:
+    margins = _margins(world)
+    companies = defaultdict(set)
+    for company, number in margins:
+        companies[number].add(company)
     out = []
-    for number, entry in _margins(world).items():
+    for (_company, number), entry in margins.items():
         total = entry["total"]
-        if Decimal(total["revenue"]) < 100:
-            continue   # a sample order is not what anyone asks about
+        # a sample order is not what anyone asks about; a number two companies use names
+        # no one order
+        if total is None or Decimal(total["revenue"]) < 100 or len(companies[number]) > 1:
+            continue
         out.append(Candidate(number, "SalesOrder", {"so": number}, [
             _fact("number", "margin_pct", entry["records"], ("bc",), value=total["margin_pct"],
                   unit="%", amount=total["margin"], label=LABELS["margin_pct"],
@@ -659,12 +773,19 @@ def order_margin_card(world: World) -> list[Candidate]:
 
 
 def customer_margin(world: World) -> list[Candidate]:
+    """A customer's margin over its invoiced BC orders, as the product states it (owner
+    decision 2026-10-31, ``operating.customer_profit``): only when every order of the
+    customer with a posted invoice has a decided margin. One such order left undecided (a
+    partial invoice, a missing cost, a credit caveat) means no customer total, so no card:
+    a total over the decided orders alone would grade a stated subset as the margin."""
     by_customer: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for entry in _margins(world).values():
         if entry["customer"]:
             by_customer[entry["customer"]].append(entry)
     out = []
     for customer, entries in by_customer.items():
+        if any(e["total"] is None for e in entries):
+            continue
         revenue = sum(Decimal(e["total"]["revenue"]) for e in entries)
         cost = sum(Decimal(e["total"]["booked_cost"]) for e in entries)
         currencies = {e["total"].get("currency") for e in entries}
@@ -681,8 +802,8 @@ def customer_margin(world: World) -> list[Candidate]:
                   label=LABELS["revenue"], tolerance="1", tolerance_pct=MONEY_PCT,
                   markings=["finance"])],
             ["order_margin over every invoiced BC order of the customer"],
-            "sum of decided order revenue and booked cost over the customer's invoiced "
-            "orders, one currency (orders the oracle leaves undecided are not counted)"))
+            "sum of order revenue and booked cost over the customer's invoiced orders, one "
+            "currency, only when the oracle decides every order with a posted invoice"))
     return out
 
 
@@ -762,49 +883,211 @@ def item_supplier_price(world: World) -> list[Candidate]:
 
 # --------------------------------------------------------------------------- quality
 
-def _batches(world: World, status: frozenset[str] | None, qc: str) -> list[Mapping[str, Any]]:
-    return [i for i in world.rows(BATCH)
-            if (status is None or i["row"].get("status") in status)
-            and i["row"].get("status_qc") == qc and i["row"].get("batch_number")]
+# One rule for every batch key, the product's (``operating.fast_answer.batch_hold_count``
+# and ``batch_status``): a physical batch is its batch code, held by FileMaker
+# (public.batch namebatch_c) and by the Portal's ETL copy (app_batch_record batch_name).
+# FileMaker is the system of record for its QC status (schema Batch.quality_status
+# precedence): a batch's status is FileMaker's; where the two disagree the key follows
+# FileMaker and its rule says how many do; a code only the Portal's copy holds is keyed as
+# "no FileMaker batch" for the one-batch question and never counted. A staging test or
+# Portal-native record (the schema's binding lineage ``gold_native_staging``: public.batch
+# id >= 9000000, a TEST-BC- name, an app_batch_record with no batch name) is no batch:
+# skipped by the keys as the product says it apart and never counts or answers by it.
+BATCH_RULE = ("each batch once by its batch code, as FileMaker (the system of record) "
+              "records it; Portal-only copies, staging test records and records with no code"
+              " are not counted")
+BATCH_BINDINGS = {FM_BATCH: "portal.fm_batch", BATCH: "portal.app_batch_record"}
+STAGING = "gold_native_staging"
+
+
+def _binding_lineage_rules() -> dict[str, Mapping[str, Any]]:
+    """relation -> its Batch binding's ``lineage`` (ontology/schema/domains/manufacturing)."""
+    import json
+    from pathlib import Path
+    doc = json.loads((Path(__file__).resolve().parent.parent / "ontology" / "schema" /
+                      "domains" / "manufacturing.json").read_text("utf-8"))
+    out = {}
+    for kind in doc["object_types"]:
+        for binding in kind.get("bindings") or ():
+            for relation, wanted in BATCH_BINDINGS.items():
+                if binding.get("id") == wanted:
+                    out[relation] = binding["lineage"]
+    if set(out) != set(BATCH_BINDINGS):
+        raise ValueError("batch_binding_missing")
+    return out
+
+
+def _row_lineage(rule: Mapping[str, Any], row: Mapping[str, Any]) -> str:
+    """The lineage the schema's first matching rule gives ``row`` (else its default); a
+    rule of an operator not read here fails closed."""
+    for each in rule.get("rules") or ():
+        hit = True
+        for cond in each["when"]:
+            value, op = row.get(cond["path"]), cond["op"]
+            if op == "gte":
+                hit &= isinstance(value, (int, str)) and str(value).strip().isdigit() \
+                    and int(str(value).strip()) >= int(cond["value"])
+            elif op == "prefix":
+                hit &= isinstance(value, str) and value.startswith(cond["value"])
+            elif op == "present":
+                hit &= value not in (None, "")
+            else:
+                raise ValueError(f"lineage_op_unknown:{op}")
+        if hit:
+            return each["lineage"]
+    return rule["default"]
+
+
+def _batch_codes(world: World) -> dict[str, tuple[list[Mapping[str, Any]],
+                                                  list[Mapping[str, Any]]]]:
+    """batch code -> (its FileMaker rows, its Portal copies), staging records left out."""
+    if "batch_codes" not in world._cache:
+        rules = _binding_lineage_rules()
+        out: dict[str, tuple[list, list]] = {}
+        for side, (relation, column) in enumerate(((FM_BATCH, "namebatch_c"),
+                                                   (BATCH, "batch_name"))):
+            for item in world.rows(relation):
+                code = str(item["row"].get(column) or "").strip().upper()
+                if code and _row_lineage(rules[relation], item["row"]) != STAGING:
+                    out.setdefault(code, ([], []))[side].append(item)
+        world._cache["batch_codes"] = out
+    return world._cache["batch_codes"]
+
+
+def _fm_is(row: Mapping[str, Any], status: frozenset[str], qc: str) -> bool:
+    return row.get("status") in status and row.get("statusqc") == qc
+
+
+def _portal_is(row: Mapping[str, Any], status: frozenset[str], qc: str) -> bool:
+    return row.get("status") in status and row.get("status_qc") == qc
+
+
+def _batches(world: World, status: frozenset[str], qc: str
+             ) -> tuple[list[tuple[str, list[Mapping[str, Any]], list[Mapping[str, Any]]]], int]:
+    """The batches FileMaker records as ``status``/``qc`` (code, its matching FileMaker
+    rows, its Portal copies) and how many batches the two systems disagree on (both hold
+    the code, one says ``status``/``qc`` and the other does not)."""
+    out, disagree = [], 0
+    for code, (fm, portal) in sorted(_batch_codes(world).items()):
+        fm_says = [i for i in fm if _fm_is(i["row"], status, qc)]
+        portal_says = any(_portal_is(i["row"], status, qc) for i in portal)
+        if fm and portal and bool(fm_says) != portal_says:
+            disagree += 1
+        if fm_says:
+            out.append((code, fm_says, portal))
+    return out, disagree
+
+
+def _held_reads(disagree: int) -> list[str]:
+    return ["FileMaker public.batch (system of record): status not Cancelled, statusqc = "
+            "On-Hold, matched to the Portal's app_batch_record by batch code (namebatch_c = "
+            f"batch_name); {disagree} batches the two disagree on follow FileMaker"]
+
+
+# What the one-batch answer says where FileMaker does not hold the batch on QC hold.
+BATCH_NOT_HELD_FORMS = {
+    "cancelled": {"accept": ["cancelled", "canceled"],
+                  "contradicts": ["is on hold", "is on qc hold", "qc released",
+                                  "was released"]},
+    "not_on_hold": {"contradicts": ["is on hold", "is on qc hold", "is held"]},
+    "no_filemaker_batch": {"accept": ["no batch", "no filemaker batch",
+                                      "not in filemaker", "no such batch in filemaker"],
+                           "contradicts": ["qc released", "was released"]},
+}
+
+
+def _one_batch_fact(code: str, fm: Sequence[Mapping[str, Any]],
+                    portal: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], str] | None:
+    """The fact answering "is batch ``code`` on hold?" by FileMaker (its rule's words), or
+    None where FileMaker's own records of the code disagree or read a status the rule
+    does not know (no key: not decidable)."""
+    marks = {"markings": ["quality_controlled"]}
+    if not fm:
+        if len(portal) != 1:
+            return None
+        return (_fact("absent", "no_filemaker_batch", [portal[0]["citation"]], ("api",),
+                      value="no FileMaker batch", **BATCH_NOT_HELD_FORMS["no_filemaker_batch"],
+                      **marks),
+                "FileMaker, the system of record, holds no batch of this code; only the "
+                "Portal's copy does (its status is not the batch's)")
+    said = {(i["row"].get("status"), i["row"].get("statusqc")) for i in fm}
+    if len(said) != 1:
+        return None
+    status, qc = next(iter(said))
+    cites = [i["citation"] for i in fm]
+    if status == "Cancelled":
+        return (_fact("claim", "cancelled", cites, ("api",), value="cancelled",
+                      **BATCH_NOT_HELD_FORMS["cancelled"], **marks),
+                "FileMaker (the system of record) records the batch Cancelled: not on hold")
+    if status not in HELD_BATCH or not isinstance(qc, str) or not qc.strip():
+        return None
+    if qc == ON_HOLD:
+        return (_fact("claim", "on_hold", cites, ("api",), value="on hold",
+                      **FORMS["on_hold"], **marks),
+                "FileMaker (the system of record) records the batch's QC status On-Hold")
+    if qc == RELEASED:
+        return (_fact("claim", "released", cites, ("api",), value="released",
+                      **FORMS["released"], **marks),
+                "FileMaker (the system of record) records the batch's QC status Released")
+    return (_fact("claim", "not_on_hold", cites, ("api",), value="not on hold",
+                  accept=[qc.strip().casefold()], **BATCH_NOT_HELD_FORMS["not_on_hold"],
+                  **marks),
+            f"FileMaker (the system of record) records the batch's QC status {qc}: not on "
+            "hold")
 
 
 def batch_on_hold(world: World) -> list[Candidate]:
+    """Every batch either system shows on QC hold (status not Cancelled), the question
+    "is it on hold?" answered by FileMaker: on hold, released, another QC status,
+    cancelled there, or no FileMaker batch of that code (the Portal's copy alone)."""
     out = []
-    for item in _batches(world, HELD_BATCH, ON_HOLD):
-        number = str(item["row"]["batch_number"])
-        out.append(Candidate(number, "Batch", {"batch": number}, [
-            _fact("claim", "on_hold", [item["citation"]], ("api",), value="on hold",
-                  **FORMS["on_hold"],
-                  markings=["quality_controlled"])],
-            ["portal mirror app_batch_record: status not Cancelled, status_qc = On-Hold"],
-            "a batch whose QC status is On-Hold (in the works or finished)"))
+    for code, (fm, portal) in sorted(_batch_codes(world).items()):
+        if not any(_fm_is(i["row"], HELD_BATCH, ON_HOLD) for i in fm) \
+                and not any(_portal_is(i["row"], HELD_BATCH, ON_HOLD) for i in portal):
+            continue
+        decided = _one_batch_fact(code, fm, portal)
+        if decided is None:
+            continue
+        fact, why = decided
+        copy = [f"the Portal's app_batch_record {i['row'].get('status')}/"
+                f"{i['row'].get('status_qc')} ({i['citation']})" for i in portal]
+        out.append(Candidate(code, "Batch", {"batch": code}, [fact],
+            ["FileMaker public.batch (system of record) by batch code (namebatch_c), beside "
+             "the Portal's app_batch_record copy (batch_name): " + (", ".join(copy) or
+                                                                   "no Portal copy")],
+            "a batch either system shows on QC hold (in the works or finished), its status "
+            f"FileMaker's: {why}; " + BATCH_RULE))
     return out
 
 
 def batch_released(world: World) -> list[Candidate]:
     out = []
-    for item in _batches(world, frozenset({"Realized"}), RELEASED):
-        made = instant(item["row"].get("date_manufactured"))
-        if made is None or (world.as_of - made.date()).days > 180:
+    released, disagree = _batches(world, frozenset({"Realized"}), RELEASED)
+    for code, fm, portal in released:
+        made = {instant(i["row"].get("date_manufactured")) for i in portal}
+        if len(made) != 1 or None in made \
+                or (world.as_of - next(iter(made)).date()).days > 180:
             continue
-        number = str(item["row"]["batch_number"])
-        out.append(Candidate(number, "Batch", {"batch": number}, [
-            _fact("claim", "released", [item["citation"]], ("api",), value="released",
-                  **FORMS["released"],
+        out.append(Candidate(code, "Batch", {"batch": code}, [
+            _fact("claim", "released", [i["citation"] for i in fm], ("api",),
+                  value="released", **FORMS["released"],
                   markings=["quality_controlled"])],
-            ["portal mirror app_batch_record: status Realized, status_qc = Released, made "
-             "within 180 days"], "a recent batch QC released"))
+            ["FileMaker public.batch (system of record): status Realized, statusqc = "
+             "Released; made within 180 days (its Portal app_batch_record date_manufactured,"
+             f" matched by batch code); {disagree} batches the two disagree on follow "
+             "FileMaker"], "a recent batch QC released: " + BATCH_RULE))
     return out
 
 
 def batches_on_hold_count(world: World) -> list[Candidate]:
-    rows = _batches(world, HELD_BATCH, ON_HOLD)
+    held, disagree = _batches(world, HELD_BATCH, ON_HOLD)
     return [Candidate("live-ops:batches-on-hold", "Batch", {}, [
-        _fact("number", "on_hold_count", [i["citation"] for i in rows], ("api",),
-              value=str(len(rows)), label=LABELS["batch_count"], tolerance="0",
+        _fact("number", "on_hold_count", [i["citation"] for _c, fm, _p in held for i in fm],
+              ("api",), value=str(len(held)), label=LABELS["batch_count"], tolerance="0",
               markings=["quality_controlled"])],
-        ["portal mirror app_batch_record: status not Cancelled, status_qc = On-Hold"],
-        "count of batches (in the works or finished) on QC hold")] if rows else []
+        _held_reads(disagree),
+        "count of batches (in the works or finished) on QC hold: " + BATCH_RULE)] \
+        if held else []
 
 
 def _released_lots(world: World) -> list[tuple[str, date, list[str]]]:
@@ -868,6 +1151,7 @@ FAMILIES: dict[str, Callable[[World], list[Candidate]]] = {
 }
 # The portal relations the families read (``scripts.eval_live_ops`` loads only these).
 PORTAL_RELATIONS = (PO, PO_LINE, FM_PO, po_lateness.ENTITY_MAP, "public.app_receipt", BATCH,
+                    FM_BATCH,
                     RAW_LOT, PORTAL_SO, MO, FM_PO_ITEM, FM_RECEIPT_PACK, FM_AO,
                     FM_AO_ITEM, FM_PACK_SUPPLIER)
 BC_SETS = ("purchaseOrders", "purchaseOrderLines", "purchaseReceipts", "purchaseInvoices",

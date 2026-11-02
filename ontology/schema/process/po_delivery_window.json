@@ -2,7 +2,7 @@
  "$schema": "_process.schema.json",
  "format": "plx-process-graph/v1",
  "id": "po_delivery_window",
- "description": "Inbound delivery window of a purchase order (Ricardo's po-delivery-window map; Vince's Packaging Procure-to-GL Map stages 11 PO, 13 production complete and pickup, 16 receive): the PO issued, the supplier's confirmation (document-derived, optional), the vendor shipped (optional), and the goods received, which is due by the PO's planned arrival. It keeps planned arrival, actual shipment and actual receipt apart and never repairs a date. Chosen for an unnamed call when every root PO is open by the shared purchase-order status definition (open_when, operating.po_status: a Portal header not cancelled or draft whose lines' received quantity is below the ordered one, or a BC PO not fully received and not Draft; a Sage-only PO, an FM header alone, or an unmapped word is unknown, so it stays purchase_to_invoice unnamed); otherwise named calls only (implicit false). The receipt stage's lateness reads every requested-by date (FM datearrive and Sage exparrival first, then Portal expected_date, then the BC header requestedReceiptDate: the authority precedence of PurchaseOrder.expected_date; never a BC line's expected date or a supplier promise), the supplier's promised dates and the receipts. Not stages, because the ontology declares no record for them: map stages 01-10 (inquiry to requisition), 12 vendor prepayment, 14 packing slip / CI / BOL (a document lead only), 15 in transit, 17 landed cost, 18 relief; 19 G/L is purchase_to_invoice's.",
+ "description": "Inbound delivery window of a purchase order (Ricardo's po-delivery-window map; Vince's Packaging Procure-to-GL Map stages 11 PO, 13 production complete and pickup, 16 receive): the PO issued, the supplier's confirmation (document-derived, optional), the vendor shipped (optional), and the goods received, which is due by the PO's planned arrival. It keeps planned arrival, actual shipment and actual receipt apart and never repairs a date. Chosen for an unnamed call when every root PO is open by the shared purchase-order status definition (open_when, operating.po_status: a Portal header not cancelled or draft whose lines' received quantity is below the ordered one, or a BC PO not fully received and not Draft; a Sage-only PO is closed (iscomplete 1) or unknown, and an FM header alone or an unmapped word is unknown, so it stays purchase_to_invoice unnamed); otherwise named calls only (implicit false). The receipt stage's lateness reads every requested-by date (FM datearrive and Sage exparrival first, then Portal expected_date, then the BC header requestedReceiptDate: the authority precedence of PurchaseOrder.expected_date; never a BC line's expected date or a supplier promise), the supplier's promised dates and the receipts. Not stages, because the ontology declares no record for them: map stages 01-10 (inquiry to requisition), 12 vendor prepayment, 14 packing slip / CI / BOL (a document lead only), 15 in transit, 17 landed cost, 18 relief; 19 G/L is purchase_to_invoice's.",
  "root_type": "PurchaseOrder",
  "tier_floor": "stored_by_text_join",
  "implicit": false,
@@ -30,7 +30,7 @@
     "property": "sage_is_complete"
    }
   ],
-  "note": "The status values the shared definition reads: the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity and a Sage iscomplete value is not mapped, so both stay unknown; BC reads fullyReceived and status (Draft: not issued)."
+  "note": "The status values the shared definition reads: the Portal header holds the FileMaker words (Cancel, Complete, DRAFT, Pending, B.Order, Revised, Generated) and openness is by its lines' quantities (plx-customer-portal@d39d91b open-po-lines/route.ts:38-46,302-312); an FM header alone has no received quantity, so it stays unknown; a Sage iscomplete 1 is a closed historical record (never judged) and any other Sage value stays unknown; BC reads fullyReceived and status (Draft: not issued)."
  },
  "stages": [
   {
@@ -289,7 +289,8 @@
       ],
       "event_types": [
        "SupplierConfirmation.promised",
-       "SupplierConfirmation.promised_on_file"
+       "SupplierConfirmation.promised_on_file",
+       "SupplierConfirmation.promised_in_mail"
       ],
       "order_by": "document_date"
      },
@@ -321,6 +322,94 @@
          "link": "Receipt.receives",
          "direction": "reverse"
         }
+       ],
+       [
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.receives_line",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.line_of",
+         "direction": "forward"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "forward"
+        },
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.receives_line",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.line_of",
+         "direction": "forward"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.receives_line",
+         "direction": "reverse"
+        },
+        {
+         "link": "ReceiptLine.line_of",
+         "direction": "forward"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "Receipt.receives_line",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "forward"
+        },
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "Receipt.receives_line",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "PurchaseOrderLine.line_of",
+         "direction": "reverse"
+        },
+        {
+         "link": "Receipt.receives_line",
+         "direction": "reverse"
+        }
        ]
       ],
       "event_types": [
@@ -344,7 +433,7 @@
       "ordered": "ordered_quantity",
       "received": "received_quantity"
      },
-     "note": "Precedence mirrors PurchaseOrder.expected_date's authority (fm_bronze, sage_bronze > gold_etl_from_fm > bc). A promise is a SupplierConfirmation's delivery date (a machine-read lead; its link counts at the graph's tier floor only), ordered by the confirmation's document date: a later differing one is the revision."
+     "note": "Precedence mirrors PurchaseOrder.expected_date's authority (fm_bronze, sage_bronze > gold_etl_from_fm > bc). A promise is a SupplierConfirmation's arrival date (its document's or its carrying message's; a lead; its link counts at the graph's tier floor only), ordered by the confirmation's document date: a later differing one is the revision. Received also reads FileMaker receipt headers (datereceived): those the QC rows of the PO's items name (idreceipt) and those naming an item (idgenpoitem); a QC row naming none is dated by its item's headers, else the received date is unstated."
     }
    }
   }

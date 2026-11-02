@@ -890,6 +890,60 @@ def identifier_leads(question: str) -> list[_Lead]:
     return sorted(leads, key=lambda lead: lead.span)
 
 
+_TYPED_VALUE = re.compile(r"(?i)^[a-z.]+\s*[#:.\-]?\s*(\S+)$")
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+MAX_ASKED = 12
+
+
+@functools.lru_cache(maxsize=256)
+def asked_identifiers(question: Any) -> tuple[str, ...]:
+    """The identifiers the asker wrote in ``question``, as written: what a reply may
+    repeat without a citation because the asker gave them (``answer_gate.unbacked``).
+    Read by the one grammar (``identifier_leads``): a grammar mention (labelled or by its
+    shape: ``SO100021``, ``PO#4819``; a labelled one's value too: ``PO 4819``'s 4819; and each
+    in the grammar's normalized form: ``PO4819``), a typed label's value
+    (``order 1000091938``, ``lot 240306``: the value) and a bare token that mixes letters
+    and digits (``R-0404``, ``TASK-928``, ``25A0165``). Never a bare number, an amount, a
+    quantity with its unit, a date or a year: those stay figures a citation must back.
+    Empty for anything that is not text; at most ``MAX_ASKED``."""
+    if not isinstance(question, str) or not question.strip() or len(question) > 4000:
+        return ()
+    out: list[str] = []
+
+    def add(token: str) -> None:
+        token = token.strip().rstrip(".,;:?!")
+        if len(token) >= 2 and re.search(r"\d", token) and not _ISO_DAY.fullmatch(token) \
+                and token not in out:
+            out.append(token)
+
+    try:
+        mentions = identifiers.find_identifiers(question)
+        leads = identifier_leads(question)
+    except Exception:  # noqa: BLE001 - nothing read: nothing is given by the asker
+        return ()
+    for mention in mentions:
+        if identifiers.is_quantity(question, mention.text, mention.end):
+            continue
+        add(question[mention.label_start:mention.end])
+        add(mention.text)   # a labelled mention's value: ``PO 4819``'s 4819
+        # the same identifier as the grammar writes it: ``PO#10297`` asked is ``PO10297``
+        # replied (gen 7 no_such_po: the reply's "No purchase order PO10297 was found" was
+        # cut as unbacked, leaving the lead it named as the answer)
+        if isinstance(mention.normalized, str):
+            add(mention.normalized)
+    for lead in leads:
+        if lead.exact:
+            continue   # a grammar mention: read above
+        if lead.why.endswith("(typed label)"):
+            found = _TYPED_VALUE.match(lead.text)
+            if found and not identifiers.is_quantity(question, found.group(1), lead.span[1]):
+                add(lead.text)
+                add(found.group(1))
+        elif lead.why.startswith("bare ") and re.search(r"[A-Za-z]", lead.text):
+            add(lead.text)
+    return tuple(out[:MAX_ASKED])
+
+
 # --------------------------------------------------------------------- name mentions
 
 _TOKEN_RE = re.compile(r"[\w&'’\-]+", re.UNICODE)

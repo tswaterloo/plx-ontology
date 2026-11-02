@@ -584,33 +584,186 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         self.assertEqual(returned["currencies"],
                          {("h0", "row.amount"): "USD", ("h1", "row.amount"): "USD"})
 
-    def test_a_failing_item_permission_read_keeps_nothing_and_says_why(self):
+    def test_a_failing_item_permission_read_keeps_only_what_no_item_gates_and_says_why(self):
         """Any error of the pre-call item permission read (not only a SQLite or OS one)
-        keeps nothing the call returns (a count and a money cell here) and leaves the tool
-        answer standing: its ``_meta`` names the typed reason."""
+        keeps nothing the call returns that an item's permissions gate (a count listing a
+        SharePoint file and its money cell here), keeps what none gates (the Portal
+        record's count and cell: its generation and grant were decided) and leaves the
+        tool answer standing: its ``_meta`` names the typed reason."""
         server, call = self.client({"staff:purchasing"})
         found = call("plx.find", {"query": "PO100012"})
         real = server.ontology.call
+        portal, filed = "api://public.app_purchase_order/x@1-1", "sharepoint://d/i@v1"
 
         def counted(name, arguments, actor):
             out = real(name, arguments, actor)
-            return dict(out, groups=[{"key": {}, "value": "1", "currency": "USD", "inputs": 1,
-                                      "markings": [], "inputs_citations": [
-                                          {"l1_handle": "h0", "field_path": "row.amount"}]}])
+            return dict(out, groups=[{"key": {"n": n}, "value": "1", "currency": "USD",
+                                      "inputs": 1, "markings": [], "inputs_citations": [
+                                          {"l1_handle": handle, "field_path": "row.amount"}]}
+                                     for n, handle in enumerate((portal, filed))])
 
-        with mock.patch.object(server.ontology, "call", counted), \
-                mock.patch.object(mcp_server, "_permission_reads",
-                                  side_effect=RuntimeError("unexpected")):
-            response = server.handle({"jsonrpc": "2.0", "id": 90, "method": "tools/call",
-                                      "params": {"name": "plx.aggregate", "arguments": {
-                                          "set": found["set"], "measure": {"op": "count"}}}})
-            returned = server._returned()
-        result = response["result"]
-        self.assertFalse(result["isError"], result)
-        self.assertEqual(result["structuredContent"]["groups"][0]["value"], "1")
-        self.assertEqual(result["_meta"][mcp_server.EVIDENCE_META_KEY],
+        # The read failing before the call, or the call's snapshot failing when the items
+        # its evidence names are read from it.
+        for request_id, target, attribute in ((90, mcp_server, "_permission_reads"),
+                                              (91, mcp_server._ItemPermissions, "digests")):
+            with self.subTest(attribute), \
+                    mock.patch.object(server.ontology, "call", counted), \
+                    mock.patch.object(target, attribute,
+                                      side_effect=RuntimeError("unexpected")):
+                response = server.handle({"jsonrpc": "2.0", "id": request_id,
+                                          "method": "tools/call",
+                                          "params": {"name": "plx.aggregate", "arguments": {
+                                              "set": found["set"],
+                                              "measure": {"op": "count"}}}})
+                returned = server._returned()
+                result = response["result"]
+                self.assertFalse(result["isError"], result)
+                self.assertEqual(result["structuredContent"]["groups"][0]["value"], "1")
+                self.assertEqual(result["_meta"][mcp_server.EVIDENCE_META_KEY],
+                                 {"kept": False, "reason": "permissions_unreadable"})
+                self.assertEqual([entry["records"] for entry in returned["counts"]][-1:],
+                                 [[portal]])
+                self.assertNotIn(filed, [record for entry in returned["counts"]
+                                         for record in entry["records"]])
+                self.assertEqual(returned["currencies"], {(portal, "row.amount"): "USD"})
+
+    def test_an_unrestricted_reader_reads_no_item_permission_and_keeps_its_evidence(self):
+        """Owner-open: for a reader holding the owner full-read
+        grant (``EmployeeEntitlement.unrestricted``, carried by the call's read policy) no
+        item permission is read before a call or at the answer gate, and nothing it was
+        returned is dropped or made incomplete for permissions, not even when such a read
+        would fail. The flag is decided once per session. A policy that disagrees (the
+        grant moved) keeps nothing an item gates (fail closed); a restricted reader still
+        reads them (the tests above)."""
+        import dataclasses
+        from operating import employee_permissions
+        portal, filed = "api://public.app_purchase_order/x@1-1", "sharepoint://d/i@v1"
+        real_policy = CaseHostTools.policy_now
+
+        def session(owner_policy):
+            server, call = self.client({"staff:purchasing"})
+            real = server.ontology.call
+
+            def counted(name, arguments, actor):
+                out = real(name, arguments, actor)
+                return dict(out, complete=True, groups=[
+                    {"key": {"n": n}, "value": "1", "currency": "USD", "inputs": 1,
+                     "markings": [], "inputs_citations": [
+                         {"l1_handle": handle, "field_path": "row.amount"}]}
+                    for n, handle in enumerate((portal, filed))])
+
+            def policy(host, actor):
+                return dataclasses.replace(real_policy(host, actor),
+                                           unrestricted=owner_policy)
+
+            decided = mock.Mock(return_value=True)
+            with mock.patch.object(server.ontology, "call", counted), \
+                    mock.patch.object(CaseHostTools, "policy_now", policy), \
+                    mock.patch.object(employee_permissions, "reader_unrestricted", decided), \
+                    mock.patch.object(mcp_server, "_permission_reads",
+                                      side_effect=TimeoutError("must not be read")) as reads:
+                found = call("plx.find", {"query": "PO100012"})
+                results = [server.handle({"jsonrpc": "2.0", "id": 300 + n,
+                                          "method": "tools/call",
+                                          "params": {"name": "plx.aggregate", "arguments": {
+                                              "set": found["set"],
+                                              "measure": {"op": "count"}}}})["result"]
+                           for n in range(3)]
+                returned = server._returned()
+            return results, returned, reads, decided, server
+
+        results, returned, reads, decided, server = session(True)
+        self.assertEqual(reads.call_count, 0)        # no item permission read at all
+        self.assertEqual(decided.call_count, 1)      # one decision for the session
+        for result in results:
+            self.assertFalse(result["isError"], result)
+            self.assertNotIn(mcp_server.EVIDENCE_META_KEY, result.get("_meta", {}))
+        records = [record for entry in returned["counts"] for record in entry["records"]]
+        self.assertIn(filed, records)
+        self.assertIn(portal, records)
+        self.assertEqual(returned["currencies"], {(portal, "row.amount"): "USD",
+                                                  (filed, "row.amount"): "USD"})
+        # Completeness is never cleared for permissions (a restricted reader's is, below).
+        self.assertTrue(server._evidence["counts"])
+        kept = [entry["complete"] for entry in server._evidence["counts"]]
+        self.assertTrue(server._scope.startswith(mcp_server.UNRESTRICTED_SCOPE))
+
+        # The reader's flag says unrestricted but the call's policy does not: the item
+        # gated evidence is not kept and the answer says why.
+        results, returned, reads, _, _ = session(False)
+        self.assertEqual(results[0]["_meta"][mcp_server.EVIDENCE_META_KEY],
                          {"kept": False, "reason": "permissions_unreadable"})
-        self.assertEqual((returned["counts"], returned["currencies"]), ([], {}))
+        self.assertNotIn(filed, [record for entry in returned["counts"]
+                                 for record in entry["records"]])
+        self.assertEqual(returned["currencies"], {(portal, "row.amount"): "USD"})
+        self.assertTrue(all(entry["complete"] is False for entry in returned["counts"]))
+        self.assertIn(True, kept, "the owner's complete count must stay complete")
+
+    def test_a_slow_permission_read_is_no_failed_one(self):
+        """The shared budget bounds lock waits, not the time a read takes: a store read
+        after the budget is spent (the live SharePoint capture's ~90,000 items took 1-2.3 s
+        under load) still decides, and a lock held past the floor still fails it."""
+        from integrations import capture_teams
+        folder = Path(self.runtime.state_dir) / capture_teams.STORE_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(folder / capture_teams.DB_FILE)
+        conn.execute("CREATE TABLE unit_acl (kind TEXT, unit TEXT, acl TEXT, "
+                     "recorded_at TEXT)")
+        conn.execute("INSERT INTO unit_acl VALUES ('teams-chat', 'c1', '[]', "
+                     "'2099-01-01T00:00:00Z')")
+        conn.commit()
+        clock = iter([0.0] + [60.0] * 10)   # the budget is spent before the Teams store
+        with mock.patch.object(mcp_server, "monotonic", lambda: next(clock)):
+            reads = mcp_server._permission_reads(self.runtime, None)
+        reads.close()
+        self.assertEqual(list(reads.units), [("unit", "teams-chat", "c1")])
+        conn.execute("BEGIN EXCLUSIVE")   # a writer holding the store past the floor
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                mcp_server._permission_reads(self.runtime, None)
+        finally:
+            conn.rollback()
+            conn.close()
+
+    def test_a_record_read_stays_citable_when_the_permission_read_fails_at_the_gate(self):
+        """F29 gen 7 (sage_order_shipped, no_such_po and 26 other dev items): the item
+        permission read timed out under load when the agent submitted its answer, the
+        session's whole evidence was dropped and the gate refused a claim on a Portal
+        record the session had read (cites_what_this_run_did_not_return). A read with
+        undecided item permissions drops only what an item gates: the record stays
+        citable, a SharePoint file read before does not."""
+        server, _ = self.client({"staff:purchasing"})
+        local_client(server, "answer")   # initializes the session
+        ids = iter(range(100, 120))
+
+        def client(name, arguments):
+            return server.handle({"jsonrpc": "2.0", "id": next(ids), "method": "tools/call",
+                                  "params": {"name": name, "arguments": arguments}})["result"]
+
+        read = client("plx.object", {"object_id": self.fixture.PO})["structuredContent"]
+        handle = read["values"][0]["citation"]["l1_handle"]
+        filed = "sharepoint://d/i@v1"
+        server._evidence["handles"][filed] = None   # as a file read before would keep it
+
+        def submit(cited):
+            return client("plx.case_get", {"answer": {
+                "text": "PO100012 is on record.", "question": "is PO100012 on record?",
+                "claims": [{"name": "po_number", "citation": cited,
+                            "field": "row.po_number", "value": "PO100012"}]}}
+                          )["structuredContent"]
+
+        def reasons(decided):
+            return [claim["reason"] for claim in decided["unsupported_claims"]]
+
+        with mock.patch.object(mcp_server, "_permission_reads",
+                               side_effect=TimeoutError("permission_read_timeout")):
+            # The claim reaches the claim check (this fixture holds no row to check it
+            # against): it is no longer refused as evidence the session was not returned.
+            self.assertNotIn("cites_what_this_run_did_not_return", reasons(submit(handle)))
+            self.assertNotIn(filed, server._evidence["handles"])
+            # Unknown evidence still fails closed: a handle the session never read.
+            self.assertEqual(reasons(submit("api://public.app_purchase_order/never@1-1")),
+                             ["cites_what_this_run_did_not_return"])
 
     def test_the_session_working_directory_is_removed_when_the_stdio_session_ends(self):
         # Review wh-3 (minor): every session left a /tmp/plx-case-find-* directory.

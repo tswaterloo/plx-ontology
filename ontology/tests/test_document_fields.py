@@ -332,7 +332,8 @@ class DocumentFieldsTests(unittest.TestCase):
             "quantity": "unit_unknown",                 # a quantity without its unit
             "incoterm": "several_values",               # two Incoterms on one line
             "delivery_date": "date_ambiguous",          # 03/04: March 4 or April 3?
-            "document_date": "not_stated", "seller": "not_stated", "buyer": "not_stated"})
+            "document_date": "not_stated", "seller": "not_stated", "buyer": "not_stated",
+            "ship_date": "not_stated"})
         for gap in evidence["gaps"]:
             if gap["reason"] != "not_stated":
                 self.assertEqual(len(gap["citations"]), 1, gap)
@@ -1231,6 +1232,127 @@ class MailDirectionTests(unittest.TestCase):
         colleague = {**received, "message_from": "finance@example-plx.com"}
         self.assertFalse(read({**sent, "mailbox_copies": [colleague, sent]})["ok"])
         self.assertTrue(read({**sent, "message_from": "buyer@customer.example"})["ok"])
+
+
+@unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
+                     "document fields are read from PDFs: needs pypdf and reportlab")
+class LinePromisesTests(unittest.TestCase):
+    """A confirmation promising each item its own date (a Mettler
+    layout: line number, item, product id; its dates below it) reads one block per item
+    with its own arrival and ship dates, a block cut by a page break going on below the
+    next page's header; the document-level date stays conflicting."""
+
+    def read(self, pages):
+        return document_fields.extract_fields(pdf(pages), "application/pdf",
+                                              filename="oc.pdf")
+
+    def test_each_item_block_states_its_own_dates_across_a_page_break(self):
+        found = self.read([
+            ["Order Confirmation 145400001", "Purchase Order No. PO100500",
+             "90 Moyal Crt", "Item Description Product ID Qty Unit Price Total CAD",
+             "10 SevenExcellence pH/Cond meter S470 30046252 1 EA 4,770.00 4,397.94",
+             "Commodity Code 9027894530", "Estimated Ship Date: 01/16/2023",
+             "Estimated Arrival Date : 01/18/2023",
+             "20 InLab cable MultiPin-BNC/RCA 1.2m 30281896 1 EA 233.00 233.00"],
+            ["Print Date 01/13/2023", "Delivery date: 02/02/2023",
+             "Item Description Product ID Qty Unit Price Total CAD",
+             "Country of Origin CN", "Estimated Ship Date: 01/13/2023",
+             "Estimated Arrival Date : 01/31/2023",
+             "30 Rainbow II sachets 51302080 1 PAC 148.50 148.50",
+             "Customer material number: R-0714/02",
+             "Estimated Ship Date: 01/27/2023",
+             "Total excl. tax 7,796.54", "40 Not an item 30000001 after the total",
+             "Estimated Arrival Date : 03/01/2023"]])
+        self.assertEqual(found["profile"], "supplier_confirmation")
+        self.assertIsNone(found["fields"]["delivery_date"]["value"])   # one per item
+        got = [(b["line"], b["codes"], b.get("delivery_date", {}).get("value"),
+                b.get("ship_date", {}).get("value")) for b in found["line_promises"]]
+        # page 2's header-area date belongs to no block; line 30 states a ship date only;
+        # nothing after the total line is an item
+        self.assertEqual(got, [
+            ("10", ["S470", "30046252"], "2023-01-18", "2023-01-16"),
+            ("20", ["1.2m", "30281896"], "2023-01-31", "2023-01-13"),
+            ("30", ["51302080", "R-0714/02"], None, "2023-01-27")])
+        cite = found["line_promises"][1]["delivery_date"]["citations"][0]
+        self.assertEqual((cite["page"], cite["text"]),
+                         (2, "Estimated Arrival Date : 01/31/2023"))
+        self.assertTrue(cite["l1_handle"] is None or isinstance(cite["l1_handle"], str))
+
+    def test_two_dates_in_one_block_and_no_item_header_read_no_line_value(self):
+        found = self.read([[
+            "Order Confirmation 145400002", "Item Description Qty",
+            "10 Widget 30046252 1 EA", "Estimated Arrival Date : 01/18/2023",
+            "Estimated Arrival Date : 01/20/2023"]])
+        (only,) = found["line_promises"]
+        self.assertEqual((only["delivery_date"]["value"], only["delivery_date"]["gap"]),
+                         (None, "several_values"))
+        found = self.read([[
+            "Order Confirmation 145400003", "10 Widget 30046252 1 EA",
+            "Estimated Arrival Date : 01/18/2023"]])
+        self.assertNotIn("line_promises", found)
+        self.assertEqual(found["fields"]["delivery_date"]["value"], "2023-01-18")
+
+
+@unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
+                     "document fields are read from PDFs: needs pypdf and reportlab")
+class PromiseDatesTests(unittest.TestCase):
+    """A confirmation's arrival and ship dates are separate fields; an ambiguous
+    numeric date is read in the order its document writes that form in; the supplier's own
+    message carrying the confirmation states promises of its own, cited to its body, and a
+    colleague's forward, quoted history or a question states none."""
+
+    def test_arrival_and_ship_dates_from_the_document_and_the_suppliers_own_message(self):
+        dated = pdf([["ORDER CONFIRMATION", "Your PO: PO100500", "Order date 22.07.2026",
+                      "Estimated delivery date: 08/10/2026",
+                      "Estimated dispatch date: 07/30/2026", "Valid from 07/22/2026"]])
+        bare = pdf([["ORDER CONFIRMATION", "Your PO: PO100501", "Total Amount: USD 10.00"]])
+        graph = tm.FakeGraph()
+        graph.put(tm.BOX_A, "MSG-DOC", "CK-1", subject="OC", body="attached",
+                  attachments=[tm.file_attachment("ATT-D", dated, "oc.pdf")],
+                  received="2026-08-10T09:00:00Z")
+        graph.put(tm.BOX_A, "MSG-SUP", "CK-2", subject="Re: PO100501",
+                  body=("Hi,\nWe will deliver your order Aug. 17th.\nThe estimated ship out "
+                        "date is 12th Aug.\nCan you confirm the ETA of Sept 2 works?\n\n"
+                        "On Mon, Aug 3, 2026 at 10:00 Bob wrote:\n> ETA Sept 30"),
+                  attachments=[tm.file_attachment("ATT-S", bare, "oc2.pdf")],
+                  received="2026-08-10T09:00:00Z")
+        graph.put(tm.BOX_A, "MSG-FWD", "CK-3", subject="FW: OC", body="ETA Aug 20.",
+                  attachments=[tm.file_attachment("ATT-F", bare, "oc3.pdf")],
+                  received="2026-08-10T09:00:00Z")
+        graph.messages[tm.BOX_A]["MSG-FWD"]["from"] = {"emailAddress": {"address": tm.UPN_A}}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MailCaptureStore(tmp, clock=tm.Clock())
+            self.addCleanup(store.close)
+            api, _ = graph_read.build_graph(tm.ENV, sender=graph, retry=BoundedBackoff(
+                sleep=lambda s: None, jitter=lambda: 0.0))
+            run = MailCapture(store, GraphMailReader(api, tm.capture_audience()), tm.CAPTURE,
+                              sleep=lambda s: None).run(tm.SCOPE)
+            self.assertTrue(run["complete"], run)
+            store.close()
+            with MailCaptures(tmp, internal_domains=tm.SCOPE.internal_domains) as mail:
+                rows = {next(a for a in ("ATT-D", "ATT-S", "ATT-F") if a in rec.record_key):
+                        (rec.row, rec.l1_handle)
+                        for rec in mail.records(["documentFields"])["documentFields"]}
+        self.assertEqual(sorted(rows), ["ATT-D", "ATT-F", "ATT-S"])
+        doc, _ = rows["ATT-D"]
+        # '/' dates are month-first in this document (07/30), '.' ones day-first (22.07)
+        self.assertEqual((doc["fields"]["delivery_date"]["value"],
+                          doc["fields"]["ship_date"]["value"]), ("2026-08-10", "2026-07-30"))
+        self.assertEqual({k: v["value"] for k, v in doc["carrier"].items() if k != "message"},
+                         {"delivery_date": None, "ship_date": None})
+        sup, handle = rows["ATT-S"]
+        self.assertIsNone(sup["fields"]["delivery_date"]["value"])
+        carrier = sup["carrier"]
+        # the message's own handle, never the attachment's; a year-less date in its year
+        self.assertEqual(carrier["message"], {"l1_handle": handle.split("#", 1)[0],
+                                              "field_path": "row.body_text"})
+        self.assertEqual({k: v["value"] for k, v in carrier.items() if k != "message"},
+                         {"delivery_date": "2026-08-17", "ship_date": "2026-08-12"})
+        (cite,) = carrier["delivery_date"]["citations"]
+        self.assertEqual(cite["text"], "will deliver your order Aug. 17th")
+        # a colleague's forward states no supplier promise, whatever its body says
+        fwd, _ = rows["ATT-F"]
+        self.assertNotIn("carrier", fwd)
 
 
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),

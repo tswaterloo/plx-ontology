@@ -415,7 +415,24 @@
             {
               "binding": "portal.app_purchase_order",
               "path": "custom_fields.fmGeneratedPoId",
-              "parser": "identifier"
+              "parser": "identifier",
+              "when": [
+                {
+                  "path": "custom_fields.fmTable",
+                  "op": "not_in",
+                  "value": [
+                    "po"
+                  ]
+                }
+              ],
+              "note": "Not on a copy of a record of FileMaker's po table (custom_fields.fmTable po, with fmId): that record is not a generated_purchase_order, so it carries no generated_purchase_order id and is no twin of one. A missing key on any other Portal PO still leaves a FileMaker PO's twins unproven.",
+              "evidence": [
+                {
+                  "kind": "data_profile",
+                  "ref": "portal mirror public.app_purchase_order custom_fields 2026-11-02",
+                  "note": "Read-only, 5,901 rows: 5,541 carry fmGeneratedPoId with source etl-silver-to-gold or mirror-fm-pos-to-gold and no fmTable; the other 360 carry only fmId and fmTable po (ids fm-po2-<n>, numbers PO2-FM-<n>, DRAFT) and no source stamp."
+                }
+              ]
             }
           ],
           "authority": {
@@ -1750,13 +1767,114 @@
         {
           "name": "description",
           "value_type": "text",
+          "description": "The line's item description as the ordering system writes it (Portal, Sage itemdesc, BC, FileMaker); a supplier confirmation's per-item promise is matched to the line by it (operating/line_promises.py).",
           "sources": [
             {
               "binding": "portal.app_purchase_order_line",
               "path": "description",
               "parser": "trim"
+            },
+            {
+              "binding": "portal.sage_po_detail",
+              "path": "itemdesc",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.purchase_order_lines",
+              "path": "description",
+              "parser": "trim"
+            },
+            {
+              "binding": "portal.fm_generated_purchase_order_item",
+              "path": "description",
+              "parser": "trim"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "fm_bronze",
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              }
+            ],
+            "note": "Each line object is projected from one binding (one system's line), so the sources never meet on one object."
+          }
+        },
+        {
+          "name": "item_code",
+          "value_type": "text",
+          "description": "The item number the line names in its own system (Sage aritemno; BC lineObjectNumber, an item only on an Item line: line_type says which); a supplier confirmation's per-item promise is matched to the line by it (operating/line_promises.py).",
+          "sources": [
+            {
+              "binding": "portal.sage_po_detail",
+              "path": "aritemno",
+              "parser": "trim"
+            },
+            {
+              "binding": "bc.purchase_order_lines",
+              "path": "lineObjectNumber",
+              "parser": "trim"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "sage_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  }
+                ]
+              }
+            ],
+            "note": "Each line object is projected from one binding (one system's line), so the sources never meet on one object."
+          }
         },
         {
           "name": "line_type",
@@ -4148,6 +4266,85 @@
             ],
             "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
           }
+        },
+        {
+          "name": "mail_delivery_date",
+          "value_type": "date",
+          "description": "The arrival (delivery) date the supplier's own message carrying this confirmation states in its body (ontology/document_fields.py carrier_fields: a sentence of the sender's own text, never quoted history, a question or a colleague's forward), cited to that message's body span; a machine-read lead, null when the body states none or several.",
+          "sources": [
+            {
+              "binding": "graph_mail.supplier_confirmations",
+              "path": "carrier.delivery_date.value",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        },
+        {
+          "name": "mail_ship_date",
+          "value_type": "date",
+          "description": "The ship date the supplier's own message carrying this confirmation states in its body (ontology/document_fields.py carrier_fields: a sentence of the sender's own text, never quoted history, a question or a colleague's forward), cited to that message's body span; a machine-read lead, null when the body states none or several.",
+          "sources": [
+            {
+              "binding": "graph_mail.supplier_confirmations",
+              "path": "carrier.ship_date.value",
+              "parser": "iso_date"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        },
+        {
+          "name": "line_promises",
+          "value_type": "json",
+          "markings": [
+            "purchasing_prices"
+          ],
+          "description": "The promise dates the confirmation states per item (ontology/document_fields.py line_promises): per item block of its line table, the supplier's line number, the item's text and the codes written on it, and its arrival (delivery_date) and ship (ship_date) dates, each cited by page and span; a block with several dates carries the gap several_values. Matched to the order's own lines only on firm evidence at read time (operating/line_promises.py: one item code or one description, both ways unique), never by position. Untrusted document text; marked purchasing_prices like the extraction (evidence), since an item's line writes its price; null when no item block states a date.",
+          "sources": [
+            {
+              "binding": "graph_mail.supplier_confirmations",
+              "path": "line_promises",
+              "parser": "as_is"
+            },
+            {
+              "binding": "sharepoint.supplier_confirmations",
+              "path": "line_promises",
+              "parser": "as_is"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "mail",
+                  "sharepoint"
+                ],
+                "evidence": [
+                  {
+                    "kind": "workbench_code",
+                    "path": "ontology/document_fields.py"
+                  }
+                ]
+              }
+            ],
+            "note": "Each object is projected from one binding (one captured document), so the two sources never meet on one object."
+          }
         }
       ],
       "display": [
@@ -5323,6 +5520,36 @@
             {
               "kind": "ref",
               "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Receipt.receives_line",
+      "from": "Receipt",
+      "to": "PurchaseOrderLine",
+      "name": "receives_line",
+      "reverse_name": "receipt_headers",
+      "cardinality": "N:1",
+      "description": "An FM receipt header names the FM PO item it was received against (public.receipt idgenpoitem = gpi.id), a record link of its own beside the QC rows' idreceipt. One header may cover more than one delivery of the item.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_receipt",
+          "to_binding": "portal.fm_generated_purchase_order_item",
+          "pairs": [
+            {
+              "from": "idgenpoitem",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.receipt"
             }
           ]
         }
@@ -6818,7 +7045,7 @@
     {
       "id": "SupplierConfirmation.promised",
       "object_type": "SupplierConfirmation",
-      "description": "The delivery date a supplier confirmation read from a captured mail attachment states (document field delivery_date): the supplier's promise, a machine-read lead cited to the document bytes. The field's labels include ship and ETD dates, so it may be a dispatch rather than an arrival promise.",
+      "description": "The arrival (delivery) date a supplier confirmation read from a captured mail attachment states (document field delivery_date): the supplier's promise, a machine-read lead cited to the document bytes. Ship, ETD and cargo-ready dates are the field ship_date (SupplierConfirmation.ship_promised), never this promise.",
       "time_basis": "planned",
       "time": {
         "binding": "graph_mail.supplier_confirmations",
@@ -6847,6 +7074,102 @@
       "time": {
         "binding": "sharepoint.supplier_confirmations",
         "path": "fields.delivery_date.value",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "supplier_confirmation",
+          "object_type": "SupplierConfirmation",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+        }
+      ]
+    },
+    {
+      "id": "SupplierConfirmation.promised_in_mail",
+      "object_type": "SupplierConfirmation",
+      "description": "The arrival (delivery) date the supplier's own message carrying a confirmation states in its body (property mail_delivery_date); as SupplierConfirmation.promised, cited to the confirmation's row, whose carrier block names the message body span.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "graph_mail.supplier_confirmations",
+        "path": "carrier.delivery_date.value",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "supplier_confirmation",
+          "object_type": "SupplierConfirmation",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+        }
+      ]
+    },
+    {
+      "id": "SupplierConfirmation.ship_promised",
+      "object_type": "SupplierConfirmation",
+      "description": "The ship (dispatch, ETD, cargo-ready) date a supplier confirmation read from a captured mail attachment states (document field ship_date): when the goods leave, stated beside the arrival promise and never judged as one.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "graph_mail.supplier_confirmations",
+        "path": "fields.ship_date.value",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "supplier_confirmation",
+          "object_type": "SupplierConfirmation",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+        }
+      ]
+    },
+    {
+      "id": "SupplierConfirmation.ship_promised_on_file",
+      "object_type": "SupplierConfirmation",
+      "description": "The ship date a supplier confirmation read from a captured SharePoint file states; as SupplierConfirmation.ship_promised.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "sharepoint.supplier_confirmations",
+        "path": "fields.ship_date.value",
+        "parser": "iso_date"
+      },
+      "qualifiers": [
+        {
+          "qualifier": "supplier_confirmation",
+          "object_type": "SupplierConfirmation",
+          "via": "self"
+        }
+      ],
+      "evidence": [
+        {
+          "kind": "workbench_code",
+          "path": "ontology/document_fields.py"
+        }
+      ]
+    },
+    {
+      "id": "SupplierConfirmation.ship_promised_in_mail",
+      "object_type": "SupplierConfirmation",
+      "description": "The ship date the supplier's own message carrying a confirmation states in its body (property mail_ship_date); as SupplierConfirmation.ship_promised.",
+      "time_basis": "planned",
+      "time": {
+        "binding": "graph_mail.supplier_confirmations",
+        "path": "carrier.ship_date.value",
         "parser": "iso_date"
       },
       "qualifiers": [

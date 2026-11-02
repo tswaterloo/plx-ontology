@@ -217,7 +217,7 @@ function UserMenu() {
           className="z-50 w-64 rounded-xl border border-border bg-surface p-1.5 shadow-pop animate-fade-in"
         >
           <div className="px-2.5 py-2">
-            <p className="truncate text-sm font-medium">{u.name}</p>
+            <p className="truncate text-row font-medium">{u.name}</p>
             <p className="truncate text-meta text-muted">{u.email}</p>
           </div>
           <div className="flex items-center justify-between px-2.5 py-2">
@@ -300,7 +300,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </Dialog.Portal>
             </Dialog.Root>
             <Link href="/" className="lg:hidden">
-              <Logo className="text-sm" />
+              <Logo className="text-row" />
             </Link>
             <div className="flex flex-1 justify-center">
               <GlobalSearch />

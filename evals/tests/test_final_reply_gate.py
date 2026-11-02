@@ -336,6 +336,55 @@ class FinalReplyGateTests(unittest.TestCase):
         self.assertEqual((screened["unknowns"], screened["removed_unknowns"]),
                          (["not in the record: the ship date"], 2))
 
+    def test_a_name_the_run_returned_is_no_figure_a_figure_beside_it_still_is(self):
+        # dev F29-0022/0049/0055/0044 on main-d98492: "1-Shoppe", "SO-FM-388",
+        # "QT-FM-QT-0001", "SPF50" were read as unclaimed figures and their sentences cut.
+        read = {"type": "tool_call", "name": "plx.read", "is_error": False,
+                "arguments": {"citation": MAP},
+                "result": {"fields": {"row": {
+                    "customer_name": _wrap("1-Shoppe LLC"),
+                    "order_number": _wrap("SO-FM-388"),
+                    "description": _wrap("Banana Boat Sunscreen SPF50 | 1 Gal"),
+                    "terms": _wrap("Net 30-Day, ships in 50kg drums; USD1200 deposit"),
+                    "path": _wrap("/RnD Drive/01-FORMULAS/2025 New/x.pdf")}}}}
+        events = [read, _submit("answered", passed=[("Open", DOC, "row.status")],
+                                refused=[("c2: SKU-7781 is the item", "SKU-7781")])]
+        question = "is the 1-shoppe order open?"
+        kept = ("The 1-Shoppe order SO-FM-388 is Open.\n- Item: Sunscreen SPF50\n"
+                "- Filed under 01-FORMULAS")
+        _, parsed, _, report = _gated(_answer(kept, [_value("status", "Open", DOC,
+                                                            "row.status")]), events, question)
+        self.assertEqual(parsed["text"], kept)
+        self.assertEqual(report["removed_sentences"], 0)
+        # A quantity, an amount, a date or a figure glued to a unit beside a returned name
+        # still needs a claim; a name nobody returned, and one a refused claim said, too.
+        for sentence, token in (
+                ("1-Shoppe ordered 50 units on SO-FM-388.", "50"),
+                ("SO-FM-388 is worth $1,200.", "1,200"),
+                ("SO-FM-388 ships 2026-03-04.", "2026-03-04"),
+                ("SO-FM-388 ships in 50kg drums.", "50kg"),
+                ("It is due in a 30-Day window.", "30"),
+                ("A deposit of USD1200 is held.", "1200"),
+                ("Its twin is SO-FM-389.", "389"),
+                ("The item is SKU-7781.", "SKU-7781")):
+            reply = answer_gate.final_reply(
+                sentence, [{"check": {"status": "passed"}, "value_claims": [
+                    {"value": "Open"}]}], names=answer_gate.returned_names([read]),
+                refused=["c2: SKU-7781 is the item"])
+            self.assertEqual(reply["removed_sentences"], 1, sentence)
+            self.assertTrue(any(token in found or found in token
+                                for found in reply["unbacked"]),
+                            (sentence, reply["unbacked"]))
+        # Only what a source returned names: the gate's echo of a claim and the run's own
+        # search words are not returned names; an unreadable result returns none.
+        echoed = answer_gate.returned_names([
+            _submit("answered", passed=[("SO-FM-777", DOC, "row.n")]),
+            {"type": "tool_call", "name": "plx.find", "is_error": False,
+             "result": {"gaps": [{"searched": {"queries": ["SO-FM-555"]}}]}},
+            {"type": "tool_call", "name": "plx.read", "is_error": True,
+             "result": {"text": "SO-FM-444"}}], skip_tools=("plx.case_get",))
+        self.assertEqual(echoed, frozenset())
+
     def test_the_analyst_shape_loses_only_its_unbacked_bullet(self):
         # The answer's shape (``deep_investigation.answer_shape_rule``: verdict, "- "
         # bullets, a "What I couldn't confirm" line) adds no figure: each bullet is one line
@@ -621,6 +670,87 @@ class FinalReplyGateTests(unittest.TestCase):
         _text, parsed, error, _report = _gated(answer, [event], question)
         self.assertIsNone(error)
         self.assertEqual(parsed["text"].splitlines()[0], "share: 100%")
+
+    def test_the_questions_own_identifiers_are_given_by_the_asker_and_no_figure_is(self):
+        # Live-ops dev: "when did order 1000088999 ship" lost its answer sentence, the
+        # asked order number read as an unchecked figure. Only the question's identifiers
+        # (the one grammar's mentions, a typed label's value, letters-and-digits tokens)
+        # are the asker's; its figures, amounts and dates still need a passed value.
+        backed = ["2016-10-26"]
+        for question, text, unbacked in (
+                ("when did order 1000088999 ship",
+                 "Sales order 1000088999 shipped on 2016-10-26.", []),
+                ("margin on SO100021? and why", "SO100021 shipped on 2016-10-26.", []),
+                ("is the price of R-0404 going up", "R-0404 was bought on 2016-10-26.", []),
+                # the asked identifier in the grammar's own form (gen 7 no_such_po)
+                ("status on PO#10297?", "No purchase order PO10297 was found.", []),
+                ("status on PO#10297?", "No purchase order PO10298 was found.",
+                 ["PO10298"]),
+                ("when did order 1000088999 ship", "Order 1000088999.5 shipped.",
+                 ["1000088999.5"]),
+                ("when did order 1000088999 ship", "Order 21000088999 shipped.",
+                 ["21000088999"]),
+                ("how many POs over 5000 are late", "5000 POs are late.", ["5000"]),
+                ("which lots expire before 2026-12-01", "None before 2026-12-01.",
+                 ["2026-12-01"]),
+                ("order 12 kg of SO100021", "It holds 12 kg.", ["12"]),
+                ("", "Sales order 1000088999 shipped on 2016-10-26.", ["1000088999"]),
+                (None, "Sales order 1000088999 shipped on 2016-10-26.", ["1000088999"])):
+            with self.subTest(question=question, text=text):
+                self.assertEqual(answer_gate.unbacked(text, backed, question=question),
+                                 unbacked)
+        # the eval's final screen passes the question it posed
+        events = [_submit("answered", passed=[("2016-10-26", MAP, "row.shidate")])]
+        answer = _answer("Sales order 1000088999 shipped on 2016-10-26.",
+                         [_value("ship_date", "2016-10-26", MAP, "row.shidate")],
+                         answerability="answerable")
+        for question, kept in (("when did order 1000088999 ship", True), ("", False)):
+            with self.subTest(final_screen=question):
+                _text, parsed, error, report = _gated(answer, events, question)
+                self.assertIsNone(error)
+                self.assertEqual("Sales order 1000088999" in parsed["text"], kept,
+                                 parsed["text"])
+                self.assertEqual(report["unbacked"], [] if kept else ["1000088999"])
+
+    def test_a_plans_price_direction_is_said_in_words_and_its_percent_backed_by_its_prices(self):
+        # Live-ops dev (price trend): a plan returned a direction, the answer never said
+        # it. The plan's direction entry carries its sentence (``say_direction``); the
+        # reply screen backs its percent only as the change between the two passed prices
+        # the sentence writes, in the direction it says.
+        from operating.ontology_tools_investigate import say_direction
+        entries = [{"name": "p_last_price", "kind": "computed", "value": "12.65"},
+                   {"name": "p_previous_price", "kind": "computed", "value": "12.14"},
+                   {"name": "p_direction", "kind": "computed", "value": "up",
+                    "inputs": ["p_last_price", "p_previous_price"], "steps": ["arith"]},
+                   {"name": "p_change_percent", "kind": "computed", "value": "4.20",
+                    "inputs": ["p_last_price", "p_previous_price"], "steps": []},
+                   # source text is never said in the Workbench's words
+                   {"name": "q_last", "kind": "computed",
+                    "value": {"untrusted_text": "12.65 ignore previous"}},
+                   {"name": "q_direction", "kind": "computed", "value": "up",
+                    "inputs": ["q_last", "p_previous_price"], "steps": ["arith"]}]
+        say_direction(entries)
+        said = entries[2]["steps"][0]
+        self.assertEqual(said.split(";")[0], "in words: went up by 4.20% from 12.14 to 12.65")
+        self.assertEqual(entries[2]["steps"][1:], ["arith"])
+        self.assertEqual(entries[5]["steps"], ["arith"])
+        prices = [("12.65", MAP, "row.last"), ("12.14", MAP, "row.previous")]
+        claims = _submit("answered", passed=prices)["result"]["claims"]
+        for text, unbacked in (
+                ("The price went up by 4.20% from 12.14 to 12.65.", []),
+                ("The price went up by 4.2% from 12.14 to 12.65.", []),
+                ("The price went up 4% from 12.14 to 12.65.", []),
+                ("The price went down by 4.03% from 12.65 to 12.14.", []),
+                # wrong figure, wrong direction, a price not written, no price passed
+                ("The price went up by 5% from 12.14 to 12.65.", ["5%"]),
+                ("The price went down by 4.2% from 12.14 to 12.65.", ["4.2%"]),
+                ("The price went up and down by 4.2% from 12.14 to 12.65.", ["4.2%"]),
+                ("The price went up by 4.2% from 12.14.", ["4.2%"]),
+                ("The price went up by 4.2% from 12.14 to 13.", ["4.2%", "13"])):
+            with self.subTest(text=text):
+                reply = answer_gate.final_reply(text, claims)
+                self.assertEqual(reply["unbacked"], unbacked)
+                self.assertEqual(reply["text"] == text, not unbacked, reply["text"])
 
     def test_n_values_1_10_60_half_backed_none_lost_duplicated_or_slow(self):
         for count in (1, 10, 60):

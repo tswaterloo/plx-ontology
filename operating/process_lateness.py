@@ -21,13 +21,14 @@ definition (``operating.po_status``) over
 the status values and lines' quantities of the root and its settled identity twins, combined
 by the one reader, ``po_status.read``, that the proactive engine and the packaging eval
 also call: a draft or cancelled PO is not
-applicable; an unknown one (Sage-only, an FM header alone, an unmapped, withheld or
+applicable, and so is a Sage order Sage says is complete (``historical_sage``: a historical
+record, not judged); an unknown one (a Sage order open in Sage, an FM header alone, an unmapped, withheld or
 disputed word, unread lines) is undetermined (``status_unknown``), never late.
 
 Where linked records of two systems disagree (``po_status.read``'s conflicts) the entry's
 ``systems_disagree`` names each conflict with both values, each side cited as this reader
 reads it, and who governs; an issued BC order's lines govern receipt state, so its open
-lines keep a Portal "Complete" order open (never fully received); a BC Draft whose lines
+lines keep a Portal order its status calls complete open (never fully received); a BC Draft whose lines
 record no receipt (never received against) states no receipt state, so it never reopens
 one, while a Draft reopened after a receipt keeps its lines' receipt state.
 
@@ -54,6 +55,7 @@ permissions), with the ``promises_unproven`` gap.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from operating import po_status as ps
@@ -68,25 +70,92 @@ LATE, ON_TIME, NOT_DUE, UNDETERMINED = "late", "on_time", "not_due", "undetermin
 NOT_APPLICABLE = "not_applicable"
 STATES = (LATE, ON_TIME, NOT_DUE, UNDETERMINED, NOT_APPLICABLE)
 # The reason chain, in the order it is stated.
-REASONS = ("not_issued_or_closed", "no_expected_date", "expected_dates_disagree", "no_confirmation",
-           "no_confirmation_found", "confirmation_lead_only", "no_promised_date", "promises_disagree",
+REASONS = ("not_issued_or_closed", "historical_sage", "no_expected_date", "expected_dates_disagree", "no_confirmation",
+           "no_confirmation_found", "confirmation_lead_only", "po_number_match_only",
+           "no_promised_date", "promises_disagree",
            "promise_slipped", "partial_receipt", "receipt_coverage_unproven",
            "not_received")
 # Reasons whose source values are cited in ``because``.
-_CITED_REASONS = ("not_issued_or_closed", "promise_slipped", "partial_receipt")
+_CITED_REASONS = ("not_issued_or_closed", "historical_sage", "promise_slipped",
+                  "partial_receipt")
 MAX_BECAUSE_VALUES = 4
 # Sized so a lateness entry fits plx.process's response next to its stages (about 11 KB; the envelope counts it twice
 # at worst: each cited value is about 450 bytes).
 MAX_VALUES = 10
-MAX_LINES = 10
+# Lines listed with their cited values (about 1.5 KB each); every line is counted in
+# ``quantities`` and the rest page through plx.around.
+MAX_LINES = 5
 MAX_LINE_VALUES = 3
 # Lines listed by how far from received.
 _LINE_ORDER = {"not_received": 0, "partial": 1, "unknown": 2, "received": 3}
 MAX_GAPS = 8
 MAX_CONFLICTS = 3   # one per field (po_status.CONFLICT_FIELDS)
 MAX_TWINS = 4
+MAX_VENDOR_VALUES = 2   # the vendor-promise verdict's cited promise dates (latest last)
 # Due-date gaps of ``_due_date`` that precedence ranks rather than stops at.
 _RANKED = frozenset({"no_due_date", "due_dates_disagree"})
+
+
+def closed_short_note(lines: Sequence[Mapping[str, Any]]) -> str | None:
+    """``closed short: N of M <unit> received`` over the lines with an outstanding quantity
+    (``po_status.ContextSource.line_report``'s decided quantities, summed as Decimal, one
+    unit only), with how many lines that is; None when no line is short. Lines in more
+    than one unit are counted, never summed."""
+    short = [ln["_quantity"] for ln in lines
+             if ln["state"] in ("partial", "not_received") and "_quantity" in ln]
+    if not short:
+        return None
+    of = f" on {len(short)} of {len(lines)} lines" if len(lines) > 1 else ""
+    units = {unit for _o, _r, unit in short}
+    if len(units) != 1:
+        return f"closed short: {len(short)} lines received below their ordered quantity"
+    (unit,) = units
+    ordered = sum((o for o, _r, _u in short), Decimal(0))
+    received = sum((r for _o, r, _u in short), Decimal(0))
+    shown = f" {unit}" if is_unit(unit) else ""
+    return (f"closed short: {ps._qty(received)} of {ps._qty(ordered)}{shown} received{of}; "
+            "the rest is cancelled")
+
+
+def quantities(lines: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Every line's quantities aggregated, so the verdict's receipt state reads from the
+    whole order however many lines and receipts it has (the lines themselves page through
+    ``plx.around`` over ``PurchaseOrderLine.line_of``): the line count by state and, when
+    every decided line is in one unit, the ordered and received totals (Decimal, as text).
+    None without lines."""
+    if not lines:
+        return None
+    by_state: dict[str, int] = {}
+    for line in lines:
+        by_state[line["state"]] = by_state.get(line["state"], 0) + 1
+    out: dict[str, Any] = {"lines": len(lines), "by_state": dict(sorted(by_state.items()))}
+    decided = [line["_quantity"] for line in lines if "_quantity" in line]
+    units = {unit for _o, _r, unit in decided}
+    if decided and len(decided) == len(lines) and len(units) == 1:
+        (unit,) = units
+        out["ordered"] = format(sum((o for o, _r, _u in decided), Decimal(0)), "f")
+        out["received"] = format(sum((r for _o, r, _u in decided), Decimal(0)), "f")
+        out["unit"] = unit if is_unit(unit) else None
+    return out
+
+
+def _list_lines(entry: dict[str, Any], lines: Sequence[Mapping[str, Any]],
+                gaps: list[dict[str, Any]], subject: str) -> None:
+    """The lines aggregated (``quantities``) and the first ``MAX_LINES`` listed (furthest
+    from received first) without their private quantities; the rest page through
+    ``plx.around``, and the cut is a gap that says so."""
+    summed = quantities(lines)
+    if summed is not None:
+        entry["quantities"] = summed
+    shown = [{k: v for k, v in line.items() if not k.startswith("_")}
+             for line in lines[:MAX_LINES]]
+    if shown:
+        entry["lines"] = shown
+    if len(lines) > MAX_LINES:
+        gaps.append(_gap("unknown", "lines_truncated", subject, (
+            f"{len(lines) - MAX_LINES} of {len(lines)} lines are not listed (the quantities "
+            "count every line); page them with plx.around from the order over "
+            "PurchaseOrderLine.line_of reverse")))
 
 
 def po_state(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: str
@@ -141,6 +210,175 @@ def systems_disagree(po: ps.PoRead) -> list[dict[str, Any]]:
     return out
 
 
+def _day(raw: Any) -> Any:
+    """An ISO day of a stored per-item promise, else None (a gap, or not a date)."""
+    from datetime import date
+
+    try:
+        return date.fromisoformat(raw) if isinstance(raw, str) and len(raw) == 10 else None
+    except ValueError:
+        return None
+
+
+def by_line(src: ps.ContextSource, lines: Sequence[Mapping[str, Any]],
+            records: Sequence[str], measured: Any, against: str, coverage_unknown: bool,
+            judged: bool = True) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The order's lines against the per-item promises of ``records`` (the confirmations
+    a counted link joins, or only a lead reaches: ``judged`` false, dates stated, never
+    judged), matched on firm evidence only (``operating.line_promises``). Returns (the
+    per-line verdict, None when no promised arrival date matches a line; the arrival
+    dates of the blocks no line matched, cited: kept at document level as unmatched)."""
+    from operating import line_promises as lp
+    from operating.ontology_tools import _citation, _markings
+
+    reads = src.line_promise_blocks(records) if lines else []
+    if not reads:
+        return None, []
+    own = src.line_descriptors([line["line"] for line in lines])
+    stated: dict[str, list[tuple[Any, Any, dict[str, Any]]]] = {}
+    basis: dict[str, str] = {}
+    unmatched: list[dict[str, Any]] = []
+    for order, _conf, row in reads:
+        blocks = lp.blocks_of(row["value"])
+        hits, rest = lp.match(own, blocks)
+        cite = _citation(row)
+        if cite is None:
+            continue
+
+        def item(found: Mapping[str, Any]) -> dict[str, Any] | None:
+            if not isinstance(found, Mapping) or ("value" not in found and "gap" not in found):
+                return None
+            day = _day(found.get("value"))
+            return {"property": ps.LINE_PROMISES, "value_type": "date",
+                    "value": None if day is None else day.isoformat(), "citation": cite,
+                    "markings": list(_markings(row["markings"]))}
+        for lid, (index, how) in hits.items():
+            found = item(blocks[index].get("delivery_date"))
+            if found is not None:   # a block stating only a ship date promises no arrival
+                stated.setdefault(lid, []).append((order, found["value"], found))
+                basis[lid] = how
+        for index in rest:
+            found = item(blocks[index].get("delivery_date"))
+            if found is not None and found["value"] is not None:
+                unmatched.append(found)
+    if not stated:
+        return None, unmatched
+    promises = {}
+    for lid, found in stated.items():
+        if any(day is None for _, day, _ in found):
+            promise = ps.Promise(reason="promises_disagree", items=tuple(f for *_, f in found))
+        else:
+            promise = ps.promise((order, _day(day), f) for order, day, f in found)
+        promises[lid] = {"promise": promise, "basis": basis[lid],
+                         "values": [f for *_, f in found if f["value"] is not None]}
+    if judged:
+        out = lp.judge(lines, promises, measured, against, src.lines_proven, coverage_unknown)
+    else:
+        listed = [{"line": lid, "matched_by": p["basis"], "state": "not_judged", "late": None,
+                   **({"promised_date": p["promise"].latest.isoformat()}
+                      if p["promise"].latest is not None else {"reason": "promises_disagree"}),
+                   **({"values": p["values"][-1:]} if p["values"] else {})}
+                  for lid, p in sorted(promises.items())]
+        out = {"lines": listed[:lp.MAX_LISTED], "lines_judged": 0,
+               "lines_unmatched": sum(1 for line in lines if line["line"] not in promises)}
+    return out, unmatched
+
+
+def _unmatched_out(out: dict[str, Any], unmatched: Sequence[Mapping[str, Any]]) -> None:
+    """Promise dates stated for items no order line matched: kept at document level,
+    flagged as unmatched to any line (stated, never judged against one)."""
+    from operating.line_promises import MAX_UNMATCHED
+
+    days = sorted({str(v["value"]) for v in unmatched})
+    if days:
+        out["unmatched_dates"] = days[:MAX_UNMATCHED]
+
+
+def vs_vendor_promise(promise: ps.Promise, src: ps.ContextSource, promised: Any,
+                      measured: Any, against: str, coverage_unknown: bool,
+                      lines: Sequence[Mapping[str, Any]] = ()
+                      ) -> dict[str, Any] | None:
+    """The order against the date the vendor confirmed (``basis`` ``vendor_promise``): a
+    promise a counted (firm) link joins to this order, its latest revision, never our
+    requested-by date and never put in its place. A promise only a lead link reaches is a
+    ``possible_vendor_promise`` (``unconfirmed_link``): its date is stated, never judged.
+    None when no promise is read, or the promises are withheld from this reader."""
+    if promise.reason == "promises_unread" or (promised is not None and promised.hidden):
+        return None
+    out: dict[str, Any]
+    # per line first: a confirmation promising each item its own date
+    counted = list(promised.records) if promised is not None else []
+    per_line, unmatched = by_line(src, lines, counted, measured, against, coverage_unknown)
+    if per_line is not None:
+        out = {"basis": "vendor_promise", "link": "confirmed", "per_line": True, **per_line}
+        if out["state"] != UNDETERMINED:
+            out.update(measured_against=against, measured_on=measured.isoformat())
+        _unmatched_out(out, unmatched)
+        if not promised.proven:
+            out["complete"] = False   # a later promise this reader cannot see may exist
+        return out
+    if promise.reason == "none" and unmatched:
+        # dates stated per item, none of them tied to a line of this order on firm
+        # evidence: stated at document level as unmatched, never judged
+        out = {"basis": "vendor_promise", "link": "confirmed", "state": UNDETERMINED,
+               "late": None, "reason": "line_promises_unmatched"}
+        _unmatched_out(out, unmatched)
+        out["values"] = list(unmatched)[-MAX_VENDOR_VALUES:]
+        if not promised.proven:
+            out["complete"] = False
+        return out
+    if promise.latest is not None or promise.reason == "promises_disagree":
+        out = {"basis": "vendor_promise", "link": "confirmed"}
+        items = [v for v in promise.items if isinstance(v, Mapping)]
+        if promise.latest is None:
+            out.update(state=UNDETERMINED, late=None, reason="promises_disagree")
+        else:
+            out["promised_date"] = promise.latest.isoformat()
+            items = [v for v in items if v.get("value") == out["promised_date"]] or items
+            state, days = ps.vendor_verdict(promise.latest, measured, against)
+            if state == LATE and coverage_unknown and against == "today":
+                state, days = UNDETERMINED, None   # a receipt may cover the order
+                out["reason"] = "receipt_coverage_unproven"
+            elif state == UNDETERMINED:
+                out["reason"] = ("received_date_unproven" if against == "received"
+                                 else "receipts_unproven")
+            out.update(state=state, late=None if state == UNDETERMINED else state == LATE)
+            if days:
+                out["days_late"] = days
+            if state != UNDETERMINED:
+                out.update(measured_against=against, measured_on=measured.isoformat())
+        if promised is not None and not promised.proven:
+            out["complete"] = False   # a later promise this reader cannot see may exist
+    else:
+        found = ps.promise(src.lead_promises()) if promised is not None else ps.Promise()
+        items = [v for v in found.items if isinstance(v, Mapping)]
+        leads = list(promised.leads) if promised is not None else []
+        listed, loose = by_line(src, lines, leads, measured, against, coverage_unknown,
+                                judged=False)
+        if listed is not None or (loose and not items):
+            out = {"basis": "possible_vendor_promise", "link": "unconfirmed_link",
+                   "state": "not_judged", "late": None}
+            if listed is not None:
+                out.update(per_line=True, **listed)
+            else:
+                out["reason"] = "line_promises_unmatched"
+                out["values"] = list(loose)[-MAX_VENDOR_VALUES:]
+            _unmatched_out(out, loose)
+            return out
+        if not items:
+            return None
+        out = {"basis": "possible_vendor_promise", "link": "unconfirmed_link",
+               "state": "not_judged", "late": None}
+        if found.latest is not None:
+            out["promised_date"] = found.latest.isoformat()
+            items = [v for v in items if v.get("value") == out["promised_date"]] or items
+        else:
+            out["reason"] = "promises_disagree"
+    if items:
+        out["values"] = items[-MAX_VENDOR_VALUES:]
+    return out
+
+
 def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: str,
              stage: Mapping[str, Any], conflicts: Sequence[Mapping[str, Any]]
              ) -> dict[str, Any]:
@@ -172,13 +410,19 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
                         for c in po.conflicts)
     if state.cls == ps.DRAFT or (state.cls == ps.CLOSED and state.code != ps.RECEIVED):
         # a PO not issued (draft), cancelled or completed short (closed whatever was
-        # received; the outstanding quantity is cancelled) is never late: nothing is due
-        entry.update(state=NOT_APPLICABLE, late=False, at_risk=False,
-                     reasons=["not_issued_or_closed"], chain="not_issued_or_closed")
+        # received; the outstanding quantity is cancelled) is never late: nothing is due.
+        # A Sage header Sage says is complete is a historical record: not judged
+        why = "historical_sage" if state.code == ps.HISTORICAL_SAGE else "not_issued_or_closed"
+        entry.update(state=NOT_APPLICABLE, late=False, at_risk=False, reasons=[why], chain=why)
         cited = [v for v in status_values
                  if v["property"] in ps.HEADER_PROPS][:MAX_BECAUSE_VALUES]
+        if state.code == ps.COMPLETE:
+            # Complete with an outstanding quantity: closed short, the rest cancelled
+            note = closed_short_note(src.line_report(oid, late_spec.get("lines")))
+            if note:
+                entry["note"] = note
         if cited:
-            entry["because"] = [{"reason": "not_issued_or_closed", "values": cited}]
+            entry["because"] = [{"reason": why, "values": cited}]
         else:
             entry.update(state=UNDETERMINED, late=None)
             del entry["at_risk"]
@@ -188,9 +432,13 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
     if state.cls == ps.UNKNOWN or po.need is None or po.promise is None:
         # unknown is not open: never late, on time or at risk (Sage-only, an FM header
         # alone, an unmapped or withheld word, unread lines)
+        # the records' own words and quantities, so the reason says what to check; a read
+        # blind to a linked record says nothing of the part it reads (never decided, nor
+        # described, from a part)
         entry["gap"] = _gap("unknown", "status_unknown", subject, (
             f"the purchase order's status is unknown by the shared definition "
-            f"({state.reason}), so whether it is still open is not stated"))
+            f"({state.reason}), so whether it is still open is not stated"
+            + ("" if po.blind else ": " + ps.describe(po))))
         return entry
 
     # ---- due: every declared planned date, ranked by precedence (the reader's need)
@@ -219,7 +467,11 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
             if promised.proven and not promised.records:
                 reasons.add("no_confirmation")
             elif promised.lead_only:
-                reasons.add("confirmation_lead_only")
+                # a confirmation only a lead link reaches, else no confirmation reached at
+                # all: the only lead is a match of this order's number to another order
+                # record (a twin lead), which is never followed
+                reasons.add("confirmation_lead_only" if promised.leads
+                            else "po_number_match_only")
             elif promised.proven:
                 reasons.add("no_promised_date")
             elif not promised.records and not promised.hidden:
@@ -234,6 +486,7 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
                 entry["revised_date"] = latest.isoformat()
 
     # ---- received, lines and the receipt's state
+    due_blocking = blocking
     received = src.records(oid, late_spec["received"])
     received_days = [day for r in received.records for day, _ in received.dates[r]]
     lines = src.line_report(oid, late_spec.get("lines"))
@@ -258,6 +511,29 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
         "received" in status or (bool(received.records) and covered))
     # receipts but no status or line quantities to say they cover the order
     coverage_unknown = not partial and not fully and bool(received.records)
+    # closed with nothing outstanding (received in full, or Complete: the rest is
+    # cancelled, whatever one line says) and no requested-by date anywhere (none proven
+    # absent past a withheld or unproven due date): nothing was due, so it is not late
+    # (late = requested date passed and not fully received), whenever it arrived
+    nothing_due = ((fully or (state.cls == ps.CLOSED and not governed_open))
+                   and need.lo is None and due_blocking is None and not need.unparseable)
+    if partial and state.cls == ps.CLOSED and not governed_open and need.lo is not None:
+        # closed short: a closed order (Complete, or received by the governing BC lines)
+        # with an outstanding quantity on a line is closed, never measured against today:
+        # the rest is cancelled, so it is not late (late = requested date passed and not
+        # fully received while open); the note says how short
+        entry.update(state=NOT_APPLICABLE, late=False, at_risk=False,
+                     reasons=["not_issued_or_closed", "partial_receipt"],
+                     chain="not_issued_or_closed > partial_receipt",
+                     note=closed_short_note(lines))
+        cited = ([v for v in status_values if v["property"] in ps.HEADER_PROPS]
+                 + partial_lines)[:MAX_BECAUSE_VALUES]
+        if cited:
+            entry["because"] = [{"reason": "not_issued_or_closed", "values": cited}]
+        _list_lines(entry, lines, gaps, subject)
+        if gaps:
+            entry["gaps"] = gaps[:MAX_GAPS]
+        return entry
     if partial:
         reasons.add("partial_receipt")
         because["partial_receipt"] = ((status_values if "partial" in status or (
@@ -265,18 +541,27 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
         measured, against = today, "today"
     elif fully:
         measured, against = (max(received_days) if received_days else None), "received"
-        if measured is not None:
+        # a receipt line naming no receipt (a FileMaker QC row without its header) may
+        # be a later delivery: the latest date read is no received date then
+        unnamed = (f"{len(received.unnamed)} receipt line(s) name no receipt and no receipt "
+                   "names their order line, so their receipt date is not recorded"
+                   if received.unnamed else "")
+        if measured is not None and not unnamed:
             entry["received_date"] = measured.isoformat()
-        if not received.counted_proven or any(not received.dates[r] for r in received.records) \
-                or not received_days:
+        detail = "; ".join(d for d in (received.detail, unnamed) if d)
+        if nothing_due:
+            if not received.counted_proven or any(not received.dates[r]
+                                                  for r in received.records):
+                entry.pop("received_date", None)   # a later receipt may exist
+        elif not received.counted_proven or any(not received.dates[r] for r in received.records) \
+                or not received_days or unnamed:
             blocking = blocking or (
                 _gap("inaccessible", WITHHELD, f"{subject} received",
                      "a receipt of this record is withheld from this reader")
                 if received.hidden else
                 _gap("unknown", "received_date_unproven", f"{subject} received", (
                     "the receipt dates are not all readable or not proven complete, so the "
-                    "received date is not stated"
-                    + (f": {received.detail}" if received.detail else ""))))
+                    "received date is not stated" + (f": {detail}" if detail else ""))))
     else:
         measured, against = today, "today"
         if not received.counted_proven:
@@ -337,10 +622,38 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
                 "the top-ranked planned dates disagree (" + ", ".join(
                     sorted({v["value"] for v in governing_values})) + ") and the measured "
                 "date falls between them: lateness is not stated"))
+    if nothing_due:
+        entry.update(state=NOT_APPLICABLE, late=False, at_risk=False)
+        note = closed_short_note(lines) if state.cls == ps.CLOSED else None
+        if note:
+            entry["note"] = note
+        blocking = _gap("absent_in_source", "no_due_date", subject, (
+            "closed with nothing outstanding (received in full, or Complete: the rest "
+            "cancelled) and no planned (requested-by) date is recorded in any source, so "
+            "it is not late; whether it arrived on time is not stated (no date to judge it "
+            "by): " + ps.describe(po)))
+    elif blocking is not None and blocking["reason"] == "no_due_date":
+        # an open order with no date: what is outstanding, so the date can be asked for
+        blocking = _gap("absent_in_source", "no_due_date", subject, (
+            "no planned (requested-by) date is recorded in any source; a supplier promise "
+            "is never put in its place: " + ps.describe(po)))
     if blocking is not None:
         entry.pop("measured_against", None)
         entry.pop("measured_on", None)
         entry["gap"] = blocking
+
+    # ---- beside our verdict: the order against the vendor's own promise (never our date)
+    if partial or not (fully or received.counted_proven):
+        vendor_on = today if partial else None
+    elif fully:
+        vendor_on = (max(received_days) if received_days and received.counted_proven
+                     and all(received.dates[r] for r in received.records) else None)
+    else:
+        vendor_on = today
+    vendor = vs_vendor_promise(po.promise, src, promised, vendor_on,
+                               "received" if fully else "today", coverage_unknown, lines)
+    if vendor is not None:
+        entry["vs_vendor_promise"] = vendor
     chain = [r for r in REASONS if r in reasons]
     if chain:
         entry["reasons"] = chain
@@ -359,11 +672,7 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
         gaps.append(_gap("unknown", "values_truncated", subject,
                          f"{len(values) - MAX_VALUES} of {len(values)} cited dates are not "
                          "listed (the governing ones come first)"))
-    if lines:
-        entry["lines"] = lines[:MAX_LINES]
-    if len(lines) > MAX_LINES:
-        gaps.append(_gap("unknown", "lines_truncated", subject,
-                         f"{len(lines) - MAX_LINES} of {len(lines)} lines are not listed"))
+    _list_lines(entry, lines, gaps, subject)
     for where in sorted(getattr(ctx, "unserved", ()))[:2]:
         # a link key the source serves on no record: the verdict stands, with the caveat
         prop, _, binding = where.partition("@")

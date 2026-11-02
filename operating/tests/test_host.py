@@ -8,7 +8,7 @@ Portal Workbench senders sit behind the real GET-only clients; no network, no cr
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import io
 import itertools
 import json
@@ -79,6 +79,9 @@ class Router:
         self.bc = FakeBc(companies=CO)   # pinned companies only: a complete listing
         self.mail, self.drive = mail_t.FakeGraph(), sp_t.seeded_drive()
         self.teams = teams_t.FakeTeamsGraph()   # members resolve through the mail directory
+        # Posted yesterday: a conversation active in the scope's active_days is due every
+        # cycle (capture_teams._schedule); a fixed date would age out of that window.
+        self.teams.epoch = datetime.now(timezone.utc) - timedelta(days=1)
         self.teams.post_root(teams_t.GENERAL, "1001", replies=1)
         self.teams.post_root(teams_t.PRIVATE, "2001")
         self.teams.post_chat("3001")
@@ -1633,6 +1636,28 @@ INIT = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
 def call(request_id, name, arguments):
     return {"jsonrpc": "2.0", "id": request_id, "method": "tools/call",
             "params": {"name": name, "arguments": arguments}}
+
+
+class EngineReaderTests(HostCase):
+    """The proactive engine and the vendor-mail pass read as the capture principal granted
+    what it captured (live 2026-11-02: a host config with a capture audience and no live
+    audience ran the engine on the Portal mirror audience alone, blind to BC: 0 late POs,
+    201 undetermined)."""
+
+    def test_the_engine_reads_with_the_capture_audience_and_builds_no_reader(self):
+        from operating.case_runtime import LiveReaders
+
+        config = host_module.HostConfig.from_file(self.write_config(live_audience=None))
+        readers = host_module.engine_readers(config, None)
+        self.assertIsInstance(readers, LiveReaders)
+        self.assertIn("bc", readers.audience.granted_sources())
+        # grants only: no source reader, so nothing is requested and no credential read
+        self.assertEqual(readers.configured(), {"graph-mail": False,
+                                                "sharepoint_drives": [], "bc": False})
+        # a host with a live audience keeps its own live readers
+        live = object()
+        self.assertIs(host_module.engine_readers(
+            host_module.HostConfig.from_file(self.config), live), live)
 
 
 class FreshnessBoundTests(HostCase):

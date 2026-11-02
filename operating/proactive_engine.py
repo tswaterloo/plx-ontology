@@ -55,7 +55,14 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   a grant on every source audience the ``po_delivery_window`` graph reads
   (``_lateness_audiences``): a reader whose own verdict would be withheld never sees it.
   The summary's ``top_finding`` says "N customer orders at risk from M late POs, worst
-  first" (counts only). ``not_configured`` without a caller;
+  first" (counts only). Where ``plx.process`` judged the PO per line, the line feeding the
+  order decides by its own promise (``impact_chain.Late.material``): the gap cites the
+  confirmation's per-item date as its own group and its event names the line, how it was
+  matched, its promised date and the order's required date. A gap whose date is a
+  supplier's promise tells a reader who may not read every audience a promise sits in
+  (supplier confirmations, mailboxes), or every reader when the run's own promises were
+  not proven complete, that a later promise it cannot see may exist (``read_inbox``; the
+  audiences are never shown). ``not_configured`` without a caller;
 * the proactive events (``operating.proactive_events``): ``eta_slipped``,
   ``lot_attention`` (``lot_near_expiry``, ``lot_on_hold``), ``accepted_quote_no_order``,
   ``invoice_quantity_mismatch`` over the store, and ``vendor_no_reply`` (F28),
@@ -138,6 +145,7 @@ PRIORITY = ("high", "medium", "low")
 # investigation never leaves a store-only check unrun.
 # An open purchase order with no requested-by date: never late, its own Home group.
 UNDATED_KIND = "undated_po"
+LATE_RULE = "late_or_unconfirmed_po"   # the rule Home's late count is read from
 DETECTORS = ("late_or_unconfirmed_po",
              # the store-only proactive events (``operating.proactive_events``)
              "eta_slipped", "lot_attention", "accepted_quote_no_order",
@@ -1386,6 +1394,76 @@ def _lateness_audiences(st: _Store) -> list[str]:
     return sorted(need)
 
 
+# The audience prefixes of the record systems a lateness verdict decides on.
+_DECIDING_AUDIENCES = ("api:", "bc:")
+
+
+def _reader_judges_lateness(st: _Store, may_read: Callable[[str], bool] | None) -> bool:
+    """Whether the run principal (``may_read``: its grant; None: not checked) reads every
+    record-system audience (Portal ``api:``, ``bc:``: the status, lines, requested-by dates
+    and receipts a verdict decides on) the ``po_delivery_window`` graph reads that the
+    store holds records of (``_lateness_audiences``; a source with no record here blinds
+    no verdict). A supplier promise read from a document source (mail, SharePoint: item
+    permissions, gated per message) never decides late and is a stated caveat
+    (``promises_unproven``), so it is not required here."""
+    if may_read is None:
+        return True
+    row = st.meta("audience_keys")
+    held = set(json.loads(row)) if row else set()
+    held |= {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+    return all(may_read(key) for key in _lateness_audiences(st)
+               if key in held and key.startswith(_DECIDING_AUDIENCES))
+
+
+# A gap whose date is a supplier's promise says, to a reader who may not read every source
+# a promise sits in (or when the run's own reader could not see every promise), that a
+# later promise it cannot see may exist.
+PROMISE_CAVEAT = "later_promise_may_exist"
+PROMISE_CAVEAT_TEXT = " (a later promise you cannot see may exist)"
+
+
+def _promise_audiences(st: _Store) -> list[str]:
+    """Every audience a supplier's promise may sit in: the stored supplier confirmations'
+    and the mailboxes' (a promise is read from the carrying message too)."""
+    row = st.meta("audience_keys")
+    keys = {k for k in (json.loads(row) if row else ()) if isinstance(k, str)}
+    keys |= {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+    found = {r[0] for r in st.conn.execute(
+        "SELECT DISTINCT audience_key FROM objects WHERE object_type = ?",
+        (po_status.CONFIRMATION_TYPE,))}
+    return sorted(found | {k for k in keys if k.startswith("mail:")})
+
+
+def _promise_caveat(gap: dict[str, Any] | None, unless: Sequence[str], always: bool) -> None:
+    """Record on ``gap`` the audiences a reader must read for the promise it rests on to
+    be every promise there is (``read_inbox`` adds the caveat for any other reader;
+    ``always``: the run's own reader could not see every promise either)."""
+    if gap is not None:
+        gap["follow_up"]["promise_caveat"] = {"unless": sorted(set(unless)),
+                                              "always": bool(always)}
+
+
+def _caveat_all(gap: dict[str, Any] | None, *, unless: Sequence[str]) -> None:
+    _promise_caveat(gap, unless, False)
+
+
+def _line_cites(verdict: Any, chain: Any) -> list[Mapping[str, Any]]:
+    """The cited per-item promise the chain's line is judged by, when its own promise
+    decides (``impact_chain.Late.own_promise``)."""
+    own = verdict.own_promise(chain.line)
+    return list(own.cites) if own is not None else []
+
+
+def _line_event(own: Any, chain: Any, required: date | None) -> dict[str, Any]:
+    """The evidence trail of a per-line verdict: the PO line, how it was matched to the
+    confirmation's item, its promised date and the order's required date."""
+    if own is None or own.promised is None:
+        return {}
+    return {"line": chain.line, "matched_by": own.matched_by,
+            "line_promised": own.promised.isoformat(),
+            **({"required": required.isoformat()} if required is not None else {})}
+
+
 def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                     ) -> dict[str, Any]:
     """``orders_at_risk``: one gap per customer order a late PO puts at risk, and per late
@@ -1404,6 +1482,9 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
     late = found["late"]
     handles = {v["citation"]["l1_handle"] for order in risky
                for v in late[order.worst].cites}
+    # per line: the confirmation's cited per-item promise of the line each chain leaves by
+    handles |= {v["citation"]["l1_handle"] for order in risky for chain in order.chains
+                for v in _line_cites(late[chain.po], chain)}
     handles |= {ref for order in risky for ref in order.required_from}
     records = {r for order in risky for chain in order.chains if chain.po == order.worst
                for r in chain.records}
@@ -1418,6 +1499,7 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                 for v in late[chain.po].cites}
     handles |= {r for margin in found["margins"].values() for f in margin.figures
                 for r in (f.refs or (f.ref,))}
+    handles |= {ref for order in risky for chain in order.chains for ref in chain.refs}
     held = {v["l1_handle"]: v for v in st.versions(handles=handles)}
 
     def cite_value(fig: Any) -> Cite:
@@ -1432,10 +1514,13 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         return ((handle, version["object_id"], _markings(version["markings"])) if version
                 else (handle, None, UNREADABLE))
 
+    unless = _promise_audiences(st) if risky else []
     gaps = []
     skipped: Counter[str] = Counter()
     for order in risky:
-        chain = next(c for c in order.chains if c.po == order.worst)
+        chain = order.chain_of(order.worst)
+        verdict = late[order.worst]
+        own = verdict.own_promise(chain.line)
         into: dict[str, list[str]] = defaultdict(list)
         for edge in chain.edges:
             into[edge.frm].append(edge.markings)
@@ -1443,29 +1528,42 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         # each lateness value its own group: a reader who may not open one of them never
         # sees the verdict that rests on it
         groups = [[cite(v["citation"]["l1_handle"])] for v in late[order.worst].cites]
+        # the line's own promise: the confirmation's cited per-item date, its own group
+        groups += [[cite(v["citation"]["l1_handle"])] for v in _line_cites(verdict, chain)]
         groups += [[(v["l1_handle"], record, _markings(v["markings"], *into[record]))
                     for v in by_object.get(record, ())] for record in chain.records]
         groups.append([cite(ref) for ref in order.required_from])
+        # a lead's own basis (the planned date it was paired by) is cited too
+        groups += [[cite(ref)] for ref in chain.refs]
         pos = len({c.po for c in order.chains})
         noun = "purchase order" if pos == 1 else "purchase orders"
+        firm = chain.tier == "firm"
+        how = ("an assembly order made or allocated for this order (recorded links, each "
+               "cited)" if firm else
+               f"an assembly order tied to this order only by a lead ({ic.CHAIN_BASES[chain.basis]}; "
+               "each record it rests on cited)")
         gap = _gap(
             "order_at_risk", "orders_at_risk", order.key, "SalesOrder", "at_risk",
-            summary=f"{order.days} days at risk from {pos} late {noun} (days at risk is a "
+            summary=("" if firm else "Lead, not firm: ")
+                    + f"{order.days} days at risk from {pos} late {noun} (days at risk is a "
                     "lower bound: no assembly lead time is recorded)",
             missing="Confirm whether the order's required date still holds, or when the "
-                    "late purchase order's material will arrive",
-            why=pg._clip(f"The item of a late purchase order is consumed by an assembly "
-                         f"order made or allocated for this order (recorded links, each "
-                         f"cited): material {order.material.isoformat()} "
-                         f"({order.material_how}) against the required date "
-                         f"{order.required.isoformat()}."),
-            priority="high" if order.days >= 7 else "medium",
+                    "late purchase order's material will arrive"
+                    + ("" if firm else ", and whether this assembly order is made for it"),
+            why=pg._clip(f"The item of a late purchase order is consumed by {how}: material "
+                         f"{order.material.isoformat()} ({order.material_how}) against the "
+                         f"required date {order.required.isoformat()}."),
+            priority=("high" if order.days >= 7 else "medium") if firm else
+                     ("medium" if order.days >= 7 else "low"),
             about=("SalesOrder", "required_date"), groups=groups,
-            event={"days": order.days, "orders_affected": 1})
+            event={"days": order.days, "orders_affected": 1,
+                   **_line_event(own, chain, order.required)})
         if gap is None:
             skipped["order_at_risk_uncited"] += 1
         else:
             gap["requires"] = requires
+            if verdict.rests_on_promise(chain.line):
+                _promise_caveat(gap, unless, verdict.unseen_promise)
             gaps.append(gap)
     by_key = {order.key: order for order in risky}
     for impact in found["po_impacts"]:
@@ -1477,7 +1575,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         # group: a reader who may not open one never sees the claim
         groups = [[cite(v["citation"]["l1_handle"])] for v in late[po].cites]
         for order in orders:
-            chain = next(c for c in order.chains if c.po == po)
+            chain = order.chain_of(po)
+            groups += [[cite(v["citation"]["l1_handle"])] for v in _line_cites(late[po], chain)]
             into: dict[str, list[str]] = defaultdict(list)
             for edge in chain.edges:
                 into[edge.frm].append(edge.markings)
@@ -1490,10 +1589,14 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         worst = max(o.days for o in orders)
         missing = ("Confirm when the late purchase order's material will arrive, or whether "
                    "the sales orders' required dates still hold")
+        leads = sum(1 for o in orders if o.chain_of(po).tier != "firm")
+        groups += [[cite(ref)] for o in orders for ref in o.chain_of(po).refs]
         why = pg._clip(f"An item of this purchase order is consumed by assembly orders made or "
-                       f"allocated for {n} {noun} at risk (recorded links, each cited); the "
-                       f"worst is {worst} days at risk (a lower bound: no assembly lead time is "
-                       "recorded).")
+                       f"allocated for {n} {noun} at risk (recorded links, each cited"
+                       + (f"; {leads} of them tied by a lead only, not firm: inferred by "
+                          "item and date or mentioned in a document" if leads else "")
+                       + f"); the worst is {worst} days at risk (a lower bound: no assembly "
+                       "lead time is recorded).")
         priority = "high" if worst >= 7 else "medium"
         plain = _gap("po_impact", "orders_at_risk", po, "PurchaseOrder", "impact",
                      summary=f"affects {n} {noun}, worst {worst} days at risk",
@@ -1504,6 +1607,9 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
             skipped["po_impact_uncited"] += 1
             continue
         plain["requires"] = requires
+        promised = any(late[po].rests_on_promise(o.chain_of(po).line) for o in orders)
+        if promised:
+            _promise_caveat(plain, unless, late[po].unseen_promise)
         gaps.append(plain)
         margin = impact["margin"]
         if margin is None or impact["orders_with_margin"] != n:
@@ -1529,6 +1635,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
             skipped["po_impact_margin_uncited"] += 1
         else:
             money["requires"] = requires
+            if promised:
+                _promise_caveat(money, unless, late[po].unseen_promise)
             gaps.append(money)
     if found["lateness_undetermined"]:
         skipped["lateness_undetermined"] = found["lateness_undetermined"]
@@ -1538,6 +1646,7 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                      reasons=["impact_bound"] if found["pos_not_checked"] else [],
                      not_evaluated=skipped)
     result["finding"] = {"orders_at_risk": len(risky),
+                         "orders_at_risk_by_tier": found["orders_at_risk_by_tier"],
                          "late_pos": found["late_pos_with_orders_at_risk"],
                          "text": ic.headline(len(risky),
                                              found["late_pos_with_orders_at_risk"])}
@@ -1613,8 +1722,9 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
     common = {"gap": _gap, "cites": _cites, "result": _result}
     mail = {} if vendor_bound is None else {"bound": vendor_bound}
     return {
-        "eta_slipped": lambda: ev.eta_slipped(st, as_of, settled=SETTLED,
-                                              confirming=CONFIRMING, **common),
+        "eta_slipped": lambda: ev.eta_slipped(
+            st, as_of, settled=SETTLED, confirming=CONFIRMING,
+            caveat=functools.partial(_caveat_all, unless=_promise_audiences(st)), **common),
         "lot_attention": lambda: ev.lot_attention(st, as_of, **common),
         "accepted_quote_no_order": lambda: ev.accepted_quote_no_order(st, as_of, **common),
         "invoice_quantity_mismatch": lambda: ev.invoice_quantity_mismatch(
@@ -1793,6 +1903,9 @@ class TimeBudgetSpent(Exception):
     """A tool call refused because the run's time budget is spent."""
 
 
+TOOL_BUDGET_MAX_MS = 600000   # plx.investigate's schema maximum for time_budget_ms
+
+
 class Budget:
     """A run's time budget (``seconds`` from now on ``monotonic``): ``guard`` wraps a tool
     caller so that once it is spent every call raises ``TimeBudgetSpent`` and is noted
@@ -1836,7 +1949,9 @@ class Budget:
             if tool == "plx.investigate":
                 # the investigation stops itself at the deadline (between its steps), never
                 # only the next call: the budget bounds the call in flight too
-                arguments = {**arguments, "time_budget_ms": max(1, int(left * 1000))}
+                # (the tool refuses more than TOOL_BUDGET_MAX_MS: a long pass asks for that much)
+                arguments = {**arguments,
+                             "time_budget_ms": max(1, min(int(left * 1000), TOOL_BUDGET_MAX_MS))}
             found = call(tool, arguments)
             reasons = ((found.get("answerability") or {}).get("reasons") or ()
                        if isinstance(found, Mapping) else ())
@@ -1862,8 +1977,8 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
         qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-        only: Sequence[str] | None = None, vendor_bound: int | None = None
-        ) -> dict[str, Any]:
+        only: Sequence[str] | None = None, vendor_bound: int | None = None,
+        reader_may_read: Callable[[str], bool] | None = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -1875,7 +1990,10 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     detectors alone (the others' gaps and records are left as they are: the separate
     vendor-mail pass, ``operating.vendor_watch``). ``vendor_bound``: how many purchase
     orders the incremental vendor checks may investigate this run (0: reuse their
-    readings only, the build's run when the vendor pass is scheduled apart)."""
+    readings only, the build's run when the vendor pass is scheduled apart).
+    ``reader_may_read(audience_key)``: the grant of the principal ``call`` reads as; a
+    rule whose verdict needs a source it may not read is ``blocked``
+    (``reader_lacks_lateness_access``), never judged blind (None: not checked)."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
@@ -1897,7 +2015,14 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "expired_quote": lambda: _expired_quote(st, as_of),
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
-            "orders_at_risk": lambda: _orders_at_risk(st, as_of, call, card_bound),
+            "orders_at_risk": lambda: (
+                _orders_at_risk(st, as_of, call, card_bound)
+                if call is None or _reader_judges_lateness(st, reader_may_read) else
+                # the run principal cannot read a source a lateness verdict rests on (a
+                # PO's BC twin): its verdicts would be undetermined, never late, for every
+                # reader, so it does not judge (its gaps stay as they were); never a clean
+                # "none at risk"
+                _result([], status="blocked", reasons=["reader_lacks_lateness_access"])),
             "card_rules": lambda: _card_rules(st, as_of, call, card_bound),
             **_event_steps(st, as_of, call, cache, vendor_bound)}
         results: dict[str, dict[str, Any]] = {}
@@ -2042,6 +2167,8 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
             "INSERT INTO rule_coverage VALUES (?, ?, ?) ON CONFLICT (detector) DO UPDATE SET "
             "unattributed = excluded.unattributed, run_at = excluded.run_at",
             (name, int(result.get("unattributed") or 0), run_at))
+        if result["status"] in READ_WHOLE_DATA:
+            _note_generation(conn, name, digest, run_at)
     for gap in gaps.values():
         before = conn.execute("SELECT state FROM gaps WHERE gap_id = ?", (gap["id"],)).fetchone()
         if before is not None and before["state"] == "resolved":
@@ -2075,6 +2202,106 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
         "AND detector IN (SELECT value FROM json_each(?)) "
         "AND gap_id NOT IN (SELECT value FROM json_each(?))",
         (run_at, json.dumps(complete), json.dumps(sorted(gaps))))
+
+
+# A detector whose run ended in one of these read the store it ran over: what it found is
+# that store's (a truncated run's findings stand, its unfound older gaps do not).
+READ_WHOLE_DATA = ("complete", "truncated")
+_GENERATION_KEY = "generation:"   # inbox meta key per detector: the data its gaps are of
+
+
+def _note_generation(conn: sqlite3.Connection, detector: str, digest: str | None,
+                     run_at: str) -> None:
+    """Record that ``detector`` ran over the store of ``digest`` at ``run_at``: the first
+    run over that data is kept (``since``), so a gap last seen before it is of older data."""
+    key = _GENERATION_KEY + detector
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    try:
+        held = json.loads(row[0]) if row is not None else None
+    except ValueError:
+        held = None
+    if isinstance(held, dict) and held.get("digest") == digest \
+            and isinstance(held.get("since"), str):
+        return
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                 (key, json.dumps({"digest": digest, "since": run_at}, sort_keys=True)))
+
+
+def _moment(text: Any) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(text) if isinstance(text, str) else None
+    except ValueError:
+        return None
+    if moment is not None and moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _current_since(conn: sqlite3.Connection, served: str | None
+                   ) -> tuple[dict[str, datetime | None], dict[str, str | None]]:
+    """Per detector, from when its gaps are of the data served now (``served``: the store's
+    content digest): ``{detector: since}`` for those that ran over it (None: every gap, an
+    inbox written before per-detector records whose last full run was over this data), and
+    ``{detector: last run}`` for those that did not (their gaps are of older data: never
+    shown as current, ``read_inbox``'s ``refreshing``)."""
+    held: dict[str, Any] = {}
+    for key, value in conn.execute("SELECT key, value FROM main.meta WHERE key LIKE ?",
+                                   (_GENERATION_KEY + "%",)):
+        try:
+            held[key[len(_GENERATION_KEY):]] = json.loads(value)
+        except ValueError:
+            held[key[len(_GENERATION_KEY):]] = None   # unreadable: of no known data
+    last = conn.execute("SELECT store_digest FROM main.runs ORDER BY run_id DESC "
+                        "LIMIT 1").fetchone()
+    ran = {row[0]: row[1] for row in conn.execute(
+        "SELECT detector, run_at FROM main.detector_runs")}
+    current: dict[str, datetime | None] = {}
+    behind: dict[str, str | None] = {}
+    for name in sorted(set(DETECTORS) | set(ran) | set(held)):
+        record = held.get(name, ...)
+        if record is ...:
+            # no per-detector record (an older engine's inbox): its last full run says
+            if last is not None and last[0] == served:
+                current[name] = None
+            else:
+                behind[name] = ran.get(name)
+            continue
+        since = _moment(record.get("since")) if isinstance(record, dict) else None
+        if isinstance(record, dict) and record.get("digest") == served and since is not None:
+            current[name] = since
+        else:
+            behind[name] = ran.get(name)
+    return current, behind
+
+
+def _of_served(row: Mapping[str, Any], current: Mapping[str, datetime | None]) -> bool:
+    """Whether a gap was found over the data served now (else it may say what the record
+    pages no longer do: never shown as current)."""
+    if row["detector"] not in current:
+        return False
+    since = current[row["detector"]]
+    if since is None:
+        return True
+    # an open gap was found again over it; a resolved one was resolved by a run over it
+    keys = row.keys() if hasattr(row, "keys") else ()
+    resolved = "state" in keys and row["state"] == "resolved"
+    seen = _moment(row["resolved_at"] if resolved else row["last_seen"])
+    return seen is not None and seen >= since
+
+
+def served_behind(store_path: Any, inbox: Any = None) -> bool:
+    """Whether the inbox's last full run is over other data than the store served now (or
+    there is none): the scheduled refresh is due (``operating.vendor_watch``). Read only."""
+    store = Path(store_path)
+    path = inbox_path(store) if inbox is None else Path(inbox)
+    if not path.is_file():
+        return True
+    with closing(_attach(path, store)) as conn:
+        last = conn.execute("SELECT store_digest FROM main.runs ORDER BY run_id DESC "
+                            "LIMIT 1").fetchone()
+        served = conn.execute(
+            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+    return last is None or last[0] != (served[0] if served else None)
 
 
 def _reader_view(conn: sqlite3.Connection, may_read: Callable[[str], bool],
@@ -2246,15 +2473,24 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         last = conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
         digest = conn.execute(
             "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        current, behind = _current_since(conn, digest[0] if digest else None)
         scanned = conn.execute(
             "SELECT COALESCE(SUM(objects), 0) FROM scope WHERE audience_key IN (SELECT value "
             "FROM json_each(:aud)) AND markings IN (SELECT value FROM json_each(:marks))",
             params).fetchone()[0]
-        runs = conn.execute("SELECT detector, status, reasons FROM detector_runs "
-                            "ORDER BY detector").fetchall()
+        runs = conn.execute("SELECT detector, status, reasons, not_evaluated FROM "
+                            "detector_runs ORDER BY detector").fetchall()
         detectors = {row["detector"]: row["status"] for row in runs}
         reasons = {row["detector"]: json.loads(row["reasons"]) for row in runs
                    if row["reasons"] not in (None, "[]")}
+        # the late rule's skips by reason (store-wide, never per reader: a restricted
+        # reader is told at most that the count is not exact, never what was skipped)
+        late_skips = next((row["not_evaluated"] for row in runs
+                           if row["detector"] == LATE_RULE), None)
+        try:
+            late_skips = json.loads(late_skips) if isinstance(late_skips, str) else None
+        except ValueError:
+            late_skips = None   # unreadable: never an exact count
         # each rule's recorded runs over this data: whether one ever found something, and
         # when first (the counts are the run's, never per reader)
         # an inbox an earlier engine wrote may lack the history tables (its next run adds
@@ -2292,6 +2528,9 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             if not rows:
                 break
             offset += len(rows)
+            # a gap found over older data than the store served now is never shown: the
+            # record page reads the served data, so the two would disagree
+            rows = [row for row in rows if _of_served(row, current)]
             for row, citations in _visible(conn, rows, params, decide):
                 state = ("resolved" if row["state"] == "resolved"
                          else "acknowledged" if row["acked"] else "open")
@@ -2322,16 +2561,29 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     # with no row at all) looked for nothing: the read is never complete while one remains.
     not_run = {name: detectors.get(name, "not_run") for name in DETECTORS
                if detectors.get(name) not in ("complete", "truncated", "failed")}
+    # the rules whose findings are of older data than the store served now: theirs are not
+    # shown until they run over it (the scheduled refresh), and the read says so
+    refreshing = sorted(name for name in behind if name in detectors)
+    checked = sorted(at for name in refreshing if isinstance(at := behind[name], str))
     return {"status": "read", "as_of": last["as_of"] if last else None,
             "run_at": last["run_at"] if last else None,
-            "stale": bool(last) and (digest[0] if digest else None) != last["store_digest"],
+            "stale": bool(refreshing) or (bool(last) and (digest[0] if digest else None)
+                                          != last["store_digest"]),
+            "refreshing": refreshing, "checked_on": checked[0] if checked else None,
             "scanned": scanned, "truncated": truncated or bool(failed),
             "max_objects": None, "unscanned": None,
             "unread": {f"{name}_failed": 1 for name in failed},
             "detectors": detectors, "detector_reasons": reasons, "history": history,
             "kind_history": first_found,
             "not_run": not_run, "rules": rules,
-            "complete": not (truncated or failed or not_run),
+            "complete": not (truncated or failed or not_run or refreshing),
+            # the late count is the late rule's alone: exact when that rule ran to the end
+            # over the data served and left no order its rule could not decide (the one
+            # late-list rule, ``po_status.late_count_exact``); another rule cut short
+            # never makes it inexact
+            "late_exact": (detectors.get(LATE_RULE) == "complete"
+                           and LATE_RULE not in refreshing
+                           and po_status.late_count_exact(late_skips)),
             "gaps": shown, "more": more, "limit": limit}
 
 
@@ -2341,6 +2593,18 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
     """One inbox row as its reader sees it (``follow_up`` without the order field)."""
     days_late = follow_up.pop("days_late", None)
     event = follow_up.pop("event", None)
+    summary = row["summary"]
+    caveat = follow_up.pop("promise_caveat", None)
+    if caveat is not None:
+        unless = caveat.get("unless") if isinstance(caveat, dict) else None
+        # a reader who may not read every audience a promise sits in (or a caveat this
+        # engine cannot read) is told a later promise may exist; the audiences are never
+        # shown
+        if not isinstance(unless, list) or caveat.get("always") is not False \
+                or not set(unless) <= set(audiences):
+            summary = pg._clip(summary, pg.MAX_TEXT - len(PROMISE_CAVEAT_TEXT)) \
+                + PROMISE_CAVEAT_TEXT
+            event = {**(event if isinstance(event, dict) else {}), "caveat": PROMISE_CAVEAT}
     if isinstance(event, dict) and isinstance(event.get("amount"), dict):
         amount = event["amount"]
         handle = amount.get("handle")
@@ -2369,7 +2633,7 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
         follow_up.pop("draft")   # a fact it states is not this reader's to open
     return {"id": row["gap_id"], "kind": row["kind"],
             "object_id": row["object_id"], "object_type": row["object_type"],
-            "summary": row["summary"], "citations": citations,
+            "summary": summary, "citations": citations,
             "detected_by": "rule", "state": state,
             "first_seen": row["first_seen"], "last_seen": row["last_seen"],
             **({"days_late": days_late} if days_late is not None else {}),
@@ -2411,13 +2675,18 @@ def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
     with closing(_attach(path, Path(store))) as conn:
         aud, marks = _reader_view(conn, may_read, held)
         params = {"aud": aud, "marks": marks, "kinds": json.dumps(list(kinds))}
-        total = Counter({row[0]: row[1] for row in conn.execute(
-            "SELECT kind, count(*) FROM gaps WHERE state = 'open' AND kind IN (SELECT value "
-            "FROM json_each(:kinds)) GROUP BY kind", params)})
-        rows = conn.execute(
+        served = conn.execute(
+            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        current, _ = _current_since(conn, served[0] if served else None)
+        # a gap of older data than the store served is shown to no one (``read_inbox``):
+        # it is not counted as one hidden from this reader either
+        total = Counter(row["kind"] for row in conn.execute(
+            "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
+            "(SELECT value FROM json_each(:kinds))", params) if _of_served(row, current))
+        rows = [row for row in conn.execute(
             "SELECT g.* FROM gaps g WHERE g.state = 'open' AND g.kind IN (SELECT value FROM "
             "json_each(:kinds)) AND " + _OBJECT_VISIBLE.format(o="g.object_id"),
-            params).fetchall()
+            params).fetchall() if _of_served(row, current)]
         seen = Counter(row["kind"] for row, _ in _visible(conn, rows, params, decide))
     return {kind: total[kind] - seen[kind] for kind in sorted(total)
             if total[kind] - seen[kind] > 0}
@@ -2474,6 +2743,9 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
     customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
     statuses ``absent_in_this_source``) and a case session over the projection and the
     state directory's captures as the tool caller (``orders_at_risk``, ``card_rules``).
+    ``investigator`` must hold every source the engine's verdicts rest on (the host's
+    capture principal with its capture audience: Portal and BC, ``host.engine_readers``);
+    ``orders_at_risk`` is ``blocked`` (``reader_lacks_lateness_access``) when it does not.
     The inbox stores each gap with its citations' audiences; ``read_inbox`` trims it per
     reader. Shared by ``main`` and the host's ``after_build(scheduled=)``."""
     from . import case_workspace_live as live
@@ -2485,9 +2757,16 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
 
     session = live._Session(runtime, investigator, audience, projection, captures=captures)
     try:
+        # the reader the engine's verdicts are read as (the capture principal, granted
+        # what it captured: ``host.engine_readers``): every reader's inbox and briefing
+        # are trimmed from them, so a rule it cannot judge for lack of a grant says so.
+        # Decided over the units the store holds (the keys it checks are stored ones):
+        # no live BC company listing is requested for it.
+        policy = session.host.stored_policy(investigator)
         return run(projection, inbox_path(projection), as_of,
                    coverage=coverage if scan_coverage else None, call=session,
-                   budget=budget, clock=clock, vendor_bound=vendor_bound)
+                   budget=budget, clock=clock, vendor_bound=vendor_bound,
+                   reader_may_read=lambda key: policy.may_read(investigator, key))
     finally:
         session.close()
 
