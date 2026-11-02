@@ -72,6 +72,42 @@
      ]
     },
     {
+     "name": "to_addresses",
+     "value_type": "text",
+     "description": "The TO addresses as Graph reports them: one JSON list, lower-case.",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "to",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
+     "name": "cc_addresses",
+     "value_type": "text",
+     "description": "The CC addresses as Graph reports them: one JSON list, lower-case.",
+     "sources": [
+      {
+       "binding": "graph_mail.messages",
+       "path": "cc",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      }
+     ]
+    },
+    {
      "name": "received_at",
      "value_type": "timestamp",
      "sources": [

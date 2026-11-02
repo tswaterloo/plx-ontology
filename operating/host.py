@@ -247,6 +247,11 @@ BUILD_DISK_MARGIN_BYTES = 1024 ** 3
 CHECKPOINT_WAIT_MS = 2000
 PROJECTION_DIR, PROJECTION_FILE = "projection", "ontology.sqlite"
 BC_DIR, BC_FILE = "bc-capture", "capture.sqlite"
+# ``ingest.build_inputs`` ``snapshot``: the copies a build opens, ``<DIR>/host/build-inputs``
+# (``Host.snapshot_inputs``): ``state/`` mirrors the state directory's capture stores (each
+# store file copied, everything beside it linked), ``portal/`` the served Portal mirror.
+BUILD_INPUTS_DIR = "build-inputs"
+_STORE_FILE_TAILS = ("-wal", "-shm", "-journal")
 KEY_ENV, URL_ENV = "PLX_WORKBENCH_API_KEY", "PLX_WORKBENCH_API_URL"
 KEYCHAIN_SERVICE = "plx-workbench-api-key"
 DEFAULT_PRINCIPAL = "svc:workbench-host"
@@ -606,6 +611,24 @@ def _publish(store: Path, path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _store_marks(path: Path) -> list[list[Any]] | None:
+    """The file marks of a store and its ``-wal`` (device, inode, size, modification and
+    change times; a write changes the change time, which no caller can set), or None when
+    the store cannot be read."""
+    out: list[list[Any]] = []
+    for name in (path, path.with_name(path.name + "-wal")):
+        try:
+            st = os.stat(name)
+        except FileNotFoundError:
+            out.append([name.name, None])
+            continue
+        except OSError:
+            return None
+        out.append([name.name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns,
+                    st.st_ctime_ns])
+    return out
 
 
 def state_capture_paths(state_dir: str | Path) -> dict[str, Path]:
@@ -1038,7 +1061,7 @@ class Host:
                 sleep=self.sleep, budget_seconds=entry.get("budget_seconds"),
                 **capture_mail.PRODUCTION)
             run = capture.run(scope, directory=lambda: capture_mail.directory_mailboxes(
-                api, scope.directory_allows))
+                api, scope.directory_allows, disabled=capture.disabled_mailboxes))
         finally:
             store.close()
         folders = [f for m in run["mailboxes"] for f in m["folders"]]
@@ -1294,7 +1317,7 @@ class Host:
                     runtime, self._actor(), AudienceMap.from_file(self.config.mirror_audience),
                     store, as_of, captures=self.state_dir,
                     scan_coverage="portal" in self.config.sources, budget=budget,
-                    clock=self.clock)
+                    clock=self.clock, vendor_bound=0)   # the vendor pass reads mail apart
             finally:
                 runtime.close()
 
@@ -1361,7 +1384,8 @@ class Host:
                                                      len(self.config.sources)),
                 refresh=refresh, should_stop=lambda: self.stop_reason(stop_file),
                 children=self.children(), max_refreshes=max_refreshes,
-                wait_idle=self.stop.wait, build_reads=self.build_reads).run()
+                wait_idle=self.stop.wait, build_reads=self.build_reads,
+                background=self.snapshot_builds).run()
         return {"schema": CONTINUOUS_SCHEMA, **summary}
 
     def _record(self, db: sqlite3.Connection, name: str, outcome: Mapping[str, Any],
@@ -1405,14 +1429,20 @@ class Host:
         if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
             return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
                     "disk": disk}
+        snapshot: dict[str, Any] | None = None
         with ExitStack() as stack:
             sources: dict[str, Any] = {}
             try:
-                if portal is not None and portal["served_path"] \
-                        and Path(portal["served_path"]).is_file():
+                served_path = (Path(portal["served_path"]) if portal is not None
+                               and portal["served_path"] else None)
+                captures = self.state_dir
+                if self.snapshot_builds:
+                    snapshot = self.snapshot_inputs(served_path)
+                    captures, served_path = snapshot["root"], snapshot["portal"]
+                if served_path is not None and served_path.is_file():
                     sources["portal_api"] = stack.enter_context(
-                        project.MirrorCaptures(portal["served_path"]))
-                sources.update(state_captures(self.state_dir, stack,
+                        project.MirrorCaptures(served_path))
+                sources.update(state_captures(captures, stack,
                                               internal_domains=self._internal_domains()))
                 if not sources:
                     return {"state": "no_captures", "generation": previous}
@@ -1429,8 +1459,13 @@ class Host:
             db.execute("INSERT INTO projection VALUES (?,?,?,?,?,?)",
                        (cycle_id, _iso(self.clock()), previous, built["content_digest"],
                         objects, json.dumps(inputs, sort_keys=True)))
-        return {"state": "built", "generation": cycle_id, "previous_generation": previous,
-                "objects": objects, "sources": sorted(sources), **built["build"]}
+        report = {"state": "built", "generation": cycle_id, "previous_generation": previous,
+                  "objects": objects, "sources": sorted(sources), **built["build"]}
+        if snapshot is not None:
+            report["inputs"] = {"kind": "snapshot", "stores": snapshot["stores"],
+                                "kept": snapshot["kept"], "bytes": snapshot["bytes"],
+                                "seconds": snapshot["seconds"]}
+        return report
 
     def build_disk(self, need: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The free bytes of the state directory's file system (None: it cannot say,
@@ -1453,8 +1488,27 @@ class Host:
             free: int | None = int(self.disk_free(self.state_dir))
         except OSError:
             free = None
+        copies = 0
+        if self.snapshot_builds:   # the build's copies of the stores (snapshot_inputs)
+            try:
+                portal = self.store_paths().get("portal")
+                copies = sum(p.stat().st_size for p in [*self._capture_stores(), portal]
+                             if p is not None and p.is_file())
+                # Copies already on disk (this build's, or the last one's it replaces)
+                # are counted in the free space already: only the rest is still needed.
+                inputs = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
+                held = sum(os.lstat(os.path.join(top, name)).st_size
+                           for top, _dirs, names in os.walk(inputs)   # links not followed
+                           for name in names
+                           if not os.path.islink(os.path.join(top, name)))
+                copies = max(0, copies - held)
+            except (OSError, sqlite3.Error):
+                copies = 0
+        if copies:
+            need = {**need, "snapshot_bytes": copies}
         return {"free_bytes": free,
-                "needed_bytes": int(need.get("needed_bytes") or 0) + BUILD_DISK_MARGIN_BYTES,
+                "needed_bytes": int(need.get("needed_bytes") or 0) + BUILD_DISK_MARGIN_BYTES
+                + copies,
                 "generation_bytes": served, "estimate": dict(need)}
 
     def _space_guard(self, need: Mapping[str, Any]) -> None:
@@ -1513,6 +1567,12 @@ class Host:
 
         from .case_runtime import CASE_RUNTIME_DIR, MIRROR_FILE
 
+        if self.snapshot_builds:
+            # The build opens only its own copies, which no capture writes.
+            inputs = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
+            return [inputs / "portal" / MIRROR_FILE,
+                    *[inputs / "state" / p.relative_to(self.state_dir) for p in
+                      self._capture_stores()]]
         paths = [self.state_dir / CASE_RUNTIME_DIR / MIRROR_FILE]
         with self._ledger() as db:
             row = db.execute("SELECT served_path FROM source_state WHERE source='portal'"
@@ -1523,6 +1583,108 @@ class Host:
             paths.extend(project.SharePointCaptures.stores(self.state_dir)
                          if name == "sharepoint" else [path])
         return paths
+
+    @property
+    def snapshot_builds(self) -> bool:
+        """Whether a build opens snapshots of the stores (``ingest.build_inputs``)."""
+        return bool(self.config is not None and self.config.ingest is not None
+                    and self.config.ingest.get("build_inputs") == "snapshot")
+
+    def _capture_stores(self) -> list[Path]:
+        """Every capture store file of the state directory a build may open (SharePoint:
+        its drive and list-item stores), held or not."""
+        from ontology import project
+
+        paths: list[Path] = []
+        for name, path in state_capture_paths(self.state_dir).items():
+            paths.extend(project.SharePointCaptures.stores(self.state_dir)
+                         if name == "sharepoint" else [path])
+        return paths
+
+    def snapshot_inputs(self, portal: Path | None) -> dict[str, Any]:
+        """Consistent copies of every capture store the next build opens, under
+        ``<DIR>/host/build-inputs``: each SQLite store copied by SQLite's online backup in
+        one step (one read transaction on the live store, so the copy is one committed
+        state while its capture keeps writing), every other entry beside a store (blob
+        directories, index files: content-addressed or replaced whole) linked, and the
+        served Portal mirror copied. The build then reads only these copies: no build
+        snapshot pins a live store's WAL, so no capture waits for a build.
+
+        A store whose files (main and ``-wal``: device, inode, size, modification and
+        change time, ``ontology.project._file_marks``) are as they were when its copy was
+        made is not copied again (``kept``): the copy stays the same file, so the build's
+        watermark of it is the last build's and its fingerprints are not read again
+        (``ontology.project_incremental``). Marks are recorded only for a copy no write
+        landed during (equal before and after), so a kept copy holds the live store's
+        state. Returns ``{"root", "portal", "stores", "kept", "bytes", "seconds"}`` (paths
+        for the build only, never reported)."""
+        from contextlib import closing
+
+        started = time.monotonic()
+        root = self.state_dir / HOST_DIR / BUILD_INPUTS_DIR
+        state = root / "state"
+        marks_file = root / "marks.json"
+        try:
+            held = json.loads(marks_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            held = None
+        if not isinstance(held, dict):   # none recorded (or a snapshot cut short): anew
+            shutil.rmtree(root, ignore_errors=True)
+            held = {}
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marks: dict[str, Any] = {}
+        copied, kept, total = 0, 0, 0
+
+        def copy(source: Path, target: Path) -> None:
+            nonlocal copied, kept, total
+            name = target.relative_to(root).as_posix()
+            before = _store_marks(source)
+            if before is not None and held.get(name) == before and target.is_file() \
+                    and not target.is_symlink():
+                marks[name] = before
+                kept += 1
+                total += target.stat().st_size
+                return
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if target.is_symlink():
+                target.unlink()
+            temp = target.with_name(f".{target.name}.copying")
+            temp.unlink(missing_ok=True)
+            with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True,
+                                         timeout=60)) as live, \
+                    closing(sqlite3.connect(temp)) as copied_store:
+                live.backup(copied_store)   # one step: one read transaction, one state
+                copied_store.execute("PRAGMA journal_mode=DELETE")
+            os.chmod(temp, 0o600)
+            os.replace(temp, target)
+            after = _store_marks(source)
+            marks[name] = before if before is not None and before == after else None
+            copied += 1
+            total += target.stat().st_size
+
+        marks_file.unlink(missing_ok=True)   # rewritten once every copy is in place
+        stores = [p for p in self._capture_stores() if p.is_file()]
+        for path in stores:   # every copy first: no link ever stands where a copy goes
+            copy(path, state / path.relative_to(self.state_dir))
+        skip = {p.parent / (p.name + tail) for p in stores for tail in ("", *_STORE_FILE_TAILS)}
+        for parent in {p.parent for p in stores}:
+            for entry in parent.iterdir():
+                link = state / entry.relative_to(self.state_dir)
+                if entry not in skip and not link.exists() and not link.is_symlink():
+                    link.symlink_to(entry)
+        served = None
+        if portal is not None and portal.is_file():
+            served = root / "portal" / portal.name
+            copy(portal, served)
+        for name in set(held) - set(marks):   # a store the state directory no longer holds
+            gone = root / name
+            if root.resolve() in gone.resolve().parents:
+                gone.unlink(missing_ok=True)
+        temp = marks_file.with_name(f".{marks_file.name}.tmp")
+        temp.write_text(json.dumps(marks, sort_keys=True), encoding="utf-8")
+        os.replace(temp, marks_file)
+        return {"root": state, "portal": served, "stores": copied, "kept": kept,
+                "bytes": total, "seconds": round(time.monotonic() - started, 1)}
 
     def checkpoint_written(self, names: Sequence[str]) -> dict[str, Any]:
         """``wal_checkpoint(TRUNCATE)`` of the stores the named capture sources write

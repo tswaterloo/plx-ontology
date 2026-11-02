@@ -16,7 +16,7 @@ import time
 from typing import Any, Iterator
 from urllib.parse import quote
 
-from . import models as m
+from . import models as m, presentation
 from .auth import Reader
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
@@ -256,15 +256,33 @@ class MockBackend:
                                               answer_id=answer_id,
                                               conversation_id=conversation))
             del recent[10:]
-        yield "answer", m.AnswerPayload(answer_id=answer_id, question=request.question,
-                                        freshness=FRESH, conversation_id=conversation,
-                                        latency_ms=ms(), **parts)
+        answer = m.AnswerPayload(answer_id=answer_id, question=request.question,
+                                 freshness=FRESH, conversation_id=conversation,
+                                 latency_ms=ms(), **parts)
+        answer.follow_ups = presentation.follow_ups(request.question, answer)
+        yield "answer", answer
 
     def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
+        started = time.perf_counter()
+        # as the live lookup does: each trailing phrase of what was typed, longest first
+        words = q.strip().lower().split()
+        got: list = []
+        for start in range(len(words)):
+            got = self._suggest_phrase(" ".join(words[start:]))
+            if got:
+                break
+        return m.SuggestResponse(query=q, source="fixture",
+                                 took_ms=int((time.perf_counter() - started) * 1000),
+                                 suggestions=[m.Suggestion(
+                                     object_id=o["object_id"], type=o["type"],
+                                     label=o["label"], sublabel=o["sublabel"], match=match,
+                                     score=score, open_url=obj_url(o["type"], o["object_id"]))
+                                     for score, o, match in got[:limit]])
+
+    @staticmethod
+    def _suggest_phrase(needle: str) -> list:
         from difflib import SequenceMatcher
 
-        started = time.perf_counter()
-        needle = q.strip().lower()
         scored = []
         for obj in OBJECTS:
             names = [obj["label"].lower(), *obj["aliases"]]
@@ -280,29 +298,37 @@ class MockBackend:
                 match, score = "fuzzy", round(best * 0.8, 3)
             scored.append((score, obj, match))
         scored.sort(key=lambda item: (-item[0], item[1]["label"]))
-        return m.SuggestResponse(query=q, source="fixture",
-                                 took_ms=int((time.perf_counter() - started) * 1000),
-                                 suggestions=[m.Suggestion(
-                                     object_id=o["object_id"], type=o["type"],
-                                     label=o["label"], sublabel=o["sublabel"], match=match,
-                                     score=score, open_url=obj_url(o["type"], o["object_id"]))
-                                     for score, o, match in scored[:limit]])
+        return scored
 
-    def home(self, reader: Reader) -> m.Home:
-        late = [
+    def forget_reader(self, reader: Reader) -> None:
+        return None
+
+    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
+        late = self._late()
+        page = late[offset:offset + limit]
+        return m.LateList(total=len(late), offset=offset, items=page,
+                          more=offset + len(page) < len(late),
+                          next_offset=offset + len(page), as_of=_iso(0.5))
+
+    @staticmethod
+    def _late() -> list[m.LatePo]:
+        return [
             m.LatePo(object_id="PurchaseOrder:demo:90412", label="PO 90412",
                      supplier="Maple Leaf Soapworks", due_date="2026-10-17", days_late=12,
-                     open_lines=1, reason="12,000 lavender bars not received; supplier "
+                     open_lines=1, amount=m.Money(amount="18400.00", currency="CAD"), reason="12,000 lavender bars not received; supplier "
                      "says ships 4 Nov", open_url=obj_url("PurchaseOrder",
                                                           "PurchaseOrder:demo:90412"),
                      sources=[PO_ROW, MAIL]),
             m.LatePo(object_id="PurchaseOrder:demo:90388", label="PO 90388",
                      supplier="Northwind Packaging Ltd", due_date="2026-10-24", days_late=5,
-                     open_lines=2, reason="Shipper cartons not received; no reply since "
+                     open_lines=2, amount=m.Money(amount="2310.50", currency="USD"), reason="Shipper cartons not received; no reply since "
                      "23 Oct", open_url=obj_url("PurchaseOrder", "PurchaseOrder:demo:90388"),
                      sources=[src("BC", "bc://demo/purchaseOrders/90388",
                                   "BC purchase order 90388", fields={
                                       "Expected Receipt Date": "2026-10-24"})])]
+
+    def home(self, reader: Reader) -> m.Home:
+        late = self._late()
         risk = [m.AtRisk(object_id="SalesOrder:demo:77120", label="SO 77120", kind="order",
                          reason="Needs PO 90412's bars, which now arrive 4 Nov; ships 6 Nov",
                          open_url=obj_url("SalesOrder", "SalesOrder:demo:77120"),
@@ -319,10 +345,93 @@ class MockBackend:
                                 "which POs are late this week"],
                       needs_attention=m.NeedsAttention(status="read", late_pos=late,
                                                        at_risk=risk, hidden=HIDDEN_FINANCE,
-                                                       as_of=_iso(0.5)),
+                                                       as_of=_iso(0.5), late_total=len(late)),
                       recent_questions=recent, freshness=FRESH)
 
-    def object_page(self, reader: Reader, object_type: str, object_id: str) -> m.ObjectPage:
+    def _briefing(self, since_visit: bool) -> tuple[dict, dict[str, str]]:
+        """A demo briefing built by the real rules (``operating.briefing.build``) over demo
+        events: top items, groups with counts, a suspect total, a PO due today, an
+        acknowledged one, a partial check and a hidden count."""
+        from operating import briefing as bf
+
+        def gap(n: int, kind: str, oid: str, summary: str, **extra: Any) -> dict:
+            return {"id": f"pe-demo{n:011d}", "kind": kind, "object_id": oid,
+                    "object_type": oid.split(":", 1)[0], "summary": summary,
+                    "state": extra.pop("state", "open"),
+                    "first_seen": extra.pop("first_seen", _iso(30)),
+                    "citations": extra.pop("citations", ["bc://demo/purchaseOrders/90412"]),
+                    "follow_up": {"why": extra.pop("why", None)}, **extra}
+
+        labels = {"PurchaseOrder:demo:90412": "PO 90412", "PurchaseOrder:demo:90388": "PO 90388",
+                  "PurchaseOrder:demo:90455": "PO 90455", "PurchaseOrder:demo:90501": "PO 90501"}
+        gaps = [
+            gap(1, "po_impact", "PurchaseOrder:demo:90412", "affects 1 sales order, worst 2 "
+                "days at risk", why="An item of this purchase order is consumed by an "
+                "assembly order made for SO 77120.", first_seen=_iso(0.5),
+                event={"orders_affected": 1, "days": 12, "amount": {
+                    "value": "18400.00", "currency": "CAD", "basis": "total_cost"}}),
+            gap(2, "unconfirmed_po", "PurchaseOrder:demo:90388", "An open purchase order "
+                "needed by 2026-10-24 has no supplier confirmation", days_late=5,
+                event={"amount": {"value": "2400.00", "currency": "CAD",
+                                  "basis": "total_cost"}}),
+            gap(3, "unconfirmed_po", "PurchaseOrder:demo:90501", "An open purchase order "
+                "needed by 2026-07-14 has no supplier confirmation", days_late=109,
+                event={"amount": {"value": "4410000.21", "currency": "CAD",
+                                  "basis": "total_cost", "suspect": "the total is over "
+                                  "1,000 times this vendor's usual order in CAD"}}),
+            gap(4, "unconfirmed_po", "PurchaseOrder:demo:90455", "An open purchase order "
+                "needed by 2026-10-31 has no supplier confirmation"),       # due today
+            gap(5, "vendor_no_reply", "PurchaseOrder:demo:90388", "A request to the vendor "
+                "has had no reply for 8 days", event={"days": 8}),
+        ]
+        gaps += [gap(10 + n, "lot_near_expiry", f"Lot:demo:{n}", f"Expires in {n + 3} days",
+                     event={"days": n + 3}, first_seen=_iso(0.5 if n < 3 else 30))
+                 for n in range(9)]
+        gaps += [gap(30 + n, "unconfirmed_po", f"PurchaseOrder:demo:91{n:03d}",
+                     "An open purchase order past its need date has no supplier "
+                     "confirmation", days_late=2 + n,
+                     state="acknowledged" if n == 0 else "open") for n in range(6)]
+        history = {d: {"runs": 3, "first_found": "2026-10-30T06:00:00Z"} for d in (
+            "late_or_unconfirmed_po", "orders_at_risk", "lot_attention", "vendor_no_reply")}
+        detectors = {d: "complete" for d in bf.CHECK_WORDS}
+        detectors["vendor_terms_unapplied"] = "truncated"
+        inbox = {"status": "read", "gaps": gaps, "complete": False, "as_of": _iso(0.5)[:10],
+                 "run_at": _iso(0.5), "detectors": detectors, "history": history,
+                 "detector_reasons": {"vendor_terms_unapplied": ["time_budget"]}}
+        found = bf.build(inbox, routing=bf.Routing(frozenset({"PROC", "QUALITY"})),
+                         hidden={"lot_on_hold": 3, "vendor_no_reply": 1},
+                         last_visit=_iso(24), since_visit=since_visit)
+        for item in found["items"]:
+            labels.setdefault(item["object_id"], item["object_id"].split(":")[-1])
+        return found, labels
+
+    def briefing(self, reader: Reader, *, since_visit: bool = False) -> m.Briefing:
+        from operating import briefing as bf
+        from .backend import briefing_item, briefing_model
+
+        found, labels = self._briefing(since_visit)
+        top = [briefing_item(i, labels, None) for i in found["items"][:bf.TOP_ITEMS]]
+        return briefing_model(found, top, digest=bf.digest_text(
+            found, first_name=reader.display_name.split(" ")[0], labels=labels))
+
+    def briefing_items(self, reader: Reader, event_type: str, *, offset: int = 0,
+                       limit: int = 25, since_visit: bool = False) -> m.BriefingItems:
+        from operating import briefing as bf
+        from .backend import briefing_item
+
+        found, labels = self._briefing(since_visit)
+        members = [i for i in found["items"] if i["event_type"] == event_type
+                   and i["rank"] > bf.TOP_ITEMS]
+        page = members[offset:offset + limit]
+        return m.BriefingItems(event_type=event_type, total=len(members), offset=offset,
+                               items=[briefing_item(i, labels, None) for i in page],
+                               more=offset + len(page) < len(members))
+
+    def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
+        return m.BriefingSeen(ok=True, at=_iso(0))
+
+    def object_page(self, reader: Reader, object_type: str, object_id: str, *,
+                    quick: bool = False) -> m.ObjectPage:
         obj = next((o for o in OBJECTS if o["object_id"] == object_id
                     or (o["type"].lower() == object_type.lower()
                         and object_id.lower() in o["aliases"])), None)

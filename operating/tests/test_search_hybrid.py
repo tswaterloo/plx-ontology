@@ -14,6 +14,7 @@ import os
 import shutil
 import statistics
 import unittest
+from pathlib import Path
 from unittest import mock
 
 try:
@@ -27,7 +28,7 @@ from operating.search import retrievers as rt
 from operating.search.config import WeightsError, load_weights, parse_weights
 from operating.search.fusion import rrf
 from operating.tests.search_fixture import (BC, EXCLUDED, FINANCE, NOW, PURCHASING,
-                                            QUALITY, FixtureDb, HashEmbedder, chunks)
+                                            QUALITY, FixtureDb, HashEmbedder, _t, chunks)
 
 TEAMS = "teams:chat:ops-chat-4"
 # Mailbox units are keyed by the owner's directory object id (the people exclusion
@@ -124,7 +125,8 @@ class RerankTimeBoxTests(unittest.TestCase):
         with mock.patch.dict(models._DEFAULTS, {"reranker": boxed, "embedder:m": Emb()},
                              clear=True), mock.patch.dict(models._WARMING, clear=True), \
                 mock.patch.dict(os.environ, {"PLX_EMBED_MODEL": "m", "PLX_RERANK": "on",
-                                             "PLX_SEARCH": "hybrid"}):
+                                             "PLX_SEARCH": "hybrid",
+                                             "PLX_SEARCH_MODELS": "local"}):
             plug.warm_if_enabled()                          # a session start: background
             self.assertEqual(models.warm(wait=True, timeout=5),
                              {"embedder": True, "reranker": True})
@@ -134,7 +136,8 @@ class RerankTimeBoxTests(unittest.TestCase):
             self.assertEqual(boxed.score("q", ["p", "p"], 1.0), ([0.9, 0.9], None))
         with mock.patch.dict(models._DEFAULTS, {"embedder:m": Emb()}, clear=True), \
                 mock.patch.dict(models._WARMING, clear=True), \
-                mock.patch.dict(os.environ, {"PLX_EMBED_MODEL": "m", "PLX_RERANK": "off"}):
+                mock.patch.dict(os.environ, {"PLX_EMBED_MODEL": "m", "PLX_RERANK": "off",
+                                             "PLX_SEARCH_MODELS": "local"}):
             self.assertEqual(models.warm(wait=True, timeout=5),
                              {"embedder": True, "reranker": None})
         with mock.patch.dict(models._WARMING, clear=True), \
@@ -142,6 +145,79 @@ class RerankTimeBoxTests(unittest.TestCase):
                 mock.patch.object(models, "warm") as never:
             plug.warm_if_enabled()                          # search off: nothing loads
             never.assert_not_called()
+
+
+class SharedModelTests(unittest.TestCase):
+    """One model process per host user (operating/search/model_server.py): every search
+    process asks it instead of loading its own copy (about 3.4 GB each), only this user
+    reaches it, and a search without it is ranked without the models, saying so."""
+
+    def setUp(self):
+        import tempfile
+        import threading
+        from operating.search import model_server, models
+        self.dir = Path(tempfile.mkdtemp()) / "models"
+        self.addCleanup(__import__("shutil").rmtree, self.dir.parent, True)
+
+        class Boxed:   # TimeBoxed's interface over a fixed scorer
+            reranker = type("R", (), {"loaded": True})()
+
+            def warm(self, wait=False):
+                pass
+
+            def score(self, query, passages, timeout):
+                return [0.25] * len(passages), None
+        for patch in (mock.patch.dict(os.environ, {"PLX_SEARCH_MODEL_DIR": str(self.dir),
+                                                   "PLX_SEARCH_MODELS": "shared"}),
+                      mock.patch.multiple(models, local_embedder=lambda: EMB,
+                                          local_reranker=lambda: Boxed()),
+                      mock.patch.dict(models._DEFAULTS, clear=True)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.server = threading.Thread(target=model_server.serve, args=(self.dir, 1.0),
+                                       daemon=True)
+        self.server.start()
+        for _ in range(200):
+            if model_server.running(self.dir) if self.dir.exists() else False:
+                break
+            __import__("time").sleep(0.01)
+
+    def test_search_processes_share_one_copy_and_bad_requests_are_refused(self):
+        from operating.search import model_server, models
+        embedder, reranker = models.default_embedder(), models.default_reranker()
+        self.assertEqual(embedder.model, EMB.model)
+        self.assertEqual(embedder.embed(["gasket order"]), EMB.embed(["gasket order"]))
+        self.assertEqual(reranker.score("q", ["a", "b"], 1.0), ([0.25, 0.25], None))
+        self.assertEqual(oct(self.dir.stat().st_mode & 0o777), "0o700")
+        # A second server on the same directory exits at once: one copy per directory.
+        self.assertEqual(model_server.serve(self.dir, 1.0), 0)
+        for bad in ({"op": "embed", "texts": "x"}, {"op": "embed", "texts": [1]},
+                    {"op": "rerank", "query": "q", "passages": ["a"], "timeout": 999},
+                    {"op": "unknown"}):
+            self.assertEqual(model_server.request(bad, 5.0, self.dir),
+                             {"ok": False, "problem": "bad_request"})
+        self.server.join(5.0)   # idle past its bound: it stops and frees the directory
+        self.assertFalse(self.server.is_alive())
+        self.assertFalse(model_server.running(self.dir))
+        self.assertEqual(list((self.dir / "req").iterdir()), [])
+        self.assertEqual(list((self.dir / "resp").iterdir()), [])
+
+    def test_a_directory_others_may_open_is_refused(self):
+        from operating.search import model_server
+        os.chmod(self.dir, 0o755)
+        with self.assertRaises(PermissionError):
+            model_server.request({"op": "ping"}, 1.0, self.dir)
+
+    def test_without_a_server_search_ranks_without_the_models_and_says_so(self):
+        from operating.search import model_server, models
+        self.server.join(5.0)
+        with mock.patch.object(model_server, "START_SECONDS", 0.5), \
+                mock.patch.object(model_server.subprocess, "Popen"):   # it never comes up
+            embedder, reranker = models.default_embedder(), models.default_reranker()
+            self.assertIsNone(embedder.model)
+            scores, problem = reranker.score("q", ["a"], 0.2)
+        self.assertIsNone(scores)
+        self.assertTrue(problem.startswith("reranker_unavailable"), problem)
 
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")
@@ -334,7 +410,8 @@ class HybridSearchTests(unittest.TestCase):
         plain = self.run_search(question, who)
         self.assertIn("rerank_off", plain.notes)
         fake = FixedReranker({"working days": 1.0, "castile": 0.2})
-        ranked = self.run_search(question, who, reranker=fake)
+        # k within the reranked top (weights.json rerank_top): every hit is reranked.
+        ranked = self.run_search(question, who, reranker=fake, k=load_weights().rerank_top)
         self.assertEqual(fake.calls, 1)
         self.assertEqual(ranked.hits[0]["chunk_id"], "sop1#0")
         self.assertEqual(ranked.hits[0]["signals"]["rerank"], 1.0)
@@ -408,6 +485,25 @@ class HybridSearchTests(unittest.TestCase):
 
     # ------------------------------------------------------------- log + inputs
 
+    def test_a_system_senders_mail_ranks_below_a_persons_with_the_same_text(self):
+        # Same text, the system sender's copy newer (recency favours it): the authority
+        # prior (weights.json "authority") puts the person's mail first and logs why.
+        def mail(cid, domain, days):
+            return dict(chunk_id=cid, source_handle=f"graph-mail://purchasing/{cid}",
+                        object_id=f"EmailMessage:graph:{cid}", kind="mail",
+                        title="Gasket order 4417 delivery", author_role=f"external ({domain})",
+                        occurred_at=_t(days), header="Email 'Gasket order 4417 delivery'.",
+                        body="The gasket order 4417 ships on Friday from the Hamilton plant.",
+                        audience_key=PURCHASING, authority=1)
+        with FixtureDb() as db:
+            db.add([mail("bot", "github.com", 1), mail("person", "vendor.example", 9)])
+            result = search("gasket order delivery Hamilton", reader([PURCHASING]),
+                            dsn=db.dsn, now=NOW, embedder=EMB, reranker=None, owners={},
+                            log=False)
+        self.assertEqual([h["chunk_id"] for h in result.hits], ["person", "bot"])
+        self.assertLess(result.hits[1]["signals"]["prior"], 0)
+        self.assertEqual(result.hits[0]["signals"]["prior"], 0)
+
     def test_every_query_is_logged_with_signal_values(self):
         result = self.run_search("maple suds soap", reader([PURCHASING, BC]), log=True)
         self.assertIsNotNone(result.query_log_id)
@@ -420,7 +516,7 @@ class HybridSearchTests(unittest.TestCase):
         self.assertEqual(len(logged), len(result.hits))
         self.assertEqual(set(logged[0]["signals"]),
                          {"exact_id", "graph", "dense", "bm25", "fuzzy", "authority",
-                          "recency", "rerank", "fused"})
+                          "prior", "recency", "rerank", "fused"})
         self.assertIn("total", row[4])
 
     def test_query_log_rows_past_the_retention_are_pruned(self):
@@ -760,6 +856,78 @@ class ToolPathTests(unittest.TestCase):
         self.assertEqual(len(again["documents"]), 1)
         self.assertNotEqual(again["documents"][0]["citation"],
                             first["documents"][0]["citation"])
+
+    def test_a_next_page_reuses_the_ranking_and_a_revoked_item_stays_hidden(self):
+        from operating.search import plug
+        fx = self.fx
+        tools = self.tools()
+        args = {"query": "why are the pallets late", "sources": ["graph_mail"], "limit": 1}
+        with mock.patch.object(plug, "_ranked_now", wraps=plug._ranked_now) as made:
+            first = fx.ok(self, "plx.documents", tools.call("plx.documents", args, fx.FULL))
+            cursor = first["completeness"]["next_cursor"]
+            second = fx.ok(self, "plx.documents",
+                           tools.call("plx.documents", dict(args, cursor=cursor), fx.FULL))
+            self.assertEqual(made.call_count, 1)   # one ranking, both pages
+            self.assertEqual({first["documents"][0]["citation"],
+                              second["documents"][0]["citation"]}, {fx.M1_H, fx.M2_H})
+            # The reused ranking is gated again: an item the reader lost is not shown.
+            tools.base.item_gate = lambda actor, handle: not handle.startswith(fx.M1_H)
+            after = fx.ok(self, "plx.documents",
+                          tools.call("plx.documents", dict(args, limit=5), fx.FULL))
+            self.assertEqual(made.call_count, 1)
+        self.assertNotIn(fx.M1_H, json.dumps(after))
+        self.assertIn(fx.M2_H, [d["citation"] for d in after["documents"]])
+
+    def test_the_item_gate_runs_on_use_best_first_until_the_page_is_full(self):
+        # Ranked beside the tool's own search, gated in the tool call: N = 1, 10, 60 hits,
+        # every other one denied; the allowed ones come back in order, at most FIND_K,
+        # and none denied is ever returned (or digested into the cursor's mode).
+        from operating.search import plug
+        fx = self.fx
+        tools = self.tools()
+        for n in (1, 10, 60):
+            hits = [{"object_id": f"Email:graph_mail.messages:n{i}",
+                     "handle": f"graph-mail://mbx-a/n{i}@ck1"} for i in range(n)]
+            allowed = [h for i, h in enumerate(hits) if i % 2 == 1]
+
+            def gate(actor, handle):
+                return int(handle.split("/n")[1].split("@")[0]) % 2 == 1
+            with mock.patch.object(plug, "_ranked_now",
+                                   return_value=plug.Ranked(hits, "hybrid")), \
+                    plug.call_state() as state:
+                plug.prefetch(tools.base.policy, fx.FULL, gate, f"pallets {n}")
+                got = plug.ranked(tools.base.policy, fx.FULL, gate, f"pallets {n}")
+            self.assertEqual(got.hits, allowed[:plug.FIND_K], n)
+            shown = plug._gated(plug.Ranked(allowed, "hybrid"), tools.base.policy, fx.FULL,
+                                lambda a, h: True)
+            self.assertEqual(state["mode"], shown.mode, n)
+
+    def test_leads_holding_all_but_one_word_are_listed_beside_what_meaning_found(self):
+        import zlib
+        fx = self.fx
+        text = "Pallets are late again at the dock."
+
+        def stored(store):
+            self._stored_text(store)
+            field = store.conn.execute(
+                "INSERT INTO text_fields (object_id, version_handle, citation, field_path, "
+                "document_kind, sender_class, markings, text_digest) VALUES "
+                "(?, ?, ?, 'row.content_text', 'attachment', 'internal', '[]', ?)",
+                (fx.A1, fx.A1_H, fx.A1_H, "1" * 64)).lastrowid
+            chunk = store.conn.execute(
+                "INSERT INTO text_chunks (field_id, start, body) VALUES (?, 0, ?)",
+                (field, zlib.compress(text.encode()))).lastrowid
+            store.conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
+                               (chunk, text))
+        tools = self.tools(stored=False)
+        stored(tools.store)
+        out = fx.ok(self, "plx.documents", tools.call(
+            "plx.documents", {"query": "pallets late tomorrow", "sources": ["graph_mail"]},
+            fx.FULL))
+        listed = [d["citation"] for d in out["documents"]]
+        self.assertIn(fx.M1_H, listed)        # meaning (and the words) found it
+        self.assertIn(fx.A1_H, listed)        # only the words, all but "tomorrow"
+        self.assertIn("partial_word_match", [g["reason"] for g in out["gaps"]])
 
     def test_a_search_fallback_is_stated_in_the_answer(self):
         fx = self.fx

@@ -653,7 +653,8 @@ class FullReadAccess:
                 return False
             try:
                 from integrations.people_exclusion import is_object_id
-                decidable = all(is_object_id(v.strip()) or guard.bound for v in people)
+                decidable = all(is_object_id(v.strip()) or guard.bound or guard.decides(v)
+                                for v in people)
             except Exception:  # noqa: BLE001 - an undecidable guard opens nothing
                 return False
             if not decidable or _people_excluded(guard, people):
@@ -673,6 +674,43 @@ class FullReadAccess:
         elif scope == "teams" and not folded:
             return False
         return not _people_excluded(guard, sorted(folded))
+
+    def allows_stale(self, scheme: str, source_acl: Any, *, modifier: Any = None,
+                     onedrive_owner: Any = None) -> bool:
+        """An item of ``scheme`` whose captured permission list (``source_acl``; a Teams
+        chat's member list) is older than the capture-age bound, under this grant. The
+        exclusion is exactly a fresh item's, plus the people a stale list cannot vouch
+        for: (c) the exclusion is loaded; (a) no entry of the list the exclusion decides
+        (an object id; an address once bound, or one the captured directory maps) is an
+        excluded person's, as on a fresh item; (b) a recorded last modifier
+        (``modifier``) is decidable and cleared (none recorded: as on a fresh item), and
+        a file in a OneDrive (``onedrive_owner``, its personal-site path) is a listed
+        user's who is not excluded. No other field is required. Anything else stays
+        withheld."""
+        scope = _FULL_READ_SCHEME_SCOPE.get(scheme)
+        if scope is None or not self.covers(scope) or not isinstance(source_acl, Mapping):
+            return False
+        guard = self.guard()
+        listed = source_acl.get("identities")
+        if not isinstance(listed, (list, tuple)) or not listed \
+                or any(not isinstance(v, str) or not v.strip() for v in listed):
+            return False
+        folded = [v.strip().lower() for v in listed]
+        try:
+            # The list as a fresh item's is checked: every entry the exclusion decides (an
+            # object id; an address once bound or mapped by the captured directory) must
+            # be clear; the rest is no person it can name, as on a fresh item.
+            if _people_excluded(guard, folded):
+                return False
+            if modifier is not None:
+                if not isinstance(modifier, str) or not guard.decides(modifier) \
+                        or guard.is_excluded(modifier):
+                    return False
+            if onedrive_owner is not None:
+                guard.refuse_onedrive_path(onedrive_owner)   # raises: excluded/undecided
+        except Exception:  # noqa: BLE001 - excluded or undecidable: withheld
+            return False
+        return True
 
 
 def _strict_json(raw: bytes) -> Any:
@@ -855,6 +893,11 @@ class EmployeeEntitlement:
     library_security_classes: Mapping[str, str] = field(default_factory=dict)
     rights_unresolved: bool = False   # denied because a provider failed, not a refusal
     qc_document_reader: bool = False  # reads Batches QC documents (admin or QC department)
+    # Where work is routed (``operating.briefing``), never what may be read: the Portal
+    # department codes the system of record confirms, with the Entra department's code;
+    # and the Portal role. Empty when unknown: nothing is routed by a guess.
+    routing_departments: frozenset[str] = frozenset()
+    portal_role: str = ""
     # The declared full-read grant this employee holds (``FullReadAccess``), else None.
     full_read: FullReadAccess | None = None
 
@@ -868,6 +911,13 @@ class EmployeeEntitlement:
     def full_read_covers(self, scope: str) -> bool:
         return self.actor is not None and self.full_read is not None \
             and self.full_read.covers(scope)
+
+    def full_read_stale_allows(self, scheme: str, source_acl: Any, *, modifier: Any = None,
+                               onedrive_owner: Any = None) -> bool:
+        """``FullReadAccess.allows_stale`` for this employee's grant; no grant: False."""
+        return self.actor is not None and self.full_read is not None \
+            and self.full_read.allows_stale(scheme, source_acl, modifier=modifier,
+                                            onedrive_owner=onedrive_owner)
 
     def full_read_allows(self, scheme: str, source_acl: Any, record: Any = None) -> bool:
         """Whether this employee's full-read grant opens one item of ``scheme``
@@ -1193,7 +1243,11 @@ class EmployeePermissionResolver:
                                                      else full_read.grant.code()),
                                    access.user_id, file_clearance,
                                    dict(p.library_security_classes),
-                                   qc_document_reader=qc_reader, full_read=full_read)
+                                   qc_document_reader=qc_reader, full_read=full_read,
+                                   routing_departments=frozenset(
+                                       set(access.clearance_departments or ())
+                                       | ({code} if code else set())),
+                                   portal_role=access.role)
 
     def _fingerprint(self, actor: Actor | None, identities: frozenset[str],
                      reason: str | None, user_id: str = "",

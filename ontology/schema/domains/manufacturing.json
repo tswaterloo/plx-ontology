@@ -82,6 +82,38 @@
                     "id": "upstream-code.etlmanufacturingorders.cdba79"
                   }
                 ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "mo_code",
+                    "op": "prefix",
+                    "value": "MO-FM-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.migrate-fm-mo.b46934"
+                  }
+                ]
+              },
+              {
+                "when": [
+                  {
+                    "path": "mo_code",
+                    "op": "prefix",
+                    "value": "UAT-MO-FM-"
+                  }
+                ],
+                "lineage": "gold_etl_from_fm",
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.migrate-fm-mo.b46934"
+                  }
+                ]
               }
             ]
           },
@@ -99,7 +131,7 @@
               "id": "upstream-code.manufacturingorder.42f88d"
             }
           ],
-          "note": "Portal-native MOs (MO-{base36}) live only here."
+          "note": "Portal-native MOs (MO-{base36}) live only here. MO-FM-{id} rows are the FM migration's one-time copy of FM assembly order {id} (custom_fields.fmId)."
         }
       ],
       "properties": [
@@ -265,7 +297,20 @@
               "binding": "portal.app_manufacturing_order",
               "path": "quantity",
               "parser": "decimal_text",
-              "unit_from": "uom"
+              "unit_from": "uom",
+              "when": [
+                {
+                  "path": "custom_fields.fmId",
+                  "op": "absent"
+                }
+              ],
+              "note": "Not on an FM migration copy (custom_fields.fmId set): its quantity is FM qtymanufold, the expected yield, not the ordered quantity.",
+              "evidence": [
+                {
+                  "kind": "ref",
+                  "id": "upstream-code.migrate-fm-mo.b46934"
+                }
+              ]
             }
           ],
           "authority": {
@@ -869,6 +914,81 @@
               "id": "upstream-code.manufacturingorder.42f88d"
             }
           ]
+        },
+        {
+          "name": "fm_modified_at",
+          "value_type": "timestamp",
+          "description": "FileMaker's own edit time of the assembly order (audittimestampmodified): a change signal per FM record (the FM edit time, not the replica's).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "audittimestampmodified",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "context-pack.03-portal-md-6-traps"
+            }
+          ]
+        },
+        {
+          "name": "portal_updated_at",
+          "value_type": "text",
+          "description": "The Portal row's updated_at: naive UTC wall time as Prisma writes it, kept as text (it states no zone). The Portal's ETL and bridges bump it whether or not a field changed: a stamp, never proof of a change.",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "updated_at",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "portal_created_at",
+          "value_type": "text",
+          "description": "The Portal row's created_at: naive UTC wall time as Prisma writes it, kept as text. When the Portal record was created (an FM migration copy: the copy's creation, not the FM record's).",
+          "sources": [
+            {
+              "binding": "portal.app_manufacturing_order",
+              "path": "created_at",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "fm_created_at",
+          "value_type": "timestamp",
+          "description": "FileMaker's own creation time of the record (audittimestampcreated).",
+          "sources": [
+            {
+              "binding": "portal.fm_assembly_order",
+              "path": "audittimestampcreated",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -929,10 +1049,10 @@
     },
     {
       "id": "AssemblyOrderComponent",
-      "description": "One component line of an AO (bulk or packaging): planned quantity and consumption. Gold app_manufacturing_order_line is not bound: ETL copies are unlinked (buildMoFmIdMap).",
+      "description": "One component line of an AO (bulk or packaging): planned quantity and consumption. FM assembly_order_item is the component record; the Portal's app_manufacturing_order_line is the ETL's copy of it on the MO-FM-{id} manufacturing order (re-inserted every run; copies collapse on their content), the line set the Portal's MRP demand reads. Its product is the ETL's guess across product families (buildFmIdMap), so its item link is a lead, never a firm link; the FM component is the firm one.",
       "availability": {
         "state": "partial",
-        "reason": "Lines of Portal-native MOs (gold only) are not projected; FM qtydamage_c/totalqty_c are not served."
+        "reason": "FM qtydamage_c/totalqty_c are not served; a Portal line's item is a lead (the ETL's product id map collides across families)."
       },
       "bindings": [
         {
@@ -959,6 +1079,29 @@
               "id": "upstream-code.fetchassemblyorderitems.f2113b"
             }
           ]
+        },
+        {
+          "id": "portal.app_manufacturing_order_line",
+          "source": "portal_api",
+          "relation": "public.app_manufacturing_order_line",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "default": "gold_native_staging",
+            "inherit": "AssemblyOrderComponent.component_of"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etl-mo-lines.b46934"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.item-demand.b46934"
+            }
+          ],
+          "note": "The line's own lineage is its manufacturing order's (an MO-FM copy's lines are the ETL's copies of FM items)."
         }
       ],
       "properties": [
@@ -981,6 +1124,12 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "qty_c",
               "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "quantity",
+              "parser": "decimal_text",
+              "unit_from": "uom"
             }
           ],
           "evidence": [
@@ -988,7 +1137,38 @@
               "kind": "ref",
               "id": "context-pack.03-portal-md-4-8.915e1d"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         },
         {
           "name": "consumed_quantity",
@@ -1009,6 +1189,12 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "actualamount",
               "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "actual_amount",
+              "parser": "decimal_text",
+              "unit_from": "uom"
             }
           ],
           "evidence": [
@@ -1016,7 +1202,38 @@
               "kind": "ref",
               "id": "upstream-code.canonicalizestatus.9cfff9"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         },
         {
           "name": "quantity_per_unit",
@@ -1027,8 +1244,44 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "qtybatch",
               "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "qty_per_batch",
+              "parser": "decimal_text"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         },
         {
           "name": "quantity_per_box",
@@ -1038,8 +1291,44 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "qtybatchbox",
               "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "qty_per_batch_box",
+              "parser": "decimal_text"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         },
         {
           "name": "damaged_quantity",
@@ -1078,8 +1367,44 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "lotno",
               "parser": "trim"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "lot_number",
+              "parser": "trim"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         },
         {
           "name": "pack_price",
@@ -1092,8 +1417,44 @@
               "binding": "portal.fm_assembly_order_item",
               "path": "pricepack",
               "parser": "decimal_text"
+            },
+            {
+              "binding": "portal.app_manufacturing_order_line",
+              "path": "price_packaging",
+              "parser": "decimal_text"
             }
-          ]
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "fm_bronze"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context-pack.03-portal-md-3-8.8b1656"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.fetchassemblyorderitems.f2113b"
+                  }
+                ]
+              },
+              {
+                "lineage": [
+                  "gold_etl_from_fm"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "upstream-code.etl-mo-lines.b46934"
+                  }
+                ]
+              }
+            ],
+            "note": "The FM item is the component record; the Portal line is the ETL's copy."
+          }
         }
       ],
       "evidence": [
@@ -3200,8 +3561,8 @@
       "to": "AssemblyOrder",
       "name": "same_record_as",
       "reverse_name": "same_record_as",
-      "cardinality": "1:1",
-      "description": "Gold MO and FM AO are one AO: gold mo_code = FM nameamo_c (ETL upserts on mo_code).",
+      "cardinality": "N:1",
+      "description": "A Portal manufacturing order and the FM assembly order it copies are one AO: the ETL copy by code (mo_code = FM nameamo_c, upserted on mo_code) and the FM migration copy by id (MO-FM-{id}, custom_fields.fmId = FM id). One FM AO can have both copies.",
       "bindings": [
         {
           "kind": "same_record",
@@ -3224,6 +3585,31 @@
             {
               "kind": "ref",
               "id": "upstream-code.silver-manufacturing-orders.9d477f"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order",
+          "to_binding": "portal.fm_assembly_order",
+          "pairs": [
+            {
+              "from": "custom_fields.fmId",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "where": [
+            {
+              "path": "custom_fields.fmId",
+              "op": "present"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.migrate-fm-mo.b46934"
             }
           ]
         }
@@ -3387,7 +3773,7 @@
       "name": "component_of",
       "reverse_name": "components",
       "cardinality": "N:1",
-      "description": "AO item -> its AO.",
+      "description": "AO item -> its AO; a Portal MO line -> its manufacturing order.",
       "bindings": [
         {
           "kind": "fk",
@@ -3412,6 +3798,25 @@
             }
           ],
           "link_contract": "fm-ao-item-to-assembly-order"
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_manufacturing_order_line",
+          "to_binding": "portal.app_manufacturing_order",
+          "pairs": [
+            {
+              "from": "assembly_order_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etl-mo-lines.b46934"
+            }
+          ]
         }
       ]
     },
@@ -3422,7 +3827,7 @@
       "name": "uses_item",
       "reverse_name": "used_in_ao_lines",
       "cardinality": "N:1",
-      "description": "The packaging or bulk consumed.",
+      "description": "The packaging or bulk consumed. A Portal MO line's product is a lead only: the ETL picks it by a number shared across product families.",
       "bindings": [
         {
           "kind": "fk",
@@ -3459,6 +3864,29 @@
             {
               "kind": "ref",
               "id": "upstream-code.fetchassemblyorderitems.f2113b"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_manufacturing_order_line",
+          "to_binding": "portal.app_product",
+          "pairs": [
+            {
+              "from": "product_id",
+              "to": "id",
+              "compare": "text_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etl-mo-lines.b46934"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.build-fm-id-map.b46934"
             }
           ]
         }
@@ -4924,6 +5352,46 @@
       "kind": "context_pack",
       "ref": "devloop/CONTEXT/03-PORTAL.md#4.6",
       "note": "Portal acc0c53 (TASK-2351, portal/src/lib/mrp/test-receiving/batch-ids.ts:29-31, pinned in the upstream pin file): off the live customer site a batch that uses a staging test lot takes public.batch/batch_item ids >= 9000000 and a TEST-BC- number; FileMaker never issues either. silver.batches selects every public.batch row, so etlBatches copies them to app_batch_record."
+    },
+    "upstream-code.migrate-fm-mo.b46934": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "scripts/migrate-fm-to-portal.sql",
+      "commit": "b46934a",
+      "symbol": "11. MANUFACTURING ORDERS",
+      "lines": "386-443",
+      "note": "The FM migration copies every FM assembly order once into app_manufacturing_order as id 'fm-mo-'||id, code 'MO-FM-'||id, custom_fields.fmId = the FM assembly_order.id (ON CONFLICT DO NOTHING: a snapshot, never refreshed); quantity = qtymanufold (the expected yield, not the ordered qtytotal); status mapped to the Portal enum (Realized -> RELEASED, Committed -> IN_PRODUCTION, Allocated/Scheduled -> SCHEDULED, Cancelled -> CANCELLED, else CREATED)."
+    },
+    "upstream-code.etl-mo-lines.b46934": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "symbol": "etlAssemblyOrderItems",
+      "lines": "1326-1360",
+      "note": "Every ETL run inserts each FM assembly order item again as an app_manufacturing_order_line with a fresh cuid (ON CONFLICT (id) never fires): assembly_order_id = the MO-FM-{FM id} manufacturing order (buildMoFmIdMap), product_id = buildFmIdMap(app_product, /^fm-(raw|pack|bulk|fp)-/) of the item's packaging id, else its bulk id. That map strips the family prefix, so one number keys whichever of fm-raw-N, fm-pack-N, fm-bulk-N, fm-fp-N (or a bare external id N) the query returned last: the product a line names is a guess across families."
+    },
+    "upstream-code.build-fm-id-map.b46934": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "symbol": "buildFmIdMap",
+      "lines": "101-115",
+      "note": "external_id with the regex removed -> app_product.id, in one Map: ids of different families with the same number overwrite each other."
+    },
+    "upstream-code.item-demand.b46934": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/src/app/api/mrp/purchase-orders/item-demand/route.ts",
+      "commit": "b46934a",
+      "lines": "17-33",
+      "note": "The Portal's MRP item demand reads app_manufacturing_order_line by productId (quantityRequired) for manufacturing orders not CANCELLED or COMPLETED."
+    },
+    "context-pack.03-portal-md-6-traps": {
+      "kind": "context_pack",
+      "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+      "note": "Reporting API traps: app_* updated_at is also bumped by the ETL and bridges, not only by people; FM audittimestampmodified is the FileMaker edit time."
     }
   }
 }

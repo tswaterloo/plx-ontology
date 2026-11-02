@@ -525,17 +525,22 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
 
 # ---------------------------------------------------------------------- customer orders
 
-def customer_orders(call: Call, customer: str, period: Period
-                    ) -> tuple[list[Order], bool, bool, int]:
+def customer_orders(call: Call, customer: str, period: Period,
+                    skip: Callable[[str], bool] | None = None
+                    ) -> tuple[list[Order], bool, bool, int, int]:
     """(the customer's orders dated in the period, whether orders were withheld from this
     reader (never how many or which), whether every page was read, orders of the customer
-    outside the period)."""
+    outside the period, orders ``skip`` left out by their number: test and staging
+    orders the caller does not count, never read for their dates)."""
     objects, _edges, withheld, complete = _around(call, customer, [(ORDER_LINK, "reverse")],
                                                   MAX_ORDERS * 4)
-    out, outside = [], 0
+    out, outside, skipped = [], 0, 0
     for ref in objects:
         oid = ref["object_id"]
         number = _display(ref) or oid
+        if skip is not None and skip(number):
+            skipped += 1
+            continue
         handle = ((ref.get("display") or {}).get("origin") or {}).get("citation")
         dates = _order_dates(call, oid)
         if not dates or not period.start <= min(dates) <= period.end:
@@ -543,7 +548,7 @@ def customer_orders(call: Call, customer: str, period: Period
             continue
         out.append(Order(oid, number, sorted(dates), handle if isinstance(handle, str)
                          else None))
-    return out, withheld, complete, outside
+    return out, withheld, complete, outside, skipped
 
 
 def _order_dates(call: Call, order: str) -> list[date]:
@@ -773,7 +778,8 @@ def _sum(values: Sequence[Decimal]) -> Decimal:
 
 
 def profitability(call: Call, customer: str, *, today: date, question: str = "",
-                  period: Period | None = None, focus: str | None = None) -> dict[str, Any]:
+                  period: Period | None = None, focus: str | None = None,
+                  skip_order: Callable[[str], bool] | None = None) -> dict[str, Any]:
     """The customer's profitability over the period, its orders ranked worst first, and why
     the focus order (named, else the worst) lost money (module doc). Raises ``ProfitError``
     when the customer is not readable for this reader."""
@@ -793,8 +799,10 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                    "the period by its first posted invoice's posting date (with no posted "
                    "invoice, by its order date)"},
         "gaps": [], "withheld": 0}
-    orders, trimmed, whole, outside = customer_orders(call, customer, period)
+    orders, trimmed, whole, outside, skipped = customer_orders(call, customer, period,
+                                                               skip_order)
     out["orders_outside_period"] = outside
+    out["test_orders_skipped"] = skipped
     # Coverage: a customer total and a verdict only over every order of the period. Past
     # MAX_ORDERS the most recent are read and ranked as a partial ranking, never totalled;
     # an order list not read whole gives its count as a lower bound.

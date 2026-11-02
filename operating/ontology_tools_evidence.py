@@ -104,7 +104,10 @@ version (relation, handle, recorded time, row). A ``bc://`` capture handle
 (``CaseRuntime.resolve_citation``: the host's BC capture store, read-only, under the live
 audience for the employee-gated reader), exactly the revision it names, as captured
 (never a live read); a revision a later capture superseded answers ``changed_since`` with
-its own values and ``current_citation``; the digest is the one a case records. ``page``
+its own values and ``current_citation``; the digest is the one a case records. A
+``teams-chat://`` or ``teams-channel://`` message (its captured ``row.body_text``
+included) and an ``mc://`` record are read the same way from the host's capture, gated by
+the conversation's captured membership and the people exclusion as the chat is. ``page``
 reads one page of an original, or of a SharePoint PDF from the host's capture, and the read
 cites that page (``citation`` is the ``#page=<n>`` handle, evidence the answer gate takes);
 a read of an original's whole text lists in ``pages`` the page citations of the pages the
@@ -135,8 +138,9 @@ tests; the live path is the host's reviewed GET-only readers (live-unverified).
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 import contextlib
+import contextvars
 import datetime as dt
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -177,13 +181,40 @@ MAX_EDGES = 100
 MAX_NEAR_MISSES = 20
 MAX_GAPS = 20
 MAX_MENTIONS = 50
+# A listed document shows this many of its mentions (``summarise_mentions``); the rest are
+# counted in its ``mention_summary`` and paged with ``mention_offset`` (a page whose
+# mentions filled 12.7k of a 14.3k-character entry crowded out the documents' text).
+MENTIONS_SHOWN = 5
+MAX_SUMMARY_IDENTIFIERS = 20
 MAX_READINGS = 8           # identifier kinds named in a bare query's reading gap
 LINK_SCAN_CAP = 5000       # visible links read per root (identity, documents)
 DOC_SCAN_CAP = 2000        # candidate documents considered per documents call
+TWIN_ROOTS = 50            # identifier records whose firm twins a documents call reads
+FIRM_TIERS = ("verified", "reviewed", "corroborated")   # a link that firmly joins records
 CANDIDATE_CAP = 200        # identifier rows read per key (near misses)
 ORIGINAL_SCAN = 50         # operator originals listed per documents call
 CAPPED_LISTED = 5          # capped files with no match one documents answer names one by one
 DEFAULT_LIMIT = 10
+# plx.documents ``participant``: the mail whose sender, To or CC is an address, a domain
+# or one of a record's addresses (its properties named like ``email``, ``rep_email``,
+# ``email_2``, on it and its firm twins).
+PARTICIPANT_PROPERTIES = ("sender", "to_addresses", "cc_addresses")
+PARTICIPANT_SCAN_CAP = 20_000   # matching value rows read per call
+MAX_PARTICIPANTS = 16           # addresses and domains one call searches
+_EMAIL_PROPERTY = re.compile(r"^(?:[a-z0-9]+_)?email(?:_[0-9]+)?$")
+# A party record's contacts, whose addresses a participant search of the party reads too:
+# the BC contacts linked to a customer or vendor (its contactsInformation), then the
+# people of those company contacts.
+PARTY_CONTACT_LINKS = ("Contact.bc_customer", "Contact.bc_vendor")
+CONTACT_PEOPLE_LINK = "Contact.of_company"
+_ADDRESS = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
+_DOMAIN = re.compile(r"^@?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$")
+# Mailbox providers shared by many unrelated people: a record's address there is
+# matched exactly, never widened to its domain.
+SHARED_MAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "yahoo.ca", "icloud.com", "me.com", "aol.com", "proton.me",
+    "protonmail.com", "gmx.com", "mail.com", "qq.com", "163.com", "126.com"})
 DEFAULT_READ_CHARS = 8000
 SNIPPET_CHARS = 300
 _SCHEME_FAMILY = {"graph-mail": "mail", "sharepoint": "sharepoint", "original": "original",
@@ -283,7 +314,9 @@ def people_excluded(guard: Any, identities: Iterable[Any]) -> bool:
     if not isinstance(guard, PeopleExclusion) or guard.unavailable:
         return True
     values = {v.strip().lower() for v in _strings(list(identities)) if v.strip()}
-    return guard.excluded(v for v in values if guard.bound or is_object_id(v))
+    # An address is decided by a bound guard or one the attached directory maps.
+    return guard.excluded(v for v in values if guard.bound or is_object_id(v)
+                          or guard.decides(v))
 
 
 # --------------------------------------------------------------------------- citation reader
@@ -322,6 +355,12 @@ class CitationReader:
     def field_text(self, handle: str, field_path: str, actor: Actor) -> str | None:
         return None
 
+    def tenant_domains(self) -> frozenset[str] | None:
+        """Our own mail domains (lower-case), or None when unknown. ``plx.documents``
+        widens a record's addresses to their domains only when these are known, so a
+        colleague's address on a record never turns into all of our own mail."""
+        return None
+
     def batch(self) -> contextlib.AbstractContextManager[Any]:
         """A block of reads that may share per-call gate state (``RuntimeCitations``);
         the decisions inside it are those made outside it."""
@@ -354,6 +393,26 @@ class RuntimeCitations(CitationReader):
         within the tool call's one live re-read bound (shared either way)."""
         call = getattr(getattr(self.runtime, "captures", None), "call", None)
         return call() if callable(call) else contextlib.nullcontext()
+
+    def tenant_domains(self) -> frozenset[str] | None:
+        """The case mail scope's internal domains and every domain of a captured
+        mailbox's addresses (as ``_sender_excluded`` reads them); None when neither is
+        known."""
+        domains = {d.lower() for d in getattr(getattr(self.runtime, "mail_scope", None),
+                                              "internal_domains", ()) if isinstance(d, str)}
+        if self.mail_capture_dir is not None:
+            from integrations.capture_mail import store_exists
+            from integrations.people_exclusion import is_object_id
+            try:
+                if store_exists(self.mail_capture_dir):
+                    with self._mail_store() as store:
+                        for identities, _ in self._mailbox_identities(store, is_object_id,
+                                                                      None):
+                            domains |= {i.rsplit("@", 1)[1] for i in identities
+                                        if i.count("@") == 1}
+            except (OSError, sqlite3.Error, ValueError):
+                pass   # unreadable: the domains stay those of the mail scope
+        return frozenset(domains) or None
 
     # ---- helpers -----------------------------------------------------------
 
@@ -390,14 +449,18 @@ class RuntimeCitations(CitationReader):
 
     # ---- read --------------------------------------------------------------
 
-    def read(self, handle: str, actor: Actor, *, page: int | None = None) -> dict[str, Any]:
+    def read(self, handle: str, actor: Actor, *, page: int | None = None,
+             content: bool = True) -> dict[str, Any]:
+        """``content=False``: the status and citation only (an item gate's question): a
+        captured attachment cited whole is not decoded, its status never depends on its
+        text."""
         scheme = _scheme(handle)
         if scheme == "api":
             return self._read_api(handle, actor)
         if scheme == "original":
             return self._read_original(handle, actor, page)
         if scheme == "graph-mail":
-            return self._read_mail(handle, actor, page)
+            return self._read_mail(handle, actor, page, content=content)
         if scheme == "sharepoint" and page is not None:
             # A page is read from captured text only (a host holding the capture).
             return self._out("unresolvable", "page_not_captured", gaps=[_gap(
@@ -406,9 +469,11 @@ class RuntimeCitations(CitationReader):
                 "host holds no captured text of that page for this reader")])
         if scheme in ("sharepoint", "bc", "sharepoint-list"):
             return self._read_live(handle, actor, scheme)
-        if scheme == "mc":
-            # A Mission Control record: read from the host's MC capture only, through the
-            # runtime's per-reader resolve (``_read_capture``).
+        if scheme in ("mc", "teams-chat", "teams-channel"):
+            # A Mission Control record or a Teams message (its captured text included):
+            # read from the host's capture only, through the runtime's per-reader resolve
+            # (``_read_capture``), which gates a message by its conversation's captured
+            # membership and the people exclusion, as the chat itself is gated.
             return self._read_capture(handle, actor)
         return self._out("unresolvable", "citation_scheme_not_supported")
 
@@ -535,8 +600,8 @@ class RuntimeCitations(CitationReader):
     def _live(self) -> Any:
         return getattr(self.runtime, "live", None)
 
-    def _read_mail(self, handle: str, actor: Actor, page: int | None = None
-                   ) -> dict[str, Any]:
+    def _read_mail(self, handle: str, actor: Actor, page: int | None = None, *,
+                   content: bool = True) -> dict[str, Any]:
         from ontology.mentions import cited_page, page_citation
         if page is not None:
             # One page of an attachment: the citation of that page (``&page=<n>``).
@@ -561,7 +626,7 @@ class RuntimeCitations(CitationReader):
                     "inaccessible", refusal, "graph_mail",
                     "the people exclusion cannot decide on this host, so no captured "
                     "message is served")])
-        captured = self._read_mail_capture(handle, gated, audience)
+        captured = self._read_mail_capture(handle, gated, audience, content=content)
         if captured is not None:
             return captured
         if cited_page(handle)[1] is not None:
@@ -633,7 +698,8 @@ class RuntimeCitations(CitationReader):
         bound = getattr(self.runtime, "address_exclusion", None)
         return bound() if callable(bound) else None
 
-    def _sent_by_excluded(self, store: Any, senders: Sequence[Any]) -> bool:
+    def _sent_by_excluded(self, store: Any, senders: Sequence[Any],
+                          memo: dict | None = None) -> bool:
         """Whether a captured message's sender is, or may be, an excluded person now
         (then nobody is served it). An object id is decided by the guard; an address by
         the object ids the capture recorded beside it for a mailbox it holds, else by a
@@ -641,12 +707,46 @@ class RuntimeCitations(CitationReader):
         mailbox names cannot be resolved to a person: one in a tenant domain (the case
         mail scope's internal domains and every domain of a captured mailbox's
         addresses) may be an excluded colleague's and is withheld (fail closed); one in
-        no tenant domain is not a member's. A sender that is neither is withheld."""
+        no tenant domain is not a member's. A sender that is neither is withheld.
+        ``memo`` (one search call's, ``CaptureCaseHostTools._mail_search_gate``; else the
+        tool call's, ``capture_mail.call_memo``): the captured mailboxes' identities are
+        read once per store and each sender set is decided once per call (the guard and
+        the store do not change within one call)."""
+        from integrations.capture_mail import call_memo
         from integrations.people_exclusion import PeopleExclusion, is_object_id
+        if memo is None:
+            memo = call_memo()   # one tool call's per-handle checks decide each once
         guard = self._people()
         if not isinstance(guard, PeopleExclusion) or guard.unavailable:
             return True
         values = {v.strip().lower() for v in _strings(list(senders)) if v.strip()}
+        decided = ("sent_by_excluded", str(getattr(store, "path", id(store))),
+                   frozenset(values))
+        if memo is not None and decided in memo:
+            return memo[decided]
+        result = self._sender_excluded(store, guard, values, is_object_id, memo)
+        if memo is not None:
+            memo[decided] = result
+        return result
+
+    def _mailbox_identities(self, store: Any, is_object_id: Callable[[str], bool],
+                            memo: dict | None) -> list[tuple[set[str], set[str]]]:
+        """(identities, owner object ids) of every captured mailbox, read once per call
+        when ``memo`` is given."""
+        key = ("mailbox_identities", str(getattr(store, "path", id(store))))
+        if memo is not None and key in memo:
+            return memo[key]
+        out = []
+        for mailbox, text in store.db.execute("SELECT mailbox_id, identities FROM mailboxes"):
+            identities = {str(i).strip().lower() for i in [mailbox, *json.loads(text)]
+                          if isinstance(i, str) and i.strip()}
+            out.append((identities, {i for i in identities if is_object_id(i)}))
+        if memo is not None:
+            memo[key] = out
+        return out
+
+    def _sender_excluded(self, store: Any, guard: Any, values: set[str],
+                         is_object_id: Callable[[str], bool], memo: dict | None) -> bool:
         ids = {v for v in values if is_object_id(v)}
         addresses = values - ids
         if any(a.count("@") != 1 or not a.rsplit("@", 1)[1] for a in addresses):
@@ -655,11 +755,8 @@ class RuntimeCitations(CitationReader):
                                               "internal_domains", ()) if isinstance(d, str)}
         unresolved = set(addresses)
         if addresses:
-            for mailbox, text in store.db.execute("SELECT mailbox_id, identities FROM mailboxes"):
-                identities = {str(i).strip().lower() for i in [mailbox, *json.loads(text)]
-                              if isinstance(i, str) and i.strip()}
+            for identities, owner in self._mailbox_identities(store, is_object_id, memo):
                 domains |= {i.rsplit("@", 1)[1] for i in identities if i.count("@") == 1}
-                owner = {i for i in identities if is_object_id(i)}
                 if owner and addresses & identities:
                     ids |= owner
                     unresolved -= identities
@@ -710,6 +807,12 @@ class RuntimeCitations(CitationReader):
                         "this mailbox would hold the message; this reader holds no capture "
                         "of it (excluded from the capture scope, not reached yet, not "
                         "openable, or not granted to this reader)", searched)
+        if coverage["status"] == "no_mailbox":
+            return _gap("inaccessible", "no_mailbox", coverage["source"],
+                        "Graph reports no Exchange Online mailbox for this person (404 "
+                        "MailboxNotEnabledForRESTAPI: unlicensed, inactive, deleted or "
+                        "hosted on-premises), so the capture holds none of their mail; "
+                        "it is checked again every run", searched)
         if coverage["status"] == "incomplete":
             return _gap("not_ingested", "mailbox_capture_incomplete", coverage["source"],
                         "this mailbox would hold the message; its capture is incomplete ("
@@ -757,8 +860,8 @@ class RuntimeCitations(CitationReader):
                  "recorded_at": resolved["recorded_at"], "row": resolved["row"],
                  "superseded_at": resolved.get("superseded_at")}, current)
 
-    def _read_mail_capture(self, handle: str, gated: Actor, audience: Any
-                           ) -> dict[str, Any] | None:
+    def _read_mail_capture(self, handle: str, gated: Actor, audience: Any, *,
+                           content: bool = True) -> dict[str, Any] | None:
         """A captured message or attachment; a cited page of an attachment (or of a
         container member) with that page's captured text as its content, digested as the
         case store digests the page citation (``CaseRuntime.mail_capture``)."""
@@ -780,7 +883,7 @@ class RuntimeCitations(CitationReader):
                         gaps=[])
         if isinstance(body, str):
             out["content"] = body
-        if page is None and resolved["relation"] in _MAIL_FILES:
+        if content and page is None and resolved["relation"] in _MAIL_FILES:
             # An attachment (or a member of one) read whole: its text, as a page read
             # gives one page of it; its text status says why there is none.
             whole = self.mail_capture(handle, gated, audience, text=True)
@@ -925,7 +1028,8 @@ class RuntimeCitations(CitationReader):
         return out
 
     def _read_capture(self, handle: str, actor: Actor) -> dict[str, Any]:
-        """A BC or SharePoint list item capture handle through ``CaseRuntime
+        """A BC, SharePoint list item, Mission Control or Teams message capture handle
+        through ``CaseRuntime
         .resolve_citation`` (one read: the values shown and the digest are of the same view;
         a list item also passes its own captured permissions there). A list item's column
         values are its ``row.fields.<column>`` fields."""
@@ -1426,11 +1530,11 @@ class EvidenceTools:
         """Shrink the main list until the answer fits one response (marked truncated).
         A paged list (``cursor_after``) keeps at least one item and its next cursor
         resumes right after the items actually returned, so nothing shrunk away is
-        skipped. Kept documents still too large for one response (a few heavily
-        mentioned files: about 1 KB per mention) keep fewer of their mentions (``MENTION_TRIM``
-        each, then none), said by one ``mentions_trimmed`` gap: the page is never refused
-        for its mentions (plx.read of the document has them all). What does not fit even
-        so is refused by ``_checked``."""
+        skipped. Kept documents still too large for one response keep fewer of their
+        mentions (``MENTION_TRIM`` each, then none: ``kept_mentions``), said by one
+        ``mentions_trimmed`` gap: the page is never refused for its mentions (their
+        summary stays, and ``mention_offset`` pages them). What does not fit even so is
+        refused by ``_checked``."""
         limit = self.limits["max_result_bytes"]
         if ot._envelope_bytes(result) <= limit:
             return result
@@ -1451,12 +1555,13 @@ class EvidenceTools:
                    if isinstance(item, dict) and len(item.get("mentions") or []) > keep]
             if not cut:
                 continue
-            items = [dict(item, mentions=item["mentions"][:keep]) if i in cut else item
+            items = [kept_mentions(item, keep) if i in cut else item
                      for i, item in enumerate(items)]
             gaps = [g for g in result.get("gaps") or [] if g.get("reason") != "mentions_trimmed"]
             note = _gap("unknown", "mentions_trimmed", "plx.documents",
                         f"the listed documents' mentions were cut to {keep} each to fit one "
-                        "response; plx.read a document for all of its mentions")
+                        "response; each document's mention_summary counts them all and "
+                        "its next_mention_offset, given as mention_offset, shows the rest")
             result = dict(result, **{list_key: items}, gaps=gaps[:MAX_GAPS - 1] + [note])
         return result
 
@@ -1484,6 +1589,16 @@ class EvidenceTools:
             cursor_mode = ot._cursor_mode(arguments["cursor"])
             pinned = (at, False)
         sources = list(arguments.get("sources") or ("graph_mail", "sharepoint", "original"))
+        participant = arguments.get("participant")
+        tenant: frozenset[str] | None = None
+        if participant is not None:
+            # Mail alone has senders and recipients.
+            if "graph_mail" not in sources:
+                raise ToolError("invalid_input", "participant searches mail: sources must "
+                                "include graph_mail")
+            sources = ["graph_mail"]
+            if ot._OBJECT_ID.match(participant.strip()) and self.reader is not None:
+                tenant = self.reader.tenant_domains()
         since = _parse_time(arguments["since"]) if arguments.get("since") else None
         until = (_parse_time(arguments["until"], end_of_day=True)
                  if arguments.get("until") else None)
@@ -1491,7 +1606,7 @@ class EvidenceTools:
                                                           and until is None):
             raise ToolError("invalid_input", "since/until is not a valid date or timestamp")
         state = self._with_gate(actor, lambda gate: self._documents_in(
-            arguments, actor, gate, sources, since, until, pinned))
+            arguments, actor, gate, sources, since, until, pinned, tenant))
         documents, gaps, scope_info = state
         # A page continues only the ranking it was cut from: a change of search mode or
         # order mid-pagination is an error, never an empty "complete" page.
@@ -1510,7 +1625,16 @@ class EvidenceTools:
         if scope_info["bare"] is not None and scope_info["bare"]["readings"]:
             gaps.insert(0, _reading_gap(arguments["query"], scope_info["bare"]["readings"],
                                          sources))
-        documents.sort(key=_document_order)
+        if participant is not None:
+            # "The last email with them": the date alone orders, newest first.
+            documents.sort(key=lambda doc: _document_order(dict(doc, _prior=0.0)))
+        else:
+            rule = _prioritize(documents, arguments.get("query"))
+            if rule is None and documents:
+                gaps.append(_gap("unknown", "ranking_weights_unreadable", "plx.documents",
+                                 "the search weights could not be read; the documents are "
+                                 "in date order, newest first, without the authority order"))
+            documents.sort(key=_document_order)
         limit = arguments.get("limit", DEFAULT_LIMIT)
         total = len(documents)
         page = documents[offset:offset + limit]
@@ -1525,9 +1649,10 @@ class EvidenceTools:
                 arguments, actor, gate, stored,
                 (scope_info["at"], scope_info["explicit_at"]))))
         for doc in page:
-            doc.pop("_order", None)
-            doc.pop("_rank", None)
-            doc.pop("_object", None)
+            for key in ("_order", "_rank", "_object", "_signals", "_prior", "_words",
+                        "_ranked_only"):
+                doc.pop(key, None)
+        page = [summarise_mentions(doc, arguments.get("mention_offset", 0)) for doc in page]
         searched: dict[str, Any] = {"sources": sources[:8], "scopes": scope_info["scopes"][:16]}
         if arguments.get("since"):
             searched["since"] = arguments["since"]
@@ -1535,6 +1660,8 @@ class EvidenceTools:
             searched["until"] = arguments["until"]
         if arguments.get("query"):
             searched["queries"] = [arguments["query"]]
+        if participant is not None:
+            searched["participants"] = scope_info["participants"]
         early = self._before_first_capture(sources, scope_info) \
             if scope_info["explicit_at"] else []
         gaps.extend(early)
@@ -1543,14 +1670,19 @@ class EvidenceTools:
                 searched_store and len(early) == len(searched_store)):
             gaps.append(_gap("unknown", "no_match",
                              (f"query:{' '.join(arguments['query'].split())}"
-                              if arguments.get("query") else str(arguments.get("object_id"))
+                              if arguments.get("query") else
+                              str(arguments.get("object_id") or f"participant:{participant}")
                               )[:700],
                              "no visible document matched; documents never prove absence",
-                             searched))
+                             {k: v for k, v in searched.items() if k != "participants"}))
         partial = scope_info["withheld"] or any(
             g["state"] in ("inaccessible", "not_ingested") for g in gaps)
         completeness = _completeness(len(page), total, more, "page" if more else None, cursor)
-        if partial and not more:
+        if scope_info["scan_cut"] and not more:
+            # A candidate scan stopped at its cap: rows past it were never read, so the
+            # list is cut even on its last page (the ``scan_cap`` gap says so too).
+            completeness.update(complete=False, truncated=True, reason="scan_cap")
+        elif partial and not more:
             completeness.update(complete=False, reason="partial_scope")
         result: dict[str, Any] = {"documents": page, "searched": searched,
                                   "gaps": gaps[:MAX_GAPS], "completeness": completeness,
@@ -1593,7 +1725,8 @@ class EvidenceTools:
 
     def _documents_in(self, arguments: Mapping[str, Any], actor: Actor, gate: str,
                       sources: Sequence[str], since: dt.datetime | None,
-                      until: dt.datetime | None, pinned: Any
+                      until: dt.datetime | None, pinned: Any,
+                      tenant: frozenset[str] | None = None
                       ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         scope = self.traverse._scope(actor, arguments, gate, pinned)
         families = sorted(_FAMILY_OF_SOURCE[s] for s in sources)
@@ -1631,9 +1764,13 @@ class EvidenceTools:
         query_keys: list[tuple[str, str]] = []
         bare: dict[str, Any] | None = None
         ranks: dict[str, int] = {}
+        named: set[str] = set()
+        worded: dict[str, float] = {}
+        ranked_only: set[str] = set()
         if arguments.get("query"):
             by_query, query_keys, bare, cut, relaxed = self._query_documents(
-                scope, arguments["query"], store_families, snippets, ranks)
+                scope, arguments["query"], store_families, snippets, ranks, named, worded,
+                ranked_only)
             scan_cut |= cut
             if relaxed:
                 gaps.append(_gap(
@@ -1644,6 +1781,14 @@ class EvidenceTools:
                     f"required to hold: {', '.join(relaxed)}. Read them before relying "
                     "on any of them"))
             candidate = by_query if candidate is None else candidate & by_query
+        roles: dict[str, tuple[str, str]] = {}
+        participants: list[str] = []
+        if arguments.get("participant") is not None:
+            by_participant, roles, participants, cut = self._participant_documents(
+                scope, arguments["participant"], actor, tenant, since, until, gaps)
+            scan_cut |= cut
+            candidate = (by_participant if candidate is None
+                         else candidate & by_participant)
         ids = sorted(candidate or ())
         visible = self.traverse._visible_ids(scope, ids)
         versions = self.traverse._versions_at(scope, sorted(visible))
@@ -1672,10 +1817,19 @@ class EvidenceTools:
                                    "_order": (moment, handle), "_object": oid}
             if oid in ranks:
                 doc["_rank"] = ranks[oid]
+            if oid in named:
+                doc["_signals"] = ["names_record"]
+            if worded.get(oid):
+                doc["_words"] = worded[oid]
+            if oid in ranked_only:
+                doc["_ranked_only"] = True
+            if oid in roles:
+                doc["direction"], doc["matched_by"] = roles[oid]
             markings = sorted(set(_json_list(version["markings"])))
             if markings:
                 doc["markings"] = markings
             documents.append(doc)
+        self._mail_signals(scope, documents)
         if undated:
             gaps.append(_gap("unknown", "undated_excluded", "documents",
                              f"{undated} matching document(s) carry no date and were left "
@@ -1690,8 +1844,205 @@ class EvidenceTools:
             scopes.append("originals_store")
         info = {"at": scope.at, "explicit_at": scope.explicit_at, "withheld": withheld,
                 "meta": meta, "scopes": scopes, "root_keys": root_keys,
-                "query_keys": query_keys, "bare": bare}
+                "query_keys": query_keys, "bare": bare, "scan_cut": scan_cut,
+                "participants": participants}
         return documents, gaps, info
+
+    def _participant_documents(self, scope: Any, participant: str, actor: Actor,
+                               tenant: frozenset[str] | None, since: dt.datetime | None,
+                               until: dt.datetime | None, gaps: list[dict[str, Any]]
+                               ) -> tuple[set[str], dict[str, tuple[str, str]], list[str],
+                                          bool]:
+        """The mail whose sender, To or CC is ``participant`` (an address, a domain, or
+        an object id: the addresses this reader may see on that record, its firm twins
+        and its contacts (``_party_contacts``), and, when our own domains are known (``tenant``), their domains outside
+        ours and the shared providers'), as (ids, id -> (direction, matched_by), what was
+        searched, cut). ``direction`` is ``from_them`` when a participant sent it, else
+        ``to_them``. Every value read is gated as any other (``_visible_value``); the
+        newest ``DOC_SCAN_CAP`` within since/until are kept (an older cut is said)."""
+        text = participant.strip().lower()
+        addresses: set[str] = set()
+        domains: set[str] = set()
+        cut = False
+        if ot._OBJECT_ID.match(participant.strip()):
+            root = participant.strip()
+            self._visible_or_raise(scope, root, actor)
+            twins, cut = self._firm_twins(scope, [root])
+            contacts, more = self._party_contacts(scope, [root, *twins])
+            cut |= more
+            addresses = self._record_addresses(scope, [root, *twins, *contacts])
+            if tenant is not None:
+                domains = {a.rsplit("@", 1)[1] for a in addresses} - SHARED_MAIL_DOMAINS
+                domains = {d for d in domains if not any(_within(d, t) for t in tenant)}
+            if not addresses:
+                gaps.append(_gap("unknown", "participant_has_no_address", root,
+                                 "no e-mail address on this record, its firm twins or its "
+                                 "contacts is "
+                                 "visible to this reader; pass an address or a domain"))
+                return set(), {}, [], cut
+        elif _ADDRESS.fullmatch(text):
+            addresses = {text}
+        elif _DOMAIN.fullmatch(text):
+            domains = {_DOMAIN.fullmatch(text)[1]}
+        else:
+            raise ToolError("invalid_input", "participant must be an e-mail address, a "
+                            "domain (@example.com) or an object_id")
+        if not ot._OBJECT_ID.match(participant.strip()) and len(text) > 254:
+            raise ToolError("invalid_input", "participant is longer than an e-mail address "
+                            "may be (254 characters)")
+        # An address longer than any valid one (254 characters) is never searched.
+        addresses = {a for a in addresses if len(a) <= 254}
+        domains = {d for d in domains if len(d) <= 254}
+        needles = sorted(addresses) + sorted(domains - addresses)
+        if len(needles) > MAX_PARTICIPANTS:
+            gaps.append(_gap("unknown", "participants_cut", participant[:700],
+                             f"{len(needles)} addresses and domains; the first "
+                             f"{MAX_PARTICIPANTS} were searched"))
+            needles = needles[:MAX_PARTICIPANTS]
+        wanted = set(needles)
+        rows, more = self._participant_rows(scope, needles)
+        cut |= more
+        roles: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            match = None
+            for found in _ADDRESS.finditer(str(row["value"]).lower()):
+                if found[0] in wanted and found[0] in addresses:
+                    match = "address"
+                    break
+                if any(_within(found[1], d) for d in domains & wanted):
+                    match = match or "domain"
+            if match is None:
+                continue
+            direction = "from_them" if row["property"] == "sender" else "to_them"
+            old = roles.get(row["object_id"])
+            if old is not None:
+                direction = "from_them" if "from_them" in (old[0], direction) else direction
+                match = "address" if "address" in (old[1], match) else match
+            roles[row["object_id"]] = (direction, match)
+        dates = self._document_dates(scope, sorted(roles))
+        dated = []
+        for oid in roles:
+            moment = _parse_time(dates[oid]) if dates.get(oid) else None
+            if moment is not None and ((since and moment < since)
+                                       or (until and moment > until)):
+                continue
+            dated.append((moment, oid))
+        if len(dated) > DOC_SCAN_CAP:
+            # The newest are kept: the last message with them is never what is cut.
+            dated.sort(key=lambda item: (item[0] is None, -(item[0].timestamp()
+                                                            if item[0] else 0), item[1]))
+            dated, cut = dated[:DOC_SCAN_CAP], True
+        kept = {oid for _, oid in dated}
+        return kept, {oid: roles[oid] for oid in kept}, needles, cut
+
+    def _party_contacts(self, scope: Any, ids: Sequence[str]) -> tuple[list[str], bool]:
+        """The contacts of the party records ``ids`` this reader may see: those a visible
+        ``PARTY_CONTACT_LINKS`` link joins to one of them, then the people a visible
+        ``CONTACT_PEOPLE_LINK`` names under those, and whether a read was cut
+        (``LINK_SCAN_CAP``)."""
+        if not ids:
+            return [], False
+        roots = set(ids)
+        types = json.dumps(list(PARTY_CONTACT_LINKS))
+        rows = self._visible_links(scope, sorted(roots),
+                                   "AND l.link_type IN (SELECT value FROM json_each(:lt))",
+                                   {"lt": types})
+        cut = len(rows) > LINK_SCAN_CAP
+        firms = sorted({r["from_object"] for r in rows[:LINK_SCAN_CAP]
+                        if r["to_object"] in roots} - roots)
+        if not firms:
+            return [], cut
+        rows = self._visible_links(scope, firms, "AND l.link_type = :lt",
+                                   {"lt": CONTACT_PEOPLE_LINK})
+        cut |= len(rows) > LINK_SCAN_CAP
+        named = set(firms)
+        people = {r["from_object"] for r in rows[:LINK_SCAN_CAP] if r["to_object"] in named}
+        return firms + sorted(people - set(firms) - roots), cut
+
+    def _record_addresses(self, scope: Any, ids: Sequence[str]) -> set[str]:
+        """The e-mail addresses in the visible text values of ``ids`` whose property is
+        an e-mail field (``_EMAIL_PROPERTY``), lower-case; a field may hold several."""
+        rows = self.store.conn.execute(
+            f"""SELECT v.property, v.value FROM object_values v
+                WHERE v.object_id IN (SELECT value FROM json_each(:ids))
+                AND v.value_type = 'text' AND v.value IS NOT NULL
+                AND {tt._visible_value('v', scope.gate)}""",
+            scope.params(ids=json.dumps(sorted(ids)))).fetchall()
+        return {found[0] for row in rows if _EMAIL_PROPERTY.match(row["property"])
+                for found in _ADDRESS.finditer(row["value"].lower())}
+
+    def _participant_rows(self, scope: Any, needles: Sequence[str]
+                          ) -> tuple[list[sqlite3.Row], bool]:
+        """Visible sender/To/CC value rows of mail holding one of ``needles`` (a
+        substring prefilter; the caller matches whole addresses and domains), read as
+        ``_text_hits`` reads values: narrowed by the value word index where the store
+        has it, else scanned. At most ``PARTICIPANT_SCAN_CAP`` rows (more: cut)."""
+        keys = [key for key in scope.audience_keys if _family(key) == "mail"]
+        if not keys or not needles:
+            return [], False
+        params = scope.params(aud=json.dumps(keys), props=json.dumps(PARTICIPANT_PROPERTIES),
+                              needles=json.dumps(list(needles)),
+                              cap=PARTICIPANT_SCAN_CAP + 1)
+        visible = _audience_first("o", f"{tt._visible_object('o', scope.gate)} "
+                                       f"AND {tt._visible_value('v', scope.gate)}")
+        held = ("v.property IN (SELECT value FROM json_each(:props)) AND v.value IS NOT NULL "
+                "AND EXISTS (SELECT 1 FROM json_each(:needles) n "
+                "WHERE instr(lower(v.value), n.value) > 0)")
+        rows = None
+        spans = self._cell_spans(["mail"])
+        if spans == []:
+            return [], False
+        groups = [" AND ".join(f'"{w}"' for w in re.findall(r"[a-z0-9]+", needle))
+                  for needle in needles]
+        if spans is not None and all(groups):
+            params["words"] = " OR ".join(f"({g})" for g in groups)
+            narrowed = " OR ".join(f"f.rowid BETWEEN :lo{i} AND :hi{i}"
+                                   for i in range(len(spans)))
+            for i, (low, high) in enumerate(spans):
+                params[f"lo{i}"], params[f"hi{i}"] = low, high
+            try:
+                rows = self.store.conn.execute(
+                    f"""SELECT v.object_id, v.property, v.value
+                        FROM value_text f JOIN object_values_numbered v ON v.row_no = f.rowid
+                        JOIN objects o ON o.object_id = v.object_id
+                        WHERE value_text MATCH :words AND ({narrowed}) AND {held}
+                        AND {visible} LIMIT :cap""", params).fetchall()
+            except sqlite3.OperationalError:
+                rows = None   # a store without the value word index: the scan below
+        if rows is None:
+            rows = self.store.conn.execute(
+                f"""SELECT v.object_id, v.property, v.value FROM object_values v
+                    JOIN objects o ON o.object_id = v.object_id
+                    WHERE {held} AND {visible} LIMIT :cap""", params).fetchall()
+        return rows[:PARTICIPANT_SCAN_CAP], len(rows) > PARTICIPANT_SCAN_CAP
+
+    def _mail_signals(self, scope: Any, documents: list[dict[str, Any]]) -> None:
+        """Each listed message's mail signals (``authority.mail_signals``) in its
+        ``_signals``, from the visible sender and conversation values of the listed
+        messages alone (one read; the same gate as every value here)."""
+        from operating.search import authority as au
+        try:
+            rule = au.load()
+        except Exception:  # noqa: BLE001 - no rule: no mail signal (_prioritize says so)
+            return
+        mail = {doc["_object"]: doc for doc in documents
+                if doc.get("kind") == "email" and "_object" in doc}
+        if not mail:
+            return
+        senders: dict[str, Any] = {oid: None for oid in mail}
+        conversations: dict[str, Any] = {}
+        for row in self.store.conn.execute(
+                f"""SELECT v.object_id, v.property, v.value FROM object_values v
+                    WHERE v.object_id IN (SELECT value FROM json_each(:ids))
+                    AND v.property IN ('sender', 'conversation_id') AND v.value IS NOT NULL
+                    AND {tt._visible_value('v', scope.gate)}
+                    ORDER BY v.object_id, v.property, v.l1_handle, v.field_path""",
+                scope.params(ids=json.dumps(sorted(mail)))):
+            target = senders if row["property"] == "sender" else conversations
+            if target.get(row["object_id"]) is None:
+                target[row["object_id"]] = row["value"]
+        for oid, names in au.mail_signals(rule, senders, conversations).items():
+            mail[oid]["_signals"] = [*mail[oid].get("_signals", ()), *names]
 
     def _page_mentions(self, arguments: Mapping[str, Any], actor: Actor, gate: str,
                        page: Sequence[dict[str, Any]], pinned: tuple[dt.datetime, bool]
@@ -1702,7 +2053,7 @@ class EvidenceTools:
         for doc in page:
             mentions, mention_gaps = self._mentions(scope, doc["_object"], actor)
             gaps.extend(mention_gaps)
-            doc["mentions"] = mentions[:MAX_MENTIONS]
+            doc["mentions"] = list(mentions)
             if doc["snippet"] is None:
                 doc["snippet"] = self._mention_snippet(scope, doc["_object"], mentions)
         return gaps
@@ -1751,9 +2102,12 @@ class EvidenceTools:
 
     def _query_documents(self, scope: Any, query: str, families: Sequence[str],
                          snippets: dict[str, dict[str, Any]],
-                         ranks: dict[str, int] | None = None
+                         ranks: dict[str, int] | None = None,
+                         named: set[str] | None = None,
+                         worded: dict[str, float] | None = None,
+                         ranked_only: set[str] | None = None
                          ) -> tuple[set[str], list[tuple[str, str]], dict[str, Any] | None,
-                                    bool]:
+                                    bool, list[str]]:
         """(document ids, keys searched, the bare-token readings or None, scan capped).
         A bare token (``_bare``) is also searched as the same-number twins of each of
         its readings; the readings are the (kind, stored value) of every identifier row
@@ -1762,7 +2116,13 @@ class EvidenceTools:
         (``operating/search``: meaning, OR-matched words, typos), their relevance order
         in ``ranks``; they pass the same visibility and item gate as every other id
         here (``_documents_in``) and get no snippet from search (search text is
-        normalised, not a quote: ``_page_mentions`` reads one from the source)."""
+        normalised, not a quote: ``_page_mentions`` reads one from the source).
+        ``named`` gets the documents found through an identifier the query names (the
+        document holds it, or is linked to a record that does): the ``names_record``
+        prior (``operating.search.authority``); ``worded`` the share of the query's
+        words each document's values hold (the ``word_share`` weight orders by it);
+        ``ranked_only`` the documents hybrid search alone found (no word or identifier
+        of the query is in them: their rank orders them, never a document boost)."""
         keys = [k for k in ot._query_keys(self.base.grammar, query, None)
                 if not k.secondary and k.kind]
         out: set[str] = set()
@@ -1777,6 +2137,13 @@ class EvidenceTools:
             bare = {"keys": list(pairs), "readings": {}}
             twins, twin_cut = self._twin_pairs(scope, pairs)
             pairs.extend(twins)
+            cut |= twin_cut
+        elif pairs:
+            # A labelled mention ("PO 106093") also names the same number as another
+            # system stores it (BC's bare ``106093`` for the Portal's ``PO106093``), as
+            # plx.find reads it (``_lead_matches``): the mention's same-number twins.
+            twins, twin_cut = self._twin_pairs(scope, self._mention_pairs(query))
+            pairs.extend(pair for pair in twins if pair not in pairs)
             cut |= twin_cut
         if pairs:
             rows = self.store.conn.execute(
@@ -1794,7 +2161,11 @@ class EvidenceTools:
             if len(rows) > DOC_SCAN_CAP:
                 rows, cut = rows[:DOC_SCAN_CAP], True
             objects = list(dict.fromkeys(r["object_id"] for r in rows))
-            out |= {r["object_id"] for r in rows if _family(r["audience_key"]) in families}
+            firm, firm_cut = self._firm_twins(scope, objects)
+            objects += [oid for oid in firm if oid not in objects]
+            cut |= firm_cut
+            direct = {r["object_id"] for r in rows if _family(r["audience_key"]) in families}
+            out |= direct
             if bare is not None:
                 for r in rows:
                     bare["readings"].setdefault(r["identifier_kind"], set()).add(r["normalized"])
@@ -1802,6 +2173,8 @@ class EvidenceTools:
                 else (set(), False)
             out |= linked
             cut |= more
+            if named is not None:
+                named |= direct | linked
         words = _content_words(ot._text_tokens(query, keys, limit=None))[:6]
         tokens = words or ([query.strip()] if not pairs else [])
         # Words, never identifiers: a query naming an identifier (a label or a
@@ -1811,8 +2184,12 @@ class EvidenceTools:
         if tokens:
             matched: set[str] | None = None
             for token in tokens:
-                hits = self._text_hits(scope, token, families, snippets)
+                hits, token_cut = self._text_hits(scope, token, families, snippets)
+                cut |= token_cut
                 matched = hits if matched is None else matched & hits
+                if worded is not None and words:
+                    for oid in hits:
+                        worded[oid] = worded.get(oid, 0.0) + 1 / len(tokens)
             out |= matched or set()
             text_hits: set[str] = set()
             if prose:
@@ -1822,10 +2199,14 @@ class EvidenceTools:
                 cut |= text_cut
             hybrid = self._hybrid_documents(scope, query) if prose else []
             for rank, object_id in enumerate(hybrid, start=1):
+                if ranked_only is not None and object_id not in out:
+                    ranked_only.add(object_id)
                 out.add(object_id)
                 if ranks is not None:
                     ranks.setdefault(object_id, rank)
-            if (not matched and not text_hits and not hybrid and prose
+            # Hybrid hits never stand in for these leads: a document holding all but
+            # one word (a use case's own map) is listed beside what meaning found.
+            if (not matched and not text_hits and prose
                     and len(words) >= RELAX_MIN_WORDS):
                 # No document holds every word: the documents whose text holds all but
                 # one, each word left out in turn, are leads, and the answer says which
@@ -1837,7 +2218,49 @@ class EvidenceTools:
                     if hits:
                         out |= hits
                         relaxed.append(word)
+        if not prose and out and ranks is not None:
+            # A query naming an identifier is answered by it, never by search's other
+            # hits; with hybrid search on, its order ranks the documents already found.
+            hybrid = [oid for oid in self._hybrid_documents(scope, query) if oid in out]
+            for rank, object_id in enumerate(hybrid, start=1):
+                ranks.setdefault(object_id, rank)
         return out, pairs, bare, cut, relaxed
+
+    def _mention_pairs(self, query: str) -> list[tuple[str, str]]:
+        """(kind, normalized) of each identifier mention the grammar finds in ``query``."""
+        try:
+            mentions = self.base.grammar.find_identifiers(query)
+        except Exception:  # noqa: BLE001 - a text the grammar refuses names nothing
+            return []
+        out: list[tuple[str, str]] = []
+        for mention in mentions:
+            pair = (getattr(mention, "kind", ""), getattr(mention, "normalized", None))
+            if pair[0] and isinstance(pair[1], str) and pair[1] and pair not in out:
+                out.append(pair)
+        return out
+
+    def _firm_twins(self, scope: Any, ids: Sequence[str]) -> tuple[list[str], bool]:
+        """The records firmly the same as ``ids`` (a visible ``<T>.same_record_as`` link
+        at a firm tier, ``FIRM_TIERS``, after the lineage rule: the same PO in BC and
+        the Portal), as this reader may see them, and whether the read was cut: past
+        ``TWIN_ROOTS`` records none is expanded and the answer says the scan was cut."""
+        if not ids:
+            return [], False
+        if len(ids) > TWIN_ROOTS:
+            return [], True
+        rows = self._visible_links(scope, ids, "AND l.link_type LIKE '%.same_record_as'")
+        cut = len(rows) > LINK_SCAN_CAP
+        rows = rows[:LINK_SCAN_CAP]
+        lineages = self._lineages(scope, {r["from_object"] for r in rows}
+                                  | {r["to_object"] for r in rows})
+        out: list[str] = []
+        for row in rows:
+            if self._effective_tier(row, lineages) not in FIRM_TIERS:
+                continue
+            for oid in (row["from_object"], row["to_object"]):
+                if oid not in ids and oid not in out:
+                    out.append(oid)
+        return out, cut
 
     def _hybrid_documents(self, scope: Any, query: str) -> list[str]:
         """Object ids hybrid search ranks for ``query``, best first (``PLX_SEARCH=hybrid``
@@ -1983,7 +2406,7 @@ class EvidenceTools:
         return [span for span in spans if span is not None]
 
     def _text_hits(self, scope: Any, token: str, families: Sequence[str],
-                   snippets: dict[str, dict[str, Any]]) -> set[str]:
+                   snippets: dict[str, dict[str, Any]]) -> tuple[set[str], bool]:
         """Objects of ``families`` holding a text or identifier value that contains
         ``token``, read as every value row is (live at T, held, gated). The rows are
         read in the families' audiences only, so another family's row never takes a
@@ -1991,12 +2414,14 @@ class EvidenceTools:
         looked up in the value word index (``value_text``, as ``plx.find`` reads it: the
         word or, without a digit, a word it starts) and then held to the substring
         match, so the index only narrows; any other token (or a store without the index)
-        is the substring scan alone."""
+        is the substring scan alone. Returns the objects and whether the scan reached its
+        cap (``DOC_SCAN_CAP`` rows: the rows past it were never read, said as
+        ``scan_cap``)."""
         keys = [key for key in scope.audience_keys if _family(key) in families]
         if not keys:
-            return set()   # no audience of these families: no row could be kept
+            return set(), False   # no audience of these families: no row could be kept
         pattern = "%" + token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        params = scope.params(pattern=pattern, cap=DOC_SCAN_CAP, aud=json.dumps(keys))
+        params = scope.params(pattern=pattern, cap=DOC_SCAN_CAP + 1, aud=json.dumps(keys))
         visible = _audience_first("o", f"{tt._visible_object('o', scope.gate)} "
                                        f"AND {tt._visible_value('v', scope.gate)}")
         terms = query_terms([token])
@@ -2010,7 +2435,7 @@ class EvidenceTools:
             # it. The families' cell spans drop those first, on the index's rowid alone.
             spans = self._cell_spans(families)
             if spans == []:
-                return set()   # these families hold no value cell: nothing can match
+                return set(), False   # these families hold no value cell: nothing can match
             narrowed = "" if spans is None else " AND (" + " OR ".join(
                 f"f.rowid BETWEEN :lo{i} AND :hi{i}" for i in range(len(spans))) + ")"
             for i, (low, high) in enumerate(spans or ()):
@@ -2033,15 +2458,16 @@ class EvidenceTools:
                     WHERE v.value_type IN ('text', 'identifier') AND v.value LIKE :pattern
                     ESCAPE '\\' AND {visible}
                     ORDER BY v.object_id, v.property LIMIT :cap""", params).fetchall()
+        cut = len(rows) > DOC_SCAN_CAP
         out = set()
-        for row in rows:
+        for row in rows[:DOC_SCAN_CAP]:
             if _family(row["audience_key"]) not in families:
                 continue
             out.add(row["object_id"])
             if row["object_id"] not in snippets:
                 snippets[row["object_id"]] = _window(row["value"], token, row["l1_handle"],
                                                      row["field_path"])
-        return out
+        return out, cut
 
     def _document_dates(self, scope: Any, ids: Sequence[str]) -> dict[str, str]:
         """The document's date: its first visible timestamp/date value in the type's
@@ -2272,7 +2698,7 @@ class EvidenceTools:
             title = _envelope(filename, citation) if filename else None
             out.append({"citation": citation, "kind": "original", "title": title,
                         "date": None, "snippet": snippet,
-                        "mentions": mentions[:MAX_MENTIONS], "_order": (None, citation)})
+                        "mentions": mentions, "_order": (None, citation)})
         return out, gaps + capped_gaps(capped, "source:original", "original(s)")
 
     def _twin_of(self, pair: tuple[str, str], readings: Sequence[tuple[str, str]]) -> bool:
@@ -2297,6 +2723,29 @@ class EvidenceTools:
         ``sqlite3.Error`` like the tool body."""
         return self._read(arguments, actor)
 
+
+    def _bc_marked(self, handle: str, read: Mapping[str, Any], actor: Actor
+                   ) -> dict[str, Any]:
+        """A raw BC row as the reader may open it (defence in depth): the markings its
+        projected record carries (``ontology.project_bc.raw_row_markings``) apply to the
+        read too. Lacking a row marking (a bank account without finance): withheld, no
+        field shown. Lacking a field's (its IBAN without l5): that field is left out."""
+        from integrations.live_source_guard import parse_handle
+        from ontology.project_bc import raw_row_markings
+        try:
+            (_env, _company, entity_set, _record), _version, _extra = parse_handle(
+                handle, "bc", 4)
+        except ValueError:
+            return {"status": "withheld", "gaps": []}
+        held = self.base.policy.held_markings(actor)
+        row_marks, field_marks = raw_row_markings(entity_set)
+        if not row_marks <= held:
+            return {"status": "withheld", "gaps": []}
+        hidden = {f"row.{name}" for name, marks in field_marks.items() if not marks <= held}
+        fields = {path: value for path, value in (read.get("fields") or {}).items()
+                  if ".".join(str(path).split(".", 2)[:2]) not in hidden}
+        return {**read, "fields": fields}
+
     def _read(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         handle = arguments["citation"]
         scheme = _scheme(handle)
@@ -2319,6 +2768,9 @@ class EvidenceTools:
         read = self.reader.read(handle, actor, page=page)
         status = read.get("status")
         gaps = list(read.get("gaps") or [])
+        if status in ("resolved", "changed_since") and _scheme(handle) == "bc":
+            read = self._bc_marked(handle, read, actor)
+            status = read.get("status")
         if status not in ("resolved", "changed_since"):
             status = "withheld" if status == "withheld" else "unresolvable"
             return dict(base, status=status, gaps=gaps[:MAX_GAPS],
@@ -2588,6 +3040,105 @@ STOP_WORDS = frozenset({
 RELAX_MIN_WORDS = 3
 
 
+# The whole mention list of each document a ``plx.documents`` call summarised, by citation,
+# while a host that adds mentions of its own holds it (``full_mentions_kept``).
+_FULL_MENTIONS: contextvars.ContextVar[dict[str, list[dict[str, Any]]] | None] = \
+    contextvars.ContextVar("plx_full_mentions", default=None)
+
+
+@contextlib.contextmanager
+def full_mentions_kept() -> Iterable[dict[str, list[dict[str, Any]]]]:
+    """Within it, ``summarise_mentions`` keeps each document's whole mention list (by
+    citation) so a host adding the mentions of its own captures merges them with all of
+    them (``case_tools_host._with_mentions``), never only the ones shown."""
+    kept: dict[str, list[dict[str, Any]]] = {}
+    token = _FULL_MENTIONS.set(kept)
+    try:
+        yield kept
+    finally:
+        _FULL_MENTIONS.reset(token)
+
+
+def held_mentions() -> Mapping[str, list[dict[str, Any]]]:
+    """The whole mention lists ``full_mentions_kept`` holds now, by citation (none
+    outside it)."""
+    return _FULL_MENTIONS.get() or {}
+
+
+def _mention_key(mention: Mapping[str, Any]) -> tuple[Any, ...]:
+    span = mention.get("span") if isinstance(mention.get("span"), Mapping) else {}
+    origin = span.get("origin") if isinstance(span.get("origin"), Mapping) else {}
+    return (mention.get("identifier_kind"), mention.get("normalized"),
+            mention.get("object_id"), origin.get("citation"), origin.get("field_path"),
+            span.get("untrusted_text"))
+
+
+def summarise_mentions(document: Mapping[str, Any], offset: int = 0) -> dict[str, Any]:
+    """``document`` with its mentions summarised: duplicates dropped (the same identifier,
+    object, cited field and span), ordered one per identifier first, ``MENTIONS_SHOWN``
+    of them shown from ``offset``, and, when more exist or a later window is asked for, a
+    ``mention_summary``: the ``total``, the ``offset`` shown from, the count per
+    identifier kind, the identifiers by count (at most ``MAX_SUMMARY_IDENTIFIERS``, of
+    ``identifiers_total``) and ``next_mention_offset`` (the same call with it as
+    ``mention_offset`` shows the next ones; None after the last). Counts are of this
+    reader's mentions only (the list given is already permission-trimmed)."""
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for mention in document.get("mentions") or ():
+        if isinstance(mention, Mapping):
+            unique.setdefault(_mention_key(mention), dict(mention))
+    whole = list(unique.values())
+    kept = _FULL_MENTIONS.get()
+    if kept is not None and isinstance(document.get("citation"), str):
+        kept[document["citation"]] = whole
+    first, rest, named = [], [], set()
+    for mention in whole:
+        pair = (mention.get("identifier_kind"), mention.get("normalized"))
+        (rest if pair in named else first).append(mention)
+        named.add(pair)
+    ordered = first + rest
+    out = {key: value for key, value in document.items() if key != "mention_summary"}
+    if len(ordered) <= MENTIONS_SHOWN and not offset:
+        return dict(out, mentions=ordered)
+    window = ordered[offset:offset + MENTIONS_SHOWN]
+    return dict(out, mentions=window,
+                mention_summary=_mention_summary(ordered, offset, len(window)))
+
+
+def _mention_summary(ordered: Sequence[Mapping[str, Any]], offset: int, shown: int
+                     ) -> dict[str, Any]:
+    """The ``mention_summary`` of a document's whole mention list (``summarise_mentions``)
+    whose ``shown`` mentions from ``offset`` are listed."""
+    pairs = [(m.get("identifier_kind"), m.get("normalized")) for m in ordered]
+    counts = Counter(pairs)
+    place = {pair: at for at, pair in reversed(list(enumerate(pairs)))}
+    top = sorted(counts, key=lambda pair: (-counts[pair], place[pair]))
+    kinds = Counter(str(kind) for kind, _ in pairs)
+    after = offset + shown
+    return {"total": len(ordered), "offset": offset,
+            "by_kind": dict(sorted(kinds.items())[:MAX_SUMMARY_IDENTIFIERS]),
+            "identifiers": [{"identifier_kind": kind, "normalized": normalized,
+                             "count": counts[(kind, normalized)]}
+                            for kind, normalized in top[:MAX_SUMMARY_IDENTIFIERS]],
+            "identifiers_total": len(counts),
+            "next_mention_offset": after if after < len(ordered) else None}
+
+
+def kept_mentions(document: Mapping[str, Any], keep: int) -> dict[str, Any]:
+    """``document`` showing only its first ``keep`` mentions (a page over the response
+    bound); a summarised one's next offset moved back to the first one no longer shown, so
+    paging skips none."""
+    shown = list(document.get("mentions") or ())
+    if keep >= len(shown):
+        return dict(document)
+    summary = document.get("mention_summary")
+    if not isinstance(summary, Mapping):
+        # Few mentions, all shown: cut as they are (the page's mentions_trimmed gap says
+        # so); a summary would grow the answer it is trimming.
+        return dict(document, mentions=shown[:keep])
+    return dict(document, mentions=shown[:keep],
+                mention_summary=dict(summary, next_mention_offset=summary["offset"] + keep))
+
+
 def _text_mentions(text: Any) -> Sequence[Mapping[str, Any]]:
     """``ontology.mentions.extract(text)``, remembered by the text's SHA-256 and the
     identifier grammar it ran with. A pure function of the text: a documents search
@@ -2747,12 +3298,54 @@ def _page_citation(citation: str, pages: Sequence[Mapping[str, Any]], offset: in
     return citation
 
 
+def _prioritize(documents: Sequence[dict[str, Any]], query: Any) -> Any:
+    """Each document's authority prior (``_prior``, ``operating.search.authority``):
+    a use-case catalog document, a captured original and a title naming an identifier
+    the query names up, automated or unreplied mail (``_signals``, ``_mail_signals``)
+    down, plus ``relevance`` / its hybrid rank (PLX_SEARCH=hybrid). The rule, or None
+    when the weights cannot be read (every prior 0: the date order, said by a gap)."""
+    from operating.search import authority as au
+    try:
+        rule = au.load()
+    except Exception:  # noqa: BLE001 - unreadable weights: date order, stated by the caller
+        for doc in documents:
+            doc["_prior"] = 0.0
+        return None
+    catalog = au.catalog_keys()
+    wanted = au.query_identifiers(query)
+    for doc in documents:
+        signals = list(doc.get("_signals") or ())
+        key = au.document_key(doc.get("citation"))
+        # A document hybrid search alone found is ordered by its rank: another use
+        # case's map that only reads alike is never lifted above the matches.
+        boost = not doc.get("_ranked_only")
+        if boost and key is not None and key in catalog:
+            signals.append("use_case_document")
+        if boost and doc.get("kind") == "original":
+            signals.append("captured_original")
+        title = doc.get("title")
+        if au.names_identifier(title.get("untrusted_text") if isinstance(title, Mapping)
+                               else title, wanted):
+            signals.append("identifier_in_title")
+        rank = doc.get("_rank")
+        relevance = rule.relevance / rank if isinstance(rank, int) and rank > 0 else 0.0
+        doc["_prior"] = (rule.prior(signals) + relevance
+                         + rule.word_share * min(float(doc.get("_words") or 0.0), 1.0))
+    return rule
+
+
+def _within(domain: str, parent: str) -> bool:
+    """Whether ``domain`` is ``parent`` or one of its subdomains."""
+    return domain == parent or domain.endswith("." + parent)
+
+
 def _document_order(doc: Mapping[str, Any]) -> tuple:
-    """Hybrid search's relevance order first (``_rank``, PLX_SEARCH=hybrid), then the
-    newest first; without a rank every document keeps the date order."""
+    """The authority prior first (``_prior``, ``_prioritize``: it carries hybrid search's
+    relevance order when PLX_SEARCH=hybrid ranked the document), then the newest first,
+    then the citation; documents of equal prior keep the date order."""
     moment, handle = doc.get("_order") or (None, doc["citation"])
     stamp = -moment.timestamp() if moment is not None else float("inf")
-    return (doc.get("_rank", float("inf")), stamp, handle)
+    return (-doc.get("_prior", 0.0), stamp, handle)
 
 
 # --------------------------------------------------------------------------- host wiring

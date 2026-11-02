@@ -38,7 +38,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import logging
@@ -58,6 +58,7 @@ from . import errors
 from . import models as m
 from . import presentation
 from .auth import Reader
+from .test_records import hidden_words
 
 MAX_WORKSPACES = 64
 MAX_FACTS = 12
@@ -65,6 +66,8 @@ MAX_FACTS = 12
 LATE_LIST_LIMIT = MAX_FACTS
 # How many inbox items the late-order count reads past the first page.
 LATE_COUNT_LIMIT = 20000
+SAME_NAME_ROWS = 20   # records of one name a customer page looks through
+LATE_LABEL_LIMIT = 500   # "show all" names this many late orders once per reader
 MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
 ASK_TIMEOUT_SECONDS = 600
@@ -75,8 +78,35 @@ READ_TIMEOUT_SECONDS = 60
 # checks every mail item of a message type against its item gate once (cold, measured
 # 60 s and more on the live store), so it gets longer than a plain read before "busy".
 PAGE_TIMEOUT_SECONDS = 150
-WARM_PRIORITY = 9          # after every page and Ask read
-WARM_SECONDS = 240         # one warming read per reader in this window
+WARM_SECONDS = 240         # one warm-up per reader in this window
+# What a reader's warm-up reads ahead on the warm worker (its own runtime, so it never
+# holds up a reader's request): Home's list, the briefing, the pages of the first late
+# orders and the pages the reader opened last.
+WARM_LATE_PAGES = 4    # the longest late orders Home lists
+# The warm-up yields to every live request: it runs at the lowest CPU priority, starts a
+# job or a page only after the read worker has been idle WARM_IDLE_SECONDS, and never
+# holds a page a live request waits for (``ReaderCache.flight``). It is never paused
+# inside a read: a pause there could hold a lock a live read needs.
+WARM_THREAD = "app-warm"
+WARM_IDLE_SECONDS = 1.0
+WARM_PAUSE_SECONDS = 0.5
+WARM_RECENT_PAGES = 4
+# A reader's Home list, briefing and record pages are reused for this long, per reader
+# (their policy's fingerprint and principals), projection generation, exclusion and gap
+# inbox state; every source a reused one shows is decided for the reader again first, so
+# only a count (a hidden count, Home's late total) can lag an item-level grant change,
+# by at most this long. Known readers are read ahead again within it (REWARM_SECONDS).
+READER_CACHE_SECONDS = 1200
+REWARM_SECONDS = 900
+READER_CACHE_KEPT = 512
+# The readers warmed at start and again on each new projection generation: employees whose
+# last real session is unexpired and not revoked, at most KNOWN_READERS (object id, when
+# seen, that session's reference and expiry, and the record pages they opened last; no
+# name), kept owner-only in the app's own data directory, never the state's.
+KNOWN_READERS_FILE = "known-readers.json"
+KNOWN_READERS = 8
+GENERATION_POLL_SECONDS = 60
+FLIGHT_SECONDS = 120   # how long a read waits for the same read in progress elsewhere
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
 ORIGINAL_READS_PER_READER = 2
 ORIGINAL_READ_WAIT = 5.0       # seconds a read waits for a slot before it is busy
@@ -186,6 +216,17 @@ def plain(value: Any) -> Optional[str]:
     return str(value)[:500]
 
 
+def citation_handle(citation: Any) -> Optional[str]:
+    """The L1 handle a citation names: a tool cites as ``{"l1_handle": ...}`` or as the
+    handle itself (a plan's fact, an event); anything else names none."""
+    if isinstance(citation, str):
+        return citation or None
+    if isinstance(citation, Mapping):
+        handle = citation.get("l1_handle")
+        return handle if isinstance(handle, str) and handle else None
+    return None
+
+
 def teams(codes: Iterable[Any]) -> str:
     words = []
     for code in codes or ():
@@ -201,6 +242,102 @@ def teams(codes: Iterable[Any]) -> str:
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ---- what a reader read, kept for them -----------------------------------------------
+
+class ReaderCache:
+    """Results kept per key for ``READER_CACHE_SECONDS`` (each key names its reader and
+    the store state it was read from), shared by the read and warm workers."""
+
+    def __init__(self, kept: int = READER_CACHE_KEPT) -> None:
+        self.size = kept
+        self._items: dict[tuple, tuple[float, Any]] = {}
+        self._flights: dict[tuple, threading.Event] = {}
+        self._lock = threading.Lock()
+
+    @contextmanager
+    def flight(self, key: Optional[tuple]) -> Iterator[None]:
+        """Hold ``key`` while a live request reads it: a second reader of the same key
+        waits for it (at most ``FLIGHT_SECONDS``), then finds it kept, instead of reading
+        it again beside it. The warm-up never holds a key, so a live request never waits
+        for read-ahead work: it reads the page itself."""
+        if key is None:
+            yield
+            return
+        warm = threading.current_thread().name == WARM_THREAD
+        with self._lock:
+            event = self._flights.get(key)
+            owner = event is None and not warm   # the warm-up never holds a key
+            if owner:
+                event = self._flights[key] = threading.Event()
+        if not owner:
+            # the warm-up waits for a live read of the same key; a live read waits for
+            # another live one; neither ever waits for the warm-up (it holds no key)
+            if event is not None:
+                event.wait(FLIGHT_SECONDS)
+            yield
+            return
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._flights.pop(key, None)
+            event.set()
+
+    def kept(self, view: Any, key: Optional[tuple], read: Callable[[], Any],
+             handles: Callable[[Any], Iterable[str]],
+             copy: Callable[[Any], Any] = lambda value: value) -> Any:
+        """``read()`` as kept under ``key``, when every source handle it shows
+        (``handles``) still opens for this reader now (item-level permissions, a mailbox
+        or a SharePoint ACL, are not in the key); else read now and kept."""
+        held = self.get(key)
+        if held is None:
+            with self.flight(key):
+                held = self.get(key)
+                if held is None:
+                    value = read()
+                    self.put(key, copy(value))
+                    return value
+        listed = sorted(set(handles(held)))
+        with view._request():
+            decided = view.access.decide(listed) if listed else {}
+        if all(decided.get(h) is None for h in listed):
+            return copy(held)
+        self.pop(key)
+        value = read()
+        self.put(key, copy(value))
+        return value
+
+    def get(self, key: Optional[tuple]) -> Any:
+        if key is None:
+            return None
+        with self._lock:
+            held = self._items.get(key)
+            if held is None:
+                return None
+            if held[0] <= time.monotonic():
+                del self._items[key]
+                return None
+            return held[1]
+
+    def put(self, key: Optional[tuple], value: Any,
+            seconds: float = READER_CACHE_SECONDS) -> None:
+        if key is None:
+            return
+        with self._lock:
+            while len(self._items) >= self.size:
+                self._items.pop(next(iter(self._items)))
+            self._items[key] = (time.monotonic() + seconds, value)
+
+    def pop(self, key: Optional[tuple]) -> None:
+        if key is not None:
+            with self._lock:
+                self._items.pop(key, None)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
 
 
 # ---- the owner thread: every workspace call runs on it ----------------------------------
@@ -220,6 +357,8 @@ class Worker:
             jobs if jobs is not None else queue.PriorityQueue()
         self.cache: dict[str, Any] = {}
         self.stopped = threading.Event()
+        self.running = 0                       # jobs running now (read by the warm-up)
+        self.last_done = time.monotonic()      # when the last one ended
 
     def _workspace(self, session: Any) -> Any:
         key = ",".join(sorted(session.principals))
@@ -258,10 +397,14 @@ class Worker:
                 future, reader, job = item
                 if not future.set_running_or_notify_cancel():
                     continue
+                self.running += 1
                 try:
                     future.set_result(job(self._workspace(reader.session)))
                 except BaseException as error:  # noqa: BLE001 - handed to the route
                     future.set_exception(error)
+                finally:
+                    self.running -= 1
+                    self.last_done = time.monotonic()
         finally:
             self.stopped.set()
             while self.cache:
@@ -270,6 +413,13 @@ class Worker:
     def stop(self) -> None:
         self.stopped.set()
         self.jobs.put((-1, 0, None))
+
+    def busy(self) -> bool:
+        """A live read is queued or running."""
+        return self.running > 0 or not self.jobs.empty()
+
+    def idle_for(self) -> float:
+        return 0.0 if self.busy() else time.monotonic() - self.last_done
 
 
 _SEQ = iter(range(1, 1 << 62))
@@ -322,7 +472,7 @@ class WorkspaceBackend:
     def __init__(self, objects_for: Callable[[Any], Any], *, data_label: str,
                  state_dir: Optional[Path] = None, data_dir: Optional[Path] = None,
                  pg_dsn: Optional[str] = None, understand: Optional[Callable] = None,
-                 search: Optional[Callable] = None, ask_served: bool = True,
+                 ask_served: bool = True,
                  today: Callable[[], date] | None = None, agent_ask: Any = None,
                  agent_sessions: int = ASK_WORKERS, store_path: Optional[Path] = None,
                  freshness_bounds: Mapping[str, float] | None = None,
@@ -345,7 +495,6 @@ class WorkspaceBackend:
         self.data_dir = Path(data_dir) if data_dir else None
         self.pg_dsn = pg_dsn
         self.understand = understand
-        self.search = search
         self.ask_served = ask_served
         self.today = today
         self.reads = Worker(objects_for)
@@ -356,7 +505,15 @@ class WorkspaceBackend:
         self._recent: dict[str, list[m.RecentQuestion]] = {}
         self._lock = threading.Lock()
         self._pool: Any = None
-        self.page_cache: dict[tuple, tuple[float, Any]] = {}   # read worker only
+        self.page_cache = ReaderCache()   # pages, Home lists, briefings: per reader
+        self.warmer: Optional[Worker] = None   # the warm worker (``add_warm_worker``)
+        # employee object id -> its session now, resolved as a sign-in is (None: no
+        # known reader is warmed at start)
+        self.identity_for: Optional[Callable[[str, int], Any]] = None
+        # the replay guard's revocation check; none wired: every session counts as revoked
+        self.revoked: Callable[[str], bool] = lambda ref: True
+        self.reader_mode = "dev"
+        self._pages_seen: dict[str, list[tuple[str, str]]] = {}
 
     def add_ask_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
         """A worker of the Ask pool; the caller runs its ``loop`` on the thread that built
@@ -366,12 +523,196 @@ class WorkspaceBackend:
         self.ask_workers.append(worker)
         return worker
 
+    def add_warm_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
+        """The warm worker: its own runtime and queue; the caller runs its ``loop`` on the
+        thread that built ``objects_for``'s runtime. What it reads lands in the shared
+        reader caches, so a reader's first Home, briefing and record pages are ready."""
+        self.warmer = Worker(objects_for)
+        return self.warmer
+
+    def _known_path(self) -> Optional[Path]:
+        return self.data_dir / KNOWN_READERS_FILE if self.data_dir else None
+
+    def known_readers(self) -> dict[str, dict[str, Any]]:
+        """Employees whose last real session is unexpired: object id -> {seen, ref, exp,
+        pages}."""
+        path = self._known_path()
+        try:
+            held = json.loads(path.read_text(encoding="utf-8")) if path else {}
+        except (OSError, ValueError):
+            return {}
+        now = time.time()
+        return {oid: v for oid, v in (held.items() if isinstance(held, dict) else ())
+                if isinstance(v, Mapping) and float(v.get("exp") or 0) > now
+                and re.fullmatch(r"[0-9a-f-]{36}", str(oid))
+                and re.fullmatch(r"[0-9a-f]{64}", str(v.get("ref") or ""))}
+
+    def _write_known(self, known: Mapping[str, Any]) -> None:
+        path = self._known_path()
+        if path is None:
+            return
+        kept = dict(sorted(known.items(), key=lambda kv: -kv[1]["seen"])[:KNOWN_READERS])
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(kept, handle)
+            os.replace(tmp, path)
+        except OSError:
+            pass   # not remembered: that reader is warmed when they sign in
+
+    def remember_reader(self, reader: Reader) -> None:
+        """Note an employee's real session (its reference and expiry, never a name) and the
+        pages they opened last, for the read-ahead at start; once a minute at most."""
+        session = reader.session
+        oid = getattr(getattr(session, "employee", None), "object_id", None)
+        ref, exp = getattr(session, "session_ref", None), getattr(session, "expires_at", None)
+        if not isinstance(oid, str) or not isinstance(ref, str) or not isinstance(exp, int) \
+                or getattr(session, "warm_ahead", False):
+            return
+        with self._lock:
+            known = self.known_readers()
+            held = known.get(oid) or {}
+            pages = [list(p) for p in self._pages_seen.get(reader.key, ())]
+            if held.get("ref") == ref and held.get("pages") == pages \
+                    and time.time() - float(held.get("seen") or 0) < 60:
+                return
+            known[oid] = {"seen": time.time(), "ref": ref, "exp": exp, "pages": pages}
+            self._write_known(known)
+
+    def forget_reader(self, reader: Reader) -> None:
+        """Signed out: never read ahead for this employee again until they sign in."""
+        oid = getattr(getattr(reader.session, "employee", None), "object_id", None)
+        with self._lock:
+            known = self.known_readers()
+            if known.pop(str(oid), None) is not None:
+                self._write_known(known)
+            self._warmed.pop(reader.key, None)
+
+    def warm_known(self) -> int:
+        """Read ahead for each known reader (start, a new generation): only while their real
+        session is unexpired and its ticket not revoked (the replay guard), each resolved
+        again as a sign-in is (``session_identity.warm_session``: refused for an inactive,
+        unverified or excluded employee; it serves nothing). Results are kept under their
+        own policy, as their own requests would be."""
+        if self.identity_for is None:
+            return 0
+        warmed = 0
+        for oid, held in self.known_readers().items():
+            try:
+                if self.revoked(str(held["ref"])):
+                    continue
+                session = self.identity_for(oid, int(held["exp"]))
+            except Exception:  # noqa: BLE001 - refused now: not warmed
+                continue
+            reader = Reader(session, self.reader_mode, "", None)
+            with self._lock:
+                pages = [tuple(p) for p in held.get("pages") or ()
+                         if isinstance(p, list) and len(p) == 2]
+                if pages and not self._pages_seen.get(reader.key):
+                    self._pages_seen[reader.key] = pages[:WARM_RECENT_PAGES]
+            warmed += self.warm(reader, force=True)
+        return warmed
+
+    def watch_generation(self, stop: threading.Event) -> None:
+        """Warm the known readers again whenever a new projection generation is served,
+        and every ``REWARM_SECONDS`` while their sessions last (before what was read for
+        them expires)."""
+        from operating.ontology_host import _file_identity
+        seen = _file_identity(self.store_path) if self.store_path else None
+        last = time.monotonic()
+        while not stop.wait(GENERATION_POLL_SECONDS):
+            now = _file_identity(self.store_path) if self.store_path else None
+            if now != seen or time.monotonic() - last >= REWARM_SECONDS:
+                seen, last = now, time.monotonic()
+                self.warm_known()
+
+    def warm(self, reader: Reader, *, force: bool = False) -> bool:
+        """Read ahead for ``reader`` on the warm worker, at most once per
+        ``WARM_SECONDS`` (``force``: now): Home's list, the briefing, the first late
+        orders' pages and the pages they opened last. False when nothing was queued."""
+        warmer = self.warmer
+        if warmer is None or warmer.stopped.is_set():
+            return False
+        now = time.monotonic()
+        with self._lock:
+            if not force and now - self._warmed.get(reader.key, -WARM_SECONDS) < WARM_SECONDS:
+                return False
+            self._warmed[reader.key] = now
+            recent = list(self._pages_seen.get(reader.key, ()))[:WARM_RECENT_PAGES]
+
+        def pages(view: Any) -> None:
+            try:
+                read_pages(view)
+            finally:
+                logging.getLogger("operator_api.warm").info(
+                    "warm-up done in %.1f s", time.monotonic() - now)
+
+        def read_pages(view: Any) -> None:
+            inbox, labels, suppliers = without_tests(*self._attention_cached(view),
+                                                     named=self.test_named())
+            late, _ = attention_items(inbox, labels, suppliers=suppliers)
+            wanted = list(dict.fromkeys(
+                recent + [(po.object_id.split(":", 1)[0], po.object_id)
+                          for po in late[:WARM_LATE_PAGES]]))
+            for kind, oid in wanted:
+                self.wait_idle()   # live requests first, every page
+                try:
+                    object_page(self, view, kind, oid)
+                except Exception:  # noqa: BLE001 - a page that fails is read when opened
+                    continue
+
+        for job in (self._attention_cached,
+                    lambda view: self._briefing_cached(view, reader, since_visit=False),
+                    pages):
+            warmer.submit(reader, self.yielding(job))
+        return True
+
+    def yielding(self, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
+        """``job`` started only once the read worker is idle."""
+        def run(view: Any) -> Any:
+            self.wait_idle()
+            return job(view)
+        return run
+
+    def wait_idle(self) -> None:
+        """Wait (on the warm-up) until the read worker has been idle ``WARM_IDLE_SECONDS``,
+        then a short pause; returns at once when the backend stops."""
+        while not self.reads.stopped.is_set() and \
+                self.reads.idle_for() < WARM_IDLE_SECONDS:
+            time.sleep(0.05)
+        time.sleep(WARM_PAUSE_SECONDS)
+
+    def warm_store(self) -> None:
+        """The served generation's reader-independent facts (its audience keys and BC
+        units), read once now so no reader's first request pays for them."""
+        if self.store_path is None or not self.store_path.is_file():
+            return
+        from operating.ontology_host import _file_identity, served_bc_units
+        from operating.ontology_tools import StoreReader
+        from operating.ontology_tools_traverse import kept_audience_keys
+        try:
+            reader = StoreReader.open(self.store_path)
+        except sqlite3.Error:
+            return
+        try:
+            if not kept_audience_keys(reader):
+                reader.audience_keys()
+            served_bc_units(reader, _file_identity(self.store_path))
+        except sqlite3.Error:
+            pass
+        finally:
+            reader.conn.close()
+
     def loop(self, until: Callable[[], bool] = lambda: False) -> None:
         """Serve page reads on the calling (owner) thread (``Worker``)."""
         self.reads.loop(until)
 
     def stop(self) -> None:
         self.reads.stop()
+        if self.warmer is not None:
+            self.warmer.stop()
         self.ask_stopped.set()
         self.ask_jobs.put((-1, 0, None))
         if self._pool is not None:
@@ -391,6 +732,8 @@ class WorkspaceBackend:
     # ---- me ---------------------------------------------------------------------------
 
     def me(self, reader: Reader) -> m.Me:
+        self.warm(reader)   # every app load asks who is reading: read ahead for them
+        self.remember_reader(reader)
         s = reader.session
         return m.Me(display_name=reader.display_name, email=reader.email,
                     principal=",".join(sorted(s.principals)), auth=reader.mode,
@@ -413,6 +756,23 @@ class WorkspaceBackend:
             print(f"session journal: write failed ({type(error).__name__})", file=sys.stderr)
 
     # ---- freshness ----------------------------------------------------------------------
+
+    def _store_built_at(self) -> Optional[str]:
+        """The served projection's build time (``store_meta.built_at``), or None."""
+        path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
+                                   if self.state_dir else None)
+        if path is None or not path.is_file():
+            return None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute("SELECT value FROM store_meta WHERE key = 'built_at'"
+                                   ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        return row[0] if row and isinstance(row[0], str) else None
 
     def _store_freshness(self) -> Optional[list[dict[str, Any]]]:
         """The served projection's per-source freshness entries (``store_meta``), None
@@ -448,7 +808,7 @@ class WorkspaceBackend:
         if entries is not None:
             from operating.ontology_tools import aged, capture_failures
             now = self.clock()
-            failed = capture_failures(ledger)
+            failed = capture_failures(ledger, self._store_built_at())
             seen: dict[str, m.FreshnessSource] = {}
             for entry in entries:
                 system = STORE_SYSTEMS.get(entry["source"])
@@ -534,10 +894,14 @@ class WorkspaceBackend:
         if openable is None:
             openable = view.access.decide([handle]).get(handle) is None \
                 and view._can_open(handle)
+        # the field the fact cites opens first on the source page (``&field=``)
+        cited = next(iter(fields), None) if fields else None
         return m.Source(system=system_of(handle), handle=handle,
                         label=label or record_words(handle), quote=quote_text,
                         fields=dict(fields) if fields else None,
-                        open_url=open_url(handle) if openable else None)
+                        open_url=(open_url(handle) + (f"&field={quote(str(cited)[:80], safe='')}"
+                                                      if cited else ""))
+                        if openable else None)
 
     def _claim_sources(self, view: Any, claim: Mapping[str, Any]) -> list[m.Source]:
         """A gate-kept claim's sources with what the gate checked of each."""
@@ -649,12 +1013,20 @@ class WorkspaceBackend:
             # goes on to the agent path.
             answer = yield from self._profit_ask(reader, request, conversation, ms,
                                                  question=intent)
+        if answer is None and not request.object_id:
+            # The most common questions about one record, answered by code's own reads
+            # through the same answer gate (``operating.fast_answer``); anything it does
+            # not settle goes on to the agent.
+            answer = yield from self._fast_ask(reader, request, conversation, ms)
         if answer is not None:
             pass
         elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
             answer = yield from self._agent_ask(reader, request, conversation, ms)
         else:
             answer = yield from self._box_ask(reader, request, conversation, ms)
+        answer = presentation.polished(answer)   # no codes or escapes reach the reader
+        # what to ask next: from the answer's own records and gaps, as this reader sees them
+        answer.follow_ups = presentation.follow_ups(request.question, answer)
         cited = {s.handle: s for f in answer.facts for s in f.sources}
         if cited:
             yield "sources", m.SourcesEvent(sources=list(cited.values()))
@@ -703,11 +1075,60 @@ class WorkspaceBackend:
                                       elapsed_ms=ms())
 
         def job(view: Any) -> m.AnswerPayload:
-            inbox, labels, suppliers = self._attention(view)
+            inbox, labels, suppliers = without_tests(*self._attention_cached(view),
+                                                     named=self.test_named())
+            inbox = aged_to_today(inbox, self.today() if self.today else None)
             late, _risk = attention_items(inbox, labels, suppliers=suppliers)
             with view._request():
                 return late_answer(self, view, request, inbox, late, conversation, ms)
         return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+
+    def _fast_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                  ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        """A question ``operating.fast_answer`` recognises, answered by its reads as this
+        reader through the session's answer gate, and shaped as the agent's gated reply is
+        (``agent_answer``: the passed claims as facts, each source decided for this reader
+        again); several records of the name or number asked are a did-you-mean. None:
+        not a fast question, or one it declined (the agent answers)."""
+        from operating import fast_answer
+        from operating.answer_contract import parse_answer
+        from .agent_ask import AskRun
+
+        if not fast_answer.serves(request.question):
+            return None
+        yield "status", m.StatusEvent(step="reading", message="Reading the record your "
+                                      "question names", elapsed_ms=ms())
+
+        def job(view: Any) -> Optional[m.AnswerPayload]:
+            access = view.access
+            if not all(hasattr(access, name) for name in ("host", "runtime", "agent_server")):
+                return None   # a reader with no host session (a fixture console)
+            reads = fast_answer.Reads(access.host, access.runtime, access.actor,
+                                      access.agent_server())
+            ran = fast_answer.answer(request.question, reads)
+            if ran is None:
+                return None
+            with view._request():
+                if ran.found.get("ambiguous"):
+                    choices, _promoted = business_choices(ran.found["ambiguous"])
+                    if len(choices) < 2:
+                        return None
+                    return m.AnswerPayload(
+                        answer_id=secrets.token_hex(12), question=request.question,
+                        outcome="partial", direct_answer="That name or number matches "
+                        "more than one record. Which did you mean?",
+                        hidden=m.Hidden(count=0, by_owner=[], message=None),
+                        freshness=self.freshness(_base(view)), did_you_mean=choices[:8],
+                        conversation_id=conversation, latency_ms=ms())
+                answer, _error = parse_answer(ran.final_text)
+                run = AskRun(final_text=ran.final_text, answer=answer, events=ran.events,
+                             decision=None, stopped=False, seconds=ran.seconds,
+                             final_reply=ran.reply)
+                return agent_answer(self, view, request, run, ran.found, conversation, ms)
+        try:
+            return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        except (TimeoutError, PermissionError):
+            return None   # the agent answers
 
     def _profit_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
                     ms: Callable[[], int], *, question: Optional[str] = None
@@ -766,11 +1187,14 @@ class WorkspaceBackend:
                             step="checking", message=STEP_WORDS[name], elapsed_ms=ms())))
                     return view._call(name, arguments)
                 today = self.today() if self.today is not None else date.today()
+                from .test_records import is_test
+                named_tests = self.test_named()
                 try:
                     profit = customer_profit.profitability(
                         call, candidates[0]["object_id"], today=today,
                         question=question,
-                        focus=customer_profit.order_words(question))
+                        focus=customer_profit.order_words(question),
+                        skip_order=lambda number: is_test((number,), named_tests))
                 except customer_profit.ProfitError:
                     return None
                 return profit_answer(self, view, request, profit, conversation, ms)
@@ -917,7 +1341,14 @@ class WorkspaceBackend:
                 step="searching", message="The full check could not start; giving the "
                                           "quicker answer", elapsed_ms=ms())
             answer = yield from self._box_ask(reader, request, conversation, ms)
-            answer.direct_answer = (AGENT_FALLBACK + answer.direct_answer)[:4000]
+            if answer.outcome == "not_found":
+                # the quicker answer found nothing either: the assistant was unavailable
+                answer.direct_answer, answer.outcome = unavailable_answer(
+                    UNAVAILABLE_WORDS["error"], answer.trail, answer.facts,
+                    answer.subjects, [])
+                answer.assistant_unavailable = UNAVAILABLE_WORDS["error"]
+            else:
+                answer.direct_answer = (AGENT_FALLBACK + answer.direct_answer)[:4000]
             return answer
         try:
             found = pre.get("found") or found_future.result(timeout=READ_TIMEOUT_SECONDS)
@@ -1047,13 +1478,7 @@ class WorkspaceBackend:
                 where_it_would_live="No record with that reference is visible to you in "
                                     "Business Central, the Portal or captured mail and files"))
         not_found = dedupe_not_found(not_found)
-        did_you_mean = [m.ObjectRef(object_id=c["object_id"],
-                                    type=str(c.get("object_type") or "Object"),
-                                    label=f"{item.get('mention')} ({c.get('object_type')})",
-                                    open_url=object_url(c.get("object_type") or "Object",
-                                                        c["object_id"]))
-                        for item in out.get("ambiguous") or ()
-                        for c in item.get("candidates") or () if c.get("object_id")]
+        did_you_mean, promoted = business_choices(out.get("ambiguous") or ())
         subjects = [m.ObjectRef(object_id=r["object_id"],
                                 type=str(r.get("object_type") or "Object"),
                                 label=str(r.get("mention") or r.get("object_type") or
@@ -1061,6 +1486,7 @@ class WorkspaceBackend:
                                 open_url=object_url(r.get("object_type") or "Object",
                                                     r["object_id"]))
                     for r in out.get("roots") or () if isinstance(r.get("object_id"), str)]
+        subjects += [p for p in promoted if p.object_id not in {s.object_id for s in subjects}]
         conflicts: list[m.Conflict] = []
         for root in subjects[:3]:
             card = view._call("plx.object", {"object_id": root.object_id})
@@ -1083,6 +1509,10 @@ class WorkspaceBackend:
         elif did_you_mean:
             outcome = "partial"
             direct = "That name or number matches more than one record. Which did you mean?"
+        elif trail_shows(trail):
+            outcome, direct = "partial", RECORDS_BELOW   # the trail shows what was read
+        elif promoted:
+            outcome, direct = "partial", RECORD_LINKED    # the one record named, linked
         else:
             outcome = "not_found"
         return m.AnswerPayload(
@@ -1198,11 +1628,23 @@ class WorkspaceBackend:
         gated, policy = self._reader_policy(reader)
         return reader_scope(conn, policy, gated)
 
-    def _pg_suggest(self, reader: Reader, q: str, limit: int) -> Optional[list[m.Suggestion]]:
-        """``search.entities`` through the reader's scope (before ranking); None when Postgres holds no entities yet."""
+    def _pg_suggest(self, reader: Reader, q: str, limit: int, *,
+                    members: Optional[dict[str, list[str]]] = None
+                    ) -> Optional[list[m.Suggestion]]:
+        """``search.entities`` through the reader's scope (before ranking); None when Postgres holds no entities yet.
+        ``q``: the words typed up to the caret; each trailing phrase of them is looked up,
+        longest first ("three ships", then "ships"), so a name of several words is found
+        whole. A match is an exact name, a record code, a name starting with the phrase, a
+        word of the name starting with it, or (four letters or more) a near spelling of a
+        word of it (``pg_trgm`` word similarity at least ``SUGGEST_FUZZY``). Copies of one
+        record collapse (``suggestions``)."""
         pool = self.pg()
         if pool is None:
             return None
+        phrases = suggest_phrases(q)
+        if not phrases:
+            return []
+        rows: list[tuple] = []
         try:
             with pool.connection() as conn:
                 if conn.execute("SELECT NOT EXISTS (SELECT 1 FROM search.entities)"
@@ -1211,32 +1653,44 @@ class WorkspaceBackend:
                 scope = self._scope(conn, reader)
                 if scope.empty:
                     return []
-                conn.execute("SET LOCAL pg_trgm.similarity_threshold = 0.2")
-                needle = normalize(q)
-                rows = conn.execute(
-                    "SELECT e.object_id, e.type, e.name, similarity(e.normalized, "
-                    "%(q)s) AS s, e.normalized LIKE %(p)s AS prefix, e.normalized = %(q)s "
-                    "AS exact FROM search.entities e WHERE " + scope.clause("e") +
-                    " AND e.object_id IS NOT NULL AND (e.normalized %% %(q)s OR "
-                    "e.normalized LIKE %(p)s) ORDER BY exact DESC, prefix DESC, s DESC, "
-                    "e.name LIMIT %(n)s",
-                    scope.params(q=needle, p=needle.replace("%", "").replace("_", "") + "%",
-                                 n=limit * 3)).fetchall()
+                conn.execute("SET pg_trgm.word_similarity_threshold = %s"
+                             % float(SUGGEST_FUZZY))
+                type_order = "CASE e.type " + " ".join(
+                    f"WHEN '{kind}' THEN {rank}" for kind, rank in SUGGEST_TYPE_RANK.items()
+                ) + " ELSE 9 END"
+                for words, needle in phrases:
+                    plain_needle = needle.replace("%", "").replace("_", "")
+                    # a near spelling of one or two words, never of a whole clause
+                    fuzzy = len(needle) >= 4 and words <= 2
+                    found = conn.execute(
+                        "SELECT e.object_id, e.type, e.name, e.alias, "
+                        "e.normalized = %(q)s AS exact, "
+                        "e.alias @> ARRAY[%(code)s]::text[] OR e.alias @> ARRAY[%(raw)s]::text[]"
+                        " AS code, e.normalized LIKE %(p)s AS prefix, "
+                        "e.normalized LIKE %(w)s AS word, "
+                        "word_similarity(%(q)s, e.normalized) AS s "
+                        "FROM search.entities e WHERE " + scope.clause("e") +
+                        " AND e.object_id IS NOT NULL AND (e.normalized = %(q)s OR "
+                        "e.normalized LIKE %(p)s OR e.normalized LIKE %(w)s OR "
+                        "e.alias @> ARRAY[%(code)s]::text[] OR e.alias @> ARRAY[%(raw)s]::text[]"
+                        + (" OR %(q)s <%% e.normalized" if fuzzy else "") +
+                        ") ORDER BY exact DESC, code DESC, prefix DESC, word DESC, "
+                        + type_order + ", s DESC, length(e.name), e.name LIMIT %(n)s",
+                        scope.params(q=needle, p=plain_needle + "%", w="% " + plain_needle + "%",
+                                     code=needle.upper(), raw=needle,
+                                     n=SUGGEST_ROWS)).fetchall()
+                    rows += [(words, *row) for row in found]
+                    strong = {r[1] for r in rows if any(r[5:9])}
+                    if len(strong) >= SUGGEST_ROWS:
+                        break   # enough whole-phrase matches: shorter phrases rank below
         except (TimeoutError, LookupError):
             raise
         except Exception:  # noqa: BLE001 - Postgres down: the projection answers
             return None
-        out, seen = [], set()
-        for object_id, kind, name, score, prefix, exact in rows:
-            if object_id in seen:
-                continue
-            seen.add(object_id)
-            out.append(m.Suggestion(object_id=object_id, type=kind or "Object",
-                                    label=str(name or object_id)[:200], sublabel=kind,
-                                    match="exact" if exact else "prefix" if prefix else "fuzzy",
-                                    score=round(float(score or 0), 3),
-                                    open_url=object_url(kind or "Object", object_id)))
-        return out[:limit]
+        return suggestions(rows, limit, members=members,
+                           same_record=lambda ids: self.reads.run(
+                               reader, lambda view: same_records(view, ids),
+                               timeout=SAME_RECORD_SECONDS, priority=-1))
 
     def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
         started = time.perf_counter()
@@ -1285,21 +1739,28 @@ class WorkspaceBackend:
                         suppliers[oid] = name
         return inbox, labels, suppliers
 
+    def _attention_cached(self, view: Any) -> tuple[dict[str, Any], dict[str, str],
+                                                    dict[str, str]]:
+        """``_attention`` as this reader read it last (``reader_key``), when every source
+        its listed gaps cite still opens for them; else read now and kept."""
+        with view._request():
+            key = reader_key(view, ("attention",))
+        return self.page_cache.kept(view, key, lambda: self._attention(view), lambda held: (
+            h for g in held[0].get("gaps") or () for h in g.get("citations") or ()
+            if isinstance(h, str)))
+
+    def test_named(self) -> frozenset[str]:
+        """The deployment's named test records (``operator_api.test_records``)."""
+        from .test_records import listed
+        return listed(self.data_dir)
+
     def home(self, reader: Reader) -> m.Home:
-        inbox, labels, suppliers = self.reads.run(reader, self._attention,
-                                                  timeout=READ_TIMEOUT_SECONDS)
+        inbox, labels, suppliers = without_tests(*self.reads.run(
+            reader, self._attention_cached, timeout=READ_TIMEOUT_SECONDS),
+            named=self.test_named())
+        inbox = aged_to_today(inbox, self.today() if self.today else None)
         late, risk = attention_items(inbox, labels, suppliers=suppliers)
-        warmed = self._warmed.get(reader.key, 0.0)
-        if late and time.monotonic() - warmed > WARM_SECONDS:
-            self._warmed[reader.key] = time.monotonic()
-            # The first record page a reader opens checks every mail item of a message
-            # type against their item gate (cold: a minute and more); read the first late
-            # order's page now, behind every other read, so that check is done before
-            # they click.
-            first = late[0]
-            self.reads.submit(reader, lambda view: object_page(
-                self, view, first.object_id.split(":", 1)[0], first.object_id),
-                priority=WARM_PRIORITY)
+        self.warm(reader)
         status = inbox.get("status")
         with self._lock:
             recent = list(self._recent.get(reader.key, []))
@@ -1314,23 +1775,219 @@ class WorkspaceBackend:
                 late_pos=late, at_risk=risk, hidden=None,   # the inbox counts no hidden gap
                 late_total=max(len(late), int(inbox.get("late_total") or 0))
                 if status == "read" else None,
+                test_records_hidden=hidden_words(int(inbox.get("tests_hidden") or 0)),
                 as_of=inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
+    def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
+        """Every late purchase order the reader may see, a page at a time, in Home's order
+        (longest late first): Home and the late-list answer show the first
+        ``LATE_LIST_LIMIT``; "show all" pages through the rest."""
+        def job(view: Any) -> tuple[list[m.LatePo], int, Optional[str]]:
+            with view._request():
+                key = reader_key(view, ("late_list",))
+            held = self.page_cache.get(key)
+            if held is None:
+                inbox, _, _ = without_tests(view.gap_inbox(limit=LATE_COUNT_LIMIT), {}, {},
+                                            named=self.test_named())
+                inbox = aged_to_today(inbox, self.today() if self.today else None)
+                seen: dict[str, Mapping[str, Any]] = {}   # one line per order, as Home
+                for gap in inbox.get("gaps") or ():
+                    oid = gap.get("object_id")
+                    if gap.get("days_late") is not None and isinstance(oid, str) \
+                            and oid not in seen:
+                        seen[oid] = gap
+                labels: dict[str, str] = {}
+                suppliers: dict[str, str] = {}
+                with view._request():
+                    for oid in list(seen)[:LATE_LABEL_LIMIT]:   # each order's own name
+                        card = view._call("plx.object", {"object_id": oid})
+                        labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+                        name = supplier_of(view, oid, card)
+                        if name:
+                            suppliers[oid] = name
+                # test records known by their label are left out of the list and its
+                # total alike, so the total is the same on every page
+                kept, _, _ = without_tests({"gaps": list(seen.values())}, labels, suppliers,
+                                           named=self.test_named())
+                held = (inbox, kept["gaps"], labels, suppliers)
+                self.page_cache.put(key, held)
+            inbox, ordered, labels, suppliers = held
+            window = ordered[offset:offset + limit]
+            with view._request():
+                handles = sorted({h for g in window for h in g.get("citations") or ()
+                                  if isinstance(h, str)})
+                decided = view.access.decide(handles) if handles else {}
+            shown = [g for g in window
+                     if all(decided.get(h) is None for h in g.get("citations") or ()
+                            if isinstance(h, str))]
+            items, _ = attention_items({"gaps": shown}, labels, limit=limit,
+                                       suppliers=suppliers)
+            run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+            consumed = offset + len(window)
+            return items, len(ordered), run_at, consumed, consumed < len(ordered)
+
+        items, total, as_of, after, more = self.reads.run(reader, job,
+                                                          timeout=READ_TIMEOUT_SECONDS)
+        return m.LateList(total=total, offset=offset, items=items, more=more,
+                          next_offset=after, as_of=as_of)
+
+    # ---- briefing ------------------------------------------------------------------------
+
+    def briefing(self, reader: Reader, *, since_visit: bool = False) -> m.Briefing:
+        """Your briefing (``ObjectWorkspace.briefing``): the events routed to this reader
+        that its grant shows, ranked; the top ``bf.TOP_ITEMS`` one by one, each with its
+        record's label, its sources (decided for the reader), a suggested next action and,
+        for the first ``BRIEFING_TRAILS``, how we know (the PO lateness trail or the why
+        trail) read as the reader, all trails within ``BRIEFING_TRAIL_SECONDS`` (each trail
+        gets what is left and stops itself at it); every other item counted in its type's
+        group; each check's state; the daily digest text as a preview (never sent)."""
+        return self.reads.run(reader, lambda view: self._briefing_cached(
+            view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS)
+
+    def _briefing_cached(self, view: Any, reader: Reader, *,
+                         since_visit: bool) -> m.Briefing:
+        """The reader's briefing as read last for them (``reader_key``: the gap inbox's
+        state included, so a new run or a "seen" mark reads again), when every source it
+        shows still opens for them; else read now and kept."""
+        from operating import briefing as bf
+
+        with view._request():
+            key = reader_key(view, ("briefing", since_visit,
+                                    tuple(sorted(self.test_named()))))
+        # kept without the reader's name (a read-ahead does not know it): the greeting
+        # in the digest is written for the reader now
+        found, top, labels, tests_hidden = self.page_cache.kept(
+            view, key, lambda: self._briefing(view, since_visit=since_visit),
+            lambda held: page_handles(held[1]),
+            copy=lambda held: (held[0], [i.model_copy(deep=True) for i in held[1]],
+                               held[2], held[3]))
+        first = (reader.display_name or "").split(" ")[0]
+        return briefing_model(found, top, tests_hidden=tests_hidden, digest=bf.digest_text(
+            found, first_name=first, labels=labels))
+
+    def _briefing(self, view: Any, *, since_visit: bool
+                  ) -> tuple[dict[str, Any], list[m.BriefingItem], dict[str, str], int]:
+        from operating import briefing as bf
+
+        named = self.test_named()
+        found = briefing_aged(view.briefing(since_visit=since_visit),
+                              self.today() if self.today else None)
+        # test and placeholder records are left out of the top (judged on the label
+        # each reads as), the count says how many fewer there are
+        candidates = (found.get("items") or [])[:bf.TOP_ITEMS + BRIEFING_TEST_SLACK]
+        labels = briefing_labels(view, candidates)
+        with view._request():
+            makers = {i["object_id"]: supplier_of(view, i["object_id"], view._call(
+                "plx.object", {"object_id": i["object_id"]})) or ""
+                for i in candidates if i.get("object_type") == "PurchaseOrder"}
+        tests = [i for i in candidates if briefing_test(i, labels, named, makers)]
+        if tests:
+            found = {**found, "items": [i for i in found.get("items") or ()
+                                        if i not in tests],
+                     "count": max(0, int(found.get("count") or 0) - len(tests)),
+                     "tests_hidden": len(tests)}
+            found["today"] = bf.today_line(found)   # said of what is left
+        items = (found.get("items") or [])[:bf.TOP_ITEMS]
+        trails: dict[str, Any] = {}
+        with view._request():
+            deadline = time.monotonic() + BRIEFING_TRAIL_SECONDS
+            for item in items[:BRIEFING_TRAILS]:
+                left = deadline - time.monotonic()
+                if left <= 1.0:
+                    break
+                trails[item["id"]] = briefing_trail(self, view, item,
+                                                    labels.get(item["object_id"]),
+                                                    seconds=left)
+        top = [briefing_item(item, labels, trails.get(item["id"]))
+               for item in (found.get("items") or [])[:bf.TOP_ITEMS]]
+        return found, top, labels, int(found.get("tests_hidden") or 0)
+
+    def briefing_items(self, reader: Reader, event_type: str, *, offset: int = 0,
+                       limit: int = 25, since_visit: bool = False) -> m.BriefingItems:
+        """One event type's items of this reader's briefing, a page at a time (a group's
+        "+N more": its items past the top ones), each with its record's label; no trail
+        (the item's page has it)."""
+        from operating import briefing as bf
+
+        def job(view: Any) -> tuple[list[Any], list[Any], dict[str, str]]:
+            found = view.briefing(since_visit=since_visit)
+            # the group's "+N more": its items past the top ones (those are shown already)
+            members = [i for i in found.get("items") or () if i["event_type"] == event_type
+                       and i["rank"] > bf.TOP_ITEMS]
+            page = members[offset:offset + limit]
+            return members, page, briefing_labels(view, page)
+
+        members, page, labels = self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        return m.BriefingItems(event_type=event_type, total=len(members), offset=offset,
+                               items=[briefing_item(i, labels, None) for i in page],
+                               more=offset + len(page) < len(members))
+
+    def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
+        try:
+            at = self.reads.run(reader, lambda view: view.briefing_seen(),
+                                timeout=READ_TIMEOUT_SECONDS)
+        except (FileNotFoundError, ValueError):
+            return m.BriefingSeen(ok=False)
+        return m.BriefingSeen(ok=True, at=at)
+
     # ---- object page ---------------------------------------------------------------------
 
-    def object_page(self, reader: Reader, object_type: str, object_id: str) -> m.ObjectPage:
-        """The record's page; one served under a full-read grant is labelled and journalled."""
+    def object_page(self, reader: Reader, object_type: str, object_id: str, *,
+                    quick: bool = False) -> m.ObjectPage:
+        """The record's page; one served under a full-read grant is labelled and journalled.
+        ``quick``: a first read without the checks (``ObjectPage.complete`` false), unless
+        the full page is already kept."""
         page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
-                                                               object_id),
+                                                               object_id, quick=quick),
                               timeout=PAGE_TIMEOUT_SECONDS)
+        with self._lock:   # what the reader's next warm-up reads ahead
+            seen = self._pages_seen.setdefault(reader.key, [])
+            entry = (page.type, page.object_id)
+            if entry in seen:
+                seen.remove(entry)
+            seen.insert(0, entry)
+            del seen[WARM_RECENT_PAGES:]
+        self.remember_reader(reader)   # the pages they opened warm after a restart
+        if page.customer is not None and not quick:
+            page = page.model_copy(update={"customer": page.customer.model_copy(
+                update={"same_name": self.same_name(reader, page)})})
         return self._labelled(reader, page, "/api/object")
+
+    def same_name(self, reader: Reader, page: m.ObjectPage) -> list[m.ObjectRef]:
+        """The other records of the page's type and name this reader may see, as its
+        search shows them (``suggest``: its scope, copies of one record collapsed), so the
+        page can say "N customers share this name". None listed unless the search also
+        shows the page's own record (a copy of it is never called another customer), nor
+        any copy of it (``also_in``)."""
+        name = (page.label or "").strip()
+        if not name:
+            return []
+        members: dict[str, list[str]] = {}
+        try:
+            found = self._pg_suggest(reader, name[:100], SAME_NAME_ROWS, members=members)
+            if found is None:
+                found = self.reads.run(reader, lambda view: projection_suggest(
+                    view, name[:100], SAME_NAME_ROWS), timeout=READ_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - not established: the page says nothing of it
+            return []
+        own = {page.object_id, *(r.object_id for r in (page.customer.also_in
+                                                         if page.customer else ()))}
+        same = [s for s in found if s.type == page.type
+                and normalize(s.label) == normalize(name)]
+        if not any(own & set(members.get(s.object_id, [s.object_id])) for s in same):
+            return []
+        return [m.ObjectRef(object_id=s.object_id, type=s.type,
+                            label=(f"{s.label} ({s.sublabel})" if s.sublabel
+                                   and s.sublabel != s.type else s.label)[:200],
+                            open_url=s.open_url)
+                for s in same if not own & set(members.get(s.object_id, [s.object_id]))]
 
     def _labelled(self, reader: Reader, payload: Any, path: str) -> Any:
         """``payload`` (a copy) with the full-read label when the reader's session holds the
         grant, journalled; else unchanged."""
         label = access_label(reader.session)
-        if not label:
+        if not label or getattr(reader.session, "warm_ahead", False):
             return payload
         self.journal_full_read(reader, path)
         return payload.model_copy(update={"access_label": label})
@@ -1423,6 +2080,203 @@ class WorkspaceBackend:
 
 # ---- helpers shared by the routes ------------------------------------------------------
 
+# Briefing: of the top items, the first ones get a trail read as the reader.
+BRIEFING_TRAILS = 3
+BRIEFING_TRAIL_SECONDS = 30.0
+# The why-trail question per event type that is not about a purchase order's lateness
+# (``operating.why_trail.select`` picks the plan covering the record's type).
+BRIEFING_QUESTIONS = {
+    "lot_near_expiry": "Why is this lot held or released, and how do we know?",
+    "lot_on_hold": "Why is this batch on hold, and how do we know?",
+    "quantity_mismatch": "Why don't the received and ordered quantities match?",
+    "negative_margin": "Why did this order change, and how do we know?",
+    "quote_accepted_no_order": "Why was this decided, and how do we know?",
+    "customer_order_at_risk": "Why did this order change, and how do we know?",
+}
+
+
+def briefing_aged(found: Mapping[str, Any], today: Optional[date] = None) -> dict[str, Any]:
+    """The briefing's late purchase orders with their days late counted to today, as Home
+    and the trail count them (``aged_to_today``); every other count stays as built."""
+    shifted = aged_to_today({"as_of": found.get("as_of"), "run_at": found.get("run_at"),
+                             "gaps": [
+        {"days_late": (i.get("facts") or {}).get("days")} if i.get("event_type") == "po_late"
+        else {} for i in found.get("items") or ()]}, today)
+    items = [{**i, "facts": {**(i.get("facts") or {}), "days": g["days_late"]}}
+             if isinstance(g.get("days_late"), int) else i
+             for i, g in zip(found.get("items") or (), shifted.get("gaps") or ())] \
+        if shifted.get("gaps") else list(found.get("items") or ())
+    return {**found, "items": items}
+
+
+BRIEFING_TEST_SLACK = 8   # items past the top read too, so a test record's place is filled
+
+
+def briefing_test(item: Mapping[str, Any], labels: Mapping[str, str],
+                  named: frozenset[str], suppliers: Mapping[str, str] | None = None) -> bool:
+    """Whether a briefing item is about a test or placeholder record
+    (``operator_api.test_records``): its record's label and its supplier's name."""
+    from .test_records import is_test
+    oid = item.get("object_id")
+    return is_test((labels.get(oid), (suppliers or {}).get(oid)), named)
+
+
+def briefing_labels(view: Any, items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Each item's record display label as this reader reads it."""
+    labels: dict[str, str] = {}
+    with view._request():
+        for item in items:
+            oid = item["object_id"]
+            if oid not in labels:
+                card = view._call("plx.object", {"object_id": oid})
+                labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+    return labels
+
+
+def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
+                  trail: Optional[m.EvidenceTrail]) -> m.BriefingItem:
+    """One briefing item (``operating.briefing``) as the API states it. A suspect total
+    carries its reason; the app shows the reason, never the figure as fact."""
+    oid, kind = item["object_id"], str(item.get("object_type") or "Object")
+    facts = item.get("facts") or {}
+    amount = facts.get("amount")
+    action = item["next_action"]
+    next_action = (trail.next_action if trail is not None and trail.next_action
+                   else m.NextAction(text=action["text"][:400], rule=action["rule"]))
+    return m.BriefingItem(
+        rank=item["rank"], id=item["id"], event_type=item["event_type"],
+        label=item["label"], evidence=item.get("evidence") or "fixture-only",
+        object_id=oid, object_type=kind,
+        subject_label=labels.get(oid) or f"{kind} record",
+        summary=str(item.get("summary") or "")[:300],
+        why=str(item["why"])[:600] if item.get("why") else None,
+        next_action=next_action,
+        amount=m.Money(amount=amount["value"], currency=amount["currency"])
+        if amount else None,
+        amount_basis=amount.get("basis") if amount else None,
+        amount_suspect=str(amount["suspect"])[:200] if amount and amount.get("suspect")
+        else None,
+        amount_disagree=bool(amount) and isinstance(amount.get("disagree"), Mapping),
+        lines_sum=m.Money(amount=str(amount["disagree"]["lines_sum"]),
+                          currency=amount["currency"])
+        if amount and isinstance(amount.get("disagree"), Mapping)
+        and amount["disagree"].get("lines_sum") is not None else None,
+        orders_affected=facts.get("orders_affected"), days=facts.get("days"),
+        acknowledged=bool(item.get("acknowledged")),
+        new_since_visit=bool(item.get("new_since_visit")),
+        new_this_generation=bool(item.get("new_this_generation")),
+        first_seen=item.get("first_seen"), open_url=object_url(kind, oid),
+        sources=[m.Source(system=system_of(h), handle=h, label=record_words(h),
+                          open_url=open_url(h))
+                 for h in (item.get("citations") or ())[:3] if isinstance(h, str)],
+        trail=trail)
+
+
+def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, digest: str,
+                   tests_hidden: int = 0) -> m.Briefing:
+    """The briefing (``operating.briefing.build``) as the API states it."""
+    from operating import briefing as bf
+
+    status = found.get("status")
+    routing = found.get("routing") or {}
+    return m.Briefing(
+        status="read" if status == "read" else "not_configured"
+        if status in ("not_configured", "not_scheduled") else "unavailable",
+        count=int(found.get("count") or 0),
+        counts_exact=bool(found.get("counts_exact", True)),
+        new_since_visit=int(found.get("new_since_visit") or 0),
+        since_visit=bool(found.get("since_visit")),
+        acknowledged=int(found.get("acknowledged") or 0),
+        late_total=found.get("late_total"),
+        other_teams=int(found.get("other_teams") or 0), hidden=found.get("hidden"),
+        hidden_by_type=dict(found.get("hidden_by_type") or {}),
+        rank_basis=str(found.get("rank_basis") or bf.RANK_BASIS),
+        routing_basis=str(routing.get("basis") or "unknown"),
+        departments=list(routing.get("departments") or ()),
+        last_visit=found.get("last_visit"), as_of=found.get("as_of"),
+        complete=bool(found.get("complete")), more=bool(found.get("more")), items=top,
+        groups=[m.BriefingGroup(**{k: g[k] for k in ("event_type", "label", "count", "in_top",
+                                                     "new_since_visit", "acknowledged")})
+                for g in found.get("groups") or ()],
+        checks=[m.BriefingCheck(**{k: c.get(k) for k in ("check", "label", "status",
+                                                         "words")})
+                for c in found.get("checks") or ()],
+        types=[m.BriefingEventType(**{k: t.get(k) for k in (
+            "event_type", "label", "status", "words", "found_live", "first_found")})
+               for t in found.get("types") or ()],
+        today=str(found.get("today") or bf.today_line(found)),
+        digest_preview=digest, test_records_hidden=hidden_words(tests_hidden))
+
+
+def briefing_trail(backend: "WorkspaceBackend", view: Any, item: Mapping[str, Any],
+                   label: Optional[str], *, seconds: float = BRIEFING_TRAIL_SECONDS
+                   ) -> Optional[m.EvidenceTrail]:
+    """How we know one briefing item, read as the reader: a purchase order's lateness trail
+    (``operator_api.trail.for_page``), else the why trail of the record; None when none is
+    built (the item stands without it)."""
+    from . import trail as trails
+
+    oid, kind = item["object_id"], str(item.get("object_type") or "")
+    if kind == "PurchaseOrder":
+        return trails.for_page(backend, view, oid, label or "Purchase order",
+                               object_url=object_url, open_url=open_url,
+                               host_schemes=HOST_READ_SCHEMES, seconds=seconds)
+    question = BRIEFING_QUESTIONS.get(str(item.get("event_type")))
+    if question is None:
+        return None
+    root = m.ObjectRef(object_id=oid, type=kind or "Object", label=(label or kind)[:200],
+                       open_url=object_url(kind or "Object", oid))
+    return why_answer_trail(backend, view, question, [root], [], seconds=seconds)
+
+
+def aged_to_today(inbox: Mapping[str, Any], today: Optional[date] = None) -> dict[str, Any]:
+    """The inbox's days late counted to today: the engine counted each order's days to the
+    business day it ran (``run_at``), the trail and the record's page count them to today,
+    so one order shows one count everywhere. ``days_as_of`` names the day counted to."""
+    from operating.po_status import business_today
+
+    stated = inbox.get("as_of") or inbox.get("run_at")   # the day the engine counted to
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(stated)):
+            ran = date.fromisoformat(str(stated))
+        else:
+            ran = business_today(datetime.fromisoformat(str(stated).replace("Z", "+00:00")))
+    except (TypeError, ValueError):
+        return dict(inbox)
+    today = today or business_today()
+    shift = (today - ran).days
+    if shift <= 0:
+        return {**inbox, "days_as_of": ran.isoformat()}
+    gaps = [{**g, "days_late": int(g["days_late"]) + shift}
+            if isinstance(g, Mapping) and isinstance(g.get("days_late"), int) else g
+            for g in inbox.get("gaps") or ()]
+    return {**inbox, "gaps": gaps, "days_as_of": today.isoformat()}
+
+
+def without_tests(inbox: Mapping[str, Any], labels: Mapping[str, str],
+                  suppliers: Mapping[str, str], *, named: frozenset[str] = frozenset()
+                  ) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+    """The reader's gap inbox without test and placeholder records
+    (``operator_api.test_records``: a "(DO NOT USE)" supplier, a UAT- number, the
+    deployment's list), judged on the record's label and its supplier's name; the late
+    count drops each late order it leaves out."""
+    from .test_records import is_test
+
+    def test(gap: Mapping[str, Any]) -> bool:
+        oid = gap.get("object_id")
+        return isinstance(oid, str) and is_test((labels.get(oid), suppliers.get(oid)), named)
+    gaps = list(inbox.get("gaps") or ())
+    kept = [g for g in gaps if not test(g)]
+    if len(kept) == len(gaps):
+        return dict(inbox), dict(labels), dict(suppliers)
+    dropped_late = {g.get("object_id") for g in gaps if g not in kept
+                    and g.get("days_late") is not None}
+    total = inbox.get("late_total")
+    return ({**inbox, "gaps": kept, "tests_hidden": len(gaps) - len(kept),
+             **({"late_total": max(0, int(total) - len(dropped_late))}
+                if isinstance(total, int) else {})}, dict(labels), dict(suppliers))
+
+
 def late_total(inbox: Mapping[str, Any]) -> int:
     """How many late purchase orders the reader's inbox lists (each order once)."""
     return len({g.get("object_id") for g in inbox.get("gaps") or ()
@@ -1470,6 +2324,8 @@ def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
                    for h in (gap.get("citations") or ())[:3] if isinstance(h, str)]
         reason = str(gap.get("summary") or (gap.get("follow_up") or {}).get("why")
                      or "Needs attention")[:300]
+        if gap.get("kind") == "conflicting_quantity" and rounded_alike(reason):
+            continue   # 1257 and 1257.1666...: one quantity rounded two ways, no risk
         if gap.get("kind") == "conflicting_quantity":
             # an inbox built before the summary rounded its values: "(1257, 1257.1666 box)"
             # reads "(1257 box and 1257.17 box)", as the gap engine now writes it
@@ -1482,14 +2338,59 @@ def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
         if gap.get("days_late") is not None and any(p.object_id == oid for p in late):
             continue   # one order, one line
         if gap.get("days_late") is not None and len(late) < limit:
+            amount, suspect = late_amount(gap)
             late.append(m.LatePo(object_id=oid, label=label, days_late=int(gap["days_late"]),
                                  supplier=suppliers.get(oid), reason=reason,
+                                 due_date=need_date(gap), amount=amount,
+                                 amount_suspect=suspect,
                                  open_url=object_url(kind, oid), sources=sources))
         elif gap.get("days_late") is None and len(risk) < limit:
             risk.append(m.AtRisk(object_id=oid, label=label, kind=str(gap.get("kind")),
                                  reason=reason, open_url=object_url(kind, oid),
                                  sources=sources))
     return late, risk
+
+
+_NEED_DATE = re.compile(r"\b(?:need date|needed by) (\d{4}-\d{2}-\d{2})\b")
+
+
+def need_date(gap: Mapping[str, Any]) -> Optional[str]:
+    """A late order's requested-by date as the gap engine wrote it into its summary
+    ("past its need date 2026-06-24"); None when the summary names no valid date."""
+    found = _NEED_DATE.search(str(gap.get("summary") or ""))
+    if not found:
+        return None
+    try:
+        return date.fromisoformat(found.group(1)).isoformat()
+    except ValueError:
+        return None
+
+
+def late_amount(gap: Mapping[str, Any]) -> tuple[Optional[m.Money], Optional[str]]:
+    """A late order's total and currency as the inbox shows it to this reader (the
+    engine drops a figure the reader may not open), with why it is suspect when it is
+    (a suspect total is shown as such, never sorted or banded as fact)."""
+    stated = (gap.get("event") or {}).get("amount")
+    if not isinstance(stated, Mapping):
+        return None, None
+    money = _decimal_money(stated.get("value"), stated.get("currency"))
+    if money is None:
+        return None, None
+    suspect = stated.get("suspect")
+    return money, (str(suspect)[:300] if suspect else None)
+
+
+def rounded_alike(reason: str) -> bool:
+    """Whether a conflicting-quantity gap's values (its summary's "(1257, 1257.1666 box)"
+    or "(1257 box and 1257.17 box)") differ only by rounding
+    (``answer_conflicts.rounding_only``)."""
+    from operating.answer_conflicts import rounding_only
+
+    found = re.search(r"\(([^()]*)\)\s*$", reason or "")
+    if not found:
+        return False
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", found.group(1))
+    return len(numbers) >= 2 and rounding_only(numbers)
 
 
 def _quantities_in_words(found: re.Match) -> str:
@@ -1528,13 +2429,15 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                 ms: Callable[[], int]) -> m.AnswerPayload:
     """The late-PO list as an answer: one fact per late purchase order (its gap's own
     evidence, each source decided for this reader again), longest late first."""
-    as_of = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    as_of = inbox.get("days_as_of") or (inbox.get("run_at") if isinstance(
+        inbox.get("run_at"), str) else None)
     facts = []
     for po in late:
         sources = [backend._source(view, s.handle) for s in po.sources]
         facts.append(m.Fact(text=f"{po.label}: {po.days_late} days late. {po.reason}"[:1000],
                             sources=sources, check="computed_from_cited_records"))
     when = f" as of {as_of[:10]}" if as_of else ""
+    total = len(late)
     if inbox.get("status") != "read":
         direct = ("The late-order check has not run for your records yet, so I can't list "
                   "late purchase orders.")
@@ -1545,13 +2448,12 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     else:
         total = max(len(late), int(inbox.get("late_total") or late_total(inbox)))
         named = "; ".join(f"{po.label}" + (f" from {po.supplier}" if po.supplier else "")
-                          + f" ({po.days_late} days)" for po in late[:5])
-        more = f", and {len(late) - 5} more below" if len(late) > 5 else ""
-        shown = ("This is the list on your home page." if total == len(late) else
-                 f"The {len(late)} longest late are below and on your home page; "
-                 f"{total - len(late)} more are not listed.")
+                          + f" ({po.days_late} days)" for po in late[:3])
+        shown = ("All of them are listed below, longest late first." if total == len(late)
+                 else f"{len(late)} of {total} shown below, longest late first.")
         direct = (f"{total} purchase order{'s' if total != 1 else ''} you can see "
-                  f"{'are' if total != 1 else 'is'} late{when}: {named}{more}. {shown}")
+                  f"{'are' if total != 1 else 'is'} late{when}. Longest late: {named}. "
+                  f"{shown}")
         outcome = "answered"
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
@@ -1561,7 +2463,8 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         subjects=[m.ObjectRef(object_id=po.object_id, type="PurchaseOrder",
                               label=po.label[:200], open_url=po.open_url)
                   for po in late[:MAX_FACTS]],
-        did_you_mean=[], conversation_id=conversation, latency_ms=ms())
+        did_you_mean=[], conversation_id=conversation, latency_ms=ms(),
+        list_total=total if late and total > len(late) else None)
 
 
 # How the app words a did-you-mean pick (app/src/app/(app)/ask/page.tsx ``onPick``): the
@@ -1645,14 +2548,10 @@ def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest
     this reader), never merged or picked."""
     choices = []
     for c in candidates[:8]:
-        card = view._call("plx.object", {"object_id": c["object_id"],
-                                         "properties": ["erp_code"]})
-        code = next((plain(v.get("value")) for v in (card or {}).get("values") or ()
-                     if v.get("property") == "erp_code"), None)
+        detail = customer_hint(view, c["object_id"]) or [c.get("lineage") or "Customer"]
         choices.append(m.ObjectRef(
             object_id=c["object_id"], type="Customer",
-            label=f"{plain(c.get('display')) or c['object_id']} "
-                  f"({code or c.get('lineage') or 'Customer'})"[:200],
+            label=f"{plain(c.get('display')) or c['object_id']} ({' · '.join(detail)})"[:200],
             open_url=object_url("Customer", c["object_id"])))
     direct = (f"Did you mean {choices[0].label}?" if len(choices) == 1 else
               "That name matches more than one customer. Which did you mean?")
@@ -1661,6 +2560,31 @@ def profit_choices(backend: "WorkspaceBackend", view: Any, request: m.AskRequest
         direct_answer=direct,
         hidden=m.Hidden(count=0, by_owner=[], message=None), freshness=backend.freshness(),
         did_you_mean=choices, conversation_id=conversation, latency_ms=ms())
+
+
+def customer_hint(view: Any, oid: str) -> list[str]:
+    """What tells two customers of one name apart, as this reader reads them: the
+    customer number, its city when the record carries one, and its last order's date
+    with its order count."""
+    card = view._call("plx.object", {"object_id": oid,
+                                     "properties": ["erp_code", "city", "namecity"]}) or {}
+    values = {v.get("property"): plain(v.get("value")) for v in card.get("values") or ()
+              if isinstance(v, Mapping)}
+    out = [x for x in (values.get("erp_code"), values.get("city") or values.get("namecity"))
+           if x]
+    try:
+        handle, orders = _related(view, oid, CUSTOMER_ORDERS, pages=1)
+        if handle is not None and orders:
+            dates = sorted(str(plain((g.get("key") or {}).get("order_date")) or "") for g in
+                           _grouped(view, handle, {"op": "count"}, ["order_date"]) or ())
+            last = next((d for d in reversed(dates) if d), None)
+            total = next((int(g["value"]) for g in _grouped(view, handle, {"op": "count"})
+                          or () if str(g.get("value") or "").isdigit()), None)
+            count = f"{total} orders" if total is not None else f"{len(orders)}+ orders"
+            out.append(f"last order {last[:10]}, {count}" if last else count)
+    except (KeyError, LookupError):   # a host serving no traversal or aggregate tools
+        pass
+    return out
 
 
 GAP_OWNER = {"LINE_NOT_INVOICED": "Finance: post the order's invoice in Business Central",
@@ -1844,6 +2768,7 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                       message=" ".join(messages) or None)
 
     view_model = m.Profitability(
+        test_records_hidden=hidden_words(int(profit.get("test_orders_skipped") or 0)),
         customer=customer_ref, period_start=profit["period"]["start"],
         period_end=profit["period"]["end"], period=period,
         revenue=_money(totals.get("revenue"), cur),
@@ -2037,6 +2962,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     from operating import agent_session as runner
     from operator_api.agent_ask import plain_tree, reply_prose
     from operating import answer_gate
+    from operating.deep_investigation import COULD_NOT_CONFIRM
     from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED
 
     decision, _refused = runner._gate_results(ran.events)
@@ -2139,7 +3065,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
             direct = " ".join(fact.text for fact in facts)
         direct, removed = presentation.reader_prose(
             direct, [c.get("phrase") for c in passed])
-        if removed and not_found and direct:
+        if removed and not_found and direct and COULD_NOT_CONFIRM not in direct:
             direct += ("\n\nWhat I couldn't confirm from a source you can open is listed "
                        "below.")
         if not direct and facts:
@@ -2206,13 +3132,8 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                             open_url=object_url(r.get("object_type") or "Object",
                                                 r["object_id"]))
                 for r in found.get("roots") or () if isinstance(r.get("object_id"), str)]
-    did_you_mean = [m.ObjectRef(object_id=c["object_id"],
-                                type=str(c.get("object_type") or "Object"),
-                                label=f"{item.get('mention')} ({c.get('object_type')})",
-                                open_url=object_url(c.get("object_type") or "Object",
-                                                    c["object_id"]))
-                    for item in found.get("ambiguous") or ()
-                    for c in item.get("candidates") or () if c.get("object_id")]
+    did_you_mean, promoted = business_choices(found.get("ambiguous") or ())
+    subjects += [p for p in promoted if p.object_id not in {s.object_id for s in subjects}]
     conflicts: list[m.Conflict] = []
     for root in subjects[:3]:
         card = view._call("plx.object", {"object_id": root.object_id})
@@ -2247,6 +3168,29 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
         read=trail)
     if trail is not None and trail.kind == "materials" and trail.materials:
         direct = materials_lead(trail, direct)
+    not_found = reconciled_not_found(not_found, trail)
+    failure = getattr(ran, "failure", None)
+    if failure is None and ran.stopped and not facts:
+        failure = "timeout"
+    unavailable = UNAVAILABLE_WORDS.get(failure) if failure else None
+    if failure == "timeout":
+        seconds = int(getattr(backend.agent_ask, "seconds", 0) or 0)
+        unavailable = f"it reached its {seconds} s time limit" if seconds else unavailable
+    if unavailable is not None:
+        # The session failed as a session (its usage limit, its sign-in, its time, a
+        # crash): the assistant was unavailable, never "no records answer this". What was
+        # read without it (the trail, the late list, the records named) is shown.
+        direct, outcome = unavailable_answer(unavailable, trail, facts, subjects, late)
+    elif outcome == "not_found" and trail_shows(trail):
+        # the records read for the question show something: not "not found"
+        outcome = "partial"
+        if direct.startswith("I couldn't find records you can see"):
+            direct = RECORDS_BELOW
+    elif outcome == "not_found" and promoted:
+        # the one business record the question names is linked, never "not found"
+        outcome = "partial"
+        if direct.startswith("I couldn't find records you can see"):
+            direct = RECORD_LINKED
     return m.AnswerPayload(
         answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
         direct_answer=str(direct)[:4000], facts=facts, not_found=not_found[:10],
@@ -2254,7 +3198,86 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                         message=hidden_message(withheld, []) if withheld else None),
         conflicts=conflicts[:6],
         freshness=backend.freshness(_base(view)), subjects=subjects, did_you_mean=did_you_mean[:8],
-        trail=trail, conversation_id=conversation, latency_ms=ms())
+        trail=trail, conversation_id=conversation, latency_ms=ms(),
+        assistant_unavailable=unavailable)
+
+
+# Why the assistant could not work a question (``agent_ask.FAILURES``), as said to the reader.
+UNAVAILABLE_WORDS = {"usage_limit": "its usage limit has been reached",
+                     "sign_in": "it could not sign in",
+                     "timeout": "it ran out of time",
+                     "error": "it stopped with an error"}
+RECORDS_BELOW = ("I couldn't confirm a direct answer, but the records read for your "
+                 "question are below.")
+
+
+def trail_shows(trail: Optional[m.EvidenceTrail]) -> bool:
+    """Whether an answer's trail shows anything read from the records."""
+    return trail is not None and bool(
+        trail.steps or trail.materials or any(t.steps or t.verdict for t in trail.trails))
+
+
+def unavailable_answer(reason: str, trail: Optional[m.EvidenceTrail], facts: Sequence[m.Fact],
+                       subjects: Sequence[m.ObjectRef], late: Sequence[Any]
+                       ) -> tuple[str, str]:
+    """(direct answer, outcome) when the assistant was unavailable: said first, then what
+    the records read without it show (each PO trail's verdict, the late list's facts),
+    never a statement that nothing was found."""
+    said = [f"The assistant is unavailable right now ({reason})."]
+    shown = trail_shows(trail) or bool(facts) or bool(late)
+    if shown:
+        said.append("Here is what the records show.")
+        for po in (trail.trails if trail is not None else [])[:3]:
+            if po.verdict:
+                said.append(f"{po.subject.label}: {po.verdict.split(' Rule:')[0].strip()}")
+        if not (trail and trail.trails) and facts:
+            said.append(facts[0].text)
+    elif subjects:
+        said.append("The records your question names are linked below; ask again later "
+                    "for a full answer.")
+    else:
+        said.append("Ask again later, or narrow the question (name the record or the field "
+                    "you need).")
+    return " ".join(said), ("partial" if shown or subjects else "abstained")
+
+
+RECORD_LINKED = ("I couldn't confirm an answer from what you can see; the record your "
+                 "question names is linked below.")
+
+
+def business_choices(ambiguous: Iterable[Any]) -> tuple[list[m.ObjectRef],
+                                                        list[m.ObjectRef]]:
+    """(did-you-mean choices, records promoted to the answer's subjects), per ambiguous
+    mention: a mapping or plumbing candidate is never a choice; a mention left with one
+    business record names it (promoted, linked), never "not found"; two or more stay a
+    choice."""
+    choices: list[m.ObjectRef] = []
+    promoted: list[m.ObjectRef] = []
+    for item in ambiguous:
+        if not isinstance(item, Mapping):
+            continue
+        refs = [m.ObjectRef(object_id=c["object_id"], type=str(c.get("object_type") or "Object"),
+                            label=candidate_title(item, c),
+                            open_url=object_url(c.get("object_type") or "Object",
+                                                c["object_id"]))
+                for c in item.get("candidates") or ()
+                if isinstance(c, Mapping) and isinstance(c.get("object_id"), str)
+                and not internal_type(c.get("object_type"))]
+        (promoted if len(refs) == 1 else choices).extend(refs)
+    return choices, promoted
+
+
+def internal_type(object_type: Any) -> bool:
+    """A mapping or plumbing type (``BcEntityMapping``): never a record a person picks."""
+    return bool(re.search(r"(?:Mapping|EntityMap|Map|Binding|Mirror|Lineage)$",
+                          str(object_type or "")))
+
+
+def candidate_title(item: Mapping[str, Any], candidate: Mapping[str, Any]) -> str:
+    """A did-you-mean choice's title: the record's own display (its number or name), else
+    what the question said; its kind is shown beside it, never inside it."""
+    return (plain(candidate.get("display")) or plain(candidate.get("label"))
+            or str(item.get("mention") or "Record"))[:200]
 
 
 def session_roots(events: Sequence[Mapping[str, Any]], known: set[str],
@@ -2305,8 +3328,8 @@ def session_roots(events: Sequence[Mapping[str, Any]], known: set[str],
 
 
 def why_answer_trail(backend: "WorkspaceBackend", view: Any, question: str,
-                 roots: Sequence[m.ObjectRef], facts: Sequence[m.Fact]
-                 ) -> Optional[m.EvidenceTrail]:
+                 roots: Sequence[m.ObjectRef], facts: Sequence[m.Fact], *,
+                 seconds: Optional[float] = None) -> Optional[m.EvidenceTrail]:
     """How the answer is known (``operating.why_trail``): for the first record the answer is
     about that a why plan covers, its steps read through this reader's own view, each
     source decided for the reader again (a step it may not open is counted, never named),
@@ -2332,7 +3355,8 @@ def why_answer_trail(backend: "WorkspaceBackend", view: Any, question: str,
                    "check": f.check} for f in facts if f.sources]
         built = why_trail.build(plan, {"object_id": root.object_id, "object_type": root.type,
                                        "label": root.label},
-                                call=view._call, decide=view.access.decide, claims=claims)
+                                call=view._call, decide=view.access.decide, claims=claims,
+                                **({"seconds": seconds} if seconds is not None else {}))
     except Exception as error:  # noqa: BLE001 - the trail is extra; the answer stands
         logging.getLogger("operator_api.ask").info(json.dumps(
             {"trail": "not_built", "error": type(error).__name__}))
@@ -2516,7 +3540,9 @@ def named_late_pos(backend: "WorkspaceBackend", view: Any, question: str,
     inbox = view.gap_inbox()
     if inbox.get("status") != "read":
         return []
-    run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    inbox = aged_to_today(inbox, backend.today() if backend.today else None)
+    run_at = inbox.get("days_as_of") or (inbox.get("run_at") if isinstance(
+        inbox.get("run_at"), str) else None)
     late_gaps = [g for g in inbox.get("gaps") or () if g.get("days_late") is not None
                  and isinstance(g.get("object_id"), str)][:MAX_LATE_LOOKUPS]
     labels: dict[str, str] = {}
@@ -2627,6 +3653,151 @@ def understanding_event(got: Any) -> m.UnderstandingEvent:
                                 rewrites=[str(r)[:300] for r in get(got, "rewrites", []) or []][:5])
 
 
+SUGGEST_FUZZY = 0.6     # word similarity a near spelling needs ("diversifed": 0.73)
+SUGGEST_ROWS = 24       # rows read per phrase
+SUGGEST_WORDS = 4       # the longest trailing phrase looked up
+# How a suggestion's entity type ranks within one kind of match: the parties and orders a
+# person names first, places and people last.
+SUGGEST_TYPE_RANK = {"customer": 0, "supplier": 0, "purchase_order": 1, "sales_order": 1,
+                     "item": 2, "manufacturer": 3, "customer_po": 3, "assembly_order": 3,
+                     "lot": 4, "batch": 4, "person": 5, "customer_location": 6}
+SYSTEM_WORDS = {"portal": "Portal", "bc": "BC", "gen": "Sage"}
+# A copy of a record to open first: the Portal's own app record, then Business Central.
+OPEN_FIRST = ("portal.app_", "bc.")
+
+
+def suggest_phrases(q: str) -> list[tuple[int, str]]:
+    """(words, folded phrase) for each trailing phrase of ``q``, longest first: the last
+    ``SUGGEST_WORDS`` words typed, then without the first, down to the last word alone;
+    phrases under two characters are not looked up."""
+    from operating.chunking.entities import fold
+    words = fold(q).split()[-SUGGEST_WORDS:]
+    out = []
+    for start in range(len(words)):
+        phrase = " ".join(words[start:])
+        if len(phrase) >= 2:
+            out.append((len(words) - start, phrase))
+    return out
+
+
+SAME_RECORD_ASKS = 12   # records a suggestion list asks about, at most
+SAME_RECORD_SECONDS = 5   # past this, copies without a shared code stay apart
+
+
+def same_records(view: Any, object_ids: Sequence[str]) -> set[frozenset[str]]:
+    """Pairs of ``object_ids`` this reader reads as one record in two systems: a verified
+    ``<Type>.same_record_as`` link, walked as the reader (``plx.around``: its grants and
+    the link's markings). Only ids the reader was already shown are asked about."""
+    ids = list(dict.fromkeys(object_ids))[:SAME_RECORD_ASKS]
+    wanted, pairs = set(ids), set()
+    with view._request():
+        for oid in ids:
+            kind = oid.split(":", 1)[0]
+            for direction in ("forward", "reverse"):
+                got = view._call("plx.around", {
+                    "from": oid, "tier_floor": "verified", "limit": 20,
+                    "path": [{"link_type": f"{kind}.same_record_as",
+                              "direction": direction}]})
+                for obj in got.get("objects") or ():
+                    other = obj.get("object_id") if isinstance(obj, Mapping) else None
+                    if other in wanted and other != oid:
+                        pairs.add(frozenset((oid, other)))
+    return pairs
+
+
+def record_codes(alias: Iterable[Any]) -> set[str]:
+    """The identifiers among an entity's aliases: an alias that is also given labelled
+    ("DIVE11" beside "Customer DIVE11"), as the entity index writes every identifier."""
+    names = [str(a) for a in alias or () if isinstance(a, str)]
+    held = set(names)
+    return {name.split(" ", 1)[1] for name in names
+            if " " in name and name.split(" ", 1)[1] in held
+            and re.fullmatch(r"[A-Z][A-Za-z]*", name.split(" ", 1)[0])}
+
+
+def system_word(object_id: str) -> str:
+    binding = object_id.split(":", 2)[1] if object_id.count(":") >= 2 else ""
+    family = binding.split(".", 1)[0]
+    return SYSTEM_WORDS.get(family, family.capitalize() or "Record")
+
+
+def suggestions(rows: Sequence[tuple], limit: int, *,
+                same_record: Callable[[Sequence[str]], set[frozenset[str]]],
+                members: Optional[dict[str, list[str]]] = None
+                ) -> list[m.Suggestion]:
+    """The ranked, collapsed suggestions of ``rows`` ((words of the phrase matched,
+    object_id, entity type, name, aliases, exact, code, prefix, word, similarity), every
+    one already within the reader's scope). Ranked: any match of the words as typed before
+    a near spelling, then by the phrase's length (a whole name before one of its words),
+    the match (an exact name or code, a name starting with the phrase, a word starting
+    with it), the entity type
+    (``SUGGEST_TYPE_RANK``), then similarity and a shorter name. Rows of one type and one
+    name are one suggestion when they share a record code or the projection records them
+    as the same record (``same_record``); others of that name stay apart, each told by
+    its code and system. The suggestion opens the Portal's own copy first
+    (``OPEN_FIRST``). ``members``, when given, gets each suggestion's copies by its id."""
+    best: dict[str, tuple] = {}
+    for words, oid, kind, name, alias, exact, code, prefix, word, sim in rows:
+        match = 0 if exact or code else 1 if prefix else 2 if word else 3
+        rank = (match == 3, -words, match, SUGGEST_TYPE_RANK.get(str(kind), 7),
+                -float(sim or 0), len(str(name or "")), str(name or ""))
+        if oid not in best or rank < best[oid][0]:
+            best[oid] = (rank, oid, str(kind or "object"), str(name or oid), alias,
+                         "exact" if match == 0 else "prefix" if match < 3 else "fuzzy",
+                         float(sim or 0))
+    ordered = sorted(best.values())
+    # copies of one record: same type and name, a shared code or a recorded same record
+    groups: dict[tuple[str, str], list[tuple]] = {}
+    for item in ordered:
+        groups.setdefault((item[2], normalize(item[3])), []).append(item)
+    asked = [item[1] for g in groups.values() if len(g) > 1 for item in g]
+    try:
+        pairs = same_record(asked) if asked else set()
+    except (TimeoutError, LookupError):   # busy: copies without a shared code stay apart
+        pairs = set()
+    out: list[m.Suggestion] = []
+    for item in ordered:
+        group = groups[(item[2], normalize(item[3]))]
+        if item not in group:
+            continue   # already shown as a copy of an earlier one
+        cluster = [item]
+        codes = record_codes(item[4])
+        changed = True
+        while changed:   # every row reachable by a shared code or a same-record link
+            changed = False
+            for other in group:
+                if other in cluster:
+                    continue
+                if codes & record_codes(other[4]) or any(
+                        frozenset((other[1], c[1])) in pairs for c in cluster):
+                    cluster.append(other)
+                    codes |= record_codes(other[4])
+                    changed = True
+        for member in cluster:
+            group.remove(member)
+        lead = min(cluster, key=lambda c: (next((n for n, p in enumerate(OPEN_FIRST)
+                                                 if c[1].split(":", 2)[1].startswith(p)),
+                                                len(OPEN_FIRST))
+                                           if c[1].count(":") >= 2 else len(OPEN_FIRST),
+                                           c[1]))
+        object_type = lead[1].split(":", 1)[0] or "Object"
+        systems = list(dict.fromkeys(system_word(c[1]) for c in cluster))
+        detail = [words_of(lead[2]).capitalize()]
+        if codes:
+            detail.append(", ".join(sorted(codes)[:2]))
+        detail.append(" and ".join(systems))
+        out.append(m.Suggestion(object_id=lead[1], type=object_type, label=lead[3][:200],
+                                sublabel=" · ".join(detail)[:200], match=item[5],
+                                score=round(max(item[6], 1.0 if item[5] == "exact" else 0.0),
+                                            3),
+                                open_url=object_url(object_type, lead[1])))
+        if members is not None:
+            members[lead[1]] = [c[1] for c in cluster]
+        if len(out) >= limit:
+            break
+    return out
+
+
 def projection_suggest(view: Any, q: str, limit: int) -> list[m.Suggestion]:
     """``plx.find`` for the reader (its grants, its ranking); typo tolerance by retrying
     shorter prefixes of the last word and dropping one word at a time."""
@@ -2668,21 +3839,23 @@ def projection_suggest(view: Any, q: str, limit: int) -> list[m.Suggestion]:
 def resolve_object(view: Any, object_type: str, object_id: str) -> str:
     """The object id a page asks for: given whole (``<Type>:...``), else the one record of
     that type a business reference finds for the reader; several or none: not found."""
-    if ":" in object_id and object_id.split(":", 1)[0].lower() == object_type.lower():
+    if ":" in object_id and (object_id.split(":", 1)[0].lower()
+                             == object_type.replace("_", "").lower()
+                             or re.fullmatch(r"[A-Z][A-Za-z0-9]{1,63}:[a-z][\w.]*:\{.*\}",
+                                             object_id)):
+        # a whole object id names its own type ("item" links once opened Product ids)
         return object_id
     result = view._call("plx.find", {"query": object_id[:200], "object_type": object_type,
                                      "limit": 3})
     if (result.get("error") or {}).get("code") == "invalid_input":
         result = view._call("plx.find", {"query": object_id[:200], "limit": 3})
+    wanted = object_type.replace("_", "").lower()   # "assembly_order" is AssemblyOrder
     found = [c["object"]["object_id"] for c in result.get("candidates") or ()
              if isinstance((c.get("object") or {}).get("object_id"), str)
-             and str(c["object"].get("object_type", "")).lower() == object_type.lower()]
+             and str(c["object"].get("object_type", "")).lower() == wanted]
     if len(found) != 1:
         raise KeyError("object_not_found")   # never merged: two matches are no page
     return found[0]
-
-
-PAGE_CACHE_SECONDS = 60
 
 
 def page_key(view: Any, oid: str) -> Optional[tuple]:
@@ -2699,44 +3872,330 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
         return None
 
 
+def reader_key(view: Any, what: tuple) -> Optional[tuple]:
+    """``page_key`` of ``what`` for this reader (inside its ``_request``), with the state
+    of the gap inbox beside the store (a new run, an acknowledgement or a "seen" mark is
+    a new key); None: never cached."""
+    key = page_key(view, what)
+    return None if key is None else key + (inbox_stamp(view),)
+
+
+def inbox_stamp(view: Any) -> Optional[tuple]:
+    """The gap inbox file's state now (its and its write-ahead log's change time and
+    size), or None when the workspace names no store."""
+    from operating.proactive_engine import inbox_path
+    path = getattr(getattr(view, "store_status", None), "store_path", None)
+    if path is None:
+        return None
+    inbox = inbox_path(path)
+    out = []
+    for file in (inbox, inbox.with_name(inbox.name + "-wal")):
+        try:
+            found = os.stat(file)
+            out.append((found.st_mtime_ns, found.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
 def object_page(backend: WorkspaceBackend, view: Any, object_type: str,
-                object_id: str) -> m.ObjectPage:
+                object_id: str, *, quick: bool = False) -> m.ObjectPage:
+    """The record's page for this reader, kept (``ReaderCache``). ``quick``: the full page
+    when it is kept, else the quick read (``read_page``) the app shows while the full one
+    is read."""
     cache = backend.page_cache
     with view._request():
         ref = page_key(view, f"ref:{object_type}:{object_id}")
-        held = cache.get(ref) if ref is not None else None
-        if held is not None and held[0] > time.monotonic():
-            oid = held[1]
+        held = cache.get(ref)
+        if held is not None:
+            oid = held[0]
         else:
             try:
                 oid = resolve_object(view, object_type, object_id)
             except KeyError:
                 oid = None
-            if ref is not None:
-                remember(cache, ref, oid)
+            cache.put(ref, (oid,))
         if oid is None:
             raise KeyError("object_not_found")   # resolved to nothing for this reader
         key = page_key(view, oid)
-    held = cache.get(key) if key is not None else None
-    if held is not None and held[0] > time.monotonic():
-        with view._request():
-            # item-level permissions (a SharePoint ACL, a mailbox) are not in the policy
-            # fingerprint: every source the cached page shows is decided again now
-            handles = sorted(page_handles(held[1]))
-            decided = view.access.decide(handles) if handles else {}
-        if all(decided.get(h) is None for h in handles):
-            return held[1].model_copy(deep=True)
-        cache.pop(key, None)
+        full = not quick or cache.get(key) is not None
+        if not full:
+            key = page_key(view, ("quick", oid))
+    return cache.kept(view, key, lambda: read_page(backend, view, oid, quick=not full),
+                      page_handles, copy=lambda model: model.model_copy(deep=True))
+
+
+def read_page(backend: WorkspaceBackend, view: Any, oid: str, *,
+              quick: bool = False) -> m.ObjectPage:
+    """The record's page: its workspace, timeline rows named by the records they are
+    about, a customer's summary, and (unless ``quick``) the plans and the trail."""
     page = view.workspace(oid)   # its own request; KeyError when not visible
     kind = str(((page.get("card") or {}).get("object") or {}).get("object_type") or "")
-    plans = plan_runs(view, kind, oid)
+    plans = {} if quick else plan_runs(view, kind, oid)
     with view._request():
         model = _page_model(backend, view, page)
-        model = with_plans(backend, view, model, plans)
+        labels = {o.get("object_id"): plain(o.get("display"))
+                  for hop in (page.get("around") or {}).get("hops") or ()
+                  for o in (hop.get("result") or {}).get("objects") or ()
+                  if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)}
+        status: dict[str, str] = {}
+        if kind == "Customer":
+            model.customer, orders, status = customer_summary(backend, view, oid)
+            labels.update(orders)
+        label_timeline(view, model, labels, status,
+                       ((page.get("timeline") or {}).get("events") or [])[:50])
+        if not quick:
+            model = with_plans(backend, view, model, plans)
         model.hidden = page_hidden(backend, view, oid)
-    if key is not None:
-        remember(cache, key, model.model_copy(deep=True))
+        model.complete = not quick
+    model = presentation.polished(model)
     return model
+
+
+# What a customer's record is summed and listed from: (link from the record walked in
+# reverse, its date property, what the sum is called). Each total is the records' own
+# ``subtotal`` (excluding tax) per currency over the last ``CUSTOMER_DAYS``.
+CUSTOMER_SUMS = (("SalesInvoice.billed_to", "invoice_date", "Invoiced (excluding tax)"),
+                 ("SalesOrder.ordered_by", "order_date", "Ordered (excluding tax)"))
+CUSTOMER_ORDERS = "SalesOrder.ordered_by"
+CUSTOMER_DAYS = 365
+CUSTOMER_ROWS = 5
+_CLOSED = re.compile(r"clos|cancel|complet|shipped|invoic|deliver|void|posted|fulfilled",
+                     re.IGNORECASE)
+
+
+def _decimal_money(value: Any, currency: Any) -> Optional[m.Money]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str) or not _DECIMAL.match(value.strip()) \
+            or not isinstance(currency, str) or not _CURRENCY.match(currency.strip()):
+        return None
+    # a sum of binary-float source values ("352956.480000000003") reads in cents
+    amount = Decimal(value.strip())
+    if amount.as_tuple().exponent < -2:
+        amount = amount.quantize(Decimal("0.01"))
+    return m.Money(amount=str(amount), currency=currency.strip())
+
+
+def _cited(backend: "WorkspaceBackend", view: Any, citations: Iterable[Any],
+           limit: int = 3) -> list[m.Source]:
+    """The first ``limit`` cited records the reader may open, as sources."""
+    handles = list(dict.fromkeys(c.get("l1_handle") for c in citations or ()
+                                 if isinstance(c, Mapping) and isinstance(c.get("l1_handle"),
+                                                                          str)))
+    decided = view.access.decide(handles) if handles else {}
+    return [backend._source(view, h) for h in handles if decided.get(h) is None][:limit]
+
+
+def _related(view: Any, oid: str, link_type: str, *, filters: Sequence[Mapping] = (),
+             pages: int = 4) -> tuple[Optional[str], dict[str, str]]:
+    """(the set of records ``link_type`` links to ``oid`` in reverse, as the reader reads
+    it; their object id -> display, up to ``pages`` pages)."""
+    arguments: dict[str, Any] = {"from": oid, "limit": 50,
+                                 "path": [{"link_type": link_type, "direction": "reverse"}]}
+    if filters:
+        arguments["filters"] = list(filters)
+    shown: dict[str, str] = {}
+    handle = None
+    for _ in range(pages):
+        got = view._call("plx.around", arguments)
+        if got.get("error"):
+            break
+        handle = handle or got.get("set")
+        for obj in got.get("objects") or ():
+            if isinstance(obj, Mapping) and isinstance(obj.get("object_id"), str) \
+                    and plain(obj.get("display")):
+                shown[obj["object_id"]] = str(plain(obj.get("display")))
+        cursor = (got.get("completeness") or {}).get("next_cursor")
+        if not cursor:
+            break
+        arguments["cursor"] = cursor
+    return handle, shown
+
+
+def _grouped(view: Any, handle: str, measure: Mapping[str, str],
+             group_by: Sequence[str] = ()) -> Optional[list[Mapping[str, Any]]]:
+    """``plx.aggregate`` over a set; a sum mixing currencies is read again per currency.
+    None when it cannot be read for this reader (the refusal stands; ``_refusal`` says
+    why)."""
+    return _aggregate_read(view, handle, measure, group_by)[0]
+
+
+def _aggregate_read(view: Any, handle: str, measure: Mapping[str, str],
+                    group_by: Sequence[str] = ()
+                    ) -> tuple[Optional[list[Mapping[str, Any]]], Optional[str]]:
+    """(the groups, or None; the refusal's code when refused)."""
+    arguments: dict[str, Any] = {"set": handle, "measure": dict(measure)}
+    if group_by:
+        arguments["group_by"] = list(group_by)
+    got = view._call("plx.aggregate", arguments)
+    if got.get("error") and not group_by and measure.get("op") == "sum":
+        got = view._call("plx.aggregate", {**arguments, "group_by": ["currency"]})
+    if got.get("error"):
+        return None, str((got.get("error") or {}).get("code") or "refused")
+    return [g for g in got.get("groups") or () if isinstance(g, Mapping)], None
+
+
+def _refusal(code: Optional[str]) -> str:
+    """Why a sum is not shown, as the tool said it: a unit or currency mix, or amounts
+    this reader may not read (a marking it does not hold), never one for the other."""
+    words = words_of(code)
+    if re.search(r"unit|currenc|mix|role|not.numeric", words):
+        return f"the amounts could not be summed ({words})"
+    if re.search(r"withheld|marking|grant|access|permission|inaccessible", words):
+        return "the amounts are not shown to you (they need access you do not hold)"
+    return f"the amounts could not be read ({words or 'refused'})"
+
+
+def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
+                     ) -> tuple[m.CustomerSummary, dict[str, str], dict[str, str]]:
+    """A customer's revenue, open and recent orders, contacts and copies in other systems,
+    from what its own record links to as this reader reads it (``plx.around`` then
+    ``plx.aggregate``: exact Decimal sums per currency, each with the records summed).
+    Never a figure read from prose and never another record's links: a copy in another
+    system is listed to open, not added in. Also returns the orders' displays by object
+    id and their statuses by number (the timeline names them)."""
+    today = backend.today() if backend.today is not None else date.today()
+    since = (today - timedelta(days=CUSTOMER_DAYS)).isoformat()
+    period = f"last 12 months (since {since})"
+    out = m.CustomerSummary()
+    for link, when, label in CUSTOMER_SUMS:
+        handle, shown = _related(view, oid, link, filters=[
+            {"property": when, "op": "gte", "value": since}], pages=1)
+        if handle is None or not shown:
+            continue
+        groups, refused = _aggregate_read(view, handle, {"property": "subtotal", "op": "sum"})
+        if groups is None:
+            out.not_established.append(f"{label}, {period}: {_refusal(refused)}")
+            continue
+        for group in groups:
+            money = _decimal_money(group.get("value"), group.get("currency"))
+            cites = group.get("inputs_citations") or ()
+            if money is None:
+                continue
+            system = system_of(next((c.get("l1_handle") for c in cites
+                                     if isinstance(c, Mapping)), "") or "")
+            out.revenue.append(m.CustomerAmount(
+                label=label, period=period, money=money, count=int(group.get("inputs") or 0),
+                system=system, sources=_cited(backend, view, cites)))
+    handle, orders = _related(view, oid, CUSTOMER_ORDERS)
+    status: dict[str, str] = {}
+    if handle is not None and orders:
+        # the set's own size (a count over the whole set), never the rows one read
+        # returned; unknown, it is said as "at least"
+        counted = _grouped(view, handle, {"op": "count"})
+        total = next((int(g["value"]) for g in counted or ()
+                      if str(g.get("value") or "").isdigit()), None)
+        if total is not None:
+            out.orders_total = total
+        else:
+            out.orders_at_least = len(orders)
+        by_number = {label: obj for obj, label in orders.items()}
+
+        def rows_of(filters: Sequence[Mapping[str, Any]]) -> list[m.OrderRow]:
+            """The orders matching ``filters``, each with its date, status and total
+            (two small reads over the narrowed set: a result is bounded in size)."""
+            narrowed, _ = _related(view, oid, CUSTOMER_ORDERS, filters=filters, pages=1)
+            if narrowed is None:
+                return []
+            states = _grouped(view, narrowed, {"op": "count"}, ["status", "order_number"])
+            for g in states or ():
+                key = g.get("key") or {}
+                status[str(plain(key.get("order_number")))] = \
+                    words_of(plain(key.get("status"))).capitalize()
+            found = []
+            groups, _ = _aggregate_read(view, narrowed, {"property": "subtotal", "op": "sum"},
+                                        ["order_date", "order_number"])
+            if groups is None:   # amounts this reader may not read: the orders, unpriced
+                groups = [{**g, "value": None, "inputs_citations": ()} for g in _grouped(
+                    view, narrowed, {"op": "count"}, ["order_date", "order_number"]) or ()]
+            for group in groups:
+                key = {k: plain(v) for k, v in (group.get("key") or {}).items()}
+                number = key.get("order_number")
+                if not isinstance(number, str) or not number:
+                    continue
+                target = by_number.get(number)
+                found.append(m.OrderRow(
+                    object_id=target or number, label=number,
+                    open_url=object_url("SalesOrder", target or number),
+                    date=key.get("order_date") if isinstance(key.get("order_date"), str)
+                    else None,
+                    status=status.get(number) or None,
+                    amount=_decimal_money(group.get("value"), group.get("currency")),
+                    sources=_cited(backend, view, group.get("inputs_citations") or (), 1)))
+            return sorted(found, key=lambda r: (r.date or "", r.label), reverse=True)
+
+        for days in (90, CUSTOMER_DAYS, None):   # the latest orders, in a bounded read
+            window = [] if days is None else [{"property": "order_date", "op": "gte",
+                                               "value": (today - timedelta(days=days))
+                                               .isoformat()}]
+            recent = rows_of(window)
+            if len(recent) >= CUSTOMER_ROWS or days is None:
+                break
+        out.recent_orders = recent[:CUSTOMER_ROWS]
+        counts = [g for g in _grouped(view, handle, {"op": "count"}, ["status"]) or ()
+                  if plain((g.get("key") or {}).get("status"))]
+        if counts:
+            states = {plain((g.get("key") or {}).get("status")): int(g.get("value") or 0)
+                      for g in counts}
+            open_states = sorted(str(k) for k in states if k and not _CLOSED.search(str(k)))
+            out.open_orders = sum(states[k] for k in open_states)
+            if open_states:
+                out.open_list = rows_of([{"property": "status", "op": "in",
+                                          "value": open_states[:50]}])[:CUSTOMER_ROWS]
+        else:
+            out.not_established.append("Open orders: no order status is recorded")
+    elif not out.revenue:
+        out.not_established.append("Orders: none linked to this customer record")
+    kind = oid.split(":", 1)[0]
+    twins = [obj for direction in ("forward", "reverse") for obj in view._call(
+        "plx.around", {"from": oid, "tier_floor": "verified", "limit": 10, "path": [
+            {"link_type": f"{kind}.same_record_as", "direction": direction}]}
+    ).get("objects") or ()]
+    seen: set[str] = set()
+    for obj in twins:
+        if not isinstance(obj, Mapping) or obj.get("object_id") in seen:
+            continue
+        seen.add(str(obj.get("object_id")))
+        if isinstance(obj, Mapping) and isinstance(obj.get("object_id"), str) \
+                and obj["object_id"] != oid:
+            out.also_in.append(m.ObjectRef(
+                object_id=obj["object_id"], type=str(obj.get("object_type") or "Customer"),
+                label=f"{plain(obj.get('display')) or obj['object_id']} "
+                      f"({system_word(obj['object_id'])})"[:200],
+                open_url=object_url(str(obj.get("object_type") or "Customer"),
+                                    obj["object_id"])))
+    out.not_established.append("Contacts: none captured for this customer's record")
+    return out, orders, {n: st for n, st in status.items() if st}
+
+
+def label_timeline(view: Any, page: m.ObjectPage, labels: Mapping[str, str],
+                   status: Mapping[str, str], events: Sequence[Mapping[str, Any]]) -> None:
+    """Each timeline row names the record it is about (an order's number) and, when
+    known, that record's status: "Required" alone says nothing."""
+    about_of = []
+    for event in events:
+        others = [o.get("object_id") for o in event.get("objects") or ()
+                  if isinstance(o, Mapping) and o.get("object_id") != page.object_id]
+        about_of.append(next((o for o in others if isinstance(o, str)), None))
+    labels, read_status = dict(labels), {}
+    for oid in list(dict.fromkeys(o for o in about_of if o and not labels.get(o)))[:40]:
+        card = view._call("plx.object", {"object_id": oid, "properties": ["status"]}) or {}
+        labels[oid] = plain((card.get("object") or {}).get("display"))
+        read_status[oid] = next((plain(v.get("value")) for v in card.get("values") or ()
+                                 if isinstance(v, Mapping) and v.get("property") == "status"),
+                                None)
+    for row, about in zip(page.timeline, about_of):
+        if about is None:
+            continue
+        name = labels.get(about)
+        if not name or name == about:
+            continue   # no display to name it by: the row stays as it was
+        kind = words_of(re.sub(r"(?<=[a-z])(?=[A-Z])", " ", about.split(":", 1)[0])).lower()
+        row.title = f"{row.title}: {kind} {name}"[:200]
+        state = status.get(name) or words_of(read_status.get(about)).capitalize()
+        if state:
+            row.summary = f"Status: {state}"
 
 
 def page_handles(value: Any) -> set[str]:
@@ -2754,12 +4213,6 @@ def page_handles(value: Any) -> set[str]:
                 walk(getattr(item, name))
     walk(value)
     return found
-
-
-def remember(cache: dict, key: tuple, value: Any) -> None:
-    while len(cache) >= 512:
-        cache.pop(next(iter(cache)))
-    cache[key] = (time.monotonic() + PAGE_CACHE_SECONDS, value)
 
 
 PAGE_PLANS = ("late_po", "landed_cost", "people_on_record")
@@ -2814,8 +4267,7 @@ def entry_sources(backend: "WorkspaceBackend", view: Any, entry: Mapping[str, An
     """The cited records a computed entry rests on: its own citation, else its inputs'
     (each re-decided for this reader; one they may not open is left out)."""
     handles: list[str] = []
-    own = (entry.get("citation") or {}).get("l1_handle") \
-        if isinstance(entry.get("citation"), Mapping) else None
+    own = citation_handle(entry.get("citation"))
     if isinstance(own, str):
         handles.append(own)
     elif depth < 3:
@@ -2910,7 +4362,8 @@ def with_plans(backend: "WorkspaceBackend", view: Any, page: m.ObjectPage,
     if isinstance(late, Mapping) and late.get("state") not in (None, "not_established"):
         cited = [(str(f.get("text") or "")[:300], f["citation"])
                  for f in late.get("facts") or ()
-                 if isinstance(f.get("citation"), str) and f.get("openable")]
+                 if isinstance(f, Mapping) and isinstance(f.get("citation"), str)
+                 and f.get("openable")]
         page.late_lines = [m.LateLine(line=text, sources=[backend._source(view, h)])
                            for text, h in cited][:20]
         page.status = m.ObjectStatus(state=str(late.get("state")),
@@ -2925,11 +4378,51 @@ def with_plans(backend: "WorkspaceBackend", view: Any, page: m.ObjectPage,
         page.trail = trails.for_page(backend, view, page.object_id, page.label,
                                      object_url=object_url, open_url=open_url,
                                      host_schemes=HOST_READ_SCHEMES,
-                                     late=listed_late(view, page.object_id, page.label))
+                                     late=listed_late(view, page.object_id, page.label,
+                                                      backend.today() if backend.today
+                                                      else None))
+        page.not_found = reconciled_not_found(page.not_found, page.trail)
     return page
 
 
-def listed_late(view: Any, oid: str, label: str) -> list[tuple[m.LatePo, Optional[str]]]:
+# What a missing stage is called, and words a message about it uses (a reminder about a
+# "Billing Invoice" is about the vendor invoice). Matched on the trail's step titles.
+STAGE_WORDS = (("vendor invoice", r"\binvoice|\bbilling\b"),
+               ("vendor payment", r"\bpayment|\bremittance|\bpaid\b"),
+               ("receipt", r"\breceipt|\breceived\b|\bpick ?up\b|\bdelivered\b"),
+               ("supplier confirmation", r"\bconfirm"),
+               ("vendor credit", r"\bcredit (?:memo|note)\b"))
+
+
+def reconciled_not_found(items: Sequence[m.NotFound], trail: Optional[m.EvidenceTrail]
+                         ) -> list[m.NotFound]:
+    """Not-found items said against what the trail shows: a stage no system of record
+    holds, while messages on the trail talk about it (a vendor invoice the reminders
+    mention), reads "not on record; N messages below mention it (not confirmed)", never
+    a bare "not found" beside those messages."""
+    steps = [step for t in (trail.trails if trail is not None else ()) for step in t.steps] + \
+        list(trail.steps if trail is not None else ())
+    out = []
+    for item in items:
+        what = item.what.lower()
+        rule = next((words for stage, words in STAGE_WORDS if what.startswith(stage)), None)
+        mentions = [step for step in steps if rule and step.kind not in ("verdict", "due_date")
+                    and re.search(rule, step.title, re.I)] if rule else []
+        if mentions:
+            owner = (item.where_it_would_live or "").split(". ", 1)[0].strip().rstrip(".")
+            many = len(mentions) != 1
+            said = (f"Not on record in the systems searched; {len(mentions)} "
+                    f"message{'s' if many else ''} in How we know mention{'' if many else 's'} "
+                    "it (not confirmed as this order's)")
+            item = item.model_copy(update={
+                "where_it_would_live": f"{owner}. {said}" if owner.lower().startswith("ask")
+                else said})
+        out.append(item)
+    return out
+
+
+def listed_late(view: Any, oid: str, label: str, today: Optional[date] = None
+                ) -> list[tuple[m.LatePo, Optional[str]]]:
     """This record's entry on the reader's late list (the gap inbox Home shows), if any."""
     try:
         inbox = view.gap_inbox()
@@ -2937,9 +4430,11 @@ def listed_late(view: Any, oid: str, label: str) -> list[tuple[m.LatePo, Optiona
         return []
     if inbox.get("status") != "read":
         return []
+    inbox = aged_to_today(inbox, today)
     gaps = [g for g in inbox.get("gaps") or () if g.get("object_id") == oid
             and g.get("days_late") is not None]
-    run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    run_at = inbox.get("days_as_of") or (inbox.get("run_at") if isinstance(
+        inbox.get("run_at"), str) else None)
     late, _ = attention_items({"gaps": gaps[:1]}, {oid: label}, limit=1)
     return [(po, run_at) for po in late]
 
@@ -2950,32 +4445,41 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     oid, kind = page["object_id"], str(obj.get("object_type") or "Object")
     label = plain(obj.get("display")) or oid
     facts = []
-    for value in card.get("values") or ():
-        handle = (value.get("citation") or {}).get("l1_handle")
+    values = [v for v in card.get("values") or () if isinstance(v, Mapping)]
+    currency = presentation.record_currency(values)
+    for value in values:
+        handle = citation_handle(value.get("citation"))
         shown = plain(value.get("value"))
-        if not isinstance(handle, str) or shown is None:
+        prop = str(value.get("property") or "value")
+        if not isinstance(handle, str) or shown is None or presentation.internal_field(prop):
             continue
-        name = str(value.get("property") or "value").replace("_", " ")
-        facts.append(m.Fact(text=f"{name.capitalize()}: {shown}",
-                            sources=[backend._source(view, handle, fields={name: shown})],
+        name = presentation.field_label(prop)
+        shown = presentation.value_words(prop, shown, currency)
+        facts.append(m.Fact(text=f"{name}: {shown}",
+                            sources=[backend._source(view, handle, fields={prop: shown})],
                             check="read_from_record"))
         if len(facts) >= MAX_FACTS:
             break
     answers = page.get("answers") or {}
+    # an answer that does not apply to this kind of record (a supplier's confirmation on a
+    # customer page) is not said at all
     verdicts = [a for key, a in answers.items() if isinstance(a, Mapping) and key != "subject"
-                and isinstance(a.get("text"), str)]
+                and isinstance(a.get("text"), str) and a.get("applicable") is not False]
     lead = next((a for a in verdicts if a.get("state") not in ("not_established",)), None) \
         or (verdicts[0] if verdicts else None)
     status = m.ObjectStatus(
         state=str((lead or {}).get("state") or page.get("status") or "read"),
-        text=str((lead or {}).get("text") or "No status established from your records")[:600],
-        sources=[backend._source(view, f["citation"], openable=bool(f.get("openable")))
+        text=presentation.status_words(str((lead or {}).get("text")
+                                           or "No status established from your records"))[:600],
+        sources=[backend._source(view, citation_handle(f.get("citation")),
+                                 openable=bool(f.get("openable")))
                  for f in (lead or {}).get("facts") or ()
-                 if isinstance(f.get("citation"), str)][:4])
+                 if isinstance(f, Mapping) and citation_handle(f.get("citation"))][:4])
     timeline = []
     for event in (page.get("timeline") or {}).get("events") or ():
-        handle = (event.get("citation") or {}).get("l1_handle") \
-            if isinstance(event.get("citation"), Mapping) else event.get("citation")
+        if not isinstance(event, Mapping):
+            continue
+        handle = citation_handle(event.get("citation"))
         when = event.get("at") or event.get("occurred_at") or event.get("time")
         title = str(event.get("event_type") or event.get("type") or "Event")
         title = title.split(".")[-1].replace("_", " ").capitalize()
@@ -2987,8 +4491,8 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     linked = []
     documents = ((page.get("documents") or {}).get("result") or {}).get("documents") or ()
     for doc in documents[:20]:
-        handle = doc.get("l1_handle") or (doc.get("citation") or {}).get("l1_handle") \
-            if isinstance(doc, Mapping) else None
+        handle = (citation_handle(doc.get("l1_handle"))
+                  or citation_handle(doc.get("citation"))) if isinstance(doc, Mapping) else None
         if not isinstance(handle, str):
             continue
         system = system_of(handle)
@@ -3000,11 +4504,13 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     related = []
     for hop in (page.get("around") or {}).get("hops") or ():
         for other in (hop.get("result") or {}).get("objects") or ():
-            if isinstance(other.get("object_id"), str) and len(related) < 20:
+            if isinstance(other, Mapping) and isinstance(other.get("object_id"), str) \
+                    and len(related) < 20:
+                kind_of = str(other.get("object_type") or "Object")
                 related.append(m.ObjectRef(
-                    object_id=other["object_id"], type=str(other.get("object_type") or
-                                                          "Object"),
-                    label=(plain(other.get("display")) or other["object_id"])[:200],
+                    object_id=other["object_id"], type=kind_of,
+                    label=presentation.record_label(plain(other.get("display")), kind_of,
+                                                    other["object_id"])[:200],
                     open_url=object_url(other.get("object_type") or "Object",
                                         other["object_id"])))
     not_found = []
@@ -3111,6 +4617,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="hard cap of one agent Ask's session (seconds)")
     group.add_argument("--ask-workers", type=int, default=ASK_WORKERS,
                        help="Asks answered at once (each its own runtime and thread)")
+    group.add_argument("--warm", type=int, choices=(0, 1), default=1,
+                       help="1 (default): a warm worker (its own runtime) reads each "
+                            "signed-in reader's Home, briefing and first pages ahead, and the "
+                            "served generation's facts at start; 0: none")
     group.add_argument("--dev-ticket-login", action="store_true",
                        help="--dev over live state: dev-login takes a console session ticket "
                             "(python3 -m operator_ui.console_ticket mint)")
@@ -3166,6 +4676,10 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         parser.error("--dev-* identities are for --dev only")
 
     argv = console_argv(parser, args, mode)
+    if args.host_config is not None:   # a live host: the app's agents search with it
+        default_search(os.environ, mode, args.pg_dsn)
+        from operating.search import plug
+        plug.warm_if_enabled()   # models load at start, so early questions are reranked
 
     def serve_with(ctx: Mapping[str, Any]) -> int:
         auth, auth_config = make_auth(parser, args, mode, ctx)
@@ -3182,10 +4696,22 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    freshness_bounds=ctx.get("freshness_bounds"),
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
-                                   search=optional_search(), ask_served=bool(args.ask),
+                                   ask_served=bool(args.ask),
                                    agent_ask=agent, agent_sessions=max(1, args.ask_workers))
+        resolver = ctx.get("resolver")
+        if resolver is not None and not args.dev_fixture_principal:
+            from operating.session_identity import warm_session
+            guard = ctx.get("replay_guard")
+            if guard is not None and hasattr(guard, "revoked_ref"):
+                # read ahead only with a revocation check to consult
+                backend.revoked = guard.revoked_ref
+                backend.identity_for = lambda oid, exp: warm_session(resolver, oid,
+                                                                     expires_at=exp)
+        backend.reader_mode = mode
         threads = [start_ask_worker(backend, argv, fixtures, planner, n)
                    for n in range(max(0, args.ask_workers) if args.ask else 0)]
+        if getattr(args, "warm", 0):
+            threads.append(start_warm_worker(backend, argv, fixtures, planner))
         try:
             return start(backend, auth, auth_config)
         finally:
@@ -3214,6 +4740,38 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
             logging.getLogger("operator_api").error("ask worker %s did not start: %s",
                                                     number, type(error).__name__)
     thread = threading.Thread(target=run_stack, name=f"app-ask-{number}", daemon=True)
+    thread.start()
+    return thread
+
+
+def start_warm_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any,
+                      planner: Any) -> threading.Thread:
+    """The warm worker: the console's builder run again on its own thread (its own case
+    runtime, every check again); it reads the served generation's facts first, then each
+    reader's warm-up (``WorkspaceBackend.warm``)."""
+    from operator_ui import case_console
+
+    def serve_warm(ctx: Mapping[str, Any]) -> int:
+        try:   # the lowest CPU priority for this thread (Linux: per-thread nice)
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+        except (AttributeError, OSError):
+            pass
+        worker = backend.add_warm_worker(ctx["objects_for"])
+        backend.warm_store()
+        backend.warm_known()   # the readers seen lately: Home and the briefing are ready
+        watch = threading.Thread(target=backend.watch_generation, args=(worker.stopped,),
+                                 name="app-warm-generation", daemon=True)
+        watch.start()
+        worker.loop()
+        return 0
+
+    def run_stack() -> None:
+        try:
+            case_console.main(argv, fixtures=fixtures, planner=planner, serve_with=serve_warm)
+        except BaseException as error:  # noqa: BLE001 - logged; pages are read when opened
+            logging.getLogger("operator_api").error("warm worker did not start: %s",
+                                                    type(error).__name__)
+    thread = threading.Thread(target=run_stack, name=WARM_THREAD, daemon=True)
     thread.start()
     return thread
 
@@ -3272,14 +4830,15 @@ def optional_understanding() -> Optional[Callable]:
     return understand
 
 
-def optional_search() -> Optional[Callable]:
-    """the ``search`` when merged and switched on (PLX_APP_HYBRID_SEARCH=1)."""
-    if os.environ.get("PLX_APP_HYBRID_SEARCH") != "1":
-        return None
-    try:
-        from operating.search import search
-        from operating.search.models import warm
-    except ImportError:
-        return None
-    warm(wait=False)   # its models load at start, so early questions are reranked
-    return search
+def default_search(env: Any, mode: str, pg_dsn: Optional[str]) -> str:
+    """The search the app's agent and tools use (``operating.search.plug``), set in this
+    process's environment so every agent host it starts inherits it
+    (``agent_session.SEARCH_ENV``): ``PLX_SEARCH`` when set (``hybrid``; any other value,
+    e.g. ``keyword``, is the word index alone), else ``hybrid`` over live state (``--mock``
+    keeps the word index: its fixtures have no search tables). ``PLX_PG_DSN`` defaults to
+    ``--pg-dsn``. Returns the value in force."""
+    if not (env.get("PLX_SEARCH") or "").strip() and mode != "mock":
+        env["PLX_SEARCH"] = "hybrid"
+    if pg_dsn and not env.get("PLX_PG_DSN"):
+        env["PLX_PG_DSN"] = pg_dsn
+    return env.get("PLX_SEARCH") or "keyword"

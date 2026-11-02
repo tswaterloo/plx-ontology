@@ -398,6 +398,19 @@ class MaterialsTests(unittest.TestCase):
         self.assertEqual((trail["subject"], trail["state"]), (po, "late"))
         self.assertEqual(got["gaps"], [])
 
+    def test_a_portal_mo_whose_own_line_names_its_item_as_a_lead_walks_its_fm_twin(self):
+        s = tp.Store()
+        _order, ao, item, po = chain(s)
+        mo = s.obj("AssemblyOrder:portal.app_manufacturing_order:fm-mo-1", "gold_etl_from_fm")
+        s.link("AssemblyOrder.same_record_as", mo, ao, kind="same_record")
+        line = s.obj("AssemblyOrderComponent:portal.app_manufacturing_order_line:l-1",
+                     "gold_etl_from_fm")
+        s.link("AssemblyOrderComponent.component_of", line, mo)
+        wrong = s.obj("Product:portal.app_product:raw-1")
+        s.link("AssemblyOrderComponent.uses_item", line, wrong, tier="lead")
+        got = et.materials(reader(s), mo, "AssemblyOrder")
+        self.assertEqual([(r["item"], r["po"]) for r in got["rows"]], [(item, po)])
+
     def test_a_received_po_of_the_material_is_counted_not_listed(self):
         s = tp.Store()
         order, ao, item, po = chain(s)

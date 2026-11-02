@@ -21,6 +21,18 @@
             "title": "Answer Id",
             "type": "string"
           },
+          "assistant_unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.",
+            "title": "Assistant Unavailable"
+          },
           "conflicts": {
             "items": {
               "$ref": "#/components/schemas/Conflict"
@@ -51,6 +63,15 @@
             "title": "Facts",
             "type": "array"
           },
+          "follow_ups": {
+            "description": "Up to three questions to ask next, built only from this answer's own records and what it could not confirm (optional: older clients ignore it).",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Follow Ups",
+            "type": "array"
+          },
           "freshness": {
             "$ref": "#/components/schemas/Freshness"
           },
@@ -60,6 +81,19 @@
           "latency_ms": {
             "title": "Latency Ms",
             "type": "integer"
+          },
+          "list_total": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the answer lists only the first of a longer list (the late purchase orders): the whole list's size; the app offers 'show all' (GET /api/late).",
+            "title": "List Total"
           },
           "not_found": {
             "items": {
@@ -269,6 +303,669 @@
           "sign_in_available"
         ],
         "title": "AuthConfig",
+        "type": "object"
+      },
+      "Briefing": {
+        "additionalProperties": false,
+        "description": "Your briefing: the events routed to you that you may see, ranked; the top items one\nby one and every other one in its type's group; each check's state; a preview of the\ndaily digest. Suggestions only; nothing is sent or written.",
+        "properties": {
+          "acknowledged": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Acknowledged",
+            "type": "integer"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/BriefingCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "counts_exact": {
+            "default": true,
+            "description": "False: the read stopped at its cap and the counts are 'at least'.",
+            "title": "Counts Exact",
+            "type": "boolean"
+          },
+          "departments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Departments",
+            "type": "array"
+          },
+          "digest_preview": {
+            "description": "The daily digest text this reader would get. Preview only: never sent.",
+            "title": "Digest Preview",
+            "type": "string"
+          },
+          "digest_sent": {
+            "const": false,
+            "default": false,
+            "title": "Digest Sent",
+            "type": "boolean"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/BriefingGroup"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "hidden": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Events for your teams in places you can't open: counted, never named.",
+            "title": "Hidden"
+          },
+          "hidden_by_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "The hidden count per event type (types whose policy gives no count are absent).",
+            "title": "Hidden By Type",
+            "type": "object"
+          },
+          "items": {
+            "description": "The top items.",
+            "items": {
+              "$ref": "#/components/schemas/BriefingItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_visit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Visit"
+          },
+          "late_total": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Late purchase orders: Home's count and rule.",
+            "title": "Late Total"
+          },
+          "more": {
+            "default": false,
+            "title": "More",
+            "type": "boolean"
+          },
+          "new_since_visit": {
+            "minimum": 0.0,
+            "title": "New Since Visit",
+            "type": "integer"
+          },
+          "other_teams": {
+            "description": "Events you may see routed to other teams.",
+            "minimum": 0.0,
+            "title": "Other Teams",
+            "type": "integer"
+          },
+          "rank_basis": {
+            "title": "Rank Basis",
+            "type": "string"
+          },
+          "routing_basis": {
+            "title": "Routing Basis",
+            "type": "string"
+          },
+          "since_visit": {
+            "default": false,
+            "description": "Only what is new since your last visit.",
+            "title": "Since Visit",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "not_configured",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "test_records_hidden": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.",
+            "title": "Test Records Hidden"
+          },
+          "today": {
+            "default": "",
+            "description": "Today in one line: what the latest check (or your last visit) found new, worst first, else what is still open.",
+            "title": "Today",
+            "type": "string"
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/BriefingEventType"
+            },
+            "title": "Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "count",
+          "new_since_visit",
+          "other_teams",
+          "rank_basis",
+          "routing_basis",
+          "complete",
+          "digest_preview"
+        ],
+        "title": "Briefing",
+        "type": "object"
+      },
+      "BriefingCheck": {
+        "additionalProperties": false,
+        "description": "One check behind the event types, as this run left it: never a silent gap.",
+        "properties": {
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "partial",
+              "not_checked",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "words": {
+            "description": "e.g. 'vendor replies: not checked this run'.",
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "check",
+          "label",
+          "status",
+          "words"
+        ],
+        "title": "BriefingCheck",
+        "type": "object"
+      },
+      "BriefingEventType": {
+        "additionalProperties": false,
+        "description": "One event type: its checks' state this run and whether a recorded run over this data\nhas found one of this type.",
+        "properties": {
+          "event_type": {
+            "enum": [
+              "po_late",
+              "po_due",
+              "eta_slipped",
+              "vendor_no_reply",
+              "vendor_terms_unapplied",
+              "negative_margin",
+              "lot_near_expiry",
+              "lot_on_hold",
+              "quote_accepted_no_order",
+              "quantity_mismatch",
+              "customer_order_at_risk",
+              "po_undated"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "first_found": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Found"
+          },
+          "found_live": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null where that is withheld.",
+            "title": "Found Live"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "partial",
+              "not_checked",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "words": {
+            "title": "Words",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_type",
+          "label",
+          "status",
+          "words"
+        ],
+        "title": "BriefingEventType",
+        "type": "object"
+      },
+      "BriefingGroup": {
+        "additionalProperties": false,
+        "description": "Every item of one event type in the briefing: its count, and how many of those are\nshown among the top items; the rest open as a list (``/api/briefing/items``).",
+        "properties": {
+          "acknowledged": {
+            "minimum": 0.0,
+            "title": "Acknowledged",
+            "type": "integer"
+          },
+          "count": {
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "event_type": {
+            "enum": [
+              "po_late",
+              "po_due",
+              "eta_slipped",
+              "vendor_no_reply",
+              "vendor_terms_unapplied",
+              "negative_margin",
+              "lot_near_expiry",
+              "lot_on_hold",
+              "quote_accepted_no_order",
+              "quantity_mismatch",
+              "customer_order_at_risk",
+              "po_undated"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "in_top": {
+            "minimum": 0.0,
+            "title": "In Top",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "new_since_visit": {
+            "minimum": 0.0,
+            "title": "New Since Visit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "event_type",
+          "label",
+          "count",
+          "in_top",
+          "new_since_visit",
+          "acknowledged"
+        ],
+        "title": "BriefingGroup",
+        "type": "object"
+      },
+      "BriefingItem": {
+        "additionalProperties": false,
+        "description": "One event routed to this reader, as its own grant shows it.",
+        "properties": {
+          "acknowledged": {
+            "default": false,
+            "title": "Acknowledged",
+            "type": "boolean"
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Money involved: a cited figure this reader may open; null otherwise. When amount_suspect is set it is NOT a fact: show the reason, never the figure."
+          },
+          "amount_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the amount is: total_cost, total_amount, loss, margin_at_stake; or, never ranked: unit_price_sum (a Portal total adding unit prices), portal_lines_unpriced, not_checked_against_lines.",
+            "title": "Amount Basis"
+          },
+          "amount_disagree": {
+            "default": false,
+            "description": "The total and its own lines disagree: both shown, neither ranked by.",
+            "title": "Amount Disagree",
+            "type": "boolean"
+          },
+          "amount_suspect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the source's total looks wrong (suspect source data); never ranked by.",
+            "title": "Amount Suspect"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Days late, slipped, waiting or to expiry, between cited dates.",
+            "title": "Days"
+          },
+          "event_type": {
+            "enum": [
+              "po_late",
+              "po_due",
+              "eta_slipped",
+              "vendor_no_reply",
+              "vendor_terms_unapplied",
+              "negative_margin",
+              "lot_near_expiry",
+              "lot_on_hold",
+              "quote_accepted_no_order",
+              "quantity_mismatch",
+              "customer_order_at_risk",
+              "po_undated"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "evidence": {
+            "default": "fixture-only",
+            "description": "'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.",
+            "enum": [
+              "live",
+              "fixture-only"
+            ],
+            "title": "Evidence",
+            "type": "string"
+          },
+          "first_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "description": "The event type in words, e.g. 'Late purchase order'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "lines_sum": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What its lines sum to, when they disagree and this reader may open every line."
+          },
+          "new_since_visit": {
+            "title": "New Since Visit",
+            "type": "boolean"
+          },
+          "new_this_generation": {
+            "title": "New This Generation",
+            "type": "boolean"
+          },
+          "next_action": {
+            "$ref": "#/components/schemas/NextAction"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "orders_affected": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orders Affected"
+          },
+          "rank": {
+            "minimum": 1.0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "subject_label": {
+            "description": "The record's display label for this reader.",
+            "title": "Subject Label",
+            "type": "string"
+          },
+          "summary": {
+            "description": "What happened; every date and figure is cited.",
+            "title": "Summary",
+            "type": "string"
+          },
+          "trail": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceTrail"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How we know, read as this reader (top items only)."
+          },
+          "why": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Why"
+          }
+        },
+        "required": [
+          "rank",
+          "id",
+          "event_type",
+          "label",
+          "object_id",
+          "object_type",
+          "subject_label",
+          "summary",
+          "next_action",
+          "new_since_visit",
+          "new_this_generation",
+          "open_url"
+        ],
+        "title": "BriefingItem",
+        "type": "object"
+      },
+      "BriefingItems": {
+        "additionalProperties": false,
+        "description": "One event type's items of your briefing past the top ones, a page at a time (the\ngroup's \"+N more\": never the top items again).",
+        "properties": {
+          "event_type": {
+            "enum": [
+              "po_late",
+              "po_due",
+              "eta_slipped",
+              "vendor_no_reply",
+              "vendor_terms_unapplied",
+              "negative_margin",
+              "lot_near_expiry",
+              "lot_on_hold",
+              "quote_accepted_no_order",
+              "quantity_mismatch",
+              "customer_order_at_risk",
+              "po_undated"
+            ],
+            "title": "Event Type",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BriefingItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "more": {
+            "default": false,
+            "title": "More",
+            "type": "boolean"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "event_type",
+          "total",
+          "offset"
+        ],
+        "title": "BriefingItems",
+        "type": "object"
+      },
+      "BriefingSeen": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "BriefingSeen",
         "type": "object"
       },
       "Candidate": {
@@ -651,6 +1348,155 @@
           "label"
         ],
         "title": "CostSource",
+        "type": "object"
+      },
+      "CustomerAmount": {
+        "additionalProperties": false,
+        "description": "A customer's total over a period, in one currency, from its own cited records.",
+        "properties": {
+          "count": {
+            "description": "The records summed.",
+            "minimum": 0.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "label": {
+            "description": "What is summed, e.g. 'Invoiced (excluding tax)'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "money": {
+            "$ref": "#/components/schemas/Money"
+          },
+          "period": {
+            "description": "e.g. 'last 12 months (since 2025-11-01)'.",
+            "title": "Period",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "system": {
+            "enum": [
+              "BC",
+              "Portal",
+              "Sage",
+              "FileMaker",
+              "Email",
+              "Teams",
+              "File",
+              "MC"
+            ],
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "period",
+          "money",
+          "count",
+          "system"
+        ],
+        "title": "CustomerAmount",
+        "type": "object"
+      },
+      "CustomerSummary": {
+        "additionalProperties": false,
+        "description": "What a customer's own record links to, read as the reader: revenue per period and\ncurrency, open and recent orders, contacts where captured, and its copies in other\nsystems; each figure with its sources. What could not be established is named.",
+        "properties": {
+          "also_in": {
+            "description": "The same customer's record in another system, as the projection links them.",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Also In",
+            "type": "array"
+          },
+          "contacts": {
+            "items": {
+              "$ref": "#/components/schemas/Person"
+            },
+            "title": "Contacts",
+            "type": "array"
+          },
+          "not_established": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Established",
+            "type": "array"
+          },
+          "open_list": {
+            "items": {
+              "$ref": "#/components/schemas/OrderRow"
+            },
+            "title": "Open List",
+            "type": "array"
+          },
+          "open_orders": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Orders"
+          },
+          "orders_at_least": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the total could not be counted: the orders read, at least this many (shown as 'n+'); never a capped count stated as exact.",
+            "title": "Orders At Least"
+          },
+          "orders_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Every order linked to the record, counted over the whole set.",
+            "title": "Orders Total"
+          },
+          "recent_orders": {
+            "items": {
+              "$ref": "#/components/schemas/OrderRow"
+            },
+            "title": "Recent Orders",
+            "type": "array"
+          },
+          "revenue": {
+            "items": {
+              "$ref": "#/components/schemas/CustomerAmount"
+            },
+            "title": "Revenue",
+            "type": "array"
+          },
+          "same_name": {
+            "description": "Other customers of the same name this reader may see (copies of this one left out).",
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Same Name",
+            "type": "array"
+          }
+        },
+        "title": "CustomerSummary",
         "type": "object"
       },
       "DevLoginRequest": {
@@ -1430,9 +2276,84 @@
         "title": "LateLine",
         "type": "object"
       },
+      "LateList": {
+        "additionalProperties": false,
+        "description": "Every late purchase order this reader may see, a page at a time, longest late first\n(Home and the late-list answer show the first ones; \"show all\" pages the rest).",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LatePo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "more": {
+            "default": false,
+            "title": "More",
+            "type": "boolean"
+          },
+          "next_offset": {
+            "default": 0,
+            "description": "Where the next page starts: past every order this page read, shown or left out (stable paging).",
+            "minimum": 0.0,
+            "title": "Next Offset",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "offset"
+        ],
+        "title": "LateList",
+        "type": "object"
+      },
       "LatePo": {
         "additionalProperties": false,
         "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order's total in its own currency, when this reader may open it."
+          },
+          "amount_suspect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the total is suspect (shown as a check, never as fact).",
+            "title": "Amount Suspect"
+          },
           "days_late": {
             "anyOf": [
               {
@@ -1795,6 +2716,18 @@
             ],
             "title": "Status",
             "type": "string"
+          },
+          "test_records_hidden": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.",
+            "title": "Test Records Hidden"
           }
         },
         "required": [
@@ -1886,12 +2819,29 @@
             "description": "'Viewing with full-read access' when served under the reader's declared full-read grant.",
             "title": "Access Label"
           },
+          "complete": {
+            "default": true,
+            "description": "False on a quick first read (?quick=1): the record, its timeline and links without the checks (lateness, landed cost, people, how we know), which the full read adds.",
+            "title": "Complete",
+            "type": "boolean"
+          },
           "conflicts": {
             "items": {
               "$ref": "#/components/schemas/Conflict"
             },
             "title": "Conflicts",
             "type": "array"
+          },
+          "customer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CustomerSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A customer's revenue, orders and contacts (customers only)."
           },
           "facts": {
             "items": {
@@ -2152,6 +3102,69 @@
           "order"
         ],
         "title": "OrderMargin",
+        "type": "object"
+      },
+      "OrderRow": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "string"
+          },
+          "open_url": {
+            "title": "Open Url",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "object_id",
+          "label",
+          "open_url"
+        ],
+        "title": "OrderRow",
         "type": "object"
       },
       "Person": {
@@ -2464,6 +3477,18 @@
               }
             ],
             "default": null
+          },
+          "test_records_hidden": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.",
+            "title": "Test Records Hidden"
           },
           "verdict": {
             "anyOf": [
@@ -3411,6 +4436,201 @@
         ]
       }
     },
+    "/api/briefing": {
+      "get": {
+        "description": "Your briefing: the events routed to you that you may see, ranked by impact; the\ntop ones each with why, a suggested next action and how we know, every other one\ncounted in its type's group; each check's state; and a preview of the daily\ndigest (never sent). ``view=since_visit``: only what is new since your last visit.",
+        "operationId": "briefing_api_briefing_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "since_visit"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Briefing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Briefing",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/briefing/items": {
+      "get": {
+        "description": "One event type's items of your briefing, a page at a time (a group's \"+N more\").",
+        "operationId": "briefing_items_api_briefing_items_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "event_type",
+            "required": true,
+            "schema": {
+              "enum": [
+                "po_late",
+                "po_due",
+                "eta_slipped",
+                "vendor_no_reply",
+                "vendor_terms_unapplied",
+                "negative_margin",
+                "lot_near_expiry",
+                "lot_on_hold",
+                "quote_accepted_no_order",
+                "quantity_mismatch",
+                "customer_order_at_risk",
+                "po_undated"
+              ],
+              "title": "Event Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 5000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "since_visit"
+              ],
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefingItems"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Briefing Items",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/briefing/seen": {
+      "post": {
+        "description": "Mark your briefing seen now: the next \"since your last visit\" starts here.",
+        "operationId": "briefing_seen_api_briefing_seen_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefingSeen"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Briefing Seen",
+        "tags": [
+          "home"
+        ]
+      }
+    },
     "/api/feedback": {
       "post": {
         "operationId": "feedback_api_feedback_post",
@@ -3503,6 +4723,74 @@
         ]
       }
     },
+    "/api/late": {
+      "get": {
+        "description": "Every late purchase order you may see, a page at a time, longest late first\n(Home shows the first ones: \"show all\").",
+        "operationId": "late_list_api_late_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 20000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LateList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Late List",
+        "tags": [
+          "home"
+        ]
+      }
+    },
     "/api/me": {
       "get": {
         "operationId": "me_api_me_get",
@@ -3565,6 +4853,18 @@
             "schema": {
               "title": "Object Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "A first read without the checks (complete=false), shown while the full page is read",
+            "in": "query",
+            "name": "quick",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "A first read without the checks (complete=false), shown while the full page is read",
+              "title": "Quick",
+              "type": "boolean"
             }
           }
         ],

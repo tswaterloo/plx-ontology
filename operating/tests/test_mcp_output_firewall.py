@@ -208,7 +208,8 @@ class OutputFirewallTestCase(live.LiveCitationTestCase):
 class EveryToolTests(OutputFirewallTestCase):
     def test_every_registered_tool_returns_source_text_only_inside_envelopes(self):
         runtime, server = self.world()
-        self.assertEqual(server.tool_names, set(CASE_RUNTIME_TOOLS))
+        # the default agent also lists plx.changes
+        self.assertEqual(server.tool_names, set(CASE_RUNTIME_TOOLS) | {"plx.changes"})
         case_id = self.ok(server, "plx.case_open", {"question": "AO-26005B / PO5447",
                                                     "audience": ["staff:shared"]})["case_id"]
         # A mail message enters the case through plx.read (body-pinned cite_as) and a
@@ -311,6 +312,7 @@ class EveryToolTests(OutputFirewallTestCase):
         self.tool(server, "plx.process", {"from": OBJECT})
         self.tool(server, "plx.investigate", {"family": "three_way_match",
                                               "root": {"identifier": "PO5447"}})
+        self.tool(server, "plx.changes", {"since": "2000-01-01T00:00:00Z"})
         view = self.ok(server, "plx.case_get", {"case_id": case_id})
         self.ok(server, "plx.case_close", {"case_id": case_id, "outcome": "checked"})
         self.assertEqual(set(self.responses), server.tool_names)

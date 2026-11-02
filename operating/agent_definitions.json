@@ -5,7 +5,7 @@
   "agents": [
     {
       "id": "plx.agent.investigate",
-      "version": 2,
+      "version": 3,
       "role": "Reconstruct the business context of a question from cited sources into a durable case; never acts.",
       "responsibilities": [
         "read sources and the projection as the session employee, citing every value",
@@ -27,6 +27,7 @@
         "plx.process",
         "plx.investigate",
         "plx.agenda",
+        "plx.changes",
         "plx.case_open",
         "plx.case_get",
         "plx.case_add_finding",
@@ -77,7 +78,7 @@
     },
     {
       "id": "plx.agent.act",
-      "version": 1,
+      "version": 2,
       "role": "Investigate as plx.agent.investigate does, then carry authorized existing PLX capabilities through the action path: register proposals as intents parked for approval, run approval-free Workbench-internal actions, and verify outcomes by read-back.",
       "responsibilities": [
         "everything plx.agent.investigate does",
@@ -99,6 +100,7 @@
         "plx.compare",
         "plx.process",
         "plx.investigate",
+        "plx.changes",
         "plx.case_open",
         "plx.case_get",
         "plx.case_add_finding",

@@ -18,6 +18,10 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
+from datetime import date
+from typing import Optional
+from urllib.parse import quote
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -174,6 +178,16 @@ class FixtureBackend(unittest.TestCase):
         whole = self.ops.client.get(found["suggestions"][0]["open_url"]
                                     .replace("/object/", "/api/object/", 1))
         self.assertEqual(whole.json()["object_id"], body["object_id"])
+        # a search type's spelling ("purchase_order", as links once carried) opens the
+        # same record, by its number or its whole id; the quick read is the same record
+        for path in (f"purchase_order/{case_fixtures.PO_NUMBER}",
+                     f"purchase_order/{quote(body['object_id'], safe='')}"):
+            snake = self.ops.client.get(f"/api/object/{path}")
+            self.assertEqual((snake.status_code, snake.json().get("object_id")),
+                             (200, body["object_id"]), path)
+        quick = self.ops.client.get(f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}",
+                                    params={"quick": 1}).json()
+        self.assertEqual(quick["object_id"], body["object_id"])
 
     def test_a_po_page_and_answer_carry_its_trail_each_step_opening_for_the_reader(self):
         body = self.ops.client.get(
@@ -211,7 +225,7 @@ class FixtureBackend(unittest.TestCase):
                                       "supplies it?"))]
         for path, params in (("/api/suggest", {"q": case_fixtures.PO_NUMBER}),
                              ("/api/suggest", {"q": "Synthetic Botle"}),
-                             ("/api/home", None),
+                             ("/api/home", None), ("/api/briefing", None),
                              (f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}", None),
                              ("/api/object/PurchaseOrder/" + po["object_id"], None),
                              ("/api/source", {"handle": handle})):
@@ -253,6 +267,74 @@ class FixtureBackend(unittest.TestCase):
             HOLD.set()
             asker.join(60)
         self.assertEqual(events(streamed[0].text)[-1][0], "answer")
+
+    def test_briefing_ranks_what_the_reader_sees_counts_the_rest_and_never_sends(self):
+        ops = self.ops.client.get("/api/briefing").json()
+        m.Briefing.model_validate(ops)
+        self.assertEqual(ops["status"], "read")
+        self.assertGreater(ops["count"], 0)
+        self.assertEqual([i["rank"] for i in ops["items"]], list(range(1, len(ops["items"]) + 1)))
+        first = ops["items"][0]
+        self.assertTrue(first["next_action"]["suggestion_only"])
+        self.assertTrue(first["open_url"].startswith("/object/"))
+        self.assertIs(ops["digest_sent"], False)
+        self.assertIn("Preview only", ops["digest_preview"])
+        self.assertIn(f"{ops['count']} item", ops["digest_preview"])
+        # the outsider is briefed on nothing; what is there for it is a count
+        out = self.outsider.client.get("/api/briefing").json()
+        self.assertEqual((out["count"], out["items"]), (0, []))
+        self.assertGreaterEqual(out["hidden"], ops["count"])
+        for item in ops["items"]:
+            self.assertNotIn(item["object_id"], json.dumps(out))
+            self.assertNotIn(item["summary"], json.dumps(out))
+        # every item is in its type's group (the top ones shown, the rest opened as a list)
+        self.assertEqual(sum(g["count"] for g in ops["groups"]), ops["count"])
+        self.assertLessEqual(len(ops["items"]), 7)
+        for group in ops["groups"]:
+            page = self.ops.client.get("/api/briefing/items", params={
+                "event_type": group["event_type"], "limit": 100}).json()
+            m.BriefingItems.model_validate(page)
+            # "+N more" lists the group's items past the top ones, never those again
+            rest = group["count"] - group["in_top"]
+            self.assertEqual((page["total"], len(page["items"])), (rest, rest))
+            top_ids = {i["id"] for i in ops["items"]}
+            self.assertFalse(top_ids & {i["id"] for i in page["items"]})
+            hidden = self.outsider.client.get("/api/briefing/items", params={
+                "event_type": group["event_type"]}).json()
+            self.assertEqual((hidden["total"], hidden["items"]), (0, []))
+        # the late count is Home's
+        home = self.ops.client.get("/api/home").json()
+        self.assertEqual(ops["late_total"], home["needs_attention"]["late_total"])
+        self.assertTrue(all(c["words"] for c in ops["checks"]))
+        # seen: the next read says when, and nothing first seen before it is new
+        seen = self.ops.client.post("/api/briefing/seen", headers={
+            "Origin": "http://testserver"}).json()
+        self.assertTrue(seen["ok"])
+        again = self.ops.client.get("/api/briefing").json()
+        self.assertEqual((again["last_visit"], again["new_since_visit"]), (seen["at"], 0))
+
+    def test_show_all_pages_every_late_order_and_never_another_readers(self):
+        home = self.ops.client.get("/api/home").json()
+        total = home["needs_attention"]["late_total"]
+        seen, offset = [], 0
+        while True:
+            page = self.ops.client.get("/api/late", params={"offset": offset,
+                                                             "limit": 2}).json()
+            m.LateList.model_validate(page)
+            self.assertEqual(page["total"], total)
+            seen += [p["object_id"] for p in page["items"]]
+            offset += len(page["items"])
+            if not page["more"] or not page["items"]:
+                break
+        self.assertEqual(len(seen), total)
+        self.assertEqual(len(set(seen)), total)   # one line per order, none twice
+        self.assertEqual(seen[:len(home["needs_attention"]["late_pos"])],
+                         [p["object_id"] for p in home["needs_attention"]["late_pos"]])
+        # read (and kept) for ops first: the outsider still sees none of it
+        out = self.outsider.client.get("/api/late").json()
+        self.assertEqual((out["total"], out["items"]), (0, []))
+        out_home = self.outsider.client.get("/api/home").json()["needs_attention"]
+        self.assertEqual(out_home["late_pos"], [])
 
     def test_late_pos_on_home_are_longest_late_first(self):
         home = self.ops.client.get("/api/home").json()
@@ -556,39 +638,64 @@ class HomeFreshnessTest(unittest.TestCase):
             conn.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.execute("INSERT INTO store_meta VALUES ('freshness', ?)",
                          (json.dumps(entries),))
+            conn.execute("INSERT INTO store_meta VALUES ('built_at', "
+                         "'2026-10-31T04:40:00Z')")
         # the ledger names the cycle now running: never the age of the data served
         (tmp / "host").mkdir()
         with sqlite3.connect(tmp / "host" / "host.sqlite") as conn:
             conn.execute("CREATE TABLE source_state (source TEXT, configured INTEGER, "
-                         "captured_at TEXT, stale_since TEXT, error TEXT)")
-            conn.executemany("INSERT INTO source_state VALUES (?, 1, ?, NULL, NULL)",
-                             [(s, "2026-10-31T04:24:26Z") for s in ("portal", "teams", "bc")])
+                         "captured_at TEXT, stale_since TEXT, error TEXT, attempted_at TEXT)")
+            conn.executemany("INSERT INTO source_state VALUES (?, 1, ?, NULL, NULL, ?)",
+                             [(s, "2026-10-31T04:24:26Z", "2026-10-31T04:24:26Z")
+                              for s in ("teams", "bc")])
+            # failed on the attempt the served generation (built 04:40) was built from
             conn.execute("INSERT INTO source_state VALUES ('mc', 1, '2026-10-31T04:24:26Z', "
-                         "'2026-10-31T04:30:00Z', 'capture_failed')")
+                         "'2026-10-31T04:30:00Z', 'capture_failed', '2026-10-31T04:24:26Z')")
+            # the cycle that built the served data (04:40) started at 04:00
+            conn.execute("CREATE TABLE cycle (cycle_id INTEGER, started_at TEXT)")
+            conn.executemany("INSERT INTO cycle VALUES (?, ?)",
+                             [(1, "2026-10-30T20:00:00Z"), (2, "2026-10-31T04:00:00Z"),
+                              (3, "2026-10-31T05:00:00Z")])
+            # failed only in the cycle still running (attempted after that build), its
+            # last good capture inside the build's cycle: the data served is untouched
+            # (vm15 scoreboard diagnosis, 2026-10-31)
+            conn.execute("INSERT INTO source_state VALUES ('portal', 1, '2026-10-31T04:24:26Z', "
+                         "'2026-10-31T05:10:00Z', 'capture_failed', '2026-10-31T05:05:00Z')")
+            # failed in the build's cycle AND again in the running one: the ledger keeps
+            # the last attempt only (after the build), but the last good capture predates
+            # the build's cycle, so the served data rests on a failed capture: counted
+            conn.execute("INSERT INTO source_state VALUES ('sharepoint', 1, "
+                         "'2026-10-31T03:00:00Z', '2026-10-31T04:20:00Z', 'capture_failed', "
+                         "'2026-10-31T05:06:00Z')")
         bounds = dict.fromkeys(("portal_api", "teams", "bc", "graph_mail", "sharepoint",
                                 "mission_control"), 36 * 3600.0)
         backend = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
                                       freshness_bounds=bounds, clock=lambda: now)
         self.addCleanup(backend.stop)
         home = {s.system: s for s in backend.freshness().sources}
-        failed = ontology_tools.capture_failures(tmp / "host" / "host.sqlite")
-        self.assertEqual(failed, {"mission_control"})
+        failed = ontology_tools.capture_failures(tmp / "host" / "host.sqlite",
+                                                 "2026-10-31T04:40:00Z")
+        self.assertEqual(failed, {"mission_control", "sharepoint"})
+        # with no served build time to compare, every recorded failure counts
+        self.assertEqual(ontology_tools.capture_failures(tmp / "host" / "host.sqlite"),
+                         {"mission_control", "portal_api", "sharepoint"})
         # answers find the same ledger from their store's own path
         from types import SimpleNamespace
         conn = sqlite3.connect(store)
         self.addCleanup(conn.close)
+        tools = SimpleNamespace(store=SimpleNamespace(conn=conn))
         self.assertEqual(ontology_tools.OntologyTools._capture_failures(
-            SimpleNamespace(store=SimpleNamespace(conn=conn))), failed)
+            tools, ontology_tools.OntologyTools._served_at(tools)), failed)
         answers = {e["source"]: ontology_tools.aged(e, bounds, now, failed)["stale"]
                    for e in entries if e["captured_at"]}
         # a failed or never-run capture is stale whatever its age; a partial one
         # (budgeted, continuing next cycle) is judged by age like any other
         self.assertEqual({"Portal": False, "Teams": True, "BC": True, "Email": True,
-                          "File": False, "MC": True},
+                          "File": True, "MC": True},
                          {k: v.stale for k, v in home.items()})
         self.assertEqual({k: v.capture for k, v in home.items()},
                          {"Portal": "complete", "Teams": "partial", "BC": "complete",
-                          "Email": "never_captured", "File": "partial", "MC": "failed"})
+                          "Email": "never_captured", "File": "failed", "MC": "failed"})
         for family, system in be.STORE_SYSTEMS.items():   # Home and answers: one rule
             if family in answers:
                 self.assertEqual(home[system].stale, answers[family], family)
@@ -602,6 +709,63 @@ class HomeFreshnessTest(unittest.TestCase):
                                     clock=lambda: now)
         self.addCleanup(tight.stop)
         self.assertTrue({s.system: s for s in tight.freshness().sources}["Portal"].stale)
+
+    def test_good_capture_after_the_served_build_does_not_excuse_a_failure(self):
+        """The source fails and the served build is made; the source then captures well
+        but that cycle's build fails or is skipped; the source fails again. The ledger's
+        last good capture lies after the served build, so it never reached the served
+        data: the failure counts and Home reads stale."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from operating import ontology_tools
+
+        tmp = Path(tempfile.mkdtemp(prefix="home-fresh-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        now = datetime(2026, 10, 31, 8, 20, tzinfo=timezone.utc)
+        store = tmp / "projection" / "ontology.sqlite"
+        store.parent.mkdir()
+        with sqlite3.connect(store) as conn:
+            conn.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT)")
+            # served data: the last good Portal capture before cycle 1, young by age
+            conn.execute("INSERT INTO store_meta VALUES ('freshness', ?)", (json.dumps([
+                {"source": "portal_api", "captured_at": "2026-10-30T23:00:00Z",
+                 "completeness": "complete", "stale": False}]),))
+            conn.execute("INSERT INTO store_meta VALUES ('built_at', "
+                         "'2026-10-31T00:40:00Z')")
+        (tmp / "host").mkdir()
+        ledger = tmp / "host" / "host.sqlite"
+        with sqlite3.connect(ledger) as conn:
+            conn.execute("CREATE TABLE source_state (source TEXT, configured INTEGER, "
+                         "captured_at TEXT, stale_since TEXT, error TEXT, attempted_at TEXT)")
+            conn.execute("CREATE TABLE cycle (cycle_id INTEGER, started_at TEXT)")
+            # cycle 1 (00:00): Portal fails at 00:10, the served build is made at 00:40;
+            # cycle 2 (04:00): Portal captures well at 04:10, the build fails/is skipped;
+            # cycle 3 (08:00): Portal fails again at 08:05 (the ledger keeps this attempt)
+            conn.executemany("INSERT INTO cycle VALUES (?, ?)",
+                             [(1, "2026-10-31T00:00:00Z"), (2, "2026-10-31T04:00:00Z"),
+                              (3, "2026-10-31T08:00:00Z")])
+            conn.execute("INSERT INTO source_state VALUES ('portal', 1, '2026-10-31T04:10:00Z', "
+                         "'2026-10-31T08:05:00Z', 'capture_failed', '2026-10-31T08:05:00Z')")
+        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+                         {"portal_api"})
+        backend = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
+                                      freshness_bounds={"portal_api": 36 * 3600.0},
+                                      clock=lambda: now)
+        self.addCleanup(backend.stop)
+        portal = {s.system: s for s in backend.freshness().sources}["Portal"]
+        self.assertTrue(portal.stale)
+        self.assertEqual(portal.capture, "failed")
+        # the same good capture inside the served build's cycle (cycle 1 after the
+        # failure, before the build) is what the served data holds: excused
+        with sqlite3.connect(ledger) as conn:
+            conn.execute("UPDATE source_state SET captured_at = '2026-10-31T00:30:00Z'")
+        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+                         frozenset())
+        # at the build instant itself it is still the build's own capture: excused
+        with sqlite3.connect(ledger) as conn:
+            conn.execute("UPDATE source_state SET captured_at = '2026-10-31T00:40:00Z'")
+        self.assertEqual(ontology_tools.capture_failures(ledger, "2026-10-31T00:40:00Z"),
+                         frozenset())
 
 
 class LateListCountTest(unittest.TestCase):
@@ -634,9 +798,12 @@ class LateListCountTest(unittest.TestCase):
                     f"{total} purchase order"), answer.direct_answer)
                 self.assertIn("106000 from DSM (200 days)", answer.direct_answer)
                 if total <= be.LATE_LIST_LIMIT:
-                    self.assertIn("This is the list on your home page.", answer.direct_answer)
+                    self.assertIn("All of them are listed below", answer.direct_answer)
+                    self.assertIsNone(answer.list_total)
                 else:
-                    self.assertIn(f"{total - shown} more are not listed", answer.direct_answer)
+                    # "12 of 34 shown": the rest are a "show all" away (GET /api/late)
+                    self.assertIn(f"{shown} of {total} shown", answer.direct_answer)
+                    self.assertEqual(answer.list_total, total)
 
     def test_the_true_total_past_the_inbox_page(self):
         # The count stopped at the inbox's first page (100)
@@ -665,4 +832,379 @@ class LateListCountTest(unittest.TestCase):
         answer = be.late_answer(fake, None, m.AskRequest(question="late pos?"), inbox, home,
                                 "c1", lambda: 0)
         self.assertTrue(answer.direct_answer.startswith("150 purchase orders"))
-        self.assertIn("138 more are not listed", answer.direct_answer)
+        self.assertIn("12 of 150 shown", answer.direct_answer)
+        self.assertEqual(answer.list_total, 150)
+
+
+class SuggestionRankingTests(unittest.TestCase):
+    """The typeahead's ranking and collapsing (``backend.suggestions``) over rows as
+    ``search.entities`` returns them within the reader's scope: (words matched, object id,
+    type, name, aliases, exact, code, prefix, word, similarity)."""
+
+    @staticmethod
+    def row(words, oid, kind, name, alias=(), exact=False, code=False, prefix=False,
+            word=False, sim=0.5):
+        return (words, oid, kind, name, list(alias), exact, code, prefix, word, sim)
+
+    def test_copies_collapse_two_customers_stay_two_and_whole_names_rank_first(self):
+        r = self.row
+        rows = [
+            # "three ships": the whole name before a word of it ("SHIPPING - 1" x2)
+            r(1, 'CustomerLocation:portal.app_customer_location:{"id":"a"}',
+              "customer_location", "SHIPPING - 1", ["1"], prefix=False, word=True),
+            r(1, 'CustomerLocation:portal.app_customer_location:{"id":"b"}',
+              "customer_location", "SHIPPING - 1", ["1"], word=True),
+            r(2, 'Customer:bc.customers:{"id":"ts"}', "customer",
+              "Three Ships (NIU BODY INC.)", ["NIUB01", "Customer NIUB01"], prefix=True),
+            # Diversified: three copies of DIVE11 (one by a recorded same record), and a
+            # second customer of the same name
+            r(1, 'Customer:portal.app_customer:{"id":"fm-cust-89"}', "customer",
+              "Diversified", ["DIVE11", "Customer DIVE11"], exact=True),
+            r(1, 'Customer:bc.customers:{"id":"d1"}', "customer", "Diversified",
+              ["DIVE11", "Customer DIVE11"], exact=True),
+            r(1, 'Customer:portal.fm_customer:{"id":89}', "customer", "Diversified",
+              [], exact=True),
+            r(1, 'Customer:bc.customers:{"id":"d2"}', "customer", "Diversified",
+              ["C01100", "Customer C01100"], exact=True),
+            # a near spelling ranks below every match of the words as typed
+            r(3, 'Supplier:bc.vendors:{"id":"lt"}', "supplier", "LIPOTRUE", sim=0.61),
+            r(1, 'Product:bc.items:{"id":"g"}', "item", "Glycerin Hint: Glycerin",
+              ["R-0238", "Item R-0238"], prefix=True),
+        ]
+        same = {frozenset(('Customer:portal.app_customer:{"id":"fm-cust-89"}',
+                           'Customer:portal.fm_customer:{"id":89}'))}
+        asked = []
+
+        def same_record(ids):
+            asked.append(set(ids))
+            return same
+
+        out = be.suggestions(rows, 20, same_record=same_record)
+        labels = [(s.label, s.sublabel) for s in out]
+        self.assertEqual(out[0].label, "Three Ships (NIU BODY INC.)")
+        diversified = [s for s in out if s.label == "Diversified"]
+        self.assertEqual(len(diversified), 2, labels)
+        self.assertEqual(diversified[0].object_id,
+                         'Customer:portal.app_customer:{"id":"fm-cust-89"}')   # Portal first
+        self.assertIn("DIVE11", diversified[0].sublabel)
+        self.assertIn("BC and Portal", diversified[0].sublabel)
+        self.assertIn("C01100", diversified[1].sublabel)
+        self.assertEqual(len([s for s in out if s.label == "SHIPPING - 1"]), 2)  # 2 places
+        self.assertEqual(out[-1].label, "LIPOTRUE")
+        self.assertEqual(out[-1].match, "fuzzy")
+        # an item opens as the record it is (the Glycerin 404: /object/item/Product:...)
+        glycerin = next(s for s in out if s.label.startswith("Glycerin"))
+        self.assertEqual((glycerin.type, glycerin.open_url.split("/")[2]),
+                         ("Product", "Product"))
+        # only rows the reader was shown are asked about
+        self.assertTrue(all(ids <= {row[1] for row in rows} for ids in asked))
+
+    def test_phrases_are_the_trailing_words_longest_first(self):
+        self.assertEqual([p for _, p in be.suggest_phrases("What did we tell Three Ships")],
+                         ["we tell three ships", "tell three ships", "three ships", "ships"])
+        self.assertEqual(be.suggest_phrases("a"), [])
+
+    def test_a_kept_result_is_read_again_once_a_shown_source_is_withheld(self):
+        cache = be.ReaderCache()
+
+        class View:
+            closed: set = set()
+
+            def _request(self):
+                return contextlib.nullcontext()
+
+            class access:
+                @staticmethod
+                def decide(handles):
+                    return {h: ({"state": "withheld"} if h in View.closed else None)
+                            for h in handles}
+
+        reads = []
+
+        def read():
+            reads.append(1)
+            return {"handles": ["bc://x", "graph-mail://m"]}
+
+        key = ("reader-a", "gen-1")
+        for _ in range(2):
+            cache.kept(View(), key, read, lambda v: v["handles"])
+        self.assertEqual(len(reads), 1)          # reused for the same reader and state
+        View.closed = {"graph-mail://m"}         # a mailbox ACL revoked meanwhile
+        cache.kept(View(), key, read, lambda v: v["handles"])
+        self.assertEqual(len(reads), 2)          # never served from the cache
+        cache.kept(View(), None, read, lambda v: v["handles"])
+        self.assertEqual(len(reads), 3)          # no key, never kept
+
+
+class LateRowAndSameNameTests(unittest.TestCase):
+    """The late list's row carries the order's due date and its total only as the inbox
+    shows them to the reader; a customer page names the other customers of its name the
+    reader's search shows, never a copy of itself, and nothing when it cannot tell."""
+
+    def test_a_late_row_states_its_due_date_and_only_a_shown_total(self):
+        def gap(oid, amount=None, summary="An open purchase order is past its need date "
+                "2026-06-24"):
+            return {"object_id": f"PurchaseOrder:bc.purchase_orders:{{\"id\":\"{oid}\"}}",
+                    "object_type": "PurchaseOrder", "days_late": 130, "summary": summary,
+                    "citations": [], **({"event": {"amount": amount}} if amount else {})}
+        inbox = {"gaps": [
+            gap("a", {"value": "1993.004", "currency": "CAD", "basis": "total_cost"}),
+            gap("b"),   # the engine dropped a total this reader may not open
+            gap("c", {"value": "9.00", "currency": "dollars"}),   # no currency code
+            gap("d", {"value": "5000000", "currency": "USD", "suspect": "10x its history"},
+                summary="An open purchase order needed by 2026-02-30 has no supplier "
+                        "confirmation"),
+        ]}
+        rows, _ = be.attention_items(inbox, {})
+        self.assertEqual([(r.due_date, r.amount and (r.amount.amount, r.amount.currency),
+                           r.amount_suspect) for r in rows], [
+            ("2026-06-24", ("1993.00", "CAD"), None),
+            ("2026-06-24", None, None),
+            ("2026-06-24", None, None),
+            (None, ("5000000", "USD"), "10x its history")])   # no 30 February
+
+
+    PORTAL = 'Customer:portal.app_customer:{"id":"fm-cust-89"}'
+    BC_COPY = 'Customer:bc.customers:{"id":"d1"}'
+    OTHER = 'Customer:bc.customers:{"id":"d2"}'
+
+    def same_name(self, opened, shown, also_in=()):
+        r = SuggestionRankingTests.row
+        every = {
+            self.PORTAL: r(1, self.PORTAL, "customer", "Diversified",
+                           ["DIVE11", "Customer DIVE11"], exact=True),
+            self.BC_COPY: r(1, self.BC_COPY, "customer", "Diversified",
+                            ["DIVE11", "Customer DIVE11"], exact=True),
+            self.OTHER: r(1, self.OTHER, "customer", "Diversified",
+                          ["C01100", "Customer C01100"], exact=True),
+            "loc": r(1, 'CustomerLocation:portal.x:{"id":"l"}', "customer_location",
+                     "Diversified", exact=True)}
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test")
+        asked = []
+
+        def pg_suggest(reader, q, limit, *, members=None):
+            asked.append(q)
+            return be.suggestions([every[k] for k in shown], limit, members=members,
+                                  same_record=lambda ids: set())
+        backend._pg_suggest = pg_suggest
+        page = m.ObjectPage(object_id=opened, type="Customer", label="Diversified",
+                            summary="", status=m.ObjectStatus(state="ok", text="ok"), freshness=m.Freshness(),
+                            customer=m.CustomerSummary(also_in=[
+                                m.ObjectRef(object_id=o, type="Customer", label="x",
+                                            open_url="/x") for o in also_in]))
+        out = backend.same_name(SimpleNamespace(), page)
+        self.assertEqual(asked, ["Diversified"])
+        return [(o.object_id, o.label) for o in out]
+
+    def test_the_other_customer_of_the_name_is_named_never_a_copy(self):
+        everyone = [self.PORTAL, self.BC_COPY, self.OTHER, "loc"]
+        other = [(self.OTHER, "Diversified (Customer · C01100 · BC)")]
+        self.assertEqual(self.same_name(self.PORTAL, everyone), other)
+        # opened at the BC copy (one record by its code): the Portal row is not "another"
+        self.assertEqual(self.same_name(self.BC_COPY, everyone), other)
+        self.assertEqual(self.same_name(self.OTHER, everyone),
+                         [(self.PORTAL, "Diversified (Customer · DIVE11 · BC and Portal)")])
+        # a twin recorded on the page is never listed as another customer
+        self.assertEqual(self.same_name(self.PORTAL, [self.PORTAL, self.OTHER],
+                                        also_in=[self.OTHER]), [])
+
+    def test_a_reader_who_cannot_see_the_other_or_the_page_record_hears_nothing(self):
+        # the restricted reader's search shows only this customer: nothing is said
+        self.assertEqual(self.same_name(self.PORTAL, [self.PORTAL, self.BC_COPY]), [])
+        # the search does not show the page's own record: undecidable, nothing said
+        self.assertEqual(self.same_name(self.PORTAL, [self.OTHER]), [])
+
+
+class CustomerSummaryTests(unittest.TestCase):
+    """``customer_summary`` over a reader's tool calls: the order count is the set's own
+    size, never the rows one capped read returned; a refused sum keeps the rows unpriced
+    and says why."""
+
+    def view(self, *, total: Optional[int], sums_refused: bool = False):
+        orders = [{"object_id": f"SalesOrder:portal.app_sales_order:{{\"id\":\"{i}\"}}",
+                   "display": f"OR{i:04d}"} for i in range(50)]
+        calls = []
+
+        class View:
+            access = SimpleNamespace(decide=lambda hs: {h: None for h in hs})
+
+            def _request(self):
+                return contextlib.nullcontext()
+
+            def _can_open(self, handle):
+                return True
+
+            def _call(self, tool, args):
+                calls.append((tool, args))
+                if tool == "plx.around":
+                    if "same_record_as" in json.dumps(args):
+                        return {"objects": []}
+                    # one page of 50 with more behind it (the live customer had 844)
+                    first = 50 if args.get("cursor") else 0
+                    page = [{**o, "object_id": o["object_id"] + f"#{first}"} for o in orders]
+                    return {"set": "set:x", "objects": page,
+                            "completeness": {"next_cursor": None if args.get("cursor")
+                                             else "c1", "total": None}}
+                if tool == "plx.aggregate":
+                    measure, groups = args["measure"], args.get("group_by") or []
+                    if measure.get("op") == "count" and not groups:
+                        return ({"error": {"code": "result_too_large"}} if total is None
+                                else {"groups": [{"key": {}, "value": str(total)}]})
+                    if measure.get("op") == "sum" and sums_refused:
+                        return {"error": {"code": "withheld_marking"}}
+                    if groups == ["status"]:
+                        return {"groups": [{"key": {"status": "Open"}, "value": "3"}]}
+                    return {"groups": [{"key": {"order_date": "2026-10-0%d" % (i + 1),
+                                                "order_number": f"OR{i:04d}",
+                                                "status": "Open"},
+                                        "value": "10.00", "currency": "CAD",
+                                        "inputs_citations": []} for i in range(3)]}
+                return {}
+        return View(), calls
+
+    def summary(self, view):
+        backend = SimpleNamespace(today=lambda: date(2026, 11, 1),
+                                  _source=lambda v, h: m.Source(system="Portal", handle=h,
+                                                                label="x"))
+        return be.customer_summary(backend, view, "Customer:portal.app_customer:{\"id\":\"c\"}")[0]
+
+    def test_the_count_is_the_whole_set_or_said_as_at_least(self):
+        whole = self.summary(self.view(total=844)[0])
+        self.assertEqual((whole.orders_total, whole.orders_at_least), (844, None))
+        unknown = self.summary(self.view(total=None)[0])
+        self.assertEqual((unknown.orders_total, unknown.orders_at_least), (None, 100))
+
+    def test_a_reader_without_the_amounts_keeps_the_orders_unpriced(self):
+        out = self.summary(self.view(total=60, sums_refused=True)[0])
+        self.assertEqual(out.revenue, [])
+        self.assertTrue(out.recent_orders)
+        self.assertTrue(all(r.amount is None for r in out.recent_orders))
+        self.assertTrue(any("not shown to you" in n for n in out.not_established),
+                        out.not_established)
+        self.assertFalse(any("mixed" in n for n in out.not_established))
+
+
+class KnownReaderWarmTests(unittest.TestCase):
+    """The read-ahead at start follows only an unexpired, unrevoked real session, keeps no
+    name, and its identity serves and audits nothing."""
+
+    def test_only_live_sessions_are_followed_and_nothing_names_the_person(self):
+        tmp = Path(tempfile.mkdtemp(prefix="app-known-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test", data_dir=tmp)
+        backend.warmer = be.Worker(lambda s: None)   # queued, never run here
+        now = int(time.time())
+        people = {"29e05178-0bd1-49b9-be6e-b01be1975f70": ("a" * 64, now + 3600),
+                  "00000000-0000-4000-8000-000000000001": ("b" * 64, now + 3600),  # revoked
+                  "00000000-0000-4000-8000-000000000002": ("c" * 64, now - 1)}     # expired
+        for oid, (ref, exp) in people.items():
+            session = SimpleNamespace(principals=frozenset({f"employee:{oid}"}),
+                                      employee=SimpleNamespace(object_id=oid), email=None,
+                                      session_ref=ref, expires_at=exp)
+            backend.remember_reader(be.Reader(session, "dev", "Vince Example"))
+        path = tmp / be.KNOWN_READERS_FILE
+        self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+        self.assertNotIn("Vince", path.read_text())
+        self.assertEqual(len(backend.known_readers()), 2)   # the expired one is gone
+        backend.revoked = lambda ref: ref == "b" * 64
+        made = []
+
+        def identity_for(oid, exp):
+            made.append((oid, exp))
+            return SimpleNamespace(principals=frozenset({f"employee:{oid}"}), email=None)
+        backend.identity_for = identity_for
+        self.assertEqual(backend.warm_known(), 1)
+        self.assertEqual(made, [("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600)])
+        self.assertEqual(backend.warmer.jobs.qsize(), 3)   # Home, briefing, pages
+        # signed out: never read ahead for again
+        backend.forget_reader(be.Reader(SimpleNamespace(
+            principals=frozenset(), employee=SimpleNamespace(
+                object_id="29e05178-0bd1-49b9-be6e-b01be1975f70")), "dev", ""))
+        self.assertEqual(len(backend.known_readers()), 1)
+
+    def test_a_read_ahead_identity_serves_and_audits_nothing(self):
+        from operating import session_identity as si
+        from operating.employee_permissions import EmployeePrincipal
+        from operator_ui.session_journal import SessionJournal
+        principal = EmployeePrincipal("11111111-1111-4111-8111-111111111111",
+                                      "29e05178-0bd1-49b9-be6e-b01be1975f70")
+        warm = si.SessionIdentity(
+            tenant="plx", channel=si.CHANNEL_CONSOLE, author_kind=si.AUTHOR_HUMAN,
+            proof=si.PROOF_WARM, employee=principal,
+            principals=frozenset({principal.principal}), expires_at=int(time.time()) + 60,
+            identities=frozenset({principal.object_id}))
+        with self.assertRaises(si.SessionIdentityRefused):
+            warm.describe()
+        with self.assertRaises(si.SessionIdentityRefused):
+            warm.intent_identity(warm.actor)
+        tmp = Path(tempfile.mkdtemp(prefix="app-warm-journal-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        with self.assertRaises(PermissionError):
+            SessionJournal.for_state_dir(tmp).record(method="GET", path="/api/home",
+                                                     status=200, session=warm)
+        from fastapi.testclient import TestClient as Client
+        from operator_api.app import create_app
+        from operator_api.auth import DevAuth
+        client = Client(create_app(be.WorkspaceBackend(lambda s: None, data_label="t"),
+                                   DevAuth(lambda: warm), secure_cookie=False))
+        client.post("/api/auth/dev-login", json={})
+        self.assertEqual(client.get("/api/home").status_code, 401)
+
+
+class WarmYieldsTests(unittest.TestCase):
+    """The read-ahead never delays a person: it starts a page only after live reads went
+    quiet, and a live request never waits on a page the read-ahead is reading."""
+
+    def test_a_queued_live_request_delays_the_next_warm_page(self):
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test")
+        reader = SimpleNamespace(session=SimpleNamespace(principals=frozenset({"x"})))
+        backend.reads.submit(reader, lambda view: None)   # queued, not yet run
+        done = threading.Event()
+        with mock.patch.object(be, "WARM_PAUSE_SECONDS", 0.0):
+            waiter = threading.Thread(target=lambda: (backend.wait_idle(), done.set()))
+            waiter.start()
+            self.assertFalse(done.wait(1.5))              # the warm page waits
+            backend.reads.jobs.get_nowait()               # the live request is served
+            backend.reads.last_done = time.monotonic() - be.WARM_IDLE_SECONDS
+            self.assertTrue(done.wait(2.0))
+            waiter.join()
+
+    def test_a_live_request_never_waits_on_read_ahead_work(self):
+        cache = be.ReaderCache()
+        inside, release, live_done = threading.Event(), threading.Event(), threading.Event()
+
+        def warm():
+            with cache.flight(("page", "PO-1")):
+                inside.set()
+                release.wait(5)
+        warming = threading.Thread(target=warm, name=be.WARM_THREAD)
+        warming.start()
+        inside.wait(2)
+        live = threading.Thread(target=lambda: (cache.flight(("page", "PO-1")).__enter__(),
+                                                live_done.set()))
+        live.start()
+        self.assertTrue(live_done.wait(1.0))   # read itself, did not wait
+        release.set()
+        warming.join()
+        live.join()
+
+    def test_no_revocation_check_wired_means_no_read_ahead(self):
+        backend = be.WorkspaceBackend(lambda s: None, data_label="test")
+        self.assertTrue(backend.revoked("a" * 64))   # fails closed
+
+
+class SearchDefaultTests(unittest.TestCase):
+    """The app's agents search with hybrid search unless PLX_SEARCH says otherwise; the
+    fixture mode keeps the word index (no search tables)."""
+
+    def test_hybrid_unless_switched_off_and_never_over_fixtures(self):
+        env = {}
+        self.assertEqual(be.default_search(env, "entra", "postgresql:///plx"), "hybrid")
+        self.assertEqual(env, {"PLX_SEARCH": "hybrid", "PLX_PG_DSN": "postgresql:///plx"})
+        off = {"PLX_SEARCH": "keyword", "PLX_PG_DSN": "postgresql:///other"}
+        self.assertEqual(be.default_search(off, "dev", "postgresql:///plx"), "keyword")
+        self.assertEqual(off["PLX_PG_DSN"], "postgresql:///other")
+        self.assertEqual(be.default_search({}, "mock", None), "keyword")
+        from operating.search import plug
+        with mock.patch.dict(os.environ, off, clear=False):
+            self.assertFalse(plug.enabled())

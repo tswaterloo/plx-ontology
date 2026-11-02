@@ -270,13 +270,13 @@
             "code": "binding_expected",
             "state": "not_ingested",
             "subject": "meeting_chat",
-            "detail": "TeamsChatMessage declares no body_preview; lines cite the record and show no text until a projection declares it"
+            "detail": "TeamsChatMessage declares no body_preview; lines cite the record and show no text until a projection declares it: plx.read a line's citation for the captured text"
           },
           {
             "code": "binding_expected",
             "state": "not_ingested",
             "subject": "kb_channel",
-            "detail": "TeamsChannelMessage declares no body_preview; lines cite the record and show no text until a projection declares it"
+            "detail": "TeamsChannelMessage declares no body_preview; lines cite the record and show no text until a projection declares it: plx.read a line's citation for the captured text"
           },
           {
             "code": "lane_scope_not_given",

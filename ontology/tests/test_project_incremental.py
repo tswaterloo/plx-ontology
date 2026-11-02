@@ -9,6 +9,7 @@ time bound at fixture scale (diagnostic, not a target).
 
 from __future__ import annotations
 
+from contextlib import closing
 import dataclasses
 from datetime import datetime, timedelta, timezone
 import json
@@ -189,6 +190,86 @@ class MirrorGenerationTests(unittest.TestCase):
         self.assertEqual(len(read), 1)
         self.assertGreater(second.units_rebuilt, 0)
         self.assertSameAsCold(second, "cold2.sqlite")
+
+    def test_a_mirror_relation_no_write_reached_is_not_fingerprinted_again(self):
+        """Decision 2026-11-01-mirror-relation-marks: the mirror's triggers count every
+        write a projection reads per relation, whatever writes it. A build fingerprints
+        only the relations whose counter (or the mirror's own) moved: none after a sync
+        that changed nothing, the one relation a changed row is in, the relation of a
+        merge stopped in progress and again when it completes, every relation after a
+        writer opening the file migrates it or (re)installs the counters. Each
+        generation equals a cold build."""
+        asked: list[str] = []
+        fingerprint = MirrorCaptures.fingerprint
+
+        def counted(captures, relations):
+            asked.extend(relations)
+            return fingerprint(captures, relations)
+
+        def build(name):
+            asked.clear()
+            with mock.patch.object(MirrorCaptures, "fingerprint", autospec=True,
+                                   side_effect=counted):
+                built = self.generation()
+            self.assertSameAsCold(built, name)
+            return sorted(asked)
+
+        def reopen():
+            self.mirror.close()
+            self.mirror = SourceMirror(self.root / "mirror.sqlite",
+                                       WorkbenchReadApiClient(BASE, KEY, fetch=self.fake),
+                                       AudienceMap(AUDIENCE, tenant="plx"), clock=self.clock,
+                                       retry_delay_seconds=0, page_size=2)
+        po = "public.app_purchase_order"
+        self.capture(T1)
+        held = build("c1.sqlite")
+        self.assertIn(po, held)
+        self.capture(T1 + timedelta(hours=1))   # sightings only
+        self.assertEqual(build("c2.sqlite"), [])
+        self.fake.set(po, "po-a", status="RECEIVED")
+        self.capture(T1 + timedelta(hours=2))
+        self.assertEqual(build("c3.sqlite"), [po])
+        # A merge stopped in progress: its rows are written, not yet served.
+        self.fake.set(po, "po-a", status="CLOSED")
+        merge = SourceMirror._merge_stage
+
+        def stopped(mirror, relation, *args, **kwargs):
+            counts = merge(mirror, relation, *args, **kwargs)
+            if relation == po:
+                raise SystemExit("child_timeout")
+            return counts
+        self.clock.now = T2
+        with mock.patch.object(SourceMirror, "_merge_stage", autospec=True,
+                               side_effect=stopped), self.assertRaises(SystemExit):
+            self.mirror.sync(OPS, relations=sorted(CATALOG), full=True)
+        self.assertEqual(build("c4.sqlite"), [])   # rolled back: nothing served moved
+        self.capture(T2 + timedelta(hours=1))   # the merge completes: served now
+        self.assertEqual(build("c5.sqlite"), [po])
+        # A batched merge's capture flips from in progress to complete with its rows
+        # already written (``SourceMirror._merge_batches``): the flip alone moves them.
+        with closing(sqlite3.connect(self.root / "mirror.sqlite")) as conn:
+            latest = conn.execute("SELECT MAX(capture_id) FROM row_current WHERE relation = ?",
+                                  (po,)).fetchone()[0]
+            for state, name in (("in_progress", "c5a.sqlite"), ("complete", "c5b.sqlite")):
+                with conn:
+                    conn.execute("UPDATE capture_state SET state = ? WHERE capture_id = ?",
+                                 (state, latest))
+                self.assertEqual(build(name), [po])
+        # A writer opening a file labelled under an earlier replacement rule migrates it.
+        with closing(sqlite3.connect(self.root / "mirror.sqlite")) as conn, conn:
+            conn.execute("UPDATE mirror_meta SET value = 'beyond-cascade-parent/v1' "
+                         "WHERE name = 'replacement_rule'")
+        build("c6.sqlite")
+        reopen()
+        self.assertEqual(build("c7.sqlite"), held)
+        # Counters a writer did not keep (a trigger gone) are never trusted: every relation
+        # is read until a writer reinstalls them under a new epoch, and only then skipped.
+        with closing(sqlite3.connect(self.root / "mirror.sqlite")) as conn, conn:
+            conn.execute("DROP TRIGGER change_row_current_update")
+        self.assertEqual(build("c8.sqlite"), held)
+        reopen()
+        self.assertEqual(build("c9.sqlite"), held)
+        self.assertEqual(build("c10.sqlite"), [])
 
     def test_an_interrupted_build_keeps_the_previous_generation_and_the_next_recovers(self):
         self.capture(T1)
@@ -436,6 +517,58 @@ class SyntheticGenerationTests(unittest.TestCase):
                     self.assertLess(built.units_rebuilt, built.units)
                     self.assertNotEqual(built.content_digest, first.content_digest)
                     self.assertEqual(tables(built.store), tables(root / "cold.sqlite"))
+                    self.assertEqual(built.content_digest, cold["content_digest"])
+
+    def test_a_sharded_binding_rebuilds_only_the_shards_of_changed_or_removed_records(self):
+        """A large isolated binding (Sage AP lines: no link, hop or event reads one of its
+        records) is cut into shards by object id; a changed record re-projects its shards
+        only, a removed one leaves none of its rows, and each generation equals a cold
+        build (rows, report, digest)."""
+        binding = next(b["id"] for t in self.schema.object_types.values()
+                       for b in t.get("bindings", []) if b["relation"] == "sage.ap_pjd")
+        self.assertIn(binding, inc.plan(self.schema).isolated)
+
+        def without(sources, index=None):   # the source no longer holds one record
+            inner, relation = sources["portal_api"], "sage.ap_pjd"
+
+            class Dropped:
+                source = inner.source
+
+                def records(self, relations):
+                    held = inner.records(relations)
+                    return {r: [rec for rec in held[r] if not (
+                        r == relation and rec.record_key == f"{relation}/{index}")]
+                        for r in relations}
+
+                def describe(self):
+                    return inner.describe()
+            return {**sources, "portal_api": Dropped()}
+
+        def keys(generation):
+            return json.loads((generation.store.parent / "units.json").read_text())["keys"]
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(inc, "SHARD_RECORDS", 2):
+            root = Path(tmp)
+            first = inc.build_generation(root / "state", self.schema, without(self.sources()),
+                                         clock=lambda: T2)
+            shards = sorted(u for u in keys(first) if u.startswith(f"b:{binding}#"))
+            self.assertGreater(len(shards), 2)
+            for name, built_sources in (
+                    ("changed", without(self.sources("sage.ap_pjd"))),
+                    ("removed", without(self.sources("sage.ap_pjd"), 5))):
+                with self.subTest(name):
+                    before = inc.current_generation(root / "state")
+                    built = inc.build_generation(root / "state", self.schema, built_sources,
+                                                 clock=lambda: T2, space=incremental_path)
+                    cold = build_store(root / f"{name}.sqlite", self.schema, built_sources,
+                                       clock=lambda: T2)
+                    dirty = {u for u, k in keys(built).items() if keys(before).get(u) != k}
+                    self.assertEqual(built.mode, "incremental")
+                    self.assertIn(f"b:{binding}", dirty)
+                    self.assertTrue(dirty - {f"b:{binding}"})
+                    self.assertTrue(dirty - {f"b:{binding}"} < set(shards), dirty)
+                    self.assertEqual(tables(built.store), tables(root / f"{name}.sqlite"))
                     self.assertEqual(built.content_digest, cold["content_digest"])
 
     def test_an_incremental_build_clones_its_seed_when_it_can_and_checks_its_estimate(self):

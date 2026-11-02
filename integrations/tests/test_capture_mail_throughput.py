@@ -12,7 +12,11 @@ listings, child folders and a newest-first message listing. Evidence label:
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import re
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -252,6 +256,39 @@ class EveryFolderAndHistoryTests(ThroughputCase):
         self.assertIn("folder_listing_incomplete", run["incomplete_reasons"])
         self.assertEqual(self.stored(BOX_A), [("IN-1", "AAMkFOLDER-A=")])   # inbox still
 
+    def test_a_user_without_an_exchange_mailbox_reads_as_no_mailbox_never_a_gap(self):
+        """Graph 404 ``MailboxNotEnabledForRESTAPI``: no mail exists, so the run is not
+        held incomplete by it, and every reader of the store says ``no_mailbox``."""
+        self.graph.put(BOX_A, "IN-1", "CK-1")
+        graph = self.graph
+        plain = graph.__call__
+
+        def no_mailbox(method, url, headers, body, timeout, max_bytes):
+            if f"/users/{BOX_B}/mailFolders" in unquote(urlsplit(url).path):
+                graph.calls.append((method, url, dict(headers)))
+                return j(404, {"error": {"code": "MailboxNotEnabledForRESTAPI"}})
+            return plain(method, url, headers, body, timeout, max_bytes)
+        self.graph = no_mailbox
+        run = self.capture().run(every_folder_scope())
+        self.assertTrue(run["complete"], run["incomplete_reasons"])
+        self.assertEqual(run["mailboxes_absent"], 1)
+        statuses = {m.get("mailbox_id"): m["status"] for m in run["mailboxes"]}
+        self.assertEqual(statuses[BOX_B], "no_mailbox")
+        self.assertNotIn("not_visible", run["incomplete_reasons"])
+        self.assertEqual(self.stored(BOX_A), [("IN-1", "AAMkFOLDER-A=")])
+        audience = capture_audience()
+        coverage = self.store.mailbox_coverage(BOX_B, CAPTURE, audience)
+        self.assertEqual((coverage["status"], coverage["reasons"]),
+                         ("no_mailbox", ["no_mailbox"]))
+        held = {m["mailbox"]: m for m in self.store.completeness(CAPTURE, audience)
+                ["mailboxes"]}
+        self.assertEqual((held[BOX_B]["status"], held[BOX_B]["complete"]),
+                         ("no_mailbox", True))
+        self.assertTrue(held[BOX_A]["complete"])
+        # Any other 404 on a folder listing stays what it was: an unreadable mailbox.
+        self.assertFalse(graph_read.hidden(graph_read.SourceNotFound("x"))
+                         .__class__ is graph_read.MailboxAbsent)
+
     def test_the_shipped_scope_is_every_folder_and_the_whole_history(self):
         shipped = CaptureScope.from_file(capture_mail.DEFAULT_SCOPE)
         self.assertEqual((shipped.all_mailboxes, shipped.all_mailbox_folders,
@@ -415,6 +452,327 @@ class OcrBesideTheCaptureTests(ThroughputCase):
         self.assertEqual(later["ocr"]["read"], 1)
         self.assertEqual(self.texts(), [("SCAN", 1, "ocr_pending"), ("SCAN", 2, "extracted_ocr")])
 
+
+def lane_scope(upns, **kwargs) -> CaptureScope:
+    return CaptureScope([{"address": u, "folders": "all"} for u in upns], window_days=90,
+                        internal_domains=["example-plx.com"],
+                        allowlist=capture_mail.MailScope(upns), **kwargs)
+
+
+class LanesAndPriorityTests(ThroughputCase):
+    """Mailboxes captured at once by lanes (one writer to the store), a Retry-After that
+    holds only its own mailbox, text read in extraction processes, and The priority mailboxes' recent mail, then the others', then older history, then
+    notification-heavy folders."""
+
+    def add_mailbox(self, n: int) -> tuple[str, str]:
+        box, upn = f"12345678-aaaa-bbbb-cccc-{n:012d}", f"box{n}@example-plx.com"
+        self.graph.users[box] = {"id": box, "userPrincipalName": upn, "mail": upn,
+                                 "proxyAddresses": [f"SMTP:{upn}"]}
+        inbox = f"AAMkIN-{n}="
+        self.graph.folders[box] = {"inbox": inbox, inbox.lower(): inbox,
+                                   **{f.lower(): f for f in (CUSTOM, CHILD, EMPTY)}}
+        self.graph.messages[box] = {}
+        return box, upn
+
+    def lane_capture(self, upns, **kwargs) -> MailCapture:
+        api, self.transport = graph_read.build_graph(
+            ENV, sender=self.graph,
+            retry=BoundedBackoff(sleep=self.sleeps.append, jitter=lambda: 0.0))
+        audience = capture_mail.LiveSourceAudience(
+            {f"mail:{u}": ["svc:mail-capture"] for u in upns}, tenant="plx",
+            classifications={"mail:*": "restricted"})
+        kwargs.setdefault("sleep", self.sleeps.append)
+        kwargs.setdefault("page_size", 2)
+        return MailCapture(self.store, GraphMailReader(api, audience), CAPTURE, **kwargs)
+
+    def test_lanes_capture_mailboxes_at_once_through_one_writer_losing_nothing(self):
+        writing = {"now": 0, "most": 0}
+        per_box: dict[str, int] = {}
+        most_per_box: dict[str, int] = {}
+        plain = MailCapture._commit_message_locked
+
+        def counted(capture, *args, **kwargs):
+            with self.graph.lock:
+                writing["now"] += 1
+                writing["most"] = max(writing["most"], writing["now"])
+            try:
+                return plain(capture, *args, **kwargs)
+            finally:
+                with self.graph.lock:
+                    writing["now"] -= 1
+        graph = self.graph
+        read = FolderGraph.__call__
+
+        def per_mailbox(fake, method, url, headers, body, timeout, max_bytes):
+            path = unquote(urlsplit(url).path)
+            box = path.split("/")[3] if re.fullmatch(r"/v1\.0/users/[^/]+/messages/[^/]+",
+                                                     path) else None
+            if box is not None:
+                with fake.lock:
+                    per_box[box] = per_box.get(box, 0) + 1
+                    most_per_box[box] = max(most_per_box.get(box, 0), per_box[box])
+            try:
+                return read(fake, method, url, headers, body, timeout, max_bytes)
+            finally:
+                if box is not None:
+                    with fake.lock:
+                        per_box[box] -= 1
+        for size in (1, 10, 60):
+            with self.subTest(mailboxes=size), mock.patch.object(
+                    MailCapture, "_commit_message_locked", counted), mock.patch.object(
+                    FolderGraph, "__call__", per_mailbox):
+                self.store.close()
+                self.store = capture_mail.MailCaptureStore(self.state / f"n{size}",
+                                                           clock=self.clock)
+                self.graph = FolderGraph()
+                self.graph.slow = 0.002
+                upns, expected = [], set()
+                for n in range(size):
+                    box, upn = self.add_mailbox(n)
+                    upns.append(upn)
+                    for m in range(5):
+                        self.graph.put(box, f"M-{n}-{m}", "CK-1",
+                                       folder=CUSTOM if m % 2 else "inbox",
+                                       received=OLD if m == 4 else None)
+                        expected.add(f"M-{n}-{m}")
+                run = self.lane_capture(upns, lanes=4, workers=2, pages_per_turn=1).run(
+                    lane_scope(upns, history="all"))
+                self.assertTrue(run["complete"], run["incomplete_reasons"])
+                held = [m for m, _f in self.stored()]
+                self.assertEqual(sorted(held), sorted(expected))      # none lost, none twice
+                self.assertEqual(writing["most"], 1)                  # one writer at a time
+                self.assertLessEqual(max(most_per_box.values()), 2)   # workers per mailbox
+                if size >= 10:
+                    self.assertGreater(self.graph.max_inflight, 2)    # mailboxes at once
+        del graph
+
+    def test_a_retry_after_holds_only_the_mailbox_it_was_given_for(self):
+        from integrations.live_source_guard import HOLD_SCOPE
+        slept: list[float] = []
+        backoff = BoundedBackoff(sleep=slept.append, jitter=lambda: 0.0)
+        token = HOLD_SCOPE.set("mailbox-a")
+        try:
+            backoff.pause(0, {"Retry-After": "3"})
+        finally:
+            HOLD_SCOPE.reset(token)
+        waits = {}
+
+        def other(scope):
+            token = HOLD_SCOPE.set(scope)
+            try:
+                waits[scope] = backoff.hold()
+            finally:
+                HOLD_SCOPE.reset(token)
+        for scope in ("mailbox-a", "mailbox-b"):
+            thread = threading.Thread(target=other, args=(scope,))
+            thread.start()
+            thread.join()
+        self.assertGreater(waits["mailbox-a"], 0)    # its own mailbox waits it out
+        self.assertEqual(waits["mailbox-b"], 0.0)    # another mailbox reads on
+
+    def test_text_read_in_extraction_processes_matches_inline_and_holds_no_credential(self):
+        text = b"Order confirmation PO 4711 for 120 cases.\n"
+        attachment = {"name": "note.txt", "contentType": "text/plain",
+                      "content_type": "text/plain", "size": len(text)}
+        inline = capture_mail.extract_attachment(text, attachment, True, False)
+        secrets = {"MICROSOFT_GRAPH_CLIENT_SECRET": "s3cr3t-value-x",
+                   "PLX_WORKBENCH_API_KEY": "k3y-value-x", "GH_TOKEN": "t0ken-value-x",
+                   "PLX_EXCLUDED_PEOPLE_OIDS": "0e0e0e0e-0000-4000-8000-00000000e0e9"}
+        with mock.patch.dict(os.environ, secrets):
+            extractors = capture_mail._Extractors(1, 60)
+        try:
+            self.assertEqual(extractors.read(text, attachment, defer_ocr=True,
+                                             defer_all=False), inline)
+            (pid,) = extractors.pids()
+            environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        finally:
+            extractors.close()
+        names = {e.split(b"=", 1)[0].decode() for e in environ if e}
+        self.assertEqual(inline[0], "extracted")
+        self.assertLessEqual(names, set(capture_mail.EXTRACTION_ENV))   # nothing else
+        self.assertFalse([v for v in secrets.values()
+                          if v.encode() in b"\0".join(environ)])
+        # A capture with extraction processes stores the same text as an inline one.
+        self.graph.put(BOX_A, "M-1", "CK-1", attachments=[{**file_attachment(
+            "T1", text, name="note.txt"), "contentType": "text/plain"}])
+        run = self.capture(extract_workers=1).run(
+            CaptureScope([{"address": UPN_A, "folders": ["inbox"]}], allowlist=SYNTHETIC,
+                         internal_domains=["example-plx.com"]))
+        self.assertTrue(run["complete"], run["incomplete_reasons"])
+        self.assertEqual(self.store.db.execute(
+            "SELECT text_status FROM attachments").fetchone()[0], "extracted")
+
+    def test_a_reading_that_hangs_ends_its_process_alone_and_the_others_are_read(self):
+        attachment = {"name": "note.txt", "contentType": "text/plain",
+                      "content_type": "text/plain"}
+        real = capture_mail._Extractors._start
+        started: list = []
+
+        def start(extractors):
+            # The first process never answers (a file its parser never finishes).
+            process = (subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        start_new_session=True)
+                       if not started else real(extractors))
+            started.append(process)
+            return process
+        with mock.patch.object(capture_mail._Extractors, "_start", start):
+            extractors = capture_mail._Extractors(2, 5)
+        try:
+            hung = started[0]
+            results: dict[str, tuple] = {}
+
+            def read(name: str, content: bytes) -> None:
+                results[name] = extractors.read(content, attachment, defer_ocr=True,
+                                                defer_all=False)
+            with mock.patch.object(capture_mail._Extractors, "_start", start):
+                threads = [threading.Thread(target=read, args=(f"r{n}", b"words %d" % n))
+                           for n in range(4)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(60)
+            statuses = sorted(r[0] for r in results.values())
+            # One reading met the hung process: its own gap; every other one was read.
+            self.assertEqual(statuses, ["extracted"] * 3 + [capture_mail.EXTRACTION_TIMED_OUT])
+            self.assertIsNotNone(hung.poll())                  # the hung process was ended
+            self.assertEqual(len(started), 3)                  # and replaced
+            self.assertEqual(extractors.read(b"after", attachment, defer_ocr=True,
+                                             defer_all=False)[0], "extracted")
+        finally:
+            extractors.close()
+
+    def test_a_reading_left_unfinished_is_a_named_gap_its_original_kept_and_retried(self):
+        big = b"%PDF-1.4 " + os.urandom(300_000)
+        self.graph.put(BOX_A, "M-1", "CK-1", attachments=[file_attachment("P1", big,
+                                                                          name="scan.pdf")])
+        scope = CaptureScope([{"address": UPN_A, "folders": ["inbox"]}], allowlist=SYNTHETIC,
+                             internal_domains=["example-plx.com"])
+
+        def parsed(*_args, **_kwargs):
+            raise AssertionError("parsed in the capture process")
+        gap = (capture_mail.EXTRACTION_TIMED_OUT, None, None)
+        with mock.patch.object(MailCapture, "_extract", lambda *a: gap), \
+                mock.patch.object(MailCapture, "_read_again", lambda *a: gap), \
+                mock.patch.object(capture_mail, "readings_of", parsed), \
+                mock.patch.object(capture_mail, "capture_text", parsed), \
+                mock.patch("integrations.document_understanding.local_ocr_available",
+                           lambda: True):
+            run = self.capture(extract_workers=1).run(scope)
+            self.assertTrue(run["mailboxes"][0]["folders"][0]["complete"], run)
+            row = self.store.db.execute("SELECT l1_handle, content_sha256, text_status "
+                                        "FROM attachments").fetchone()
+            self.assertEqual(row["text_status"], capture_mail.EXTRACTION_TIMED_OUT)
+            self.assertEqual(self.store.blob(row["content_sha256"]), big)   # kept
+            # Read again (a round's re-read, then later runs) until EXTRACTION_RETRIES more
+            # readings were left unfinished too; then a named gap for good, still kept.
+            for _ in range(capture_mail.EXTRACTION_RETRIES + 1):
+                self.capture(extract_workers=1).run(scope)
+        retries = self.store.db.execute(
+            "SELECT COUNT(*) FROM message_events WHERE l1_handle=? AND "
+            "event='text_reextracted'", (row["l1_handle"],)).fetchone()[0]
+        self.assertEqual(retries, capture_mail.EXTRACTION_RETRIES)
+        self.assertEqual(self.store.db.execute("SELECT text_status FROM attachments")
+                         .fetchone()[0], capture_mail.EXTRACTION_TIMED_OUT)
+        self.assertEqual(self.store.blob(row["content_sha256"]), big)
+        self.assertEqual(self.store.text_unread(None, None, 10), [])
+        self.assertEqual(self.store.settle_original(row["content_sha256"]), "kept_pending")
+        self.assertEqual(self.store.blob(row["content_sha256"]), big)
+
+    def test_a_large_reextraction_backlog_never_stalls_new_mail(self):
+        """Live 2026-11-01: every lane waited on the store lock while one lane's round-end
+        re-extraction scanned the whole store (text_unread at 636k messages) under it.
+        A backlog of re-readable attachments is found through indexes, each round reads
+        a bounded share of it, and new mail in every mailbox is captured beside it."""
+        backlog = 5000
+        db = self.store.db
+        with db:
+            db.execute("INSERT INTO mailboxes VALUES (?,?,?,?,?,?,?)",
+                       ("old-box", "old@example-plx.com", "[]", "[]", "{}", "t", "t"))
+            for n in range(backlog):
+                handle = f"graph-mail://old-box/OLD-{n}@CK"
+                db.execute("INSERT INTO messages (l1_handle, mailbox_id, message_id, "
+                           "change_key, folder_id, record, digest, body_status, recorded_at, "
+                           "last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (handle, "old-box", f"OLD-{n}", "CK", "OLD-F", "{}", "d",
+                            "captured", "t", "t"))
+                db.execute("INSERT INTO attachments (message_handle, attachment_id, l1_handle, "
+                           "mailbox_id, metadata, content_sha256, content_status, recorded_at, "
+                           "text_status) VALUES (?,?,?,?,?,?,?,?,?)",
+                           (handle, "A", handle + "#a", "old-box",
+                            '{"content_type": "application/pdf", "name": "s.pdf"}',
+                            "0" * 64, "captured", "t", "ocr_pending"))
+        plans = []
+        for folder in (None, "AAMkFOLDER-A="):
+            query = self.store.db.execute
+            seen: list[str] = []
+
+            def explain(sql, params=(), _query=query, _seen=seen):
+                if sql.lstrip().upper().startswith("SELECT"):
+                    _seen.extend(r[3] for r in _query("EXPLAIN QUERY PLAN " + sql, params))
+                return _query(sql, params)
+            with mock.patch.object(self.store, "db", mock.Mock(execute=explain)):
+                self.store.text_unread(None if folder is None else BOX_A, folder, 100)
+            plans.append(seen)
+        # Never a scan of the messages, attachments or events tables.
+        self.assertEqual([p for plan in plans for p in plan
+                          if p.startswith("SCAN") and "CONSTANT" not in p], [], plans)
+        for m in range(6):
+            self.graph.put(BOX_A, f"NEW-A-{m}", "CK-1")
+            self.graph.put(BOX_B, f"NEW-B-{m}", "CK-1")
+        with mock.patch("integrations.document_understanding.local_ocr_available",
+                        lambda: True), mock.patch.object(capture_mail, "_ocr_engine",
+                                                         lambda: True):
+            run = self.capture(lanes=2, workers=2, pages_per_turn=1, ocr_workers=1,
+                               defer_ocr=True).run(every_folder_scope())
+        held = {m for m, _f in self.stored()}
+        self.assertTrue({f"NEW-A-{m}" for m in range(6)} | {f"NEW-B-{m}" for m in range(6)}
+                        <= held)
+        # The run queued a bounded share of the backlog, never all of it.
+        self.assertLessEqual(run["ocr"].get("queued", 0), capture_mail.OCR_BACKLOG_PER_RUN)
+
+    def test_priority_mailboxes_recent_mail_first_older_history_and_bulk_folders_last(self):
+        a, upn_a = self.add_mailbox(1)
+        b, upn_b = self.add_mailbox(2)
+        for box, tag in ((a, "A"), (b, "B")):
+            for m in range(3):
+                self.graph.put(box, f"{tag}-NEW-{m}", "CK-1", received=f"2026-0{7 + m}-01T09:00:00Z")
+                self.graph.put(box, f"{tag}-OLD-{m}", "CK-1", received=f"2023-0{1 + m}-01T09:00:00Z")
+        upns = [upn_a, upn_b]
+        scope = lane_scope(upns, history="all",
+                           priority={"mailboxes": [upn_b], "recent_days": 365})
+        self.lane_capture(upns, lanes=1, pages_per_turn=1, page_size=1).run(scope)
+        held = [m for m, _f in self.stored()]
+        self.assertEqual(len(held), 12)
+        # The priority mailbox first; every mailbox's last year before older mail (a
+        # folder's band is taken per turn: at most its one page past the horizon).
+        self.assertEqual(held[0][:1], "B")
+        last_recent = max(held.index(m) for m in held if "-NEW-" in m)
+        self.assertLessEqual(sum(1 for m in held[:last_recent] if "-OLD-" in m), 2)
+        self.assertLess(max(held.index(m) for m in held if m.startswith("B-OLD")),
+                        max(held.index(m) for m in held if m.startswith("A-OLD")))
+        # Lanes read the same mail, every message once, and never the excluded person.
+        self.assertFalse(self.requested(EXCLUDED))
+        # A folder most of whose held mail one sender sent is read after every other.
+        c, upn_c = self.add_mailbox(3)
+        for m in range(6):
+            self.graph.put(c, f"N-{m}", "CK-1", folder=CUSTOM, sender="alerts@vendor.example",
+                           received=f"2026-0{1 + m}-01T09:00:00Z")
+            self.graph.put(c, f"R-{m}", "CK-1", sender=f"person{m}@outside.example",
+                           received=f"2026-0{1 + m}-02T09:00:00Z")
+        only_c = lane_scope([upn_c], history="all", priority={})
+        before = len(self.stored())
+        with mock.patch.object(capture_mail, "BULK_SAMPLE", 2):
+            first = self.lane_capture([upn_c], pages_per_turn=1, page_size=1,
+                                      page_budget=4).run(only_c)   # samples both folders
+            self.assertFalse(first["complete"])
+            sampled = len(self.stored())
+            self.lane_capture([upn_c], pages_per_turn=1, page_size=1).run(only_c)
+        self.assertEqual(sampled - before, 4)
+        later = [m for m, _f in self.stored()][sampled:]
+        self.assertEqual(len(later), 8)
+        self.assertLess(max(later.index(m) for m in later if m.startswith("R-")),
+                        min(later.index(m) for m in later if m.startswith("N-")))
 
 if __name__ == "__main__":
     unittest.main()

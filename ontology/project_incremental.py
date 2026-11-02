@@ -106,23 +106,28 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import sqlite3
 import time
 from typing import Any, Callable, Iterable, Mapping
 
-from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH, POST_PROJECT,
-                              CaptureSource, Normalizer, ProjectionError, Projector,
-                              _default_normalizer, _get,
-                              binding_unit, event_id_of, finish_generation, link_ends,
-                              link_unit, merge_reports, open_generation, stream_fingerprint)
+from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH, ETL_REINSERTED,
+                              POST_PROJECT, SHARD_BUCKETS, CaptureSource, Normalizer,
+                              ProjectionError, Projector, _default_normalizer,
+                              _fingerprint_cells, _get, binding_key, binding_unit,
+                              derivation_code, event_id_of, finish_generation, link_ends,
+                              link_unit, merge_reports, object_bucket, object_id_of,
+                              open_generation, shard_of, shard_unit, stream_fingerprint)
 from integrations.captured_text import kept_readings
+from ontology.document_fields import kept_fields
 from ontology import store_ddl
 from ontology.store import StoreBuilder, _fsync_dir, canonical, known_at
 
 FORMAT = "plx-projection-generations/v1"
 CURRENT = "CURRENT"
 READINGS = "readings.sqlite"   # readings of captured files kept between builds
+FIELDS = "fields.sqlite"       # fields of captured documents kept between builds
 KEEP = 2
 _LOCK = ".build.lock"
 # Modules whose code decides what a unit holds: a change to any of them changes every key.
@@ -164,6 +169,9 @@ class Plan:
     rows: dict[str, tuple]
     bindings: dict[str, tuple[str, Mapping[str, Any]]]
     acyclic: bool
+    # Bindings whose rows are each a function of one object's own records (``isolated``):
+    # the ones a build may cut into shards (``with_shards``).
+    isolated: frozenset[str] = frozenset()
 
 
 class _Cycle(Exception):
@@ -279,7 +287,70 @@ def plan(schema: Any) -> Plan:
                 units[unit] = frozenset(deps)
     except _Cycle:
         return Plan({}, {}, bindings, acyclic=False)
-    return Plan(units, rows, bindings, acyclic=True)
+    return Plan(units, rows, bindings, acyclic=True,
+                isolated=isolated(units, bindings, types, events, kin))
+
+
+def isolated(units: Mapping[str, frozenset[str]],
+             bindings: Mapping[str, tuple[str, Mapping[str, Any]]],
+             types: Mapping[str, Any], events: Mapping[str, Any],
+             kin: Mapping[str, set[str]]) -> frozenset[str]:
+    """The bindings B whose projected rows and gaps are each a function of one object's
+    own records: B's unit reads B alone and no other unit reads B (no link binding has B
+    as an end, nothing hops into it or reads its values), no event type is of B's type,
+    B neither stands for a binding nor is stood for, no binding (B included) reads a local
+    currency from B and B reads none, and B's relation is not ETL re-inserted (its copies
+    collapse across objects). Every record names its object by the binding key alone, so
+    the rows of the objects of one shard are what a cold build writes for them."""
+    readers: dict[str, int] = {}
+    for deps in units.values():
+        for bid in deps:
+            readers[bid] = readers.get(bid, 0) + 1
+    typed = {ev.get("object_type") for ev in events.values()}
+    locals_ = {(b.get("local_currency") or {}).get("binding") for _, b in bindings.values()}
+    out = set()
+    for bid, (tid, b) in bindings.items():
+        if units.get(binding_unit(bid)) != frozenset({bid}) or readers.get(bid) != 1:
+            continue
+        if tid in typed or kin[bid] != {bid} or bid in locals_ or b.get("local_currency"):
+            continue
+        if b["relation"] in ETL_REINSERTED.get(b["source"], {}):
+            continue
+        out.add(bid)
+    return frozenset(out)
+
+
+# A sharded binding has about this many records a shard, and is sharded only from twice
+# that many records (``shard_count``).
+SHARD_RECORDS = 2048
+
+
+def shard_count(records: int, held: int | None = None) -> int:
+    """How many shards a binding of ``records`` records is cut into: a power of two (1:
+    not sharded), at most ``SHARD_BUCKETS``. A count ``held`` from the last build is kept
+    until the records outgrow it fourfold, so its shards' keys stay comparable."""
+    wanted = 1
+    while wanted < SHARD_BUCKETS and wanted * SHARD_RECORDS < records:
+        wanted *= 2
+    if wanted < 2:
+        wanted = 1
+    if held and held > 1 and wanted < 4 * held:
+        return held
+    return wanted
+
+
+def with_shards(the_plan: Plan, shards: Mapping[str, int]) -> Plan:
+    """``the_plan`` with each binding of ``shards`` (binding -> count > 1) cut into its
+    shard units (``ontology.project.shard_unit``, rows ``("shard", binding, count, k)``)
+    beside its own unit, which then holds no rows: only the binding's gaps and those of
+    records naming no object."""
+    units, rows = dict(the_plan.units), dict(the_plan.rows)
+    for bid, count in shards.items():
+        rows[binding_unit(bid)] = ("gaps",)
+        for k in range(count):
+            units[shard_unit(bid, k)] = frozenset({bid})
+            rows[shard_unit(bid, k)] = ("shard", bid, count, k)
+    return replace(the_plan, units=units, rows=rows)
 
 
 # --------------------------------------------------------------------------- fingerprints
@@ -330,18 +401,33 @@ def _pin(sources: Mapping[str, CaptureSource], the_plan: Plan,
         mark = watermark() if callable(watermark) else None
         mark = canonical(mark) if mark is not None else None
         kept = (held or {}).get(name) or {}
+        # Per relation (a source that keeps change marks: the Portal mirror's counters):
+        # a relation whose mark is the one held reads the same rows, so its print is
+        # read back and only the others are fingerprinted.
+        relation_marks = getattr(source, "relation_marks", None)
+        per = relation_marks(sorted(wanted)) if callable(relation_marks) else None
+        per = {r: canonical(m) for r, m in per.items()} if per is not None else None
         if mark is not None and kept.get("mark") == mark and \
                 set(wanted) <= set(kept.get("prints") or {}):
             prints = {relation: kept["prints"][relation] for relation in sorted(wanted)}
         else:
+            reused = {relation: kept["prints"][relation] for relation in sorted(wanted)
+                      if per is not None and relation in (kept.get("prints") or {})
+                      and (kept.get("relations") or {}).get(relation) == per[relation]}
+            rest = sorted(set(wanted) - set(reused))
             own = getattr(source, "fingerprint", None)
-            if callable(own):
-                prints = own(sorted(wanted))
+            if not rest:
+                prints = {}
+            elif callable(own):
+                prints = own(rest)
             else:
                 prints = {relation: stream_fingerprint(records[relation])
-                          for relation in sorted(wanted) if relation in records}
-        if mark is not None:
+                          for relation in rest if relation in records}
+            prints.update(reused)
+        if mark is not None or per is not None:
             marks[name] = {"mark": mark, "prints": dict(sorted(prints.items()))}
+            if per is not None:
+                marks[name]["relations"] = dict(sorted(per.items()))
         # What a source says it does not hold of a relation (``capture_gap``), and the
         # scopes it holds it whole in (``whole_scopes``: what stands in for it there),
         # decide its bindings' rows and gaps, so they are part of its fingerprint.
@@ -356,6 +442,48 @@ def _pin(sources: Mapping[str, CaptureSource], the_plan: Plan,
     fingerprints = {bid: by_relation.get((b["source"], b["relation"]))
                     for bid, (_, b) in the_plan.bindings.items()}
     return pinned, fingerprints, marks
+
+
+def _shard_prints(the_plan: Plan, pinned: Mapping[str, Any],
+                  fingerprints: Mapping[str, str | None],
+                  held: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """binding -> ``{"shards", "relation", "prints"}`` for each isolated binding cut into
+    shards (``shard_count`` of the records naming an object): the fingerprint of the
+    records of each shard's objects, with what its source says it does not hold of the
+    relation. ``held``: the last build's (same code); a binding whose relation
+    fingerprint is the one held takes its prints and is not read."""
+    out: dict[str, dict[str, Any]] = {}
+    for bid in sorted(the_plan.isolated):
+        tid, b = the_plan.bindings[bid]
+        relation, print_ = b["relation"], fingerprints.get(bid)
+        source = pinned.get(b["source"])
+        if source is None or print_ is None:
+            continue
+        kept = (held or {}).get(bid) or {}
+        if kept.get("relation") == print_ and isinstance(kept.get("prints"), list):
+            out[bid] = kept
+            continue
+        gap = getattr(source, "capture_gap", None)
+        whole = getattr(source, "whole_scopes", None)
+        state = canonical([gap(relation) if callable(gap) else None,
+                           sorted(whole(relation)) if callable(whole) else None])
+        buckets = [hashlib.sha256(state.encode("utf-8")) for _ in range(SHARD_BUCKETS)]
+        count = 0
+        for rec in source.records([relation])[relation]:
+            key = binding_key(b, rec.row)
+            if key is None:   # names no object: the binding's own unit (its whole print)
+                continue
+            count += 1
+            buckets[object_bucket(object_id_of(tid, bid, key))].update(
+                repr(_fingerprint_cells(rec)).encode("utf-8") + b"\n")
+        shards = shard_count(count, kept.get("shards"))
+        if shards < 2:
+            continue
+        width = SHARD_BUCKETS // shards
+        out[bid] = {"shards": shards, "relation": print_, "prints": [
+            _sha("".join(d.hexdigest() for d in buckets[k * width:(k + 1) * width]))
+            for k in range(shards)]}
+    return out
 
 
 def _code_digest(names: Iterable[str]) -> str:
@@ -741,7 +869,8 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
         # The readings of captured files (PDF text and the like) are kept beside the
         # generations, so a build reads only the files no build read before
         # (``integrations.captured_text.KeptReadings``).
-        with kept_readings(state / READINGS):
+        with kept_readings(state / READINGS), \
+                kept_fields(state / FIELDS, derivation_code()):
             try:
                 generation = _build(state, schema, sources, base, reuse=reuse,
                                     before_seed=before_seed, space=space, **options)
@@ -783,8 +912,20 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                                        units.get("watermarks") if same_code else None)
     seconds = {"fingerprint": round(time.monotonic() - started, 3)}
     started = time.monotonic()
+    sharded = _shard_prints(the_plan, pinned, fingerprints,
+                            units.get("shards") if same_code else None) \
+        if the_plan.acyclic else {}
+    the_plan = with_shards(the_plan, {b: s["shards"] for b, s in sharded.items()})
+    seconds["fingerprint.shards"] = round(time.monotonic() - started, 3)
+    started = time.monotonic()
     keys = {unit: _sha(context + canonical({b: fingerprints.get(b) for b in sorted(deps)}))
             for unit, deps in the_plan.units.items()}
+    for bid, shards in sharded.items():
+        keys[binding_unit(bid)] = _sha(context + canonical(
+            {bid: fingerprints.get(bid), "shards": shards["shards"]}))
+        for k, print_ in enumerate(shards["prints"]):
+            keys[shard_unit(bid, k)] = _sha(context + canonical(
+                {"binding": bid, "shards": shards["shards"], "shard": k, "print": print_}))
     reusable = the_plan.acyclic and same_code
     dirty = {u for u in keys if units["keys"].get(u) != keys[u]} if reusable else set(keys)
     if reuse and reusable and not dirty:
@@ -808,7 +949,8 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     try:
         projector = Projector(schema, pinned, normalizer=normalizer, as_known_at=as_known_at,
                               batch_size=batch_size, scratch_dir=directory, scope=scope,
-                              emit=dirty if incremental else None)
+                              emit=dirty if incremental else None,
+                              shards={b: s["shards"] for b, s in sharded.items()})
         projector.checkpoint = checkpoint
         work_peak = [0]
 
@@ -825,9 +967,22 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             open_generation(builder)
             if incremental:
                 laid = time.monotonic()
+                _identifier_rows(builder.connection, the_plan, dirty, "before")
                 _seed_delete(builder.connection, the_plan, schema, dirty)
                 seconds["project.seed_delete"] = round(time.monotonic() - laid, 3)
             projector.project_into(builder)
+            if incremental:
+                laid = time.monotonic()
+                _identifier_rows(builder.connection, the_plan, dirty, "after")
+                _changed_keys(builder.connection)
+                seconds["project.changed_keys"] = round(time.monotonic() - laid, 3)
+            # A token only this build holds names it to the steps' memos; the next build
+            # reads it in units.json, so nothing a build that never committed derived
+            # passes for derived against a committed generation.
+            token = f"{gen_id}-{secrets.token_hex(8)}"
+            projector.build_context = BuildContext(
+                state, units.get("build_token") if incremental else None, token,
+                builder.connection)
             unattributed = projector.report.unattributed
             if unattributed and incremental:
                 raise _Unattributed(unattributed)
@@ -840,10 +995,15 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             # A cold build reports what it projected; an incremental one merges the parts
             # of its units (equal for a cold build: every entry is in exactly one part,
             # and samples are order-independent).
-            report = finish_generation(
-                builder, projector, merge_reports(parts.values()) if incremental
-                else projector.report.as_dict(), post_project=_timed(post_project, seconds),
-                clock=clock)
+            committed = False
+            try:
+                report = finish_generation(
+                    builder, projector, merge_reports(parts.values()) if incremental
+                    else projector.report.as_dict(), post_project=_timed(post_project, seconds),
+                    clock=clock)
+                committed = True
+            finally:
+                projector.build_context.close(committed=committed)
             digested = {"mode": builder.digest_mode, "segments": builder.digest_segments}
             seconds.update({f"finish.{name}": value for name, value in builder.seconds.items()})
         seconds["finish"] = round(time.monotonic() - started, 3)
@@ -856,6 +1016,10 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             "keys": keys, "fragments": {u: p for u, p in parts.items() if p != _EMPTY},
             # Each source's watermark and the fingerprints read under it (``_pin``).
             "watermarks": marks,
+            # Each sharded binding's shard count and shard fingerprints (``_shard_prints``).
+            "shards": sharded,
+            # The token this build's step memos are valid under (``BuildContext``).
+            "build_token": token,
             # Measured, for the next build's space estimate (``space_need``).
             "bytes": {"store": (directory / "store.sqlite").stat().st_size,
                       "work_peak": work_peak[0], "mode": "incremental" if incremental
@@ -873,6 +1037,92 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                       mode=mode, units=len(keys), units_rebuilt=len(dirty),
                       bindings_read=len(scope) if scope is not None else len(the_plan.bindings),
                       seconds=seconds, seed=seed, need=need, digest=digested)
+
+
+class BuildContext:
+    """What a ``post_project`` step of a generation build may know of it (the projector's
+    ``build_context``): the state directory and the build tokens (``units.json``
+    ``build_token``) of the generation it started from when it is incremental (``base``;
+    None: cold) and of the one it builds. ``changed_key``: whether an identifier key's
+    index rows (with their object's type and version digest and markings, what a mention
+    resolves against) may differ from the base's; every key of a cold build."""
+
+    def __init__(self, state: Path, base: str | None, generation: str,
+                 conn: sqlite3.Connection) -> None:
+        self.state, self.base, self.generation = state, base, generation
+        self._conn = conn
+        self._memo: Any = None
+
+    def changed_key(self, kind: str, normalized: str) -> bool:
+        if self.base is None:
+            return True
+        return self._conn.execute(
+            "SELECT 1 FROM temp.plx_changed_keys WHERE identifier_kind = ? AND "
+            "normalized = ?", (kind, normalized)).fetchone() is not None
+
+    def document_memo(self) -> Any:
+        """The document steps' memo of this state directory (``ontology.mention_memo``),
+        one for the build."""
+        if self._memo is None:
+            from ontology.mention_memo import FILE, DocumentMemo
+            self._memo = DocumentMemo(self.state / FILE, self.base, self.generation,
+                                      int(self.generation.split("-")[0]))
+        return self._memo
+
+    def close(self, *, committed: bool) -> None:
+        """Close the memo; a committed build drops the entries no recent build used."""
+        if self._memo is not None:
+            self._memo.close(prune=committed)
+            self._memo = None
+
+
+# The identifier rows a mention resolves against (``ontology.mentions._store_candidates``).
+_CANDIDATE_ROWS = (
+    "SELECT i.identifier_kind, i.normalized, i.object_id, o.object_type, i.property, i.role, "
+    "i.l1_handle, i.field_path, i.lineage, i.recorded_at, i.superseded_at, v.digest, "
+    "v.markings FROM identifiers i JOIN objects o ON o.object_id = i.object_id "
+    "JOIN object_versions v ON v.object_id = i.object_id AND v.l1_handle = i.l1_handle "
+    "WHERE i.object_id >= ? AND i.object_id < ?")
+
+
+def _identifier_rows(conn: sqlite3.Connection, the_plan: Plan, dirty: Iterable[str],
+                     when: str) -> None:
+    """Keep the identifier rows of the objects of the ``dirty`` units (``when``:
+    ``before`` their rows are deleted from the seed, ``after`` they are projected
+    again) in ``temp.plx_ident_<when>``: only those can differ between the base and
+    this generation (no other unit's rows are written)."""
+    conn.create_function("plx_shard", 2, shard_of, deterministic=True)
+    table = f"temp.plx_ident_{when}"
+    conn.execute(f"DROP TABLE IF EXISTS {table}")
+    conn.execute(f"CREATE TABLE {table} AS {_CANDIDATE_ROWS} AND 0", ("", ""))
+    shards: dict[str, list[int]] = {}
+    for unit in sorted(dirty):
+        where = the_plan.rows[unit]
+        if where[0] == "binding":
+            conn.execute(f"INSERT INTO {table} {_CANDIDATE_ROWS}",
+                         _prefix(the_plan, where[1]))
+        elif where[0] == "shard":
+            shards.setdefault(where[1], []).append(where[3])
+    for binding, chosen in sorted(shards.items()):
+        count = the_plan.rows[shard_unit(binding, chosen[0])][2]
+        conn.execute(f"INSERT INTO {table} {_CANDIDATE_ROWS} AND plx_shard(i.object_id, ?) "
+                     "IN (SELECT value FROM json_each(?))",
+                     (*_prefix(the_plan, binding), count, json.dumps(sorted(chosen))))
+
+
+def _changed_keys(conn: sqlite3.Connection) -> None:
+    """``temp.plx_changed_keys``: the identifier keys of the rows kept before and after
+    that differ (``_identifier_rows``)."""
+    conn.execute("DROP TABLE IF EXISTS temp.plx_changed_keys")
+    conn.execute("CREATE TABLE temp.plx_changed_keys (identifier_kind TEXT, normalized TEXT, "
+                 "PRIMARY KEY (identifier_kind, normalized)) WITHOUT ROWID")
+    conn.execute(
+        "INSERT OR IGNORE INTO temp.plx_changed_keys SELECT identifier_kind, normalized FROM "
+        "(SELECT * FROM temp.plx_ident_before EXCEPT SELECT * FROM temp.plx_ident_after) "
+        "UNION SELECT identifier_kind, normalized FROM "
+        "(SELECT * FROM temp.plx_ident_after EXCEPT SELECT * FROM temp.plx_ident_before)")
+    conn.execute("DROP TABLE temp.plx_ident_before")
+    conn.execute("DROP TABLE temp.plx_ident_after")
 
 
 def _timed(steps: Mapping[str, Callable[..., Any]] | None, seconds: dict[str, float]
@@ -918,9 +1168,44 @@ def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
     conn.execute("DELETE FROM value_sources WHERE src IN (SELECT src FROM temp.plx_posted) "
                  "AND NOT EXISTS (SELECT 1 FROM value_cells c WHERE c.src = value_sources.src)")
     conn.execute("DROP TABLE temp.plx_posted")
+    shards: dict[str, set[int]] = {}
     for unit in sorted(dirty):
+        if the_plan.rows[unit][0] == "shard":
+            _, bid, count, k = the_plan.rows[unit]
+            shards.setdefault(bid, set()).add(k)
+            continue
         _delete_unit(conn, the_plan, unit, events)
     conn.execute("DROP TABLE temp.plx_unit_events")
+    for bid, chosen in sorted(shards.items()):
+        count = the_plan.rows[shard_unit(bid, min(chosen))][2]
+        _delete_shards(conn, the_plan, bid, count, chosen)
+
+
+def _delete_shards(conn: sqlite3.Connection, the_plan: Plan, binding: str, count: int,
+                   chosen: set[int]) -> None:
+    """Delete the rows of the objects of ``binding`` in the ``chosen`` of its ``count``
+    shards from a seeded generation (an isolated binding: no event, link or other
+    binding's row names them)."""
+    low, high = _prefix(the_plan, binding)
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS plx_shard_objects "
+                 "(object_id TEXT PRIMARY KEY) WITHOUT ROWID")
+    conn.execute("DELETE FROM temp.plx_shard_objects")
+    cursor = conn.execute("SELECT object_id FROM objects WHERE object_id >= ? AND "
+                          "object_id < ?", (low, high))
+    while True:
+        rows = cursor.fetchmany(DEFAULT_BATCH)
+        if not rows:
+            break
+        conn.executemany("INSERT INTO temp.plx_shard_objects VALUES (?)",
+                         [row for row in rows if shard_of(row[0], count) in chosen])
+    objects = "SELECT object_id FROM temp.plx_shard_objects"
+    versions = f"SELECT rowid FROM object_versions WHERE object_id IN ({objects})"
+    conn.execute("DELETE FROM value_cells WHERE src IN (SELECT src FROM value_sources "
+                 f"WHERE ver IN ({versions}))")
+    conn.execute(f"DELETE FROM value_sources WHERE ver IN ({versions})")
+    for table in ("identifiers", "object_versions", "object_removals", "objects"):
+        conn.execute(f"DELETE FROM {table} WHERE object_id IN ({objects})")
+    conn.execute("DROP TABLE temp.plx_shard_objects")
 
 
 __all__ = ["CURRENT", "FORMAT", "Generation", "KEEP", "Plan", "UNKNOWN", "build_generation",

@@ -5,7 +5,7 @@
   "limits": {
     "max_result_bytes": 48000,
     "max_description_chars": 600,
-    "max_case_host_tools": 22,
+    "max_case_host_tools": 23,
     "max_hops": 3,
     "max_page": 50,
     "max_untrusted_text_chars": 20000
@@ -2652,7 +2652,7 @@
       }
     },
     "plx.find": {
-      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; normalized, aliases included) or filter objects of one type (a property it does not declare is unknown_property, naming the valid ones). Exact unique match returns it; several matches return ranked candidates with the matched key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists that property's holders as lead candidates (reason reference_match), never roots. Returns a set handle for chaining. object_type alone pages it; a portfolio question ranks all by its plan.",
+      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; normalized, aliases included) or filter objects of one type (an undeclared property is unknown_property, naming the valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -2789,6 +2789,7 @@
                       "type": "string",
                       "enum": [
                         "unconfirmed_po",
+                        "undated_po",
                         "late_po",
                         "po_receipt_quantity_mismatch",
                         "receipt_without_qc",
@@ -2800,10 +2801,18 @@
                         "order_at_risk",
                         "po_impact",
                         "po_impact_margin",
-                        "systems_disagree"
+                        "systems_disagree",
+                        "eta_slipped",
+                        "lot_near_expiry",
+                        "lot_on_hold",
+                        "quote_accepted_no_order",
+                        "invoice_quantity_mismatch",
+                        "vendor_no_reply",
+                        "vendor_terms_unapplied",
+                        "negative_margin"
                       ]
                     },
-                    "maxItems": 13
+                    "maxItems": 21
                   },
                   "as_of": {
                     "type": [
@@ -2846,10 +2855,17 @@
                         "conflicting_quantity",
                         "late_order",
                         "orders_at_risk",
-                        "card_rules"
+                        "card_rules",
+                        "eta_slipped",
+                        "lot_attention",
+                        "accepted_quote_no_order",
+                        "invoice_quantity_mismatch",
+                        "vendor_no_reply",
+                        "vendor_terms_unapplied",
+                        "negative_margin"
                       ]
                     },
-                    "maxItems": 9
+                    "maxItems": 16
                   },
                   "rules": {
                     "type": "array",
@@ -2875,7 +2891,14 @@
                             "conflicting_quantity",
                             "late_order",
                             "orders_at_risk",
-                            "card_rules"
+                            "card_rules",
+                            "eta_slipped",
+                            "lot_attention",
+                            "accepted_quote_no_order",
+                            "invoice_quantity_mismatch",
+                            "vendor_no_reply",
+                            "vendor_terms_unapplied",
+                            "negative_margin"
                           ]
                         },
                         "status": {
@@ -2908,7 +2931,7 @@
                         }
                       }
                     },
-                    "maxItems": 9
+                    "maxItems": 16
                   },
                   "scanned": {
                     "type": "integer",
@@ -2957,6 +2980,7 @@
                           "type": "string",
                           "enum": [
                             "unconfirmed_po",
+                            "undated_po",
                             "late_po",
                             "po_receipt_quantity_mismatch",
                             "receipt_without_qc",
@@ -2968,7 +2992,15 @@
                             "order_at_risk",
                             "po_impact",
                             "po_impact_margin",
-                            "systems_disagree"
+                            "systems_disagree",
+                            "eta_slipped",
+                            "lot_near_expiry",
+                            "lot_on_hold",
+                            "quote_accepted_no_order",
+                            "invoice_quantity_mismatch",
+                            "vendor_no_reply",
+                            "vendor_terms_unapplied",
+                            "negative_margin"
                           ]
                         },
                         "priority": {
@@ -4137,7 +4169,7 @@
       }
     },
     "plx.process": {
-      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (ordered vs received vs invoiced: three-way match), variant frequency among peers; for one root also the next stage, overdue stages, document-vs-record conflicts, and per unreached stage its blockers in other processes with owner roles and schedule risks. Processes: purchase_to_invoice, po_delivery_window (lateness), sales_order_lifecycle, manufacturing_order, ao_packet; plx.schema section processes lists them. Without process: the root's default (see process).",
+      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (three-way match), variant frequency; for one root also the next stage, overdue stages, document-vs-record conflicts and each unreached stage's blockers in other processes. Processes: purchase_to_invoice, po_delivery_window (lateness), sales_order_lifecycle, manufacturing_order, ao_packet (plx.schema lists them); default: the root's.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5240,6 +5272,12 @@
           "object_id": {
             "$ref": "#/$defs/object_id"
           },
+          "participant": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 700,
+            "description": "An e-mail address, a domain (@acme.com) or a Customer/Supplier/Contact object_id (a record searches its addresses, its firm twins' and its BC contacts' and their people's): only mail from or to it, newest first, each with direction and matched_by."
+          },
           "sources": {
             "type": "array",
             "items": {
@@ -5274,6 +5312,12 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 512
+          },
+          "mention_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000,
+            "description": "Show each listed document's mentions from this one on (its mention_summary.next_mention_offset); every other argument as before, the cursor included."
           }
         },
         "anyOf": [
@@ -5285,6 +5329,11 @@
           {
             "required": [
               "object_id"
+            ]
+          },
+          {
+            "required": [
+              "participant"
             ]
           }
         ]
@@ -5430,6 +5479,35 @@
                       },
                       "maxItems": 50
                     },
+                    "direction": {
+                      "type": "string",
+                      "enum": [
+                        "from_them",
+                        "to_them"
+                      ],
+                      "description": "participant mode: from_them when a participant sent it, else to_them (a participant is in To or CC)."
+                    },
+                    "matched_by": {
+                      "type": "string",
+                      "enum": [
+                        "address",
+                        "domain"
+                      ]
+                    },
+                    "mention_summary": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "description": "The document's mentions when more exist than are shown: their total, the offset shown from, the count per identifier kind, the identifiers by count and the mention_offset that shows the next ones (null after the last).",
+                      "properties": {
+                        "total": {"type": "integer", "minimum": 0},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "by_kind": {"type": "object", "maxProperties": 20, "additionalProperties": {"type": "integer", "minimum": 0}},
+                        "identifiers": {"type": "array", "maxItems": 20, "items": {"type": "object", "additionalProperties": false, "required": ["identifier_kind", "normalized", "count"], "properties": {"identifier_kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"}, "normalized": {"anyOf": [{"$ref": "#/$defs/identifier_value"}, {"type": "null"}]}, "count": {"type": "integer", "minimum": 1}}}},
+                        "identifiers_total": {"type": "integer", "minimum": 0},
+                        "next_mention_offset": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]}
+                      },
+                      "required": ["total", "offset", "by_kind", "identifiers", "identifiers_total", "next_mention_offset"]
+                    },
                     "markings": {
                       "$ref": "#/$defs/markings"
                     }
@@ -5475,6 +5553,16 @@
                   "until": {
                     "type": "string",
                     "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+                  },
+                  "participants": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 254,
+                      "pattern": "^(?:[a-z0-9._%+'-]+@)?[a-z0-9-]+(?:\\.[a-z0-9-]+)+$"
+                    },
+                    "maxItems": 16
                   },
                   "queries": {
                     "type": "array",
@@ -5526,7 +5614,7 @@
       }
     },
     "plx.read": {
-      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (page, or #page=<n>) of an original or captured SharePoint PDF. Reports changed, withheld or unresolvable citations. A page read cites its #page=<n>; pages lists an original text's page citations: cite a figure by its page, field text. text_offset pages long text (field_path: one field) until text_window.next_offset is null; sha256 is the whole text's. column_offset pages a wide row. Originals list extraction versions; live mail gives cite_as, the pinned citation.",
+      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (#page=<n>) of an original or captured PDF; says when changed, withheld or unresolvable. A page read cites its #page=<n>: cite a figure by its page. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5557,7 +5645,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 1000000,
-            "description": "Read one line (1-based, lines split at newlines in the whole text) of the content, or of the field named by field_path; exclusive with text_offset. The answer is that line without its line ending, cut at max_chars (text_window.line_cut says so); text_window.first_line and last_line name it."
+            "description": "Read one line (1-based, lines split at newlines in the whole text; a file read as one part is numbered as the file is, from the line after its part marker) of the content, or of the field named by field_path; exclusive with text_offset. The answer is that line without its line ending, cut at max_chars (text_window.line_cut says so); text_window.first_line and last_line name it."
           },
           "find": {
             "type": "string",
@@ -5725,7 +5813,7 @@
                   "first_line": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Line (1-based, in the whole text) the window starts in."
+                    "description": "Line (1-based, numbered as line reads it) the window starts in."
                   },
                   "last_line": {
                     "type": "integer",
@@ -5797,7 +5885,7 @@
                         "line": {
                           "type": "integer",
                           "minimum": 1,
-                          "description": "Line (1-based, in the whole text) the phrase starts on."
+                          "description": "Line (1-based, numbered as line reads it) the phrase starts on."
                         },
                         "text": {
                           "$ref": "#/$defs/untrusted_text"
@@ -6804,6 +6892,268 @@
               },
               "complete": {
                 "type": "boolean"
+              }
+            }
+          },
+          {
+            "$ref": "#/$defs/error_result"
+          }
+        ]
+      }
+    },
+    "plx.changes": {
+      "description": "Records changed since a time, for this reader: values changed (before/after, cited), new and removed; an ETL restamp alone is never a change.",
+      "read_only": true,
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "since"
+        ],
+        "properties": {
+          "since": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 32
+          },
+          "object_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "uniqueItems": true
+          },
+          "as_known_at": {
+            "$ref": "#/$defs/as_known_at"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "since",
+              "object_types",
+              "changes",
+              "counts",
+              "by_type",
+              "basis",
+              "gaps",
+              "withheld",
+              "meta",
+              "completeness"
+            ],
+            "description": "operating/ontology_tools_changes.py: per record, the readable values of the version in force at since compared with those in force at as_known_at.",
+            "properties": {
+              "since": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+              },
+              "object_types": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+                }
+              },
+              "changes": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "object",
+                    "kind"
+                  ],
+                  "properties": {
+                    "object": {
+                      "$ref": "#/$defs/object_ref"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "changed",
+                        "first_captured",
+                        "removed"
+                      ]
+                    },
+                    "captured_at": {
+                      "type": "string",
+                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$",
+                      "description": "When the capture first held the new version; the change happened after the previous capture and at or before this."
+                    },
+                    "previous_captured_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+                    },
+                    "source_stamps": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "description": "The record's own write stamps as its source states them: source_write_time (BC lastModifiedDateTime, the FileMaker edit time) or bumped_by_etl (the Portal's updated_at, never proof of a change).",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "stamp",
+                          "value"
+                        ],
+                        "properties": {
+                          "stamp": {
+                            "type": "string",
+                            "enum": [
+                              "source_write_time",
+                              "bumped_by_etl"
+                            ]
+                          },
+                          "value": {
+                            "$ref": "#/$defs/value"
+                          }
+                        }
+                      }
+                    },
+                    "fields": {
+                      "type": "array",
+                      "maxItems": 12,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "property",
+                          "before",
+                          "after"
+                        ],
+                        "properties": {
+                          "property": {
+                            "type": "string",
+                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                          },
+                          "before": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/value"
+                            },
+                            "maxItems": 20
+                          },
+                          "after": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/value"
+                            },
+                            "maxItems": 20
+                          }
+                        }
+                      }
+                    },
+                    "more_fields": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "removal": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "basis",
+                        "since"
+                      ],
+                      "properties": {
+                        "basis": {
+                          "type": "string",
+                          "enum": [
+                            "missing_from_source",
+                            "source_soft_delete"
+                          ]
+                        },
+                        "since": {
+                          "type": "string",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\\.[0-9]{1,6})?)?(?:Z|[+-][0-9]{2}:[0-9]{2}))?$"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "counts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "changed",
+                  "first_captured",
+                  "removed",
+                  "restamped",
+                  "first_captured_earlier"
+                ],
+                "properties": {
+                  "changed": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "first_captured": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "removed": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "restamped": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "first_captured_earlier": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "by_type": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              },
+              "basis": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/gap"
+                },
+                "maxItems": 20
+              },
+              "withheld": {
+                "$ref": "#/$defs/withheld"
+              },
+              "meta": {
+                "$ref": "#/$defs/meta"
+              },
+              "completeness": {
+                "$ref": "#/$defs/completeness"
               }
             }
           },

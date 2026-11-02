@@ -1,0 +1,185 @@
+/* Design tokens: colour, type and spacing. Components read these through Tailwind's
+   @theme names below (bg-surface, text-late, text-answer, ...); nothing else defines colour.
+   Every text/background pair meets WCAG AA in its theme; status fg on its soft fill is
+   >= 5.2:1 (light) and >= 8.3:1 (dark). */
+
+:root {
+  --bg: #fafafa; /* off-white page so white cards read without shadows */
+  --bg-subtle: #f4f4f5;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
+  --fg: #18181b;
+  --fg-muted: #52525b; /* 7.0:1 on white */
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --control-border: #8a8a93; /* 3.4:1 on white: inputs need a 3:1 boundary */
+  --accent: #4338ca; /* 8.6:1 on white; actions and links only */
+  --accent-fg: #ffffff;
+  --accent-soft: #eef2ff;
+  --ring: #6366f1;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px rgb(0 0 0 / 0.08); /* popovers, menus, drawer only */
+
+  /* Status: fg (text, icon), soft (fill), line (badge border, left rule). */
+  --late: #b42318;
+  --late-soft: #fef3f2;
+  --late-line: #fda29b;
+  --risk: #b54708;
+  --risk-soft: #fffaeb;
+  --risk-line: #fec84b;
+  --ok: #067647;
+  --ok-soft: #ecfdf3;
+  --ok-line: #75e0a7;
+  --suspect: #6941c6; /* a data problem must not look like a business problem */
+  --suspect-soft: #f4f3ff;
+  --suspect-line: #bdb4fe;
+  --new: #175cd3;
+  --new-soft: #eff8ff;
+  --new-line: #84caff;
+  --neutral: #52525b;
+  --neutral-soft: #f4f4f5;
+  --neutral-line: #d4d4d8;
+
+  /* Type scale (mobile first; larger from 640 px). */
+  --fs-display: 24px;
+  --lh-display: 30px;
+  --fs-title: 22px;
+  --lh-title: 28px;
+  --fs-answer: 17px;
+  --lh-answer: 26px;
+  --fs-stat: 24px;
+  --lh-stat: 28px;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --fs-display: 28px;
+    --lh-display: 34px;
+    --fs-title: 24px;
+    --lh-title: 32px;
+    --fs-answer: 18px;
+    --lh-answer: 28px;
+    --fs-stat: 28px;
+    --lh-stat: 32px;
+  }
+}
+
+.dark {
+  --bg: #0b0b0e;
+  --bg-subtle: #111115;
+  --surface: #141418;
+  --surface-2: #1d1d22;
+  --fg: #f4f4f5;
+  --fg-muted: #a1a1aa; /* 7.6:1 on #141418 */
+  --border: #27272d;
+  --border-strong: #3a3a42;
+  --control-border: #6b6b75; /* 3.5:1 */
+  --accent: #a5b4fc;
+  --accent-fg: #11113a;
+  --accent-soft: #1e1b4b;
+  --ring: #818cf8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+
+  --late: #fda29b;
+  --late-soft: #3a1512;
+  --late-line: #b42318;
+  --risk: #fec84b;
+  --risk-soft: #33240a;
+  --risk-line: #b54708;
+  --ok: #75e0a7;
+  --ok-soft: #0b2b1c;
+  --ok-line: #067647;
+  --suspect: #bdb4fe;
+  --suspect-soft: #221a42;
+  --suspect-line: #6941c6;
+  --new: #84caff;
+  --new-soft: #0b2440;
+  --new-line: #175cd3;
+  --neutral: #a1a1aa;
+  --neutral-soft: #1d1d22;
+  --neutral-line: #3a3a42;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-control: var(--control-border);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-soft: var(--accent-soft);
+  --color-ring: var(--ring);
+
+  --color-late: var(--late);
+  --color-late-soft: var(--late-soft);
+  --color-late-line: var(--late-line);
+  --color-risk: var(--risk);
+  --color-risk-soft: var(--risk-soft);
+  --color-risk-line: var(--risk-line);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-ok-line: var(--ok-line);
+  --color-suspect: var(--suspect);
+  --color-suspect-soft: var(--suspect-soft);
+  --color-suspect-line: var(--suspect-line);
+  --color-new: var(--new);
+  --color-new-soft: var(--new-soft);
+  --color-new-line: var(--new-line);
+  --color-neutral: var(--neutral);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-line: var(--neutral-line);
+
+  /* Older tone names, kept as aliases of the status palette. */
+  --color-good: var(--ok);
+  --color-good-soft: var(--ok-soft);
+  --color-warn: var(--risk);
+  --color-warn-soft: var(--risk-soft);
+  --color-bad: var(--late);
+  --color-bad-soft: var(--late-soft);
+  --color-info: var(--new);
+  --color-info-soft: var(--new-soft);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --shadow-card: none;
+  --shadow-pop: var(--shadow);
+
+  /* Type: text-display ... text-eyebrow. Nothing below 12 px. */
+  --text-display: var(--fs-display);
+  --text-display--line-height: var(--lh-display);
+  --text-display--letter-spacing: -0.02em;
+  --text-display--font-weight: 600;
+  --text-title: var(--fs-title);
+  --text-title--line-height: var(--lh-title);
+  --text-title--letter-spacing: -0.015em;
+  --text-title--font-weight: 600;
+  --text-answer: var(--fs-answer);
+  --text-answer--line-height: var(--lh-answer);
+  --text-answer--letter-spacing: -0.005em;
+  --text-answer--font-weight: 500;
+  --text-section: 15px;
+  --text-section--line-height: 22px;
+  --text-section--font-weight: 600;
+  --text-body: 15px;
+  --text-body--line-height: 24px;
+  --text-row: 14px;
+  --text-row--line-height: 20px;
+  --text-meta: 13px;
+  --text-meta--line-height: 18px;
+  --text-label: 12px;
+  --text-label--line-height: 16px;
+  --text-label--letter-spacing: 0.02em;
+  --text-label--font-weight: 500;
+  --text-stat: var(--fs-stat);
+  --text-stat--line-height: var(--lh-stat);
+  --text-stat--letter-spacing: -0.02em;
+  --text-stat--font-weight: 600;
+  --text-eyebrow: 12px;
+  --text-eyebrow--line-height: 16px;
+  --text-eyebrow--letter-spacing: 0.06em;
+  --text-eyebrow--font-weight: 600;
+}

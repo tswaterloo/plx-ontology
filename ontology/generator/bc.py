@@ -73,7 +73,14 @@ LINEAGE = {"from_capture": "bc_company"}
 # BC must serve it under api/v2.0 (a live $metadata re-pin shows it; ``drift`` reports it
 # now_served). ``workbench_grammar``: BC serves it under a custom API route the Workbench's
 # closed GET-only request grammar does not admit.
-UPSTREAM_ASKS = {"not_in_metadata": "bc_api_v2", "custom_api": "workbench_grammar"}
+# ``bc_publish``: a PLX API page the custom route (api/plx/integration/v1.0) does not
+# publish in the environment (its live $metadata of 2026-11-01 lists only
+# plxCustomerShipTos; the others answer 404): the PLX extension must be published there.
+# ``workbench_projection``: a PLX API page the capture reads whole from its custom route
+# (``bc_read.CAPTURE_ENTITY_SETS``) that api/v2.0 $metadata does not describe, so no type
+# is generated for it yet: held, not projected.
+UPSTREAM_ASKS = {"not_in_metadata": "bc_api_v2", "custom_api": "bc_publish",
+                 "custom_api_captured": "workbench_projection"}
 MAX_DOCUMENT_BYTES = 8_000_000
 _EDMX = "{http://docs.oasis-open.org/odata/ns/edmx}"
 _EDM = "{http://docs.oasis-open.org/odata/ns/edm}"
@@ -507,8 +514,11 @@ def facts(pin_doc: Mapping[str, Any], docs: Sequence[tuple[str, Mapping[str, Any
                 continue
             add_link(name, target, nav["name"], cols, refs, snake(name), tier, how)
 
+    from integrations.live_source_grammar import BC_PLX_API_SETS
     for name in [s for s in scope if s not in sets]:
-        unserved.append(_unserved(pin_doc, name, named.get(name), "not_in_metadata"))
+        unserved.append(_unserved(pin_doc, name, named.get(name),
+                                  "custom_api_captured" if name in BC_PLX_API_SETS
+                                  else "not_in_metadata"))
     not_captured = []
     for name, entry in sorted(named.items()):
         if name in scope:
@@ -538,17 +548,25 @@ def _unserved(pin_doc: Mapping[str, Any], name: str, entry: Mapping[str, Any] | 
     named = f" The Portal names it ({entry['evidence'][0]})." if entry else ""
     if code == "custom_api":
         reason = (f"{name} is an AL API page of a PLX extension, served under its own custom "
-                  "API route (api/<publisher>/<group>/<version>), not api/v2.0: the pinned "
-                  "api/v2.0 $metadata does not describe it and the Workbench's closed BC "
-                  "request grammar reads api/v2.0 only." + named)
+                  "API route (api/plx/integration/v1.0), not api/v2.0: that route's live "
+                  "$metadata (2026-11-01) does not list it and a listing answers 404, so the "
+                  "extension version carrying it is not published in this environment."
+                  + named)
+    elif code == "custom_api_captured":
+        reason = (f"{name} is an AL API page of a PLX extension, captured whole from its own "
+                  "custom API route (api/plx/integration/v1.0, GET listings only); the pinned "
+                  "api/v2.0 $metadata does not describe it, so no type is generated: held in "
+                  "the capture, not projected." + named)
     else:
         reason = (f"The pinned BC API v2.0 $metadata ({pin_doc['evidence_mode']}) serves no "
                   f"entity set {name}: no record of it is readable through api/v2.0." + named)
     return {"relation": name, "domain": "not_served", "upstream_name": name, "code": code,
             "upstream_ask": f"{UPSTREAM_ASKS[code]}:{name}", "reason": f"[{code}] {reason}",
             "description": (f"Generated not_served type: the BC entity set or API page {name} "
-                            f"({code}). No record is readable; a served value naming it is a "
-                            "plain reference, never a link."),
+                            f"({code}). "
+                            + ("Held in the capture, never projected; " if code ==
+                               "custom_api_captured" else "No record is readable; ")
+                            + "a served value naming it is a plain reference, never a link."),
             "evidence": [_pin_evidence(pin_doc, f"no entity set {name}")] + ([cite] if cite else []),
             "declared": None}
 
@@ -622,8 +640,12 @@ def bound_columns(compiled: Any) -> dict[str, dict[str, Any]]:
     binding, property source, qualifier or link pair of the compiled schema reads; a
     property declared ``not_served`` reads nothing, see ``unserved_columns``)."""
     out: dict[str, dict[str, Any]] = defaultdict(lambda: {"keys": set(), "columns": set()})
+    from integrations.capture_store import BC_FIELD_PAGES
+    # A field page (an ODataV4 web-service page's fields stored under an api/v2.0 record,
+    # ``capture_store.BC_FIELD_PAGES``) is no api/v2.0 entity set: the drift never asks
+    # api/v2.0 $metadata for it.
     relation_of = {bid: b["relation"] for bid, (_, b) in compiled.bindings.items()
-                   if b.get("source") == SOURCE}
+                   if b.get("source") == SOURCE and b["relation"] not in BC_FIELD_PAGES}
 
     def read(bid: str | None, *paths: Any) -> None:
         if bid in relation_of:
@@ -659,6 +681,22 @@ def unserved_columns(compiled: Any) -> set[str]:
             for s in p["sources"] if s["binding"] in relation_of}
 
 
+def _key_agrees(key: list[str], entry: Mapping[str, Any],
+                sets: Mapping[str, Mapping[str, Any]]) -> bool:
+    """A binding key is the set's $metadata key, or (a set contained in its parents, keyed
+    within its parent: ``contactsInformation`` by its contact under a customer or vendor)
+    the field naming the parent (a referential constraint of a navigation to a parent's
+    entity type) followed by that key."""
+    if key == list(entry["key"]):
+        return True
+    parents = {sets[p]["entity_type"] for p in entry.get("parents", ()) if p in sets}
+    named = {c for nav in entry.get("navigation", ()) if not nav.get("collection")
+             and nav.get("target") in parents for c, _ in nav.get("constraints", ())}
+    head = key[:len(key) - len(entry["key"])]
+    return (key[len(head):] == list(entry["key"]) and len(head) == 1
+            and head[0] in named)
+
+
 def drift(live: Mapping[str, Any], pinned: Mapping[str, Any], compiled: Any,
           coverage: Mapping[str, Any], registry: Mapping[str, Any],
           overrides: Overrides | None = None) -> dict[str, Any]:
@@ -675,7 +713,7 @@ def drift(live: Mapping[str, Any], pinned: Mapping[str, Any], compiled: Any,
     names = set(live.get("entity_set_names", ())) | set(sets)
     missing = sorted(n for n in bound if n not in sets)
     key_changed = sorted(n for n, b in bound.items() if n in sets and
-                         any(list(k) != sets[n]["key"] for k in b["keys"]))
+                         any(not _key_agrees(list(k), sets[n], sets) for k in b["keys"]))
     missing_columns = sorted(f"{n}.{c}" for n, b in bound.items() if n in sets
                              for c in b["columns"]
                              if c not in {p["name"] for p in sets[n]["properties"]})

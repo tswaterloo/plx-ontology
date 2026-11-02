@@ -512,6 +512,24 @@ class AccountingTest(unittest.TestCase):
             item, own, foreign = docs[row["card_id"]]
             self.assertEqual(row["item"]["scoring"]["foreign_documents"], sorted(foreign))
 
+    def test_each_rubric_item_carries_the_relations_of_its_served_live_sources(self):
+        """Scorer /27: a card's named live record is a row of a relation its live sources
+        name, and only of a source a Workbench reader serves (served or partial): the
+        Portal reporting API's relations as the mirror names them, BC entity sets as
+        ``bc.<entitySet>``; a source not served, of another system or none, names none."""
+        compiled, _ = tool.compile_cards(tool.card_sets(), now=NOW)
+        by = {row["card_id"]: (row["item"].get("scoring") or {}).get("live_relations")
+              for row in compiled}
+        self.assertEqual(by["EMD-07"], ["bc.itemLedgerEntries", "public.app_receipt_line",
+                                        "public.receipt_raw_material"])
+        self.assertEqual(by["PG-05"], ["bc.purchaseInvoiceLines", "bc.purchaseInvoices",
+                                       "bc.purchaseOrderLines", "bc.purchaseOrders",
+                                       "bc.purchaseReceiptLines", "bc.purchaseReceipts",
+                                       "public.app_receipt", "public.app_receipt_line"])
+        # AT-08: a case original, a Portal relation not served and Fiix (no reader)
+        self.assertIsNone(by["AT-08"])
+        self.assertTrue(any(r and any(x.startswith("sage.") for x in r) for r in by.values()))
+
     # The audit of 2026-10-28 (decision record, "Scorer /21"): the own-document credits
     # judged undeserved, those judged deserved or borderline-meeting the criterion, and
     # the cards whose criterion no transcript can show met.

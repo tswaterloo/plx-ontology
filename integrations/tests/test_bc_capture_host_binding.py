@@ -21,7 +21,8 @@ from urllib.parse import unquote
 from integrations import bc_read
 from integrations.capture_store import CaptureError, CaptureStore
 from integrations.live_source_guard import BoundedBackoff, LiveSourceAudience
-from integrations.tests.test_bc_capture import (MY_COMPANY, OTHERS, PRODUCTION_NAMES, FakeBc)
+from integrations.tests.test_bc_capture import (MY_COMPANY, OTHERS, PRODUCTION_NAMES, SHIPPED,
+                                                FakeBc)
 from integrations.tests.test_live_source_adapters import ENV
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +48,7 @@ class HostStoreBindingTests(unittest.TestCase):
         self.db.parent.mkdir()
         audience = LiveSourceAudience.from_file(HOST_AUDIENCE)
         CaptureStore(self.db, audience).close()   # the host made it: bound to its tenant
-        self.fake = FakeBc({"purchaseOrders": 4}, companies=[OTHERS[0], MY_COMPANY],
+        self.fake = FakeBc({"purchaseOrders": 4}, companies=[OTHERS[0], *SHIPPED],
                            names=PRODUCTION_NAMES)
         self.base = ["capture", "--db", str(self.db), "--entity-set", "purchaseOrders",
                      "--resolve-sample", "20"]
@@ -64,15 +65,17 @@ class HostStoreBindingTests(unittest.TestCase):
                                    "--principal", HOST_PRINCIPAL], self.fake)
         self.assertEqual(code, 0)
         self.assertTrue(report["all_complete"])
-        self.assertEqual(report["books"], ["manufacturing"])
+        self.assertEqual(sorted(report["books"]), ["consol", "distribution", "manufacturing"])
         self.assertTrue(report["resolve_all_ok"])
-        # Page 50 PurchaseOrder read once for My Company, at BC's page ceiling, whatever
-        # the record page size of the call
+        # Page 50 PurchaseOrder read once per pinned company, by its pinned name, at BC's page
+        # ceiling, whatever the record page size of the call
         page50 = [(url, headers) for method, url, headers in self.fake.calls
-                  if "/ODataV4/" in unquote(url)]
-        self.assertEqual(len(page50), 1)
-        self.assertIn("Company('My Company')/PurchaseOrder", unquote(page50[0][0]))
-        self.assertEqual(page50[0][1].get("Prefer"), "odata.maxpagesize=1000")
+                  if "/ODataV4/" in unquote(url) and unquote(url).split("?")[0].endswith(
+                      "/PurchaseOrder")]
+        self.assertEqual(len(page50), 3)
+        self.assertEqual(sum("Company('My Company')/PurchaseOrder" in unquote(u)
+                             for u, _h in page50), 1)
+        self.assertEqual({h.get("Prefer") for _u, h in page50}, {"odata.maxpagesize=1000"})
         # the references are held in the host's store, readable as the host reads it
         audience = LiveSourceAudience.from_file(HOST_AUDIENCE)
         with CaptureStore(self.db, audience) as store:

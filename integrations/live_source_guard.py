@@ -161,6 +161,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -654,6 +655,13 @@ BACKOFF_BASE_SECONDS = 0.5
 BACKOFF_CAP_SECONDS = 4.0
 
 
+# The scope a ``Retry-After`` holds (``BoundedBackoff.hold``): unset, every thread sharing
+# the backoff; set, only the threads
+# reading the same scope, so one throttled mailbox never stalls the others' reads.
+HOLD_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "backoff_hold_scope", default=None)
+
+
 class BoundedBackoff:
     """At most ``max_retries`` (<= 2) jittered exponential waits per call,
     each capped at ``BACKOFF_CAP_SECONDS``; ``Retry-After`` (delta-seconds or
@@ -684,9 +692,10 @@ class BoundedBackoff:
         self.slept_seconds = 0.0
         self.retries = 0
         # A Retry-After one thread was given holds the other threads sharing this backoff
-        # (``hold``): (monotonic end, the thread that waits it out itself).
+        # and its ``HOLD_SCOPE`` (``hold``): scope -> (monotonic end, the thread that waits
+        # it out itself).
         self._hold_lock = threading.Lock()
-        self._hold: tuple[float, int] | None = None
+        self._holds: dict[str | None, tuple[float, int]] = {}
 
     def __repr__(self) -> str:
         return f"BoundedBackoff(max_retries={self.max_retries}, retries={self.retries})"
@@ -737,18 +746,21 @@ class BoundedBackoff:
         if self.retry_after(lowered.get("retry-after")) is not None:
             with self._hold_lock:
                 end = time.monotonic() + delay
-                if self._hold is None or self._hold[0] < end:
-                    self._hold = (end, threading.get_ident())
+                scope = HOLD_SCOPE.get()
+                held = self._holds.get(scope)
+                if held is None or held[0] < end:
+                    self._holds[scope] = (end, threading.get_ident())
         self.slept_seconds += delay
         self.retries += 1
         self._sleep(delay)
         return delay
 
     def hold(self) -> float:
-        """Before a request: wait out a ``Retry-After`` another thread was given (at most
-        ``BACKOFF_CAP_SECONDS``); the wait slept (0 when none is running)."""
+        """Before a request: wait out a ``Retry-After`` another thread of the same
+        ``HOLD_SCOPE`` was given (at most ``BACKOFF_CAP_SECONDS``); the wait slept (0 when
+        none is running)."""
         with self._hold_lock:
-            held = self._hold
+            held = self._holds.get(HOLD_SCOPE.get())
         if held is None or held[1] == threading.get_ident():
             return 0.0
         left = min(BACKOFF_CAP_SECONDS, held[0] - time.monotonic())

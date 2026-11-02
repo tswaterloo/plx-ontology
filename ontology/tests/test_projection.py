@@ -623,8 +623,10 @@ class EvidenceTests(ProjectionCase):
         self.assertEqual(result["counts"]["passed"], len(values) - nulls)
         self.assertEqual(result["counts"]["source_contract"],
                          sum(1 for v in values if v["value_type"] == "quantity"))
-        # Without them the gate refuses to take the role on trust (fail closed).
-        bare = claim_checks.check_items(items, rows=rows)
+        # Without them (and with no shipped schema to read a role from) the gate refuses to
+        # take the role on trust (fail closed).
+        with unittest.mock.patch.object(claim_checks, "_schema_roles", return_value={}):
+            bare = claim_checks.check_items(items, rows=rows)
         self.assertEqual({f["code"] for f in bare["failures"]}, {"claim_role_unverified"})
         # A wrong role is refused against the schema's contract.
         wrong = [dict(item, value_claims=[dict(item["value_claims"][0], role="produced")])

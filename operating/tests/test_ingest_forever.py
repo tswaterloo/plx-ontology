@@ -10,7 +10,7 @@ the next; a killed runner's capture child is stopped before the next cycle reads
 
 from __future__ import annotations
 
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -44,6 +44,8 @@ FAKE = textwrap.dedent("""
     os.makedirs(store, exist_ok=True)
     with open(os.path.join(store, "ran"), "a") as handle:
         handle.write("1\\n")
+    with open(os.path.join(store, "starts"), "a") as handle:   # when (one clock)
+        handle.write("%r\\n" % time.monotonic())
     if mode == "fail":
         print(json.dumps({"error": "SourceUnavailable", "error_class": "upstream",
                           "http_status": 503,
@@ -602,6 +604,12 @@ class ConcurrentIngestTest(unittest.TestCase):
         path = self.state / f"fake-{name}" / "ran"
         return len(path.read_text().splitlines()) if path.is_file() else 0
 
+    def starts(self, name: str) -> list[float]:
+        """When each run of a fake source started (``time.monotonic``, one clock for
+        every process of the host)."""
+        path = self.state / f"fake-{name}" / "starts"
+        return [float(t) for t in path.read_text().split()] if path.is_file() else []
+
     def test_a_cycle_runs_its_sources_at_once_within_max_parallel(self) -> None:
         table = fake_table(self.script, "one", "two")
         sections = {"one": {"mode": "barrier"}, "two": {"mode": "barrier"}}
@@ -655,6 +663,10 @@ class ConcurrentIngestTest(unittest.TestCase):
         self.assertEqual(held.exception.code, "host_cycle_running")
         (self.state / "release").touch()
         self.until(lambda: any("slow" in r["sources"] for r in reports), "slow never refreshed")
+        # the failing source's backoff is seen over three of its runs (waited for, never
+        # raced against the clock)
+        self.until(lambda: sum("broken" in r["sources"] for r in reports) >= 3,
+                   "the failing source stopped running", seconds=60)
         stop_file.touch()
         runner.join(60)
         self.assertFalse(runner.is_alive())
@@ -666,7 +678,15 @@ class ConcurrentIngestTest(unittest.TestCase):
         self.assertTrue(broken)
         self.assertEqual({(o["state"], o["capture"]["error_code"]) for o in broken},
                          {("failed", "SourceUnavailable")})
-        self.assertLess(len(broken), self.runs("bc"))
+        # It backed off: the cadence (1 s) doubled per failure in a row, so each run starts
+        # at least 2 s, then 4 s, 8 s ... after the one before, while the healthy source
+        # kept its 1 s cadence (it ran 3 times while the slow one read, above). A bound
+        # the scheduler guarantees at any host load, where comparing run counts raced
+        # the wall clock (3 vs 3 at load 19).
+        starts = self.starts("broken")
+        self.assertGreaterEqual(len(starts), 3)
+        for failures, (before, after) in enumerate(zip(starts, starts[1:]), 1):
+            self.assertGreaterEqual(after - before, 2 ** failures, (failures, starts))
         # Each refresh is one ledger cycle with its own generation, chained, incremental
         # after the first; none overlapped another.
         built = [r["projection"] for r in reports if r["projection"]["state"] == "built"]
@@ -997,6 +1017,145 @@ class BuildExclusionTest(unittest.TestCase):
         self.assertNotIn(str(self.state), json.dumps(exclusions))   # names, never paths
 
 
+class SnapshotBuildTest(unittest.TestCase):
+    """``ingest.build_inputs`` ``snapshot`` (2026-10-31): a cold build took 9 h and every
+    capture writing a store it reads waited for it, so mail got 2 h in each 11.5 h. A
+    build opens consistent copies of the stores made as it starts, runs on its own
+    thread, and every capture keeps reading beside it, one writer per store."""
+
+    setUp, config = IngestModeTest.setUp, IngestModeTest.config
+    host, until = ConcurrentIngestTest.host, ConcurrentIngestTest.until
+
+    def test_captures_run_beside_a_build_that_reads_only_copies(self) -> None:
+        from integrations import bc_read
+        from integrations.live_source_guard import BoundedBackoff
+        from integrations.tests.test_bc_capture import BOOKS, ENV, Clock, FakeBc
+
+        store = host_module.state_capture_paths(self.state)["bc"]
+        store.parent.mkdir(parents=True)
+        bc_read.capture_probe(ENV, sender=FakeBc({"purchaseReceipts": 3}), db=store,
+                              page_size=2, passes=1, books=BOOKS, monotonic=Clock().monotonic,
+                              retry=BoundedBackoff(sleep=lambda s: None),
+                              entity_sets=("purchaseReceipts",))
+        before = store.read_bytes()
+        table = fake_table(self.script, "bc", "fast", projected={"bc": "bc"},
+                           writes={"bc": lambda state: (host_module.state_capture_paths(
+                               state)["bc"],)})
+        config = self.config({"bc": {"mode": "busy", "min_interval_seconds": 1},
+                              "fast": {"min_interval_seconds": 1}},
+                             ingest={"mode": forever.MODE, "grace_seconds": 1,
+                                     "build_inputs": "snapshot"})
+        host = self.host(config, table)
+        inputs = self.state / host_module.HOST_DIR / host_module.BUILD_INPUTS_DIR
+        self.assertTrue(all(inputs in p.parents for p in host.build_reads()))
+        builds: list[dict] = []
+        real = host_module.build_projection
+
+        def build(state_dir, sources, **kwargs):
+            opened = [Path(getattr(s, "path")) for s in sources.values() if hasattr(s, "path")]
+            began = self.ran_count("bc")
+            time.sleep(2.5)   # a capture of the store it reads runs meanwhile
+            builds.append({"opened": opened, "bc_runs": self.ran_count("bc") - began})
+            return real(state_dir, sources, **kwargs)
+        reports: list[dict] = []
+        with mock.patch.object(host_module, "build_projection", build):
+            done = host.ingest_continuous(stop_file=self.tmp / "stop", max_refreshes=3,
+                                          on_refresh=reports.append)
+        self.assertEqual(done["refreshes"], 3)
+        built = [r["projection"] for r in reports if r["projection"]["state"] == "built"]
+        self.assertTrue(built, reports)
+        self.assertEqual({p["inputs"]["kind"] for p in built}, {"snapshot"})
+        # The build opened only its copies, never a live store; the live store is intact.
+        self.assertTrue(all(inputs in p.parents for b in builds for p in b["opened"]), builds)
+        self.assertTrue(any(b["opened"] for b in builds), builds)
+        self.assertEqual(store.read_bytes()[:100], before[:100])
+        # The capture of a store the build reads started again while it built (with
+        # live inputs it waits: BuildExclusionTest); no capture waited for a build.
+        self.assertTrue(any(b["bc_runs"] > 0 for b in builds), builds)
+        self.assertEqual({w for r in reports for w in r["build_exclusion"]["waited_for"]},
+                         set())
+        self.assertNotIn(str(self.state), json.dumps(built))   # counts, never paths
+        self.assertEqual(host_module.cycle_overlaps(host)["cycles_overlapping"], 0)
+
+    def ran_count(self, name: str) -> int:
+        path = self.state / f"fake-{name}" / "ran"
+        return len(path.read_text().splitlines()) if path.is_file() else 0
+
+    def test_a_snapshot_never_writes_through_to_a_live_store(self) -> None:
+        """Two stores side by side: each is copied before anything beside it is
+        linked, so no link ever stands where a copy is written."""
+        config = self.config({"fast": {}}, ingest={"mode": forever.MODE, "grace_seconds": 1,
+                                                   "build_inputs": "snapshot"})
+        host = self.host(config, fake_table(self.script, "fast"))
+        paths = host_module.state_capture_paths(self.state)
+        for name in ("teams", "graph_mail"):
+            paths[name].parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(paths[name]) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("CREATE TABLE t (x)")
+                conn.execute("INSERT INTO t VALUES (?)", (name,))
+            conn.close()
+        (paths["graph_mail"].parent / "blobs").mkdir()
+        live = {n: paths[n].read_bytes() for n in ("teams", "graph_mail")}
+        made = host.snapshot_inputs(None)
+        self.assertEqual(made["stores"], 2)
+        for name in ("teams", "graph_mail"):
+            copy = made["root"] / paths[name].relative_to(self.state)
+            self.assertFalse(copy.is_symlink())
+            self.assertEqual(sqlite3.connect(copy).execute("SELECT x FROM t").fetchall(),
+                             [(name,)])
+            self.assertEqual(paths[name].read_bytes(), live[name])
+        blobs = made["root"] / "mail-capture" / "blobs"
+        self.assertTrue(blobs.is_symlink())
+        # The copies on disk are not asked for again by the build's disk check.
+        (paths["graph_mail"].parent / "blobs" / "big").write_bytes(b"x" * 100_000)
+        self.assertNotIn("snapshot_bytes", host.build_disk()["estimate"])
+        self.assertEqual(blobs.resolve(), (paths["graph_mail"].parent / "blobs").resolve())
+
+
+    def test_an_unchanged_store_keeps_its_copy_so_its_fingerprints_are_kept(self) -> None:
+        """Snapshot copies are new files, so a watermark of file marks never matched and
+        every build fingerprinted every source in full (846-946 s, cycles 5-6). A store
+        whose files did not change keeps its copy, the same file; a written one is copied
+        again and a removed one leaves no copy behind."""
+        config = self.config({"fast": {}}, ingest={"mode": forever.MODE, "grace_seconds": 1,
+                                                   "build_inputs": "snapshot"})
+        host = self.host(config, fake_table(self.script, "fast"))
+        paths = host_module.state_capture_paths(self.state)
+        for name in ("teams", "graph_mail"):
+            paths[name].parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(paths[name])) as conn, conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("CREATE TABLE t (x)")
+                conn.execute("INSERT INTO t VALUES (?)", (name,))
+            with closing(sqlite3.connect(paths[name].as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.execute("SELECT 1 FROM t").fetchall()   # as a capture, a -wal stays
+
+        def identity(made, name):
+            st = (made["root"] / paths[name].relative_to(self.state)).stat()
+            return st.st_ino, st.st_mtime_ns
+
+        first = host.snapshot_inputs(None)
+        self.assertEqual((first["stores"], first["kept"]), (2, 0))
+        self.assertEqual(host.snapshot_inputs(None)["kept"], 2)
+        with closing(sqlite3.connect(paths["graph_mail"])) as conn, conn:
+            conn.execute("INSERT INTO t VALUES ('later')")
+        mail = paths["graph_mail"].as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(mail, uri=True)) as conn:
+            conn.execute("SELECT 1 FROM t").fetchall()
+        second = host.snapshot_inputs(None)
+        self.assertEqual((second["stores"], second["kept"]), (1, 1))
+        self.assertEqual(identity(second, "teams"), identity(first, "teams"))
+        copy = second["root"] / paths["graph_mail"].relative_to(self.state)
+        with closing(sqlite3.connect(copy)) as conn:
+            self.assertEqual(conn.execute("SELECT x FROM t ORDER BY rowid").fetchall(),
+                             [("graph_mail",), ("later",)])
+        paths["teams"].unlink()
+        third = host.snapshot_inputs(None)
+        self.assertEqual((third["stores"], third["kept"]), (0, 1))
+        self.assertFalse((third["root"] / paths["teams"].relative_to(self.state)).exists())
+
+
 class LiveCycleRepairTest(unittest.TestCase):
     """Reproduced 2026-10-26 on the shared state (ingest mode, every cycle since 17:56Z):
     BC and MC failed with a bare ``CaptureError`` and mail and SharePoint with
@@ -1115,10 +1274,12 @@ class LiveCycleRepairTest(unittest.TestCase):
             self.assertEqual(config.sources[name]["live_audience"], audience, name)
         # every supported BC set; purchaseOrders brings Page 50 Your_Reference with it
         self.assertEqual(config.sources["bc"]["entity_sets"], list(CAPTURE_ENTITY_SETS))
-        catalog = json.loads((ROOT / "ontology" / "schema" / "generated" / "meta" /
-                              "portal_catalog.json").read_text())
-        self.assertEqual(sorted(config.sources["portal"]["relations"]),
-                         sorted(r["name"] for r in catalog["relations"]))
+        # Portal: no hand list; the mirror syncs every relation the live catalog serves.
+        self.assertNotIn("relations", config.sources["portal"])
+        with tempfile.TemporaryDirectory() as state:
+            argv = forever.SOURCES["portal"].argv(Path(state), config.sources["portal"])
+        self.assertIn("sync", argv)
+        self.assertNotIn("--relation", argv)
         scope = json.loads(Path(config.sources["mail"]["scope"]).read_text())
         self.assertTrue(scope["all_mailboxes"]["enabled"])
         # SharePoint (business rule everything, 2026-10-27): every document library of every

@@ -511,7 +511,7 @@ def assemble(call: Callable[..., Mapping[str, Any]], actor: Any, agenda: Agenda,
             reads.add(gap("binding_expected", "not_ingested", lid,
                           f"{lane['object_type']} declares no {', '.join(agenda.undeclared[lid])}"
                           "; lines cite the record and show no text until a projection "
-                          "declares it"))
+                          "declares it: plx.read a line's citation for the captured text"))
         if "via" in lane:
             continue
         given = scope.get(lid) or {}

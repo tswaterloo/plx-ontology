@@ -88,6 +88,48 @@ class OwnerEvalHostTest(unittest.TestCase):
         for source in ("portal", "bc", "mail", "sharepoint"):
             self.assertEqual(made[source], base[source])
 
+    def test_a_role_reader_holds_its_principals_and_its_marking_never_finance(self):
+        for role, (principals, marking) in tool.ROLES.items():
+            out = self.tmp / role
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(tool.main(["--out", str(out), "--role", role],
+                                           environ=ENV), 0)
+            doc = json.loads((out / "host.json").read_text("utf-8"))
+            self.assertEqual(check_marking_grants(doc["marking_grants"]),
+                             {marking: frozenset(principals)} if marking else {})
+            policy = ep.EmployeePermissionPolicy.from_file(out / "employee_policy.json")
+            self.assertNotIn("full_read", json.loads(
+                (out / "employee_policy.json").read_text("utf-8")))
+            held = ep.EmployeePermissionResolver(
+                policy, ep.PortalAccessSnapshot(out / "portal_access.json")).resolve(
+                ep.EmployeePrincipal(TID, OID))
+            self.assertEqual(held.actor.principals, frozenset({*principals, "employee:" + OID}))
+            self.assertEqual(held.portal_role, "SUPER_ADMIN")
+        with self.assertRaises(ValueError):
+            tool.build(CLAIMS, role="purchasing", full_read=True)
+
+    def test_a_department_member_is_routed_by_its_department_never_as_an_admin(self):
+        from operating.briefing import Routing
+        for role, (principals, marking) in tool.ROLES.items():
+            out = self.tmp / f"member-{role}"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(tool.main(["--out", str(out), "--role", role,
+                                            "--department-member"], environ=ENV), 0)
+            doc = json.loads((out / "host.json").read_text("utf-8"))
+            self.assertFalse(doc["entra_directory"])
+            held = ep.EmployeePermissionResolver(
+                ep.EmployeePermissionPolicy.from_file(out / "employee_policy.json"),
+                ep.PortalAccessSnapshot(out / "portal_access.json")).resolve(
+                ep.EmployeePrincipal(TID, OID))
+            self.assertEqual(held.actor.principals, frozenset({*principals, "employee:" + OID}))
+            self.assertNotIn("finance", json.dumps(doc["marking_grants"]))
+            routing = Routing.of(held)
+            self.assertFalse(routing.all_types)
+            self.assertEqual(routing.departments, {tool.ROLE_DEPARTMENTS[role]})
+        with self.assertRaises(ValueError):
+            tool.build(CLAIMS, department_member=True)
+
     def test_the_owner_reader_is_granted_exactly_the_repositories_the_registry_names(self):
         from integrations.live_source_guard import Actor, LiveSourceAudience
 

@@ -87,6 +87,8 @@ class FakeTeamsGraph:
         self.channel_types = {GENERAL: "standard", PRIVATE: "private"}
         # The tenant hosting CHAT (ENV's own by default; a cross-tenant chat otherwise).
         self.chat_tenant = ENV["MICROSOFT_GRAPH_TENANT_ID"]
+        # The chat listing's lastUpdatedDateTime (members or name changed), when set.
+        self.chat_updated: str | None = None
         # Channels whose delta, while they hold no message, answers an empty page and a
         # nextLink Graph then refuses with 400 (live 2026-10-27).
         self.refused_empty_delta: set[str] = set()
@@ -170,7 +172,9 @@ class FakeTeamsGraph:
         if re.fullmatch(r"/v1\.0/users/[^/]+/joinedTeams", path):
             return j(200, {"value": [{"id": TEAM}]})
         if path == f"/v1.0/users/{U_COS}/chats":
-            return j(200, {"value": [{"id": CHAT, "chatType": "oneOnOne"}]})
+            return j(200, {"value": [{"id": CHAT, "chatType": "oneOnOne",
+                                      **({"lastUpdatedDateTime": self.chat_updated}
+                                         if self.chat_updated else {})}]})
         if re.fullmatch(r"/v1\.0/users/[^/]+/chats", path):
             return j(200, {"value": []})
         if path == "/v1.0/teams":
@@ -249,9 +253,11 @@ def audience() -> LiveSourceAudience:
 
 
 def scope(allowlist: tuple[str, ...] = (COS, VINCE), **caps) -> TeamsScope:
+    """The test scope: every conversation is read every run (``refresh_hours`` 0) unless
+    a test sets the schedule's own window."""
     return TeamsScope({"schema": capture_teams.SCOPE_SCHEMA,
                        "members": [{"address": COS, "joined_teams": True}],
-                       "member_chats": "mail_allowlist", **caps},
+                       "member_chats": "mail_allowlist", "refresh_hours": 0, **caps},
                       allowlist=MailScope(allowlist))
 
 
@@ -314,6 +320,13 @@ class CaptureCase(unittest.TestCase):
     def by_kind(self, run: dict) -> dict[str, dict]:
         return {f"{c['kind']}:{c['membership']}": c for c in run["conversations"]}
 
+    def retry_passed(self) -> None:
+        """Every conversation's Retry-After (429/503) is over: it is due again."""
+        state = json.loads(self.store.state(capture_teams.SEEN) or "{}")
+        for entry in (state.get("units") or {}).values():
+            entry.pop("retry", None)
+        self.store.set_state(capture_teams.SEEN, json.dumps(state))
+
 
 class GetOnlyTests(CaptureCase):
     def test_every_request_is_a_grammar_get_and_writes_are_refused(self):
@@ -354,10 +367,11 @@ class ChatScopeTests(CaptureCase):
         self.graph.calls.clear()
         self.capture.run(scope(allowlist=(COS,)))
         self.assertEqual(chat_listings(self.graph), {U_COS})
-        # Channels and chats share the conversation cap in turn.
-        run = self.capture.run(scope(max_conversations=2))
-        self.assertEqual(sorted(c["kind"] for c in run["conversations"]), ["channel", "chat"])
-        self.assertIn("cap:conversation_cap", run["discovery"]["reasons"])
+        # The shipped scope sets no conversation cap; an invalid one fails closed.
+        self.assertIsNone(TeamsScope.from_file(capture_teams.DEFAULT_SCOPE).max_conversations)
+        for bad in (0, True, "5", 1_000_001):
+            with self.assertRaises(capture_teams.TeamsCaptureError):
+                scope(max_conversations=bad)
 
     def test_an_unknown_or_unbounded_chat_scope_fails_closed(self):
         base = {"schema": capture_teams.SCOPE_SCHEMA, "members": [{"address": COS}]}
@@ -373,9 +387,10 @@ class ChatScopeTests(CaptureCase):
             self.assertEqual(err.exception.code, code)
 
 
-class RotationTests(CaptureCase):
-    """Over ``max_conversations`` the runs rotate on a stored cursor: every conversation
-    found is read, discovery is complete once a pass has read them all."""
+class ScheduleTests(CaptureCase):
+    """No fixed cap: every run reads the conversations due, most due first (``_schedule``),
+    keyed on the store's ledger, so every conversation found is read within
+    ``refresh_hours`` and the oldest membership is refreshed first."""
 
     def channels(self, threads: list[str]) -> None:
         self.graph.channel_types = dict.fromkeys(threads, "standard")
@@ -389,23 +404,23 @@ class RotationTests(CaptureCase):
             r"/v1\.0/(?:teams/[^/]+/channels|chats)/([^/]+)/messages(?:/delta)?",
             unquote(urlsplit(u).path)))]
 
-    def run_until_complete(self, cap: int, total: int, change=None) -> list[list[str]]:
+    def run_until_complete(self, cap: int | None, total: int, change=None
+                           ) -> list[list[str]]:
         reads: list[list[str]] = []
         for _ in range(total + 2):
             self.graph.calls.clear()
-            run = self.capture.run(scope(max_conversations=cap))
+            run = self.capture.run(scope(refresh_hours=12,
+                                         **({"max_conversations": cap} if cap else {})))
             reads.append(self.listed())
             found = sorted(self.graph.channel_types) + [CHAT]
             discovery = run["discovery"]
             self.assertEqual(discovery["discovered_total"], len(found))
             # Only the conversations due are read, each once.
-            self.assertEqual(len(reads[-1]), min(cap, len(found)))
             self.assertEqual(len(set(reads[-1])), len(reads[-1]))
             self.assertEqual([self.unit(t)[1] for t in reads[-1]],
                              [c["unit"] for c in run["conversations"]])
             unread = set(found) - {t for r in reads for t in r}
             self.assertEqual(discovery["unvisited"], len(unread))
-            self.assertEqual(discovery["status"], "incomplete" if unread else "complete")
             self.assertEqual(run["complete"], not unread)
             if not unread:
                 return reads
@@ -413,53 +428,106 @@ class RotationTests(CaptureCase):
                 change(len(reads))
         self.fail(f"discovery never complete in {len(reads)} runs")
 
-    def test_repeated_capped_runs_read_every_conversation_at_any_cardinality(self):
-        for total in (1, 10, 60):
-            with self.subTest(total=total):
-                self.tearDown()
-                self.setUp()
-                self.channels([f"19:rot{n:03d}@thread.tacv2" for n in range(total - 1)])
-                reads = self.run_until_complete(4, total)
-                channels = {t for r in reads for t in r if t != CHAT}
-                self.assertEqual(channels, set(self.graph.channel_types))
-                # Channels and chats in turn: the one chat takes a place in every run.
-                self.assertEqual(len(reads), 1 if total <= 4 else -(-(total - 1) // 3))
-                # The next pass starts where this one stopped, never over the same window.
-                self.graph.calls.clear()
-                run = self.capture.run(scope(max_conversations=4))
-                if total > 4:
-                    self.assertIn("cap:conversation_cap", run["discovery"]["reasons"])
-                    self.assertNotEqual(self.listed(), reads[-1])
+    def ledger(self) -> dict:
+        return json.loads(self.store.state(capture_teams.SEEN))["units"]
 
-    def test_rotation_keys_on_ids_so_added_or_removed_conversations_skip_nothing(self):
+    def age(self, thread: str, *, seen: float | None = None, acl: float | None = None,
+            activity: float | None = None) -> None:
+        """Date a conversation's last settled read, membership or newest message back by
+        that many hours."""
+        now = datetime.now(timezone.utc)
+
+        def ago(hours: float) -> str:
+            return (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        kind, unit = self.unit(thread)
+        ledger = self.ledger()
+        entry = ledger.setdefault(unit, {})
+        for key, hours in (("seen", seen), ("activity", activity)):
+            if hours is not None:
+                entry[key] = ago(hours)
+        self.store.set_state(capture_teams.SEEN, json.dumps(
+            {"version": capture_teams.SEEN_VERSION, "units": ledger}))
+        if acl is not None:
+            with sqlite3.connect(self.store.path) as db:
+                db.execute("UPDATE unit_acl SET recorded_at = ? WHERE kind = ? AND unit = ?",
+                           (ago(acl), kind, unit))
+
+    def test_runs_read_every_conversation_at_any_cardinality_with_or_without_a_cap(self):
+        for total in (1, 10, 60):
+            for cap in (None, 4):
+                with self.subTest(total=total, cap=cap):
+                    self.tearDown()
+                    self.setUp()
+                    self.channels([f"19:rot{n:03d}@thread.tacv2" for n in range(total - 1)])
+                    reads = self.run_until_complete(cap, total)
+                    self.assertEqual(sorted(t for r in reads for t in r),
+                                     sorted([*self.graph.channel_types, CHAT]))
+                    self.assertEqual(len(reads), 1 if cap is None else -(-total // cap))
+                    # Read within refresh_hours: the next run has nothing due.
+                    self.graph.calls.clear()
+                    run = self.capture.run(scope(refresh_hours=12, **(
+                        {"max_conversations": cap} if cap else {})))
+                    self.assertEqual((self.listed(), run["complete"]), ([], True))
+                    self.assertEqual(run["sweep"]["never_read"], 0)
+
+    def test_the_oldest_membership_goes_first_then_the_active_then_the_longest_unseen(self):
+        threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(8)]
+        self.channels(threads)
+        self.run_until_complete(None, 9)
+        acl_old, acl_older, active_new, active_old, stale, staler = threads[:6]
+        self.age(acl_old, acl=37)          # past 3/4 of the 48-hour bound
+        self.age(acl_older, acl=47)
+        self.age(active_new, activity=1)
+        self.age(active_old, activity=100)
+        self.age(stale, seen=13, acl=13)   # past refresh_hours (12)
+        self.age(staler, seen=30, acl=30)
+        self.graph.calls.clear()
+        run = self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(self.listed(), [acl_older, acl_old, active_new, active_old, staler,
+                                         stale])
+        self.assertTrue(run["complete"])
+        self.assertLess(run["sweep"]["membership_oldest_hours"], 1)
+        self.assertEqual(run["sweep"]["membership_past_bound"], 0)
+        # Under a cap the membership past the bound is still read first.
+        self.age(acl_old, acl=49)
+        self.age(staler, seen=30, acl=30)
+        self.graph.calls.clear()
+        run = self.capture.run(scope(refresh_hours=12, max_conversations=1))
+        self.assertEqual(self.listed(), [acl_old])
+        self.assertIn("cap:conversation_cap", run["discovery"]["reasons"])
+
+    def test_a_chat_whose_members_graph_changed_is_read_again_first(self):
+        self.capture.run(scope(refresh_hours=12))
+        later = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z")
+        self.graph.chat_updated = later
+        self.graph.calls.clear()
+        self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(self.listed(), [CHAT])   # the channels are fresh and wait
+        self.assertIn("lastUpdatedDateTime", unquote(next(
+            u for u in self.graph.gets() if u.split("?")[0].endswith("/chats"))))
+
+    def test_the_ledger_keys_on_ids_so_added_or_removed_conversations_skip_nothing(self):
         threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(1, 10)]
         self.channels(threads)
-        # An unreadable stored cursor starts the rotation over: nothing counts as read.
-        self.store.set_state(capture_teams.ROTATION, "{not json")
+        # An unreadable ledger starts over: nothing counts as read.
+        self.store.set_state(capture_teams.SEEN, "{not json")
         added, removed = "19:rot000@thread.tacv2", "19:rot009@thread.tacv2"
 
         def change(runs: int) -> None:
-            if runs == 1:   # behind the cursor, and one not read yet
+            if runs == 1:
                 self.channels([added] + [t for t in threads if t != removed])
         reads = self.run_until_complete(4, len(threads) + 2, change)
-        # Every channel listed is read once in the pass, the one added behind the cursor
-        # too; the one removed before its turn is not waited for.
         channels = [t for r in reads for t in r if t != CHAT]
-        self.assertEqual(sorted(channels), sorted(self.graph.channel_types))
         self.assertIn(added, channels)
-        self.assertEqual(len(reads), 3)
-
-    def test_an_old_layout_rotation_restarts_the_pass_and_never_reports_it_complete(self):
-        threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(1, 10)]
-        self.channels(threads)
-        # Unversioned (old layout): it claims every conversation visited. Read as such,
-        # the first run would report the pass complete after reading only 4 of 10.
-        every = [self.unit(t)[1] for t in [*threads, CHAT]]
-        self.store.set_state(capture_teams.ROTATION, json.dumps(
-            {"channel": every[2], "next": "channel", "visited": every}))
-        reads = self.run_until_complete(4, len(every))   # nothing counts as visited
-        self.assertEqual(len(reads), 3)
-        self.assertEqual({t for r in reads for t in r}, {*threads, CHAT})
+        self.assertLessEqual(set(self.graph.channel_types), set(channels))
+        # A ledger of another layout claims nothing read: every conversation is due.
+        self.store.set_state(capture_teams.SEEN, json.dumps(
+            {"units": {self.unit(t)[1]: {"seen": "2099-01-01T00:00:00.000000Z"}
+                       for t in [*self.graph.channel_types, CHAT]}}))
+        self.graph.calls.clear()
+        self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(len(self.listed()), len(self.graph.channel_types) + 1)
 
     def test_a_conversation_cut_short_keeps_the_pass_open_until_its_read_completes(self):
         threads = [f"19:rot{n:03d}@thread.tacv2" for n in range(8)]
@@ -467,33 +535,35 @@ class RotationTests(CaptureCase):
         cut = threads[5]
         self.graph.post_root(cut, "5001", replies=2)
         cut_unit = self.unit(cut)[1]
-
-        def runs(count: int, **caps) -> list[tuple[bool, int, dict | None]]:
-            out = []
-            for _ in range(count):
-                run = self.capture.run(scope(max_conversations=4, **caps))
-                read = {c["unit"]: c for c in run["conversations"]}.get(cut_unit)
-                discovery = run["discovery"]
-                self.assertEqual(run["complete"], discovery["status"] == "complete")
-                self.assertEqual("cap:conversation_cap" in discovery["reasons"],
-                                 discovery["unvisited"] > 0)
-                out.append((run["complete"], discovery["unvisited"], read))
-            return out
-
-        # Run 2 cuts the channel (reply cap); run 3 reads the rest of the pass but the cut
-        # channel is still incomplete, so no run reports the pass complete.
-        capped = runs(5, max_replies_per_message=1)
-        self.assertEqual([read is not None for _, _, read in capped],
-                         [False, True, False, False, True])
-        self.assertEqual(capped[1][2]["reasons"], ["cap:reply_cap"])
-        self.assertEqual([(done, left) for done, left, _ in capped[2:]],
-                         [(False, 1), (False, 1), (False, 1)])
-        # Once the cap fits, the pass completes in the run that reads the channel complete.
-        fits = runs(3)
-        self.assertEqual([(done, left, read is not None) for done, left, read in fits],
-                         [(False, 1, False), (False, 1, False), (True, 0, True)])
-        self.assertEqual(fits[-1][2]["status"], "complete")
+        for _ in range(3):   # over the reply cap every run: read again, never complete
+            run = self.capture.run(scope(refresh_hours=12, max_replies_per_message=1))
+            read = {c["unit"]: c for c in run["conversations"]}
+            self.assertEqual(read[cut_unit]["reasons"], ["cap:reply_cap"])
+            self.assertEqual((run["complete"], run["discovery"]["unvisited"]), (False, 1))
+        run = self.capture.run(scope(refresh_hours=12))   # the cap fits: the pass completes
+        self.assertEqual([c["unit"] for c in run["conversations"]], [cut_unit])
+        self.assertEqual((run["complete"], run["discovery"]["unvisited"]), (True, 0))
         self.assertEqual(len(self.visible(MEMBER, cut)), 3)   # the root and both replies
+
+    def test_a_reply_added_to_an_older_root_is_read_on_the_next_round(self):
+        # Messages dated now: the root is active, its replies are listed again each round.
+        now = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.graph._stamp = lambda: (now + timedelta(seconds=len(self.graph.calls))
+                                     ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        self.graph.post_root(GENERAL, "1003", "fresh root")
+        self.capture.run(scope(refresh_hours=12))
+        self.assertEqual(len([r for r in self.visible(MEMBER, GENERAL)
+                              if r["row"]["reply_to_id"] == "1003"]), 0)
+        # Graph's delta lists no root (only a reply was added): the reply is read anyway.
+        self.graph.replies[(GENERAL, "1003")] = [self.graph.message(
+            "10031", "late reply", channel=GENERAL, reply_to="1003")]
+        self.age(GENERAL, seen=13)
+        run = self.capture.run(scope(refresh_hours=12))
+        general = [c for c in run["conversations"] if c["unit"] == self.unit(GENERAL)[1]][0]
+        self.assertEqual(general["round"], "incremental")
+        self.assertGreater(general["counts"]["replies_read"], 0)
+        self.assertEqual([r["row"]["id"] for r in self.visible(MEMBER, GENERAL)
+                          if r["row"]["reply_to_id"] == "1003"], ["10031"])
 
 
 class PagingTests(CaptureCase):
@@ -737,6 +807,7 @@ class AudienceTests(CaptureCase):
         self.assertEqual(run["channel:private"]["status"], "incomplete")
         self.assertEqual(self.gap("channelMessages"), "source_capture_incomplete")
         self.graph.failing = {}
+        self.retry_passed()
         self.capture.run(scope())
         handles = [r["citation"] for r in self.visible(VINCE_ONLY, PRIVATE)]
         self.assertEqual(len(handles), 1)
@@ -841,6 +912,7 @@ class TransientMembersReadTests(CaptureCase):
                 self.graph.failing = ({} if case == "timeout"
                                       else {self.CHAT_MEMBERS: int(case)})
                 capture = self.capture_with(timing_out) if case == "timeout" else self.capture
+                self.retry_passed()
                 run = capture.run(scope())
                 chat = self.by_kind(run)["chat:oneOnOne"]
                 self.assert_kept(chat, before, handles)
@@ -922,6 +994,7 @@ class TransientMembersReadTests(CaptureCase):
         self.capture.run(scope())
         self.assertEqual(len(self.visible(VINCE_ONLY, CHAT)), 2)
         self.graph.failing = {}
+        self.retry_passed()
         chat = self.by_kind(self.capture.run(scope()))["chat:oneOnOne"]
         self.assertEqual(chat["status"], "complete")
         self.assertEqual(self.visible(VINCE_ONLY, CHAT), [])
@@ -1065,7 +1138,10 @@ class ProbeTests(unittest.TestCase):
                                  ["cap:conversation_cap"])
                 self.assertTrue(report["pass"]["unvisited_falling"], report["pass"])
                 if cut:
-                    self.assertEqual(report["pass"]["runs"], 12)
+                    # Once a run read every conversation due, another would only cut the
+                    # same one again: the invocation stops (the next one reads it again).
+                    self.assertEqual((report["pass"]["runs"], report["pass"]["stop"]),
+                                     (3, "read_all_due"))
                     self.assertEqual(report["pass"]["unvisited"][-1], 1)
                     self.assertFalse(report["pass"]["last_run_complete"])
                     self.assertEqual(report["status"], "incomplete")
@@ -1073,8 +1149,10 @@ class ProbeTests(unittest.TestCase):
                         self.SPEC, code, report)))
                     self.assertFalse(lv.completeness(self.SPEC, report)["complete"])
                 else:
-                    # 16 a run, the one chat among them every run.
-                    self.assertEqual(report["pass"]["unvisited"], [27, 12, 0])
+                    # 16 a run, each conversation once.
+                    self.assertEqual(report["pass"]["unvisited"], [27, 11, 0])
+                    self.assertEqual(report["sweep"]["never_read"], 0)
+                    self.assertEqual(report["sweep"]["eta_hours"], 0.0)
                     self.assertEqual(lv.check_expectations(self.SPEC, code, report), [],
                                      report)
                     self.assertTrue(lv.completeness(self.SPEC, report)["complete"])
@@ -1100,7 +1178,7 @@ class ProbeTests(unittest.TestCase):
             confirm(host, [*graph.channel_types, *new])
             code, report = self.run_spec(sender, host, confirmed=False)
         unvisited = report["pass"]["unvisited"]
-        self.assertEqual(unvisited, [27, 12, 0])                       # never rose
+        self.assertEqual(unvisited, [27, 11, 0])                       # never rose
         self.assertEqual(report["pass"]["unvisited_first_run"], unvisited)
         self.assertEqual(report["content"]["confirmed_not_cleared"], 0)   # no confirmation
         self.assertFalse([u for _m, u in graph.calls if "new0" in unquote(u)])
@@ -1113,7 +1191,7 @@ class ProbeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as host:
             day1 = self.run_spec(graph, host, runs="1", max_runs="2")[1]   # 32 of 43 read
             code, day2 = self.run_spec(graph, host)
-        self.assertEqual((day1["status"], day1["pass"]["unvisited"]), ("incomplete", [27, 12]))
+        self.assertEqual((day1["status"], day1["pass"]["unvisited"]), ("incomplete", [27, 11]))
         # Day 2's first run completes the carried pass: its forced --runs 2 never starts
         # the next pass (whose unvisited would climb back to 27).
         self.assertEqual((day2["storage"]["carried"], day2["pass"]["runs"],
@@ -1194,11 +1272,17 @@ class ProbeTests(unittest.TestCase):
 
     def test_concurrent_conversations_overshoot_a_spent_budget_by_at_most_one_read_each(self):
         # Eight at a time: a conversation that started before the deadline was seen may
-        # send the one read it had begun (its members read); none starts after it.
+        # send the one read it had begun (its members read); none starts after it. The
+        # deadline falls after 6 reads: a conversation starts only while fewer have been
+        # sent and each one that ended sent at least one, so at most 5 + WORKERS of the 16
+        # due can ever start, however the threads interleave on a loaded host (at 20 reads
+        # all 16 could start before the deadline, the run then taking every one).
+        self.assertLess(6 - 1 + capture_teams.WORKERS, 16)
         self.spent_budget_case(workers=capture_teams.WORKERS,
-                               overshoot=capture_teams.WORKERS - 1)
+                               overshoot=capture_teams.WORKERS - 1, deadline_reads=6)
 
-    def spent_budget_case(self, *, workers: int, overshoot: int) -> None:
+    def spent_budget_case(self, *, workers: int, overshoot: int,
+                          deadline_reads: int = 20) -> None:
         graph = self.fixture()
         self.many(graph, [f"19:many{n:03d}@thread.tacv2" for n in range(40)])
         parser = argparse.ArgumentParser()
@@ -1208,22 +1292,25 @@ class ProbeTests(unittest.TestCase):
             confirm(host, list(graph.channel_types))
             args = parser.parse_args(self.argv(host)[1:] + ["--workers", str(workers)])
             # Each conversation read (members or messages) after the census's last read
-            # (the activity report) takes 315 s: the 6300 s budget is spent after 20 (a
-            # conversation's members read, before its messages), inside run 1.
+            # (the activity report) takes 6300 / deadline_reads s: the 6300 s budget is
+            # spent after deadline_reads of them (at 20: a conversation's members read,
+            # before its messages), inside run 1.
             def reads() -> list[str]:
                 urls = [u for _m, u in graph.calls]
                 report = [i for i, u in enumerate(urls) if "/reports/" in urlsplit(u).path]
                 return [u for u in urls[report[0] + 1:] if re.search(
                     r"/(messages|members)", urlsplit(u).path)] if report else []
             spent = capture_teams.run_cli(args, environ=env, sender=graph,
-                                          clock=lambda: 315.0 * len(reads()))
+                                          clock=lambda: 6300.0 / deadline_reads
+                                          * len(reads()))
             captured = reads()
             after = capture_teams.run_cli(args, environ=env, sender=graph, clock=lambda: 0.0)
         self.assertEqual((spent["status"], spent["pass"]["stop"], spent["budget"]),
                          ("incomplete", "budget", {"seconds": 6300.0, "exhausted": True}))
         self.assertEqual(spent["pass"]["runs"], 1)   # no run starts after it, --runs or not
-        self.assertGreaterEqual(len(captured), 20)   # no page read past the deadline
-        self.assertLessEqual(len(captured), 20 + overshoot)
+        # no page read past the deadline
+        self.assertGreaterEqual(len(captured), deadline_reads)
+        self.assertLessEqual(len(captured), deadline_reads + overshoot)
         # The read under way pauses on its cursor; the conversations due after it wait.
         run = spent["runs"][0]
         self.assertIn(capture_teams.TIME_BUDGET, run["discovery"]["reasons"])

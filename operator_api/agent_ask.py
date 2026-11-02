@@ -35,13 +35,17 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Callable, Mapping, Optional
 
+from operating import deep_investigation as deep
+
 AGENT = "plx.agent.investigate"
-ASK_SECONDS = 150          # the hard cap of one Ask's session
-MAX_TURNS = 25             # as the scoreboard's sessions
+ASK_SECONDS = deep.SESSION_SECONDS   # the hard cap of one Ask's session, and its budget
+MAX_TURNS = deep.MAX_TURNS           # as the scoreboard's sessions
+MAX_STEPS = deep.MAX_STEPS           # tool calls besides the answer gate's
 CATALOG_SECONDS = 3600     # a reader's tool catalog is listed again after this
 
 
@@ -120,6 +124,44 @@ class AskRun:
     seconds: float
     usage: dict[str, Any] = field(default_factory=dict)
     final_reply: dict[str, Any] = field(default_factory=dict)
+    # why the session itself failed (``session_failure``): the assistant was unavailable,
+    # which is never "no records answer this"; None for a session that ran
+    failure: Optional[str] = None
+
+
+# The Claude Code CLI's own words when the login's quota is spent ("You've hit your weekly
+# limit", "Claude AI usage limit reached") or the login is not usable; matched only on a
+# session that produced no answer and ended in an error (``session_failure``).
+LIMIT_TEXT = re.compile(r"hit your (?:\w+[ -])?limit|usage limit|limit reached|rate[ -]limit"
+                        r"|out of (?:extra )?usage|quota (?:exceeded|reached)|overloaded",
+                        re.I)
+AUTH_TEXT = re.compile(r"invalid api key|run /login|please log ?in|not logged in"
+                       r"|oauth token (?:has )?expired|authentication[_ ](?:error|failed)"
+                       r"|unauthori[sz]ed|credit balance is too low", re.I)
+FAILURES = ("usage_limit", "sign_in", "timeout", "error")
+
+
+def session_failure(final_text: str, usage: Mapping[str, Any], events: list,
+                    answer: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Why a session failed as a session (a code of ``FAILURES``), or None when it ran:
+    ``usage_limit`` (the CLI says the login's limit is hit), ``sign_in`` (the login is not
+    usable), ``timeout`` (stopped at the cap with nothing passed is the caller's), ``error``
+    (the CLI ended in an error or a non-zero exit with no answer). A session whose answer
+    block parsed is never a failure."""
+    if answer is not None:
+        return None
+    text = final_text or ""
+    errored = bool(usage.get("is_error")) or usage.get("exit_code") not in (0, None) \
+        or (not events and not text.strip())
+    if usage.get("subtype") == "timeout":
+        return None
+    if not errored and events:
+        return None
+    if LIMIT_TEXT.search(text):
+        return "usage_limit"
+    if AUTH_TEXT.search(text):
+        return "sign_in"
+    return "error" if errored else None
 
 
 def last_decision(events: list[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
@@ -228,9 +270,12 @@ class AgentAsk:
         if self._agent_for is not None:
             return self._agent_for(on_line)
         from operating import agent_session as runner
+        # The deep-investigation budget is the Ask's own cap: research ends before it, so
+        # the session submits what it established rather than being stopped mid-search.
         return runner.ClaudeCodeAgent(binary=self.claude_bin, model=self.model,
                                       timeout=int(self.seconds), max_turns=self.max_turns,
-                                      spawn=runner.streaming_spawn(on_line))
+                                      spawn=runner.streaming_spawn(on_line),
+                                      budget_seconds=self.seconds, max_steps=MAX_STEPS)
 
     def read_source(self, session: Any, handle: str, text_offset: int = 0
                     ) -> dict[str, Any]:
@@ -322,14 +367,24 @@ class AgentAsk:
             "seconds": round(time.monotonic() - started, 1), "stopped": stopped,
             "subtype": run.usage.get("subtype"), "turns": run.usage.get("num_turns"),
             "tool_calls": len(run.events), "answer_parsed": answer is not None,
+            "steps": (run.agent.get("budget") or {}).get("steps_used"),
+            "refused_after_budget": (run.agent.get("budget") or {}).get(
+                "refused_after_budget"),
             "gate": (run.agent.get("answer_gate") or {}).get("outcomes"),
             "removed_sentences": reply.get("removed_sentences"),
             "withheld_values": len(reply.get("withheld") or ()),
             "prose_chars": len(reply_prose(run.final_text, answer))}))
+        # the CLI's own message (a limit or sign-in notice) before the gate screened it
+        failure = session_failure(str(reply.get("agent_final_text") or run.final_text or ""),
+                                  run.usage, run.events, answer)
+        if failure is not None:
+            logging.getLogger("operator_api.ask").warning(json.dumps(
+                {"session_failed": failure, "subtype": run.usage.get("subtype"),
+                 "exit_code": run.usage.get("exit_code")}))
         return AskRun(final_text=run.final_text, answer=answer, events=run.events,
                       decision=last_decision(run.events), stopped=stopped,
                       seconds=time.monotonic() - started, usage=dict(run.usage),
-                      final_reply=reply)
+                      final_reply=reply, failure=failure)
 
 
 def reply_prose(final_text: str, answer: Optional[Mapping[str, Any]]) -> str:

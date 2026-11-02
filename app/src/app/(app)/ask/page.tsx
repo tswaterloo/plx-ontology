@@ -8,11 +8,9 @@ import { AskBox } from "@/components/ask-box";
 import { takePending } from "@/lib/pending";
 import { useThread } from "@/lib/thread";
 
-const STARTERS = [
-  "Which purchase orders are late, and why?",
-  "why is the soap order from that canadian guy late",
-  "landed cost on the latest shea butter lot",
-];
+import { VERIFIED_EXAMPLES } from "@/lib/examples";
+
+const STARTERS = VERIFIED_EXAMPLES;
 
 function Ask() {
   const params = useSearchParams();
@@ -41,20 +39,37 @@ function Ask() {
     if (nearBottom || last?.phase === "thinking") el.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [last?.streamed, last?.phase, turns.length]);
 
+  const empty = turns.length === 0;
+  const composer = (
+    <>
+      <AskBox
+        size="md"
+        dropUp={!empty}
+        onSubmit={(question, pins) => run(question, pins[0]?.object_id)}
+        busy={busy}
+        onStop={stop}
+        autoFocus={!q}
+        placeholder={turns.length ? "Ask a follow-up…" : "Ask anything…"}
+      />
+      <p className="mt-2 text-center text-meta text-muted">Answers use records and messages you can open. Check the source before you act.</p>
+    </>
+  );
+
   return (
     <div className="flex flex-1 flex-col">
-      <div className="mx-auto w-full max-w-3xl flex-1 px-4 pt-6 pb-40 sm:px-6">
-        {turns.length === 0 ? (
-          <div className="flex flex-col items-center pt-[12vh] text-center">
-            <h1 className="text-2xl font-semibold tracking-tight">What do you want to know?</h1>
-            <p className="mt-2 text-muted">Ask in your own words. Follow-up questions keep the context.</p>
-            <div className="mt-6 flex flex-wrap justify-center gap-2">
+      <div className={`mx-auto w-full max-w-[760px] flex-1 px-4 pt-6 sm:px-6 ${empty ? "pb-16" : "pb-44"}`}>
+        {empty ? (
+          <div className="flex flex-col items-center pt-[14vh] text-center">
+            <h1 className="text-title">What do you want to know?</h1>
+            <p className="mt-2 text-body text-muted">Ask about any order, supplier, customer or lot. Plain words and typos are fine.</p>
+            <div className="mt-6 w-full text-left">{composer}</div>
+            <div className="mt-5 flex flex-wrap justify-center gap-2" aria-label="Example questions">
               {STARTERS.map((s) => (
                 <button
                   key={s}
                   type="button"
                   onClick={() => run(s)}
-                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-sm text-muted hover:border-border-strong hover:text-fg cursor-pointer"
+                  className="min-h-9 rounded-full border border-border bg-surface px-3 py-1.5 text-row text-muted hover:border-control hover:text-fg cursor-pointer"
                 >
                   {s}
                 </button>
@@ -62,7 +77,7 @@ function Ask() {
             </div>
           </div>
         ) : (
-          <div className="space-y-8" aria-live="off">
+          <div className="space-y-10" aria-live="off">
             <div className="flex justify-end">
               <button
                 type="button"
@@ -71,16 +86,16 @@ function Ask() {
                   started.current = null;
                   router.replace("/ask");
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs text-muted hover:bg-surface-2 hover:text-fg cursor-pointer"
+                className="inline-flex min-h-9 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-row text-muted hover:bg-surface-2 hover:text-fg cursor-pointer"
               >
-                <MessageSquarePlus className="size-3.5" aria-hidden /> New conversation
+                <MessageSquarePlus className="size-4" aria-hidden /> New conversation
               </button>
             </div>
             {turns.map((t) => (
               <div key={t.id} className="space-y-5">
                 <div className="flex justify-end">
                   <p
-                    className="max-w-[85%] rounded-2xl rounded-br-md bg-surface-2 px-4 py-2.5 text-[15px] leading-relaxed"
+                    className="max-w-[80%] rounded-2xl rounded-br-md bg-surface-2 px-4 py-2.5 text-body"
                     data-testid="user-question"
                   >
                     {t.question}
@@ -90,6 +105,7 @@ function Ask() {
                   turn={t}
                   onRetry={() => run(t.question)}
                   onPick={busy ? undefined : (c) => run(`I mean ${c.label}`, c.object_id)}
+                  onAsk={busy ? undefined : (q) => run(q)}
                 />
               </div>
             ))}
@@ -102,21 +118,11 @@ function Ask() {
         )}
         <div ref={bottom} />
       </div>
-      <div className="sticky bottom-0 z-20 bg-gradient-to-t from-bg via-bg to-transparent px-4 pt-6 pb-4 sm:px-6">
-        <div className="mx-auto w-full max-w-3xl">
-          <AskBox
-            size="md"
-            onSubmit={(question, pins) => run(question, pins[0]?.object_id)}
-            busy={busy}
-            onStop={stop}
-            autoFocus={!q}
-            placeholder={turns.length ? "Ask a follow-up…" : "Ask anything…"}
-          />
-          <p className="mt-2 text-center text-[11px] text-muted">
-            Answers come from PLX records and documents you can read. Check the sources before acting.
-          </p>
+      {!empty && (
+        <div className="sticky bottom-0 z-20 bg-gradient-to-t from-bg via-bg to-transparent px-4 pt-6 pb-4 sm:px-6">
+          <div className="mx-auto w-full max-w-[760px]">{composer}</div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

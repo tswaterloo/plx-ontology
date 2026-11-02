@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Answer, EvidenceTrail, PoTrail, Source } from "@/lib/types";
 import { AnswerCard, type Turn } from "./answer-card";
 import { EvidenceTrailCard } from "./evidence-trail";
@@ -39,20 +40,34 @@ const po: PoTrail = {
 
 const trail: EvidenceTrail = { kind: "purchase_order", title: "How we know: PO 300001", trails: [po], hidden_steps: 2, hidden_message: "2 more steps in places you can't open." };
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("EvidenceTrailCard", () => {
-  it("lists the steps in order, each opening its source, with the ETA badge and the next step", () => {
+  it("puts the verdict first (rule behind a button), then the steps newest first, four then 'Show all', each opening the evidence drawer", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
     render(<EvidenceTrailCard trail={trail} />);
     const card = screen.getByTestId("evidence-trail");
-    const steps = within(card).getAllByTestId("trail-step");
-    expect(steps.map((s) => s.dataset.kind)).toEqual(["due_date", "po_issued", "confirmation", "revision", "follow_up", "verdict"]);
-    const confirm = within(steps[2]).getByRole("link");
-    expect(confirm).toHaveAttribute("href", "/source?handle=graph-mail%3A%2F%2Fb%2Fa");
-    expect(confirm).toHaveAttribute("rel", "noopener noreferrer");
-    expect(steps[5]).toHaveTextContent("Rule: an open purchase order is late");
-    expect(steps[5]).toHaveTextContent("Computed from the cited records");
-    expect(steps[4]).toHaveTextContent("Machine-read reference (a lead)");
-    expect(within(card).getByTestId("eta-check")).toHaveTextContent("ETA confirmed by the vendor");
-    expect(within(card).getByRole("link", { name: /Open the confirmation/ })).toHaveAttribute("href", "/source?handle=graph-mail%3A%2F%2Fb%2Fc");
+    const verdict = within(card).getByTestId("trail-verdict");
+    expect(verdict).toHaveTextContent("Late: open on 1 Feb 2099, past the needed-by date 15 Jan 2099 (17 days).");
+    // the rule is behind "Rule", never printed under every verdict
+    expect(card).not.toHaveTextContent("Rule: an open purchase order");
+    await userEvent.click(within(verdict).getByRole("button", { name: /Rule/ }));
+    expect(verdict).toHaveTextContent("Late means still open after the needed-by date");
+    let steps = within(card).getAllByTestId("trail-step");
+    expect(steps.map((s) => s.dataset.kind)).toEqual(["follow_up", "revision", "confirmation", "po_issued"]);
+    await userEvent.click(within(card).getByTestId("trail-show-all"));
+    steps = within(card).getAllByTestId("trail-step");
+    expect(steps.map((s) => s.dataset.kind)).toEqual(["follow_up", "revision", "confirmation", "po_issued", "due_date"]);
+    // a mention is said as not a confirmation; a confirmed step carries no check words
+    expect(steps[0]).toHaveTextContent("Mentions this record; not a confirmation");
+    expect(steps[0]).not.toHaveTextContent(/machine-read|a lead/i);
+    expect(steps[2]).not.toHaveTextContent(/Read from the record/);
+    // a step opens the evidence in a drawer, never a new tab
+    expect(card.querySelector('a[target="_blank"]')).toBeNull();
+    await userEvent.click(within(steps[2]).getByRole("button"));
+    expect(await screen.findByTestId("evidence-drawer")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(within(card).getByTestId("eta-check")).toHaveTextContent("Date confirmed");
     const action = within(card).getByTestId("next-action");
     expect(action).toHaveTextContent("ask the vendor (Bob <bob@vendor.example>) for a new date");
     expect(action).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
@@ -61,9 +76,29 @@ describe("EvidenceTrailCard", () => {
 
   it("never links an unsafe source URL", () => {
     const { container } = render(<EvidenceTrailCard trail={trail} />);
-    const step = screen.getAllByTestId("trail-step")[4];
-    expect(within(step).queryByRole("link")).toBeNull();
+    expect(container.querySelector("a[href^='javascript']")).toBeNull();
     expect(container.innerHTML).not.toContain("javascript:");
+  });
+
+  it("merges a 'Goods received' step into its partial receipt and collapses repeated messages of one thread", async () => {
+    const mailStep = (at: string, title: string) => ({ kind: "follow_up" as const, at, title, source: src(`graph-mail://b/${at}`, "Email message", "Email"), check: "lead" });
+    const t: PoTrail = {
+      ...po,
+      steps: [
+        { kind: "receipt", at: "2099-06-24", title: "Goods received", source: src("bc://r/1", "BC production", "BC"), check: "read_from_record" },
+        { kind: "receipt", at: null, title: "Partial receipt: 1 of 18 KG", source: src("bc://r/1", "BC production", "BC"), check: "read_from_record" },
+        mailStep("2099-10-08", "Email: Billing Invoice - Payment Reminder as of 08-Oct"),
+        mailStep("2099-10-14", "Email: Billing Invoice - Second Payment Reminder as of 14-Oct"),
+        mailStep("2099-10-15", "Email: RE: Billing Invoice - Second Payment Reminder as of 14-Oct"),
+      ],
+    };
+    render(<EvidenceTrailCard trail={{ ...trail, trails: [t] }} />);
+    const card = screen.getByTestId("evidence-trail");
+    expect(card).not.toHaveTextContent("Goods received");
+    expect(card).toHaveTextContent("Receipt on 24 Jun 2099: 1 of 18 KG");
+    const steps = within(card).getAllByTestId("trail-step");
+    expect(steps).toHaveLength(2);
+    expect(steps[0]).toHaveTextContent("3 messages: Billing Invoice");
   });
 
   it("says no confirmation plainly and shows a materials table with typed gaps", () => {
@@ -88,6 +123,7 @@ describe("EvidenceTrailCard", () => {
     expect(within(table).getByRole("link", { name: "PO 300001" })).toHaveAttribute("href", "/object/PurchaseOrder/1");
     expect(table).toHaveTextContent("17 d late");
     expect(screen.getByTestId("trail-gaps")).toHaveTextContent("A purchase order line for Cap 20mm on AO 11231: not found on record");
+    expect(screen.getByTestId("eta-check")).toHaveTextContent("No confirmed date");
     expect(screen.getByTestId("eta-check")).toHaveTextContent("No vendor confirmation found");
     expect(screen.queryByTestId("next-action")).toBeNull();
     expect(screen.queryByTestId("trail-hidden")).toBeNull();
@@ -124,13 +160,14 @@ describe("EvidenceTrailCard", () => {
   it("labels a row whose lateness was not read as such", () => {
     const r = { assembly: { object_id: "a", type: "AssemblyOrder", label: "AO-1", open_url: "/o/a" }, item: { object_id: "i", type: "Product", label: "P-1", open_url: "/o/i" }, po: { object_id: "p", type: "PurchaseOrder", label: "PO 5", open_url: "/o/p" } };
     render(<EvidenceTrailCard trail={{ kind: "materials", title: "From the recorded links: 1 purchase order for this order's materials, 0 late", hidden_steps: 0, materials: [r] }} />);
-    expect(screen.getByTestId("materials")).toHaveTextContent("lateness not read");
+    expect(screen.getByTestId("materials")).toHaveTextContent("Lateness not read");
     expect(screen.getByTestId("evidence-trail")).toHaveTextContent("From the recorded links");
   });
 
   it("says plainly when the ETA is not determined", () => {
     render(<EvidenceTrailCard trail={{ ...trail, trails: [{ ...po, eta: { state: "not_determined", text: "Not determined: this purchase order has more dates than were read." } }] }} />);
-    expect(screen.getByTestId("eta-check")).toHaveTextContent("ETA not determined");
+    expect(screen.getByTestId("eta-check")).toHaveTextContent("Date unknown");
+    expect(screen.getByTestId("eta-check")).toHaveTextContent("Not determined: this purchase order has more dates than were read.");
   });
 
   it("renders nothing without a trail, and an answer without one still renders", () => {
@@ -168,17 +205,20 @@ describe("EvidenceTrailCard", () => {
     };
     render(<EvidenceTrailCard trail={why} />);
     const card = screen.getByTestId("evidence-trail");
+    // the verdict first, with its own caveat; no lateness rule on a why trail
+    const verdict = within(card).getByTestId("trail-verdict");
+    expect(verdict).toHaveTextContent("The hold or release decision is not in a record you can see");
+    expect(verdict).toHaveTextContent("Not established from records you can see");
+    expect(within(verdict).queryByRole("button", { name: /Rule/ })).toBeNull();
     const steps = within(card).getAllByTestId("trail-step");
-    expect(steps.map((s) => s.dataset.kind)).toEqual(["record_change", "communication", "document", "decision", "verdict"]);
-    expect(steps.map((s) => within(s).getAllByText(/./)[0].textContent)).toEqual(["Record", "Message", "Document", "Decision", "Verdict"]);
-    for (const step of steps.slice(0, 4)) expect(within(step).getByRole("link")).toHaveAttribute("rel", "noopener noreferrer");
-    expect(within(steps[0]).getByRole("link")).toHaveAttribute("href", "/source?handle=api%3A%2F%2Fb%2F1");
-    expect(within(steps[4]).queryByRole("link")).toBeNull();
-    expect(steps[1]).toHaveTextContent("Names the record by text (a match, not a link)");
-    expect(steps[2]).toHaveTextContent("Test came back contaminated");
-    expect(steps[3]).toHaveTextContent("Not checked against its source");
-    expect(steps[3]).not.toHaveTextContent("Checked against its source.");
-    expect(steps[4]).toHaveTextContent("Not established from records you can see");
+    expect(steps.map((s) => s.dataset.kind)).toEqual(["decision", "communication", "record_change", "document"]);
+    expect(steps.map((s) => within(s).getAllByText(/./)[0].textContent)).toEqual(["Decision", "Message", "Record", "Document"]);
+    // each step opens its evidence in the drawer (a button), never a link to a new tab
+    for (const step of steps) expect(within(step).getByRole("button")).toBeInTheDocument();
+    expect(card.querySelector("a[target]")).toBeNull();
+    expect(steps[1]).toHaveTextContent("Names the record in its text; not a confirmation");
+    expect(steps[3]).toHaveTextContent("Test came back contaminated");
+    expect(steps[0]).toHaveTextContent("Not checked against its source");
     expect(within(card).getByTestId("trail-hidden")).toHaveTextContent("2 more steps in places you can't open. There may be more.");
     expect(within(card).getByTestId("trail-incomplete")).toHaveTextContent("Only the latest steps are shown");
     const action = within(card).getByTestId("next-action");

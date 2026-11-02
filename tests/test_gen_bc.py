@@ -253,8 +253,9 @@ class DriftAndRegistryTests(unittest.TestCase):
 
     def test_the_drift_result_meets_the_spec_only_from_a_live_read(self):
         report = self.report
+        from integrations.capture_store import BC_FIELD_PAGES
         bound = {b["relation"] for _, b in ontology_schema.load_schema().bindings.values()
-                 if b["source"] == "bc"}
+                 if b["source"] == "bc" and b["relation"] not in BC_FIELD_PAGES}
         self.assertEqual(set(report["bound_entity_sets"]), bound)
         self.assertEqual((report["ok"], report["evidence_label"], report["missing_column_count"]),
                          (True, "injected-transport", 0))
@@ -338,8 +339,8 @@ class DriftAndRegistryTests(unittest.TestCase):
         self.assertEqual(asks, {"pdfDocumentContent": "bc_api_v2:pdfDocumentContent",
                                 "postedSalesInvoices": "bc_api_v2:postedSalesInvoices",
                                 "salesReceivablesSetup": "bc_api_v2:salesReceivablesSetup",
-                                "plxCustomerShipTos": "workbench_grammar:plxCustomerShipTos",
-                                **{name: "workbench_grammar:" + name for name in (
+                                "plxCustomerShipTos": "workbench_projection:plxCustomerShipTos",
+                                **{name: "bc_publish:" + name for name in (
                                     "plxPostedSalesInvoices", "plxPostedSalesInvoiceLines",
                                     "plxSalesReceivablesSetups")}})
         entity_sets = [e for e in sr.load_registry()["entries"]
@@ -380,15 +381,15 @@ class DriftAndRegistryTests(unittest.TestCase):
         report = run(command)
         self.assertEqual(report["stopped_reason"], "budget")
         # The output still meets the spec's contract: only the test's unpinned company, the cut
-        # and the production pin fail it (units_total counts planned units, units_reached fewer;
-        # this fixture captures several test companies, not the one pinned My Company, so the
-        # one-company proof is absent and companies_captured is not 1), never an unknown field.
+        # and the production pins fail it (units_total counts planned units, units_reached
+        # fewer; the injected books name no company, so no Page 50 / Page 38 unit is planned
+        # and units_total stays under the three named companies' 132; the proof is the test's
+        # manufacturing company, listed under another name than My Company), never an
+        # unknown field.
         self.assertEqual(set(lv.check_expectations(CAPTURE_SPEC, 0, dict(
             report, evidence_label="live-read"))),
             {"unpinned_companies != expected", "units_reached != units_total",
-             "companies_captured != expected", "missing company_proof.environment",
-             "missing company_proof.company_name", "missing company_proof.po_count"})
-        self.assertIsNone(report["company_proof"])
+             "units_total < 135", "company_proof.company_name != expected"})
         index = sr.LiveIndex([live_result(report, CAPTURE_SPEC)])
         self.assertEqual({n for n in GENERATED if not index.naming("bc", {n})}, set())
         # Without the flag the same budget reaches none of them.

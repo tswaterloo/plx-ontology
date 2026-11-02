@@ -136,7 +136,7 @@ import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
 
-from . import answer_gate, mcp_server, plan_answer
+from . import answer_gate, mcp_server, plan_answer, tool_results
 from .agent_environment import agent_environment
 from .answer_gate import (ANSWER_BACKING, CONTRACTS, MAX_CITATIONS_PER_CLAIM,
                           MAX_CLAIM_CHARS, MAX_CLAIMS, DOCUMENT_READ_RULE, REPAIR_ANSWER, RESOLVED_STATUSES,
@@ -452,7 +452,10 @@ class _Session:
         if result.get("isError"):
             text = (result.get("content") or [{}])[0].get("text", "")
             return {"error": text[:500]}, True
-        return result.get("structuredContent"), False
+        try:
+            return tool_results.result_value(result), False
+        except tool_results.ToolResultUnreadable as error:
+            return {"error": str(error)}, True
 
 
 def run(question: str, server: MCPServer, planner: Planner,
@@ -720,7 +723,9 @@ PLANNER_RULES = (
     '"x0 - x1","of":[{"citation":...,"field":...,"value":"<the figure as written>",'
     '"quote":...},...]} (x0 the first input, each input with the quote of the passage '
     "that holds its figure; + - * / and parentheses; round_to_cents(...) around the "
-    "whole; no number of its own; each input named once), never as a bare value citing a "
+    "whole; no number of its own; each figure one input, which may stand in several "
+    "terms where the text applies it to several lines, x0 * x1 + x0 * x2, never twice "
+    "in one term or counted twice once multiplied out), never as a bare value citing a "
     "record that "
     "does not hold it. "
     "Roles (optional; a quantity a source contract types needs its role): "

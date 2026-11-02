@@ -5,10 +5,14 @@
 
 import { ApiError, apiErrorFrom } from "./errors";
 import { SseParser } from "./sse";
-import type {
+import type { LateList,
   AskEvent,
   AskRequest,
   AuthConfig,
+  Briefing,
+  BriefingItems,
+  BriefingSeen,
+  BriefingView,
   DevLoginResponse,
   FeedbackRequest,
   FeedbackResponse,
@@ -76,6 +80,33 @@ export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
   return getJson<HomeResponse>("/api/home", signal);
 }
 
+/** Your briefing: the top events routed to you, every other one counted by type, with the digest preview. */
+export function getBriefing(signal?: AbortSignal, view: BriefingView = "all"): Promise<Briefing> {
+  return getJson<Briefing>(view === "all" ? "/api/briefing" : `/api/briefing?view=${view}`, signal);
+}
+
+/** One event type's items of your briefing, a page at a time (a group's "+N more"). */
+export function getBriefingItems(
+  eventType: string,
+  offset = 0,
+  view: BriefingView = "all",
+  signal?: AbortSignal,
+): Promise<BriefingItems> {
+  const q = new URLSearchParams({ event_type: eventType, offset: String(offset), limit: "25", view });
+  return getJson<BriefingItems>(`/api/briefing/items?${q}`, signal);
+}
+
+/** Marks your briefing seen: the next "since your last visit" starts now. */
+export async function markBriefingSeen(): Promise<BriefingSeen> {
+  return (await (await call("/api/briefing/seen", { method: "POST" })).json()) as BriefingSeen;
+}
+
+/** Every late purchase order you may see, a page at a time, longest late first ("show all"). */
+export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
+  const n = Math.min(100, Math.max(1, Math.floor(limit)));
+  return getJson<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
+}
+
 export function suggest(q: string, signal?: AbortSignal): Promise<SuggestResponse> {
   return getJson<SuggestResponse>(`/api/suggest?q=${encodeURIComponent(q.slice(0, 100))}&limit=8`, signal);
 }
@@ -87,9 +118,11 @@ export function isObjectType(t: string): boolean {
   return OBJECT_TYPE.test(t);
 }
 
-export function getObject(type: string, id: string, signal?: AbortSignal): Promise<ObjectPage> {
+/** A record's page; `quick`: a first read without the checks (`complete` false) to show
+ * while the full page is read. */
+export function getObject(type: string, id: string, signal?: AbortSignal, quick = false): Promise<ObjectPage> {
   if (!isObjectType(type) || !id || id.length > 700) return Promise.reject(new ApiError(404, "not_found"));
-  return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}`, signal);
+  return getJson<ObjectPage>(`/api/object/${type}/${encodeURIComponent(id)}${quick ? "?quick=1" : ""}`, signal);
 }
 
 export function getSource(handle: string, textOffset = 0, signal?: AbortSignal): Promise<SourceView> {

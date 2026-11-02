@@ -33,7 +33,8 @@ checked as a recorded calculation is (recomputed from the re-read rows, typed by
 algebra, every input in one unit, its own or the claim's, that no contract contradicts).
 A count has no quantity type; its ``role``, like a sum's role outside ``ROLES``, is the
 value's name only and types nothing. An ``expression`` names its inputs ``x0``, ``x1``, ...
-(each exactly once, no number of its own; ``round_to_cents(...)`` around the whole rounds half-up
+(each at least once, and in its expansion into monomials never twice in one, never in
+two equal ones and never alone beside another use of it; no number of its own; ``round_to_cents(...)`` around the whole rounds half-up
 to 0.01): each input a figure as written that its cited field holds, checked as a cited
 value claim (``expression_inputs``; a percent only where printed as one), and the result
 the case evaluator's over those figures, as the eval scorer recomputes it (untyped).
@@ -517,6 +518,32 @@ Contracts = Callable[[str, Mapping[str, Any], str], "Mapping[str, Any] | None"]
 
 # --------------------------------------------------------------------------- values
 
+# A figure written rounded for display (``116.25`` for a cell holding the float
+# ``116.25000000000001``): 2 to 4 decimals, the cell's value rounded half up to the
+# written places. Never fewer than 2 (``116`` for ``116.25`` is no display rounding).
+ROUNDED_PLACES = (2, 4)
+
+
+def rounded_from(number: Decimal, values: Iterable[Any]) -> bool:
+    """Whether ``number`` as written is a value of ``values`` rounded to its own 2-4
+    decimal places (``ROUNDED_PLACES``), never the other way round: the value carries
+    more places than the written figure and rounds half up to exactly it."""
+    if not isinstance(number, Decimal) or not number.is_finite():
+        return False
+    places = -number.as_tuple().exponent
+    if not ROUNDED_PLACES[0] <= places <= ROUNDED_PLACES[1]:
+        return False
+    target = abs(number)
+    step = Decimal(1).scaleb(-places)
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite() \
+                or -value.as_tuple().exponent <= places:
+            continue
+        if abs(value).quantize(step, rounding=ROUND_HALF_UP) == target:
+            return True
+    return False
+
+
 def to_decimal(value: Any) -> Decimal | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -652,7 +679,8 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
 def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
                ) -> list[dict[str, str]]:
     """The cited inputs of an ``op`` claim, shape only: 1 to ``MAX_OP_INPUTS``, each one of
-    ``handles``, none twice; a sum's each with a ``field`` (a row column) and an optional
+    ``handles``, a sum's or a count's none twice (an expression's figure may repeat:
+    ``_check_expression`` judges it); a sum's each with a ``field`` (a row column) and an optional
     ``unit``, a count's a citation alone, an expression's a figure (``_expression_input``)."""
     op, inputs = item["op"], item["of"]
     if op not in OPS or isinstance(inputs, (str, Mapping)) or not isinstance(
@@ -668,12 +696,11 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
             raise ValidationError(f"value_claim_citation_not_cited:{index}")
         entry = {"citation": given["citation"]}
         if op == "expression":
-            entry = _expression_input(given, index)
-            key = tuple(entry.get(name) for name in ("citation", "field", "value", "quote"))
-            if key in seen:
-                raise ValidationError(f"value_claim_duplicate_input:{index}")
-            seen.add(key)
-            out.append(entry)
+            # An input listed twice as written is one printed figure used in two roles
+            # (A12: one pack size dividing two kit lines): it reaches the check as that
+            # figure again (``_check_expression``'s aliasing by place), which still refuses
+            # a figure counted twice once multiplied out, never here by its copy.
+            out.append(_expression_input(given, index))
             continue
         if op == "sum":
             field, unit = given.get("field"), given.get("unit")
@@ -728,13 +755,115 @@ def _expression_input(given: Mapping[str, Any], index: int) -> dict[str, str]:
     return entry
 
 
+# An expression expanded into monomials (``_expanded``) holds at most this many terms;
+# a longer expansion is unreadable (fail closed).
+_MAX_MONOMIALS = 512
+
+
+def _expanded(node: Any, quotients: list[dict]) -> dict[tuple, int] | None:
+    """An expression's AST as a sum of monomials: {monomial: integer coefficient}, a
+    monomial the sorted multiset of its factors (``(input, +1)`` multiplied, ``(input,
+    -1)`` divided by), terms that cancel kept with coefficient 0. A divisor that is no
+    single monomial is one opaque factor named by its own expansion, which is appended to
+    ``quotients`` to be judged too. None for anything else (a call, a number, a power) or
+    an expansion past ``_MAX_MONOMIALS``."""
+    import ast
+    if isinstance(node, ast.Name):
+        return {((node.id, 1),): 1}
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        inner = _expanded(node.operand, quotients)
+        if inner is None or isinstance(node.op, ast.UAdd):
+            return inner
+        return {mono: -coef for mono, coef in inner.items()}
+    if not isinstance(node, ast.BinOp):
+        return None
+    left = _expanded(node.left, quotients)
+    right = _expanded(node.right, quotients)
+    if left is None or right is None:
+        return None
+    out: dict[tuple, int] = dict(left)
+    if isinstance(node.op, (ast.Add, ast.Sub)):
+        sign = 1 if isinstance(node.op, ast.Add) else -1
+        for mono, coef in right.items():
+            out[mono] = out.get(mono, 0) + sign * coef
+        return out if len(out) <= _MAX_MONOMIALS else None
+    if isinstance(node.op, ast.Div):
+        if len(right) == 1 and abs(next(iter(right.values()))) == 1:
+            (mono, coef), = right.items()
+            right = {tuple((factor, -power) for factor, power in mono): coef}
+        else:
+            quotients.append(right)
+            right = {((("quotient", tuple(sorted(right.items(), key=repr))), -1),): 1}
+    elif not isinstance(node.op, ast.Mult):
+        return None
+    if len(left) * len(right) > _MAX_MONOMIALS:
+        return None
+    out = {}
+    for mono_l, coef_l in left.items():
+        for mono_r, coef_r in right.items():
+            mono = tuple(sorted(mono_l + mono_r, key=repr))
+            out[mono] = out.get(mono, 0) + coef_l * coef_r
+    return out
+
+
+def _monomial_inputs(mono: tuple) -> list[str]:
+    """Every input a monomial names, inside an opaque divisor too."""
+    names: list[str] = []
+    for factor, _power in mono:
+        if isinstance(factor, str):
+            names.append(factor)
+        else:
+            for inner, _coef in factor[1]:
+                names += _monomial_inputs(inner)
+    return names
+
+
+def _repeated_in_term(body: str) -> bool:
+    """Whether an expression counts an input more than once where it may not, judged on
+    its expansion into a sum of monomials (``_expanded``), so no factoring hides a double
+    count: ``(x0 + x1) * x2 + x0 * x2`` is 2·x0·x2 + x1·x2, kit A twice. Refused when a
+    monomial's coefficient is not +1 or -1 (``x0 + x0``, ``x0 * x1 + x0 * (x1 + x2)``; a
+    0 is a term that cancels itself, ``(x0 + x1) - x0 - x1``), when one monomial names an
+    input twice (``x0 / x0``, ``x0 * (x1 - x0)``, ``x0 / (x0 + x1)``), when an input
+    standing in several monomials stands in one with nothing else (``x0 + x0 * x1``), or
+    when the expression cannot be read as such a sum (fail closed). One input in several
+    monomials with different other inputs is one figure applied to several lines
+    (``x0 / x1 + x2 / x1``: one rate, two quantities; ``(x0 + x1) * x2``)."""
+    import ast
+    try:
+        tree = ast.parse(body.strip(), mode="eval").body
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return True
+    quotients: list[dict] = []
+    try:
+        total = _expanded(tree, quotients)
+    except RecursionError:
+        return True
+    if total is None:
+        return True
+    for poly in (total, *quotients):
+        for mono, coef in poly.items():
+            named = _monomial_inputs(mono)
+            if abs(coef) != 1 or len(named) != len(set(named)):
+                return True
+    rests: dict[str, list[frozenset[str]]] = {}
+    for mono in total:
+        named = _monomial_inputs(mono)
+        for name in named:
+            rests.setdefault(name, []).append(frozenset(named) - {name})
+    return any(len(seen) > 1 and not all(seen) for seen in rests.values())
+
+
 def _expression_shape(item: Mapping[str, Any], count: int, index: int) -> str:
     """An expression claim's ``expression``, shape only: at most ``MAX_EXPRESSION_CHARS``,
     optionally ``round_to_cents(...)`` around the whole, naming each of its ``count``
-    inputs ``x0`` ... exactly once and nothing else, with no number of its own (every
-    operand is a figure a cited text holds; a figure printed twice is two inputs, each
-    quoted where it is printed, so no input builds a constant, x0 / x0). The
-    evaluator decides the rest when the claim is checked."""
+    inputs ``x0`` ... at least once and nothing else, with no number of its own (every
+    operand is a figure a cited text holds). An input may stand in several additive
+    terms (one rate applied to several quantities, ``x0 / x1 + x2 / x1``) but never twice
+    in one term (``_repeated_in_term``: no ``x0 / x0`` builds a constant); the result
+    must then move with every repeated input (``_check_expression``), so no ``x0 - x0``
+    cancels one away. A figure printed twice is still two inputs, each quoted where it
+    is printed. The evaluator decides the rest when the claim is checked."""
     expression = item.get("expression")
     if not isinstance(expression, str) or not expression.strip() \
             or len(expression) > MAX_EXPRESSION_CHARS:
@@ -748,7 +877,7 @@ def _expression_shape(item: Mapping[str, Any], count: int, index: int) -> str:
     names = set(named)
     if re.search(r"[A-Za-z_]", rest) or names - {f"x{n}" for n in range(count)}:
         raise ValidationError(f"value_claim_expression_name:{index}")
-    if len(named) != len(names):
+    if len(named) != len(names) and _repeated_in_term(body):
         raise ValidationError(f"value_claim_expression_repeated_input:{index}")
     if len(names) != count:
         raise ValidationError(f"value_claim_expression_unused_input:{index}")
@@ -952,11 +1081,12 @@ class _Evidence:
 
 
 @lru_cache(maxsize=1)
-def _bc_roles() -> Mapping[tuple[str, str], tuple[str, str] | None]:
-    """(BC entity set, column) -> (``ontology:<type>.<property>``, quantity role) of every
-    quantity property the ontology schema binds to a BC column without a row condition;
-    None for a column two properties type differently. Empty when the schema does not
-    load (no role is then grounded: stricter, never looser)."""
+def _schema_roles() -> Mapping[tuple[str, str, str], tuple[str, str] | None]:
+    """(source, BC entity set or mirror relation, column) -> (``ontology:<type>.<property>``,
+    quantity role) of every quantity property the ontology schema binds to a BC column
+    (and, for such a property, to a Portal reporting API column) without a row condition; None
+    for a column two properties type differently. Empty when the schema does not load (no
+    role is then grounded: stricter, never looser)."""
     try:
         from ontology.schema import load_schema
         schema = load_schema()
@@ -968,13 +1098,18 @@ def _bc_roles() -> Mapping[tuple[str, str], tuple[str, str] | None]:
             role = prop.get("quantity_role")
             if prop.get("value_type") != "quantity" or role not in QUANTITY_ROLES:
                 continue
-            for source in prop.get("sources") or ():
+            sources = prop.get("sources") or ()
+            # A Portal column is grounded only for a property the schema also reads from a
+            # BC column (one cross-system quantity: a PO line's ordered and received).
+            in_bc = any(schema.bindings.get(given.get("binding"), (None, {}))[1]
+                        .get("source") == "bc" for given in sources)
+            for source in sources:
                 _type, binding = schema.bindings.get(source.get("binding"), (None, {}))
                 path = source.get("path")
-                if binding.get("source") != "bc" or binding.get("where") or \
-                        not isinstance(path, str) or "." in path:
+                if binding.get("source") not in (("bc", "portal_api") if in_bc else ("bc",)) \
+                        or binding.get("where") or not isinstance(path, str) or "." in path:
                     continue
-                key = (binding["relation"], path)
+                key = (binding["source"], binding["relation"], path)
                 if key not in out:
                     out[key] = (f"ontology:{type_id}.{prop['name']}", role)
                 elif out[key] is not None and out[key][1] != role:
@@ -984,16 +1119,22 @@ def _bc_roles() -> Mapping[tuple[str, str], tuple[str, str] | None]:
 
 def schema_role(handle: str, resolved: Mapping[str, Any], field: str
                 ) -> dict[str, Any] | None:
-    """The ontology schema's quantity role of a cited BC row column (``row.<column>``), as
-    a contract ``{"id", "role", "schema": True}`` (the role the projection gives the value
-    read there; ``ontology/project.py``); None for any other citation or column. The
-    entity set is the re-read view's: its relation (``bc.<entity set>``) or its own
-    citation (a BC capture view)."""
+    """The ontology schema's quantity role of a cited BC or Portal mirror row column
+    (``row.<column>``), as a contract ``{"id", "role", "schema": True}`` (the role the
+    projection gives the value read there; ``ontology/project.py``: a Portal PO line's
+    ``quantity`` is ordered, its ``quantity_received`` received); None for any other
+    citation or column. A BC entity set is the re-read view's relation (``bc.<entity
+    set>``) or its own citation (a BC capture view); a mirror relation is the view's."""
     match = _COLUMN_FIELD.match(field)
-    if not handle.startswith("bc://") or match is None or not field.startswith("row."):
+    if match is None or not field.startswith("row."):
         return None
-    entity_set = _bc_entity_set(resolved)
-    found = _bc_roles().get((entity_set, match.group(1))) if entity_set else None
+    if handle.startswith("bc://"):
+        key = ("bc", _bc_entity_set(resolved))
+    elif handle.startswith("api://") and isinstance(resolved.get("relation"), str):
+        key = ("portal_api", resolved["relation"])
+    else:
+        return None
+    found = _schema_roles().get((*key, match.group(1))) if key[1] else None
     return None if found is None else {"id": found[0], "role": found[1], "schema": True}
 
 
@@ -1058,6 +1199,29 @@ def _changed(resolved: Mapping[str, Any] | None) -> bool:
     (``changed_since`` true, as ``CaseStore`` refuses support; ``CaseRuntime._live_view``,
     ``_capture_view``, ``claim_row``). Any flag but an explicit false is changed: it fails closed."""
     return resolved is not None and resolved.get("changed_since") not in (None, False)
+
+
+def _moved_on(resolved: Mapping[str, Any], fields: Sequence[str], evidence: "_Evidence"
+              ) -> tuple[Mapping[str, Any] | None, str]:
+    """A changed-since re-read (``_changed``) judged by what it cites: (the current
+    revision's view, "") when the source names one (``current_citation``), this reader can
+    read it as current, and every cited ``field`` holds the same value there, so a source
+    that moved on elsewhere in the record (a live mirror ahead of the served projection)
+    never refuses the claim; else (None, why): the value itself changed (what it is now,
+    and the revision to cite), or no current revision can be read (refused)."""
+    current = resolved.get("current_citation")
+    view = evidence.row(current) if isinstance(current, str) and current \
+        and current != resolved.get("citation") else None
+    if view is None or _changed(view):
+        return None, ("the cited revision is no longer the source's current one and no "
+                      "current revision of it can be read now")
+    for field in fields:
+        (had, before), (has, now) = dig(resolved, field), dig(view, field)
+        if not had or not has or before != now:
+            shown = json.dumps(now, default=str)[:120] if has else "absent"
+            return None, (f"the cited {field} changed since this revision: it is now "
+                          f"{shown} in {current[:300]}; cite that revision")
+    return view, ""
 
 
 def _moment_of(match: re.Match[str]) -> tuple[str, datetime | None] | None:
@@ -1348,9 +1512,18 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
                  if spec.get("kind") == "citation"}
         if not cited <= set(handles):
             return _fail(out, "claim_uncited", f"{name} reads rows the item does not cite")
-        if any(_changed(evidence.row(handle)) for handle in sorted(cited)):
-            return _fail(out, "claim_changed_since", f"{name} reads a cited "
-                         "revision that is no longer the source's current one")
+        for handle in sorted(cited):
+            resolved = evidence.row(handle)
+            if not _changed(resolved):
+                continue
+            fields = [spec["field"] for spec in calc["inputs"].values()
+                      if spec.get("kind") == "citation"
+                      and spec["citation"]["handle"] == handle and spec.get("field")]
+            current, problem = _moved_on(resolved, fields, evidence) if fields \
+                else (None, "the cited revision is no longer the source's current one")
+            if current is None:
+                return _fail(out, "claim_changed_since", f"{name} reads {handle[:200]}: "
+                             f"{problem}")
         result = evidence.recomputed(calc)
         if result is None or "op" not in claim and result != to_decimal(calc.get("result")):
             return _fail(out, "claim_uncited", f"{name} does not recompute "
@@ -1397,7 +1570,14 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
     if resolved is None:
         return _fail(out, "claim_uncited", "the cited row is not readable now as the case "
                      "recorded it")
-    if _changed(resolved):
+    if _changed(resolved) and field != PAGE_TEXT:
+        current, problem = _moved_on(resolved, [field], evidence)
+        if current is None:
+            return _fail(out, "claim_changed_since", problem)
+        # The cited value is the current one: checked on the current revision.
+        out["current_citation"] = resolved["current_citation"]
+        resolved = current
+    elif _changed(resolved):
         return _fail(out, "claim_changed_since", "the cited revision is no longer the "
                      "source's current one; cite its current version")
     if field == PAGE_TEXT:
@@ -1508,9 +1688,11 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
         if resolved is None:
             return _fail(out, "claim_uncited", f"the count reads {handle[:200]}, which is "
                          "not readable now as the item cites it")
-        if _changed(resolved):
+        if _changed(resolved) and _moved_on(resolved, [], evidence)[0] is None:
+            # A count reads that the record exists: its current revision says so too.
             return _fail(out, "claim_changed_since", "the count reads a cited revision that "
-                         "is no longer the source's current one")
+                         "is no longer the source's current one, and no current one can be "
+                         "read now")
         record = _record(handle, resolved)
         if record in records:
             return _fail(out, "claim_value_mismatch", "the count cites one record twice "
@@ -1556,6 +1738,7 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
     unverified = False
     marks: list[tuple[str | None, str | None]] = []
     places: dict[tuple[Any, ...], str] = {}
+    aliases: dict[str, str] = {}
     for number, sub in enumerate(expression_inputs(claim)):
         percent = sub.get("unit") == "percent"
         shown = f"input x{number} ({sub['value']}{'%' if percent else ''})"
@@ -1567,14 +1750,13 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
         if figure is None:
             return _fail(out, "claim_value_mismatch", f"{shown} is no number")
         # Once by place: an input that may be the figure another input reads (the same
-        # spot, however quoted or written: "1,000" and "1000") is that input again.
+        # spot, however quoted or written: "1,000" and "1000") is that input again
+        # (``aliases``), so the expression is judged as naming that one input there.
         for place in _input_places(sub, evidence):
             if place in places:
-                return _fail(out, "claim_value_mismatch", (
-                    f"value_claim_expression_repeated_input: {shown} reads the figure "
-                    f"input {places[place]} reads; name each input once (a figure printed "
-                    "twice is two inputs, each quoted where it is printed)"))
-            places[place] = f"x{number}"
+                aliases.setdefault(f"x{number}", places[place])
+            else:
+                places[place] = f"x{number}"
         if percent:
             if result.get("unit_basis") in (None, "unverified"):
                 return _fail(out, "claim_value_mismatch", f"{shown}: the cited text never "
@@ -1599,6 +1781,28 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
     except (ValidationError, ArithmeticError, RecursionError) as error:
         return _fail(out, "claim_value_mismatch", "the expression does not evaluate over "
                      f"its inputs ({str(error)[:80]})")
+    if aliases:
+        # A12 (v14): one printed pack size quoted at its one place for two kit lines.
+        # Named as the input it is, the expression must still be one an input may
+        # repeat in (``_repeated_in_term``); x0 / x1 over one figure read twice is not.
+        same = EXPRESSION_INPUT.sub(lambda m: aliases.get(m.group(0), m.group(0)), body)
+        first = next(iter(aliases))
+        if _repeated_in_term(same):
+            return _fail(out, "claim_value_mismatch", (
+                f"value_claim_expression_repeated_input: input {first} reads the figure "
+                f"input {aliases[first]} reads, so the expression, multiplied out, counts "
+                "that figure twice, uses it twice in one term or cancels it; a figure "
+                "printed twice is two inputs, each quoted where it is printed"))
+        body_checked = same
+        values_checked = {name: item for name, item in values.items() if name not in aliases}
+    else:
+        body_checked, values_checked = body, values
+    inert = _inert_repeat(body_checked, values_checked, value)
+    if inert is not None:
+        return _fail(out, "claim_value_mismatch", (
+            f"value_claim_expression_repeated_input: the result does not change with "
+            f"input {inert}, which the expression names more than once, so it cancels "
+            "itself; name each input once, or only where it applies (x0 * x1 + x0 * x2)"))
     if rounded:
         value = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if to_decimal(claim["value"]) != value:
@@ -1614,6 +1818,27 @@ def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Se
                          f"claim says {claim['unit']}")
         out["unit_basis"] = "unverified" if unverified else "calculation"
     return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None}
+
+
+def _inert_repeat(body: str, values: Mapping[str, tuple[Decimal, Any]],
+                  result: Decimal) -> str | None:
+    """The first input an expression names more than once whose figure the result does
+    not move with (its figure plus one, and twice it, leave the result as it is: ``(x0 +
+    x1) - x0 - x1`` builds a zero from x0), or None. A repeated input stands for one
+    figure applied to several terms, never one that cancels itself."""
+    named = EXPRESSION_INPUT.findall(body)
+    for name in dict.fromkeys(n for n in named if named.count(n) > 1):
+        figure, unit = values[name]
+        for moved in (figure + 1, figure * 2):
+            try:
+                other = _evaluate(body, {**values, name: (moved, unit)})[0]
+            except (ValidationError, UnitMismatch, ArithmeticError, RecursionError):
+                return name
+            if other != result:
+                break
+        else:
+            return name
+    return None
 
 
 def _input_figures(sub: Mapping[str, Any], evidence: _Evidence
@@ -2991,7 +3216,7 @@ def _uncovered(texts: Iterable[str], claims: Sequence[Mapping[str, Any]],
                                      "with a percent unit covers it" if stated in values
                             or abs(number) in values else "", "number"))
                 continue
-            if number in values or abs(number) in values:
+            if number in values or abs(number) in values or rounded_from(number, values):
                 continue
             parsed = NUMBER.fullmatch(written)  # None for a number in words
             suffix = (parsed.group("scale") or "") if parsed else ""

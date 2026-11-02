@@ -76,6 +76,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import unquote
 
+from operator_ui.session_journal import run_journal_scope
+
 ROOT = Path(__file__).resolve().parents[1]
 FORMAT = "plx-eval-retrieval/v1"
 K = 10
@@ -563,6 +565,7 @@ def table_text(doc: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+@run_journal_scope
 def main(argv: Sequence[str] | None = None, *, search: SearchFn | None = None,
          environ: Mapping[str, str] | None = None) -> int:
     """``search`` (tests): an injected search function (``evidence_label``
@@ -587,6 +590,9 @@ def main(argv: Sequence[str] | None = None, *, search: SearchFn | None = None,
                         help="measure the agent's own searches in these recorded card runs "
                              "instead of searching (no host; later paths win)")
     args = parser.parse_args(argv)
+    from operator_ui.session_journal import isolate_journal
+    # the run's own journal beside its output, never the host's
+    isolate_journal(args.out.with_name(args.out.name + ".journal"))
     environ = os.environ if environ is None else environ
     kinds = [k.strip() for k in args.phrasings.split(",") if k.strip()]
     host = None

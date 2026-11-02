@@ -30,7 +30,8 @@ KINDS = ("identity", "lineage", "markings", "money", "names", "storage")
 _HEAD = {"format", "kind", "description"}
 _KEYS = {
     "money": _HEAD | {"evidence", "markings", "columns", "source_columns"},
-    "markings": _HEAD | {"name_rules", "domain_markings", "scoped_markings"},
+    "markings": _HEAD | {"name_rules", "domain_markings", "scoped_markings",
+                         "relation_markings"},
     "identity": _HEAD | {"key_name", "scope", "verified_key_sources", "unverified_tier"},
     "lineage": _HEAD | {"note", "sources"},
     "names": _HEAD | {"sources"},
@@ -38,7 +39,8 @@ _KEYS = {
 }
 _MONEY_SPEC = {"measure", "tax_basis", "header", "per_unit_from", "currency_from",
                "tax_basis_from"}
-_OPTIONAL = {"money": {"source_columns"}, "markings": {"scoped_markings"}}
+_OPTIONAL = {"money": {"source_columns"},
+             "markings": {"scoped_markings", "relation_markings"}}
 _NAME_RULE = {"marking", "value_types", "matches", "unless", "applied", "exception_label",
               "exceptions"}
 _SNAKE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -96,6 +98,12 @@ class Overrides:
     # source domain (the catalog's, e.g. people-access) -> the type markings every served
     # type of that domain carries: a reader without them never reaches the type.
     domain_markings: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    # markings.json relation_markings: (source, relation) -> (the type's markings, {column:
+    # its own extra markings}): a generated type whose rows are sensitive whatever their
+    # column names say (BC bank accounts), and columns stricter than their type.
+    relation_markings: Mapping[tuple[str, str], tuple[tuple[str, ...],
+                                                     Mapping[str, tuple[str, ...]]]] = \
+        field(default_factory=dict)
     # markings.json scoped_markings: owner-decided markings replacing a rule's on listed
     # columns and properties.
     scoped_markings: tuple[ScopedMarking, ...] = ()
@@ -346,12 +354,30 @@ def load_overrides(directory: Path = OVERRIDES_DIR) -> Overrides:
         _need(domain not in domain_markings, where, f"domain {domain!r} listed twice")
         _text(item["applied"], where, "applied")
         domain_markings[domain] = _markings(item["markings"], where)
+    relation_markings: dict[tuple[str, str], tuple[tuple[str, ...],
+                                                   dict[str, tuple[str, ...]]]] = {}
+    for n, item in enumerate(docs["markings"].get("relation_markings", [])):
+        where = f"markings.json relation_markings[{n}]"
+        _keys(item, {"source", "relation", "markings", "columns", "applied"},
+              {"source", "relation", "markings", "applied"}, where)
+        key = (_text(item["source"], where, "source"), _text(item["relation"], where,
+                                                              "relation"))
+        _need(key not in relation_markings, where, f"relation {key!r} listed twice")
+        _text(item["applied"], where, "applied")
+        columns = item.get("columns", {})
+        _need(isinstance(columns, dict), where, "columns must be an object")
+        _need(isinstance(item["markings"], list), where, "markings must be a list")
+        relation_markings[key] = (_markings(item["markings"], where) if item["markings"]
+                                  else (),
+                                  {str(c): _markings(m, f"{where}.{c}")
+                                   for c, m in columns.items()})
     scoped = tuple(_scoped_marking(item, rules, f"markings.json scoped_markings[{n}]")
                    for n, item in enumerate(docs["markings"].get("scoped_markings", [])))
     _need(len({s.marking for s in scoped}) == len(scoped), "markings.json",
           "a scoped marking is listed twice")
     return Overrides(
         domain_markings=domain_markings, scoped_markings=scoped,
+        relation_markings=relation_markings,
         money=_money(docs["money"], lineage, "money.json"),
         source_money=_source_money(docs["money"], "money.json"),
         money_markings=money_markings,

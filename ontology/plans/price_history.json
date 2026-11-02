@@ -1,0 +1,566 @@
+{
+ "$schema": "_plan.schema.json",
+ "format": "plx-investigate-plan/v1",
+ "id": "price_history",
+ "families": [
+  "F30"
+ ],
+ "title": "An item's purchase price history and trend (going up or down)",
+ "description": "The prices the item was bought at, per source: Business Central posted purchase receipt lines (unitCost, dated by the receipt's posting date), posted purchase invoice lines (unitCost, dated by the invoice date; Open or Paid only) and Portal purchase order lines (unit price, dated by the order date; cancelled and draft orders left out), each with its unit and currency and citing its line, and the trend of each: the last dated price against the one before (up, down or flat, percent change). Prices in two units or currencies are never compared; an item card's or a supplier list's cost is no purchase price (operating/price_history.py).",
+ "root": {
+  "object_types": [
+   "Product"
+  ],
+  "fallback_filters": [
+   {
+    "object_type": "Product",
+    "property": "code"
+   },
+   {
+    "object_type": "Product",
+    "property": "name"
+   }
+  ]
+ },
+ "step_budget": 128,
+ "max_each": 40,
+ "steps": [
+  {
+   "id": "root_read",
+   "tool": "plx.object",
+   "from": "root",
+   "bind": "object_id"
+  },
+  {
+   "id": "twins",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The item's records in other systems (Portal product, FileMaker raw material, packaging, bulk or finished product, Business Central item) by stored code."
+  },
+  {
+   "id": "twins_named",
+   "tool": "plx.around",
+   "from": "root",
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The same twins where the other record holds the link."
+  },
+  {
+   "id": "twins_of_twins",
+   "tool": "plx.around",
+   "from": [
+    "twins",
+    "twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "A twin's twins: a Business Central item reaches FileMaker packaging through the Portal product both copy their code from."
+  },
+  {
+   "id": "twins_of_twins_named",
+   "tool": "plx.around",
+   "from": [
+    "twins",
+    "twins_named"
+   ],
+   "bind": "from",
+   "args": {
+    "path": [
+     {
+      "link_type": "Product.same_record_as",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   },
+   "description": "The same, where the other record holds the link."
+  },
+  {
+   "id": "receipt_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "description": "Posted purchase receipt lines of the item (Business Central), only those that carry a price.",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50,
+    "filters": [
+     {
+      "property": "bc_unit_cost",
+      "op": "present"
+     }
+    ]
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipts",
+   "tool": "plx.around",
+   "from": "receipt_lines",
+   "bind": "from",
+   "description": "The posted receipt each line belongs to (its posting date).",
+   "args": {
+    "path": [
+     {
+      "link_type": "ReceiptLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoice_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "description": "Purchase invoice lines of the item (Business Central), only those that carry a price.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50,
+    "filters": [
+     {
+      "property": "unit_cost",
+      "op": "present"
+     }
+    ]
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "invoices",
+   "tool": "plx.around",
+   "from": "invoice_lines",
+   "bind": "from",
+   "description": "The invoice each line belongs to (its date and status).",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseInvoiceLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "order_lines",
+   "tool": "plx.around",
+   "from": [
+    "root",
+    "twins",
+    "twins_named",
+    "twins_of_twins",
+    "twins_of_twins_named"
+   ],
+   "bind": "from",
+   "description": "Purchase order lines of the item (Portal), only those that carry a price.",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.for_item",
+      "direction": "reverse"
+     }
+    ],
+    "limit": 50,
+    "filters": [
+     {
+      "property": "unit_price",
+      "op": "present"
+     }
+    ]
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "orders",
+   "tool": "plx.around",
+   "from": "order_lines",
+   "bind": "from",
+   "description": "The purchase order each line belongs to (its date and status).",
+   "args": {
+    "path": [
+     {
+      "link_type": "PurchaseOrderLine.line_of",
+      "direction": "forward"
+     }
+    ],
+    "limit": 50
+   },
+   "retry": {
+    "on_gap_reasons": [
+     "below_tier_floor"
+    ],
+    "set_args": {
+     "tier_floor": "lead"
+    },
+    "note_gap": "lead_tier_links_followed"
+   }
+  },
+  {
+   "id": "receipt_line_reads",
+   "tool": "plx.object",
+   "from": "receipt_lines",
+   "bind": "object_id",
+   "object_types": [
+    "ReceiptLine"
+   ],
+   "args": {
+    "properties": [
+     "bc_unit_cost"
+    ]
+   },
+   "max_each": 40
+  },
+  {
+   "id": "receipt_reads",
+   "tool": "plx.object",
+   "from": "receipts",
+   "bind": "object_id",
+   "object_types": [
+    "Receipt"
+   ],
+   "args": {
+    "properties": [
+     "bc_number"
+    ]
+   },
+   "max_each": 40
+  },
+  {
+   "id": "invoice_line_reads",
+   "tool": "plx.object",
+   "from": "invoice_lines",
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseInvoiceLine"
+   ],
+   "args": {
+    "properties": [
+     "unit_cost"
+    ]
+   },
+   "max_each": 40
+  },
+  {
+   "id": "invoice_reads",
+   "tool": "plx.object",
+   "from": "invoices",
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseInvoice"
+   ],
+   "args": {
+    "properties": [
+     "invoice_date",
+     "status"
+    ]
+   },
+   "max_each": 40
+  },
+  {
+   "id": "order_line_reads",
+   "tool": "plx.object",
+   "from": "order_lines",
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrderLine"
+   ],
+   "args": {
+    "properties": [
+     "unit_price"
+    ]
+   },
+   "max_each": 40
+  },
+  {
+   "id": "order_reads",
+   "tool": "plx.object",
+   "from": "orders",
+   "bind": "object_id",
+   "object_types": [
+    "PurchaseOrder"
+   ],
+   "args": {
+    "properties": [
+     "order_date",
+     "status"
+    ]
+   },
+   "max_each": 40
+  }
+ ],
+ "evidence": [
+  {
+   "name": "price_items",
+   "kind": "count",
+   "from": "root",
+   "description": "The items the question resolved to."
+  },
+  {
+   "name": "receipt_cost",
+   "kind": "property",
+   "object_type": "ReceiptLine",
+   "properties": [
+    "bc_unit_cost"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "bc.purchase_receipt_lines"
+   ],
+   "description": "A posted receipt line's unit cost (unitCost), per the line's unit of measure."
+  },
+  {
+   "name": "receipt_number",
+   "kind": "property",
+   "object_type": "Receipt",
+   "properties": [
+    "bc_number"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "bc.purchase_receipts"
+   ],
+   "description": "The posted receipt's number; its record holds the posting date the engine re-reads."
+  },
+  {
+   "name": "invoice_cost",
+   "kind": "property",
+   "object_type": "PurchaseInvoiceLine",
+   "properties": [
+    "unit_cost"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "bc.purchase_invoice_lines"
+   ],
+   "description": "A purchase invoice line's unit cost (unitCost, never directUnitCost or amountExcludingTax), per the line's unit of measure."
+  },
+  {
+   "name": "invoice_date",
+   "kind": "property",
+   "object_type": "PurchaseInvoice",
+   "properties": [
+    "invoice_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "invoice_status",
+   "kind": "property",
+   "object_type": "PurchaseInvoice",
+   "properties": [
+    "status"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "bc.purchase_invoices"
+   ]
+  },
+  {
+   "name": "order_price",
+   "kind": "property",
+   "object_type": "PurchaseOrderLine",
+   "properties": [
+    "unit_price"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "portal.app_purchase_order_line"
+   ],
+   "description": "A Portal purchase order line's unit price, per its unit of measure."
+  },
+  {
+   "name": "order_date",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "order_date"
+   ],
+   "omit_empty": true
+  },
+  {
+   "name": "order_status",
+   "kind": "property",
+   "object_type": "PurchaseOrder",
+   "properties": [
+    "status"
+   ],
+   "omit_empty": true,
+   "bindings": [
+    "portal.app_purchase_order"
+   ]
+  },
+  {
+   "name": "price_trend",
+   "kind": "compute",
+   "required": true,
+   "engine": "price_history",
+   "description": "The item's dated purchase prices per source (posted receipts, posted invoices, Portal orders, in that precedence) and each one's trend: the last dated price against the one before (up, down or flat, the change in percent), each price citing its line; never an item card's or a supplier list's cost.",
+   "engine_args": {
+    "series": [
+     {
+      "id": "receipts",
+      "label": "Business Central posted purchase receipts",
+      "price": "receipt_cost",
+      "header_link": "ReceiptLine.line_of",
+      "header_handle": "receipt_number",
+      "header_date_field": "row.postingDate"
+     },
+     {
+      "id": "invoices",
+      "label": "Business Central posted purchase invoices",
+      "price": "invoice_cost",
+      "header_link": "PurchaseInvoiceLine.line_of",
+      "date": "invoice_date",
+      "status": "invoice_status",
+      "status_in": [
+       "Open",
+       "Paid"
+      ]
+     },
+     {
+      "id": "orders",
+      "label": "Portal purchase orders",
+      "price": "order_price",
+      "header_link": "PurchaseOrderLine.line_of",
+      "date": "order_date",
+      "status": "order_status",
+      "status_not_in": [
+       "Cancel",
+       "Cancelled",
+       "Canceled",
+       "Draft"
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

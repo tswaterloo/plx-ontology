@@ -28,6 +28,18 @@ Never prints a claim.
     python3 -m scripts.eval_owner_host --out DIR      # then PLX_WORKBENCH_HOST_CONFIG=DIR/host.json
     python3 -m scripts.eval_owner_host --out DIR --reader-env PLX_EVAL_READER_VINCE --full-read
 
+``--role purchasing`` (or ``quality``) writes a restricted reader instead: the same named
+employee granted only that staff principal and its marking (``ROLE_MARKINGS``:
+purchasing prices, or quality-controlled results), never finance and never full read, so the
+same questions show what permissions withhold (``scripts.eval_live_ops --reader``). Every
+audience still lists the principal: only markings and the reader's own mailbox restrict it.
+
+``--role sales`` holds the order and customer principals and no marking.
+``--department-member`` (with ``--role``) makes the reader an ordinary employee of the role's
+Portal department (``ROLE_DEPARTMENTS``: a MANAGER at L3 viewing operations, never an admin
+role, no Entra directory read), so the briefing routes it by department as it routes any
+non-admin employee; without it a role reader is the SUPER_ADMIN the scoreboard measures.
+
 ``--full-read`` adds the declared full-read grant (``employee_policy.json`` ``full_read``):
 the reader opens every captured mailbox, SharePoint item and Teams conversation and holds
 the finance and price markings, still under the people exclusion and the host audiences.
@@ -61,6 +73,15 @@ def reader_claims(environ: Mapping[str, str], name: str | None = None) -> dict[s
     return dict(claims)
 
 
+# A restricted reader's principals and the marking it holds, if any (``--role``), and the
+# Portal department a ``--department-member`` of that role is confirmed in.
+ROLES = {"purchasing": (("staff:purchasing",), "purchasing_prices"),
+         "quality": (("staff:quality",), "quality_controlled"),
+         "sales": (("staff:operations", "staff:customers"), None)}
+ROLE_DEPARTMENTS = {"purchasing": "PROC", "quality": "QUALITY", "sales": "SALES"}
+# A department member is an ordinary employee: a Portal MANAGER (L3, below the admin roles
+# that are routed everything) who views operations in its scopes.
+MEMBER_ROLE, MEMBER_LEVEL, MEMBER_CAPABILITY = "MANAGER", "L3", "VIEW_OPERATIONS"
 DATA_KEYS = {"staff:operations": "operations.sales", "staff:purchasing": "operations.procurement",
              "staff:warehouse": "operations.warehouse", "staff:quality": "operations.quality",
              "staff:finance": "operations.finance", "staff:customers": "crm.customers"}
@@ -70,8 +91,8 @@ SCOPES = ([{"scopeType": "COMPANY", "scopeKey": "petra-hygienic-plx", "effect": 
              for key in sorted(set(DATA_KEYS.values()))])
 
 
-def _principal(entry: str) -> dict[str, Any]:
-    return {"capability": "MANAGE_OPERATIONS", "department_ids": [DEPARTMENT],
+def _principal(entry: str, capability: str = "MANAGE_OPERATIONS") -> dict[str, Any]:
+    return {"capability": capability, "department_ids": [DEPARTMENT],
             "company_key": "petra-hygienic-plx", "data_key": DATA_KEYS[entry]}
 
 
@@ -108,11 +129,16 @@ def full_read_grant(claims: Mapping[str, str], granted_at: str,
 
 def build(claims: Mapping[str, str], *, full_read: bool = False,
           granted_at: str = "2026-10-30",
-          granted_by: str = "workbench owner") -> dict[str, dict[str, Any]]:
+          granted_by: str = "workbench owner", role: str | None = None,
+          department_member: bool = False) -> dict[str, dict[str, Any]]:
+    if role is not None and (role not in ROLES or full_read):
+        raise ValueError("role_unknown" if role not in ROLES else "role_with_full_read")
+    if department_member and role is None:
+        raise ValueError("department_member_needs_role")
     base = json.loads(BASE_CONFIG.read_text(encoding="utf-8"))
     mirror = json.loads((EXAMPLES / base["mirror_audience"]).read_text(encoding="utf-8"))
     live = json.loads((EXAMPLES / base["live_audience"]).read_text(encoding="utf-8"))
-    owners = list(OWNER_PRINCIPALS)
+    owners = list(ROLES[role][0]) if role else list(OWNER_PRINCIPALS)
     for doc in (mirror, live):
         for key, holders in doc["audiences"].items():
             doc["audiences"][key] = sorted({*holders, *owners})
@@ -129,7 +155,8 @@ def build(claims: Mapping[str, str], *, full_read: bool = False,
         "entra_tenant_id": claims["entraTenantId"].lower(),
         "clearance_by_access_level": {"L1": "internal", "L2": "internal", "L3": "confidential",
                                       "L4": "confidential", "L5": "restricted"},
-        "principals": {name: _principal(name) for name in owners},
+        "principals": {name: _principal(name, MEMBER_CAPABILITY if department_member
+                                         else "MANAGE_OPERATIONS") for name in owners},
         "service_principal_object_ids": [],
     }
     if full_read:
@@ -138,19 +165,26 @@ def build(claims: Mapping[str, str], *, full_read: bool = False,
         "schema": "plx-portal-access-snapshot/v1",
         "source": "scripts/eval_owner_host.py (the named reader's own claims)",
         "read_at": "generated at run time",
-        "users": [{"id": claims["uid"], "email": claims["email"], "role": ROLE,
-                   "accessLevel": "L5", "isActive": True,
+        "users": [{"id": claims["uid"], "email": claims["email"],
+                   "role": MEMBER_ROLE if department_member else ROLE,
+                   "accessLevel": MEMBER_LEVEL if department_member else "L5", "isActive": True,
                    "entraTenantId": claims["entraTenantId"].lower(),
                    "entraObjectId": claims["entraObjectId"].lower(),
                    "departmentIds": [DEPARTMENT], "accessScopes": SCOPES, "mrpWarehouse": True, "mrpProduction": True, "mrpRnD": True}],
     }
+    if department_member:
+        access["users"][0]["departmentMemberships"] = [
+            {"code": ROLE_DEPARTMENTS[role], "provenance": "PORTAL", "departmentActive": True}]
     config = {**base, "capture_audience": "live_audience.json", "live_audience": "live_audience.json",
               "mirror_audience": "mirror_audience.json", "employee_policy": "employee_policy.json",
               "portal_access": "portal_access.json",
               # The reader's source identities and groups come from the Entra directory, as
               # on the product host: mail and SharePoint items are gated by their own ACL.
-              "entra_directory": True,
-              "marking_grants": {name: owners for name in OWNER_MARKINGS}}
+              # A department member is routed by its Portal department alone: the named
+              # person's own Entra department never routes it (and no directory is read).
+              "entra_directory": not department_member,
+              "marking_grants": (({ROLES[role][1]: owners} if ROLES[role][1] else {})
+                                 if role else {name: owners for name in OWNER_MARKINGS})}
     config["note"] = ("Owner-eval host config (scripts/eval_owner_host.py): all-sources scope, "
                       "the named reader granted the owner principals. Generated, never committed.")
     return {"host.json": config, "employee_policy.json": policy, "portal_access.json": access,
@@ -176,19 +210,27 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
     parser.add_argument("--full-read", action="store_true",
                         help="write a declared full-read grant for the reader (all scopes, "
                              "every mailbox); the people exclusion still wins")
+    parser.add_argument("--role", choices=sorted(ROLES),
+                        help="a restricted reader: only this role's staff principals and "
+                             "its marking")
+    parser.add_argument("--department-member", action="store_true",
+                        help="with --role: an ordinary employee of the role's Portal "
+                             "department (MANAGER, L3), routed by department, never admin")
     parser.add_argument("--granted-by", default="workbench owner",
                         help="who granted full-read, recorded in the grant")
     args = parser.parse_args(argv)
     try:
         files = build(reader_claims(os.environ if environ is None else environ,
                                     args.reader_env), full_read=args.full_read,
-                      granted_by=args.granted_by)
+                      granted_by=args.granted_by, role=args.role,
+                      department_member=args.department_member)
     except (ValueError, OSError, KeyError) as error:
         print(json.dumps({"error": type(error).__name__}), file=sys.stderr)
         return 2
     write(args.out, files)
     print(json.dumps({"host_config": str(args.out / "host.json"), "files": sorted(files),
-                      "full_read": args.full_read}))
+                      "full_read": args.full_read, "role": args.role,
+                      "department_member": args.department_member}))
     return 0
 
 

@@ -137,6 +137,8 @@ class DetectorTest(unittest.TestCase):
             card("SalesOrder"),
             card("SalesOrder", leads=[lead(cited=False)]),           # nothing to cite
             card("AssemblyOrderPacket", conflicts=[disagreement("100", "100.0")]),
+            # one quantity rounded two ways (1257 boxes, 1257.1666...): no risk
+            card("AssemblyOrderPacket", conflicts=[disagreement("1257", "1257.1666666666667")]),
             card("AssemblyOrderPacket", conflicts=[disagreement("100", "120", role_b="released")]),
             card("AssemblyOrderPacket", conflicts=[disagreement("100", "120", unit_b="KG")]),
             card("AssemblyOrderPacket", conflicts=[disagreement("100", "many")]),

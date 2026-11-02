@@ -222,6 +222,63 @@ class DocumentFieldsTests(unittest.TestCase):
         (oid,) = [o for o in self.objects("ForwarderQuote") if item in o]
         return oid
 
+    def test_a_document_is_parsed_once_across_the_bindings_and_builds_of_a_state(self):
+        """Every binding over ``documentFields`` reads the relation again; past the
+        in-process memo's bound (here 1 entry) each parsed every document again (780-1,640
+        s a mail binding on the live stores). A generation build keeps the fields
+        (``document_fields.kept_fields``): each document is parsed once by the first
+        binding, and a later cold build of the same state parses none; equal digests."""
+        from integrations.captured_text import ReadingMemo
+        from ontology import project_incremental as inc
+
+        parsed = []
+        fields_of = document_fields._fields_of
+
+        def counted(key, read, *present):   # each parse of a document's fields, by key
+            return fields_of(key, lambda: parsed.append(key) or read(), *present)
+        portal = StaticPortal([gold_po("p1", "PO100234")])
+        with tempfile.TemporaryDirectory() as tmp:
+            def build(**options):
+                parsed.clear()
+                with MailCaptures(self.state, internal_domains=tm.SCOPE.internal_domains) \
+                        as mail, SharePointCaptures(self.state) as files, \
+                        mock.patch.object(document_fields, "_FIELDS",
+                                          ReadingMemo(1, lambda _found: 1)), \
+                        mock.patch.object(document_fields, "_fields_of", counted):
+                    return inc.build_generation(
+                        Path(tmp), self.compiled, {"portal_api": portal, "graph_mail": mail,
+                                                   "sharepoint": files},
+                        clock=lambda: NOW, **options)
+            first = build()
+            self.assertTrue(parsed)
+            self.assertEqual(len(parsed), len(set(parsed)))   # one parse a document
+            again = build(previous=None)   # cold: every unit projected again
+            self.assertEqual((again.mode, parsed), ("cold", []))
+            self.assertEqual(again.content_digest, first.content_digest)
+            # A file whose bytes left the disk is never served its kept fields: the build
+            # equals one of a state that never parsed it.
+            digest = hashlib.sha256(self.bytes["confirmation"]).hexdigest()
+            moved = [path.rename(path.with_name(path.name + ".moved")) for path in
+                     self.state.rglob(f"{digest}*") if path.is_file()]
+            self.assertTrue(moved)
+            from integrations import captured_text
+            try:
+                with mock.patch.object(captured_text, "_CACHE", captured_text._CACHE.empty()):
+                    gone = build(previous=None)   # a new process: nothing read in memory
+                with mock.patch.object(captured_text, "_CACHE", captured_text._CACHE.empty()), \
+                        mock.patch.object(document_fields, "_FIELDS",
+                                          ReadingMemo(1, lambda _found: 1)), \
+                        MailCaptures(self.state, internal_domains=tm.SCOPE.internal_domains) \
+                        as mail, SharePointCaptures(self.state) as files:
+                    fresh = build_store(Path(tmp) / "fresh.sqlite", self.compiled,
+                                        {"portal_api": portal, "graph_mail": mail,
+                                         "sharepoint": files}, clock=lambda: NOW)
+            finally:
+                for path in moved:
+                    path.rename(path.with_name(path.name[:-len(".moved")]))
+            self.assertNotEqual(gone.content_digest, first.content_digest)
+            self.assertEqual(gone.content_digest, fresh["content_digest"])
+
     def test_confirmation_fields_are_typed_lead_claims_cited_to_the_original_bytes(self):
         values, evidence = self.read(self.confirmation("ATT-1"))
         self.assertEqual((values["amount"]["value"], values["amount"]["currency"]),

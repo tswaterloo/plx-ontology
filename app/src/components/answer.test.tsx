@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Answer, Hidden, Source } from "@/lib/types";
-import { AnswerCard, type Turn } from "./answer-card";
+import { AnswerCard, bulletFact, type Turn } from "./answer-card";
 import { ConflictCard, HiddenNotice } from "./answer-parts";
 import { ObjectView } from "./object-view";
 import { SourceChip } from "./source-chip";
@@ -47,16 +47,24 @@ describe("HiddenNotice", () => {
 });
 
 describe("SourceChip", () => {
-  it("links to a safe source in a new tab", () => {
-    render(<SourceChip source={bc} />);
-    const a = screen.getByRole("link", { name: /Business Central, Receipt PR-1/ });
-    expect(a).toHaveAttribute("href", "/o/po/1");
-    expect(a).toHaveAttribute("rel", "noopener noreferrer");
+  it("is named by its record, never the environment, and opens the evidence drawer on click or tap (no new tab)", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    const { container } = render(<SourceChip source={{ ...bc, label: "BC production" }} />);
+    const chip = screen.getByRole("button", { name: /Business Central, BC · Receipt/ });
+    expect(chip).not.toHaveTextContent("production");
+    expect(container.querySelector('a[target="_blank"]')).toBeNull();
+    await userEvent.click(chip);
+    expect(await screen.findByTestId("evidence-drawer")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByTestId("evidence-drawer")).toBeNull();
+    // focus returns to the chip
+    expect(document.activeElement).toBe(chip);
   });
 
-  it("is not a link when the source URL is unsafe", () => {
-    const { container } = render(<SourceChip source={{ ...bc, open_url: "javascript:alert(1)" }} />);
+  it("is not a link when the source URL is unsafe, and opens nothing without a handle", () => {
+    const { container } = render(<SourceChip source={{ ...bc, handle: "", open_url: "javascript:alert(1)" }} />);
     expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
     expect(container.innerHTML).not.toContain("javascript:");
   });
 
@@ -83,15 +91,17 @@ describe("ConflictCard", () => {
     const card = screen.getByTestId("conflict-card");
     expect(card).toHaveTextContent("3,000");
     expect(card).toHaveTextContent("3,200");
-    expect(within(card).getAllByText("Trusted")).toHaveLength(1);
+    expect(within(card).getAllByText("Used")).toHaveLength(1);
+    expect(card).toHaveTextContent("The systems disagree on quantity received");
     expect(card).toHaveTextContent("BC is the system of record for receipts.");
     expect(card).toHaveTextContent("Copied nightly from BC.");
   });
 
   it("never claims a trusted value when none is marked", () => {
     render(<ConflictCard conflict={{ field: "date", values: [{ value: "a", source: bc, trusted: false, why: "" }, { value: "b", source: bc, trusted: false, why: "" }] }} />);
-    expect(screen.queryByText("Trusted")).toBeNull();
+    expect(screen.queryByText("Used")).toBeNull();
     expect(screen.getByTestId("conflict-card")).toHaveTextContent("Neither value is confirmed");
+    expect(screen.getByTestId("conflict-card")).toHaveTextContent("We're not picking one.");
   });
 });
 
@@ -123,14 +133,111 @@ describe("AnswerCard", () => {
     expect(card).toHaveAttribute("aria-busy", "false");
   });
 
-  it("labels an answer served under a full-read grant, and only that one", () => {
-    const plain: Turn = { id: "t", question: "q", phase: "done", streamed: "", answer };
-    const { unmount } = render(<AnswerCard turn={plain} />);
-    expect(screen.queryByTestId("access-label")).toBeNull();
-    unmount();
+  it("renders markdown as text (never literal ** or list dashes), the lead first and the rest as facts", () => {
+    const md = "PO 1 is a **Draft** in Business Central.\n\n**Portal copy:** says Complete.\n\n- **Pick-up email:** ready on 2 Sep\n- **Invoice:** not linked";
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, direct_answer: md } }} />);
+    const card = screen.getByTestId("answer-card");
+    expect(card).not.toHaveTextContent("**");
+    expect(card).not.toHaveTextContent(/(^|\s)- \S/);
+    const lead = screen.getByTestId("direct-answer");
+    expect(lead).toHaveTextContent("PO 1 is a Draft in Business Central.");
+    expect(within(lead).getByText("Draft").tagName).toBe("STRONG");
+    const facts = screen.getByTestId("fact-list");
+    expect(facts).toHaveTextContent("Pick-up email: ready on 2 Sep");
+    expect(facts).toHaveTextContent("Invoice: not linked");
+  });
+
+  it("never leads with a field dump, labels a passage by its source and says money with its currency", () => {
+    const mail: Source = { system: "Email", handle: "graph-mail://b/1", label: "Email message", fields: { "row.from": "ross@vendor.example" } };
+    const a: Answer = {
+      ...answer,
+      direct_answer: "PO number: 106093\nStatus: Draft\nTotal cost: 9680",
+      subjects: [{ object_id: "PurchaseOrder:9", type: "PurchaseOrder", label: "106093", open_url: "/object/PurchaseOrder/9" }],
+      facts: [
+        { text: "Currency (BC): USD", sources: [bc], check: "read_from_record" },
+        { text: "Total cost: 9680", sources: [bc], check: "read_from_record" },
+        { text: "Body text: next cheque run on October 25", sources: [mail], check: "read_from_record" },
+      ],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: a }} />);
+    const lead = screen.getByTestId("direct-answer");
+    expect(lead).toHaveTextContent("PO 106093:");
+    const card = screen.getByTestId("answer-card");
+    expect(card).not.toHaveTextContent("Body text");
+    expect(card).not.toHaveTextContent("(BC)");
+    expect(card).toHaveTextContent("Email from ross@vendor.example: “next cheque run on October 25”");
+    expect(card).toHaveTextContent("Total cost: $9,680.00 USD");
+  });
+
+  it("shows data age as one grey line: no capture states, no amber unless a used source is over a week old", () => {
+    const fresh = {
+      as_of: "2026-10-29T10:34:00Z",
+      sources: [
+        { system: "BC" as const, as_of: "2026-10-31T23:51:00Z", age_seconds: 80000, stale: false, capture: "complete" as const },
+        { system: "Email" as const, as_of: "2026-10-30T15:11:00Z", age_seconds: 200000, stale: true, capture: "partial" as const },
+        { system: "MC" as const, as_of: "2026-10-01T00:00:00Z", age_seconds: 2700000, stale: true, capture: "failed" as const },
+      ],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: fresh } }} />);
+    const f = screen.getByTestId("freshness");
+    expect(f).toHaveTextContent(/^Data as of 29 Oct/);
+    expect(f).not.toHaveTextContent(/Out of date|capture|continuing/i);
+    expect(screen.queryByTestId("freshness-old")).toBeNull();
+    // an old source shows its date under "What I checked", not as a warning
+    expect(screen.getByTestId("checked-list")).toHaveTextContent("Mission Control");
+  });
+
+  it("never repeats the full-read label on a card: the page says it once", () => {
     const full = { ...answer, access_label: "Viewing with full-read access" };
-    render(<AnswerCard turn={{ ...plain, answer: full }} />);
-    expect(screen.getByTestId("access-label")).toHaveTextContent("Viewing with full-read access");
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: full }} />);
+    expect(screen.queryByTestId("access-label")).toBeNull();
+    expect(screen.getByTestId("answer-card")).not.toHaveTextContent("full-read");
+  });
+
+  it("says the assistant is unavailable, not that nothing was found", () => {
+    const down = {
+      ...answer,
+      outcome: "partial" as const,
+      direct_answer: "The assistant is unavailable right now (its usage limit has been reached). Here is what the records show.",
+      assistant_unavailable: "its usage limit has been reached",
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: down }} />);
+    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Assistant unavailable");
+    expect(screen.getByTestId("outcome-badge")).not.toHaveTextContent("Not found");
+    expect(screen.getByTestId("direct-answer")).not.toHaveTextContent(/couldn't find/);
+  });
+
+  it("offers business records only when a number matches several", async () => {
+    const pick = vi.fn();
+    render(
+      <AnswerCard
+        turn={{
+          id: "t",
+          question: "po 106093 status",
+          phase: "done",
+          streamed: "",
+          understanding: {
+            intent: "status",
+            entities: [
+              {
+                text: "106093",
+                resolved: null,
+                ambiguous: true,
+                candidates: [
+                  { object_id: "PurchaseOrder:x", type: "PurchaseOrder", label: "106093", score: null },
+                  { object_id: "BcEntityMapping:y", type: "BcEntityMapping", label: "106093", score: null },
+                ],
+              },
+            ],
+            time_frame: null,
+            rewrites: [],
+          },
+        }}
+        onPick={pick}
+      />,
+    );
+    expect(screen.queryByTestId("did-you-mean")).toBeNull();
+    expect(screen.getByTestId("answer-card")).not.toHaveTextContent(/entity mapping/i);
   });
 
   it("shows streamed text with a busy state before the answer lands", () => {
@@ -197,8 +304,12 @@ describe("AnswerCard payload parts", () => {
         }}
       />,
     );
-    expect(screen.getByText("Partial answer")).toBeInTheDocument();
-    expect(screen.getAllByLabelText("Checked against its source")).toHaveLength(1);
+    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Partly answered");
+    // no tick on every line: only an unconfirmed fact says so, in words
+    expect(screen.getAllByText(/\(not confirmed\)/)).toHaveLength(1);
+    expect(screen.getByTestId("fact-list").children[1]).toHaveTextContent("Unchecked fact. (not confirmed)");
+    // a partial answer opens "What's missing"
+    expect(screen.getByTestId("whats-missing")).toHaveAttribute("open");
     await userEvent.click(screen.getByRole("button", { name: /Glow Botanicals.*Customer/ }));
     expect(pick).toHaveBeenCalledWith({ object_id: "Customer:a", type: "Customer", label: "Glow Botanicals" });
     // An unsafe open_url falls back to the app's own object route.
@@ -315,5 +426,141 @@ describe("object page with optional sections absent", () => {
     expect(screen.queryByTestId("hidden-notice")).toBeNull();
     expect(screen.queryByTestId("late-lines")).toBeNull();
     expect(document.body.textContent).not.toMatch(/\b0 (more )?items?\b/);
+  });
+});
+
+describe("a long list, a repeated pick and a page read in two steps", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    sessionStorage.clear();
+  });
+
+  it("says '12 of 34 shown' with a show-all link, and offers the last pick first", async () => {
+    const two = [
+      { object_id: "Customer:b", type: "Customer", label: "Diversified (C01100)", open_url: "/object/Customer/b" },
+      { object_id: "Customer:a", type: "Customer", label: "Diversified (DIVE11)", open_url: "/object/Customer/a" },
+    ];
+    const facts = Array.from({ length: 12 }, (_, i) => ({ text: `PO ${i}: late.`, sources: [] }));
+    const late = { ...answer, facts, list_total: 34, did_you_mean: two };
+    const pick = vi.fn();
+    const { unmount } = render(<AnswerCard onPick={pick} turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: late }} />);
+    expect(screen.getByTestId("show-all")).toHaveTextContent("12 of 34 shown — show all");
+    expect(screen.getByTestId("show-all")).toHaveAttribute("href", "/late");
+    await userEvent.click(screen.getByRole("button", { name: /DIVE11/ }));
+    expect(pick).toHaveBeenCalledWith({ object_id: "Customer:a", type: "Customer", label: "Diversified (DIVE11)" });
+    unmount();
+    render(<AnswerCard onPick={pick} turn={{ id: "t2", question: "q", phase: "done", streamed: "", answer: late }} />);
+    const buttons = within(screen.getByTestId("did-you-mean")).getAllByRole("button");
+    expect(buttons[0]).toHaveTextContent("DIVE11");
+    expect(buttons[0]).toHaveTextContent("last picked");
+  });
+
+  it("shows the quick read first, then the full page with the customer's figures", async () => {
+    const base = {
+      object_id: "Customer:a", type: "Customer", label: "Diversified", summary: "Customer",
+      status: { state: "read", text: "Read", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" },
+    };
+    let release: (r: Response) => void = () => undefined;
+    const fullDone = new Promise<Response>((r) => (release = r));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        String(url).includes("quick=1")
+          ? new Response(JSON.stringify({ ...base, complete: false }), { status: 200 })
+          : fullDone,
+      ),
+    );
+    render(<ObjectView type="Customer" id="Customer:a" />);
+    expect(await screen.findByTestId("checking")).toBeInTheDocument();
+    release(
+      new Response(
+        JSON.stringify({
+          ...base,
+          complete: true,
+          customer: {
+            revenue: [{ label: "Invoiced (excluding tax)", period: "last 12 months (since 2025-11-01)", money: { amount: "549477.34", currency: "CAD" }, count: 12, system: "BC", sources: [] }],
+            orders_total: 14, open_orders: 1,
+            open_list: [{ object_id: "SalesOrder:1", label: "S-ORD101150", open_url: "/object/SalesOrder/1", date: "2026-07-29", status: "Open", sources: [] }],
+            recent_orders: [], contacts: [], also_in: [], not_established: ["Contacts: none captured for this customer's record"],
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    expect(await screen.findByTestId("revenue")).toHaveTextContent("549,477.34");
+    expect(screen.queryByTestId("checking")).toBeNull();
+    expect(screen.getByTestId("open-orders")).toHaveTextContent("S-ORD101150");
+    expect(screen.getByTestId("customer")).toHaveTextContent("Contacts: none captured");
+  });
+});
+
+describe("AnswerCard: the analyst's shape", () => {
+  const mail: Source = { system: "Email", handle: "graph-mail://m/1", label: "Email message", open_url: null };
+  const shaped: Answer = {
+    ...answer,
+    outcome: "partial",
+    direct_answer: [
+      "Yes — PO 106001 is late by 129 days.",
+      "- Expected receipt 2026-06-25, still not received.",
+      "- The supplier promised a new date in mail.",
+      "- Ordered 2,400 kg.",
+      "What I couldn't confirm: the supplier's new ship date.",
+    ].join("\n"),
+    facts: [
+      { text: "Ordered quantity: 2400 kg", sources: [bc], check: "value_matches_record" },
+      { text: "Expected receipt date: 2026-06-25", sources: [{ ...bc, handle: "bc://po/106001", label: "PO 106001" }], check: "value_matches_record" },
+      { text: "Payment terms: NET30", sources: [mail], check: "lead" },
+    ],
+    not_found: [{ what: "Supplier new ship date", where_it_would_live: "supplier email" }],
+    follow_ups: ["Who should I chase about PO 106001?", "What changed on PO 106001 recently?"],
+  };
+
+  it("leads with the verdict, gives each bullet its own fact's evidence, says what's missing once and asks the follow-ups", async () => {
+    const onAsk = vi.fn();
+    render(<AnswerCard turn={{ id: "t", question: "is po 106001 late", phase: "done", streamed: "", answer: shaped }} onAsk={onAsk} />);
+    expect(screen.getByTestId("direct-answer")).toHaveTextContent(/^Yes — PO 106001 is late by 129 days\.$/);
+    const bullets = screen.getAllByTestId("answer-bullet");
+    expect(bullets).toHaveLength(3);
+    // a bullet restating a gated fact carries that fact's chip; one restating none carries none
+    expect(within(bullets[0]).getAllByTestId("source-chip")).toHaveLength(1);
+    expect(within(bullets[1]).queryAllByTestId("source-chip")).toHaveLength(0);
+    expect(within(bullets[2]).getAllByTestId("source-chip")).toHaveLength(1);
+    // a fact no bullet restates is still listed, with its chip and its "not confirmed"
+    const list = screen.getByTestId("fact-list");
+    expect(list).toHaveTextContent("Payment terms: NET30 (not confirmed)");
+    expect(list.querySelectorAll("li")).toHaveLength(4);
+    // the missing line is the answer's own, said once, never glued to a bullet
+    const missing = screen.getByTestId("could-not-confirm");
+    expect(missing).toHaveTextContent("What I couldn't confirm: The supplier's new ship date.");
+    expect(bullets[2]).not.toHaveTextContent("confirm");
+    const asks = within(screen.getByTestId("follow-ups")).getAllByRole("button");
+    expect(asks.map((b) => b.textContent)).toEqual(shaped.follow_ups);
+    await userEvent.click(asks[1]);
+    expect(onAsk).toHaveBeenCalledWith("What changed on PO 106001 recently?");
+  });
+
+  it("has no missing line when nothing is missing, composes one from the gaps when the text has none, and no chips without follow-ups", () => {
+    const full: Answer = { ...shaped, outcome: "answered", direct_answer: "Yes — PO 106001 is late.\n- Ordered 2,400 kg.", not_found: [], follow_ups: [] };
+    const { unmount } = render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: full }} />);
+    expect(screen.queryByTestId("could-not-confirm")).toBeNull();
+    expect(screen.queryByTestId("follow-ups")).toBeNull();
+    unmount();
+    const gapsOnly: Answer = { ...full, outcome: "partial", direct_answer: "PO 106001 is open.\n\nWhat I couldn't confirm from a source you can open is listed below.", not_found: shaped.not_found };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: gapsOnly }} />);
+    expect(screen.getByTestId("could-not-confirm")).toHaveTextContent("What I couldn't confirm: Supplier new ship date.");
+    expect(screen.getByTestId("answer-card")).not.toHaveTextContent("is listed below");
+  });
+
+  it("a bullet never borrows the evidence of a fact whose figure it does not write", () => {
+    const facts = shaped.facts!;
+    expect(bulletFact("Payment terms are not on the PO.", facts, new Set())).toBeNull();
+    expect(bulletFact("Payment terms NET30.", facts, new Set())).toBe(2);
+    // each fact lends its chips once
+    expect(bulletFact("Payment terms NET30.", facts, new Set([2]))).toBeNull();
+  });
+
+  it("follow-up chips do nothing while another question is running", () => {
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: shaped }} />);
+    for (const b of within(screen.getByTestId("follow-ups")).getAllByRole("button")) expect(b).toBeDisabled();
   });
 });

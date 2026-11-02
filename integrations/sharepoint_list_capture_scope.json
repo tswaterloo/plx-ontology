@@ -1,18 +1,52 @@
 {
  "schema": "plx-sharepoint-list-capture-scope/v1",
- "note": "SharePoint list-item capture scope (integrations/capture_sharepoint_lists). It names only lists whose data exists nowhere else: the Vendor Quotes list the Portal's public RFQ form writes vendors' packaging quotes to, on the Portal's fallback site and list ids (plx-customer-portal@31a2623 portal/src/app/api/rfq/submit/route.ts:5,26-33,146-176; RFQ_SHAREPOINT_SITE_ID / RFQ_VENDOR_QUOTES_LIST_ID override them on Vercel: a deployment that sets other ids writes another list, which this scope does not name; which ids production uses is live-unverified). The columns are the fields that route writes; no other column is read. The Portal form lists and the Mission Control mirror lists stay out: they copy systems the Workbench captures. This file grants nothing: the capture principal still needs the live-source audience, and every reader is re-gated per item on the item permissions captured with it.",
+ "note": "SharePoint list-item capture scope (integrations/capture_sharepoint_lists). It names only lists whose data exists nowhere else: the Vendor Quotes list the Portal's public RFQ form writes vendors' packaging quotes to, on the Portal's fallback site and list ids (plx-customer-portal@31a2623 portal/src/app/api/rfq/submit/route.ts:5,26-33,146-176; RFQ_SHAREPOINT_SITE_ID / RFQ_VENDOR_QUOTES_LIST_ID override them on Vercel: a deployment that sets other ids writes another list, which this scope does not name; which ids production uses is live-unverified). The columns are the fields that route writes; no other column is read. The Portal form lists and the Mission Control mirror lists stay out: they copy systems the Workbench captures. This file grants nothing: the capture principal still needs the live-source audience, and every reader is re-gated per item on the item permissions captured with it. Discovery (coverage audit 2026-10-30): the discover block also captures every list of every tenant site the application may read (libraries, hidden and system lists and every OneDrive left out; a person's list is read only when named here), each with its own columns. Live dry run 2026-10-31 (--discover-only, read-only): 176 sites listed, 53 tenant sites read, 1,282 lists seen, 263 lists found, 236 captured once the 27 below are left out (309 libraries, 710 hidden or system). exclude_lists leaves out the 12 Mission Control mirror lists of the plx-mission-control and plx-mission-control-dev sites (ToDos, Milestone Register, Roadmap, Repo Registry, Risk Register, Projects; Mission Control is captured by integrations/mc_sources). The 15 Portal form and contract lists (PLX Portal - C1..C5 and F1..F10) were left out with them on the premise that the reporting API captures the Portal. Live read 2026-11-01 (scratch, read-only): all 15 listed completely, 0 items each. Every other discovered list is captured; the project registers on other sites stay in.",
  "lists": [
   {
    "name": "Vendor Quotes",
    "site_id": "petrasoap-my.sharepoint.com,b24e2c51-3e21-4af0-9fef-9297bf862d56,b7c22764-d859-4b4e-881d-74facc556f19",
    "list_id": "d3711ac7-1291-4801-a2a3-da3717934fac",
-   "columns": ["Title", "ProjectTitle", "VendorName", "VendorContactName", "VendorEmail",
-               "PackagingType", "PackagingSize", "MOQ", "LeadTimeWeeks", "INCOTerms",
-               "SamplesAvailable", "ReviewStatus", "QuotedUnitPrice", "ToolingCostUSD",
-               "PriceBreaks", "SpecNotes", "QuoteValidUntil"],
+   "columns": [
+    "Title",
+    "ProjectTitle",
+    "VendorName",
+    "VendorContactName",
+    "VendorEmail",
+    "PackagingType",
+    "PackagingSize",
+    "MOQ",
+    "LeadTimeWeeks",
+    "INCOTerms",
+    "SamplesAvailable",
+    "ReviewStatus",
+    "QuotedUnitPrice",
+    "ToolingCostUSD",
+    "PriceBreaks",
+    "SpecNotes",
+    "QuoteValidUntil"
+   ],
    "evidence": "plx-customer-portal:portal/src/app/api/rfq/submit/route.ts@31a2623f3ac0:176"
   }
  ],
+ "discover": {
+  "sites": "all_tenant_sites",
+  "exclude_lists": [
+   "0273ffa7-0773-4f8e-8885-81f3e2b431e6",
+   "21e93d04-d2ee-4df7-8dc5-0bfeb3c91e09",
+   "2aa2c695-c9a7-4c82-8125-b5b68e875615",
+   "551b4d9c-5d5e-4e20-adf5-7c5008eed6d9",
+   "5dde1dc1-3412-40b2-865c-55fcc7520e48",
+   "732995e6-504c-41e7-8c55-a1aa2906ec6e",
+   "811e3392-3e76-4ea1-b5d2-efae9d48c6a6",
+   "9c471cc3-5415-4a2d-af49-879e17490481",
+   "9ceb1277-07ad-4bec-82b3-305e7671bd30",
+   "a26cd1f0-7f30-49ed-b843-056f6468d6fa",
+   "d030818c-e628-45d8-abfd-813261b8e7a0",
+   "e2b6122f-b640-445b-8aec-d7e3a6b2b444"
+  ],
+  "max_sites": 500,
+  "max_lists": 500
+ },
  "page_size": 200,
  "max_pages_per_run": 50,
  "max_items_per_run": 5000

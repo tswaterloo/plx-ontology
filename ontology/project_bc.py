@@ -111,6 +111,14 @@ class BcCaptures:
             self._conn.close()
             raise
         self.generation = meta["generation"]
+        # Captured companies without a pinned name (``bc_read.NAMED_COMPANIES_STATE``); a
+        # store from before that state names none, so every company owes its field pages.
+        try:
+            named = json.loads(meta.get("state:bc:named_companies") or "null")
+        except ValueError:
+            named = None
+        self._named = (frozenset(c for c in named if isinstance(c, str))
+                       if isinstance(named, list) else None)
         self._units = self._unit_states()
         self._passes = self._pass_starts()
 
@@ -176,6 +184,10 @@ class BcCaptures:
     def _companies(self) -> set[str]:
         return {company for units in self._units.values() for company in units}
 
+    @property
+    def _unnamed(self) -> set[str]:
+        return set() if self._named is None else self._companies() - self._named
+
     def capture_gap(self, relation: str) -> str | None:
         """What the capture does not hold of one entity set: ``source_not_captured`` (no
         unit of it), ``source_capture_incomplete`` (a unit not settled, or a captured
@@ -183,7 +195,13 @@ class BcCaptures:
         units = self._units.get(relation)
         if not units:
             return NOT_CAPTURED
-        if set(units) != self._companies() or not all(u["settled"] for u in units.values()):
+        # A field page (``BC_FIELD_PAGES``: Page 50 references, Page 38 lots) is read only
+        # in a company whose name is pinned (ODataV4 addresses a company by name): only a
+        # captured company the capture recorded without a pinned name is exempt; a named
+        # company without its unit (its parent set not settled yet) is a gap.
+        companies = (self._companies() - self._unnamed if relation in BC_FIELD_PAGES
+                     else self._companies())
+        if set(units) != companies or not all(u["settled"] for u in units.values()):
             return INCOMPLETE
         return None
 
@@ -289,4 +307,41 @@ class BcCaptures:
                     out.append(self._record(relation, row))
         return out
 
-__all__ = ["BcCaptures", "INCOMPLETE", "NOT_CAPTURED"]
+def raw_row_markings(entity_set: str, schema: Any = None
+                     ) -> tuple[frozenset[str], dict[str, frozenset[str]]]:
+    """The markings a raw captured row of one BC entity set carries, as its projected
+    record does (defence in depth for raw reads, ``plx.read``): (the markings every type
+    bound to the set carries, {top-level row field: the markings of every property that
+    reads it}). A reader lacking a row marking gets no row; lacking a field's, not that
+    field. ``schema``: the compiled schema (default the committed one)."""
+    from ontology import schema as ontology_schema
+    compiled = schema if schema is not None else ontology_schema.load_schema()
+    bindings = {bid for bid, (_tid, b) in compiled.bindings.items()
+                if b.get("source") == SOURCE and b.get("relation") == entity_set}
+    row: set[str] = set()
+    fields: dict[str, set[str]] = {}
+    for type_def in compiled.object_types.values():
+        if not any(b.get("id") in bindings for b in type_def.get("bindings", ())):
+            continue
+        row |= set(type_def.get("markings") or ())
+        for prop in type_def.get("properties", ()):
+            marks = set(prop.get("markings") or ())
+            if not marks:
+                continue
+            for source in prop.get("sources", ()):
+                if source.get("binding") in bindings and isinstance(source.get("path"), str):
+                    fields.setdefault(source["path"].split(".", 1)[0], set()).update(marks)
+    return frozenset(row), {f: frozenset(m) for f, m in fields.items()}
+
+
+def marked_row(entity_set: str, row: Mapping[str, Any], held: frozenset[str],
+               schema: Any = None) -> dict[str, Any] | None:
+    """``row`` as a reader holding ``held`` markings may open it: None when it lacks a
+    marking of the row, else the row without each field whose markings it lacks."""
+    row_marks, field_marks = raw_row_markings(entity_set, schema)
+    if not row_marks <= held:
+        return None
+    return {k: v for k, v in row.items() if field_marks.get(k, frozenset()) <= held}
+
+
+__all__ = ["BcCaptures", "INCOMPLETE", "NOT_CAPTURED", "marked_row", "raw_row_markings"]

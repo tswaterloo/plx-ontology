@@ -37,6 +37,9 @@ from scripts import ontology_projection_bc_probe as probe
 
 MAN, DIST = tb.CO[0], tb.CO[1]
 READER = "staff:full"
+# The fixture companies' pinned names (as production pins all three): each company's
+# Page 50 references and Page 38 lots are read by name, so no field page is a gap.
+NAMED = {"production": dict(tb.NAMES)}
 FULL = Actor("plx", frozenset({READER}))
 
 
@@ -824,6 +827,143 @@ class PaymentStateTests(unittest.TestCase):
                          [("inaccessible", "not_served"), ("unknown", "measure_value_missing")])
 
 
+class SensitiveMasterTests(unittest.TestCase):
+    """BC bank accounts are finance throughout, their number
+    and IBAN finance and l5; a fixed asset's assigned employee is pii."""
+
+    def test_bank_accounts_and_asset_holders_reach_only_readers_holding_the_markings(self):
+        fake = tb.FakeBc({})
+        bank, asset = gid(1, 40), gid(1, 41)
+        fake.data[(MAN, "bankAccounts")] = [record(
+            bank, number="BANK-1", displayName="Operating", bankAccountNumber="ACCT-0099",
+            iban="CA00TEST0099", currencyCode="CAD", blocked=False)]
+        fake.data[(MAN, "fixedAssets")] = [record(
+            asset, number="FA-1", displayName="Filler", employeeNumber="EMP-7",
+            employeeId=gid(1, 42), classCode="EQUIP")]
+        party, vendor, contact = gid(1, 43), gid(1, 44), gid(1, 45)
+        fake.data[(MAN, "customers")] = [record(party, number="C-9", displayName="Acme",
+                                                email="ap@acme.test", phoneNumber="555-0100")]
+        fake.data[(MAN, "vendors")] = [record(vendor, number="V-9", displayName="Supply",
+                                              email="sales@supply.test")]
+        fake.data[(MAN, "contacts")] = [record(contact, number="CT9", type="Company",
+                                               displayName="Acme",
+                                               contactBusinessRelation="Customer")]
+        w = BcWorld(self, fake, entity_sets=("bankAccounts", "fixedAssets", "customers",
+                                             "vendors", "contacts"))
+        party_id = f'Customer:bc.customers:{{"id":"{party}"}}'
+        vendor_id = f'Supplier:bc.vendors:{{"id":"{vendor}"}}'
+        bank_id = f'RelBcBankAccounts:gen.bc.bank_accounts:{{"id":"{bank}"}}'
+        asset_id = f'RelBcFixedAssets:gen.bc.fixed_assets:{{"id":"{asset}"}}'
+
+        def values(object_id):
+            out = w.call("plx.object", {"object_id": object_id})
+            if "error" in out:
+                return out["error"]["code"]
+            return {v["property"]: (v["value"].get("untrusted_text")
+                                    if isinstance(v["value"], dict) else v["value"])
+                    for v in out["values"]}
+
+        def reader(*without):
+            w.tools(ot.ReadPolicy(tenant="plx", audiences={"bc:*": {READER}},
+                                  markings={m: {READER} for m in store_ddl.MARKINGS
+                                            if m not in without}))
+        full = values(bank_id)
+        self.assertEqual((full["iban"], full["bank_account_number"]),
+                         ("CA00TEST0099", "ACCT-0099"))
+        self.assertEqual(values(asset_id)["employee_number"], "EMP-7")
+        # a BC customer's and vendor's addresses are projected (plx.documents participant)
+        self.assertEqual((values(party_id)["bc_email"], values(party_id)["bc_phone_number"]),
+                         ("ap@acme.test", "555-0100"))
+        self.assertEqual(values(vendor_id)["bc_email"], "sales@supply.test")
+        self.assertEqual(values(f'Contact:bc.contacts:{{"id":"{contact}"}}')
+                         ["business_relation"], "Customer")
+        reader("finance")   # a BC reader without finance: no bank account at all
+        self.assertEqual(values(bank_id), "object_not_found")
+        self.assertEqual(w.call("plx.find", {"query": "CA00TEST0099"}).get("objects", []), [])
+        reader("l5")        # finance alone: the account, never its number or IBAN
+        seen = values(bank_id)
+        self.assertEqual(seen["display_name"], "Operating")
+        self.assertNotIn("iban", seen)
+        self.assertNotIn("bank_account_number", seen)
+        reader("pii")       # the asset, never whom it is assigned to
+        seen = values(asset_id)
+        self.assertEqual(seen["number"], "FA-1")
+        self.assertFalse({"employee_number", "employee_id"} & set(seen))
+        seen = values(party_id)   # the customer, never its address or phone
+        self.assertEqual(seen["name"], "Acme")
+        self.assertFalse({"bc_email", "bc_phone_number"} & set(seen))
+        self.assertNotIn("bc_email", values(vendor_id))
+        self.assertEqual(w.call("plx.find", {"query": "ap@acme.test"}).get("objects", []), [])
+
+
+class ContactRelationTests(unittest.TestCase):
+    """A contact reaches its customer or vendor through their
+    contactsInformation (ContactRelation), and a reader without pii reaches no contact."""
+
+    def test_contacts_link_to_their_customer_and_vendor_only_for_a_pii_reader(self):
+        fake = tb.FakeBc({})
+        customer, vendor = gid(1, 50), gid(1, 51)
+        firm, supplier_firm, person, other = (gid(1, 52), gid(1, 53), gid(1, 54),
+                                              gid(1, 55))
+        fake.data[(MAN, "customers")] = [record(customer, number="C-7", displayName="Acme")]
+        fake.data[(MAN, "vendors")] = [record(vendor, number="V-7", displayName="Supply")]
+        fake.data[(MAN, "contacts")] = [
+            record(firm, number="CT1", type="Company", displayName="Acme",
+                   email="office@acme.test", contactBusinessRelation="Customer"),
+            record(supplier_firm, number="CT2", type="Company", displayName="Supply",
+                   email="sales@supply.test", contactBusinessRelation="Vendor"),
+            record(person, number="CT3", type="Person", displayName="Pat Buyer",
+                   companyNumber="CT1", email="pat@acme.test"),
+            record(other, number="CT4", type="Company", displayName="Unrelated",
+                   email="x@other.test")]
+        for party_set, party, contact_id, number, kind in (
+                ("customers", customer, firm, "CT1", "Customer"),
+                ("vendors", vendor, supplier_firm, "CT2", "Vendor")):
+            fake.party_contacts[(MAN, party_set, party)] = [{
+                "@odata.etag": f'W/"R{number}"', "contactId": contact_id,
+                "contactNumber": number, "contactName": "Firm", "contactType": "Company",
+                "relatedId": party, "relatedType": kind}]
+        w = BcWorld(self, fake, entity_sets=("customers", "vendors", "contacts",
+                                             "contactsInformation"))
+        customer_id = f'Customer:bc.customers:{{"id":"{customer}"}}'
+        vendor_id = f'Supplier:bc.vendors:{{"id":"{vendor}"}}'
+
+        def contact(oid: str) -> str:
+            return f'Contact:bc.contacts:{{"id":"{oid}"}}'
+
+        def reached(root: str, link: str) -> set[str]:
+            out = w.around(root, link)
+            return {o["object_id"] for o in out.get("objects", ())} - {root}
+
+        self.assertEqual(reached(customer_id, "Contact.bc_customer"), {contact(firm)})
+        self.assertEqual(reached(vendor_id, "Contact.bc_vendor"), {contact(supplier_firm)})
+        self.assertEqual(reached(contact(firm), "Contact.of_company"), {contact(person)})
+        w.tools(ot.ReadPolicy(tenant="plx", audiences={"bc:*": {READER}},
+                              markings={m: {READER} for m in store_ddl.MARKINGS
+                                        if m != "pii"}))
+        self.assertEqual(reached(customer_id, "Contact.bc_customer"), set())
+        self.assertEqual(w.call("plx.find", {"query": "pat@acme.test"}).get("objects", []), [])
+
+
+class FieldPageGapTests(unittest.TestCase):
+    def test_only_a_company_without_a_pinned_name_is_exempt_from_its_field_pages(self):
+        fake = tb.FakeBc({"itemLedgerEntries": 2})
+        fake.fail(rf"{tb.CO[1]}\)/itemLedgerEntries", (403, {}, b'{"error":{"code":"x"}}'))
+        h = tb.Harness(self, fake)
+        h.capture.names = {"production": {tb.CO[0]: tb.NAMES[tb.CO[0]],
+                                          tb.CO[1]: tb.NAMES[tb.CO[1]]}}   # CO[2]: no name
+        h.run(entity_sets=("itemLedgerEntries",))
+        with BcCaptures(h.db) as source:
+            # CO[1] is named but its ledger never settled: its lot page is owed, a gap
+            self.assertEqual(source.capture_gap("itemLedgerEntryLots"), INCOMPLETE)
+        h.run(entity_sets=("itemLedgerEntries",))   # CO[1]'s ledger settles, then its lots
+        with BcCaptures(h.db) as source:
+            # CO[2] has no pinned name: no lot unit by design, no gap
+            self.assertIsNone(source.capture_gap("itemLedgerEntryLots"))
+            self.assertEqual(sorted(source.whole_scopes("itemLedgerEntryLots")),
+                             sorted(tb.CO[:2]))
+
+
 class HostPolicyTests(unittest.TestCase):
     def test_store_held_bc_units_are_granted_by_the_live_audience_alone(self):
         w = BcWorld(self)
@@ -842,6 +982,21 @@ class HostPolicyTests(unittest.TestCase):
         # A line set needs its header set too (as the capture store decides).
         self.assertEqual(granted(tb.HEADERS_ONLY), {f"bc:{MAN}/purchaseOrders"})
         self.assertEqual(granted(tb.NOBODY), set())
+        # BC is decided unit by unit: a reader granted every unit the store holds covers
+        # the family (a BC record reached through a Portal twin is proven visible to it;
+        # live, an owner's late-PO answers said "withheld" for want of a "bc:*" pattern);
+        # one lacking any held unit, or granted none, does not
+        capture = Actor("plx", frozenset({"svc:capture"}), "restricted")
+        for actor, covered, lacking in ((capture, True, 0),
+                                        (tb.BUYER, False, len(units) - 2),
+                                        (tb.HEADERS_ONLY, False, len(units) - 1),
+                                        (tb.NOBODY, False, len(units))):
+            with self.subTest(actor=sorted(actor.principals)):
+                policy = case_host_policy(runtime, actor, None, bc_units=units)
+                self.assertEqual(set(policy.units["bc"]), set(units))
+                self.assertEqual(policy.covers_family(actor, "bc"), covered)
+                self.assertEqual(policy.ungranted_units(actor, "bc"), lacking)
+        self.assertNotIn("bc", case_host_policy(runtime, tb.BUYER, None).units)
         self.assertEqual(case_host_policy(SimpleNamespace(**{**vars(runtime), "live": None}),
                                           tb.BUYER, None, bc_units=units).audiences, {})
         w.tools(case_host_policy(runtime, tb.HEADERS_ONLY, None, bc_units=units))
@@ -861,13 +1016,14 @@ class ProbeTests(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             code = probe.main(["--db", f"{scratch.name}/capture.sqlite", "--store",
                                f"{scratch.name}/ontology.sqlite", "--sample", "5"],
-                              environ=tb.ENV, sender=purchase_world(), books=tb.BOOKS)
+                              environ=tb.ENV, sender=purchase_world(), books=tb.BOOKS,
+                              names=NAMED)
         self.assertEqual(code, 0, out.getvalue())
         report = json.loads(out.getvalue())
         self.assertEqual((report["evidence_label"], report["companies_captured"],
                           report["units_complete"], report["units_reached"],
                           report["units_total"]),
-                         ("injected-transport", 3, 108, 108, 108))
+                         ("injected-transport", 3, 135, 135, 135))
         self.assertEqual((report["roots_checked"], report["process_calls"],
                           report["contract_failures"], report["non_bc_citations"],
                           report["portal_hop_absent"], report["cross_company_links"]),
@@ -902,7 +1058,7 @@ class ProbeTests(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             probe.main(["--db", f"{scratch.name}/capture.sqlite", "--store",
                         f"{scratch.name}/ontology.sqlite", "--sample", "5"],
-                       environ=tb.ENV, sender=fake, books=tb.BOOKS)
+                       environ=tb.ENV, sender=fake, books=tb.BOOKS, names=NAMED)
         report = json.loads(out.getvalue())
         self.assertEqual((report["all_complete"], report["bc_incomplete_bindings"],
                           report["bc_uncaptured_bindings"], report["contract_failures"]),

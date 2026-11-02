@@ -611,6 +611,35 @@ class DocumentsTests(unittest.TestCase):
             self.assertEqual(listed(), [])
         self.assertEqual(listed(), first)
 
+    def test_a_documents_mentions_are_summarised_and_paged(self):
+        # rank3 audit: one map's 19 mentions filled 12.7k of its 14.3k-character entry and
+        # 72 of 230 pages were trimmed. A document shows MENTIONS_SHOWN, counts them all
+        # and pages the rest with mention_offset; nothing is lost or shown twice.
+        lines = [f"page {n}: Purchase order {NUMBER} line {n}\n" for n in range(1, 9)]
+        text, pages, at = "".join(lines), [], 0
+        for n, line in enumerate(lines, 1):
+            pages.append({"page": n, "start": at, "end": at + len(line)})
+            at += len(line)
+        seen = []
+        with mock.patch.object(StubReader, "original_text", lambda _s, _h, _a: {
+                "text": text, "pages": pages}):
+            offset = 0
+            while offset is not None:
+                out = ok(self, "plx.documents", self.call(
+                    FULL, object_id=P1, sources=["original"], mention_offset=offset))
+                (doc,) = out["documents"]
+                summary = doc["mention_summary"]
+                self.assertEqual((summary["total"], summary["offset"],
+                                  summary["identifiers_total"]), (8, offset, 1))
+                self.assertEqual(summary["identifiers"][0]["count"], 8)
+                self.assertLessEqual(len(doc["mentions"]), ev.MENTIONS_SHOWN)
+                seen += [m["span"]["origin"]["citation"] for m in doc["mentions"]]
+                offset = summary["next_mention_offset"]
+        self.assertEqual(seen, [f"original://orig-1#page={n}" for n in range(1, 9)])
+        # A document with few mentions carries no summary.
+        few = ok(self, "plx.documents", self.call(FULL, object_id=P1, sources=["original"]))
+        self.assertNotIn("mention_summary", few["documents"][0])
+
     def test_paging_with_a_cursor(self):
         first = ok(self, "plx.documents", self.call(FULL, object_id=P1, limit=1))
         self.assertTrue(first["completeness"]["truncated"])
@@ -705,6 +734,112 @@ class DocumentsTests(unittest.TestCase):
         # A reader without the SharePoint audience finds nothing there.
         self.assertEqual(ok(self, "plx.documents", self.call(
             OPS, query="quarterly replenishment", sources=["sharepoint"]))["documents"], [])
+
+
+class DocumentOrderTests(unittest.TestCase):
+    """plx.documents orders what the reader may see by authority (operating/search/
+    authority.py, the ``authority`` block of weights.json): documents naming the record
+    asked about above mail that only shares a word, automated mail last, a use-case
+    catalog document first; and a labelled PO number finds the mail of the same PO as
+    another system numbers it, through a firm twin link only."""
+
+    M5 = "Email:graph_mail.messages:m-5"      # automated mail mentioning the PO, newer
+    M5_H = "graph-mail://mbx-a/m-5@ck1"
+    M6 = "Email:graph_mail.messages:m-6"      # a person's mail sharing a word only, newest
+    M6_H = "graph-mail://mbx-a/m-6@ck1"
+    PB9 = "PurchaseOrder:bc.po:pb-9"          # stores the bare number
+    P9 = "PurchaseOrder:portal.po:po-9"       # its firm twin under another number
+    P10 = "PurchaseOrder:portal.po:po-10"     # a text-join (lead) twin only
+    M9 = "Email:graph_mail.messages:m-9"
+    M9_H = "graph-mail://mbx-a/m-9@ck1"
+    M10 = "Email:graph_mail.messages:m-10"
+    M10_H = "graph-mail://mbx-a/m-10@ck1"
+
+    def mail(self, s, oid, handle, subject, sender, received):
+        s.obj(oid, "mail:mbx-a", handle, "mail")
+        s.val(oid, "subject", "text", subject)
+        s.val(oid, "sender", "text", sender)
+        s.val(oid, "received_at", "timestamp", received)
+
+    def extend(self, s):
+        s.val(M1, "sender", "text", "ops@supplier.example")
+        self.mail(s, self.M5, self.M5_H, f"[ci] build failed for {NUMBER}",
+                  "notifications@ci.example", "2099-02-10T10:00:00Z")
+        start = f"[ci] build failed for {NUMBER}".index(NUMBER)
+        s.mention("l-m5-p1", self.M5, P1, "row.subject", (start, start + len(NUMBER)), "g5")
+        self.mail(s, self.M6, self.M6_H, "Shipping schedule this week",
+                  "lena@supplier.example", "2099-02-20T10:00:00Z")
+        bc = make_handle(BC_KIND, ("production", CO, "purchaseOrders",
+                                   "1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d"), "00000000000000a9", 1)
+        s.obj(self.PB9, f"bc:{CO}/purchaseOrders", bc, "bc_manufacturing")
+        s.val(self.PB9, "number", "identifier", "100345")
+        s.ident(self.PB9, "petra_po", "100345")
+        for oid, number in ((self.P9, "PO7001"), (self.P10, "PO7002")):
+            s.obj(oid, "api:public.app_purchase_order", api("app_purchase_order", oid[-4:]),
+                  "gold_etl_from_fm")
+            s.val(oid, "number", "identifier", number)
+            s.ident(oid, "petra_po", number)
+        s.link("l-9-bc", "PurchaseOrder.same_record_as", self.P9, self.PB9, "corroborated",
+               "same_record")
+        s.link("l-10-bc", "PurchaseOrder.same_record_as", self.P10, self.PB9, "lead",
+               "text_match", why_not=[{"feature": "text_join_only", "agrees": None}])
+        for oid, handle, target, number, group in (
+                (self.M9, self.M9_H, self.P9, "PO7001", "g9"),
+                (self.M10, self.M10_H, self.P10, "PO7002", "g10")):
+            subject = f"Delivery note {number}"
+            self.mail(s, oid, handle, subject, "anna@vendor.example", "2099-02-01T10:00:00Z")
+            at = subject.index(number)
+            s.mention(f"l-{group}", oid, target, "row.subject", (at, at + len(number)), group,
+                      normalized=number)
+
+    def setUp(self):
+        self.tools = tools(extend=self.extend)
+
+    def call(self, **arguments):
+        return ok(self, "plx.documents", self.tools.call("plx.documents", arguments, FULL))
+
+    def test_the_named_record_ranks_above_a_shared_word_and_automated_mail_last(self):
+        out = self.call(query=f"{NUMBER} shipping", sources=["graph_mail"])
+        # Date order alone would put the newest first: M6 (a word), M5 (automated). M1
+        # names the PO in its subject; M2 and M1's attachment are linked to it; M5 names
+        # it too but is a system sender's.
+        self.assertEqual([d["citation"] for d in out["documents"]],
+                         [M1_H, M2_H, A1_H, self.M6_H, self.M5_H])
+        self.assertTrue(out["completeness"]["complete"])
+
+    def test_a_use_case_catalog_document_comes_first(self):
+        listed = [d["citation"] for d in self.call(query=NUMBER)["documents"]]
+        self.assertNotEqual(listed[0], "original://orig-1")
+        with mock.patch("operating.search.authority.catalog_keys",
+                        return_value=frozenset({"original://orig-1"})):
+            boosted = [d["citation"] for d in self.call(query=NUMBER)["documents"]]
+        self.assertEqual(boosted[0], "original://orig-1")
+        self.assertEqual(sorted(boosted), sorted(listed))   # the order moves, nothing else
+
+    def test_unreadable_weights_fall_back_to_the_date_order_and_say_so(self):
+        import tempfile
+        from operating.search import config
+        raw = json.loads(config.WEIGHTS_PATH.read_text("utf-8"))
+        raw["authority"]["unexpected"] = 1.0
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "weights.json"
+            path.write_text(json.dumps(raw), "utf-8")
+            with mock.patch.dict("os.environ", {"PLX_SEARCH_WEIGHTS": str(path)}):
+                out = self.call(query=f"{NUMBER} shipping", sources=["graph_mail"])
+        self.assertEqual([d["citation"] for d in out["documents"]][:2],
+                         [self.M6_H, self.M5_H])
+        self.assertIn("ranking_weights_unreadable", [g["reason"] for g in out["gaps"]])
+
+    def test_a_labelled_number_finds_the_mail_of_its_firm_twin_only(self):
+        out = self.call(query="what has the vendor told us about PO 100345?",
+                        sources=["graph_mail"])
+        listed = [d["citation"] for d in out["documents"]]
+        self.assertIn(self.M9_H, listed)          # BC stores 100345; the Portal twin's mail
+        self.assertNotIn(self.M10_H, listed)      # a text-join twin is no twin
+        # The same through OPS's narrower grant: the twin's mail is in mbx-a (granted).
+        ops = ok(self, "plx.documents", self.tools.call(
+            "plx.documents", {"query": "PO 100345", "sources": ["graph_mail"]}, OPS))
+        self.assertEqual([d["citation"] for d in ops["documents"]], [self.M9_H])
 
 
 class BareIdentifierTests(unittest.TestCase):
@@ -1179,6 +1314,49 @@ class RuntimeCitationsTests(unittest.TestCase):
         self.assertEqual(fields["row.description"]["origin"],
                          {"citation": PB_H, "field_path": "row.description"})
         self.assertEqual(injection_guard.bare_text_leaks(fields, "IGNORE PREVIOUS"), [])
+
+
+class BcRawMarkingTests(unittest.TestCase):
+    """Defence in depth: opening a raw BC row applies the
+    markings its projected record carries. Bank accounts are finance; their number and IBAN
+    finance and l5 (``ontology/schema/overrides/markings.json`` relation_markings)."""
+
+    def test_a_raw_bank_account_row_shows_only_what_the_readers_markings_allow(self):
+        from integrations.live_source_guard import LiveSourceAudience
+        bank_id = "1b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+        handle = make_handle(BC_KIND, ("production", CO, "bankAccounts", bank_id),
+                             "00000000000000a1", 2)
+        row = {"id": bank_id, "number": "BANK-1", "displayName": "Operating",
+               "bankAccountNumber": "ACCT-0099", "iban": "CA00TEST0099"}
+
+        class Runtime(_Runtime):
+            def resolve_citation(self, handle, actor):
+                return {"citation": handle, "source": "bc", "kind": "bc",
+                        "key": {"id": bank_id}, "row": row, "lineage": "bc_manufacturing",
+                        "source_version": 'W/"JzQ1Oyc="', "digest": "e" * 64,
+                        "recorded_at": T0, "status": "current", "changed_since": False}
+        audience = LiveSourceAudience({f"bc:production:{CO}:*": ["ops", "fin", "fin5"]},
+                                      tenant="plx")
+        policy = ot.ReadPolicy(tenant="plx", audiences={"*": {"ops", "fin", "fin5"}},
+                               markings={"finance": {"fin", "fin5"}, "l5": {"fin5"}})
+        base = ot.OntologyTools(ot.StoreReader(build().conn), policy,
+                                item_gate=lambda a, h: True, schema=SCHEMA, grammar=identifiers,
+                                contracts=CONTRACTS, clock=lambda: NOW)
+        host = ev.EvidenceTools(base, reader=ev.RuntimeCitations(Runtime(live=_Live(audience))))
+
+        def read(principal):
+            return ok(self, "plx.read", host.call("plx.read", {"citation": handle},
+                                                  Actor("plx", frozenset({principal}))))
+        out = read("ops")   # granted the company's BC units, no finance: no row at all
+        self.assertEqual((out["status"], out.get("fields")), ("withheld", None))
+        self.assertNotIn("ACCT-0099", json.dumps(out))
+        out = read("fin")   # finance alone: the account, never its number or IBAN
+        self.assertEqual(out["status"], "resolved")
+        self.assertIn("BANK-1", json.dumps(out["fields"]["row.number"]))
+        self.assertFalse({"row.iban", "row.bankAccountNumber"} & set(out["fields"]))
+        self.assertNotIn("CA00TEST0099", json.dumps(out))
+        out = read("fin5")  # finance and l5: everything
+        self.assertTrue({"row.iban", "row.bankAccountNumber"} <= set(out["fields"]))
 
 
 class HostSpecTests(unittest.TestCase):

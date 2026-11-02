@@ -397,7 +397,8 @@ class AnswerGateTests(unittest.TestCase):
                 if not calls:
                     self.assertEqual(transcript["agent"]["answer_gate"], {
                         "submissions": 0, "outcomes": [], "passed_claims": [],
-                        "refused_claims": [], "final": None, "repaired": False})
+                        "refused_claims": [], "final": None, "repaired": False,
+                        "host_submitted": False})
                 self.assertFalse([e for e in transcript["events"]
                                   if e["type"] == runner.PRESUBMIT_EVENT])
         # a role the gate never checked is withheld with its value, never dropped alone:

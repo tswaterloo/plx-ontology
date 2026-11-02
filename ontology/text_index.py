@@ -38,7 +38,8 @@ import zlib
 from contextlib import closing
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from ontology.mentions import Document, _source_documents, cited_page
+from ontology.mention_memo import document_key
+from ontology.mentions import Document, cited_page, source_document_groups
 from ontology.store import StoreError, markings_text
 from ontology.store_ddl import TEXT_TOKENIZER
 
@@ -123,6 +124,11 @@ def _fields(document: Document) -> Iterator[tuple[str, str, str]]:
             yield field.citation, field.field_path, field.text
 
 
+def _field_text(document: Document, citation: str, field_path: str) -> str:
+    return next(text for cited, path, text in _fields(document)
+                if (cited, path) == (citation, field_path))
+
+
 def _delete_field(conn: sqlite3.Connection, field_id: int) -> None:
     for chunk_id, body in conn.execute(
             "SELECT chunk_id, body FROM text_chunks WHERE field_id = ?", (field_id,)).fetchall():
@@ -132,13 +138,37 @@ def _delete_field(conn: sqlite3.Connection, field_id: int) -> None:
     conn.execute("DELETE FROM text_fields WHERE field_id = ?", (field_id,))
 
 
+def _text_facts(document: Document) -> dict[str, Any]:
+    """What the index reads of a document beyond its text: its citation, kind and sender
+    class, and per non-blank field of its own its citation, path, the digest of its
+    indexed text and its length (``ontology.mention_memo`` texts)."""
+    return {"citation": document.citation, "kind": document.kind,
+            "sender_class": document.sender_class,
+            "fields": [[citation, field_path,
+                        hashlib.sha256(text[:FIELD_CAP].encode("utf-8")).hexdigest(), len(text)]
+                       for citation, field_path, text in _fields(document)
+                       if isinstance(text, str) and text.strip()]}
+
+
+def _memo_code() -> str:
+    """What a kept entry of the index's facts was derived under: this module's source."""
+    from pathlib import Path
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
 def store_text_index(builder: Any, projector: Any, *,
                      documents: Iterable[Document] | None = None) -> dict[str, Any]:
     """Bring the generation's document-text index to ``documents`` (else every capture
-    source's ``documents()``, as ``ontology.mentions.store_mention_links`` reads them)."""
+    source's ``documents()``, in their groups, as ``ontology.mentions.store_mention_links``
+    reads them). In a generation build a group read as before is not read again: its
+    documents' facts come from the build's memo (``ontology.mention_memo`` texts), and its
+    text is read only for a field the index writes again."""
     conn = builder.connection
-    if documents is None:
-        documents = _source_documents(projector)
+    groups = (source_document_groups(projector) if documents is None
+              else ((None, lambda d=d: ([d], True)) for d in documents))
+    context = getattr(projector, "build_context", None)
+    memo = context.document_memo() if context is not None else None
+    code = _memo_code() if memo is not None else ""
     counts = {"documents": 0, "documents_not_projected": 0, "fields_stored_as_values": 0,
               "fields_unmarked": 0, "fields_unciteable": 0, "fields_truncated": 0}
     previous = {(row[1], row[2], row[3]): (row[0], tuple(row[4:]))
@@ -146,55 +176,86 @@ def store_text_index(builder: Any, projector: Any, *,
                     "SELECT field_id, citation, field_path, object_id, version_handle, "
                     "document_kind, sender_class, markings, text_digest FROM text_fields")}
     seen: set[tuple[str, str, str]] = set()
-    for document in documents:
-        versions = conn.execute(
-            "SELECT v.object_id, v.markings, o.binding_id FROM object_versions v "
-            "JOIN objects o ON o.object_id = v.object_id WHERE v.l1_handle = ? "
-            "ORDER BY v.object_id", (document.citation,)).fetchall()
-        if not versions:
-            counts["documents_not_projected"] += 1
-            continue
-        counts["documents"] += 1
-        for citation, field_path, text in _fields(document):
-            if not isinstance(text, str) or not text.strip():
+
+    def plan(facts_of: list[dict[str, Any]]) -> tuple[dict[str, int], list[tuple], set]:
+        """What indexing a group's documents does: its counts, the fields it writes
+        again (``(key, document index, facts)``) and the keys it sees, not done yet."""
+        more = dict.fromkeys(counts, 0)
+        writes: list[tuple] = []
+        keys: set[tuple[str, str, str]] = set()
+        for index, document in enumerate(facts_of):
+            versions = conn.execute(
+                "SELECT v.object_id, v.markings, o.binding_id FROM object_versions v "
+                "JOIN objects o ON o.object_id = v.object_id WHERE v.l1_handle = ? "
+                "ORDER BY v.object_id", (document["citation"],)).fetchall()
+            if not versions:
+                more["documents_not_projected"] += 1
                 continue
-            if not _FIELD_PATH.match(field_path):
-                counts["fields_unciteable"] += 1
-                continue
-            body = text[:FIELD_CAP]
-            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-            for object_id, markings, binding_id in versions:
-                key = (citation, field_path, object_id)
-                if key in seen:
+            more["documents"] += 1
+            for citation, field_path, digest, length in document["fields"]:
+                if not _FIELD_PATH.match(field_path):
+                    more["fields_unciteable"] += 1
                     continue
-                if citation == document.citation and conn.execute(
-                        _STORED_TEXT, (object_id, citation, field_path)).fetchone():
-                    counts["fields_stored_as_values"] += 1
-                    continue
-                marks = _field_marks(projector, {"markings": markings,
-                                                 "binding_id": binding_id}, field_path)
-                if marks is None:
-                    counts["fields_unmarked"] += 1
-                    continue
-                seen.add(key)
-                counts["fields_truncated"] += len(text) > FIELD_CAP
-                facts = (document.citation, document.kind, document.sender_class, marks, digest)
-                held = previous.get(key)
-                if held is not None and held[1] == facts:
-                    continue
-                if held is not None:
-                    _delete_field(conn, held[0])
-                field_id = conn.execute(
-                    "INSERT INTO text_fields (object_id, citation, field_path, version_handle, "
-                    "document_kind, sender_class, markings, text_digest) VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?)", (object_id, citation, field_path,
-                                                 *facts)).lastrowid
-                for start, piece in chunks(body):
-                    chunk_id = conn.execute(
-                        "INSERT INTO text_chunks (field_id, start, body) VALUES (?, ?, ?)",
-                        (field_id, start, zlib.compress(piece.encode("utf-8"), 6))).lastrowid
-                    conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
-                                 (chunk_id, piece))
+                for object_id, markings, binding_id in versions:
+                    key = (citation, field_path, object_id)
+                    if key in seen or key in keys:
+                        continue
+                    if citation == document["citation"] and conn.execute(
+                            _STORED_TEXT, (object_id, citation, field_path)).fetchone():
+                        more["fields_stored_as_values"] += 1
+                        continue
+                    marks = _field_marks(projector, {"markings": markings,
+                                                     "binding_id": binding_id}, field_path)
+                    if marks is None:
+                        more["fields_unmarked"] += 1
+                        continue
+                    keys.add(key)
+                    more["fields_truncated"] += length > FIELD_CAP
+                    facts = (document["citation"], document["kind"], document["sender_class"],
+                             marks, digest)
+                    held = previous.get(key)
+                    if held is None or held[1] != facts:
+                        writes.append((key, index, facts))
+        return more, writes, keys
+
+    for group, load in groups:
+        kept = memo.group(group) if memo is not None and group is not None else None
+        facts_of = [memo.text(key, code) for key in kept] if kept is not None else None
+        loaded: list[Document] | None = None
+        if facts_of is None or any(facts is None for facts in facts_of):
+            facts_of = None
+        more, writes, keys = plan(facts_of) if facts_of is not None else ({}, [None], set())
+        if writes:   # a field written again (or nothing kept): the group's text is read
+            loaded, remembered = load()
+            fresh = [_text_facts(document) for document in loaded]
+            if fresh != facts_of:
+                facts_of = fresh
+                more, writes, keys = plan(facts_of)
+                if memo is not None:
+                    found = [document_key(document) for document in loaded]
+                    for key, facts in zip(found, facts_of):
+                        memo.keep_text(key, code, facts)
+                    if group is not None and remembered:
+                        memo.keep_group(group, found)
+        for name, amount in more.items():
+            counts[name] += amount
+        seen |= keys
+        for (citation, field_path, object_id), index, facts in writes:
+            body = _field_text(loaded[index], citation, field_path)[:FIELD_CAP]
+            held = previous.get((citation, field_path, object_id))
+            if held is not None:
+                _delete_field(conn, held[0])
+            field_id = conn.execute(
+                "INSERT INTO text_fields (object_id, citation, field_path, version_handle, "
+                "document_kind, sender_class, markings, text_digest) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?)", (object_id, citation, field_path,
+                                             *facts)).lastrowid
+            for start, piece in chunks(body):
+                chunk_id = conn.execute(
+                    "INSERT INTO text_chunks (field_id, start, body) VALUES (?, ?, ?)",
+                    (field_id, start, zlib.compress(piece.encode("utf-8"), 6))).lastrowid
+                conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
+                             (chunk_id, piece))
     for key, (field_id, _facts) in previous.items():
         if key not in seen:
             _delete_field(conn, field_id)

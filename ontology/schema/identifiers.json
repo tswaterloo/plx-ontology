@@ -1181,6 +1181,90 @@
     }
    ]
   },
+  "sourcing_request_no": {
+   "object_type": "RelPublicAppSourcingRequest",
+   "description": "Portal sourcing request number SR-{request_no padded to 4}. app_sourcing_request is not served by the reporting API, so the number is read only from the mail and files that cite it (the Portal's sourcing brief, vendor package and nudge emails, drawing file names). Never the ship release SR-YYYYMMDD-NNNN: the eight-digit date part never fits this shape.",
+   "value_pattern": "SR-\\d{4,7}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "SR-0042",
+     "upstream": "plx-customer-portal@96765729963b:portal/src/lib/sourcing/pack-components-shared.ts:111"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sourcing_request",
+     "field": "request_no",
+     "role": "primary",
+     "served": false,
+     "upstream": "devloop/PORTAL-UNSERVED-TABLES-REQUEST.md"
+    }
+   ]
+  },
+  "vendor_package_no": {
+   "object_type": "RelPublicAppSourcingVendorPackage",
+   "description": "Portal sourcing vendor package number VP-{package_no padded to 4}: one email to one Supplier carrying several sourcing requests (app_sourcing_vendor_package, not served by the reporting API; read only from the mail that cites it).",
+   "value_pattern": "VP-\\d{4,7}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "VP-0003",
+     "upstream": "plx-customer-portal@96765729963b:portal/src/lib/sourcing/vendor-package-email.ts:128"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_sourcing_vendor_package",
+     "field": "package_no",
+     "role": "primary",
+     "served": false,
+     "upstream": "devloop/PORTAL-UNSERVED-TABLES-REQUEST.md"
+    }
+   ]
+  },
+  "customer_material_request_no": {
+   "object_type": "RelPublicAppCustomerMaterialRequest",
+   "description": "Portal customer material request number CMR-{request_no padded to 4} (app_customer_material_request, not served by the reporting API; a served receipt carries its id as app_receipt.customer_material_request_id, never its number).",
+   "value_pattern": "CMR-\\d{4,7}",
+   "flags": "i",
+   "normalizer": "upper_trim",
+   "identity": "anchor",
+   "exact_compare": "trim",
+   "auto_merge": false,
+   "alias_kinds": [],
+   "forms": [
+    {
+     "form": "portal",
+     "example": "CMR-0001",
+     "upstream": "plx-customer-portal@96765729963b:portal/src/lib/customer-materials/request-shared.ts:55"
+    }
+   ],
+   "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_customer_material_request",
+     "field": "request_no",
+     "role": "primary",
+     "served": false,
+     "upstream": "devloop/PORTAL-UNSERVED-TABLES-REQUEST.md"
+    }
+   ]
+  },
   "eqms_number": {
    "object_type": "QualityRecord",
    "description": "eQMS record number {D|CC|CAPA|QRM}-{YY}{seq:3}.",
@@ -2388,6 +2472,24 @@
     {
      "kind": "pr_number",
      "pattern": "(?<![A-Za-z0-9-])(PR-\\d{8}-\\d{4})(?![A-Za-z0-9])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "sourcing_request_no",
+     "pattern": "(?<![A-Za-z0-9-])(SR-\\d{4,7})(?![A-Za-z0-9-])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "vendor_package_no",
+     "pattern": "(?<![A-Za-z0-9-])(VP-\\d{4,7})(?![A-Za-z0-9-])",
+     "flags": "i",
+     "group": 1
+    },
+    {
+     "kind": "customer_material_request_no",
+     "pattern": "(?<![A-Za-z0-9-])(CMR-\\d{4,7})(?![A-Za-z0-9-])",
      "flags": "i",
      "group": 1
     },

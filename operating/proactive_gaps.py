@@ -161,6 +161,8 @@ def shown_numbers(numbers: list[Decimal]) -> list[str]:
 
 
 def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
+    from .answer_conflicts import rounding_only
+
     out = []
     for conflict in conflicts if isinstance(conflicts, list) else []:
         if not isinstance(conflict, Mapping) or conflict.get("kind") != "value_disagreement":
@@ -182,6 +184,8 @@ def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
                         for number in distinct]
             if len(distinct) < 2 or not all(requires):
                 continue   # every disagreeing value must be cited
+            if rounding_only([format(n, "f") for n in distinct]):
+                continue   # 1257 and 1257.1666...: one quantity, rounded differently
             shown = " and ".join(f"{n} {unit}" for n in shown_numbers(distinct))
             name = f"{role} quantity" if role else "quantity"
             out.append({
@@ -281,6 +285,22 @@ def _gap_of(object_id: str, object_type: str, item: Mapping[str, Any]) -> dict[s
             "follow_up": {"object_id": object_id, "missing": item["missing"],
                           "why": item["why"], "who_can_answer": _who(object_type, item),
                           "state": "unknown", "priority": item["priority"]}}
+
+
+def _draft_dates_nothing(call: Callable[[str, dict], Mapping[str, Any]], order_id: str,
+                         lines: Sequence[Mapping[str, Any]]) -> bool:
+    """The order is a BC Draft (its ``bc_status`` read as not issued) and none of its late
+    lines records a received quantity above 0: a Draft never received against dates
+    nothing, so its lines are never late."""
+    if ":bc." not in order_id:
+        return False
+    card = call("plx.object", {"object_id": order_id, "response_format": "detailed"})
+    words = [item.get("value") for item in (card.get("values") or [])
+             if isinstance(item, Mapping) and item.get("property") == "bc_status"]
+    words = [w.get("untrusted_text") if isinstance(w, Mapping) else w for w in words]
+    if not any(po_status.header_class(w, "bc") == po_status.NOT_ISSUED for w in words):
+        return False
+    return not any(line["received"][0] > 0 for line in lines)
 
 
 def _late_line(card: Mapping[str, Any], as_of: date) -> dict[str, Any] | None:
@@ -527,6 +547,8 @@ def scan(call: Callable[[str, dict[str, Any]], dict[str, Any]], as_of: date, *,
     for order_id, lines in orders.items():
         if len(gaps) >= MAX_GAPS:
             break
+        if _draft_dates_nothing(call, order_id, lines):
+            continue
         if readable is not None:   # a line is cited only whole: date and both quantities
             lines = [line for line in lines
                      if set(line["handles"]) <= set(readable(line["handles"]))]

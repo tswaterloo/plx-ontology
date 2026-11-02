@@ -336,7 +336,8 @@ def main(argv: list[str] | None = None, *, directory: Callable[[Any], Any] | Non
     # Re-read when the list file changes or every few minutes (``ReloadingExclusion``).
     from integrations.people_exclusion import ReloadingExclusion
     resolver = EmployeePermissionResolver(policy, portal_access, directory=directory,
-                                          people_exclusion=ReloadingExclusion.from_env(os.environ))
+                                          people_exclusion=ReloadingExclusion.from_env(
+                                              os.environ, state_dir=args.state_dir))
     services = SessionHost(parser, args, tenant=policy.tenant, resolver=resolver,
                            fixture=False, dev=False, capture_bounds=capture_bounds)
     try:

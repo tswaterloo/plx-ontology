@@ -239,6 +239,9 @@ HOP_SCAN_CAP = 5000
 # list is re-read on a comparable interval), and how many such results are kept.
 SLICE_GATE_SECONDS = 300.0
 SLICE_GATE_KEPT = 256
+# The slice gate results shared by tools of one gate scope (``_slice_trimmed``).
+_SHARED_SLICE_GATE: dict[tuple, tuple[float, bool]] = {}
+_SHARED_SLICE_GATE_LOCK = threading.Lock()
 # A row's end that is no time: never superseded, or a superseded time that does not parse
 # (``_from_t``). Above every fixed-width store time.
 _OPEN = "~"
@@ -1204,19 +1207,32 @@ class TraverseTools:
             return False
         listed = json.dumps(sorted(handles))
         conn = self.store.conn
-        # the handles themselves are the slice's state (a new capture is a new handle)
-        key = (scope.actor, conn.execute("PRAGMA data_version").fetchone()[0],
-               hashlib.sha256(listed.encode()).hexdigest())
+        digest = hashlib.sha256(listed.encode()).hexdigest()
+        # the handles themselves are the slice's state (a new capture is a new handle).
+        # Tools whose host declares what decides its gate (``item_gate_scope``) share the
+        # result in this process over the same store file (every reader's runtime of one
+        # server); any other keeps its own, on this connection's state.
+        shared = getattr(self.base, "item_gate_scope", None)
+        kept = _store_identity(conn) if shared is not None else None
+        if kept is not None:
+            cache, lock = _SHARED_SLICE_GATE, _SHARED_SLICE_GATE_LOCK
+            key: tuple = (shared, scope.actor, json.dumps(kept[1], sort_keys=True), digest)
+        else:
+            cache, lock = self._slice_gate, _SHARED_SLICE_GATE_LOCK
+            key = (scope.actor, conn.execute("PRAGMA data_version").fetchone()[0], digest)
         now = time.monotonic()
-        held = self._slice_gate.get(key)
+        with lock:
+            held = cache.get(key)
         if held is not None and held[0] > now:
             return held[1]
         failed = conn.execute(f"SELECT 1 FROM json_each(?) WHERE NOT {scope.gate}(value) "
                               "LIMIT 1", (listed,)).fetchone() is not None
-        if len(self._slice_gate) >= SLICE_GATE_KEPT:
-            self._slice_gate = {k: v for k, v in self._slice_gate.items() if v[0] > now}
-        if len(self._slice_gate) < SLICE_GATE_KEPT:
-            self._slice_gate[key] = (now + SLICE_GATE_SECONDS, failed)
+        with lock:
+            if len(cache) >= SLICE_GATE_KEPT:
+                for stale in [k for k, v in cache.items() if v[0] <= now]:
+                    del cache[stale]
+            if len(cache) < SLICE_GATE_KEPT:
+                cache[key] = (now + SLICE_GATE_SECONDS, failed)
         return failed
 
     def _audiences(self) -> dict[str, tuple[str, ...]]:
@@ -2081,6 +2097,42 @@ def _decode_facts(encoded: Any) -> dict[Any, Any] | None:
 
 
 def _load_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | None:
+    """The facts kept for ``store`` with this ``identity`` (a fresh dict each call: a
+    reader adds facts to it), decoded once per process per identity: every reader's host
+    in a serving process opens the same generation."""
+    key = (store, json.dumps(dict(identity), sort_keys=True))
+    with _LOADED_LOCK:
+        held = _LOADED.get(key)
+    if held is None:
+        held = _read_facts(store, identity)
+        if held is not None:
+            with _LOADED_LOCK:
+                _LOADED.clear()   # one served generation at a time
+                _LOADED[key] = held
+    return None if held is None else dict(held)
+
+
+_LOADED: dict[tuple[str, str], dict[Any, Any]] = {}
+_LOADED_LOCK = threading.Lock()
+
+
+def kept_audience_keys(store: "StoreReader") -> bool:
+    """Remember ``store``'s audience keys from the facts kept beside its file (``prime``),
+    when they were read from this very file by this code, so a reader's host never scans
+    every object for them; False (nothing remembered) otherwise."""
+    try:
+        with store.lock:
+            kept = _store_identity(store.conn)
+            facts = _load_facts(*kept) if kept is not None else None
+            if not facts or not isinstance(facts.get("audience_keys"), (list, tuple)):
+                return False
+            store.remember_audience_keys(facts["audience_keys"])
+            return True
+    except sqlite3.Error:
+        return False
+
+
+def _read_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | None:
     try:
         path = facts_path(store)
         if path.stat().st_size > FACTS_MAX_BYTES:

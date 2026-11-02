@@ -13,10 +13,15 @@ digests) plus what the retired tools gave a client, inside the frozen contract
   to the end can check it reassembled exactly what the citation names; it also names
   the ``page`` and ``page_citation`` of a page read (the citation ``plx.read`` takes
   back) and the ``first_line``/``last_line`` it covers; ``line`` reads one line
-  (1-based, numbered in the whole text) for a line-pinned question; ``find`` locates a
-  short phrase in the same text (``matches``: at most ``MAX_FIND_HITS`` places, each its
-  line, offset and a short snippet served as a window's text is, on an original its page
-  citation), so two passages far apart are found without paging between them;
+  (1-based, numbered in the whole text; a file read as one part numbered as the file
+  is, from the line after its extraction's part marker) for a line-pinned question;
+  ``find`` locates a short phrase in the same text (``matches``: at most
+  ``MAX_FIND_HITS`` places, each its line, offset and a short snippet served as a
+  window's text is, on an original its page citation), so two passages far apart are
+  found without paging between them; and every read of a document's text names each
+  place that text contradicts itself about what it was given (``_with_conflicts``,
+  ``operating.document_conflicts``) as a ``conflicting_sources`` gap with both lines,
+  whatever part of it the read returns;
 * ``column_offset`` pages a row too wide for one response by fields (a row that does
   not fit is paged from 0 on its own); ``truncated_fields`` names every field whose
   envelope was cut, readable whole with ``field_path`` and ``text_offset``;
@@ -135,7 +140,7 @@ from pathlib import Path
 import re
 import sqlite3
 import threading
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from ontology import mentions as mn
 from ontology.json_contract import validate
@@ -145,12 +150,16 @@ from operating.cases import CitationUnresolvable
 from operating.ontology_host import CaseHostTools
 from operating.ontology_tools import ReadPolicy, ToolError, _completeness, _error, _gap
 from operating.ontology_tools_evidence import (DEFAULT_LIMIT, DEFAULT_READ_CHARS,
-                                               MAX_MENTIONS, PAGING_ARGUMENTS,
+                                               PAGING_ARGUMENTS,
                                                CitationReader, EvidenceTools,
+                                               full_mentions_kept, held_mentions,
+                                               kept_mentions, summarise_mentions,
                                                RuntimeCitations, capped_gaps, covered_pages,
                                                field_value, skipped_gap, wanted_field,
                                                with_pages)
 from operating.playbook_originals import extraction_skipped
+from operating.document_conflicts import (CONFLICT_REASON, line_of, part_line_base,
+                                          scan_conflicts)
 
 _READ_OK = ("resolved", "changed_since")
 # plx.read's find: the places it lists (the contract's matches.hits bound) and the
@@ -239,6 +248,7 @@ class PagedRead:
         raw = recording.last
         if result.get("status") not in _READ_OK or raw is None:
             return self._checked(result)
+        result = self._with_conflicts(result, raw, arguments)
         if "find" in arguments:
             return self._checked(self._find(result, raw, arguments))
         if "text_offset" in arguments or "line" in arguments:
@@ -261,6 +271,54 @@ class PagedRead:
         return self._checked(result)
 
     # ---- result shaping ------------------------------------------------------
+
+    def _with_conflicts(self, result: dict[str, Any], raw: Mapping[str, Any],
+                        arguments: Mapping[str, Any]) -> dict[str, Any]:
+        """``result`` with a ``CONFLICT_REASON`` gap for each place the document's whole
+        text says it was given an item another of its lines says was not provided
+        (``operating.document_conflicts``), whatever part of the text this read returns:
+        a whole read, a window or a find. Each names both lines (numbered as ``line``
+        reads them) and holds both as source text; a page read, or one field of a row, is
+        not the document's text and gets none."""
+        text = raw.get("content") if isinstance(raw.get("content"), str) else None
+        citation = raw.get("content_citation") or arguments["citation"]
+        if text is None or arguments.get("field_path") or "page" in arguments \
+                or any(mn.cited_page(cited)[1] is not None
+                       for cited in (citation, arguments["citation"])):
+            return result
+        scan = scan_conflicts(text)
+        found = scan["conflicts"]
+        gaps = []
+        if scan["stopped_at_line"] is not None:
+            gaps.append(_gap("unknown", "conflict_scan_partial", (
+                f"{citation}: the conflict scan stopped at line {scan['stopped_at_line']} "
+                "(its size or time bound)"), (
+                "contradictions about what the text was given were looked for only before "
+                "that line; read the lines after it (plx.read with text_offset, line or "
+                "find) before saying the text holds none")))
+        if not gaps and not found:
+            return result
+        spans = raw.get("content_pages")
+        limit = self.limits["max_untrusted_text_chars"]
+        for conflict in found:
+            held, absent = conflict["held_line"], conflict["absent_line"]
+            pages = [covered_pages(citation, spans, conflict[key], conflict[key] + 1)
+                     if spans else [] for key in ("held_offset", "absent_offset")]
+            where = " and ".join(sorted({on[0]["page_citation"] for on in pages if on}))
+            gap = _gap("unknown", CONFLICT_REASON, (
+                f"lines {held} and {absent} of {citation}: line {held} says the text was "
+                f"built from or given an item that line {absent} says was not provided"),
+                (f"the text contradicts itself about what it was given ({where or citation};"
+                 " found over its whole text, however much of it this read returned): read "
+                 "both lines (plx.read with line), cite both and keep this as an unknown gap "
+                 f"with reason {CONFLICT_REASON} naming both lines; never pick one"))
+            envelope = ot._envelope(f"line {held}: {conflict['held']}\nline {absent}: "
+                                    f"{conflict['absent']}", citation, None, limit)
+            if envelope is not None:
+                gap["source_text"] = envelope
+            gaps.append(gap)
+        own = list(result.get("gaps") or [])
+        return dict(result, gaps=(own + gaps)[:20])
 
     def _checked(self, result: dict[str, Any]) -> dict[str, Any]:
         problems = validate(result, self.contracts["tools"]["plx.read"]["output"],
@@ -387,13 +445,19 @@ class PagedRead:
                           "name a text field with field_path, or read without text_offset")
         total = len(text)
         starts = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+        # A file read as one part is numbered as the file is (``part_line_base``): its
+        # line 1 is the first line after the extraction's part marker.
+        numbered = part_line_base(text) if key == "content" else 0
         line = arguments.get("line")
+        if line is not None:
+            line += numbered
         if line is None:
             offset = arguments["text_offset"]
             if offset > total:
                 return _error("invalid_input", f"text_offset beyond the text ({total} chars)")
         elif line > len(starts):
-            return _error("invalid_input", f"line beyond the text ({len(starts)} lines)")
+            return _error("invalid_input",
+                          f"line beyond the text ({len(starts) - numbered} lines)")
         else:
             offset = starts[line - 1]
         stop = total if line is None else (starts[line] - 1 if line < len(starts) else total)
@@ -415,8 +479,8 @@ class PagedRead:
                 envelope["truncated"] = True
             window = {"offset": offset, "chars": end - offset, "total_chars": total,
                       "next_offset": end if end < total else None, "sha256": digest,
-                      "first_line": bisect_right(starts, offset),
-                      "last_line": bisect_right(starts, max(offset, end - 1))}
+                      "first_line": line_of(starts, offset, numbered),
+                      "last_line": line_of(starts, max(offset, end - 1), numbered)}
             if page is not None:
                 window.update(page=page, page_citation=citation)
             if line is not None:
@@ -466,6 +530,7 @@ class PagedRead:
             return _error("invalid_input", "find names no word")
         phrase = re.compile(r"\s+".join(map(re.escape, words)), re.IGNORECASE)
         starts = [0] + [i + 1 for i, char in enumerate(text) if char == "\n"]
+        numbered = part_line_base(text) if key == "content" else 0
         _head, page = mn.cited_page(citation)
         spans = raw.get("content_pages") if key == "content" and page is None else None
         limit = self.limits["max_untrusted_text_chars"]
@@ -475,10 +540,14 @@ class PagedRead:
         hits: list[dict[str, Any]] = []
         total = 0
         for match in phrase.finditer(text):
+            line = bisect_right(starts, match.start())
+            if line <= numbered:
+                # The extraction's display-only part marker is no line of the file: a hit
+                # there has no line a read can name (it was reported as line 1).
+                continue
             total += 1
             if len(hits) >= MAX_FIND_HITS:
                 continue
-            line = bisect_right(starts, match.start())
             end_of_line = starts[line] - 1 if line < len(starts) else len(text)
             low = max(starts[line - 1], match.start() - FIND_CONTEXT_CHARS)
             high = min(max(end_of_line, match.end()), match.end() + FIND_CONTEXT_CHARS)
@@ -488,7 +557,7 @@ class PagedRead:
                 low = max(low, on[0]["offset"])
                 high = min(high, on[0]["offset"] + on[0]["chars"])
             cited = on[0]["page_citation"] if on else citation
-            hit = {"offset": low, "chars": high - low, "line": line,
+            hit = {"offset": low, "chars": high - low, "line": line - numbered,
                    "text": ot._envelope(text[low:high], cited, None if on else field_path,
                                         limit)}
             if on:
@@ -555,6 +624,9 @@ _ROW_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # store's own read-back bound) and the (identifier, file, page) entries it holds. Past
 # either the lookup is cut and an answer from it says so (scan_cap).
 LOOKUP_FILES = 100_000
+# Unsearched captured files (text not searched) gated to be counted per plx.documents call;
+# past it the counts are lower bounds (``_captured_documents``).
+UNSEARCHED_GATE = 100
 LOOKUP_ENTRIES = 200_000
 # Graph GETs one live re-read may send: the item's metadata plus at most three pages of
 # its permissions (integrations.graph_read.SharePointReader._permissions).
@@ -683,24 +755,71 @@ def _with_page(handle: str, page: int) -> str | None:
     return f"{handle}{'&' if '#' in handle else '#'}page={page}"
 
 
-def _with_mentions(document: Mapping[str, Any], mentions: list[dict[str, Any]]
+def _file_priors(query: str) -> Callable[[Mapping[str, Any]], float]:
+    """A listed document's cheap prior (``operating.search.authority``): a use-case
+    catalog document, a captured original, a title or file name naming an identifier the
+    query names. It orders the captured files before their gate and places them among
+    the projection's page; weights that cannot be read give every document 0 (the
+    store order stays)."""
+    from operating.search import authority as au
+    try:
+        rule = au.load()
+    except Exception:  # noqa: BLE001 - no weights: no prior, the store order stays
+        return lambda _document: 0.0
+    catalog, wanted = au.catalog_keys(), au.query_identifiers(query)
+
+    def prior(document: Mapping[str, Any]) -> float:
+        signals = []
+        key = au.document_key(document.get("citation"))
+        if key is not None and key in catalog:
+            signals.append("use_case_document")
+        if document.get("kind") == "original":
+            signals.append("captured_original")
+        title = document.get("title")
+        if au.names_identifier(title.get("untrusted_text") if isinstance(title, Mapping)
+                               else title, wanted):
+            signals.append("identifier_in_title")
+        return rule.prior(signals)
+    return prior
+
+
+def _placed(documents: Sequence[dict[str, Any]], added: Sequence[dict[str, Any]],
+            prior: Callable[[Mapping[str, Any]], float]) -> list[dict[str, Any]]:
+    """The projection's page with the captured files ``added`` (best first) placed in it:
+    each before the first listed document whose cheap prior is lower, else after them.
+    The projection's own order is kept."""
+    out = list(documents)
+    at = 0
+    for document in added:
+        mine = prior(document)
+        while at < len(out) and prior(out[at]) >= mine:
+            at += 1
+        out.insert(at, document)
+        at += 1
+    return out
+
+
+def _with_mentions(document: Mapping[str, Any], mentions: list[dict[str, Any]],
+                   whole: Sequence[Mapping[str, Any]] | None = None, offset: int = 0
                    ) -> dict[str, Any] | None:
     """``document`` with the captured-text ``mentions`` it does not already cite (same
-    identifier at the same cited page), after its own, within ``MAX_MENTIONS``; None
-    when none is new."""
+    identifier at the same cited page), before its own (a page-cited span no projected
+    mention gives), summarised again
+    (``summarise_mentions`` from ``offset``); ``whole``: all of its own mentions (the
+    store's list before it was summarised, ``full_mentions_kept``), else the ones it
+    shows. None when none is new."""
     def key(mention: Mapping[str, Any]) -> tuple[Any, ...]:
         origin = mention["span"]["origin"]
         return (mention["identifier_kind"], mention["normalized"], origin["citation"],
                 origin.get("field_path"))
 
-    have = list(document.get("mentions") or ())
+    have = list(whole if whole is not None else document.get("mentions") or ())
     known = {key(m) for m in have}
     new = [m for m in mentions if key(m) not in known]
     if not new:
         return None
-    merged = [*have, *new][:MAX_MENTIONS]
-    return dict(document, mentions=merged,
-                snippet=document.get("snippet") or merged[0]["span"])
+    merged = summarise_mentions(dict(document, mentions=[*new, *have]), offset)
+    return dict(merged, snippet=document.get("snippet") or new[0]["span"])
 
 
 class CaptureCaseHostTools(CaseHostTools):
@@ -893,6 +1012,10 @@ class CaptureCaseHostTools(CaseHostTools):
         tools = super().tools
         if built:
             tools.item_gate = self._item_gate(tools.item_gate)
+            state = getattr(self.runtime, "state_dir", None)
+            if state is not None:
+                tools.item_gate_scope = ("capture-host", str(state), str(self.mail_capture_dir),
+                                         str(self.sharepoint_capture_dir))
         return tools
 
     @property
@@ -947,7 +1070,8 @@ class CaptureCaseHostTools(CaseHostTools):
                         return False
             except Exception:  # noqa: BLE001 - a refused gate reads nothing
                 return False
-            return citations.read(handle, actor).get("status") in _READ_OK
+            # the status alone decides: a whole attachment's text is never decoded here
+            return citations.read(handle, actor, content=False).get("status") in _READ_OK
         return gate
 
     def _mail_search_gate(self, citations: Any, stores: Callable[[], Any], audience: Any, actor: Any,
@@ -998,7 +1122,7 @@ class CaptureCaseHostTools(CaseHostTools):
                     return False
                 record = json.loads(row["record"])
                 return not citations._sent_by_excluded(
-                    store, [record.get("from"), record.get("sender")])
+                    store, [record.get("from"), record.get("sender")], memo)
         except Exception:  # noqa: BLE001 - a refused gate or unreadable capture admits nothing
             return False
 
@@ -1091,7 +1215,8 @@ class CaptureCaseHostTools(CaseHostTools):
                 return None
         elif basis != "live":
             if not capture_decides(view["last_seen_at"], self.clock(),
-                                   self.max_capture_age):
+                                   self.max_capture_age) \
+                    and not self._full_read_stale(gated, view):
                 # Capture-time permissions too old (or undated, or dated after now) to
                 # decide alone.
                 why = ("this call's live re-read bound is reached" if failure == "budget"
@@ -1111,6 +1236,27 @@ class CaptureCaseHostTools(CaseHostTools):
             "failure": failure, "text_status": row.get("text_status"),
             "content_status": row.get("content_status"), "size": row.get("size")}
         return view
+
+    def _full_read_stale(self, gated: Any, view: Mapping[str, Any]) -> bool:
+        """A file past the capture-age bound served on its recorded permissions only under
+        the reader's declared full-read grant (``CaseRuntime.full_read_stale_allows``):
+        both recorded permission lists (this version's and the item's latest) name only
+        decidable people none of whom is excluded, a recorded last modifier and a OneDrive
+        owner are decidable and cleared, and the exclusion is loaded. Anyone else: False
+        (unchanged)."""
+        allows = getattr(self.runtime, "full_read_stale_allows", None)
+        acls = (view.get("source_acl"), view.get("item_source_acl"))
+        if not callable(allows) or not all(isinstance(a, Mapping) and isinstance(
+                a.get("identities"), list) for a in acls):
+            return False
+        row = view.get("row") if isinstance(view.get("row"), Mapping) else {}
+        listed = {"identities": [*acls[0]["identities"], *acls[1]["identities"]]}
+        # A file in a personal OneDrive: its site path segment names the owner.
+        url = row.get("original_url")
+        owner = re.search(r"/personal/([^/?#]+)", url) if isinstance(url, str) else None
+        return allows(gated, "sharepoint", listed, view.get("last_seen_at"),
+                      modifier=row.get("last_modified_by"),
+                      onedrive_owner=owner.group(1) if owner else None)
 
     def _captured_member(self, actor: Any, handle: str, container: str, text: bool
                          ) -> dict[str, Any] | None:
@@ -1370,7 +1516,8 @@ class CaptureCaseHostTools(CaseHostTools):
         counted = sorted(set(self._served) - served)
         if not handles and not counted:
             # Nothing captured served: a use-case block alone is still held to the bound.
-            return self._bounded(name, result) if "use_case" in result else result
+            return self._bounded(name, result) \
+                if "use_case" in result or name in SEARCH_TOOLS else result
         admitted = sorted(self._served[h]["captured_at"] for h in (*handles, *counted))
         output = self.tools.contracts["tools"][name]["output"]
         shape = (output["oneOf"][0] if "oneOf" in output else output).get("properties", {})
@@ -1427,7 +1574,14 @@ class CaptureCaseHostTools(CaseHostTools):
         return self._bounded(name, out)
 
     def _fits(self, result: Mapping[str, Any]) -> bool:
-        return ot._envelope_bytes(result) <= self.tools.contracts["limits"]["max_result_bytes"]
+        """Whether ``result`` fits one response as it is sent: to a client, every text
+        wrapped by the output boundary and the freshness meta's reserve counted
+        (``mcp_server._envelope_bytes``; a fitted page of documents grew some 19 KB
+        when wrapped and was refused whole as ``result_too_large``)."""
+        from operating import mcp_server
+        limit = min(self.tools.contracts["limits"]["max_result_bytes"],
+                    mcp_server.MAX_RESULT_BYTES)
+        return mcp_server._envelope_bytes(dict(result)) <= limit
 
     def _bounded(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
         contracts = self.tools.contracts
@@ -1491,7 +1645,8 @@ class CaptureCaseHostTools(CaseHostTools):
             note = _gap("unknown", "result_trimmed", name, (
                 "this answer was over the response bound and was trimmed to fit: "
                 + "; ".join([*steps, *extra]) + ". plx.read a listed document for its "
-                "full text and mentions")[:600])
+                "full text; its mention_summary counts its mentions and next_mention_offset, "
+                "given as mention_offset, shows more")[:600])
             trial = dict(out, gaps=gaps[:cap - 1] + [note])
             return trial if self._fits(trial) else None
 
@@ -1534,9 +1689,9 @@ class CaptureCaseHostTools(CaseHostTools):
 
         for keep in self.TRIM_MENTIONS:
             cut = 0
-            for doc in hits:
+            for at, doc in enumerate(hits):
                 if len(doc.get("mentions") or []) > keep:
-                    doc["mentions"], cut = doc["mentions"][:keep], cut + 1
+                    hits[at], cut = kept_mentions(doc, keep), cut + 1
             if cut:
                 steps.append(f"mentions kept to {keep} on {cut} document(s)")
                 if (answer := attempt()) is not None:
@@ -1693,7 +1848,12 @@ class CaptureCaseHostTools(CaseHostTools):
             # plx.read of a cited file re-reads it, within the call's bound).
             bound.search = searching or name in SEARCH_TOOLS
             try:
-                return self._capture_call(name, arguments, actor)
+                if name != "plx.documents":
+                    return self._capture_call(name, arguments, actor)
+                # The store's whole mention lists stay at hand while this call adds the
+                # captured files' own (``_with_mentions``).
+                with full_mentions_kept():
+                    return self._capture_call(name, arguments, actor)
             finally:
                 bound.search = searching
 
@@ -1705,7 +1865,8 @@ class CaptureCaseHostTools(CaseHostTools):
         if name in SEARCH_TOOLS and isinstance(arguments, dict):
             result = self._use_case_documents(name, arguments, actor, result)
         if self.sharepoint_capture_dir is None:
-            return self._bounded(name, result) if "use_case" in result else result
+            return self._bounded(name, result) \
+                if "use_case" in result or name in SEARCH_TOOLS else result
         if name == "plx.documents" and isinstance(arguments, dict):
             hits = len(result.get("documents") or [])
             result = self._captured_documents(arguments, actor, result)
@@ -1903,7 +2064,12 @@ class CaptureCaseHostTools(CaseHostTools):
         files first: the unsearched ones share what is left of the call's re-read bound,
         and a file the gate drops because that bound is reached is counted in one
         ``live_read_budget`` gap, never dropped silently. A lookup cut at its bounds
-        makes the answer ``scan_cap``."""
+        makes the answer ``scan_cap``. New matching files are gated best first by their
+        cheap prior (``_file_priors``) and only one past the room the page has left: the
+        rest are never gated, the answer is ``scan_cap`` with its total unknown, and the
+        files shown are placed among the projection's page by that prior (``_placed``).
+        At most ``UNSEARCHED_GATE`` unsearched files are gated to be counted; past it
+        every count is a lower bound ("N+")."""
         from integrations.capture_sharepoint import CaptureError
         from integrations.captured_text import TEXT_EXCEEDS_BOUND
         query = arguments.get("query")
@@ -1923,6 +2089,7 @@ class CaptureCaseHostTools(CaseHostTools):
         lookup = self._identifier_lookup(store, gated, audience)
         documents = list(result["documents"])
         listed = {doc["citation"]: at for at, doc in enumerate(documents)}
+        whole_mentions = held_mentions()
         pages: dict[int, set[int | None]] = {}
         for key in wanted:
             for at, page in lookup.entries.get(key, ()):
@@ -1944,17 +2111,36 @@ class CaptureCaseHostTools(CaseHostTools):
                       if at not in pages and lookup.handles[at] not in listed]
         found, capped, over_cap, over_bound, over_budget, cited = [], [], 0, 0, 0, 0
         not_read = text_unread = 0
-        for handle, document in matching:
+        room = arguments.get("limit", DEFAULT_LIMIT) - len(documents)
+        # The per-item gate (a permission re-read each) runs on what the page can show:
+        # the files the projection already listed, then the new ones best first by
+        # their cheap prior (``operating.search.authority``: a use-case document, a name
+        # naming the query's identifier), one past the room left so a cut is known; the
+        # rest are never gated and the answer says it was cut (``scan_cap``).
+        prior = _file_priors(query)
+        new = sorted((pair for pair in matching if pair[0] not in listed),
+                     key=lambda pair: -prior(pair[1]))
+        ungated = False
+        for handle, document in [pair for pair in matching if pair[0] in listed] + new:
+            if handle not in listed and len(found) > max(room, 0):
+                ungated = True
+                break
             if self.captured(actor, handle) is None:
                 over_budget += handle in self._over_budget
                 continue
             if handle in listed:
-                merged = _with_mentions(documents[listed[handle]], document["mentions"])
+                merged = _with_mentions(documents[listed[handle]], document["mentions"],
+                                        whole_mentions.get(handle),
+                                        arguments.get("mention_offset", 0))
                 if merged is not None:
                     documents[listed[handle]], cited = merged, cited + 1
             else:
-                found.append(document)
-        for handle, why in unsearched:
+                found.append(summarise_mentions(document, arguments.get("mention_offset", 0)))
+        # The files whose text was not searched are only counted (each through the gate,
+        # so a count never includes a file this reader may not see): at most
+        # ``UNSEARCHED_GATE`` are checked; past it every count is a lower bound ("N+").
+        unchecked = max(len(unsearched) - UNSEARCHED_GATE, 0)
+        for handle, why in unsearched[:UNSEARCHED_GATE]:
             if self.captured(actor, handle) is None:
                 over_budget += handle in self._over_budget
             elif why == "cap":
@@ -1967,32 +2153,33 @@ class CaptureCaseHostTools(CaseHostTools):
                 text_unread += 1
             else:
                 capped.append(skipped_gap(handle, why))
-        room = arguments.get("limit", DEFAULT_LIMIT) - len(documents)
         if not found and not lookup.truncated and not over_cap and not over_bound \
-                and not capped and not over_budget and not not_read and not text_unread:
+                and not capped and not over_budget and not not_read and not text_unread \
+                and not ungated and not unchecked:
             return dict(result, documents=documents) if cited else result
-        out = dict(result, documents=[*documents, *found[:max(room, 0)]])
+        out = dict(result, documents=_placed(documents, found[:max(room, 0)], prior))
         gaps = [g for g in result["gaps"] if not (found and g["reason"] == "no_match")]
         searched = dict(result["searched"])
         searched["scopes"] = [*searched.get("scopes", []), "capture:sharepoint"][:16]
-        cut = len(found) > room or lookup.truncated
+        cut = len(found) > room or lookup.truncated or ungated
+        more = "+" if unchecked else ""
         if cut:
             gaps.append(_gap("unknown", "scan_cap", "capture:sharepoint",
                              "the captured SharePoint files matching this query exceed what "
                              "one answer holds or the scan bound; narrow the query"))
         if over_cap:
             gaps.append(_gap("not_ingested", "content_exceeds_cap", "capture:sharepoint",
-                             f"{over_cap} captured SharePoint file(s) you may see are over "
+                             f"{over_cap}{more} captured SharePoint file(s) you may see are over "
                              "the capture's content cap: their metadata is captured, their "
                              "text is not, so identifiers in them were not searched"))
         if not_read:
             gaps.append(_gap("not_ingested", "content_not_read", "capture:sharepoint",
-                             f"{not_read} captured SharePoint file(s) you may see were "
+                             f"{not_read}{more} captured SharePoint file(s) you may see were "
                              "captured metadata-only: their bytes were never read, so "
                              "identifiers in them were not searched"))
         if text_unread:
             gaps.append(_gap("not_ingested", TEXT_NOT_READ, "capture:sharepoint",
-                             f"{text_unread} captured SharePoint file(s) you may see have "
+                             f"{text_unread}{more} captured SharePoint file(s) you may see have "
                              "no text the capture read whole (none stored: unreadable, "
                              "unsupported or failed at capture, or scanned pages left for "
                              "a later OCR pass), and text is never extracted when a "
@@ -2000,10 +2187,15 @@ class CaptureCaseHostTools(CaseHostTools):
         gaps.extend(capped_gaps(capped, "capture:sharepoint", "captured SharePoint PDF(s)"))
         if over_bound:
             gaps.append(_gap("not_ingested", TEXT_EXCEEDS_BOUND, "capture:sharepoint",
-                             f"{over_bound} captured SharePoint file(s) you may see are over "
+                             f"{over_bound}{more} captured SharePoint file(s) you may see are over "
                              "the text extractor's bound: their bytes are captured, their "
                              "text was never read whole, so identifiers in them were not "
                              "searched"))
+        if unchecked and not (over_cap or not_read or text_unread or over_bound or capped):
+            gaps.append(_gap("unknown", "unsearched_not_counted", "capture:sharepoint",
+                             "more captured SharePoint files whose text was not searched "
+                             "for identifiers were not checked or counted for this answer; "
+                             "identifiers in them were not searched"))
         if over_budget:
             gaps.append(_gap("unknown", "live_read_budget", "capture:sharepoint",
                              f"{over_budget} captured SharePoint file(s) were left out of "
@@ -2012,12 +2204,14 @@ class CaptureCaseHostTools(CaseHostTools):
                              "capture is past the host's age bound; ask again in a new call"))
         completeness = dict(result["completeness"])
         completeness["returned"] = len(out["documents"])
-        if completeness.get("total") is not None:
+        if ungated:
+            completeness["total"] = None   # files left ungated: how many are served is unknown
+        elif completeness.get("total") is not None:
             completeness["total"] += len(found)
         if cut:
             completeness.update(complete=False, truncated=True, reason="scan_cap")
-        elif (over_cap or over_bound or capped or over_budget or not_read or text_unread) \
-                and not completeness.get("truncated"):
+        elif (over_cap or over_bound or capped or over_budget or not_read or text_unread
+              or unchecked) and not completeness.get("truncated"):
             completeness.update(complete=False, reason="partial_scope")
         return dict(out, gaps=gaps[:20], searched=searched, completeness=completeness)
 
@@ -2102,7 +2296,7 @@ class CaptureCaseHostTools(CaseHostTools):
                 "title": (ot._envelope(name, handle, "row.name", limit)
                           if isinstance(name, str) and name else None),
                 "date": date if isinstance(date, str) and _DATE.match(date) else None,
-                "snippet": mentions[0]["span"], "mentions": mentions[:MAX_MENTIONS]}
+                "snippet": mentions[0]["span"], "mentions": mentions}
 
 
 class _IdentifierLookup:
@@ -2693,7 +2887,8 @@ class CaseCaptures:
                     return None
                 if view.get("changed_since") or view.get("relation") != "graph-mail.attachment":
                     raise refused
-                from ontology.project import mail_attachment_sender
+                from integrations.capture_mail import call_memo
+                from ontology.project import attachment_mailboxes, mail_attachment_sender
                 with _mail_store(self.runtime, Path(self.mail_capture_dir)) as store:
                     reader = self.runtime.employee_gate(actor)
                     audience = self.runtime.live.audience
@@ -2708,7 +2903,12 @@ class CaseCaptures:
                         raise refused
                     text = (store.blob(found["text_sha256"]).decode("utf-8")
                             if found["text_status"] == TEXT_OCR else None)
-                    whose = mail_attachment_sender(store.db, handle)
+                    memo = call_memo()   # one call reads the mailboxes once
+                    key = ("attachment_mailboxes", str(store.path))
+                    if memo is not None and key not in memo:
+                        memo[key] = attachment_mailboxes(store.db)
+                    whose = mail_attachment_sender(
+                        store.db, handle, mailboxes=None if memo is None else memo[key])
                     if whose is None:
                         raise refused
                     row = {**view["row"], **whose}

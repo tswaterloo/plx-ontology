@@ -329,25 +329,63 @@ LEDGER_FAMILIES = {"portal": "portal_api", "bc": "bc", "mail": "graph_mail",
                    "teams": "teams", "mc": "mission_control"}
 
 
-def capture_failures(ledger: Any) -> frozenset[str]:
-    """The projected families whose last capture attempt the host ledger
-    (``<state>/host/host.sqlite``) records as failed: an error, or stale since a failure.
+def capture_failures(ledger: Any, served_at: Any = None) -> frozenset[str]:
+    """The projected families whose capture the host ledger (``<state>/host/host.sqlite``)
+    records as failed (an error, or stale since a failure), as they bear on the served
+    generation (built at ``served_at``, the store's ``built_at``). The ledger keeps only
+    each source's last attempt, so a failure attempted after that build is excused only
+    when the source's last successful capture (``captured_at``) is at or after the start
+    of the cycle that built the served data (the latest ``cycle.started_at`` at or before
+    the build; no cycle recorded: the previous generation's build) and at or before the
+    build itself: the served data then holds that good capture and only a later cycle
+    failed. A good capture after the build (whose own build failed or was skipped) never
+    reached the served data, so the failure counts. Otherwise the failure counts,
+    as do one with no attempt time and any when ``served_at`` is unknown (fails closed).
     A partial capture is not a failure (budgeted captures resume next cycle). Empty
     without a readable ledger."""
     path = Path(ledger) if ledger else None
     if path is None or not path.is_file():
         return frozenset()
+    built = _parse_time(served_at)
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
         try:
-            rows = conn.execute("SELECT source, error, stale_since FROM source_state "
-                                "WHERE configured = 1").fetchall()
+            rows = conn.execute("SELECT source, error, stale_since, attempted_at, "
+                                "captured_at FROM source_state WHERE configured = 1"
+                                ).fetchall()
+            start = None
+            if built is not None:
+                for table, column in (("cycle", "started_at"), ("projection", "built_at")):
+                    try:
+                        times = [_parse_time(r[0]) for r in conn.execute(
+                            f"SELECT {column} FROM {table}")]
+                    except sqlite3.Error:
+                        continue
+                    # the cycle that built the served data started at the latest cycle
+                    # start at or before the build; else the previous build
+                    earlier = [t for t in times if t is not None
+                               and (t <= built if table == "cycle" else t < built)]
+                    if earlier:
+                        start = max(earlier)
+                        break
         finally:
             conn.close()
     except sqlite3.Error:
         return frozenset()
-    return frozenset(LEDGER_FAMILIES[source] for source, error, since in rows
-                     if source in LEDGER_FAMILIES and (error or since))
+
+    def counts(attempted: Any, captured: Any) -> bool:
+        tried = _parse_time(attempted)
+        if built is None or tried is None or tried <= built:
+            return True
+        good = _parse_time(captured)
+        # excused only when the last good capture is the one the served build was made
+        # from: inside its cycle and no later than the build. A good capture after the
+        # build (its own cycle's build failed or was skipped) never reached the served data
+        return start is None or good is None or good < start or good > built
+    return frozenset(LEDGER_FAMILIES[source]
+                     for source, error, since, attempted, captured in rows
+                     if source in LEDGER_FAMILIES and (error or since)
+                     and counts(attempted, captured))
 
 
 def aged(entry: Mapping[str, Any], bounds: Mapping[str, float], now: dt.datetime,
@@ -1024,6 +1062,20 @@ def scoped_kind(grammar: Grammar | None, kind: Any) -> bool:
         return bool(grammar.kind_spec(kind).get("identity_scope"))
     except Exception:  # noqa: BLE001 - a kind the grammar does not declare is unscoped
         return False
+
+
+def text_only_kind(grammar: Grammar | None, kind: Any) -> bool:
+    """Whether every registry carrier of ``kind`` is unserved (identifiers.json
+    ``carriers`` all ``served: false``, e.g. a Portal sourcing request number): no
+    projected record holds it, so its value is only ever read from the text citing it."""
+    if grammar is None or not isinstance(kind, str):
+        return False
+    try:
+        carriers = [c for c in grammar.kind_spec(kind).get("carriers", ()) or ()
+                    if isinstance(c, Mapping)]
+    except Exception:  # noqa: BLE001 - a kind the grammar does not declare
+        return False
+    return bool(carriers) and all(c.get("served") is False for c in carriers)
 
 
 def carrier_fields(grammar: Grammar | None) -> frozenset[tuple[str, str]]:
@@ -1770,6 +1822,11 @@ class OntologyTools:
         self.reviews = reviews
         self.policy = policy
         self.item_gate = item_gate
+        # What decides ``item_gate`` (a host's capture stores), set by the host that
+        # installs it: tools over one store with an equal scope decide every handle
+        # alike, so their per-reader gate results may be shared within a process
+        # (``ontology_tools_traverse``). None: nothing is shared.
+        self.item_gate_scope: tuple | None = None
         self.schema = schema
         self.grammar = grammar
         self.contracts = dict(contracts) if contracts is not None else load_contracts()
@@ -2097,9 +2154,18 @@ class OntologyTools:
         ``stale_source`` gap, ``_source_freshness_gaps``). An entry already stale (a
         copy served while the live source was out) keeps its own label."""
         return aged(entry, self.freshness_bounds, (self.freshness_clock or self.clock)(),
-                    self._capture_failures())
+                    self._capture_failures(self._served_at()))
 
-    def _capture_failures(self) -> frozenset[str]:
+    def _served_at(self) -> str | None:
+        """The served generation's build time (``store_meta.built_at``), or None."""
+        try:
+            row = self.store.conn.execute(
+                "SELECT value FROM store_meta WHERE key = 'built_at'").fetchone()
+        except (sqlite3.Error, AttributeError):
+            return None
+        return row[0] if row else None
+
+    def _capture_failures(self, served_at: Any = None) -> frozenset[str]:
         """``capture_failures`` of the host ledger beside this store's state directory
         (``<state>/projection/<store>`` -> ``<state>/host/host.sqlite``); none without."""
         try:
@@ -2109,7 +2175,8 @@ class OntologyTools:
         main = next((row[2] for row in rows if row[1] == "main" and row[2]), None)
         if not main:
             return frozenset()
-        return capture_failures(Path(main).parent.parent / "host" / "host.sqlite")
+        return capture_failures(Path(main).parent.parent / "host" / "host.sqlite",
+                                served_at)
 
     def _meta(self, store_meta: Mapping[str, str], at: dt.datetime,
               sources: Iterable[str]) -> dict[str, Any]:
@@ -2463,6 +2530,29 @@ class OntologyTools:
                 or arguments.get("query") is None):
             return result
         return self._find_sources(arguments, actor, result)
+
+    def _named_not_found(self, query: Any, candidates: Sequence[Mapping[str, Any]]
+                         ) -> list[dict[str, Any]]:
+        """A query naming an identifier of one kind (``PO#10855``: a purchase order) whose
+        every candidate is a lead of another kind or form (a customer PO with the same
+        digits, a same-number twin): no record of the kind named, that this reader may
+        read, holds it. Said first (``named_record_not_found``), so the lead is never read
+        as the record asked about; the leads stay listed as what they are."""
+        if (not isinstance(query, str) or not candidates or self.grammar is None
+                or any(c.get("reason") in ROOT_REASONS for c in candidates)):
+            return []
+        try:
+            named = {(m.kind, m.normalized) for m in self.grammar.find_identifiers(query)
+                     if getattr(m, "kind", None) and getattr(m, "normalized", None)}
+        except Exception:  # noqa: BLE001 - an unparsed query names no kind
+            return []
+        found = {(c.get("matched") or {}).get("identifier_kind") for c in candidates}
+        return [_gap("unknown", "named_record_not_found", f"{kind}:{normalized}"[:700], (
+            f"no record this reader may read holds {normalized} as a {kind}: the query "
+            "names it, but every candidate listed is a lead (another kind of record, or "
+            "another form, that shares its digits), not the record named; say that no "
+            "such record was found and name the lead only as a lead"))
+                for kind, normalized in sorted(named) if kind not in found]
 
     def _find_sources(self, arguments: Mapping[str, Any], actor: Actor,
                       stored: dict[str, Any]) -> dict[str, Any]:
@@ -2914,6 +3004,9 @@ class OntologyTools:
         elif ranked:
             result["set"] = self._new_set(actor, [m.object_id for m in ranked])
         result["meta"] = meta
+        named_gaps = self._named_not_found(query, candidates)
+        if named_gaps:
+            result["gaps"] = (named_gaps + list(result["gaps"]))[:20]
 
         def finish(count: int) -> dict[str, Any]:
             done = offset + max(0, count - len(repeated))
@@ -3251,12 +3344,40 @@ class OntologyTools:
         one. SQL has already applied audience, markings and time before its batch limit;
         the item ACL is then re-checked per object, and only readable objects count toward
         the cap. A query the index cannot read is a truncated search (nothing is claimed
-        absent)."""
-        tokens = _text_tokens(query, keys)
+        absent).
+
+        An identifier of a kind no projected record carries (``text_only_kind``) is
+        searched as text: its words stay in the query's words, and a match counts only
+        when the grammar reads that same kind and value in the matched text."""
+        try:   # mentions the grammar reads in the query, never its whole-query readings
+            text_only = {(m.kind, m.normalized) for m in self.grammar.find_identifiers(query)
+                         if text_only_kind(self.grammar, m.kind)} if self.grammar else set()
+        except Exception:  # noqa: BLE001 - a query the grammar cannot read: words only
+            text_only = set()
+        tokens = _text_tokens(query, [k for k in keys if (k.kind, k.normalized)
+                                      not in text_only])
         if not tokens:
             return [], False
         needle = " ".join(tokens)
+
+        def names_all(text: Any) -> bool:
+            if not text_only:
+                return True
+            # Each kind here has one written form (its shape), so text without the value
+            # literally cannot name it: the grammar reads only the rows that do.
+            folded = text.casefold() if isinstance(text, str) else ""
+            if not all(value.casefold() in folded for _kind, value in text_only):
+                return False
+            try:
+                read = {(m.kind, m.normalized)
+                        for m in self.grammar.find_identifiers(text)}
+            except Exception:  # noqa: BLE001 - text the grammar cannot read names nothing
+                return False
+            return text_only <= read
+
         hybrid = self._hybrid_matches(scope, query, needle, object_type)
+        if hybrid and text_only:   # a ranked near miss never stands in for the number
+            hybrid = [m for m in hybrid if names_all(m.raw)]
         terms = query_terms(tokens)
         if terms is None:
             # A word the index splits or drops: nothing is claimed absent.
@@ -3299,6 +3420,10 @@ class OntologyTools:
                     for row in rows:
                         version = readable.get(row["object_id"])
                         if reason == "value_text" and self._carried(row):
+                            continue
+                        if version is not None and not names_all(
+                                chunk_text(row["body"]) if reason == "document_text"
+                                else row["value"]):
                             continue
                         match = None if version is None or row["object_id"] in earlier else (
                             _chunk_match(row, version, needle, tokens)
@@ -4245,7 +4370,9 @@ def _completeness(returned: int, total: int | None, truncated: bool, reason: str
 
 
 def _fingerprint(arguments: Mapping[str, Any], actor: Actor) -> str:
-    body = {k: v for k, v in arguments.items() if k not in ("cursor", "limit")}
+    # A mention window (plx.documents ``mention_offset``) pages the same listing.
+    body = {k: v for k, v in arguments.items()
+            if k not in ("cursor", "limit", "mention_offset")}
     body["actor"] = [actor.tenant, sorted(actor.principals)]
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 

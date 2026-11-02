@@ -1219,6 +1219,35 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                                   check["content_bytes_failed"]), expected)
                 self.assertFalse(report["ok"])
 
+    def test_a_sampled_self_check_resolves_only_its_sample_and_still_gates_every_actor(self):
+        # Live 2026-11-01 20:00Z: the host's estate run ended its walk at the budget, then
+        # resolved every one of ~57k handles as three actors and was killed past its grace
+        # (child_timeout every cycle). The host passes --verify-sample; the leak checks stay.
+        from operating import ingest_forever
+        with tempfile.TemporaryDirectory() as tmp:
+            args = cli_args(tmp)
+            args.verify_sample, args.runs = 1, 1
+            drive = seeded_drive()
+            # the first invocation records every version: each is checked, none sampled
+            first = cs.run_cli(args, environ=ENV, sender=drive,
+                               sleep=lambda s: None)["resolve_check"]
+            self.assertEqual((first["handles_checked"], first["handles_new_checked"],
+                              first["sampled"]), (3, 3, False))
+            # the next records nothing new: it samples the unchanged handles and says so
+            report = cs.run_cli(args, environ=ENV, sender=drive, sleep=lambda s: None)
+        check = report["resolve_check"]
+        self.assertEqual((check["handles_checked"], check["handles_indexed"],
+                          check["handles_new_checked"], check["sampled"]), (1, 3, 0, True))
+        self.assertEqual(check["resolved_offline"], 1)
+        self.assertEqual(report["leak_check"]["withheld_actor_rows"], 0)
+        self.assertEqual(report["leak_check"]["withheld_actor_resolved"], 0)
+        self.assertTrue(report["ok"])
+        argv = ingest_forever.SOURCES["sharepoint"].argv(Path(tmp), {"live_audience": "a"})
+        self.assertEqual(argv[argv.index("--verify-sample") + 1],
+                         str(ingest_forever.SHAREPOINT_VERIFY_SAMPLE))
+        with self.assertRaises(ValueError):
+            cs._spread([1, 2, 3], 0)
+
     def test_a_run_cut_by_budget_names_its_incomplete_scope_and_resumes_in_named_host_state(self):
         # Failing first (daily 2026-10-21 capture.sharepoint: the large root was incomplete
         # in both runs of a fresh {tmp}/state and nothing said what was left or why): a root

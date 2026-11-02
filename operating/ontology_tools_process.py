@@ -2832,11 +2832,17 @@ class ProcessTools:
                                       + binding["relation"]))
         where = f"{link_id}#{index}"
         names = self._pair_wheres(lb)
+        near = "from_binding" if far == "to_binding" else "to_binding"
+        # A key unreadable only on the starts' own side hides no link of a start whose own
+        # key the projector read: every start already holds this binding's link to the far
+        # side (``_keys_read``). Unreadable far-side keys may still point at a start.
+        own_side = (self._pair_wheres(lb, near) - self._pair_wheres(lb, far)
+                    if self._keys_read(link_id, lb, far, starts) else set())
         for gap in ctx.report:
             if gap["where"] == where and gap["code"] in _LINK_GAPS:
                 return _UNPROVEN, f"the projector reported {gap['code']} for {where}"
-            if gap["where"] in names and (gap["code"].startswith("parse_")
-                                          or gap["code"] == "path_absent"):
+            if gap["where"] in names and gap["where"] not in own_side and (
+                    gap["code"].startswith("parse_") or gap["code"] == "path_absent"):
                 if gap["code"] == "path_absent" and self._key_unserved(gap["where"]):
                     # The source carries the key on no record (the reporting API does not
                     # serve it): no link through it is ever made, so it hides none from
@@ -2979,9 +2985,29 @@ class ProcessTools:
             cache[where] = unserved
         return cache[where]
 
-    def _pair_wheres(self, lb: Mapping[str, Any]) -> set[str]:
+    def _keys_read(self, link_id: str, lb: Mapping[str, Any], far: str,
+                   starts: Sequence[str]) -> bool:
+        """Every start holds a ``link_id`` row of ``lb``'s kind whose other end is a
+        record of ``lb``'s far binding, with the start on ``lb``'s near side: the projector
+        read each start's own key of this binding (a single-pair binding only: with more
+        pairs a row proves the pairs matched, not which key a second link would use)."""
+        if not starts or len(lb.get("pairs", ())) != 1 or "via" in lb:
+            return False
+        column, other = (("from_object", "to_object") if far == "to_binding"
+                         else ("to_object", "from_object"))
+        found = self.base.store.conn.execute(
+            f"SELECT COUNT(DISTINCT l.{column}) FROM links l JOIN objects o "
+            f"ON o.object_id = l.{other} WHERE l.link_type = ? AND l.binding_kind = ? "
+            "AND l.superseded_at IS NULL AND o.binding_id = ? AND l."
+            f"{column} IN (SELECT value FROM json_each(?))",
+            (link_id, lb.get("kind"), lb.get(far), json.dumps(sorted(set(starts))))
+        ).fetchone()[0]
+        return found == len(set(starts))
+
+    def _pair_wheres(self, lb: Mapping[str, Any], side: str | None = None) -> set[str]:
         """Build-report ``where`` names (``Type.property@binding``) of the properties
-        that read a link binding's key paths."""
+        that read a link binding's key paths (``side``: ``from_binding`` or
+        ``to_binding`` only)."""
         if self._where_index is None:
             index: dict[tuple[str, str], list[str]] = {}
             for tid, spec in self.base.schema.object_types.items():
@@ -2994,8 +3020,10 @@ class ProcessTools:
         pairs = [(lb.get("from_binding"), p["from"], lb.get("to_binding"), p["to"])
                  for p in lb.get("pairs", ())]
         for fb, fp, tb, tp in pairs:
-            out.update(self._where_index.get((fb, fp), ()))
-            out.update(self._where_index.get((tb, tp), ()))
+            if side in (None, "from_binding"):
+                out.update(self._where_index.get((fb, fp), ()))
+            if side in (None, "to_binding"):
+                out.update(self._where_index.get((tb, tp), ()))
         return out
 
     # ------------------------------------------------------------------ events

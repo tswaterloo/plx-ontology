@@ -590,6 +590,189 @@
    ]
   },
   {
+   "id": "MCProject",
+   "description": "One MC project (PRJ-*) visible to the operator scope: its name, owner, health, target and description, read from the context answer (mc_get_context; archived projects included, marked retired_in_mc).",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "mission_control.projects",
+     "source": "mission_control",
+     "relation": "projects",
+     "key": [
+      "scope",
+      "id"
+     ],
+     "lineage": {
+      "default": "mission_control"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "registry_entries": [
+      "plx-mc.mcp_tool:mc_get_context"
+     ]
+    }
+   ],
+   "properties": [
+    {
+     "name": "project_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "id",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "owner",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "owner",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "health",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "health",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "status",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "status",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "description": "MC's status of a project in its default list (active ...); null for an archived one."
+    },
+    {
+     "name": "target",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "target",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "desc",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    },
+    {
+     "name": "retired_in_mc",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "mission_control.projects",
+       "path": "retired_in_mc",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ],
+     "description": "project_archived when MC's default context leaves the project out; null otherwise."
+    }
+   ],
+   "display": [
+    "name"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "ctx.mc_model"
+    },
+    {
+     "kind": "ref",
+     "id": "wb.mc_sources"
+    }
+   ]
+  },
+  {
    "id": "MCTaskEvent",
    "description": "One event of an MC task's history as mc_get_task returns it (the latest 25 events, mcp.tool.invoked excluded): checkouts, progress, approval.requested/decided, completion. Older history is not captured (the unit is partial when a task returns the full window).",
    "availability": {
@@ -953,6 +1136,36 @@
      "pairs": [
       {
        "from": "bucket",
+       "to": "id",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.mc_sources"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MCBucket.in_project",
+   "from": "MCBucket",
+   "to": "MCProject",
+   "name": "in_project",
+   "reverse_name": "buckets",
+   "cardinality": "N:1",
+   "description": "The project MC files a bucket under (PRJ id; unparented buckets have none).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "mission_control.buckets",
+     "to_binding": "mission_control.projects",
+     "pairs": [
+      {
+       "from": "project",
        "to": "id",
        "compare": "text_id"
       }

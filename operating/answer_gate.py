@@ -81,6 +81,7 @@ from . import claim_checks
 from .claim_checks import (LEAD_MARK, ORIGINAL_TEXT_FIELDS, PAGE_TEXT,
                            SCHEMA as CLAIM_CHECKS_SCHEMA, check_items, dig, field_label,
                            parse_value_claims)
+from .document_conflicts import CONFLICT_REASON
 from .ontology_tools import load_contracts
 from .ontology_tools_investigate import citation_rows, default_unit_contracts, gate_rows
 
@@ -124,8 +125,9 @@ PAGE_CITATION = re.compile(r"#(?:[^#\s]*&)?page=[1-9][0-9]*(?:&|$)")
 # state it.
 DOCUMENT_READ_CHARS = 150_000
 DOCUMENT_READ_RULE = (
-    "For a question about what a named document establishes or leaves unverified, page "
-    "through its whole text before you state it: call plx.read again with text_offset "
+    "For any question about a named document (what the named document establishes or "
+    "leaves unverified, supports, leaves open, lacks or asks for), page through its "
+    "whole text before you state it: call plx.read again with text_offset "
     "set to the text_window.next_offset it returned, until next_offset is null or you "
     f"have read {DOCUMENT_READ_CHARS:,} characters; then stop, say which characters you "
     "read (from offset 0 to the last offset read) and state the rest as unread, a gap. "
@@ -133,7 +135,13 @@ DOCUMENT_READ_RULE = (
     "its line, its text_offset and a snippet you may quote. Then compare what the "
     "document says it holds or supplied with what it says is not provided or missing: "
     "where it says it holds something in one place and says that thing is not provided "
-    "in another, that is a conflict.")
+    "in another, that is a conflict. Every plx.read of a document's text names such a "
+    "conflict it finds anywhere in that text as a gap with reason " + CONFLICT_REASON + " "
+    "and both lines: when your answer says what the document establishes, holds, "
+    "supports or lacks, keep that gap in your answer (state unknown, that reason, a "
+    "subject naming both lines and what each says). A figure, calculation or passage "
+    "the question asks for that neither line touches is not made partial by it: leave "
+    "that gap out of such an answer.")
 # A record that states the gap, link or fact asked about answers that part of the question
 # (case-card run: a process map read and stating "Blank SKU: none" was paraphrased without a
 # value claim, refused, and the answer abstained as blocked). Said in every repair and by
@@ -152,9 +160,15 @@ ANSWER_BACKING = (
     "Each sentence that answers the question is backed by a value claim that states it; "
     "from a document, the claim quotes the text that says it (field text or "
     "row.content_text, with \"quote\"). A file's name, type, size or date answers "
-    "nothing, nor does a sentence no claim states. A change states both sides, each quoted. A figure from a document's worked "
+    "nothing, nor does a sentence no claim states. A change states both sides, each quoted, "
+    "and what the text's own table gives on each side: a figure it prints only as inputs "
+    "(the share before the change, a total of its rows) is an expression over them. A "
+    "figure from a document's worked "
     "example (a map's or template's example) is stated as that example, never as the "
-    "record's value. Where the question limits what to state (no prices, roles only), "
+    "record's value. A passage its document states as proposed, a target, still to be "
+    "approved, unverified or an example is stated as that (\"the map proposes\", \"still "
+    "to approve\"), never as what is or applies, and the answer is partial. Where the "
+    "question limits what to state (no prices, roles only), "
     "state no such value: no price, no person's name.")
 REPAIR_ANSWER = (
     "Every claim of your answer was refused (refused_claims: each claim's reason and the "
@@ -199,9 +213,8 @@ REPAIR_HINTS = {
 # claim passed; with a passed claim ``partial`` while the answer leaves an unknown, a
 # refused claim or an unresolved source conflict, else ``answerable``.
 ANSWERABILITY = ("answerable", "partial", "blocked")
-# The gap reason of two cited statements that contradict each other (``evals.measure``):
-# an answer carrying one unresolved is partial (``answerability``).
-CONFLICT_REASON = "conflicting_sources"
+# The gap reason of two cited statements that contradict each other (``evals.measure``,
+# ``document_conflicts``): an answer carrying one unresolved is partial (``answerability``).
 # Added to a final decision with a passed claim: a passed claim is a cited answer.
 ANSWER_NOT_BLOCKED = (
     "A claim passed, so your answer is not blocked: state each passed claim as its "
@@ -335,6 +348,10 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     if partly:
         said = unread_unknown(partly)
         unknowns = [u for u in unknowns if u != said][:MAX_UNKNOWNS - 1] + [said]
+    modality = _stated_modality(claims, rows) if rows is not None else []
+    if modality:
+        said = MODALITY_UNKNOWN.format(modality=", ".join(modality))
+        unknowns = [u for u in unknowns if u != said][:MAX_UNKNOWNS - 1] + [said]
     prose = _prose(decision.get("text") if isinstance(decision, Mapping) else None)
     out = {"outcome": "answered", "reason": None, "claims": claims, "dropped": dropped,
            "unsupported": unsupported, "unknowns": unknowns, "checks": checks,
@@ -360,6 +377,39 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     out.update(outcome="abstained",
                reason="no_checked_claims" if checked else "no_cited_claims")
     return out
+
+
+# The unknown a final decision adds when a passed claim quotes a passage its source states
+# as proposed, still to be approved, a target, unverified or an example
+# (``source_modality``): the source's own modality, so the answer is partial and never
+# states it as what is. No number in it: the reply screen keeps it (``final_reply``).
+MODALITY_UNKNOWN = ("not established: the source states a passage this answer cites as "
+                    "{modality}, not as fact; say it as the source does, never as what is "
+                    "or applies")
+
+
+def _stated_modality(claims: Sequence[Mapping[str, Any]], rows: Callable[[str], Any]
+                     ) -> list[str]:
+    """The ``source_modality`` names, in its order and once, of the sentences that hold
+    the passages the passed ``claims`` cite: each value claim on one record's text (a
+    page's ``text``, a document's text field), its quote, else its value, read in the
+    cited text as the gate re-read it. A count, sum or expression computes over figures
+    and states no passage."""
+    from .source_modality import MODALITY, stated_modality
+    found: set[str] = set()
+    for claim in claims:
+        for value_claim in claim.get("value_claims") or ():
+            handle, field = value_claim.get("citation"), value_claim.get("field")
+            if not isinstance(handle, str) or not isinstance(field, str) \
+                    or "op" in value_claim or "calculation" in value_claim:
+                continue
+            row = rows(handle)
+            if not isinstance(row, Mapping):
+                continue
+            text = row.get("text") if field == PAGE_TEXT else dig(row, field)[1]
+            passage = value_claim.get("quote") or value_claim.get("value")
+            found.update(stated_modality(text, str(passage)))
+    return [name for name, _words in MODALITY if name in found]
 
 
 def unresolved_conflict(gaps: Any) -> bool:
@@ -682,13 +732,16 @@ VALUE_CLAIM_FIXES = {
         "claims of their own"),
     "value_claim_expression_literal": (
         "the expression holds a number of its own: every operand is an input x0, x1, ... "
-        "read from a cited text, each named once"),
+        "read from a cited text"),
     "value_claim_expression_name": (
         "the expression names something other than its inputs: name them x0, x1, ... in "
         "the order of \"of\""),
     "value_claim_expression_repeated_input": (
-        "the expression names an input more than once: name each input once; a figure the "
-        "text prints twice is two inputs, each quoted where it is printed"),
+        "the expression, multiplied out, counts a figure twice ((x0 + x1) * x2 + x0 * x2 "
+        "holds x0 * x2 twice), names an input twice in one term (x0 / x0) or cancels it: "
+        "an input may stand in several terms only where the text applies one figure to "
+        "several lines (x0 * x1 + x0 * x2); a figure the text prints twice is two inputs, "
+        "each quoted where it is printed"),
     "value_claim_expression_unused_input": (
         "the expression leaves an input of \"of\" unused: use each one, or drop it"),
     "value_claim_expression_input_value": (
@@ -736,7 +789,8 @@ def _value_claim_handles(raw: Any) -> list[Any]:
 
 def _page_field_problem(value_claims: Sequence[Mapping[str, Any]]) -> str | None:
     """Why a value claim citing one page names another field than the page's text
-    (``PAGE_CITATION``), or None. A row field of the document the page belongs to
+    (``PAGE_CITATION``), or a captured file or message cited whole names the page's
+    field, or None. A row field of the document the page belongs to
     (``row.content_text``) is not what that page holds: the claim is refused so its
     repair cites the page's ``text``, the field every re-read of the page checks."""
     for claim in [read for given in value_claims
@@ -746,6 +800,16 @@ def _page_field_problem(value_claims: Sequence[Mapping[str, Any]]) -> str | None
                 and claim.get("field") != PAGE_TEXT:
             return (f"a page citation (#page=<n> or &page=<n>) states its value in field "
                     f"\"{PAGE_TEXT}\", the page's text, never {str(claim.get('field'))[:60]}")
+        if isinstance(citation, str) and claim.get("field") == PAGE_TEXT \
+                and not PAGE_CITATION.search(citation) \
+                and not citation.startswith("original://"):
+            # F24-0006, F24-0011, F24-0046 (v14): a captured file cited whole with the
+            # page field was refused "not an original page" and the finding lost.
+            return (f"\"{PAGE_TEXT}\" is a page's field: a captured file or message cited "
+                    "whole states its value in the text field plx.read returned it under "
+                    "(row.content_text for a file, row.body_text for a mail), checked "
+                    "verbatim there; or cite the page plx.read named (page_citation) with "
+                    f"field \"{PAGE_TEXT}\"")
     return None
 
 
@@ -970,7 +1034,8 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
         # percent; never by a unit-less 1 or 100).
         if claim_checks._percent_written(written):
             return abs(number) * 100 in percent_values
-        return number in numbers or abs(number) in numbers
+        return number in numbers or abs(number) in numbers or \
+            claim_checks.rounded_from(number, numbers)
 
     prose = " ".join(text.split())
     scan = prose
@@ -1095,6 +1160,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     lines = [str(plain(claim.get("text"))) for claim in claims if isinstance(claim, Mapping)
              and isinstance(plain(claim.get("text")), str)]
     marks = _checked_marks(claims)
+    denials = _text_values(claims)
     found: list[str] = []
     sentences = removed = dropped_units = 0
     kept: list[str] = []
@@ -1106,6 +1172,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
         sentences += 1
         tokens = unbacked(sentence, backed, question=question, refused=said,
                           percents=percents)
+        tokens += [token for token in _denied(sentence, denials) if token not in tokens]
         bare, other = _currencies_as_checked(sentence, marks)
         tokens += [token for token in other if token not in tokens]
         if tokens:
@@ -1142,6 +1209,82 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
             "unknowns": shown_unknowns, "modified": modified, "replaced": replaced,
             "sentences": sentences, "removed_sentences": removed,
             "removed_unknowns": dropped, "unbacked": found[:MAX_SHOWN_UNBACKED]}
+
+
+def _text_values(claims: Sequence[Any]) -> list[dict[str, Any]]:
+    """The passed claims' text values (no figure), as the prose screen reads a claim, each
+    with what its claim is about (``subject``: the words of its quotes but the value's,
+    ``_subject_words``; None when it quotes nothing) and whether a quote of a passed
+    claim itself writes it negated (``negated_in_source``: "OR1000154027 only; no Amazon
+    shipment ID")."""
+    out: list[dict[str, Any]] = []
+    quotes: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, Mapping) or (claim.get("check") or {}).get(
+                "status", "passed") != "passed":
+            continue
+        for value_claim in claim.get("value_claims") or ():
+            if not isinstance(value_claim, Mapping):
+                continue
+            quote = plain(value_claim.get("quote"))
+            quote = quote if isinstance(quote, str) and quote.strip() else None
+            if quote is not None:
+                quotes.append(quote)
+            value = plain(value_claim.get("value"))
+            if isinstance(value, str) and value.strip() \
+                    and claim_checks.to_decimal(value) is None:
+                out.append({"value": value, "kind": "text", "subject": None if quote is None
+                            else _subject_words(quote, value)})
+    for entry in out:
+        entry["negated_in_source"] = any(
+            failure["code"] == "claim_value_unstated" for quote in quotes
+            for failure in claim_checks.screen_prose(quote, [_screened(entry)]))
+    return out
+
+
+def _screened(entry: Mapping[str, Any]) -> dict[str, str]:
+    return {"value": entry["value"], "kind": "text"}
+
+
+def _subject_words(text: str, value: str = "") -> set[str]:
+    """The content words of ``text`` but those of ``value`` (lower case, at least three
+    letters, no grammar word, a plural or tense ending dropped): what a passage is about."""
+    def stems(said: str) -> set[str]:
+        words = set()
+        for word in re.findall(r"[A-Za-z][A-Za-z0-9]{2,}", said.lower()):
+            if word in claim_checks._PROSE_GRAMMAR or word in {"not", "never", "none"}:
+                continue
+            words.add(re.sub(r"(?:ies|es|ed|ing|s)$", "", word) or word)
+        return words
+    return stems(text) - stems(value)
+
+
+def _denied(sentence: str, values: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The passed text values ``sentence`` writes negated (``claim_checks.screen_prose``'s
+    ``claim_value_unstated``: "no bottle quote ... existed" over a claim whose value is
+    "bottle quote ..."): the sentence denies what the claim states, so the scorer's prose
+    screen fails the claim (F23-0049 on v14); the reply drops the sentence and keeps the
+    value. Only a negation about the claim's own subject denies it: the sentence names
+    something its quote is about ("price" of "PLX gave a price before any bottle quote
+    ... existed"), or the claim quotes nothing to tell. A negation about another subject
+    ("the table's other rows are marked stated, not approved" beside a claim quoting
+    "the approved plan keeps the MAKE gate on") or one a passed claim's own quote writes
+    ("no Amazon shipment ID" beside a quote "OR1000154027 only; no Amazon shipment ID")
+    states no denial and stays (F21-0011, F24-0001 on v13)."""
+    if not values:
+        return []
+    denied = {str(failure["value"]) for failure in claim_checks.screen_prose(
+        sentence, [_screened(entry) for entry in values])
+        if failure["code"] == "claim_value_unstated"}
+    out: list[str] = []
+    for value in sorted(denied, key=lambda v: [e["value"] for e in values].index(v)):
+        entries = [entry for entry in values if entry["value"] == value]
+        if any(entry["negated_in_source"] for entry in entries):
+            continue
+        said = _subject_words(sentence, value)
+        if any(entry["subject"] is None or entry["subject"] & said for entry in entries):
+            out.append(value)
+    return out
 
 
 def _checked_marks(claims: Sequence[Any]) -> dict[Any, dict[str, set[str]]]:
@@ -1238,10 +1381,69 @@ def _states_value(text: str, value: Any, *, percent: bool = False) -> bool:
     unit, ``percent``, also as a printed percent: ``100%`` of 100 percent)."""
     number = claim_checks.to_decimal(value)
     if number is not None:
-        return any(found == number or percent and claim_checks._percent_written(written)
+        return any(found == number or claim_checks.rounded_from(found, [number])
+                   or percent and claim_checks._percent_written(written)
                    and found * 100 == number
                    for written, found in claim_checks.prose_numbers(text))
     return " ".join(str(value).split()).lower() in " ".join(text.split()).lower()
+
+
+# What the agent is told when a submission the gate could not decide gives another value
+# for a claim its last passed decision stated (``contradicted_claims``): that decision no
+# longer stands, and the agent repairs and resubmits.
+CLEARED_BY_CONTRADICTION = (
+    "answer_cleared: this submission gives a different value for {count} claim(s) your "
+    "last passed answer decision stated ({claims}), so that decision no longer stands "
+    "and nothing of it is your answer; repair this submission as the error says and "
+    "submit it again")
+
+
+def _same_value(left: Any, right: Any) -> bool:
+    first, second = claim_checks.to_decimal(str(left)), claim_checks.to_decimal(str(right))
+    if first is not None and second is not None:
+        return first == second
+    return " ".join(str(left).split()).casefold() == " ".join(str(right).split()).casefold()
+
+
+def contradicted_claims(decision: Any, submitted: Any) -> list[str]:
+    """The ids of the claims a final gate ``decision`` passed (``passed_cells``) that a
+    later submission's raw ``claims`` give another value for: the same ``role`` on the same
+    cited records, the same cells read with the same ``quote``, or the same cell of a
+    record field (one value; a document's text field holds many, so there the quote names
+    the claim). A claim about anything else is a different claim, never a contradiction.
+    None when the decision passed nothing or the submission cannot be read."""
+    passed = passed_cells(decision)
+    if not passed or not isinstance(submitted, Sequence) or isinstance(submitted, str):
+        return []
+    text_fields = ORIGINAL_TEXT_FIELDS | {PAGE_TEXT}
+    out: list[str] = []
+    for claim in submitted:
+        if not isinstance(claim, Mapping):
+            continue
+        for given in claim.get("value_claims") or ():
+            if not isinstance(given, Mapping) or "value" not in given:
+                continue
+            if "citation" in given:
+                cells = {(plain(given.get("citation")), plain(given.get("field")))}
+            else:
+                cells = {(plain(item.get("citation")), plain(item.get("field")))
+                         for item in given.get("of") or () if isinstance(item, Mapping)}
+            role = _text_or_none(plain(given.get("role")))
+            quote = _verbatim(plain(given.get("quote")))
+            for cell in passed:
+                if cell["claim"] in out or _same_value(cell["value"], given["value"]):
+                    continue
+                records = {handle for handle, _field in cell["cells"]}
+                same_role = role is not None and role == cell["role"] \
+                    and records == {handle for handle, _field in cells}
+                same_passage = cells == cell["cells"] and quote is not None \
+                    and quote == cell["quote"]
+                same_field = cells == cell["cells"] and len(cells) == 1 \
+                    and next(iter(cells))[1] not in text_fields and cell["op"] is None \
+                    and "op" not in given and quote is None and cell["quote"] is None
+                if same_role or same_passage or same_field:
+                    out.append(cell["claim"])
+    return [str(claim) for claim in out]
 
 
 def passed_cells(decision: Any) -> list[dict[str, Any]]:

@@ -224,6 +224,21 @@ class FindScopeTests(ScopeCase):
                 with self.assertRaises(live_ws.OpenError) as refused:
                     self.opener(tools)(query)
                 self.assertEqual(refused.exception.code, "root_lead_only:marked_form")
+        # A number the query names as one kind (a Petra PO) held only by a lead of
+        # another kind is said not found first, so the lead is never read as the
+        # record asked about (live: a made-up PO was answered with a customer's order).
+        # A record that roots by the query raises no such gap.
+        for query, named in (("PO# 7000", "petra_po:PO7000"),):
+            with self.subTest(query=query):
+                out = self.find(tools, query)
+                self.assertEqual(out["gaps"][0]["reason"], "named_record_not_found", out)
+                self.assertEqual(out["gaps"][0]["subject"], named)
+                self.assertEqual(len(out["candidates"]), 1)
+                self.assertEqual(out["candidates"][0]["tier"], "lead")
+        for query in ("PO-4471", "PO#PO-6000"):
+            with self.subTest(query=query):
+                self.assertNotIn("named_record_not_found",
+                                 {g["reason"] for g in self.find(tools, query)["gaps"]})
         # Under two customers the marked form is ambiguous, never a pick.
         self.assertEqual(self.find(tools, "PO#PO-5000")["status"], "ambiguous")
 

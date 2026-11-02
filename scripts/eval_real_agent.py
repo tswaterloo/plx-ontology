@@ -201,9 +201,11 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from evals import runner
+from operating import tool_results
 from evals import score as scoring
 from operating import eval_principal
 from operating.agent_session import EXCLUSION_ENV, GRAPH_ENV, ReaderHost
+from operator_ui.session_journal import run_journal_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-real-agent/v1"
@@ -742,7 +744,10 @@ class LiveHost(ReaderHost):
         result = response.get("result") or {}
         if "error" in response or result.get("isError"):
             return {"ok": False, "error": "tool_refused"}
-        return result.get("structuredContent")
+        try:
+            return tool_results.result_value(result)
+        except tool_results.ToolResultUnreadable:
+            return {"ok": False, "error": "tool_result_unreadable"}
 
     def read(self, name: str, arguments: dict[str, Any]) -> Any:
         """One harness read as host code (``evals.harness_reads``), as ``CaseHost.read``."""
@@ -1101,6 +1106,14 @@ def agent_session(host: Any) -> tuple[Any, Any]:
                        spec.get("env") or {})
 
 
+def _value_or_unreadable(result: Mapping[str, Any]) -> Any:
+    """A tool result's value as the loop reads it (``tool_results.result_value``)."""
+    try:
+        return tool_results.result_value(result)
+    except tool_results.ToolResultUnreadable:
+        return {"ok": False, "error": "tool_result_unreadable"}
+
+
 class _Recorder:
     """The session's server as the loop calls it, recording each tool call as a transcript
     event (the result as the loop received it), so the scorer reads what the loop read."""
@@ -1122,7 +1135,7 @@ class _Recorder:
                 "seq": len(self.events), "type": "tool_call", "name": params.get("name"),
                 "arguments": dict(params.get("arguments") or {}),
                 "result": runner._bounded({"ok": False, "error": "tool_refused"} if refused
-                                          else result.get("structuredContent")),
+                                          else _value_or_unreadable(result)),
                 "is_error": refused})
         return response
 
@@ -1562,6 +1575,7 @@ def ask_summary(transcripts: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "sessions_with_verified_or_reviewed": sum(map(verified, ran))}}
 
 
+@run_journal_scope
 def main(argv: Sequence[str] | None = None, *, agent: Any = None, planner: Any = None,
          environ: Mapping[str, str] | None = None,
          live_sources: Callable[..., Any] | None = None,
@@ -1623,6 +1637,8 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None, planner: Any =
                      default=agent_loop.Bounds.max_billed_tokens,
                      help="every planner step's usage summed (tokens)")
     args = parser.parse_args(argv)
+    from operator_ui.session_journal import isolate_journal
+    isolate_journal(args.work_dir / "journal")   # never the host's own journal
     asking = args.command == "ask"
     environ = os.environ if environ is None else environ
     injected = (planner if asking else agent) is not None

@@ -1,0 +1,77 @@
+"""Test and placeholder records kept out of a business reader's default view (Home's late
+and at-risk lists, the briefing, the late-PO answer, profitability's order rows).
+
+What counts as one, and nothing else:
+
+* **a name that says so**: a supplier, customer or record whose name carries the exact
+  marker ``(DO NOT USE)``, or is exactly ``TEST`` or ends in `` TEST``, in capitals (``Laura TEST``);
+  a real name with the word in it (``Test Kitchen Inc``, ``XYZ Lab Test``, ``Covid test``,
+  ``... Materials Testing``) is not;
+* **the Portal's environment prefix**: a number issued by a prefix-setting Portal database
+  (``UAT-SO100004``, ``UAT-AO-...``; ``ontology/schema/identifiers.json``,
+  ``environment_prefixes``) is a staging record, not the business's;
+* **the deployment's own list**: record numbers an owner names as tests in
+  ``test-records.json`` in the app's data directory (``--app-data-dir``), or the file
+  ``PLX_APP_TEST_RECORDS`` names: ``{"records": ["<number>", ...], "note": "..."}``. It
+  lives with the deployment, never in the repository: a real case's number is data, not
+  code. Matched on the record's label (its number or name) as shown, whole and case-folded.
+
+Only names and numbers are judged (a record's label, its supplier's or customer's name),
+never free text such as a summary or a reason: "the supplier says do not use lot 4" is
+about a real order.
+
+Hiding is a view, never a deletion: the record's own page, search and a question that
+names it still open it; Home, the briefing and a profitability answer say how many test
+records they left out ("2 test records hidden").
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+from typing import Any, Iterable, Optional
+
+NAME_RULE = re.compile(r"\(\s*DO\s+NOT\s+USE\s*\)", re.I)
+# "TEST" exactly as the placeholder names write it, upper case only: a real "XYZ Lab Test"
+# or "Covid test" stays
+TEST_NAME = re.compile(r"(?:^|\s)TEST\s*$")
+ENVIRONMENT_PREFIX = re.compile(r"^\s*UAT-", re.I)
+LIST_FILE = "test-records.json"
+
+
+def listed(data_dir: Optional[Path], environ: Any = os.environ) -> frozenset[str]:
+    """The deployment's named test records (case-folded labels); empty without a file or
+    with one that is unreadable (nothing is hidden on a guess)."""
+    named = environ.get("PLX_APP_TEST_RECORDS") if environ is not None else None
+    path = Path(named) if named else (Path(data_dir) / LIST_FILE if data_dir else None)
+    if path is None or not path.is_file():
+        return frozenset()
+    try:
+        got = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset()
+    records = got.get("records") if isinstance(got, dict) else None
+    return frozenset(str(r).strip().casefold() for r in records or ()
+                     if isinstance(r, (str, int)) and str(r).strip())
+
+
+def is_test(texts: Iterable[Any], named: frozenset[str] = frozenset()) -> bool:
+    """Whether any of ``texts`` (a record's label, its supplier's or customer's name;
+    never free text) marks a test or placeholder record (module doc)."""
+    for text in texts:
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if NAME_RULE.search(text) or TEST_NAME.search(text) or ENVIRONMENT_PREFIX.match(text):
+            return True
+        if text.strip().casefold() in named:
+            return True
+    return False
+
+
+def hidden_words(count: int) -> Optional[str]:
+    """"2 test records hidden" (None for none)."""
+    if not count:
+        return None
+    return f"{count} test record{'s' if count != 1 else ''} hidden"

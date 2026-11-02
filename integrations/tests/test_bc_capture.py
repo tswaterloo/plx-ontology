@@ -37,6 +37,7 @@ from operating import claim_checks
 HOST = "https://api.businesscentral.dynamics.com"
 BASE = f"/v2.0/{TENANT_ID}/Production/api/v2.0"
 ODATA = f"/v2.0/{TENANT_ID}/Production/ODataV4"
+PLX_API = f"/v2.0/{TENANT_ID}/Production/api/plx/integration/v1.0"
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 # Three pinned companies (test GUIDs; the real pins live in bc_company_books.json) and one
@@ -107,6 +108,12 @@ class FakeBc:
         # ODataV4 Page 50 ``PurchaseOrder`` rows per company (None: one per purchase order,
         # ``No`` its number, a synthetic ``Your_Reference``, the order's vendor number).
         self.references: dict[str, list[dict]] = {}
+        # ODataV4 Page 38 ``ItemLedgerEntries`` lot rows per company (default: none, as live
+        # BC 2026-11-01 holds no lot-tracked entry).
+        self.lots: dict[str, list[dict]] = {}
+        # API v2.0 ``contactsInformation`` per (company, party set, party id), served only
+        # as the party listing's ``$expand`` (default: none).
+        self.party_contacts: dict[tuple[str, str, str], list[dict]] = {}
 
     def fail(self, pattern: str, *responses: tuple) -> None:
         for response in responses:
@@ -144,6 +151,13 @@ class FakeBc:
             return self.odata(odata.group(1), odata.group(2), parts, headers)
         found = re.fullmatch(re.escape(BASE) + r"/companies\(([^)]+)\)/(\w+)"
                              r"(?:\(([^)]+)\)(?:/(\w+))?)?", path)
+        plx = re.fullmatch(re.escape(PLX_API) + r"/companies\(([^)]+)\)/(\w+)", path)
+        if plx is not None:   # a PLX API page: a whole listing under its own route
+            assert plx.group(2) in grammar.BC_PLX_API_SETS, path
+            rows = self.data.get((plx.group(1), plx.group(2)))
+            if rows is None:
+                return 404, {}, b'{"error":{"code":"BadRequest_NotFound"}}'
+            return self.page(rows, parts, headers)
         if found is None:
             return 404, {}, b'{"error":{"code":"BadRequest_NotFound"}}'
         company, entity_set, document, line_set = found.groups()
@@ -187,6 +201,10 @@ class FakeBc:
         if "$select" in kept:
             names = kept["$select"].split(",") + ["@odata.etag"]
             rows = [{k: r[k] for k in names if k in r} for r in rows]
+        if kept.get("$expand") == "contactsInformation":
+            assert entity_set in grammar.BC_PARTY_CONTACTS, entity_set
+            rows = [{**r, "contactsInformation": self.party_contacts.get(
+                (company, entity_set, r["id"]), [])} for r in rows]
         page = {"value": rows[offset:offset + size]}
         if offset + size < len(rows):
             # BC keeps the original query options in the continuation (UNVERIFIED live).
@@ -207,6 +225,11 @@ class FakeBc:
         """ODataV4 ``Company('<name>')/PurchaseOrder``: the page's key (``No``) pages it,
         as ``$skiptoken='<last No>'`` (UNVERIFIED live: the token shape)."""
         company = next((c for c in self.companies if self.names.get(c) == name), None)
+        if company is not None and entity == "ItemLedgerEntries":
+            query = parse_qs(parts.query)
+            assert query.get("$select") == [grammar.BC_ODATA_LOT_SELECT], query
+            assert query.get("$filter") == [grammar.BC_ODATA_LOT_FILTER], query
+            return self.page(self.lots.get(company, []), parts, headers, keep=False)
         if company is None or entity != "PurchaseOrder":
             return 404, {}, b'{"error":{"code":"BadRequest_NotFound"}}'
         query = parse_qs(parts.query)
@@ -228,6 +251,19 @@ class FakeBc:
             page["@odata.nextLink"] = (
                 f"{HOST}{parts.path}?$select={quote(grammar.BC_ODATA_PO_SELECT, safe=',')}"
                 f"&$skiptoken={quote(repr(rows[offset + size - 1]['No']), safe='')}")
+        return 200, {}, self.body(page)
+
+    def page(self, rows: list[dict], parts, headers, *, keep: bool = True):
+        """One page of a whole listing (no query option), continued by ``$skiptoken``;
+        ``keep``: the continuation restates the request's own query options."""
+        size = int(re.search(r"maxpagesize=(\d+)", headers.get("Prefer", "maxpagesize=100"))[1])
+        query = parse_qs(parts.query)
+        offset = int(query.get("$skiptoken", ["0"])[0])
+        page = {"value": rows[offset:offset + size]}
+        if offset + size < len(rows):
+            kept = {k: v[0] for k, v in query.items() if k in ("$filter", "$select")}
+            extra = "".join(f"&{k}={quote(v, safe=',')}" for k, v in sorted(kept.items()))
+            page["@odata.nextLink"] = f"{HOST}{parts.path}?$skiptoken={offset + size}{extra}"
         return 200, {}, self.body(page)
 
     def offset(self, path: str, token: str | None) -> int | None:
@@ -297,34 +333,46 @@ ALL_UNITS = len(CAPTURE_ENTITY_SETS) + len(BC_DOCUMENT_LINES) + 1  # + the compa
 
 
 SHIPPED = bc_read.load_company_books()["production"]
-MY_COMPANY = next(iter(SHIPPED))  # the first pin; the next test needs it to be the only one
+SHIPPED_NAMES = bc_read.load_company_scope()[1]["production"]
+MY_COMPANY = next(c for c, book in SHIPPED.items() if book == "manufacturing")
+# Companies BC may list that the shipped map does not pin (never read in Production).
 OTHERS = ["c1000000-0000-4000-8000-000000000001", "c1000000-0000-4000-8000-000000000002",
           "c1000000-0000-4000-8000-000000000003"]
-PRODUCTION_NAMES = {OTHERS[0]: "CRONUS Test", OTHERS[1]: "PLX Consol",
-                    OTHERS[2]: "PLX Distribution", MY_COMPANY: "My Company"}
+PRODUCTION_NAMES = {OTHERS[0]: "CRONUS Test", OTHERS[1]: "CRONUS Copy",
+                    OTHERS[2]: "Sandbox Copy", **SHIPPED_NAMES}
 
 
 class MyCompanyScopeTests(unittest.TestCase):
-    """Production reads only My Company: a listing with CRONUS,
-    PLX Consol, PLX Distribution and My Company captures only the pinned GUID."""
+    """Production reads all three PLX companies:
+    a listing with
+    CRONUS copies and the three pinned GUIDs captures exactly the pinned ones, each by GUID
+    and pinned name, and the proof names the manufacturing book (My Company)."""
 
     def listing(self, **kwargs) -> FakeBc:
+        pinned = list(SHIPPED)
         return FakeBc(kwargs.pop("sizes", {"purchaseOrders": 5}),
-                      companies=[OTHERS[0], OTHERS[1], MY_COMPANY, OTHERS[2]],
+                      companies=[OTHERS[0], pinned[1], MY_COMPANY, OTHERS[1], pinned[2],
+                                 OTHERS[2]],
                       names=kwargs.pop("names", PRODUCTION_NAMES))
 
-    def test_production_pins_exactly_one_company(self):
-        self.assertEqual(list(SHIPPED), [MY_COMPANY])
+    def test_production_pins_the_three_companies_by_guid_and_name(self):
+        self.assertEqual(sorted(SHIPPED.values()), ["consol", "distribution", "manufacturing"])
+        self.assertEqual(sorted(SHIPPED_NAMES.values()),
+                         ["My Company", "PLX Consol", "PLX Distribution"])
+        self.assertEqual(set(SHIPPED), set(SHIPPED_NAMES))
 
-    def test_only_the_pinned_my_company_is_captured_and_proved_by_counts(self):
+    def test_only_the_pinned_companies_are_captured_and_proved_by_counts(self):
         h = Harness(self, self.listing(), books="shipped")
         report = h.run()
-        self.assertEqual(report["companies_listed"], 4)
-        self.assertEqual([c["company_id"] for c in report["companies"]], [MY_COMPANY])
+        self.assertEqual(report["companies_listed"], 6)
+        self.assertEqual(sorted(c["company_id"] for c in report["companies"]), sorted(SHIPPED))
         for other in OTHERS:
             self.assertFalse(h.fake.bc_gets(other), "a company outside scope was read")
         self.assertEqual(report["unpinned_companies"], 0)
         self.assertEqual(report["out_of_scope_companies"], 3)
+        # every pinned company's units, its PO references and its lot page included
+        self.assertEqual(report["units_total"], 3 * (ALL_UNITS + 2))
+        self.assertEqual(report["units_reached"], report["units_total"])
         self.assertEqual(report["pinned_name_mismatch"], 0)
         self.assertTrue(report["all_complete"])
         proof = report["company_proof"]
@@ -338,7 +386,8 @@ class MyCompanyScopeTests(unittest.TestCase):
         names = dict(PRODUCTION_NAMES, **{MY_COMPANY: "CRONUS (Test)"})
         h = Harness(self, self.listing(names=names), books="shipped")
         report = h.run()
-        self.assertEqual(report["companies"], [])
+        self.assertEqual(sorted(c["company_id"] for c in report["companies"]),
+                         sorted(c for c in SHIPPED if c != MY_COMPANY))
         self.assertEqual(report["pinned_name_mismatch"], 1)
         self.assertIsNone(report["company_proof"])
         self.assertFalse(report["all_complete"])
@@ -361,7 +410,7 @@ class MyCompanyScopeTests(unittest.TestCase):
             ENV, sender=self.listing(), db=Path(scratch.name) / "c.sqlite", page_size=2,
             resolve_sample=3, passes=2, mode="full", monotonic=Clock().monotonic,
             retry=BoundedBackoff(sleep=lambda s: None))
-        self.assertEqual(result["companies_captured"], 1)
+        self.assertEqual(result["companies_captured"], 3)
         self.assertEqual(set(result["company_proof"]), {"environment", "company_name",
                                                          "po_count"})
         # injected-transport is the only mark the fixture run is expected to fail on
@@ -374,14 +423,15 @@ class MyCompanyScopeTests(unittest.TestCase):
         self.assertIn("company_proof.company_name != expected",
                       live_verify.check_expectations(spec, 0, wrong))
 
-    def test_payment_journals_are_read_get_only_from_my_company_alone(self):
+    def test_payment_journals_are_read_get_only_from_the_pinned_companies_alone(self):
         h = Harness(self, self.listing(sizes={"customerPaymentJournals": 2,
                                               "vendorPaymentJournals": 3}), books="shipped")
         report = h.run(entity_sets=("customerPaymentJournals", "vendorPaymentJournals"))
         for name, count in (("customerPaymentJournals", 2), ("vendorPaymentJournals", 3)):
-            unit = h.unit(report, MY_COMPANY, name)
-            self.assertEqual((unit["state"], unit["records_current"]), ("complete", count))
-            self.assertEqual(len(h.handles(MY_COMPANY, name)), count)
+            for company in SHIPPED:
+                unit = h.unit(report, company, name)
+                self.assertEqual((unit["state"], unit["records_current"]), ("complete", count))
+                self.assertEqual(len(h.handles(company, name)), count)
         for other in OTHERS:
             self.assertFalse(h.fake.bc_gets(other), "a company outside scope was read")
         self.assertTrue(h.fake.bc_gets(r"PaymentJournals"))
@@ -433,7 +483,10 @@ class FullCaptureTests(unittest.TestCase):
         self.assertFalse(h.fake.bc_gets(UNPINNED))
         self.assertEqual([c["book"] for c in report["companies"]],
                          ["manufacturing", "distribution", "consol"])
-        self.assertEqual(ALL_UNITS, 36)  # bc.capture_full requires units_total >= 93
+        # 32 sets (the contact relations among them), 10 lines units and the company
+        # record per company (bc.capture_full requires units_total >= 132 with each
+        # company's Page 50 and Page 38 units)
+        self.assertEqual(ALL_UNITS, 43)
         self.assertEqual(report["units_total"], 3 * ALL_UNITS)
         self.assertEqual(report["units_complete"], 3 * ALL_UNITS)
         self.assertFalse(report["all_complete"])  # an unpinned company is not captured
@@ -515,8 +568,8 @@ class FullCaptureTests(unittest.TestCase):
         self.assertFalse(report["all_complete"])
 
     def test_bc_capture_full_holds_a_coded_gap_without_failing_on_it(self):
-        # The shipped pin (Production / My Company only) against the real spec.
-        fake = FakeBc({"purchaseOrders": 4}, companies=[OTHERS[0], MY_COMPANY, OTHERS[1]],
+        # The shipped pins (Production: the three PLX companies) against the real spec.
+        fake = FakeBc({"purchaseOrders": 4}, companies=[OTHERS[0], *SHIPPED, OTHERS[1]],
                       names=PRODUCTION_NAMES)
         fake.fail(rf"{MY_COMPANY}\)/agedAccountsPayables$",
                   *[(404, {}, b'{"error":{"code":"BadRequest_NotFound"}}')] * 2)  # both passes
@@ -527,8 +580,8 @@ class FullCaptureTests(unittest.TestCase):
             resolve_sample=3, passes=2, monotonic=Clock().monotonic,
             retry=BoundedBackoff(sleep=lambda s: None))
         self.assertEqual((report["units_total"], report["units_not_exposed"],
-                          report["all_complete"]), (ALL_UNITS + 1, 1, False))
-        # + 1: the Page 50 purchaseOrderReferences unit of the pinned company.
+                          report["all_complete"]), (3 * (ALL_UNITS + 2), 1, False))
+        # + 2 per company: its Page 50 purchaseOrderReferences and Page 38 lot units.
         spec = json.loads((Path(__file__).resolve().parents[2] / "devloop" / "live-checks"
                            / "bc.capture_full.json").read_text(encoding="utf-8"))
         # Only the fixture's own mark fails it: injected transport.
@@ -1535,16 +1588,24 @@ class CliTests(unittest.TestCase):
         self.assertGreater(result["store_payload_bytes"], 0)
         self.assertEqual(result["store_pruned_versions"], 0)
         text = json.dumps(result)
-        for secret in (CLIENT_SECRET, ACCESS_TOKEN, *CO, "PLX Distribution", "N00000",
-                       "bc://", "JzE"):
+        # The one name printed is the proof's: the manufacturing book's company as BC lists
+        # it (CO[0], listed as "PLX Distribution" here); no other company's name.
+        self.assertEqual(result["company_proof"]["company_name"], NAMES[CO[0]])
+        for secret in (CLIENT_SECRET, ACCESS_TOKEN, *CO, NAMES[CO[1]], NAMES[CO[2]],
+                       "N00000", "bc://", "JzE"):
             self.assertNotIn(secret, text)
 
     def test_the_shipped_book_map_pins_the_portal_guids(self):
         books = bc_read.load_company_books()
-        self.assertEqual(sorted(books["production"].values()), ["manufacturing"])
+        self.assertEqual(sorted(books["production"].values()),
+                         ["consol", "distribution", "manufacturing"])
         only, names = bc_read.load_company_scope()
         self.assertEqual(only, {"production"})
-        self.assertEqual(names, {"production": {MY_COMPANY: "My Company"}})
+        self.assertEqual(names["production"][MY_COMPANY], "My Company")
+        # the ledger scope's expected gaps name the two other pinned companies by GUID
+        gaps = bc_read.load_ledger_scope()["production"]["expected_gaps"]
+        self.assertEqual({g["company"] for g in gaps},
+                         {c for c, book in books["production"].items() if book != "manufacturing"})
         self.assertEqual(set(books["sandbox"].values()), {"manufacturing"})
         for lineage in ("bc_" + b for b in books["production"].values()):
             self.assertTrue(capture_store.lineage_ok(lineage))

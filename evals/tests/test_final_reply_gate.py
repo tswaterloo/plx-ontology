@@ -204,6 +204,49 @@ class FinalReplyGateTests(unittest.TestCase):
             text, parsed, _, report = _gated(answer, [passed])
             self.assertEqual((report["withheld"], parsed["values"][0]["value"]),
                              ([], "Blank bottle PO"))
+        # F23-0047 (v14): a resubmission that failed (result_too_large) or came back
+        # unreadable decided nothing; the decision before it stands, never nulled.
+        for name, later in (("then a failed resubmission", failed),
+                            ("then a truncated resubmission", truncated)):
+            with self.subTest(name):
+                _, parsed, _, report = _gated(answer, [passed, later])
+                self.assertEqual((report["withheld"], parsed["values"][0]["value"]),
+                                 ([], "Blank bottle PO"))
+        # A failed resubmission with different
+        # claims leaves the passed decision standing, unless it gives another value for a
+        # claim that decision passed (the same passage, role or record field): then the
+        # agent replaced that value, and the earlier decision is cleared.
+        def resubmitted(*value_claims):
+            return {**failed, "arguments": {"answer": {"claims": [
+                {"text": "x", "citations": [MAP], "value_claims": list(value_claims)}]}}}
+        quoted_passed = _submit("answered", passed=[("Blank bottle PO", MAP,
+                                                     "row.content_text")])
+        quoted_passed["result"]["claims"][0]["value_claims"][0]["quote"] = _wrap(
+            "Stage one: Blank bottle PO")
+        for name, events, withheld in (
+                ("different claims stand beside it", [quoted_passed, resubmitted(
+                    {"citation": MAP, "field": "row.content_text", "value": "Pump PO",
+                     "quote": "Stage two: Pump PO"})], []),
+                ("the same value again stands", [quoted_passed, resubmitted(
+                    {"citation": MAP, "field": "row.content_text",
+                     "value": "blank bottle PO", "quote": "Stage one: Blank bottle PO"})], []),
+                ("another value for the same passage clears it", [quoted_passed, resubmitted(
+                    {"citation": MAP, "field": "row.content_text", "value": "Pump PO",
+                     "quote": "Stage one: Blank bottle PO"})], ["stage_one"]),
+                ("another value for the same record field clears it", [other_field, {
+                    **failed, "arguments": {"answer": {"claims": [{"value_claims": [
+                        {"citation": MAP, "field": "row.name", "value": "Pump PO"}]}]}}}],
+                 ["stage_one"])):
+            with self.subTest(name):
+                stated = answer if name != "another value for the same record field clears it" \
+                    else _answer("It is the Blank bottle PO.", [_value(
+                        "stage_one", "Blank bottle PO", MAP, field="row.name")],
+                        answerability="answerable")
+                _, parsed, _, report = _gated(stated, events)
+                self.assertEqual(report["withheld"], withheld)
+        with self.subTest("a failed resubmission never revives a refused decision"):
+            _, parsed, _, report = _gated(answer, [passed, _submit("abstained"), failed])
+            self.assertEqual(report["withheld"], ["stage_one"])
         with self.subTest("a quote the gate did not check"):
             quoted = _answer("It is the Blank bottle PO.", [_value(
                 "stage_one", "Blank bottle PO", MAP, quote="Blank bottle PO at cost")])
@@ -292,6 +335,117 @@ class FinalReplyGateTests(unittest.TestCase):
             "not in the record: the REJECTED reason"], refused=["status REJECTED"])
         self.assertEqual((screened["unknowns"], screened["removed_unknowns"]),
                          (["not in the record: the ship date"], 2))
+
+    def test_the_analyst_shape_loses_only_its_unbacked_bullet(self):
+        # The answer's shape (``deep_investigation.answer_shape_rule``: verdict, "- "
+        # bullets, a "What I couldn't confirm" line) adds no figure: each bullet is one line
+        # the reply screen judges alone, so an unchecked figure takes only its own bullet.
+        from operating import deep_investigation as deep
+        claims = [{"id": "m1", "check": {"status": "passed"}, "text": "qty: 2400",
+                   "phrase": "2400", "value_claims": [{"value": "2400", "citation": MAP,
+                                                       "field": "row.qty"}]}]
+        text = ("Yes — the order asks for 2400 units.\n- Ordered 2400 units on the line.\n"
+                "- Shipped 2350 so far.\n- The carrier has not replied.\n"
+                + deep.COULD_NOT_CONFIRM + " the ship date.")
+        reply = answer_gate.final_reply(text, claims, question="How many units are ordered?")
+        self.assertEqual(reply["text"].splitlines(), [
+            "Yes — the order asks for 2400 units.", "- Ordered 2400 units on the line.",
+            "- The carrier has not replied.", deep.COULD_NOT_CONFIRM + " the ship date.",
+            answer_gate.WITHHELD_STATEMENTS])
+        self.assertEqual(reply["unbacked"], ["2350"])
+
+    def test_a_float_written_rounded_for_display_is_backed_nothing_looser(self):
+        # A BC cell holds the float 116.25000000000001; the answer writes 116.25. The gate's
+        # text check and the reply screen back the display rounding (2-4 places, half up,
+        # of a value with more places) and nothing else: not 116.3, 116 or 116.26.
+        noisy = "116.25000000000001"
+        uncovered = [written for written, _detail, _kind in claim_checks._uncovered(
+            ["It cost 116.25 per KG, or 116.250; not 116.3, 116 or 116.26."],
+            [{"kind": "number", "value": noisy}], [])]
+        self.assertEqual(uncovered, ["116.3", "116", "116.26"])
+        claims = [{"id": "m1", "check": {"status": "passed"}, "text": f"unit cost: {noisy}",
+                   "phrase": noisy, "value_claims": [{"value": noisy, "citation": MAP,
+                                                       "field": "row.unitCost"}]}]
+        kept = answer_gate.final_reply("- Billed at 116.25 per KG.", claims)
+        self.assertEqual((kept["text"], kept["unbacked"]), ("- Billed at 116.25 per KG.", []))
+        for loose in ("116.3", "116", "116.26", "116.2500001"):
+            reply = answer_gate.final_reply(f"- Billed at {loose} per KG.", claims)
+            self.assertEqual(reply["unbacked"], [loose], loose)
+        # a value written with more places than its cell is never "rounded" from it
+        self.assertFalse(claim_checks.rounded_from(claim_checks.to_decimal("1.2500"),
+                                                   [claim_checks.to_decimal("1.25")]))
+
+    def test_a_sentence_writing_a_passed_text_value_negated_is_dropped_value_kept(self):
+        # F23-0049 (v14): the gate passed "pump, label or carton" (a list of what was
+        # missing) and the answer text said "no pump, label or carton existed": the
+        # scorer's prose screen reads the value negated (claim_value_unstated) and failed
+        # the answer. The reply drops that sentence, keeps the value and the rest.
+        missing = "pump, label or carton"
+        events = [_submit("answered", passed=[(missing, DOC, "row.content_text")])]
+        answer = _answer(f"When the price went out, no {missing} existed yet. The thread "
+                         "was later.", [_value("missing", missing, DOC)],
+                         answerability="answerable")
+        text, parsed, error, report = _gated(answer, events, prose="")
+        self.assertIsNone(error)
+        self.assertEqual([v["value"] for v in parsed["values"]], [missing])
+        self.assertNotIn(f"no {missing}", parsed["text"])
+        self.assertIn("The thread was later.", parsed["text"])
+        self.assertIn(missing, report["unbacked"])
+        self.assertEqual([f["code"] for f in claim_checks.screen_prose(
+            parsed["text"], [{"value": missing, "kind": "text"}])
+            if f["code"] == "claim_value_unstated"], [])
+        # Written as stated, the sentence stays.
+        kept = answer_gate.final_reply(f"Missing then: {missing}.", events[0]["result"]["claims"])
+        self.assertFalse(kept["modified"])
+
+    def test_a_negation_about_another_subject_is_kept(self):
+        # A sentence negating a passed text value
+        # was dropped whatever it was about. Only a negation about the claim's own
+        # subject (what its quote is about) denies it; one about another subject, or one
+        # a passed claim's own quote writes, is a correct sentence and stays.
+        def claim(n, value, quote):
+            return {"id": f"m{n}", "check": {"status": "passed", "failures": []},
+                    "citations": [_wrap(DOC)], "text": _wrap(f"content text: {value}"),
+                    "value_claims": [{"citation": DOC, "field": "row.content_text",
+                                      "kind": "text", "value": _wrap(value),
+                                      "quote": _wrap(quote)}]}
+        status = claim(1, "approved", "The approved plan keeps the build gate on for day 1.")
+        key = claim(2, "Harbor tracking key", "The carrier slip carries the Harbor tracking "
+                    "key, carrier and route.")
+        only = claim(3, "RX4471", "RX4471 only; no Harbor tracking key")
+        missing = claim(4, "pump, label or carton",
+                        "The buyer got a price before any pump, label or carton existed")
+        for sentence, claims, dropped in (
+                # Another subject: the table's rows, not the plan the claim is about.
+                ('The table\'s other rows are marked "stated", not approved.', [status],
+                 False),
+                # The plan itself said not approved: the claim's own subject, denied.
+                ("The plan for the build gate is not approved.", [status], True),
+                # A passed claim's own quote writes the negation: the source says it.
+                ('On the real shipment the slip carried only "RX4471" and no Harbor '
+                 "tracking key.", [key, only], False),
+                ("The carrier slip has no Harbor tracking key.", [key], True),
+                # F23-0049: the negation is about the claim's own subject (the price).
+                ("When the price went out by email, no pump, label or carton existed yet.",
+                 [missing], True)):
+            with self.subTest(sentence):
+                reply = answer_gate.final_reply(f"{sentence} The rest stays.", claims)
+                self.assertEqual(sentence not in reply["text"], dropped, reply["text"])
+                self.assertIn("The rest stays.", reply["text"])
+        # The session's final reply screens with the quotes the kept values carry, so a
+        # correct sentence about another subject stays there too (it was dropped).
+        decision = {**_submit("answered"), "result": {"outcome": "answered", "claims": [
+            key, only], "unsupported_claims": []}}
+        sentence = ('On the real shipment the slip carried only "RX4471" and no Harbor '
+                    "tracking key.")
+        answer = _answer(sentence, [
+            _value("slip_key", "Harbor tracking key", DOC, quote="The carrier slip carries "
+                   "the Harbor tracking key, carrier and route."),
+            _value("slip_ref", "RX4471", DOC, quote="RX4471 only; no Harbor tracking key")],
+            answerability="answerable")
+        _, parsed, _, report = _gated(answer, [decision], prose="")
+        self.assertEqual(report["withheld"], [])
+        self.assertIn(sentence, parsed["text"])
 
     def test_a_unit_word_after_a_figure_stays_only_when_the_gate_verified_it(self):
         def claim(value, unit=None, basis=None):

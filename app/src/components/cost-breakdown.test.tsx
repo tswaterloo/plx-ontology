@@ -54,21 +54,29 @@ const p: Profitability = {
 describe("ProfitabilityView", () => {
   it("ranks orders worst first, says why an order has no margin, and breaks down the worst", () => {
     render(<ProfitabilityView p={p} />);
-    const rows = within(screen.getByTestId("order-ranking")).getAllByRole("row").slice(1);
+    const table = screen.getByTestId("order-ranking");
+    const rows = within(table).getAllByRole("row").slice(1);
     expect(rows.map((r) => r.textContent)).toEqual([
       expect.stringContaining("SO-101"),
       expect.stringContaining("SO-103"),
-      "SO-104No margin: line not invoiced",
+      expect.stringContaining("1 order has no margin yet"),
     ]);
+    // an order without a margin is collapsed with its reason, never an inline row of dashes
+    expect(screen.getByTestId("no-margin")).toHaveTextContent("SO-104: line not invoiced");
     const b = screen.getByTestId("cost-breakdown");
-    expect(b).toHaveTextContent("Why SO-101 lost money");
+    expect(b).toHaveTextContent("Why SO-101 lost $45.00 CAD");
+    expect(b).not.toHaveTextContent("made what it made");
     expect(b).toHaveTextContent("Booked cost (item ledger)");
     expect(b).toHaveTextContent("16.00 CAD/PCS goods cost; landed cost not established");
-    expect(within(b).getAllByRole("link", { name: /BC item ledger entry/ }).length).toBe(2);
-    expect(screen.getByTestId("next-action")).toHaveTextContent("a suggestion; nothing was changed");
-    // every margin says what it covers
-    expect(screen.getByTestId("order-ranking")).toHaveTextContent("Item costMargin (item cost only)");
-    expect(b).toHaveTextContent("margin on item cost only");
+    // one line: no "share of cost" column
+    expect(b).not.toHaveTextContent("Share of cost");
+    expect(within(b).getAllByRole("button", { name: /Business Central/ }).length).toBe(2);
+    expect(screen.getByTestId("next-action")).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
+    // the margin basis is said once, as a footnote, not on every header
+    expect(table).toHaveTextContent("Margin*");
+    expect(screen.getByTestId("profitability")).toHaveTextContent("*Item cost only. Freight, labour and overhead aren't included.");
+    // four numbers: coverage beside the figure
+    expect(screen.getByTestId("profitability")).toHaveTextContent("Orders with a margin2 of 3");
     expect(screen.getByTestId("margin-basis")).toHaveTextContent(
       "Margins are on item cost only. Labour and overhead aren't booked in Business Central, so this overstates true margin.");
   });
@@ -76,8 +84,13 @@ describe("ProfitabilityView", () => {
   it("labels a partial ranking and says how many more orders are not listed", () => {
     render(<ProfitabilityView p={{ ...p, ranking: "partial: worst of the 3 most recent orders; 214 more in the period not read", orders_more: 4 }} />);
     const t = screen.getByTestId("order-ranking");
-    expect(t).toHaveTextContent("partial: worst of the 3 most recent orders; 214 more in the period not read");
+    expect(t).toHaveTextContent("Partial: worst of the 3 most recent orders; 214 more in the period not read");
     expect(screen.getByTestId("orders-more")).toHaveTextContent("and 4 more");
+  });
+
+  it("never lists a test order in the ranking", () => {
+    render(<ProfitabilityView p={{ ...p, orders: [...(p.orders ?? []), { ...p.orders![1], order: ref("t1", "UAT-SO100004") }] }} />);
+    expect(screen.getByTestId("order-ranking")).not.toHaveTextContent("UAT-SO100004");
   });
 
   it("shows no breakdown or action when the answer has none", () => {

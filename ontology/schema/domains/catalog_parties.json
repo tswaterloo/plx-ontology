@@ -2022,6 +2022,48 @@
           ]
         },
         {
+          "name": "bc_email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The BC customer card's e-mail address. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "email",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "bc_phone_number",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The BC customer card's phone number.",
+          "sources": [
+            {
+              "binding": "bc.customers",
+              "path": "phoneNumber",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
           "name": "external_id",
           "value_type": "text",
           "description": "fm-cust-{FM id}, local-cust-{cuid}, sage-cust-{IDCUST} or cm-012-stub:...",
@@ -2053,6 +2095,51 @@
             {
               "kind": "ref",
               "id": "upstream-code.customer.25869b"
+            }
+          ]
+        },
+        {
+          "name": "email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The customer's e-mail address(es) in FileMaker email; a field may hold several. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "email",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "email_2",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The customer's e-mail address(es) in FileMaker email_2; a field may hold several. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "email_2",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "email_3",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The customer's e-mail address(es) in FileMaker email_3; a field may hold several. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "portal.fm_customer",
+              "path": "email_3",
+              "parser": "trim"
             }
           ]
         }
@@ -2934,6 +3021,48 @@
           ]
         },
         {
+          "name": "bc_email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The BC vendor card's e-mail address. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "bc.vendors",
+              "path": "email",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
+          "name": "bc_phone_number",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The BC vendor card's phone number.",
+          "sources": [
+            {
+              "binding": "bc.vendors",
+              "path": "phoneNumber",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "live-trace.latest-json-bc-case-entities-live-2026-1.a185c0"
+            }
+          ]
+        },
+        {
           "name": "external_id",
           "value_type": "text",
           "description": "fm-supp-{n}, a bare FM id, or sage-vend-{VENDORID}.",
@@ -2974,6 +3103,36 @@
             {
               "kind": "ref",
               "id": "upstream-code.supplier.56b59a"
+            }
+          ]
+        },
+        {
+          "name": "rep_email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The supplier's sales rep e-mail address(es) in FileMaker emailrep; a field may hold several. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "portal.fm_supplier",
+              "path": "emailrep",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "csr_email",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "description": "The supplier's customer service e-mail address(es) in FileMaker emailcsr; a field may hold several. A participant of plx.documents.",
+          "sources": [
+            {
+              "binding": "portal.fm_supplier",
+              "path": "emailcsr",
+              "parser": "trim"
             }
           ]
         }
@@ -3737,7 +3896,7 @@
               "id": "workbench-code.live-source-grammar-py.560dcf"
             }
           ],
-          "note": "BC contacts; fields unverified live (no probe yet)."
+          "note": "BC contacts; field names live (probe 2026-11-02)."
         }
       ],
       "properties": [
@@ -3801,6 +3960,18 @@
           ]
         },
         {
+          "name": "business_relation",
+          "value_type": "text",
+          "description": "BC contactBusinessRelation: Customer, Vendor, Bank_x0020_Account (OData escapes the space), Employee, Other, Multiple or None. Which customer or vendor: Contact.bc_customer / Contact.bc_vendor (the party's contactsInformation).",
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "contactBusinessRelation",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
           "name": "email",
           "value_type": "text",
           "markings": [
@@ -3827,6 +3998,20 @@
               "parser": "trim"
             }
           ]
+        },
+        {
+          "name": "mobile_phone_number",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts",
+              "path": "mobilePhoneNumber",
+              "parser": "trim"
+            }
+          ]
         }
       ],
       "display": [
@@ -3843,6 +4028,120 @@
         {
           "kind": "ref",
           "id": "context-pack.03-portal-md-5.3be8d0"
+        }
+      ]
+    },
+    {
+      "id": "ContactRelation",
+      "description": "A BC contact business relation: the contact a customer or vendor is linked to (API v2.0 contactsInformation, read under its customer or vendor). The join Contact.bc_customer and Contact.bc_vendor read; BC links the company contact, and its people follow Contact.of_company.",
+      "availability": {
+        "state": "served"
+      },
+      "bindings": [
+        {
+          "id": "bc.contacts_information",
+          "source": "bc",
+          "relation": "contactsInformation",
+          "key": [
+            "relatedId",
+            "contactId"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.bc-read-py.party-contacts"
+            }
+          ],
+          "note": "Keyed by its party and contact: BC keys a relation by its contact within the party's navigation, and a contact can be related to a customer and a vendor."
+        }
+      ],
+      "properties": [
+        {
+          "name": "contact_number",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "contactNumber",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "contact_name",
+          "value_type": "text",
+          "markings": [
+            "pii"
+          ],
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "contactName",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "contact_type",
+          "value_type": "text",
+          "description": "Person or Company.",
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "contactType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "related_type",
+          "value_type": "text",
+          "description": "BC contactBusinessRelationLinkToTable: Customer or Vendor.",
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "relatedType",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "contact_id",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "contactId",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "related_id",
+          "value_type": "text",
+          "description": "The customer's or vendor's BC id.",
+          "sources": [
+            {
+              "binding": "bc.contacts_information",
+              "path": "relatedId",
+              "parser": "trim"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "contact_name"
+      ],
+      "markings": [
+        "pii"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench-code.bc-read-py.party-contacts"
         }
       ]
     }
@@ -4655,6 +4954,94 @@
       ]
     },
     {
+      "id": "Contact.bc_customer",
+      "from": "Contact",
+      "to": "Customer",
+      "name": "bc_customer",
+      "reverse_name": "bc_contacts",
+      "cardinality": "N:M",
+      "description": "The BC customer a contact is linked to, through the customer's contactsInformation (ContactRelation, same BC company). BC links the company contact; a person contact reaches it by Contact.of_company.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.contacts",
+          "to_binding": "bc.customers",
+          "via": {
+            "binding": "bc.contacts_information",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "contactId",
+                "compare": "text_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "relatedId",
+                "to": "id",
+                "compare": "text_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.bc-read-py.party-contacts"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Contact.bc_vendor",
+      "from": "Contact",
+      "to": "Supplier",
+      "name": "bc_vendor",
+      "reverse_name": "bc_contacts",
+      "cardinality": "N:M",
+      "description": "The BC vendor a contact is linked to, through the vendor's contactsInformation (ContactRelation, same BC company). BC links the company contact; a person contact reaches it by Contact.of_company.",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.contacts",
+          "to_binding": "bc.vendors",
+          "via": {
+            "binding": "bc.contacts_information",
+            "from_pairs": [
+              {
+                "from": "id",
+                "to": "contactId",
+                "compare": "text_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "relatedId",
+                "to": "id",
+                "compare": "text_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench-code.bc-read-py.party-contacts"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "Contact.same_record_as",
       "from": "Contact",
       "to": "Contact",
@@ -5091,6 +5478,11 @@
       "kind": "workbench_code",
       "path": "ontology/identity_scoring.py",
       "note": "Weighted identity candidates (Fellegi-Sunter: blocking, field comparison levels, m/u from verified and reviewed pairs) offered for a person's review; a link exists only once plx.review records the decision, projected by ontology/reviews.py link_step as reviewed."
+    },
+    "workbench-code.bc-read-py.party-contacts": {
+      "kind": "workbench_code",
+      "path": "integrations/bc_read.py",
+      "note": "BusinessCentralReader.party_contacts / BcCapture._capture_party_contacts: customers and vendors listed with $select=id,number&$expand=contactsInformation (GET only); one record per (party, contact). API v2.0 contactInformation: contactId, contactNumber, contactName, contactType, relatedId, relatedType ($metadata 09a82605); a company-level listing answers 400 (live 2026-11-02). A bounded live read 2026-11-02 returned one Company contact per party."
     }
   }
 }

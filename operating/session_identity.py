@@ -119,7 +119,12 @@ PROOF_ENTRA = "entra_access_token"
 # The declared eval principal (operating.eval_principal): a signed ticket for a sentinel
 # identity that is no person, labelled as such in every intent and result.
 PROOF_EVAL = "eval_principal"
-_EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL)
+# The app's read-ahead (operator_api warm-up): an employee resolved again in-process while
+# their own real session is unexpired and not revoked, to fill that employee's own caches.
+# It serves nothing: every served path and audit record refuses it (``intent_identity``,
+# ``describe``, the session journal), and it expires with the session it follows.
+PROOF_WARM = "warm_ahead"
+_EXPIRING = (PROOF_TICKET, PROOF_ENTRA, PROOF_EVAL, PROOF_WARM)
 
 _CLAIMS = frozenset({"v", "aud", "uid", "email", "entraTenantId", "entraObjectId",
                      "author", "iat", "exp", "jti"})
@@ -308,6 +313,15 @@ class TicketReplayGuard:
                     raise SessionIdentityRefused("session_ticket_replayed")
                 self._record(db, key, "used", claims["exp"])
 
+    def revoked_ref(self, session_ref: str, now: int | None = None) -> bool:
+        """Whether the ticket whose session reference (the SHA-256 of its jti, as
+        ``employee_session`` names it) was revoked; unknown is not revoked."""
+        current = int(time.time()) if now is None else int(now)
+        with self._connect() as db:
+            db.execute("DELETE FROM ticket_jti WHERE exp <= ?", (current,))
+            return db.execute("SELECT 1 FROM ticket_jti WHERE jti_sha256=? AND kind='revoked'",
+                              (session_ref,)).fetchone() is not None
+
     def revoke(self, claims: Mapping[str, Any]) -> None:
         with self._connect() as db:
             self._record(db, self._key(claims), "revoked", claims["exp"])
@@ -365,7 +379,7 @@ class SessionIdentity:
             raise ValueError("session_channel_invalid")
         if self.author_kind != CHANNEL_AUTHOR[self.channel]:
             raise ValueError("session_author_kind_must_match_channel")
-        if self.proof not in (*_EXPIRING, PROOF_CONFIGURED, PROOF_FIXTURE):
+        if self.proof not in (*_EXPIRING, PROOF_CONFIGURED, PROOF_FIXTURE):   # warm: expiring
             raise ValueError("session_proof_invalid")
         if self.clearance not in LEVELS:
             raise ValueError("session_clearance_invalid")
@@ -420,6 +434,10 @@ class SessionIdentity:
     def actor(self) -> Actor:
         return Actor(self.tenant, self.principals, self.clearance)
 
+    @property
+    def warm_ahead(self) -> bool:
+        return self.proof == PROOF_WARM
+
     def expired(self, now: int | None = None) -> bool:
         if self.expires_at is None:
             return False
@@ -435,6 +453,8 @@ class SessionIdentity:
         decision can authorize. ``act`` names this session (kind, channel, client host,
         session digest) and is never a principal.
         """
+        if self.warm_ahead:
+            raise SessionIdentityRefused("warm_session_serves_nothing")
         if self.expired():
             raise SessionIdentityRefused("session_expired")
         if actor != self.actor:
@@ -450,6 +470,8 @@ class SessionIdentity:
 
     def describe(self) -> dict[str, Any]:
         """For the session endpoint and audit records: no ticket, no secret."""
+        if self.warm_ahead:
+            raise SessionIdentityRefused("warm_session_serves_nothing")
         return {"channel": self.channel, "author_kind": self.author_kind,
                 "proof": self.proof, "fixture": self.fixture,
                 "eval_principal": self.eval_principal,
@@ -522,6 +544,33 @@ def employee_session(resolver: EmployeePermissionResolver, *, channel: str,
              if isinstance(i, str) and i.strip() and not i.startswith("group:")}
             | {principal.object_id}
             | (set() if claims is None else {claims["email"].strip().lower()})))
+
+
+def warm_session(resolver: Any, object_id: str, *, expires_at: int,
+                 now: int | None = None) -> SessionIdentity:
+    """The app's read-ahead identity of one employee (``PROOF_WARM``): resolved now as a
+    sign-in is (an inactive, unverified or excluded employee is refused), expiring with
+    the real session it follows, serving nothing (``SessionIdentity`` refuses it every
+    served and audited use)."""
+    if not isinstance(resolver, EmployeePermissionResolver):
+        raise SessionIdentityRefused("employee_entitlements_not_configured")
+    if (int(time.time()) if now is None else int(now)) >= int(expires_at):
+        raise SessionIdentityRefused("session_expired")
+    try:
+        principal = EmployeePrincipal(resolver.policy.entra_tenant_id, object_id)
+    except ValueError:
+        raise SessionIdentityRefused("employee_principal_invalid") from None
+    entitlement = resolver.resolve(principal)
+    if entitlement.actor is None:
+        raise SessionIdentityRefused(entitlement.denied_reason or "denied")
+    return SessionIdentity(
+        tenant=resolver.policy.tenant, channel=CHANNEL_CONSOLE, author_kind=AUTHOR_HUMAN,
+        proof=PROOF_WARM, employee=principal, principals=frozenset({principal.principal}),
+        expires_at=int(expires_at), client="plx-workbench-app-warm",
+        access=entitlement.full_read_code(),
+        identities=frozenset({i for i in entitlement.source_identities
+                              if isinstance(i, str) and i.strip()
+                              and not i.startswith("group:")} | {principal.object_id}))
 
 
 def fixture_session(tenant: str, principals: Iterable[str], *, channel: str,
@@ -652,7 +701,8 @@ def bind_state_dir(state_dir: str | Path, *, fixture: bool, dev: bool = False) -
 
 
 __all__ = ["DEFAULT_CLIENT", "INTENT_IDENTITY_SCHEMA", "STATE_LABEL_FILE", "AUTHOR_AGENT", "AUTHOR_HUMAN", "CHANNEL_AUTHOR", "CHANNEL_CONSOLE", "CHANNEL_MCP",
-           "PROOF_CONFIGURED", "PROOF_ENTRA", "PROOF_EVAL", "PROOF_FIXTURE", "PROOF_TICKET", "SESSION_TICKET_AUDIENCE",
+           "PROOF_CONFIGURED", "PROOF_ENTRA", "PROOF_EVAL", "PROOF_FIXTURE", "PROOF_TICKET",
+           "PROOF_WARM", "warm_session", "SESSION_TICKET_AUDIENCE",
            "SESSION_TICKET_SECRET_ENV", "SESSION_TICKET_TTL_SECONDS", "SessionIdentity",
            "SessionIdentityRefused", "REPLAY_GUARD_FILE", "TicketReplayGuard", "bind_state_dir", "check_runtime", "employee_session", "fixture_session",
            "intent_identity", "mint_session_ticket", "replay_guard_for", "session_secret",

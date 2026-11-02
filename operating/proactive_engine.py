@@ -56,6 +56,14 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   (``_lateness_audiences``): a reader whose own verdict would be withheld never sees it.
   The summary's ``top_finding`` says "N customer orders at risk from M late POs, worst
   first" (counts only). ``not_configured`` without a caller;
+* the proactive events (``operating.proactive_events``): ``eta_slipped``,
+  ``lot_attention`` (``lot_near_expiry``, ``lot_on_hold``), ``accepted_quote_no_order``,
+  ``invoice_quantity_mismatch`` over the store, and ``vendor_no_reply`` (F28),
+  ``vendor_terms_unapplied`` (F27) and ``negative_margin`` (F10) through the caller's
+  ``plx.investigate``, bounded. A gap about a purchase order, sales order, quote or
+  purchase invoice carries the record's cited total and currency as its ranking amount
+  (``_with_amounts``), shown only to a reader who may open both; ``operating.briefing``
+  ranks and routes them per reader;
 * ``card_rules``: ``missing_in_record`` and attested conflicts from the ``plx.object``
   cards of the documents that attest a record (bounded per-object reads, ``CARD_BOUND``).
 
@@ -105,6 +113,7 @@ from ontology.units import unit_token
 
 from . import po_status
 from . import proactive_gaps as pg
+from . import suspect_money
 
 SCHEMA = "plx-proactive-engine/v1"
 INBOX_SCHEMA = "plx-gap-inbox/v1"
@@ -116,19 +125,48 @@ KEEP_RUNS = 100
 # no tool call after this many seconds: the cycle lock is not held unboundedly. Sized for a
 # ~2.5M-object store (store-only detectors alone ~4 min there) next to a 1-4 h build.
 REFRESH_BUDGET_SECONDS = 1500
+# Of it, kept for the amounts and their plausibility check after the detectors (about 5 s
+# warm and 50 s cold on the live store), so they too end within the bound.
+AMOUNTS_RESERVE_SECONDS = 120
 TIME_BUDGET = "time_budget"
 SETTLED = ("verified", "reviewed")
 CONFIRMING = ("verified", "reviewed", "corroborated")
 QC_TYPES = ("RelPublicAppIncomingQcRecord", "QualityRecord")
 PRIORITY = ("high", "medium", "low")
-DETECTORS = ("late_or_unconfirmed_po", "po_receipt_quantity_mismatch", "receipt_without_qc",
-             "order_without_customer_po", "expired_quote", "conflicting_quantity",
-             "late_order", "orders_at_risk", "card_rules")
-SET_BASED = frozenset(DETECTORS) - {"card_rules", "orders_at_risk"}
+# The order they run in: the cheap store-only checks first (the proactive events among
+# them), the tool-call rules last, sharing what time is left (``SHARED_TIME``), so a slow
+# investigation never leaves a store-only check unrun.
+# An open purchase order with no requested-by date: never late, its own Home group.
+UNDATED_KIND = "undated_po"
+DETECTORS = ("late_or_unconfirmed_po",
+             # the store-only proactive events (``operating.proactive_events``)
+             "eta_slipped", "lot_attention", "accepted_quote_no_order",
+             "invoice_quantity_mismatch",
+             "po_receipt_quantity_mismatch", "receipt_without_qc", "expired_quote",
+             "conflicting_quantity", "late_order", "order_without_customer_po",
+             # the rules that make tool calls, the last four proactive events among them:
+             # the quick margins first (what they leave carries on), the customer orders a
+             # late PO hits next, the attested-document cards last
+             "negative_margin", "orders_at_risk", "vendor_no_reply", "vendor_terms_unapplied",
+             "card_rules")
+# Each tool-call rule gets a weighted share of the time left when it starts (what one
+# leaves unused carries on, ``Budget.share``): each investigation can take minutes on a
+# full store, so one never starves the others; the customer orders a late PO hits weigh
+# most (the briefing's first criterion).
+SHARED_TIME = {"negative_margin": 1, "orders_at_risk": 3, "vendor_no_reply": 1,
+               "vendor_terms_unapplied": 1, "card_rules": 1}
+# The vendor-mail checks are incremental: each keeps its readings per purchase order in the
+# inbox (``event_cache``) and investigates only the ones whose mail thread changed.
+INCREMENTAL = ("vendor_no_reply", "vendor_terms_unapplied")
+# Rules that make tool calls (the run principal's ``plx.process``/``plx.object``/
+# ``plx.investigate``): not configured without a caller, never part of the store scope.
+CALLING = frozenset({"card_rules", "orders_at_risk", "vendor_no_reply",
+                     "vendor_terms_unapplied", "negative_margin"})
+SET_BASED = frozenset(DETECTORS) - CALLING
 STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
 # principal's grant: their gaps show only to a reader granted every recorded audience.
-REQUIRES_GRANT = frozenset({"orders_at_risk"})
+REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor_no_reply"})
 # Gap kinds whose wording sums over the whole run (money at stake): an open one is reworded
 # only by a ``complete`` run of its detector.
 WHOLE_ONLY = frozenset({"po_impact_margin"})
@@ -190,7 +228,7 @@ class _Store:
             params["objects"] = json.dumps(list(objects))
         ids = [row[0] for row in self.conn.execute(listed + " ORDER BY o.object_id", params)]
         sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
-               "v.quantity_role, v.l1_handle, v.markings FROM objects o "
+               "v.quantity_role, v.l1_handle, v.markings, v.lineage FROM objects o "
                "JOIN object_values v ON v.object_id = o.object_id "
                "WHERE o.object_id IN (SELECT value FROM json_each(:chunk)) "
                "AND v.superseded_at IS NULL")
@@ -290,11 +328,15 @@ def _day(raw: Any) -> date | None:
 def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *,
          summary: str, missing: str, why: str, priority: str, about: tuple[str, str],
          groups: Sequence[Sequence[Cite]], extra: Sequence[Cite] = (),
-         days_late: int | None = None) -> dict[str, Any] | None:
+         days_late: int | None = None, event: Mapping[str, Any] | None = None
+         ) -> dict[str, Any] | None:
     """``days_late``: the days a purchase order open by the one status definition is past its
     requested-by date (None: not late; ``late_order``'s line-level lateness is another gap
     kind and never carries it); the inbox lists every late purchase order first, longest late
-    first, whatever its kind's priority."""
+    first, whatever its kind's priority. ``event``: the facts the briefing ranks by
+    (``days``: days between two cited dates; ``amount``: a cited figure, shown only with
+    every group or, with a ``handle``, only to a reader who may open that citation;
+    ``orders_affected``: a count of cited records), kept beside the follow-up."""
     groups = [list(group) for group in groups]
     if not groups or not all(groups):
         return None   # a claim with an uncited part is not raised
@@ -308,7 +350,8 @@ def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *
             "follow_up": {"object_id": object_id, "missing": pg._clip(missing, 480),
                           "why": why, "who_can_answer": who, "state": "unknown",
                           "priority": priority,
-                          **({"days_late": days_late} if days_late is not None else {})}}
+                          **({"days_late": days_late} if days_late is not None else {}),
+                          **({"event": dict(event)} if event else {})}}
 
 
 Part = tuple  # (object_id, canonical markings): one record a skip's cause reads
@@ -415,6 +458,10 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                                        for m in (*po.members, *po.date_twins)])
     counted: dict[str, set[str]] = defaultdict(set)
     order_class: dict[str, tuple[list, str]] = {}
+    # orders open by any read; those any read dates; each undated read's pending item
+    open_orders: set[str] = set()
+    dated_orders: set[str] = set()
+    undated_reads: dict[str, list[tuple[str, list, Any]]] = defaultdict(list)
     for po in reads:
         members = po.members
         order = root.get(members[0], members[0])
@@ -458,15 +505,31 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             continue
         if state.cls != po_status.OPEN:
             continue
+        open_orders.add(order)
         rep = min(m for m in members if any(src.props(m).get(p) for p in PO_STATUS_PROPS))
         for _ in po.need.unparseable:
             skip("date_unparseable")
         verdict, why = po.verdict
         if why == "no_requested_date":
             # the requested-by date is the reference or it is missing: never a line's or
-            # the supplier's date in its place
+            # the supplier's date in its place (nor a BC Draft twin's, decision
+            # 2026-11-01-late-list-draft-twins): never late, listed apart as
+            # "open, no due date recorded", cited by the status it is open by
             skip("no_need_date")
+            # decided once every read of the order is done: an order another read dates
+            # is never undated (one order, one verdict)
+            status_cites = [[cite] for cite in _cites(po.evidence, *marks, *po.marks)]
+            undated_reads[order].append((order, rank, _gap(
+                UNDATED_KIND, name, rep, "PurchaseOrder", "undated",
+                summary="An open purchase order has no due date recorded",
+                missing="What is the requested-by date of this open purchase order?",
+                why="The order is open, but no requested-by date is recorded on it or "
+                    "on any released system record of it, so it is never counted late.",
+                priority="low", about=("PurchaseOrder", "expected_date"),
+                groups=status_cites,
+                extra=_cites(rows("po_number"), *marks)) if status_cites else None))
             continue
+        dated_orders.add(order)
         if why == "need_date_disputed":
             skip("need_date_disputed")
             continue
@@ -543,12 +606,27 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             skip("promises_disagree", *linked)
         else:
             counts["evaluated"] += count("evaluated")
+    for order, pending in undated_reads.items():
+        if order in dated_orders:
+            continue   # another read of this order dates it: never undated
+        counts["undated"] += 1   # counted whether or not a status value is citable
+        for key, rank, gap in pending:
+            if gap is not None:
+                gap["follow_up"][_ORDER] = {"key": key, "rank": rank}
+                gaps.append(gap)
+    late_orders = {o for o, keys in counted.items() if "late" in keys}
     result = _result(gaps, not_evaluated=skipped)
     classes.update(cls for _rank, cls in order_class.values())
     result["counts"] = {"pos": len(order_class),
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
                         **{key: counts.get(key, 0) for key in (
-                            "evaluated", "late", "at_risk", "unconfirmed")}}
+                            "evaluated", "late", "at_risk", "unconfirmed", "undated")},
+                        # orders open by any of their reads (a Portal Pending order beside
+                        # its BC Draft twin is classed by the BC record, yet open here):
+                        # open_by_read = late + undated + open_other
+                        "open_by_read": len(open_orders),
+                        "open_other": len(open_orders - late_orders
+                                          - (set(undated_reads) - dated_orders))}
     return result
 
 
@@ -884,6 +962,23 @@ def _card_of(object_id: str, object_type: str, props: Mapping[str, Any]) -> dict
                        for prop, rows in props.items() for row in rows]}
 
 
+def _unreceived_draft(st: _Store, order: str, order_lines: Sequence[str],
+                      lines: Mapping[str, Mapping[str, Any]]) -> bool:
+    """``order`` is a BC Draft (its ``bc_status`` read as not issued) none of whose lines
+    records a received quantity above 0 (an unreadable one counts as none: a Draft's
+    date never decides late on a guess)."""
+    values = (st.values((order.split(":", 1)[0],), ("bc_status",), objects=[order])
+              .get(order) or {"props": {}})["props"]
+    if not po_status.bc_draft({"bc_status": [r["value"] for r in values.get("bc_status", [])]}):
+        return False
+    for line_id in order_lines:
+        for row in (lines.get(line_id) or {"props": {}})["props"].get(pg.LINE_RECEIVED, ()):
+            number = po_status._number(row["value"])
+            if number is not None and number > po_status.EPS:
+                return False
+    return True
+
+
 def _late_orders(st: _Store, as_of: date, only: str | None = None
                  ) -> tuple[list[dict[str, Any]], "_Skips"] | None:
     """Each order with late lines (``pg._late_line``) and the facts its supplier draft
@@ -922,6 +1017,19 @@ def _late_orders(st: _Store, as_of: date, only: str | None = None
             continue
         marks = _markings(*[m for o, m in orders_of[line_id] if o == order])
         late[order].append((found, entry, marks))
+    # A BC Draft never received against
+    # dates nothing, so its lines are never late (a Draft any line of which records a
+    # received quantity keeps its lines' dates)
+    lines_of_order: dict[str, list[str]] = defaultdict(list)
+    for line_id, reached in orders_of.items():
+        for order, _m in reached:
+            if order in late:
+                lines_of_order[order].append(line_id)
+    for order in sorted(o for o in late
+                        if _unreceived_draft(st, o, lines_of_order[o], lines)):
+        skipped.note("draft_dates_nothing", [order],
+                     [(line["line_id"], m) for line, _e, m in late[order]])
+        del late[order]
     if not late:
         return [], skipped
     picked = sorted(late)
@@ -1352,7 +1460,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                          f"({order.material_how}) against the required date "
                          f"{order.required.isoformat()}."),
             priority="high" if order.days >= 7 else "medium",
-            about=("SalesOrder", "required_date"), groups=groups)
+            about=("SalesOrder", "required_date"), groups=groups,
+            event={"days": order.days, "orders_affected": 1})
         if gap is None:
             skipped["order_at_risk_uncited"] += 1
         else:
@@ -1389,7 +1498,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
         plain = _gap("po_impact", "orders_at_risk", po, "PurchaseOrder", "impact",
                      summary=f"affects {n} {noun}, worst {worst} days at risk",
                      missing=missing, why=why, priority=priority,
-                     about=("PurchaseOrder", "lateness"), groups=groups)
+                     about=("PurchaseOrder", "lateness"), groups=groups,
+                     event={"days": worst, "orders_affected": n})
         if plain is None:
             skipped["po_impact_uncited"] += 1
             continue
@@ -1410,7 +1520,11 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                              "risk",
                      missing=missing, why=pg._clip(why + " " + ic.MARGIN_BASIS + "."),
                      priority=priority, about=("PurchaseOrder", "lateness"),
-                     groups=groups + value_groups)
+                     groups=groups + value_groups,
+                     event={"days": worst, "orders_affected": n,
+                            "amount": {"value": str(margin["amount"]),
+                                       "currency": margin["currency"],
+                                       "basis": "margin_at_stake"}})
         if money is None:
             skipped["po_impact_margin_uncited"] += 1
         else:
@@ -1481,6 +1595,121 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int) -> d
 
 # --------------------------------------------------------------------------- the inbox
 
+# The cited amount an event about a record of these types is ranked by (the record's own
+# total and its currency, both one value across its sources): (amount, currency) property.
+AMOUNT_OF = {"PurchaseOrder": ("total_cost", "currency"),
+             "SalesOrder": ("total_amount", "currency"),
+             "Quote": ("total_amount", "currency"),
+             "PurchaseInvoice": ("total_amount", "currency")}
+
+
+def _event_steps(st: _Store, as_of: date, call: Callable | None,
+                 cache: Mapping[str, Mapping[str, Any]] | None = None,
+                 vendor_bound: int | None = None
+                 ) -> dict[str, Callable[[], dict[str, Any]]]:
+    """The proactive event detectors (``operating.proactive_events``) as engine steps."""
+    from . import proactive_events as ev
+
+    common = {"gap": _gap, "cites": _cites, "result": _result}
+    mail = {} if vendor_bound is None else {"bound": vendor_bound}
+    return {
+        "eta_slipped": lambda: ev.eta_slipped(st, as_of, settled=SETTLED,
+                                              confirming=CONFIRMING, **common),
+        "lot_attention": lambda: ev.lot_attention(st, as_of, **common),
+        "accepted_quote_no_order": lambda: ev.accepted_quote_no_order(st, as_of, **common),
+        "invoice_quantity_mismatch": lambda: ev.invoice_quantity_mismatch(
+            st, as_of, settled=SETTLED, **common),
+        "vendor_no_reply": lambda: ev.vendor_mail(
+            st, as_of, call, family="F28", cache=(cache or {}).get("vendor_no_reply"),
+            **mail, **common),
+        "vendor_terms_unapplied": lambda: ev.vendor_mail(
+            st, as_of, call, family="F27", cache=(cache or {}).get("vendor_terms_unapplied"),
+            **mail, **common),
+        "negative_margin": lambda: ev.negative_margin(st, as_of, call, **common)}
+
+
+def currency_word(raw: Any) -> str | None:
+    """A currency cell as its ISO 4217 code by the ontology's one table
+    (``ontology.units.currency_code``): ``CAD``, the Portal's ``CAD$``/``USD$``, ``C$``,
+    ``US$``; None for anything no rule reads or a code ISO 4217 does not list (``CDN``,
+    ``$``): such an amount is never stated nor ranked."""
+    from ontology.units import ISO_4217, currency_code
+
+    code, _ = currency_code(str(raw)) if raw not in (None, "") else (None, None)
+    return code if code in ISO_4217 else None
+
+
+def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
+    """Each gap about a record ``AMOUNT_OF`` names that states no amount gets the record's
+    own cited total with its cited currency: both citations join the gap as extra (they
+    never decide who sees the gap) and the amount names them, so a reader shown the gap
+    sees the figure only when it may open both (``_shown``). A total missing, disputed
+    across sources, not a decimal, or without one 3-letter currency gives none. A total
+    implausible against its lines or history (``operating.suspect_money``), or one that
+    could not be checked, carries ``suspect`` (why): the briefing never ranks by it."""
+    from . import proactive_events as ev
+
+    wanted: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for result in results.values():
+        for gap in result["gaps"]:
+            event = gap["follow_up"].get("event") or {}
+            if gap["object_type"] in AMOUNT_OF and "amount" not in event:
+                wanted[gap["object_type"]].append(gap)
+    for object_type, gaps in wanted.items():
+        amount, currency = AMOUNT_OF[object_type]
+        try:
+            checked = suspect_money.suspects(st, object_type,
+                                             sorted({g["object_id"] for g in gaps}))
+        except Exception:  # noqa: BLE001 - an unchecked total is never stated as fact
+            checked = None
+        try:
+            found = st.values([object_type], (amount, currency),
+                              objects=sorted({g["object_id"] for g in gaps}))
+        except sqlite3.OperationalError:
+            continue   # interrupted at the deadline: no amount stated, none ranked
+        for gap in gaps:
+            props = (found.get(gap["object_id"]) or {}).get("props") or {}
+            total, code = ev._one(props.get(amount)), ev._one(props.get(currency))
+            value = ev._decimal(total["value"]) if total else None
+            word = currency_word(code["value"]) if code else None
+            if value is None or value <= 0 or word is None:
+                # no figure, none entered yet (a total of 0: an order not priced), or a
+                # currency no rule reads: nothing stated or ranked
+                continue
+            extra = _cites([total, code])
+            stated: dict[str, Any] = {
+                "value": str(value), "currency": word, "basis": f"{amount}",
+                "handle": total["l1_handle"], "currency_handle": code["l1_handle"],
+                # the figure's own markings (a value may be marked apart from its record)
+                "markings": _markings(total.get("markings"), code.get("markings"))}
+            found_of = None if checked is None else checked.get(gap["object_id"]) or {}
+            if found_of is None:
+                stated["suspect"] = "its plausibility could not be checked"
+            elif found_of.get("suspect"):
+                # implausible against its history: shown as suspect, never ranked; the
+                # reason's ratio band only for a reader who may see every peer it rests on.
+                # Checked first: an outlier is never shown as a convention
+                finding = found_of["suspect"]
+                stated.update(suspect=finding["reason"], suspect_plain=finding["plain"],
+                              suspect_scope=finding["scope"])
+            if found_of and found_of.get("lines"):
+                # checked against its own lines and not simply theirs (the Portal's unit-
+                # price convention, a disagreement, or no priced line): never ranked; what
+                # the lines say is stated only to a reader who may open every one of them
+                lines = found_of["lines"]
+                rows = lines.get("rows")
+                line_cites = _cites(rows) if rows else []
+                extra = [*extra, *line_cites]
+                stated["lines"] = {
+                    "verdict": lines["verdict"],
+                    **({"lines_sum": lines["lines_sum"]} if "lines_sum" in lines else {}),
+                    "handles": None if rows is None else [c[0] for c in line_cites],
+                    "markings": lines["markings"]}
+            gap["extra"] = list(dict.fromkeys([*gap["extra"], *extra]))
+            gap["follow_up"]["event"] = {**(gap["follow_up"].get("event") or {}),
+                                         "amount": stated}
+
+
 _INBOX_DDL = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, run_at TEXT NOT NULL,
@@ -1508,7 +1737,29 @@ CREATE TABLE IF NOT EXISTS gap_requires (gap_id TEXT NOT NULL, audience_key TEXT
   PRIMARY KEY (gap_id, audience_key));
 CREATE TABLE IF NOT EXISTS acks (gap_id TEXT NOT NULL, reader TEXT NOT NULL, at TEXT NOT NULL,
   PRIMARY KEY (gap_id, reader));
+CREATE TABLE IF NOT EXISTS visits (reader TEXT PRIMARY KEY, at TEXT NOT NULL, previous TEXT);
+CREATE TABLE IF NOT EXISTS event_cache (detector TEXT NOT NULL, root TEXT NOT NULL,
+  reading TEXT NOT NULL, PRIMARY KEY (detector, root));
+CREATE TABLE IF NOT EXISTS detector_history (detector TEXT NOT NULL, run_at TEXT NOT NULL,
+  status TEXT NOT NULL, found INTEGER NOT NULL, PRIMARY KEY (detector, run_at));
+CREATE TABLE IF NOT EXISTS kind_history (kind TEXT NOT NULL, run_at TEXT NOT NULL,
+  found INTEGER NOT NULL, PRIMARY KEY (kind, run_at));
 """
+
+
+def _read_cache(inbox: Path) -> dict[str, dict[str, Any]]:
+    """The incremental detectors' last readings (``event_cache``): detector -> root ->
+    reading. None stored (or no inbox yet): every root is read."""
+    if not inbox.is_file():
+        return {}
+    out: dict[str, dict[str, Any]] = defaultdict(dict)
+    with closing(_open_inbox(inbox)) as conn:
+        for row in conn.execute("SELECT detector, root, reading FROM event_cache"):
+            try:
+                out[row["detector"]][row["root"]] = json.loads(row["reading"])
+            except ValueError:
+                continue   # an unreadable reading is read again
+    return dict(out)
 
 
 def inbox_path(store_path: Any) -> Path:
@@ -1547,32 +1798,72 @@ class Budget:
     caller so that once it is spent every call raises ``TimeBudgetSpent`` and is noted
     (``refused``), so a detector that swallows a failing call is still not complete."""
 
-    def __init__(self, seconds: float, monotonic: Callable[[], float] = time.monotonic
-                 ) -> None:
+    def __init__(self, seconds: float, monotonic: Callable[[], float] = time.monotonic,
+                 *, reserve: float = 0.0) -> None:
         self.monotonic = monotonic
-        self.deadline = monotonic() + seconds
+        # the detectors end ``reserve`` seconds early (at most a quarter of the budget): the
+        # amounts and their plausibility check run in that reserve, inside the bound
+        self.end = monotonic() + seconds
+        self.deadline = self.end - min(max(reserve, 0.0), seconds / 4)
         self.refused = 0
+        self.until: float | None = None   # the current detector's share, when it has one
 
     def spent(self) -> bool:
         return self.monotonic() >= self.deadline
+
+    def share(self, weight: float, of: float) -> None:
+        """Give the next detector ``weight``/``of`` of what is left (time it leaves unused
+        carries to the ones after it), so no one slow detector starves the rest."""
+        now = self.monotonic()
+        self.until = now + max(0.0, self.deadline - now) * weight / max(weight, of)
+
+    def unshare(self) -> None:
+        self.until = None
+
+    def release(self) -> None:
+        """The detectors are done: what is left up to the end is the reserve's."""
+        self.until, self.deadline = None, self.end
 
     def guard(self, call: Callable | None) -> Callable | None:
         if call is None:
             return None
 
         def guarded(tool: str, arguments: dict) -> Any:
-            if self.spent():
+            left = self.left()
+            if left <= 0:
                 self.refused += 1
                 raise TimeBudgetSpent(tool)
-            return call(tool, arguments)
+            if tool == "plx.investigate":
+                # the investigation stops itself at the deadline (between its steps), never
+                # only the next call: the budget bounds the call in flight too
+                arguments = {**arguments, "time_budget_ms": max(1, int(left * 1000))}
+            found = call(tool, arguments)
+            reasons = ((found.get("answerability") or {}).get("reasons") or ()
+                       if isinstance(found, Mapping) else ())
+            if tool == "plx.investigate" and "time_budget_exhausted" in reasons:
+                self.refused += 1   # a part-read investigation is no reading at all
+                raise TimeBudgetSpent(tool)
+            return found
         return guarded
+
+    def left(self) -> float:
+        """Seconds left for the current detector: to its share's end, else the deadline."""
+        end = self.deadline if self.until is None else min(self.deadline, self.until)
+        return end - self.monotonic()
+
+    def interrupt(self) -> int:
+        """SQLite's progress handler: nonzero aborts the statement running (a set-based
+        rule's query stops at the deadline, not after it)."""
+        return int(self.left() <= 0)
 
 
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
         qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> dict[str, Any]:
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        only: Sequence[str] | None = None, vendor_bound: int | None = None
+        ) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -1580,14 +1871,21 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     business day (ET) of ``clock()`` (``po_status.business_today``), never its UTC day.
     ``coverage`` may be a callable, scanned at its detector's turn (its failure fails that
     detector alone). With a ``budget``, a detector not started before it is spent, or one
-    whose tool call it refused, is ``truncated`` (``time_budget``)."""
+    whose tool call it refused, is ``truncated`` (``time_budget``). ``only``: run these
+    detectors alone (the others' gaps and records are left as they are: the separate
+    vendor-mail pass, ``operating.vendor_watch``). ``vendor_bound``: how many purchase
+    orders the incremental vendor checks may investigate this run (0: reuse their
+    readings only, the build's run when the vendor pass is scheduled apart)."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
         raise TypeError("as_of_must_be_a_date")
     run_at = moment.isoformat()
     call = call if budget is None else budget.guard(call)
+    cache = _read_cache(Path(inbox))
     st = _Store(Path(store_path))
+    if budget is not None:
+        st.conn.set_progress_handler(budget.interrupt, 10000)
     try:
         steps: dict[str, Callable[[], dict[str, Any]]] = {
             "late_or_unconfirmed_po": lambda: _late_or_unconfirmed_po(st, as_of),
@@ -1600,25 +1898,48 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
             "orders_at_risk": lambda: _orders_at_risk(st, as_of, call, card_bound),
-            "card_rules": lambda: _card_rules(st, as_of, call, card_bound)}
+            "card_rules": lambda: _card_rules(st, as_of, call, card_bound),
+            **_event_steps(st, as_of, call, cache, vendor_bound)}
         results: dict[str, dict[str, Any]] = {}
-        for name in DETECTORS:
+        unknown = set(only or ()) - set(DETECTORS)
+        if unknown:
+            raise ValueError("detector_unknown")
+        for name in DETECTORS if only is None else [d for d in DETECTORS if d in only]:
             if budget is not None and budget.spent():
                 results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
                 continue
             refused = budget.refused if budget is not None else 0
+            if budget is not None and name in SHARED_TIME:
+                later = [d for d in DETECTORS[DETECTORS.index(name):] if d in SHARED_TIME
+                         and (only is None or d in only)]
+                budget.share(SHARED_TIME[name], sum(SHARED_TIME[d] for d in later))
             try:
                 results[name] = steps[name]()
             except TimeBudgetSpent:
                 results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
             except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
-                results[name] = _result([], status="failed", reasons=[type(error).__name__])
+                if budget is not None and budget.left() <= 0 \
+                        and isinstance(error, sqlite3.OperationalError):
+                    # its query was interrupted at the deadline: cut short, not failed
+                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                else:
+                    results[name] = _result([], status="failed",
+                                            reasons=[type(error).__name__])
+            finally:
+                if budget is not None:
+                    budget.unshare()
             if budget is not None and budget.refused > refused \
                     and results[name]["status"] != "failed":
                 # a call it made was refused: what it found stands, never all it would find
                 results[name]["status"] = "truncated"
                 if TIME_BUDGET not in results[name]["reasons"]:
                     results[name]["reasons"].append(TIME_BUDGET)
+        if budget is not None:
+            budget.release()   # the amounts run in the reserve, still inside the bound
+        _with_amounts(st, results)
+        # the bound is spent on the detectors and the amounts only: the run's record (scope,
+        # digest) is always read whole, so a run cut short still folds what it found
+        st.conn.set_progress_handler(None, 0)
         scope = st.scope()
         digest = st.meta("content_digest")
     finally:
@@ -1631,7 +1952,8 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     with closing(_open_inbox(Path(inbox))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _fold(conn, results, gaps, scope, run_at, as_of, digest, summary)
+            _fold(conn, results, gaps, scope, run_at, as_of, digest, summary,
+                  record_run=only is None)
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -1644,30 +1966,39 @@ def _summary(results: Mapping[str, Mapping[str, Any]], gaps: Mapping[str, Mappin
     cited = [g for g in gaps.values() if all(g["groups"])]
     return {"scanned": sum(n for _, _, n in scope),
             "scope_truncated": any(results[d]["status"] in ("truncated", "failed")
-                                   for d in SET_BASED),
+                                   for d in SET_BASED if d in results),
             "truncated": any(r["status"] in ("truncated", "failed") for r in results.values()),
             "gaps_found": len(gaps), "gaps_cited": len(cited),
             "gaps_uncited": len(gaps) - len(cited),
             "with_follow_up": sum(1 for g in gaps.values() if g["follow_up"]["who_can_answer"]),
             "gaps_by_kind": dict(sorted(Counter(g["kind"] for g in gaps.values()).items())),
-            "detectors": {name: results[name]["status"] for name in DETECTORS},
+            "detectors": {name: results[name]["status"] for name in DETECTORS
+                          if name in results},
             "detector_reasons": {name: results[name]["reasons"] for name in DETECTORS
-                                 if results[name]["reasons"]},
+                                 if name in results and results[name]["reasons"]},
             "not_evaluated": {name: results[name]["not_evaluated"] for name in DETECTORS
-                              if results[name]["not_evaluated"]},
-            "po_lateness": results["late_or_unconfirmed_po"].get("counts"),
-            "top_finding": results["orders_at_risk"].get("finding")}
+                              if name in results and results[name]["not_evaluated"]},
+            "reused": {name: results[name]["reused"] for name in INCREMENTAL
+                       if "reused" in results.get(name, {})},
+            "po_lateness": results.get("late_or_unconfirmed_po", {}).get("counts"),
+            "top_finding": results.get("orders_at_risk", {}).get("finding")}
 
 
 def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
           gaps: Mapping[str, Mapping[str, Any]], scope: Sequence[tuple[str, str, int]],
-          run_at: str, as_of: date, digest: str | None, summary: Mapping[str, Any]) -> None:
-    conn.execute("INSERT INTO runs (run_at, as_of, store_digest, summary) VALUES (?, ?, ?, ?)",
-                 (run_at, as_of.isoformat(), digest, json.dumps(summary, sort_keys=True)))
-    conn.execute("DELETE FROM runs WHERE run_id NOT IN (SELECT run_id FROM runs "
-                 "ORDER BY run_id DESC LIMIT ?)", (KEEP_RUNS,))
-    conn.execute("DELETE FROM scope")
-    conn.executemany("INSERT INTO scope VALUES (?, ?, ?)", scope)
+          run_at: str, as_of: date, digest: str | None, summary: Mapping[str, Any], *,
+          record_run: bool = True) -> None:
+    if record_run:
+        # a run of some detectors only (the vendor-mail pass) is no build's run: it never
+        # moves the run the inbox is read as of ("new this generation", stale, as of)
+        conn.execute("INSERT INTO runs (run_at, as_of, store_digest, summary) VALUES "
+                     "(?, ?, ?, ?)", (run_at, as_of.isoformat(), digest,
+                                      json.dumps(summary, sort_keys=True)))
+        conn.execute("DELETE FROM runs WHERE run_id NOT IN (SELECT run_id FROM runs "
+                     "ORDER BY run_id DESC LIMIT ?)", (KEEP_RUNS,))
+    if set(SET_BASED) <= set(results):   # a run of some detectors only keeps the scope
+        conn.execute("DELETE FROM scope")
+        conn.executemany("INSERT INTO scope VALUES (?, ?, ?)", scope)
     for name, result in results.items():
         if result["status"] == "not_configured" and conn.execute(
                 "SELECT 1 FROM detector_runs WHERE detector = ?", (name,)).fetchone():
@@ -1687,6 +2018,26 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
             [(name, n, object_id, markings, int(object_id in skip["subjects"]))
              for n, skip in enumerate(result.get("unjudged") or ())
              for object_id, markings in skip["cause"]])
+        if result["status"] != "not_configured":
+            conn.execute("INSERT OR REPLACE INTO detector_history VALUES (?, ?, ?, ?)",
+                         (name, run_at, result["status"], len(result["gaps"])))
+            # what was found per gap kind, and per kind whether late by the status rule
+            # (``kind:late``/``kind:not_late``): "seen live" is said per event type
+            found = Counter()
+            for gap in result["gaps"]:
+                late = gap["follow_up"].get("days_late") is not None
+                found.update([gap["kind"], f"{gap['kind']}:{'late' if late else 'not_late'}"])
+            conn.executemany("INSERT OR REPLACE INTO kind_history VALUES (?, ?, ?)",
+                             [(kind, run_at, n) for kind, n in sorted(found.items())])
+        if isinstance(result.get("cache"), Mapping):
+            # merged, never replaced wholesale (a build's run and the vendor pass may fold
+            # one after the other): a root no longer named by recent mail drops, every
+            # reading this run holds is stored, the others stay as they were
+            conn.execute("DELETE FROM event_cache WHERE detector = ? AND root NOT IN (SELECT "
+                         "value FROM json_each(?))", (name, json.dumps(result["roots"])))
+            conn.executemany("INSERT OR REPLACE INTO event_cache VALUES (?, ?, ?)", [
+                (name, root, json.dumps(reading, sort_keys=True))
+                for root, reading in result["cache"].items()])
         conn.execute(
             "INSERT INTO rule_coverage VALUES (?, ?, ?) ON CONFLICT (detector) DO UPDATE SET "
             "unattributed = excluded.unattributed, run_at = excluded.run_at",
@@ -1869,7 +2220,7 @@ def _rule_coverage(conn: sqlite3.Connection, params: Mapping[str, str],
 def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str], bool],
                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
                states: Sequence[str] = ("open", "acknowledged"),
-               limit: int = MAX_SHOWN) -> dict[str, Any]:
+               limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None) -> dict[str, Any]:
     """The gaps one reader may see, trimmed: every late order first (longest late first), then
     by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
@@ -1877,7 +2228,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     are the reader's grant; anything they refuse is never shown nor counted. ``complete``
     is true only when every rule ran to the end; ``not_run`` names each rule that did not
     (not configured on this schedule, blocked, or never run), so no reader takes an
-    inbox some rules never looked at for a clean result."""
+    inbox some rules never looked at for a clean result. ``kinds``: only gaps of these
+    kinds are read (the briefing's events), so other kinds never use up ``limit``."""
     path = Path(inbox)
     if not path.is_file():
         return {"status": "not_scheduled", "gaps": [], "scanned": 0, "truncated": False,
@@ -1889,6 +2241,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     with closing(_attach(path, Path(store))) as conn:
         aud, marks = _reader_view(conn, may_read, held)
         params = {"aud": aud, "marks": marks}
+        allowed = set(json.loads(marks))
+        readable = set(json.loads(aud))   # the audiences this reader may read
         last = conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
         digest = conn.execute(
             "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
@@ -1896,8 +2250,26 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "SELECT COALESCE(SUM(objects), 0) FROM scope WHERE audience_key IN (SELECT value "
             "FROM json_each(:aud)) AND markings IN (SELECT value FROM json_each(:marks))",
             params).fetchone()[0]
-        detectors = {row["detector"]: row["status"] for row in conn.execute(
-            "SELECT detector, status FROM detector_runs ORDER BY detector")}
+        runs = conn.execute("SELECT detector, status, reasons FROM detector_runs "
+                            "ORDER BY detector").fetchall()
+        detectors = {row["detector"]: row["status"] for row in runs}
+        reasons = {row["detector"]: json.loads(row["reasons"]) for row in runs
+                   if row["reasons"] not in (None, "[]")}
+        # each rule's recorded runs over this data: whether one ever found something, and
+        # when first (the counts are the run's, never per reader)
+        # an inbox an earlier engine wrote may lack the history tables (its next run adds
+        # them): that history is unknown, the rest of the inbox still reads
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type = 'table'")}
+        has_history = "detector_history" in tables
+        first_found = {row[0]: row[1] for row in (conn.execute(
+            "SELECT kind, min(run_at) FROM kind_history WHERE found > 0 GROUP BY kind")
+            if "kind_history" in tables else ())}
+        history = {row["detector"]: {"runs": row["runs"], "first_found": row["first"]}
+                   for row in (conn.execute(
+                       "SELECT detector, count(*) AS runs, min(CASE WHEN found > 0 THEN "
+                       "run_at END) AS first FROM detector_history GROUP BY detector")
+                       if has_history else ())}
         stored = {"open"} if set(states) & {"open", "acknowledged"} else set()
         stored |= {"resolved"} & set(states)
         global_states = json.dumps(sorted(stored))
@@ -1909,12 +2281,14 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             rows = conn.execute(
                 "SELECT g.*, (SELECT at FROM acks a WHERE a.gap_id = g.gap_id AND a.reader = "
                 ":reader) AS acked FROM gaps g WHERE g.state IN (SELECT value FROM "
-                "json_each(:states)) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
+                "json_each(:states)) AND (:kinds IS NULL OR g.kind IN (SELECT value FROM "
+                "json_each(:kinds))) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
                 + " ORDER BY json_extract(g.follow_up, '$.days_late') IS NULL, "
                 "json_extract(g.follow_up, '$.days_late') DESC, "
                 "g.priority, g.last_seen DESC, g.gap_id LIMIT :page OFFSET :offset",
                 {**params, "reader": reader, "states": global_states, "page": page,
-                 "offset": offset}).fetchall()
+                 "offset": offset,
+                 "kinds": None if kinds is None else json.dumps(list(kinds))}).fetchall()
             if not rows:
                 break
             offset += len(rows)
@@ -1931,13 +2305,13 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                     # never a second item (each was decided visible to this reader)
                     if order["rank"] < held[0]:
                         index = next(i for i, g in enumerate(shown) if g is held[1])
-                        shown[index] = entry = _shown(row, citations, state, follow_up)
+                        shown[index] = entry = _shown(row, citations, state, follow_up, allowed, readable)
                         orders[order["key"]] = (order["rank"], entry)
                     continue
                 if len(shown) >= limit:
                     more = True
                     break
-                entry = _shown(row, citations, state, follow_up)
+                entry = _shown(row, citations, state, follow_up, allowed, readable)
                 shown.append(entry)
                 if isinstance(order, dict):
                     orders[order["key"]] = (order["rank"], entry)
@@ -1954,15 +2328,42 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "scanned": scanned, "truncated": truncated or bool(failed),
             "max_objects": None, "unscanned": None,
             "unread": {f"{name}_failed": 1 for name in failed},
-            "detectors": detectors, "not_run": not_run, "rules": rules,
+            "detectors": detectors, "detector_reasons": reasons, "history": history,
+            "kind_history": first_found,
+            "not_run": not_run, "rules": rules,
             "complete": not (truncated or failed or not_run),
             "gaps": shown, "more": more, "limit": limit}
 
 
 def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
-           follow_up: dict[str, Any]) -> dict[str, Any]:
+           follow_up: dict[str, Any], allowed: Iterable[str] = (),
+           audiences: Iterable[str] = ()) -> dict[str, Any]:
     """One inbox row as its reader sees it (``follow_up`` without the order field)."""
     days_late = follow_up.pop("days_late", None)
+    event = follow_up.pop("event", None)
+    if isinstance(event, dict) and isinstance(event.get("amount"), dict):
+        amount = event["amount"]
+        handle = amount.get("handle")
+        needed = {h for h in (handle, amount.get("currency_handle")) if h}
+        if handle is not None and (not needed <= set(citations) or amount.get(
+                "markings", UNREADABLE) not in set(allowed)):
+            event.pop("amount")   # a figure this reader may not open is never shown
+        else:
+            scope = amount.pop("suspect_scope", None)
+            plain = amount.pop("suspect_plain", None)
+            if scope is not None and (scope.get("audience") not in set(audiences)
+                                      or scope.get("markings") not in set(allowed)):
+                amount["suspect"] = plain   # its peers' scope is not this reader's: no band
+            lines = amount.get("lines")
+            if isinstance(lines, dict):
+                hidden = lines.get("verdict") != "unpriced" and (
+                    lines.get("handles") is None
+                    or not set(lines["handles"]) <= set(citations)
+                    or lines.get("markings", UNREADABLE) not in set(allowed))
+                # a line this reader may not open: nothing its lines say is stated, only
+                # that the total was not checked against them
+                amount["lines"] = {"verdict": "not_open"} if hidden else {
+                    k: v for k, v in lines.items() if k in ("verdict", "lines_sum")}
     draft = follow_up.get("draft")
     if isinstance(draft, dict) and not set(draft.get("citations") or ()) <= set(citations):
         follow_up.pop("draft")   # a fact it states is not this reader's to open
@@ -1972,6 +2373,7 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
             "detected_by": "rule", "state": state,
             "first_seen": row["first_seen"], "last_seen": row["last_seen"],
             **({"days_late": days_late} if days_late is not None else {}),
+            **({"event": event} if isinstance(event, dict) and event else {}),
             "follow_up": follow_up}
 
 
@@ -1998,11 +2400,76 @@ def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,
     return {"id": gap_id, "state": "acknowledged"}
 
 
+def hidden_counts(inbox: Any, store: Any, *, kinds: Sequence[str],
+                  may_read: Callable[[str], bool], held: Iterable[str],
+                  decide: Callable[[Sequence[str]], Mapping[str, Any]]) -> dict[str, int]:
+    """Per kind, the open gaps this reader may NOT see (its subject, a citation group or a
+    required grant withheld): a count, never an id, a subject or a summary. No inbox: {}."""
+    path = Path(inbox)
+    if not path.is_file():
+        return {}
+    with closing(_attach(path, Path(store))) as conn:
+        aud, marks = _reader_view(conn, may_read, held)
+        params = {"aud": aud, "marks": marks, "kinds": json.dumps(list(kinds))}
+        total = Counter({row[0]: row[1] for row in conn.execute(
+            "SELECT kind, count(*) FROM gaps WHERE state = 'open' AND kind IN (SELECT value "
+            "FROM json_each(:kinds)) GROUP BY kind", params)})
+        rows = conn.execute(
+            "SELECT g.* FROM gaps g WHERE g.state = 'open' AND g.kind IN (SELECT value FROM "
+            "json_each(:kinds)) AND " + _OBJECT_VISIBLE.format(o="g.object_id"),
+            params).fetchall()
+        seen = Counter(row["kind"] for row, _ in _visible(conn, rows, params, decide))
+    return {kind: total[kind] - seen[kind] for kind in sorted(total)
+            if total[kind] - seen[kind] > 0}
+
+
+_VISITS_DDL = ("CREATE TABLE IF NOT EXISTS visits (reader TEXT PRIMARY KEY, at TEXT NOT NULL, "
+               "previous TEXT)")
+
+
+def last_visit(inbox: Any, reader: str) -> str | None:
+    """When this reader last marked its briefing seen (``record_visit``); None: never."""
+    path = Path(inbox)
+    if not path.is_file():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    try:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = "
+                        "'visits'").fetchone() is None:
+            return None
+        row = conn.execute("SELECT at FROM visits WHERE reader = ?", (reader,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def record_visit(inbox: Any, reader: str, *,
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> str:
+    """Mark this reader's briefing seen now (the Workbench's own inbox; nothing else is
+    written). An inbox the engine never wrote is refused."""
+    path = Path(inbox)
+    if not path.is_file():
+        raise FileNotFoundError("gap_inbox_missing")
+    at = clock().isoformat()
+    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        if row is None or row[0] != INBOX_SCHEMA:
+            raise ValueError("gap_inbox_schema_mismatch")
+        conn.execute(_VISITS_DDL)
+        conn.execute("INSERT INTO visits (reader, at, previous) VALUES (?, ?, NULL) ON CONFLICT "
+                     "(reader) DO UPDATE SET previous = visits.at, at = excluded.at",
+                     (reader, at))
+    finally:
+        conn.close()
+    return at
+
+
 def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as_of: date,
             *, captures: Path | None, scan_coverage: bool = True,
             budget: Budget | None = None,
-            clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-            ) -> dict[str, Any]:
+            clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+            vendor_bound: int | None = None) -> dict[str, Any]:
     """The full scheduled run over ``projection`` into its inbox, as ``investigator``: the
     customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
     statuses ``absent_in_this_source``) and a case session over the projection and the
@@ -2020,7 +2487,7 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
     try:
         return run(projection, inbox_path(projection), as_of,
                    coverage=coverage if scan_coverage else None, call=session,
-                   budget=budget, clock=clock)
+                   budget=budget, clock=clock, vendor_bound=vendor_bound)
     finally:
         session.close()
 
@@ -2040,7 +2507,8 @@ def after_build(store_path: Any, *, as_of: date | None = None,
         else:
             found = scheduled(po_status.business_today(clock()) if as_of is None else as_of,
                               Budget(REFRESH_BUDGET_SECONDS if budget_seconds is None
-                                     else budget_seconds, monotonic))
+                                     else budget_seconds, monotonic,
+                                     reserve=AMOUNTS_RESERVE_SECONDS))
     except Exception as error:  # noqa: BLE001 - detection never fails a capture cycle
         return {"state": "failed", "error": type(error).__name__}
     return {"state": "ran", "gaps_found": found["gaps_found"], "detectors": found["detectors"],

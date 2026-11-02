@@ -257,8 +257,8 @@ class ProfitAskTests(unittest.TestCase):
         real = cp.customer_orders
 
         def cut(*args, **kwargs):
-            orders, trimmed, _whole, outside = real(*args, **kwargs)
-            return orders, trimmed, False, outside
+            orders, trimmed, _whole, outside, skipped = real(*args, **kwargs)
+            return orders, trimmed, False, outside, skipped
         with mock.patch.object(cp, "customer_orders", cut):
             _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
         text = answer["direct_answer"]

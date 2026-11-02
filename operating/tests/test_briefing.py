@@ -1,0 +1,1072 @@
+"""Proactive events (operating/proactive_events.py) folded by the scheduled engine, and the
+per-person briefing over them (operating/briefing.py): each detector, ranking, routing,
+gating as the viewer, since-last-visit and the digest preview.
+
+SYNTHETIC fixtures only (``StoreBuilder`` stores from rows written here, synthetic handles,
+fake grants and a fake tool caller). Evidence label: isolated-fixture.
+"""
+
+from __future__ import annotations
+
+from contextlib import closing
+from datetime import date, datetime, timedelta, timezone
+import json
+import sqlite3
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+from operating import briefing as bf
+from operating import customer_profit as cp
+from operating import proactive_engine as pe
+from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, T0, World, admit,
+                                                   everyone, handle)
+
+MOMENT = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
+ALL = ALL_MARKINGS | {"purchasing_prices"}
+
+
+def revise(w: World, oid: str, prop: str, old: str, at: str) -> None:
+    """An earlier version of ``oid`` holding ``prop`` = ``old``, superseded at ``at`` by the
+    current one (which is then recorded at ``at``)."""
+    first = "2026-07-01T00:00:00.000000Z"
+    w.n += 1
+    h = handle(w.n)
+    for row in w.rows["objects"]:
+        if row["object_id"] == oid:
+            row["first_recorded_at"] = first
+    for table in ("object_versions", "object_values"):
+        for row in w.rows[table]:
+            if row["object_id"] == oid and row.get("superseded_at") is None:
+                row["recorded_at"] = at
+    w.rows["object_versions"].append({
+        "object_id": oid, "l1_handle": h, "digest": f"d{w.n}", "lineage": "workbench",
+        "markings": "[]", "recorded_at": first, "superseded_at": at})
+    w.rows["object_values"].append({
+        "object_id": oid, "property": prop, "value_type": "date", "value": old, "unit": None,
+        "quantity_role": None, "l1_handle": h, "field_path": f"row.{prop}", "digest": f"d{w.n}",
+        "lineage": "workbench", "binding_id": "fx", "parser": "fixture", "markings": "[]",
+        "recorded_at": first, "superseded_at": at})
+
+
+class Case(unittest.TestCase):
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = Path(tmp.name) / "store.sqlite"
+        self.inbox = pe.inbox_path(self.store)
+
+    def run_engine(self, world: World, *, call=None, at: datetime = MOMENT) -> dict:
+        world.build(self.store)
+        return pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: at)
+
+    def read(self, *, may_read=everyone, held=ALL, decide=admit) -> dict:
+        return pe.read_inbox(self.inbox, self.store, reader="r", may_read=may_read,
+                             held=held, decide=decide, states=("open",), limit=500)
+
+    def events(self, **grant) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for gap in self.read(**grant)["gaps"]:
+            out.setdefault(gap["kind"], []).append(gap)
+        return out
+
+    def brief(self, routing: bf.Routing, *, reader="r", **grant) -> dict:
+        grant = {"may_read": everyone, "held": ALL, "decide": admit, **grant}
+        return bf.read(self.inbox, self.store, reader=reader, routing=routing, **grant)
+
+
+EVERYTHING = bf.Routing(basis="fixture", everything=True)
+PROC = bf.Routing(frozenset({"PROC"}))
+QUALITY = bf.Routing(frozenset({"QUALITY"}))
+
+
+def po_with(w: World, total=None, currency="USD", *, markings="[]", audience="api:a",
+            binding="fx", **values) -> str:
+    props = dict(values)
+    if total is not None:
+        props.update(total_cost=total, currency=currency)
+    return w.obj("PurchaseOrder", props, markings=markings, audience=audience,
+                 binding=binding)
+
+
+class DetectorTest(Case):
+
+    def test_eta_slipped_from_a_revised_date_and_from_two_confirmations(self):
+        w = World()
+        slipped = po_with(w, expected_date="2026-10-25")
+        revise(w, slipped, "expected_date", "2026-10-15", "2026-10-12T00:00:00.000000Z")
+        earlier = po_with(w, expected_date="2026-10-05")              # moved earlier: none
+        revise(w, earlier, "expected_date", "2026-10-15", "2026-10-12T00:00:00.000000Z")
+        old = po_with(w, expected_date="2026-10-25")                  # revised long ago
+        revise(w, old, "expected_date", "2026-10-15", "2026-08-01T00:00:00.000000Z")
+        confirmed = po_with(w)
+        for issued, promised in (("2026-09-01", "2026-10-01"), ("2026-09-20", "2026-10-11")):
+            w.link("SupplierConfirmation.confirms", w.obj("SupplierConfirmation", {
+                "document_date": issued, "delivery_date": promised}), confirmed)
+        summary = self.run_engine(w)
+        self.assertEqual(summary["detectors"]["eta_slipped"], "complete")
+        found = {g["object_id"]: g for g in self.events()["eta_slipped"]}
+        self.assertEqual(set(found), {slipped, confirmed})
+        self.assertEqual(found[slipped]["event"]["days"], 10)
+        self.assertIn("from 2026-10-15 to 2026-10-25", found[slipped]["summary"])
+        self.assertEqual(found[confirmed]["event"]["days"], 10)
+        self.assertEqual(len(found[confirmed]["citations"]), 2)   # both confirmations
+
+    def test_lot_near_expiry_and_an_active_batch_on_hold(self):
+        w = World()
+        soon = w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=10)).isoformat(),
+                             "lot_number": "SYNTH-L1"})
+        w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=40)).isoformat()})
+        w.obj("Lot", {"expiry_date": (AS_OF - timedelta(days=1)).isoformat()})
+        held = w.obj("Batch", {"quality_status": "On-Hold", "status": "Allocated"})
+        w.obj("Batch", {"quality_status": "On-Hold", "status": "Cancelled"})
+        w.obj("Batch", {"quality_status": "Released", "status": "Allocated"})
+        w.obj("Batch", {"quality_status": "On-Hold", "status": "SYNTH-word"})   # unmapped
+        summary = self.run_engine(w)
+        found = self.events()
+        self.assertEqual([g["object_id"] for g in found["lot_near_expiry"]], [soon])
+        self.assertEqual(found["lot_near_expiry"][0]["event"]["days"], 10)
+        self.assertEqual(found["lot_near_expiry"][0]["summary"], "Expires on 2026-10-29, in 10 days")
+        self.assertEqual([g["object_id"] for g in found["lot_on_hold"]], [held])
+        self.assertEqual(summary["not_evaluated"]["lot_attention"], {"status_unmapped": 1})
+
+    def test_accepted_quote_with_no_order_needs_every_sales_order_grant(self):
+        w = World()
+        lone = w.obj("Quote", {"status": "ACCEPTED"})
+        converted = w.obj("Quote", {"status": "ACCEPTED"})
+        w.link("Quote.converted_to", converted, w.obj("SalesOrder", {}, audience="api:so"))
+        w.obj("Quote", {"status": "DRAFT"})
+        self.run_engine(w)
+        self.assertEqual([g["object_id"] for g in self.events()["quote_accepted_no_order"]],
+                         [lone])
+        # a reader who may not read the sales orders never gets the absence verdict
+        partial = self.events(may_read=lambda key: key != "api:so")
+        self.assertNotIn("quote_accepted_no_order", partial)
+
+    def test_invoice_billing_more_than_received_in_one_unit(self):
+        w = World()
+        order = po_with(w)
+        item = w.obj("Product", {})
+        line = w.obj("PurchaseOrderLine", {"received_quantity": ("5", "ea", "received")})
+        w.link("PurchaseOrderLine.line_of", line, order)
+        w.link("PurchaseOrderLine.for_item", line, item)
+        invoice = w.obj("PurchaseInvoice", {"status": "Open"})
+        w.link("PurchaseInvoice.invoices", invoice, order)
+        billed = w.obj("PurchaseInvoiceLine", {"invoiced_quantity": ("8", "ea", "invoiced")})
+        w.link("PurchaseInvoiceLine.line_of", billed, invoice)
+        w.link("PurchaseInvoiceLine.for_item", billed, item)
+        # a second order whose invoice states no unit: never compared
+        other = po_with(w)
+        other_line = w.obj("PurchaseOrderLine", {"received_quantity": ("5", "ea", "received")})
+        w.link("PurchaseOrderLine.line_of", other_line, other)
+        w.link("PurchaseOrderLine.for_item", other_line, item)
+        other_inv = w.obj("PurchaseInvoice", {"status": "Paid"})
+        w.link("PurchaseInvoice.invoices", other_inv, other)
+        no_unit = w.obj("PurchaseInvoiceLine", {"invoiced_quantity": ("9", None, "invoiced")})
+        w.link("PurchaseInvoiceLine.line_of", no_unit, other_inv)
+        w.link("PurchaseInvoiceLine.for_item", no_unit, item)
+        summary = self.run_engine(w)
+        found = self.events()["invoice_quantity_mismatch"]
+        self.assertEqual([g["object_id"] for g in found], [order])
+        self.assertIn("Invoiced 8 ea of an item, received 5 ea", found[0]["summary"])
+        self.assertEqual(summary["not_evaluated"]["invoice_quantity_mismatch"],
+                         {"unit_not_stated": 1})
+
+    def test_vendor_mail_events_through_the_callers_investigations(self):
+        w = World()
+        order = po_with(w)
+        request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c1"},
+                        audience="mail:box")
+        w.obj("Email", {"sent_at": "2026-10-06T10:00:00Z", "conversation_id": "c1"},
+              audience="mail:other")
+        w.link("Email.mentions_purchase_order", request, order, "lead")
+        stale = w.obj("Email", {"sent_at": "2026-08-01T10:00:00Z"})     # outside the window
+        w.link("Email.mentions_purchase_order", stale, po_with(w), "lead")
+        reply_handle = handle(w.n - 2)   # the second message's own citation
+        calls = []
+
+        def call(tool, args):
+            calls.append((tool, args["family"], args["root"]))
+            if args["family"] == "F28":
+                return {"answer": [
+                    {"name": "follow_up", "kind": "computed", "value": 1, "basis": []},
+                    {"name": "follow_up_other", "kind": "computed", "value": None,
+                     "steps": ["not decided: who is ours and who is outside needs the "
+                               "people exclusion"]},
+                    {"name": "follow_up_1", "kind": "computed", "value": 14,
+                     "basis": [request], "steps": ["days since ..."]},
+                    {"name": "follow_up_1_draft", "kind": "computed", "value": "x",
+                     "basis": [request]}]}
+            return {"answer": [{"name": "replies_1", "kind": "computed",
+                                "value": {"untrusted_text": "SYNTH",
+                                          "origin": {"citation": reply_handle}},
+                                "steps": ["proposed update (differs): SYNTH"],
+                                "basis": [request, order]}]}
+
+        summary = self.run_engine(w, call=call)
+        self.assertEqual(sorted(calls), [("plx.investigate", "F27", order),
+                                         ("plx.investigate", "F28", order)])
+        self.assertEqual(summary["detectors"]["vendor_no_reply"], "complete")
+        # an undecided run is counted, never read as "nobody is waiting"
+        self.assertEqual(summary["not_evaluated"]["vendor_no_reply"], {"not_decided": 1})
+        found = self.events()
+        self.assertEqual([g["event"]["days"] for g in found["vendor_no_reply"]], [14])
+        self.assertEqual(len(found["vendor_terms_unapplied"]), 1)
+        # no reply is a verdict on the whole conversation: every mailbox it sits in
+        self.assertNotIn("vendor_no_reply",
+                         self.events(may_read=lambda key: key != "mail:other"))
+
+    def test_negative_margin_from_the_checked_order_figures_only(self):
+        w = World()
+        loser = w.obj("SalesOrder", {})
+        fine = w.obj("SalesOrder", {})
+        undecided = w.obj("SalesOrder", {})
+        figures = {}
+        stale = w.obj("SalesOrder", {})
+        w.link("SalesInvoice.bills", w.obj("SalesInvoice", {"posting_date": "2026-06-01"}),
+               stale)   # more than 30 days before the newest invoice: not a candidate
+        for order in (loser, fine, undecided):
+            # the newest invoices are 70 days before the run's day: the window is the data's
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+
+        def read_order(_call, order):
+            self.assertNotEqual(order.object_id, stale)
+            if order.object_id == undecided:
+                return order
+            order.margin = Decimal("-120.50") if order.object_id == loser else Decimal("5")
+            order.revenue, order.cost = Decimal("100"), order.margin and Decimal("220.50")
+            order.currency = "CAD"
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figures[order.object_id]])]
+            return order
+
+        from decimal import Decimal
+        with mock.patch.object(cp, "read_order", read_order):
+            summary = self.run_engine(w, call=lambda *_: {})
+        found = self.events()["negative_margin"]
+        self.assertEqual([g["object_id"] for g in found], [loser])
+        self.assertEqual(found[0]["event"]["amount"], {"value": "120.50", "currency": "CAD",
+                                                       "basis": "loss"})
+        # every amount carries its own currency
+        self.assertEqual(found[0]["summary"], "Lost 120.50 CAD on item cost only: revenue "
+                                              "100 CAD, item cost 220.50 CAD")
+        self.assertEqual(summary["not_evaluated"]["negative_margin"],
+                         {"margin_not_decided": 1})
+        # a reader without finance may not open the figure: never sees the loss
+        self.assertNotIn("negative_margin", self.events(held=frozenset()))
+
+    def test_slow_investigations_share_the_time_and_keep_what_they_found(self):
+        """Each investigation can take minutes on a full store: the three tool-call event
+        detectors share what is left in turn, so a slow vendor-mail scan never leaves the
+        margins unrun, and what a cut-short scan found is kept (never discarded)."""
+        from decimal import Decimal
+        w = World()
+        requests = {}
+        for n in range(3):
+            order = po_with(w)
+            requests[order] = w.obj("Email", {"sent_at": f"2026-10-0{n + 1}T10:00:00Z",
+                                              "conversation_id": f"c{n}"},
+                                    audience="mail:box")
+            w.link("Email.mentions_purchase_order", requests[order], order, "lead")
+        loser = w.obj("SalesOrder", {})
+        invoice = w.obj("SalesInvoice", {"posting_date": "2026-10-10"})
+        figure = handle(w.n)
+        w.link("SalesInvoice.bills", invoice, loser)
+        now = [0.0]
+
+        def call(_tool, args):        # every investigation costs 20 seconds
+            now[0] += 20
+            if args.get("family") == "F28":
+                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 9,
+                                    "basis": [requests[args["root"]]]}]}
+            return {"answer": []}
+
+        def read_order(the_call, order):
+            the_call("plx.investigate", {"family": "F10", "root": order.object_id})
+            order.margin, order.revenue, order.cost = (Decimal("-1"), Decimal("1"),
+                                                       Decimal("2"))
+            order.currency = "USD"
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figure])]
+            return order
+
+        w.build(self.store)
+        nothing = lambda *_args: pe._result([])
+        with mock.patch.object(cp, "read_order", read_order), \
+                mock.patch.object(pe, "_orders_at_risk", nothing), \
+                mock.patch.object(pe, "_card_rules", nothing):
+            summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
+                             budget=pe.Budget(90, monotonic=lambda: now[0]))
+        detectors = summary["detectors"]
+        # 30 s of 90 for the mail scan: two of three orders read, both findings kept
+        self.assertEqual(detectors["vendor_no_reply"], "truncated")
+        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_no_reply"])
+        self.assertEqual(len(self.events()["vendor_no_reply"]), 2)
+        self.assertEqual(detectors["vendor_terms_unapplied"], "truncated")
+        # the margins still get their share and finish
+        self.assertEqual(detectors["negative_margin"], "complete")
+        self.assertEqual([g["object_id"] for g in self.events()["negative_margin"]], [loser])
+
+    def test_vendor_mail_is_read_again_only_when_its_thread_changed(self):
+        """The vendor checks are incremental: an unchanged thread keeps its reading (no
+        investigation; the days waiting counted on), a new message in the conversation or
+        a request crossing seven days since the reading is investigated again."""
+        def world(extra: bool) -> tuple[World, str]:
+            w = World()
+            order = po_with(w)
+            request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z",
+                                      "conversation_id": "c1"}, audience="mail:box")
+            w.link("Email.mentions_purchase_order", request, order, "lead")
+            quiet = po_with(w)    # its newest message 2026-10-15: overdue from 10-22
+            asked = w.obj("Email", {"sent_at": "2026-10-15T10:00:00Z",
+                                    "conversation_id": "c2"}, audience="mail:box")
+            w.link("Email.mentions_purchase_order", asked, quiet, "lead")
+            if extra:   # the vendor answers in the first conversation
+                w.obj("Email", {"sent_at": "2026-10-20T10:00:00Z", "conversation_id": "c1"},
+                      audience="mail:box")
+            self.request = request
+            return w, order, quiet
+
+        calls = []
+
+        def call(tool, args):
+            calls.append((args["family"], args["root"]))
+            if args["family"] == "F28" and args["root"] == self.order:
+                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 14,
+                                    "basis": [self.request]}]}
+            return {"answer": []}
+
+        def run(on: date, w: World) -> dict:
+            for path in self.store.parent.glob("store.sqlite"):
+                path.unlink()
+            w.build(self.store)
+            calls.clear()
+            return pe.run(self.store, self.inbox, on, call=call, clock=lambda: MOMENT)
+
+        w, self.order, quiet = world(False)
+        run(AS_OF, w)
+        self.assertEqual(sorted(calls), sorted([("F28", self.order), ("F27", self.order),
+                                                ("F28", quiet), ("F27", quiet)]))
+        summary = run(AS_OF + timedelta(days=2), w)          # nothing changed
+        self.assertEqual(calls, [])
+        self.assertEqual(summary["detectors"]["vendor_no_reply"], "complete")
+        self.assertEqual(summary["reused"], {"vendor_no_reply": 2,
+                                             "vendor_terms_unapplied": 2})
+        self.assertEqual([g["event"]["days"] for g in self.events()["vendor_no_reply"]],
+                         [16])                                 # counted on, not frozen
+        run(AS_OF + timedelta(days=4), w)                      # 10-23: quiet's request is 8
+        self.assertEqual(calls, [("F28", quiet)])              # days old: read again
+        w, self.order, quiet = world(True)                     # a reply arrives
+        run(AS_OF + timedelta(days=4), w)
+        self.assertEqual(sorted(calls), sorted([("F28", self.order), ("F27", self.order)]))
+
+    def test_the_build_reuses_vendor_readings_and_the_vendor_pass_reads_apart(self):
+        """The build's run never investigates vendor mail (``vendor_bound=0``: readings
+        reused, the rest named as waiting for the vendor pass); the vendor pass runs those
+        checks alone, leaves every other rule's record as it was, and the two merge their
+        readings whichever folds last."""
+        w = World()
+        order = po_with(w)
+        request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c1"},
+                        audience="mail:box")
+        w.link("Email.mentions_purchase_order", request, order, "lead")
+        w.obj("Lot", {"expiry_date": "2026-10-25"})
+        w.build(self.store)
+        calls = []
+
+        def call(tool, args):
+            calls.append(args.get("family"))
+            if args.get("family") == "F28":
+                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 14,
+                                    "basis": [request]}]}
+            return {"answer": []}
+
+        build = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
+                       vendor_bound=0)
+        self.assertNotIn("F28", calls)
+        self.assertEqual(build["detector_reasons"]["vendor_no_reply"], ["read_apart"])
+        checks = {c["check"]: c for c in self.brief(EVERYTHING)["checks"]}
+        self.assertEqual(checks["vendor_no_reply"]["words"], "vendor replies: partly checked "
+                         "this run (the rest wait for the vendor-mail pass)")
+        with closing(sqlite3.connect(self.inbox)) as conn:
+            before = conn.execute("SELECT detector, run_at FROM detector_runs WHERE detector "
+                                  "= 'lot_attention'").fetchall()
+            runs = conn.execute("SELECT run_id, run_at FROM runs").fetchall()
+        as_read = self.read()
+        calls.clear()
+        later = MOMENT + timedelta(hours=1)
+        apart = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: later,
+                       only=pe.INCREMENTAL)
+        self.assertEqual(sorted(calls), ["F27", "F28"])
+        self.assertEqual(set(apart["detectors"]), set(pe.INCREMENTAL))
+        with closing(sqlite3.connect(self.inbox)) as conn:
+            self.assertEqual(conn.execute("SELECT detector, run_at FROM detector_runs WHERE "
+                                          "detector = 'lot_attention'").fetchall(), before)
+        # the pass is no build's run: the run the inbox is read as of does not move, so
+        # "new this generation" and stale stay the build's
+        with closing(sqlite3.connect(self.inbox)) as conn:
+            self.assertEqual(conn.execute("SELECT run_id, run_at FROM runs").fetchall(), runs)
+        after = self.read()
+        self.assertEqual((after["run_at"], after["as_of"], after["stale"]),
+                         (as_read["run_at"], as_read["as_of"], as_read["stale"]))
+        events = self.events()
+        self.assertEqual(len(events["vendor_no_reply"]), 1)
+        self.assertEqual(len(events["lot_near_expiry"]), 1)     # untouched by the pass
+        calls.clear()
+        again = pe.run(self.store, self.inbox, AS_OF, call=call,
+                       clock=lambda: later + timedelta(hours=1), vendor_bound=0)
+        self.assertEqual(calls, [])
+        self.assertEqual(again["reused"], {"vendor_no_reply": 1, "vendor_terms_unapplied": 1})
+        self.assertEqual(again["detectors"]["vendor_no_reply"], "complete")
+        self.assertEqual(len(self.events()["vendor_no_reply"]), 1)
+        with self.assertRaises(ValueError):
+            pe.run(self.store, self.inbox, AS_OF, call=call, only=("SYNTH-unknown",))
+
+    def test_the_budget_is_a_hard_bound_and_store_checks_run_first(self):
+        """The store-only event checks run before any tool-call rule, so a slow one never
+        leaves them unrun; an investigation is told the time left and one that ran out is
+        no reading; a query running at the deadline is interrupted, not let finish."""
+        w = World()
+        order = po_with(w)
+        request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c"},
+                        audience="mail:box")
+        w.link("Email.mentions_purchase_order", request, order, "lead")
+        w.obj("Lot", {"expiry_date": "2026-10-25"})
+        w.build(self.store)
+        now, budgets = [0.0], []
+
+        def call(tool, args):
+            if tool == "plx.investigate":
+                budgets.append(args.get("time_budget_ms"))
+                now[0] += 10_000            # it ran out of time inside
+                return {"answer": [], "answerability": {"reasons": ["time_budget_exhausted"]}}
+            now[0] += 10_000                # every tool-call rule is slow
+            return {}
+
+        summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
+                         budget=pe.Budget(600, monotonic=lambda: now[0]))
+        detectors = summary["detectors"]
+        for name in ("eta_slipped", "lot_attention", "accepted_quote_no_order",
+                     "invoice_quantity_mismatch"):
+            self.assertEqual(detectors[name], "complete", name)
+        self.assertIn("lot_near_expiry", summary["gaps_by_kind"])
+        self.assertTrue(budgets and all(isinstance(b, int) and 0 < b <= 600_000
+                                        for b in budgets), budgets)
+        self.assertEqual(detectors["vendor_no_reply"], "truncated")
+        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_no_reply"])
+
+        # a set-based query still running when the time is up is interrupted
+        def slow_sql(st, _as_of):
+            now[0] = 10 ** 9
+            st.conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n "
+                            "WHERE i < 10000000) SELECT count(*) FROM n").fetchone()
+            return pe._result([])
+        now[0] = 0.0
+        with mock.patch.object(pe, "_expired_quote", slow_sql):
+            summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
+                             budget=pe.Budget(600, monotonic=lambda: now[0]))
+        self.assertEqual(summary["detectors"]["expired_quote"], "truncated")
+        self.assertEqual(summary["detector_reasons"]["expired_quote"], [pe.TIME_BUDGET])
+
+    def test_the_amounts_and_their_check_run_in_the_reserve_inside_the_bound(self):
+        """The detectors stop ``reserve`` seconds early; the amounts and their plausibility
+        check use that reserve and are interrupted at the end like everything else: an
+        unchecked total is then said to be unchecked, never stated as a fact."""
+        from operating import suspect_money
+        w = World()
+        oid = po_with(w, "100.00", "CAD", expected_date="2026-10-25")
+        revise(w, oid, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        w.build(self.store)
+        now, seen = [0.0], []
+
+        def slow(st, object_type, objects):
+            seen.append(now[0])
+            now[0] = 10 ** 6        # past the end: the next long query is interrupted
+            st.conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n "
+                            "WHERE i < 10000000) SELECT count(*) FROM n").fetchone()
+            return {}
+        budget = pe.Budget(400, monotonic=lambda: now[0], reserve=100)
+        self.assertEqual(budget.left(), 300)          # the detectors' part
+        with mock.patch.object(suspect_money, "suspects", slow):
+            pe.run(self.store, self.inbox, AS_OF, clock=lambda: MOMENT, budget=budget)
+        self.assertEqual(len(seen), 1)
+        amount = self.events()["eta_slipped"][0]["event"]["amount"]
+        self.assertEqual(amount["suspect"], "its plausibility could not be checked")
+
+    def test_a_spent_reserve_never_loses_the_run_at_a_real_size(self):
+        """With the reserve spent inside the plausibility check, on a store large enough
+        that the run's own record (its scope) takes many database steps, the run still
+        completes and folds: the total says it could not be checked, nothing is lost."""
+        from operating import suspect_money
+        w = World()
+        oid = po_with(w, "100.00", "CAD", expected_date="2026-10-25")
+        revise(w, oid, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        for n in range(3000):
+            w.obj("Note", {"text": f"synthetic {n}"}, audience=f"api:n{n % 7}")
+        w.build(self.store)
+        now = [0.0]
+
+        def spent(st, object_type, objects):
+            now[0] = 10 ** 6      # the reserve runs out inside the check
+            st.conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n "
+                            "WHERE i < 10000000) SELECT count(*) FROM n").fetchone()
+            return {}
+        with mock.patch.object(suspect_money, "suspects", spent):
+            summary = pe.run(self.store, self.inbox, AS_OF, clock=lambda: MOMENT,
+                             budget=pe.Budget(400, monotonic=lambda: now[0], reserve=100))
+        self.assertGreaterEqual(summary["scanned"], 3000)
+        self.assertEqual(summary["detectors"]["eta_slipped"], "complete")
+        amount = self.events()["eta_slipped"][0]["event"]["amount"]
+        self.assertEqual(amount["suspect"], "its plausibility could not be checked")
+
+    def test_cardinality_one_ten_sixty_lots_each_once(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                lots = {w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=i % 30))
+                                      .isoformat()}) for i in range(n)}
+                self.run_engine(w)
+                found = [g["object_id"] for g in self.events()["lot_near_expiry"]]
+                self.assertEqual((len(found), set(found)), (n, lots))
+                self.inbox.unlink()
+
+
+class BriefingTest(Case):
+
+    def world(self) -> tuple[World, dict]:
+        w = World()
+        ids = {}
+        ids["big"] = po_with(w, "9000.00", expected_date="2026-10-25")
+        revise(w, ids["big"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        ids["small"] = po_with(w, "100.00", expected_date="2026-11-25")
+        revise(w, ids["small"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        ids["no_amount"] = po_with(w, expected_date="2026-12-25")
+        revise(w, ids["no_amount"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        ids["secret"] = po_with(w, "50.00", audience="api:secret", expected_date="2026-10-30")
+        revise(w, ids["secret"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        ids["hold"] = w.obj("Batch", {"quality_status": "On-Hold", "status": "Committed"})
+        return w, ids
+
+    def test_ranked_by_cited_amount_then_days_with_the_basis_stated(self):
+        w, ids = self.world()
+        self.run_engine(w)
+        out = self.brief(EVERYTHING)
+        order = [i["object_id"] for i in out["items"]]
+        self.assertEqual(order[:3], [ids["big"], ids["small"], ids["secret"]])
+        self.assertEqual(out["rank_basis"], bf.RANK_BASIS)
+        self.assertEqual(out["items"][0]["facts"]["amount"],
+                         {"value": "9000.00", "currency": "USD", "basis": "total_cost"})
+        # the items without an amount follow, longest slip first
+        self.assertEqual(order[3:], [ids["no_amount"], ids["hold"]])
+        self.assertTrue(all(i["next_action"]["suggestion_only"] for i in out["items"]))
+
+    def test_money_ranks_within_each_currency_and_one_stray_currency_keeps_it(self):
+        """Amounts are never converted or compared across currencies, yet one amount in
+        another currency does not switch money ranking off for the rest: each amount is
+        placed within its own currency."""
+        w, ids = self.world()
+        cad = po_with(w, "1.00", "CAD", expected_date="2026-10-25")
+        revise(w, cad, "expected_date", "2026-10-01", "2026-10-12T00:00:00.000000Z")
+        self.run_engine(w)
+        out = self.brief(EVERYTHING)
+        self.assertEqual(out["rank_basis"], bf.RANK_BASIS)
+        order = [i["object_id"] for i in out["items"]]
+        # USD still by money: the 9,000 order before the smaller one; the lone CAD amount
+        # is the largest of its currency, so it ranks with the largest (then by days)
+        self.assertLess(order.index(ids["big"]), order.index(ids["small"]))
+        self.assertLess(order.index(cad), order.index(ids["small"]))
+        self.assertLess(order.index(ids["small"]), order.index(ids["no_amount"]))
+
+    def test_routing_by_department_and_a_reader_with_none(self):
+        w, ids = self.world()
+        self.run_engine(w)
+        proc = self.brief(PROC)
+        self.assertNotIn(ids["hold"], [i["object_id"] for i in proc["items"]])
+        self.assertEqual(proc["other_teams"], 1)
+        quality = self.brief(QUALITY)
+        self.assertEqual([i["object_id"] for i in quality["items"]], [ids["hold"]])
+        nobody = self.brief(bf.Routing(basis="no_department_on_record"))
+        self.assertEqual((nobody["count"], nobody["other_teams"]), (0, 5))
+        self.assertIn("No department is on record",
+                      bf.digest_text(nobody, first_name="Synth"))
+        for role, count in (("ADMIN", 5), ("SUPER_ADMIN", 5), ("MANAGER", 0), ("SYNTH", 0)):
+            with self.subTest(role=role):
+                self.assertEqual(self.brief(bf.Routing(role=role))["count"], count)
+
+    def test_hidden_items_are_counted_never_named_and_amounts_gated(self):
+        w, ids = self.world()
+        w.rows["object_values"] = [dict(r, markings='["purchasing_prices"]')
+                                   if r["object_id"] == ids["big"] and r["property"] in (
+                                       "total_cost", "currency") else r
+                                   for r in w.rows["object_values"]]
+        self.run_engine(w)
+        no_secret = {"may_read": lambda key: key != "api:secret",
+                     "held": ALL_MARKINGS}
+        out = self.brief(PROC, **no_secret)
+        text = json.dumps(out) + bf.digest_text(out, first_name="Synth")
+        self.assertEqual(out["hidden"], 1)
+        self.assertNotIn(ids["secret"], text)
+        self.assertNotIn("2026-10-30", text)       # the hidden event's date
+        big = next(i for i in out["items"] if i["object_id"] == ids["big"])
+        self.assertNotIn("amount", big["facts"])   # the total is marked purchasing_prices
+        self.assertNotIn("9000", text)
+        # without the marking the big order no longer outranks the small one by money
+        self.assertEqual(out["items"][0]["object_id"], ids["small"])
+        self.assertEqual(out["hidden_by_type"], {"eta_slipped": 1})
+        self.assertIn("Delivery date slipped: 1 more for your team is in places you can't "
+                      "open (a count only)", bf.digest_text(out, first_name="Synth"))
+
+    def test_an_inbox_from_before_the_history_tables_reads(self):
+        # the live inbox predated detector_history and kind_history: Home, the briefing
+        # and the late answer failed with "no such table" until the next engine run
+        w, _ids = self.world()
+        self.run_engine(w)
+        whole = self.read()
+        with closing(sqlite3.connect(self.inbox)) as conn:
+            conn.execute("DROP TABLE kind_history")
+            conn.execute("DROP TABLE detector_history")
+            conn.commit()
+        older = self.read()
+        self.assertEqual([g["id"] for g in older["gaps"]],
+                         [g["id"] for g in whole["gaps"]])
+        self.assertEqual(older["kind_history"], {})
+
+    def test_new_since_last_visit_and_new_this_generation(self):
+        w, ids = self.world()
+        self.run_engine(w)
+        seen = pe.record_visit(self.inbox, "r", clock=lambda: MOMENT + timedelta(hours=1))
+        self.assertEqual(pe.last_visit(self.inbox, "r"), seen)
+        self.assertIsNone(pe.last_visit(self.inbox, "someone-else"))
+        late = po_with(w, expected_date="2026-10-29")
+        revise(w, late, "expected_date", "2026-10-21", "2026-10-13T00:00:00.000000Z")
+        self.run_engine(w, at=MOMENT + timedelta(hours=2))
+        out = self.brief(EVERYTHING)
+        self.assertEqual(out["last_visit"], seen)
+        new = [i["object_id"] for i in out["items"] if i["new_since_visit"]]
+        self.assertEqual((new, out["new_since_visit"]), ([late], 1))
+        self.assertEqual([i["object_id"] for i in out["items"] if i["new_this_generation"]],
+                         [late])
+        text = bf.digest_text(out, first_name="Synth")
+        self.assertIn("(1 new since your last visit)", text)
+
+    def test_other_gap_kinds_never_crowd_events_out_of_the_read(self):
+        w, ids = self.world()
+        for n in range(6):   # six expired quotes: gaps of a kind that is no event
+            w.obj("ForwarderQuote", {"valid_until": f"2026-01-0{n + 1}"})
+        self.run_engine(w)
+        self.assertEqual(len([g for g in self.read()["gaps"] if g["kind"] == "expired_quote"]),
+                         6)
+        with mock.patch.object(bf, "MAX_READ", 5):
+            out = self.brief(EVERYTHING)
+        self.assertEqual(out["count"], 5)
+        self.assertNotIn("expired_quote", {i["kind"] for i in out["items"]})
+        # the read itself is narrowed to the event kinds, whatever the inbox's history holds
+        events = pe.read_inbox(self.inbox, self.store, reader="r", may_read=everyone,
+                               held=ALL, decide=admit, limit=500, kinds=bf.EVENT_KINDS)
+        self.assertTrue(events["gaps"])
+        self.assertLessEqual({g["kind"] for g in events["gaps"]}, set(bf.EVENT_KINDS))
+
+    def test_an_unknown_kind_is_no_event_and_an_unread_inbox_is_said(self):
+        inbox = {"status": "read", "gaps": [{"id": "pe-1", "kind": "SYNTH-unknown",
+                                             "object_id": "X:1", "summary": "s"}],
+                 "complete": True}
+        out = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit=None)
+        self.assertEqual((out["count"], out["items"]), (0, []))
+        missing = bf.build({"status": "not_scheduled", "gaps": []}, routing=EVERYTHING,
+                           hidden=None, last_visit=None)
+        self.assertEqual(missing["status"], "not_scheduled")
+        self.assertIn("not available yet", bf.digest_text(missing, first_name="Synth"))
+
+    def test_late_is_the_one_late_list_and_each_item_says_if_seen_live(self):
+        """"Late purchase order" is the landed late list (the Home count's kinds), never
+        a PO with a late BC line beside it, so one PO is never briefed twice as late."""
+        from operating import mcp_server
+        self.assertEqual(set(bf.EVENT_TYPES["po_late"]["kinds"]),
+                         set(mcp_server.LATE_PO_KINDS))
+        gaps = [{"id": "pe-1", "kind": "unconfirmed_po", "object_id": "PurchaseOrder:1",
+                 "summary": "s", "days_late": 3},
+                {"id": "pe-2", "kind": "late_order", "object_id": "PurchaseOrder:1",
+                 "summary": "s"},
+                {"id": "pe-3", "kind": "quote_accepted_no_order", "object_id": "Quote:1",
+                 "summary": "s"}]
+        # seen live: per event type, from the recorded runs' history of each kind over this
+        # data (never a fixed list, never per check: one check finds several types)
+        kinds = {"unconfirmed_po": "2026-10-30T06:00", "unconfirmed_po:late": "2026-10-30T06:00",
+                 "lot_near_expiry": "2026-10-29T06:00"}
+        out = bf.build({"status": "read", "gaps": gaps, "complete": True,
+                        "kind_history": kinds}, routing=EVERYTHING, hidden={},
+                       last_visit=None)
+        self.assertEqual([(i["id"], i["evidence"]) for i in out["items"]],
+                         [("pe-1", "live"), ("pe-3", "fixture-only")])
+        types = {t["event_type"]: t for t in out["types"]}
+        self.assertEqual((types["po_late"]["found_live"], types["po_late"]["first_found"]),
+                         (True, "2026-10-30"))
+        self.assertIs(types["po_due"]["found_live"], False)    # one check, two types
+        self.assertIs(types["lot_near_expiry"]["found_live"], True)
+        self.assertIs(types["lot_on_hold"]["found_live"], False)
+        self.assertIs(types["quote_accepted_no_order"]["found_live"], False)
+        self.assertEqual(out["late_total"], 1)
+
+    def test_a_suspect_total_is_flagged_never_ranked_nor_stated_as_fact(self):
+        """A total far beyond its vendor's usual orders (a unit cost typed in cents) is
+        "suspect source data (why)": never the ranking's money, never a stated figure."""
+        w = World()
+        for _ in range(4):     # the vendor's usual order: about 100 CAD
+            po_with(w, "100.00", "CAD", vendor_number="V1")
+        typo = po_with(w, "4410000.21", "CAD", vendor_number="V1",
+                       expected_date="2026-10-25")
+        revise(w, typo, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        fair = po_with(w, "120.00", "CAD", vendor_number="V1", expected_date="2026-10-22")
+        revise(w, fair, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+        self.run_engine(w)
+        out = self.brief(EVERYTHING)
+        items = {i["object_id"]: i for i in out["items"]}
+        amount = items[typo]["facts"]["amount"]
+        self.assertEqual(amount["suspect"],
+                         "the total is over 10,000 times this vendor's usual order in CAD")
+        self.assertNotIn("suspect", items[fair]["facts"]["amount"])
+        # ranked by the fair amount, never by the suspect one (it has none to rank by)
+        self.assertEqual([i["object_id"] for i in out["items"]][:2], [fair, typo])
+        text = bf.digest_text(out, first_name="Synth")
+        self.assertIn("(suspect source data (the total is over 10,000 times this vendor's "
+                      "usual order in CAD))", text)
+        self.assertNotIn("4410000", text)
+        self.assertEqual(bf.money_words(items[fair]["facts"]), "120.00 CAD order total")
+
+    def test_a_total_and_its_lines_disagreeing_is_said_neutrally_and_normal_pos_pass(self):
+        """A Business Central total equal to its lines, and a Portal total that adds unit
+        prices with tax (the Portal's own convention), are normal: no flag. A total its
+        lines truly disagree with says so neutrally with the lines' sum (to a reader who may
+        open every line), is never called suspect and is not ranked by. A unit-cost
+        outlier is measured only against peers in the line's own scope: a reader outside it
+        gets the reason without the ratio band."""
+        w = World()
+
+        def po(total, lines, *, audience="api:a", line_audience="api:a", due="2026-10-25"):
+            oid = po_with(w, total, "CAD", expected_date=due, audience=audience)
+            revise(w, oid, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+            for qty, cost, item in lines:
+                line = w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": qty, "bc_direct_unit_cost": cost,
+                    "bc_amount_excluding_tax": str(Decimal(qty) * Decimal(cost))},
+                    audience=line_audience)
+                w.link("PurchaseOrderLine.line_of", line, oid)
+                w.link("PurchaseOrderLine.for_item", line, item)
+            return oid
+
+        from decimal import Decimal
+        soap, box = w.obj("Item", {}), w.obj("Item", {})
+        bc = po("1500.00", [("100", "10", soap), ("50", "10", box)])          # = its lines
+        portal = po("22.60", [("100", "10", soap), ("50", "10", box)])        # (10+10) x 1.13
+        wrong = po("900.00", [("100", "10", soap), ("50", "10", box)],        # neither
+                   line_audience="api:lines")
+        for _ in range(3):   # the box's usual cost, on lines a reader of api:a can't open
+            po("10.00", [("1", "10", box)], audience="api:a", line_audience="api:lines")
+        typo = po("15000.00", [("1", "15000", box)], line_audience="api:lines")
+        self.run_engine(w)
+        items = {i["object_id"]: i for i in self.brief(EVERYTHING)["items"]}
+        self.assertNotIn("suspect", items[bc]["facts"]["amount"])
+        self.assertNotIn("disagree", items[bc]["facts"]["amount"])
+        self.assertNotIn("suspect", items[portal]["facts"]["amount"])
+        self.assertNotIn("disagree", items[portal]["facts"]["amount"])
+        self.assertEqual(bf.money_words(items[wrong]["facts"]),
+                         "order total 900.00 CAD and its lines disagree (lines sum to 1500 CAD)")
+        self.assertEqual(items[typo]["facts"]["amount"]["suspect"],
+                         "a line's unit cost is over 1,000 times what this item costs on "
+                         "other orders")
+        # a reader of api:a only: the lines' sum is not stated, the band is dropped
+        own = self.brief(EVERYTHING, may_read=lambda key: key == "api:a")
+        mine = {i["object_id"]: i for i in own["items"]}
+        # nothing its unopenable lines say, not even that they disagree; and unranked
+        self.assertEqual(bf.money_words(mine[wrong]["facts"]),
+                         "900.00 CAD total (not checked against its lines)")
+        self.assertNotIn("disagree", json.dumps(mine[wrong]))
+        self.assertEqual(mine[typo]["facts"]["amount"]["suspect"],
+                         "a line's unit cost is far above what this item costs on other "
+                         "orders")
+        # neither a disagreeing nor a suspect total is ranked by money
+        ranked = [i["object_id"] for i in self.brief(EVERYTHING)["items"]]
+        self.assertLess(ranked.index(bc), ranked.index(wrong))
+        self.assertLess(ranked.index(portal), ranked.index(typo))
+
+    def test_portal_currency_spellings_are_read_and_its_unit_price_total_said_as_such(self):
+        """The Portal writes CAD$ and USD$ (C$ and US$ read the same way): its orders carry
+        amounts. A Portal total that adds its lines' unit prices is stated as that, never
+        as an order's value, and is not ranked; a code no rule reads stays unstated."""
+        from decimal import Decimal
+        w = World()
+
+        def po(total, currency, lines, binding="portal.app_purchase_order"):
+            oid = po_with(w, total, currency, expected_date="2026-10-25", binding=binding)
+            revise(w, oid, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+            for qty, cost in lines:
+                line = w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": qty, "unit_price": cost,
+                    "line_total": str(Decimal(qty) * Decimal(cost))})
+                w.link("PurchaseOrderLine.line_of", line, oid)
+            return oid
+
+        whole = po("226.00", "USD$", [("1", "100"), ("1", "100")])     # its lines, with tax
+        small = po("113.00", "US$", [("1", "100")])
+        canadian = po("50.00", "C$", [("1", "50")])
+        summed = po("22.60", "CAD$", [("100", "10"), ("50", "10")])    # unit prices x 1.13
+        unknown = po("99.00", "CDN", [("1", "99")])
+        unpriced = po("0", "CAD$", [("400", "0")])                      # no price entered
+        no_lines = po("5000.00", "CAD$", [])          # an fm_generated/Sage-like order
+        bc_no_lines = po("5000.00", "CAD", [], binding="bc.purchase_orders")
+        self.run_engine(w)
+        out = self.brief(EVERYTHING)
+        items = {i["object_id"]: i for i in out["items"]}
+        self.assertEqual(items[whole]["facts"]["amount"]["currency"], "USD")
+        self.assertEqual(items[canadian]["facts"]["amount"]["currency"], "CAD")
+        self.assertEqual(bf.money_words(items[whole]["facts"]), "226.00 USD order total")
+        self.assertEqual(bf.money_words(items[summed]["facts"]),
+                         "22.60 CAD Portal total (its lines' unit prices added, not quantity "
+                         "x price)")
+        self.assertNotIn("amount", items[unknown]["facts"])
+        self.assertNotIn("amount", items[unpriced]["facts"])           # never "0 CAD total"
+        # a Portal total with no priced line to check it: said so, never ranked; a Business
+        # Central total is its order's own
+        self.assertEqual(bf.money_words(items[no_lines]["facts"]),
+                         "5000.00 CAD Portal total (lines not priced)")
+        self.assertEqual(bf.money_words(items[bc_no_lines]["facts"]), "5000.00 CAD order total")
+        order = [i["object_id"] for i in out["items"]]
+        # USD by money (226 before 113); the unit-price sum and the unknown code unranked
+        self.assertLess(order.index(whole), order.index(small))
+        self.assertLess(order.index(canadian), order.index(summed))
+        self.assertLess(order.index(small), order.index(unknown))
+        self.assertLess(order.index(bc_no_lines), order.index(no_lines))
+
+    def test_an_outlier_reads_suspect_even_when_its_total_follows_the_portal_convention(self):
+        """The suspicion is checked first: a Portal total that adds unit prices but one of
+        whose unit costs is far above the item's usual reads "suspect source data"."""
+        from decimal import Decimal
+        w = World()
+        item = w.obj("Item", {})
+
+        def po(total, qty, cost):
+            oid = po_with(w, total, "CAD$", expected_date="2026-10-25",
+                          binding="portal.app_purchase_order")
+            revise(w, oid, "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
+            line = w.obj("PurchaseOrderLine", {
+                "ordered_quantity": qty, "unit_price": cost,
+                "line_total": str(Decimal(qty) * Decimal(cost))},
+                binding="portal.app_purchase_order_line")
+            w.link("PurchaseOrderLine.line_of", line, oid)
+            w.link("PurchaseOrderLine.for_item", line, item)
+            return oid
+
+        for _ in range(3):
+            po("11.30", "1", "10")
+        outlier = po("1130.00", "100", "1000")    # unit prices x 1.13, the cost 100 x usual
+        self.run_engine(w)
+        found = {i["object_id"]: i for i in self.brief(EVERYTHING)["items"]}
+        self.assertEqual(bf.money_words(found[outlier]["facts"]),
+                         "suspect source data (a line's unit cost is over 100 times what "
+                         "this item costs on other orders)")
+
+    def test_due_today_is_not_late_and_acknowledged_items_stay_counted(self):
+        """The late count is Home's own (``late_total`` over the same read): a PO due today
+        is "due today", and an acknowledged late PO is still listed, marked so."""
+        from operator_api.backend import late_total
+        gaps = [{"id": "pe-1", "kind": "unconfirmed_po", "object_id": "PurchaseOrder:1",
+                 "summary": "s", "days_late": 3, "state": "open"},
+                {"id": "pe-2", "kind": "unconfirmed_po", "object_id": "PurchaseOrder:2",
+                 "summary": "s", "state": "open"},                       # due today
+                {"id": "pe-3", "kind": "late_po", "object_id": "PurchaseOrder:3",
+                 "summary": "s", "days_late": 40, "state": "acknowledged"}]
+        inbox = {"status": "read", "gaps": gaps, "complete": True}
+        out = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit=None)
+        kinds = {i["id"]: (i["event_type"], i["acknowledged"]) for i in out["items"]}
+        self.assertEqual(kinds, {"pe-1": ("po_late", False), "pe-2": ("po_due", False),
+                                 "pe-3": ("po_late", True)})
+        self.assertEqual(out["late_total"], late_total(inbox))
+        self.assertEqual(out["late_total"], 2)
+        # acknowledged after the others, even when longer late
+        self.assertEqual([i["id"] for i in out["items"]][-1], "pe-3")
+        self.assertEqual(out["acknowledged"], 1)
+        self.assertIn("[acknowledged]", bf.digest_text(out, first_name="Synth"))
+
+    def test_top_items_then_every_other_item_grouped_by_type_with_its_count(self):
+        """A large briefing is never cut silently: the top items one by one, every other
+        item in its type's group (the counts add up to the total), the since-visit view
+        counting exactly what it lists."""
+        gaps = [{"id": f"pe-l{n}", "kind": "unconfirmed_po", "object_id": f"PurchaseOrder:{n}",
+                 "summary": "s", "days_late": 100 - n, "first_seen": f"2026-10-{10 + n % 9}"}
+                for n in range(30)]
+        gaps += [{"id": f"pe-x{n}", "kind": "lot_near_expiry", "object_id": f"Lot:{n}",
+                  "summary": "s", "event": {"days": n}, "first_seen": "2026-10-18"}
+                 for n in range(60)]
+        inbox = {"status": "read", "gaps": gaps, "complete": True}
+        out = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit="2026-10-17")
+        self.assertEqual((out["count"], out["top"], len(out["items"])), (90, 7, 90))
+        groups = {g["event_type"]: g for g in out["groups"]}
+        self.assertEqual(sum(g["count"] for g in groups.values()), out["count"])
+        self.assertEqual((groups["po_late"]["count"], groups["lot_near_expiry"]["count"]),
+                         (30, 60))
+        text = bf.digest_text(out, first_name="Synth")
+        self.assertIn("- Late purchase order: 23 more", text)
+        self.assertIn("- Lot near expiry: 60 more", text)
+        new = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit="2026-10-17",
+                       since_visit=True)
+        self.assertEqual(new["count"], out["new_since_visit"])
+        self.assertEqual(len(new["items"]), new["count"])
+        self.assertTrue(all(i["new_since_visit"] for i in new["items"]))
+
+    def test_hidden_counts_follow_each_types_policy(self):
+        """Hidden events are counts only, and for a type whose very existence may sit in
+        an excluded person's mailbox (vendor mail) not even a count is given."""
+        inbox = {"status": "read", "gaps": [], "complete": True}
+        out = bf.build(inbox, routing=EVERYTHING, last_visit=None,
+                       hidden={"lot_on_hold": 592, "vendor_no_reply": 3,
+                               "vendor_terms_unapplied": 1})
+        self.assertEqual(out["hidden_by_type"], {"lot_on_hold": 592})
+        self.assertEqual(out["hidden"], 592)
+        text = bf.digest_text(out, first_name="Synth")
+        self.assertIn("Batch on quality hold: 592 more for your team are in places you "
+                      "can't open (a count only).", text)
+        self.assertNotIn("vendor has not replied", text.lower())
+        types = {t["event_type"]: t for t in out["types"]}
+        self.assertIsNone(types["vendor_no_reply"]["found_live"])
+        self.assertIn("Vendor replies: not checked this run.", text)
+
+    def test_digest_preview_text(self):
+        w, ids = self.world()
+        self.run_engine(w)
+        out = self.brief(PROC)
+        text = bf.digest_text(out, first_name="Synth Person", labels={ids["big"]: "PO SYNTH-9"})
+        self.assertTrue(text.startswith(
+            "Hello Synth Person,\n\nToday in one line: In the latest check: 4 delivery "
+            "dates slipped.\n\n4 items need your attention as of 2026-10-19."))
+        self.assertIn("1. Delivery date slipped: PO SYNTH-9", text)
+        self.assertIn("(9000.00 USD order total)", text)
+        self.assertIn("Next: Check whether the new date", text)
+        self.assertIn("1 more you may see is routed to other teams.", text)
+        self.assertTrue(text.endswith("(Preview only: this digest is not sent.)"))
+
+    def test_every_event_type_builds_with_a_next_step_for_every_department(self):
+        """One gap of every event kind, read by an admin and by a reader of each department
+        any type names: the briefing builds (an undated PO once had no next step and broke
+        every reader's briefing) and every item says a next step and a line of its type."""
+        gaps = [{"id": f"pe-{n}", "kind": kind, "object_id": f"X:{n}", "summary": "s",
+                 "first_seen": "2026-10-18"} for n, kind in enumerate(bf.EVENT_KINDS)]
+        inbox = {"status": "read", "gaps": gaps, "complete": True}
+        departments = {d for spec in bf.EVENT_TYPES.values() for d in spec["departments"]}
+        for routing in [EVERYTHING, *(bf.Routing(frozenset({d})) for d in departments)]:
+            out = bf.build(inbox, routing=routing, hidden={}, last_visit=None)
+            self.assertTrue(out["items"], routing)
+            for item in out["items"]:
+                self.assertTrue(item["next_action"]["text"])
+                self.assertIn(item["event_type"], bf.TODAY_WORDS)
+        self.assertEqual(set(bf.TODAY_WORDS), set(bf.EVENT_TYPES))
+        self.assertLessEqual(set(bf.NEXT_ACTIONS_BY_DEPARTMENT), set(bf.EVENT_TYPES))
+
+    def test_the_next_step_is_said_for_the_department_that_acts_on_it(self):
+        """A Quality reader is never told to "ask Quality"; Purchasing chases the supplier of
+        an order at risk while Sales tells the customer; an admin, routed everything, gets
+        the general step; QA and QC speak as Quality."""
+        gaps = [{"id": "pe-h", "kind": "lot_on_hold", "object_id": "Batch:1", "summary": "s"},
+                {"id": "pe-r", "kind": "order_at_risk", "object_id": "SalesOrder:1",
+                 "summary": "s", "event": {"orders_affected": 1}}]
+        inbox = {"status": "read", "gaps": gaps, "complete": True}
+
+        def steps(routing):
+            out = bf.build(inbox, routing=routing, hidden={}, last_visit=None)
+            return {i["event_type"]: i["next_action"]["text"] for i in out["items"]}
+        for code in ("QUALITY", "QA", "QC"):
+            hold = steps(bf.Routing(frozenset({code})))["lot_on_hold"]
+            self.assertNotIn("Ask Quality", hold)
+            self.assertIn("decide its release", hold)
+        self.assertIn("Ask Quality", steps(bf.Routing(frozenset({"PROD"})))["lot_on_hold"])
+        self.assertIn("Chase the supplier", steps(bf.Routing(frozenset({"PROC"})))[
+            "customer_order_at_risk"])
+        self.assertIn("Tell the customer", steps(bf.Routing(frozenset({"ACCTMGMT"})))[
+            "customer_order_at_risk"])
+        self.assertEqual(steps(EVERYTHING), {name: bf.NEXT_ACTIONS[name][0]
+                                             for name in ("lot_on_hold",
+                                                          "customer_order_at_risk")})
+
+    def test_the_fewest_days_to_expiry_first_and_what_the_latest_check_found_new(self):
+        """Days left to expiry count down (tomorrow before next month); days late count up;
+        at equal orders and money what the latest check found new comes before the backlog."""
+        run = "2026-11-01T08:00:00+00:00"
+        gaps = [{"id": f"pe-x{d}", "kind": "lot_near_expiry", "object_id": f"Lot:{d}",
+                 "summary": "s", "event": {"days": d}, "first_seen": "2026-10-20"}
+                for d in (30, 1, 12, 0)]
+        gaps += [{"id": "pe-old", "kind": "unconfirmed_po", "object_id": "PurchaseOrder:1",
+                  "summary": "s", "days_late": 110, "first_seen": "2026-10-20"},
+                 {"id": "pe-new", "kind": "unconfirmed_po", "object_id": "PurchaseOrder:2",
+                  "summary": "s", "days_late": 1, "first_seen": run}]
+        out = bf.build({"status": "read", "gaps": gaps, "complete": True, "run_at": run},
+                       routing=EVERYTHING, hidden={}, last_visit=None)
+        order = [i["id"] for i in out["items"]]
+        self.assertEqual([i for i in order if i.startswith("pe-x")],
+                         ["pe-x0", "pe-x1", "pe-x12", "pe-x30"])
+        self.assertEqual(order[:2], ["pe-new", "pe-old"])
+        self.assertIn("then what the latest check found new", out["rank_basis"])
+
+    def test_today_in_one_line(self):
+        """The line names what is new (the latest check, or since the reader's last visit)
+        worst first, else what is still open with the soonest expiry; an empty briefing says
+        so or counts only what the reader can't open; at most three kinds are named."""
+        run = "2026-11-01T08:00:00+00:00"
+
+        def gap(n, kind, first="2026-10-20", **extra):
+            return {"id": f"pe-{n}", "kind": kind, "object_id": f"X:{n}", "summary": "s",
+                    "first_seen": first, **extra}
+        gaps = [gap(1, "unconfirmed_po", run, days_late=1),
+                gap(2, "late_po", run, days_late=2), gap(3, "unconfirmed_po", run, days_late=1),
+                gap(4, "order_at_risk", run, event={"orders_affected": 1}),
+                gap(5, "lot_near_expiry", event={"days": 9}),
+                gap(6, "lot_near_expiry", event={"days": 4})]
+        inbox = {"status": "read", "gaps": gaps, "complete": True, "run_at": run}
+        out = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit=None)
+        self.assertEqual(out["today"], "In the latest check: 1 customer order now at risk "
+                                       "from late POs; 3 POs went late.")
+        self.assertTrue(bf.digest_text(out, first_name="S").startswith(
+            "Hello S,\n\nToday in one line: In the latest check: 1 customer order"))
+        visit = bf.build(inbox, routing=EVERYTHING, hidden={}, last_visit="2026-11-02")
+        self.assertEqual(visit["today"], "Nothing new since your last visit; still open: "
+                         "1 customer order at risk from late POs; 3 POs late; 2 lots near "
+                         "expiry (the first in 4 days).")
+        quality = bf.build(inbox, routing=bf.Routing(frozenset({"QUALITY"})),
+                           hidden={"lot_on_hold": 5}, last_visit=None)
+        self.assertEqual(quality["today"], "Nothing new in the latest check; still open: "
+                                           "2 lots near expiry (the first in 4 days); 5 "
+                                           "more you can't open.")
+        empty = {"status": "read", "gaps": [], "complete": True}
+        self.assertEqual(bf.build(empty, routing=EVERYTHING, hidden={"lot_on_hold": 5},
+                                  last_visit=None)["today"],
+                         "Nothing you can open needs attention; 5 more for your team are in "
+                         "places you can't open.")
+        self.assertEqual(bf.build(empty, routing=EVERYTHING, hidden={}, last_visit=None)[
+            "today"], "Nothing routed to you needs attention today.")
+        none = bf.build(inbox, routing=bf.Routing(basis="no_department_on_record"),
+                        hidden={}, last_visit=None)
+        self.assertIn("No department is on record", none["today"])
+        many = [gap(n, kind, run) for n, kind in enumerate(
+            ("lot_on_hold", "lot_near_expiry", "quote_accepted_no_order",
+             "invoice_quantity_mismatch", "undated_po"), start=10)]
+        line = bf.build({"status": "read", "gaps": many, "complete": True, "run_at": run},
+                        routing=EVERYTHING, hidden={}, last_visit=None)["today"]
+        self.assertEqual(line.count(";"), 3)
+        self.assertTrue(line.endswith("; 2 more kinds."))
+
+    def test_routing_from_an_employee_entitlement(self):
+        class Ent:
+            actor = object()
+            routing_departments = frozenset({"PROC"})
+            portal_role = "USER"
+        self.assertEqual(bf.Routing.of(Ent()).departments, {"PROC"})
+        Ent.routing_departments = frozenset()
+        self.assertEqual(bf.Routing.of(Ent()).basis, "no_department_on_record")
+        self.assertEqual(bf.Routing.of(None).basis, "not_an_employee")
+        Ent.actor = None
+        self.assertEqual(bf.Routing.of(Ent()).basis, "not_an_employee")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -262,6 +262,53 @@ class AudienceTests(CaptureCase):
         self.assertEqual(self.visible(READER), [])
 
 
+class TransientAclTests(CaptureCase):
+    """Live 2026-11-01: 63 items of six lists stayed ``unreadable`` run after run while a
+    later single read of each answered cleanly; a throttled item permission read is now read
+    once more at the end of its list's listing."""
+
+    def throttle(self, items: set[str], times: int) -> list[float]:
+        """Throttle (429) each item's first ``times`` permission reads; the pauses taken."""
+        left = {item: times for item in items}
+        served = self.graph.__call__
+
+        def sender(method, url, headers, body, timeout, max_bytes):
+            found = re.search(r"/items/(\d+)/permissions$", unquote(urlsplit(url).path))
+            if found and left.get(found[1], 0) > 0:
+                left[found[1]] -= 1
+                self.graph.calls.append((method, url))
+                return j(429, {"error": {"code": "TooManyRequests"}})
+            return served(method, url, headers, body, timeout, max_bytes)
+        api, _transport = graph_read.build_graph(ENV, sender=sender)
+        pauses: list[float] = []
+        self.capture = ListCapture(self.store, api, self.audience, CAPTURE,
+                                   sleep=pauses.append)
+        return pauses
+
+    def test_a_throttled_permission_read_is_read_again_and_the_list_completes(self):
+        pauses = self.throttle({"2", "4"}, times=1)
+        run = self.capture.run(scope())["lists"][0]
+        self.assertEqual(run["status"], "complete", run)
+        counts = run["counts"]
+        self.assertEqual((counts["acl_transient"], counts["acl_recovered"],
+                          counts["acl_unreadable"], counts["acl_read"]), (2, 2, 0, 5))
+        self.assertEqual(pauses, [csl.ACL_RETRY_PAUSE_SECONDS])
+        self.assertEqual(sorted(r["key"]["id"] for r in self.visible(READER)),
+                         ["1", "2", "3", "4", "5"])
+        self.assertEqual(self.visible(OUTSIDER), [])
+
+    def test_a_read_that_keeps_failing_stays_unreadable_and_serves_no_reader(self):
+        self.throttle({"3"}, times=2)
+        run = self.capture.run(scope())["lists"][0]
+        self.assertEqual((run["status"], run["reasons"]), ("incomplete", ["acl_unreadable"]))
+        self.assertEqual((run["counts"]["acl_recovered"], run["counts"]["acl_unreadable"]),
+                         (0, 1))
+        self.assertEqual(sorted(r["key"]["id"] for r in self.visible(READER)),
+                         ["1", "2", "4", "5"])
+        # exactly one re-read of the failing item: two permission GETs for it, no loop
+        self.assertEqual(sum(p.endswith("/items/3/permissions") for p in self.graph.gets()), 2)
+
+
 class ResolverTests(CaptureCase):
     """The ``sharepoint-list://`` citation through the case runtime and the projected
     ``SharePointListItem`` through the ontology host, per reader."""

@@ -307,8 +307,46 @@ class McSourcesTests(unittest.TestCase):
                   "--scope", "ops", "--brain-items"], environ=ENV, hub=hub(self.fake))
         units = self.capture(CaptureSpec("ops", ("landed cost",)))["units"]
         self.assertEqual([u["collection"] for u in units],
-                         ["tasks", "approvals", "task_events", "buckets", "knowledge"])
+                         ["tasks", "approvals", "task_events", "buckets", "projects",
+                          "knowledge"])
         self.assertTrue(all(u.startswith(MC) for _m, u, _b in self.fake.calls))
+
+    def test_projects_come_from_context_reads_archived_marked_and_gated_per_project(self):
+        add_hr_project(self.fake)
+        self.fake.archived_projects.add("PRJ-HR")
+        units = {u["collection"]: u for u in self.capture(CaptureSpec("ops"))["units"]}
+        self.assertEqual((units["projects"]["state"], units["projects"]["records_current"]),
+                         ("complete", 2))
+        # only the context reads the capture already uses; mc_list_projects is never sent
+        self.assertNotIn("mc_list_projects", self.fake.tool_names())
+        reads = [json.loads(b)["params"]["arguments"] for _m, _u, b in self.fake.calls
+                 if json.loads(b)["params"]["name"] == "mc_get_context"]
+        self.assertIn({"depth": "compact"}, reads)
+        self.assertIn({"depth": "full", "taskIds": ["TASK-1"]}, reads)
+        rows = {r["row"]["id"]: r for r in self.store.records(
+            OPS, KIND, unit_of("ops", "projects"))["items"]}
+        self.assertEqual(rows["PRJ-HR"]["row"]["retired_in_mc"], "project_archived")
+        self.assertIsNone(rows["PRJ-OPS"]["row"]["retired_in_mc"])
+        self.assertEqual(rows["PRJ-OPS"]["row"]["status"], "active")
+        self.assertEqual({r["meta"]["project"] for r in rows.values()}, {"PRJ-OPS", "PRJ-HR"})
+        # a reader granted the collection and one project sees that project alone; the
+        # planner (tasks only) and an outsider see none
+        pm = Actor(TENANT, frozenset({"staff:pm"}), "restricted")
+        scoped = LiveSourceAudience({"mc:ops:projects": ["staff:pm"],
+                                     "mc:ops:project:PRJ-OPS": ["staff:pm"]}, tenant=TENANT)
+        with CaptureStore(Path(self.tmp.name) / "mc.sqlite", scoped) as store:
+            seen = store.records(pm, KIND, unit_of("ops", "projects"))["items"]
+            self.assertEqual([r["row"]["id"] for r in seen], ["PRJ-OPS"])
+        for actor in (TASKS_ONLY, OUTSIDER):
+            with self.assertRaises(CaptureError):
+                self.store.records(actor, KIND, unit_of("ops", "projects"))
+
+    def test_projects_without_a_listed_task_are_the_compact_rows_and_partial(self):
+        self.fake.tasks.clear()
+        units = {u["collection"]: u for u in self.capture(CaptureSpec("ops"))["units"]}
+        self.assertEqual((units["projects"]["state"], units["projects"]["reason"]),
+                         ("partial", "no_anchor_task"))
+        self.assertEqual(units["projects"]["records_current"], 1)
 
     def test_records_carry_provenance_and_the_audience_trims_every_read(self):
         self.capture(CaptureSpec("ops", ("landed cost",)))
@@ -608,7 +646,8 @@ class McSourcesTests(unittest.TestCase):
                                  ("complete", None, 0, len(self.fake.tasks), NO_DROPS))
                 self.assertEqual(bool(self.reads("mc_search_tasks")), buckets > 1)
                 if buckets == 1:  # the context's absentees, read again by id, once each
-                    again = self.reads("mc_get_context")[1:]
+                    # the last two: the projects unit's compact and anchored reads
+                    again = self.reads("mc_get_context")[1:-2]
                     self.assertEqual([len(a["taskIds"]) for a in again],
                                      [3] if tasks == 3 else [50, 50, 20])
                     self.assertEqual(sorted(i for a in again for i in a["taskIds"]),
@@ -760,7 +799,7 @@ class McSourcesTests(unittest.TestCase):
         result = self.capture(CaptureSpec("ops", ("PLX Agent Workbench",)))
         self.assertEqual([(u["collection"], u["reason"]) for u in result["units"]
                           if u["reason"] == "source_error"], [])
-        self.assertEqual(len(result["units"]), 5)
+        self.assertEqual(len(result["units"]), 6)
         self.assertIn("mc_get_task", result["tools_called"])
         events = self.store.records(OPS, "mission_control", unit_of("ops", "task_events"),
                                     limit=1000)["items"]
@@ -846,6 +885,7 @@ class McSourcesTests(unittest.TestCase):
         self.assertEqual(unit_states(failed), {
             "tasks": ("in_progress", "source_error", "auth_refused", 3),
             "buckets": ("in_progress", "source_error", "auth_refused", 1),
+            "projects": ("in_progress", "source_error", "auth_refused", 1),
             "knowledge": ("in_progress", "source_error", "auth_refused", 0)})
         del self.fake.failures["mc_search_tasks"]
         self.assertEqual(refused("scope_operator_mismatch",
@@ -866,7 +906,7 @@ class McSourcesTests(unittest.TestCase):
                 summary = self.capture(CaptureSpec("fresh"))
                 self.assertEqual(unit_states(summary), {
                     c: ("in_progress", "source_error", "search_tasks_actor_unbound", 0)
-                    for c in ("tasks", "buckets")})
+                    for c in ("tasks", "buckets", "projects")})
         self.fake.principal = "sp_mcp_workbench"
         self.assertEqual(unit_states(self.capture(CaptureSpec("fresh")))["tasks"],
                          ("complete", None, None, 3))
@@ -1011,9 +1051,10 @@ class LiveCheckSpecTests(unittest.TestCase):
             return code, json.loads(out.getvalue())
 
         code, document = run(("http", 503))
+        # the projects unit reads the same context: blocked with it
         self.assertEqual(lv.blocked_parts(document), [
-            {"part": "tasks", "source": "mission-control-mcp", "error_code": "http_503",
-             "cause": "upstream_outage"}])
+            {"part": part, "source": "mission-control-mcp", "error_code": "http_503",
+             "cause": "upstream_outage"} for part in ("tasks", "projects")])
         # The live verifier then checks only expect_blocked: blocked, never pass or fail.
         self.assertEqual(lv.check_expectations(SPEC, code, document, SPEC["expect_blocked"]),
                          ["evidence_label != expected"])
@@ -1024,7 +1065,7 @@ class LiveCheckSpecTests(unittest.TestCase):
                                              "mc_search_knowledge"))
         self.assertEqual([(p["part"], p["error_code"]) for p in lv.blocked_parts(document)],
                          [("tasks", "http_503"), ("buckets", "http_503"),
-                          ("knowledge", "http_503")])
+                          ("projects", "http_503"), ("knowledge", "http_503")])
         self.assertEqual(lv.check_expectations(SPEC, code, document, SPEC["expect_blocked"]),
                          ["evidence_label != expected"])
         code, document = run(("rpc", -32602))

@@ -356,7 +356,7 @@
           "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "maxItems": 400
         },
-        "own_document_disabled": {
+        "live_relations": {"description": "The record relations of the live sources a rubric card names (scripts/eval_case_cards.py live_relations): a Portal reporting API relation (public.*, sage.*) or a BC entity set (bc.<entitySet>). A gate-passed claim on a served row of one is evidence when the card names no record; a card that names one needs that record (evals.score.evidence_claims, path live_record, scorer /27).", "type": "array", "items": {"type": "string", "pattern": "^(?:(?:public|sage)\\.[a-z_][a-z0-9_]*|bc\\.[a-z][A-Za-z]*)$"}, "maxItems": 40}, "own_document_disabled": {
           "description": "Why an audit closed the own-document evidence path for this card (scripts/eval_case_cards.py card_scoring; evals.score.own_document_evidence, scorer /21): other paths still apply.",
           "type": "string",
           "minLength": 1,

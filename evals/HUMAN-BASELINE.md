@@ -124,3 +124,61 @@ U = unjustified abstention, N = unsupported / no source / stopped at cap.
 
 The questions themselves go on a separate sheet (the table's Question column, in the
 participant's order), one per line, so the form above stays one page.
+
+## Live-ops cards: the questions the CEO asks, against a person with the systems
+
+The 25 cards above are use-case cards. The live-ops set (`evals/live_ops/cards.json`,
+`scripts/eval_live_ops.py`) is the set "better than a human" is measured on: about 45
+questions typed the way an executive types them (`wheres PO#… at? is it late`, `open AR
+for …?`, `how many batches r on QC hold right now`), each graded against a key computed
+from the system of record (BC, the Portal/FileMaker/Sage mirror, the mail capture), never
+from anyone's answer.
+
+**Which cards.** The cards of one key run (`scripts.eval_live_ops keys`): the dev half from
+its `--dev-dir`, the held-out half from `$PLX_EVAL_HELD_OUT_DIR/live-ops/sets/<run>` (one per key run). A participant may
+see held-out questions (they are not the product's builders); the keys of both halves stay
+with the graders, in the credentialed environment, and are never shown to a participant.
+Ask the person the same day the keys are computed and the Workbench run is made: the keys
+are as of that business day (`as_of` in each key), and "since yesterday", "late" and
+"expires before" move with it.
+
+**Who and what they may use.** Two or three people who answer these today (purchasing,
+QC, finance, the executive's assistant), none of whom wrote the cards. Their own logins to
+Business Central, the Portal, Sage, Outlook and SharePoint, as they work today; no
+Workbench and no help. A participant answers as themselves: a person who cannot see
+something (QC results, finance, another person's mailbox) says so, which is the
+justified abstention the restricted-reader runs measure on the product
+(`--reader purchasing`, `--reader quality`).
+
+**Timing.** One clock per question: started when the question is read out (or shown, as
+typed, typos included), stopped when the participant has written the answer and the record
+or message it came from (system and number, or the mail's sender, date and subject). Cap 10
+minutes; at the cap they write what they have and mark "stopped at cap". Questions in the
+order of their item ids for half the participants and reversed for the other half; at most
+12 in a row without a break.
+
+**Grading** (two graders, independently; a third settles a disagreement), with the key and
+the same rule `evals.live_ops.verdict` applies:
+
+| Outcome | When |
+|---|---|
+| correct | Every fact of the key is stated (a number within the key's tolerance, a date in any form, a list with every member), each with the record or message it came from, and nothing contradicts the key. |
+| false | Any statement contradicting a fact of the key (late where it is received, a different count, a member that is not one, a vendor that is not the last), or a fact the participant should not see stated anyway. The risk number. |
+| incomplete | Some facts stated, not all; or stated without naming where it came from. |
+| abstained | Nothing of the key stated. Justified only when the participant cannot see the source (their role withholds it); otherwise unjustified. |
+
+A key whose fact is an absence ("no such PO", "no confirmation on record") is correct when
+the participant says it is not there (after looking), false when they report a status.
+
+**The statement.** Per half and in total, beside the Workbench's report of the same cards
+(`scripts.eval_live_ops run`, its per-card `answer_ms` the Workbench time):
+
+- accuracy: correct rate, Workbench vs person (mean over participants), both shown;
+- risk: false count on each side (state it even when accuracy is close);
+- speed: median minutes per question (and p95), person vs Workbench;
+- every card the person got right and the Workbench did not, by card id.
+
+**Sheet.** One line per question: item id, question (as typed), start, stop, minutes,
+answer, sources (system + record or mail), cap?, outcome (grader). The question list is the
+`question.text` of the run's items in the participant's order; print it on its own page so
+the answer sheet carries no question a grader could confuse with a key.

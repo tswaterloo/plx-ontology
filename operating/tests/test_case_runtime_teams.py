@@ -270,8 +270,15 @@ class TeamsCitationTests(tct.CaptureCase):
             # A passage of a chat message is a quote of it, checked against the message.
             self.assertEqual(self.claim(actor, "PO12172025 is 4,200 USD", handle)["passed"],
                              actor in members, actor)
+            # plx.read serves the captured message text by the same gate (AG-02, AG-04:
+            # the agenda cited messages whose text no tool would read).
+            read = host.call("plx.read", {"citation": handle}, actor)
             if actor in members:
+                self.assertEqual(read["status"], "resolved", read)
+                self.assertIn(tct.SECRET_TEXT, json.dumps(read))
                 continue
+            self.assertEqual(read["status"], "unresolvable", read)
+            self.assertNotIn(tct.SECRET_TEXT, json.dumps(read))
             hidden = [host.call(name, {"from" if name != "plx.object" else "object_id": o},
                                 actor) for o in found[tct.MEMBER]
                       for name in ("plx.object", "plx.timeline")]

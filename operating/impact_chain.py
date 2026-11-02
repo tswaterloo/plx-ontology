@@ -58,7 +58,9 @@ Per affected customer order (an order cluster: an order and its recorded twins):
   (no money) and ``po_impact_margin`` (finance-marked citations: finance readers only).
 
 Orders whose every readable status is closed (``CLOSED_ORDER``) and assembly orders whose
-every readable status is done or cancelled (``CLOSED_ASSEMBLY``) put nothing at risk and
+status is done or cancelled (``CLOSED_ASSEMBLY``; the record of the strongest authority the
+reader can read decides, so a stale Portal copy never reopens a realized FileMaker AO) put
+nothing at risk and
 are counted as excluded.
 
 Two drivers share the walk: ``plan_run`` (the ``plx.investigate`` engine of
@@ -74,6 +76,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+import functools
 import hashlib
 import json
 import re
@@ -88,7 +91,11 @@ MAX_STEP_CHARS = 400
 MAX_GAP_SUBJECTS = 5
 CLOSED_ORDER = frozenset({"shipped", "invoiced", "closed", "cancelled", "canceled",
                           "completed", "complete", "delivered"})
-CLOSED_ASSEMBLY = frozenset({"realized", "completed", "complete", "cancelled", "canceled"})
+# FileMaker's words, then the Portal manufacturing order's post-production states (its
+# status transitions: COMPLETED -> RELEASED -> CLOSED, REJECTED -> CLOSED; the FM migration
+# writes a realized AO as RELEASED).
+CLOSED_ASSEMBLY = frozenset({"realized", "completed", "complete", "cancelled", "canceled",
+                             "released", "closed", "rejected"})
 LEAD_TIME_GAP = "assembly_lead_time_not_recorded"
 
 # Each recorded link the walk crosses, by its role.
@@ -533,14 +540,50 @@ def _closed(statuses: Iterable[Any], closed: frozenset[str]) -> bool:
     return bool(said) and all(s in closed for s in said)
 
 
+@functools.lru_cache(maxsize=1)
+def status_authority() -> dict[str, int]:
+    """lineage -> rank of ``AssemblyOrder.status`` in the schema's authority precedence
+    (FileMaker first, its Portal copies after)."""
+    from ontology.schema import load_schema
+    prop = next(p for p in load_schema().object_types["AssemblyOrder"]["properties"]
+                if p["name"] == "status")
+    return {lineage: rank for rank, tier in enumerate(prop["authority"]["precedence"])
+            for lineage in tier["lineage"]}
+
+
+def _assembly_closed(statuses: Iterable[Any]) -> bool:
+    """Whether an assembly order (all its records' readable statuses) is done or cancelled,
+    decided by the strongest authority among them: a status given as (text, lineage) of a
+    higher-precedence record overrides the others (a Portal copy can be a stale snapshot:
+    MO-FM rows keep the FM status of the migration); bare texts and unranked lineages
+    decide only together, every one closed."""
+    ranks = status_authority()
+    ranked: list[tuple[int, Any]] = []
+    plain: list[Any] = []
+    for status in statuses:
+        if isinstance(status, tuple):
+            rank = ranks.get(status[1])
+            (plain if rank is None else ranked).append(
+                status[0] if rank is None else (rank, status[0]))
+        else:
+            plain.append(status)
+    if ranked:
+        best = min(rank for rank, _ in ranked)
+        decided = [text for rank, text in ranked if rank == best]
+        if any(_text(t) is not None for t in decided):
+            return _closed(decided, CLOSED_ASSEMBLY)
+    return _closed(plain + [t for _r, t in ranked], CLOSED_ASSEMBLY)
+
+
 def assess(late: Mapping[str, Late], graph: Graph, *,
            required: Mapping[str, Sequence[tuple[date, str]]],
            order_status: Mapping[str, Sequence[str]],
-           assembly_status: Mapping[str, Sequence[str]]) -> Assessment:
+           assembly_status: Mapping[str, Sequence[Any]]) -> Assessment:
     """Walk every late or slipping PO and put days at risk on each order it feeds.
 
-    ``required``: order object id -> [(required date, its reference)]; ``order_status``
-    and ``assembly_status``: object id -> readable status texts."""
+    ``required``: order object id -> [(required date, its reference)]; ``order_status``:
+    object id -> readable status texts; ``assembly_status``: object id -> readable statuses,
+    each a text or (text, lineage) (``_assembly_closed``)."""
     excluded = {"po_not_late": 0, "order_closed": 0, "assembly_order_closed": 0}
     considered: list[str] = []
     undetermined: list[str] = []
@@ -567,9 +610,9 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
         breaks.extend(stops)
         for chain in found:
             closed_ao = next((r for r in chain.records if _type_of(r) == "AssemblyOrder"
-                              and _closed([s for t in graph.cluster(AO_TWIN, r)
-                                           for s in assembly_status.get(t, ())],
-                                          CLOSED_ASSEMBLY)), None)
+                              and _assembly_closed([s for t in graph.cluster(AO_TWIN, r)
+                                                    for s in assembly_status.get(t, ())])),
+                             None)
             if closed_ao is not None:
                 excluded["assembly_order_closed"] += 1
                 continue
@@ -978,7 +1021,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 for oid, got in required_entries.items()}
     statuses = {oid: [e.get("value") for e in got]
                 for oid, got in by_object("order_status").items()}
-    ao_statuses = {oid: [e.get("value") for e in got]
+    ao_statuses = {oid: [(e.get("value"), (e.get("citation") or {}).get("lineage"))
+                         for e in got]
                    for oid, got in by_object("assembly_status").items()}
     found = assess(late, graph, required=required, order_status=statuses,
                    assembly_status=ao_statuses)
@@ -1246,7 +1290,8 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
                 for oid, entry in sales.items()}
     statuses = {oid: [row.get("value") for p in ("status", "fm_status", "bc_status")
                       for row in entry["props"].get(p, ())] for oid, entry in sales.items()}
-    ao_statuses = {oid: [row.get("value") for row in entry["props"].get("status", ())]
+    ao_statuses = {oid: [(row.get("value"), row.get("lineage"))
+                         for row in entry["props"].get("status", ())]
                    for oid, entry in aos.items()}
     found = assess(late, graph, required=required, order_status=statuses,
                    assembly_status=ao_statuses)

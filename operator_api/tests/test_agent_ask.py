@@ -82,6 +82,22 @@ class ScriptedSession:
         return runner.AgentRun(events, "" if self.stopped else self.final_text, usage, {})
 
 
+class FailedSession:
+    """A Claude Code session that ends as the CLI ends one whose login cannot run it: no
+    tool call, an error result with the CLI's own words (``usage``: the run's usage)."""
+
+    gates_final_reply = True
+
+    def __init__(self, on_line, text, usage):
+        self.on_line, self.text, self.usage = on_line, text, usage
+
+    def run(self, prompt, host):
+        line = {"type": "result", "subtype": "success", "is_error": True, "result": self.text}
+        self.on_line(json.dumps(line) + "\n")
+        run = runner.parse_stream_json([json.dumps(line)], ["plx.find"])
+        return runner.AgentRun([], run.final_text, {**run.usage, **self.usage}, {})
+
+
 def answer_block(handle, value, extra_text=""):
     return ("```json\n" + json.dumps({
         "format": "plx-eval-answer/v1", "answerability": "answerable",
@@ -212,9 +228,43 @@ class AgentPath(unittest.TestCase):
             on_line, [tool_use(1, "plx.find", {"query": "x"})], "", stopped=True),
             seconds=45)
         answer = self.ask(self.ops, "What is the status of the late order?")[-1][0][1]
+        # stopped with nothing passed: the assistant was unavailable (its time limit),
+        # never "no records answer this"
         self.assertEqual(answer["outcome"], "abstained")
-        self.assertEqual(answer["direct_answer"], be.STILL_WORKING.format(seconds=45))
+        self.assertTrue(answer["direct_answer"].startswith(
+            "The assistant is unavailable right now (it reached its 45 s time limit)."))
+        self.assertIn("narrow the question", answer["direct_answer"])
+        self.assertNotIn("couldn't find", answer["direct_answer"])
+        self.assertEqual(answer["assistant_unavailable"], "it reached its 45 s time limit")
         self.assertEqual(answer["facts"], [])
+
+    def test_a_session_the_login_cannot_run_says_the_assistant_is_unavailable(self):
+        """The CLI's weekly limit, a sign-in failure or a crash is the assistant being
+        unavailable, said with its reason, never "no records you can see answer this";
+        what the records read without it show stays (the late PO's trail and list fact)."""
+        label = self.late[0]["label"]
+        cases = [("You've hit your weekly limit \u00b7 resets Nov 2, 3pm (UTC)",
+                  {"exit_code": 1}, "its usage limit has been reached"),
+                 ("Claude AI usage limit reached|1793548800", {}, "its usage limit has been "
+                                                                  "reached"),
+                 ("Invalid API key \u00b7 Please run /login", {"exit_code": 1},
+                  "it could not sign in"),
+                 ("", {"exit_code": 137}, "it stopped with an error")]
+        for text, usage, reason in cases:
+            with self.subTest(reason=reason, text=text[:20]):
+                self.use(self.ops, lambda on_line, t=text, u=usage: FailedSession(
+                    on_line, t, u))
+                answer = self.ask(self.ops, f"What is going on with PO {label}?")[-1][0][1]
+                said = answer["direct_answer"]
+                self.assertTrue(said.startswith(
+                    f"The assistant is unavailable right now ({reason})."), said)
+                self.assertNotIn("couldn't find", said)
+                self.assertNotIn("weekly limit", said)   # the CLI's words stay out
+                self.assertEqual(answer["assistant_unavailable"], reason)
+                self.assertEqual(answer["outcome"], "partial")
+                self.assertIn("Here is what the records show.", said)
+                self.assertIn(label, said)
+                self.assertTrue(answer["trail"] and answer["trail"]["trails"])
 
     def test_late_purchase_orders_answer_from_the_list_home_shows(self):
         self.use(self.ops, lambda on_line: self.fail("the list never runs a session"))
@@ -224,7 +274,7 @@ class AgentPath(unittest.TestCase):
         self.assertEqual([s["object_id"] for s in answer["subjects"]],
                          [p["object_id"] for p in self.late])
         self.assertTrue(answer["direct_answer"].startswith(f"{len(self.late)} purchase order"))
-        self.assertIn("This is the list on your home page.", answer["direct_answer"])
+        self.assertIn("All of them are listed below", answer["direct_answer"])
         # each late order names its supplier as the reader reads it, on Home and here
         for po in self.late:
             self.assertTrue(po["supplier"], po)

@@ -286,6 +286,7 @@ Stdlib only (the PDF reader is the extractor's optional ``pypdf``).
 
 from __future__ import annotations
 
+import contextlib
 from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
@@ -2290,8 +2291,113 @@ MAX_FIELDS = 1024
 _FIELDS: ReadingMemo[dict[str, Any] | None] = ReadingMemo(MAX_FIELDS, lambda _found: 1)
 
 
+def _bytes_kept(blobs: str | Path, digest: str, text_digest: str | None) -> bool:
+    """Some form of a file's bytes (and of its pinned OCR text) is on disk: as
+    ``captured_text`` requires before serving a kept reading."""
+    from integrations.captured_text import COMPRESSED_SUFFIX, DROPPED_SUFFIX, blob_path
+
+    return all(any(blob_path(blobs, d, suffix).exists()
+                   for suffix in ("", COMPRESSED_SUFFIX, DROPPED_SUFFIX))
+               for d in (digest, text_digest) if d is not None)
+
+
+class KeptFields:
+    """The fields of documents kept between builds (``_FIELDS``' backing while a
+    projection build holds :func:`kept_fields`), under the digest of the code that
+    parses them (``code``: ``ontology.project.derivation_code``, this module included):
+    a build parses only the documents no build parsed before. Measured 2026-11-01 on a
+    copy of the live stores: every binding over ``documentFields`` parsed every attached
+    document again (the in-process memo holds ``MAX_FIELDS``), 780-1,640 s each, nine
+    mail bindings. Only a result ``_FIELDS`` remembers is kept (a missing file or a
+    failed read is not); a result that does not read back equal is not kept. Any failure
+    of the file is a miss. Private (0600): fields read from captured documents."""
+
+    KEEP_BUILDS = 3
+    _BATCH = 500
+
+    def __init__(self, path: str | Path, code: str) -> None:
+        import os
+        import sqlite3
+
+        self.code, self._pending = code, 0
+        os.close(os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600))
+        os.chmod(path, 0o600)
+        self._db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+        try:
+            self._db.execute("PRAGMA journal_mode = WAL")
+            self._db.execute("CREATE TABLE IF NOT EXISTS fields (key TEXT PRIMARY KEY, "
+                             "code TEXT NOT NULL, value TEXT NOT NULL, used INTEGER NOT NULL)")
+            self._db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, "
+                             "value TEXT NOT NULL)")
+            row = self._db.execute("SELECT value FROM meta WHERE key = 'builds'").fetchone()
+            self.build = (int(row[0]) if row else 0) + 1
+            self._db.execute("INSERT OR REPLACE INTO meta VALUES ('builds', ?)",
+                             (str(self.build),))
+            self._db.execute("BEGIN")
+        except BaseException:
+            self._db.close()
+            raise
+
+    def _wrote(self) -> None:
+        self._pending += 1
+        if self._pending >= self._BATCH:
+            self._db.execute("COMMIT")
+            self._db.execute("BEGIN")
+            self._pending = 0
+
+    def get(self, key: Any) -> tuple[dict[str, Any] | None] | None:
+        try:
+            name = json.dumps(list(key))
+            row = self._db.execute("SELECT code, value FROM fields WHERE key = ?",
+                                   (name,)).fetchone()
+            if row is None or row[0] != self.code:
+                return None
+            self._db.execute("UPDATE fields SET used = ? WHERE key = ?", (self.build, name))
+            self._wrote()
+            return (json.loads(row[1]),)
+        except Exception:  # noqa: BLE001 - an unreadable entry is a miss
+            return None
+
+    def put(self, key: Any, found: dict[str, Any] | None) -> None:
+        try:
+            text = json.dumps(found, sort_keys=True)
+            if json.loads(text) != found:
+                return
+            self._db.execute("INSERT OR REPLACE INTO fields VALUES (?, ?, ?, ?)",
+                             (json.dumps(list(key)), self.code, text, self.build))
+            self._wrote()
+        except Exception:  # noqa: BLE001 - not kept: parsed again next time
+            return
+
+    def close(self, *, prune: bool) -> None:
+        try:
+            if prune:
+                self._db.execute("DELETE FROM fields WHERE used <= ?",
+                                 (self.build - self.KEEP_BUILDS,))
+            self._db.execute("COMMIT")
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            self._db.close()
+
+
+@contextlib.contextmanager
+def kept_fields(path: str | Path, code: str) -> Iterator[KeptFields]:
+    """While open, :func:`_fields_of` reads through the fields kept at ``path``."""
+    kept = KeptFields(path, code)
+    _FIELDS.backing = kept
+    ended = False
+    try:
+        yield kept
+        ended = True
+    finally:
+        _FIELDS.backing = None
+        kept.close(prune=ended)
+
+
 def _fields_of(key: tuple[str, str, str, str | None, str | None, bool],
-               read: Callable[[], CapturedText | None]) -> dict[str, Any] | None:
+               read: Callable[[], CapturedText | None],
+               present: Callable[[], bool] | None = None) -> dict[str, Any] | None:
     """The fields of one reading of a document (``read``: ``captured_text`` of a
     captured version's pinned bytes or the capture's OCR text of a scan, or a container
     member's reading), parsed once per ``key`` (bytes, MIME type, name, OCR text, the
@@ -2305,7 +2411,7 @@ def _fields_of(key: tuple[str, str, str, str | None, str | None, bool],
         if reading is None:
             raise NotRemembered(key[0])
         return _fields(reading, None, key[4])
-    return _FIELDS.read(key, parse)
+    return _FIELDS.read(key, parse, present)
 
 
 def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
@@ -2327,10 +2433,13 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
         return
     issued = _issued_by(row, received)
     reading = captured_text(blobs, row) if read else None
+    # Fields kept between builds are served only while what they were read from is on
+    # disk (as a kept reading is): a file gone reads as gone.
     yield None, _fields_of((digest, mime, name, ocr_digest(row), issued,
                             row.get("text_status") == OCR_DEFERRED),
                            (lambda: reading) if read else
-                           (lambda: captured_text(blobs, row))), reading, issued
+                           (lambda: captured_text(blobs, row)),
+                           lambda: _bytes_kept(blobs, digest, ocr_digest(row))), reading, issued
     members = container_members(blobs, row)
     for member in () if members is None else members.members:
         # A message forwarded as an attachment is the inner message's: its sender is not
@@ -2340,7 +2449,8 @@ def _documents(row: Mapping[str, Any], blobs: str | Path, *, read: bool = False,
         inner = None if issued == "own_mailbox_send" and forwarded else issued
         yield member, _fields_of((member.sha256, member.mime_type, member.name, None, inner,
                                   False),
-                                 lambda m=member: m.reading), \
+                                 lambda m=member: m.reading,
+                                 lambda: _bytes_kept(blobs, digest, None)), \
             member.reading if read else None, inner
 
 

@@ -1,0 +1,361 @@
+{
+ "format": "plx-live-ops-cards/v1",
+ "note": "Questions as an executive types them, each with 1-2 messy rephrasings (`messy`, asked as paraphrases) (short, messy, no use-case name). Each card names a family of evals/live_ops_keys.py, which picks the records it asks about and computes the key from the system of record on every run (scripts/eval_live_ops.py keys). A card asks about `instances` records; {slot} is the record's identifier. `facts` keeps only those facts of the family (default: all). Never an expected value here: keys are computed, stored outside the repository, and split dev / held out by evals.partition groups.",
+ "cards": [
+  {
+   "id": "LO-01",
+   "family": "po_late",
+   "instances": 4,
+   "question": "wheres {po} at? is it late",
+   "messy": [
+    "{po} late??",
+    "any update on {po}, is it behind"
+   ],
+   "facts": [
+    "late"
+   ]
+  },
+  {
+   "id": "LO-02",
+   "family": "po_late",
+   "instances": 3,
+   "question": "when was {po} supposed to land",
+   "messy": [
+    "{po} due date?",
+    "when shld {po} have come in"
+   ],
+   "facts": [
+    "due"
+   ]
+  },
+  {
+   "id": "LO-03",
+   "family": "po_received",
+   "instances": 4,
+   "question": "is {po} late or did it come in?",
+   "messy": [
+    "did {po} arrive",
+    "{po} - received?"
+   ]
+  },
+  {
+   "id": "LO-04",
+   "family": "po_no_vendor_mail",
+   "instances": 3,
+   "question": "did the vendor ever confirm a date on {po}",
+   "messy": [
+    "any confirmation from the supplier on {po}?"
+   ]
+  },
+  {
+   "id": "LO-05",
+   "family": "po_vendor_last_mail",
+   "instances": 4,
+   "question": "whats the last thing the vendor said about {po}",
+   "messy": [
+    "last email from supplier re {po}?"
+   ]
+  },
+  {
+   "id": "LO-06",
+   "family": "late_po_count",
+   "instances": 1,
+   "question": "how many POs are late rn",
+   "messy": [
+    "# of late purchase orders?"
+   ]
+  },
+  {
+   "id": "LO-07",
+   "family": "vendor_open_pos",
+   "instances": 3,
+   "question": "what do we have open w/ {vendor}?",
+   "messy": [
+    "open POs with {vendor}?"
+   ]
+  },
+  {
+   "id": "LO-08",
+   "family": "po_changed",
+   "instances": 1,
+   "question": "what changed on our POs since yesterday",
+   "messy": [
+    "any PO changes since yday?"
+   ]
+  },
+  {
+   "id": "LO-09",
+   "family": "so_changed",
+   "instances": 1,
+   "question": "any sales orders new or changed since yesterday?",
+   "messy": [
+    "SO changes since yesterday?"
+   ]
+  },
+  {
+   "id": "LO-10",
+   "family": "no_such_po",
+   "instances": 3,
+   "question": "status on {po}?",
+   "messy": [
+    "wheres {po}",
+    "{po} - whats going on w it"
+   ]
+  },
+  {
+   "id": "LO-11",
+   "family": "late_po_hits",
+   "instances": 3,
+   "question": "{po} is running late - what does that hold up on the floor",
+   "messy": [
+    "what MOs r waiting on {po}?"
+   ]
+  },
+  {
+   "id": "LO-12",
+   "family": "mo_late_materials",
+   "instances": 3,
+   "question": "whats holding up {mo}? any materials late",
+   "messy": [
+    "is {mo} waiting on any late PO"
+   ]
+  },
+  {
+   "id": "LO-13",
+   "family": "order_margin",
+   "instances": 6,
+   "question": "margin on {so}? and why",
+   "messy": [
+    "how much did we make on {so}",
+    "{so} profitable?"
+   ]
+  },
+  {
+   "id": "LO-14",
+   "family": "customer_margin",
+   "instances": 3,
+   "question": "hows our margin on {customer} orders in BC?",
+   "messy": [
+    "are we making $ on {customer} (BC orders)"
+   ]
+  },
+  {
+   "id": "LO-15",
+   "family": "open_ar",
+   "instances": 6,
+   "question": "open AR for {customer}?",
+   "messy": [
+    "what does {customer} owe us",
+    "{customer} balance?"
+   ]
+  },
+  {
+   "id": "LO-16",
+   "family": "item_supplier_price",
+   "instances": 6,
+   "question": "who do we buy {item} from and what did we pay last time",
+   "messy": [
+    "last price paid for {item}? from who"
+   ]
+  },
+  {
+   "id": "LO-17",
+   "family": "batch_on_hold",
+   "instances": 5,
+   "question": "is batch {batch} on hold?",
+   "messy": [
+    "{batch} held by QC?"
+   ]
+  },
+  {
+   "id": "LO-18",
+   "family": "batch_released",
+   "instances": 5,
+   "question": "{batch} - released or still held up?",
+   "messy": [
+    "did QC release {batch}"
+   ]
+  },
+  {
+   "id": "LO-19",
+   "family": "batches_on_hold_count",
+   "instances": 1,
+   "question": "how many batches r on QC hold right now",
+   "messy": [
+    "# batches on hold?"
+   ]
+  },
+  {
+   "id": "LO-20",
+   "family": "lot_expiry",
+   "instances": 4,
+   "question": "when does lot {lot} expire",
+   "messy": [
+    "{lot} expiry?",
+    "exp date on lot {lot}"
+   ]
+  },
+  {
+   "id": "LO-21",
+   "family": "lots_expiring_count",
+   "instances": 1,
+   "question": "how many released raw lots expire before {until}?",
+   "messy": [
+    "# raw lots expiring before {until}"
+   ]
+  },
+  {
+   "id": "LO-22",
+   "family": "fm_po_people",
+   "instances": 4,
+   "question": "who set up {po}?",
+   "messy": [
+    "who created {po}"
+   ],
+   "facts": [
+    "created_by"
+   ]
+  },
+  {
+   "id": "LO-23",
+   "family": "fm_po_people",
+   "instances": 4,
+   "question": "who last touched {po} and when",
+   "messy": [
+    "last person to edit {po}?"
+   ],
+   "facts": [
+    "last_edited_by",
+    "last_edited"
+   ]
+  },
+  {
+   "id": "LO-24",
+   "family": "bc_receipt_vs_po",
+   "instances": 5,
+   "question": "did we get everything we ordered on {po}? ({item})",
+   "messy": [
+    "{po} received vs ordered for {item}?",
+    "any shortage on {po}"
+   ]
+  },
+  {
+   "id": "LO-25",
+   "family": "fm_quarantine",
+   "instances": 1,
+   "question": "whats blocked on QC - how many raw lots in quarantine",
+   "messy": [
+    "# lots in quarantine?"
+   ]
+  },
+  {
+   "id": "LO-26",
+   "family": "bc_inventory",
+   "instances": 10,
+   "question": "how much {item} do we have on hand",
+   "messy": [
+    "stock on {item}?",
+    "{item} inventory?"
+   ]
+  },
+  {
+   "id": "LO-27",
+   "family": "bc_price_trend",
+   "instances": 5,
+   "question": "is the price of {item} going up or down",
+   "messy": [
+    "{item} cost trend? last price"
+   ]
+  },
+  {
+   "id": "LO-28",
+   "family": "bc_open_sos",
+   "instances": 4,
+   "question": "what BC orders still need to ship for {customer}",
+   "messy": [
+    "{customer} orders not shipped yet (BC)?"
+   ]
+  },
+  {
+   "id": "LO-30",
+   "family": "portal_open_sos",
+   "instances": 7,
+   "question": "what sales orders are open for {customer}?",
+   "messy": [
+    "{customer} open orders?"
+   ]
+  },
+  {
+   "id": "LO-31",
+   "family": "portal_price_trend",
+   "instances": 6,
+   "question": "whats the price trend on {item}",
+   "messy": [
+    "are we paying more or less for {item} now"
+   ]
+  },
+  {
+   "id": "LO-32",
+   "family": "quotes_without_order",
+   "instances": 1,
+   "question": "any quotes accepted that never turned into an order?",
+   "messy": [
+    "accepted quotes w/ no order?"
+   ]
+  },
+  {
+   "id": "LO-33",
+   "family": "sage_balance",
+   "instances": 6,
+   "question": "what was {customer}'s balance in Sage",
+   "messy": [
+    "{customer} sage balance due?"
+   ]
+  },
+  {
+   "id": "LO-34",
+   "family": "sage_order_shipped",
+   "instances": 8,
+   "question": "when did order {so} ship",
+   "messy": [
+    "ship date for {so}?"
+   ]
+  },
+  {
+   "id": "LO-35",
+   "family": "customer_last_mail",
+   "instances": 6,
+   "question": "whats the last email we had with {customer}",
+   "messy": [
+    "last msg w/ {customer}?"
+   ]
+  },
+  {
+   "id": "LO-36",
+   "family": "teams_po_discussion",
+   "instances": 6,
+   "question": "what did the team say about {po} in Teams",
+   "messy": [
+    "any teams chat on {po}?"
+   ]
+  },
+  {
+   "id": "LO-37",
+   "family": "sharepoint_lot_file",
+   "instances": 4,
+   "question": "do we have the file for lot {lot} on sharepoint",
+   "messy": [
+    "coa for lot {lot}? where is it"
+   ]
+  },
+  {
+   "id": "LO-38",
+   "family": "mc_task",
+   "instances": 10,
+   "question": "where's {task} at and who owns it",
+   "messy": [
+    "{task} status/owner?"
+   ]
+  }
+ ]
+}

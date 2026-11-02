@@ -18,7 +18,7 @@ import json
 import logging
 import secrets
 import time
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Literal, Optional
 from urllib.parse import urlsplit
 
 from fastapi import Body, Depends, FastAPI, Query, Request, Response
@@ -140,7 +140,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         return response
 
     def reader(request: Request) -> Reader:
-        return auth.authenticate(request.headers, request.cookies)
+        who = auth.authenticate(request.headers, request.cookies)
+        if getattr(who.session, "warm_ahead", False):   # read-ahead serves nobody
+            raise AuthRequired("sign_in_required")
+        return who
 
     # ---- auth -----------------------------------------------------------------------
 
@@ -177,6 +180,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if isinstance(auth, DevAuth):
             auth.logout(request.cookies.get(SESSION_COOKIE))
             response.delete_cookie(SESSION_COOKIE, path="/api")
+        forget = getattr(backend, "forget_reader", None)
+        if forget is not None:
+            forget(who)   # signed out: no longer read ahead for
         return m.LogoutResponse(ok=True)
 
     @app.get("/api/me", response_model=m.Me, tags=["identity"],
@@ -240,17 +246,55 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def home(who: Reader = Depends(reader)) -> m.Home:
         return backend.home(who)
 
+    @app.get("/api/late", response_model=m.LateList, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def late_list(offset: int = Query(0, ge=0, le=20000), limit: int = Query(25, ge=1, le=100),
+                  who: Reader = Depends(reader)) -> m.LateList:
+        """Every late purchase order you may see, a page at a time, longest late first
+        (Home shows the first ones: "show all")."""
+        return backend.late_list(who, offset=offset, limit=limit)
+
+    @app.get("/api/briefing", response_model=m.Briefing, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def briefing(view: Literal["all", "since_visit"] = "all",
+                 who: Reader = Depends(reader)) -> m.Briefing:
+        """Your briefing: the events routed to you that you may see, ranked by impact; the
+        top ones each with why, a suggested next action and how we know, every other one
+        counted in its type's group; each check's state; and a preview of the daily
+        digest (never sent). ``view=since_visit``: only what is new since your last visit."""
+        return backend.briefing(who, since_visit=view == "since_visit")
+
+    @app.get("/api/briefing/items", response_model=m.BriefingItems, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}})
+    def briefing_items(event_type: m.EventType, offset: int = Query(0, ge=0, le=5000),
+                       limit: int = Query(25, ge=1, le=100),
+                       view: Literal["all", "since_visit"] = "all",
+                       who: Reader = Depends(reader)) -> m.BriefingItems:
+        """One event type's items of your briefing, a page at a time (a group's "+N more")."""
+        return backend.briefing_items(who, event_type, offset=offset, limit=limit,
+                                      since_visit=view == "since_visit")
+
+    @app.post("/api/briefing/seen", response_model=m.BriefingSeen, tags=["home"],
+              responses={401: {"model": m.ErrorResponse}})
+    def briefing_seen(who: Reader = Depends(reader)) -> m.BriefingSeen:
+        """Mark your briefing seen now: the next "since your last visit" starts here."""
+        return backend.briefing_seen(who)
+
     @app.get("/api/object/{object_type}/{object_id:path}", response_model=m.ObjectPage,
              tags=["object"], responses={401: {"model": m.ErrorResponse},
                                          404: {"model": m.ErrorResponse}})
     def object_page(object_type: str, object_id: str,
+                    quick: bool = Query(False, description="A first read without the "
+                                        "checks (complete=false), shown while the full "
+                                        "page is read"),
                     who: Reader = Depends(reader)) -> Response:
         """One record's page. ``object_id``: the URL-encoded object id, or a business
         reference (e.g. a PO number) resolved within ``object_type``."""
         if len(object_type) > 60 or len(object_id) > 700 or not object_id:
             return problem("invalid_request", 422)
         try:
-            page = backend.object_page(who, object_type, object_id)
+            page = (backend.object_page(who, object_type, object_id, quick=True) if quick
+                    else backend.object_page(who, object_type, object_id))
         except (KeyError, LookupError):
             return problem("not_found", 404)
         return JSONResponse(page.model_dump(mode="json"))

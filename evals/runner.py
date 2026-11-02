@@ -159,6 +159,7 @@ from evals import partition as partitions
 from evals.admission import admissible
 from operating.agent_environment import agent_environment
 from operating.answer_gate import ANSWER_BACKING, DOCUMENT_READ_RULE
+from operating import tool_results
 from evals import score as scoring
 from operating.agent_session import (  # noqa: F401 - the shared agent session path
     MAX_RESULT_CHARS, ANSWER_GATE_RULE, ANSWER_GATE_TOOL, answer_gate_record,
@@ -582,7 +583,11 @@ class CaseHost:
         result = response.get("result") or {}
         if "error" in response or result.get("isError"):
             return {"ok": False, "error": "tool_refused"}
-        return result.get("structuredContent")
+        try:
+            # A result too large to send twice comes as its JSON text alone.
+            return tool_results.result_value(result)
+        except tool_results.ToolResultUnreadable:
+            return {"ok": False, "error": "tool_result_unreadable"}
 
     def read(self, name: str, arguments: dict[str, Any]) -> Any:
         """One tool call by the harness itself (Workbench code, never the agent): the

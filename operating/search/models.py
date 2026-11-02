@@ -2,7 +2,9 @@
 embedded with, ``PLX_EMBED_MODEL``) and the cross-encoder reranker
 (``PLX_RERANK_MODEL``, default ``BAAI/bge-reranker-v2-m3``).
 
-Both load lazily from the local model cache only (``HF_HOME``, default
+Both load lazily from the local model cache only, in one process per host user
+(``operating.search.model_server``, ``PLX_SEARCH_MODELS=shared``, the default) or in this
+process (``local``) (``HF_HOME``, default
 ``/data/models``; never a download at query time), once per process. The reranker runs in
 bfloat16 on CPU (AMX: 50 pairs in about 2 s on this host against 5 s in float32) under a
 time box: a rerank that does not finish in time is dropped whole and the query is ranked
@@ -21,7 +23,7 @@ from typing import Any, Callable, Protocol, Sequence
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
 DEFAULT_RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
-RERANK_MAX_LENGTH = 384
+RERANK_MAX_LENGTH = 256   # tokens: the 800-character passages (weights.json) fit
 RERANK_BATCH = 10
 
 
@@ -199,10 +201,80 @@ class LaneBEmbedder:
         return [list(map(float, v)) for v in vectors]
 
 
-def default_embedder() -> Embedder | None:
-    """the configured embedder when it ships (``operating.embed.models.load``),
-    else the local model of ``PLX_EMBED_MODEL``; None when neither is available (the
-    dense retriever is then skipped and the result says so)."""
+def shared() -> bool:
+    """Whether this process asks the host's one model process
+    (``operating.search.model_server``) instead of loading its own copy:
+    ``PLX_SEARCH_MODELS`` unset or ``shared`` (``local``: load here)."""
+    return (os.environ.get("PLX_SEARCH_MODELS") or "shared").strip().lower() != "local"
+
+
+class SharedEmbedder:
+    """The query embedder of the host's model process. ``model`` is the name it embeds
+    with (None while no server answers: the dense retriever is skipped, stated)."""
+
+    def __init__(self) -> None:
+        self._model: str | None = None
+
+    @property
+    def model(self) -> str | None:
+        if self._model is None:
+            from operating.search import model_server
+            ping = model_server.ensure()
+            self._model = (ping or {}).get("embed_model") or None
+        return self._model
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        from operating.search import model_server
+        if self.model is None:
+            raise RuntimeError("model_server_unavailable")
+        out = model_server.request({"op": "embed", "texts": list(texts)}, 60.0)
+        if not out.get("ok"):
+            raise RuntimeError(str(out.get("problem") or "embed_failed"))
+        return out["vectors"]
+
+
+class SharedReranker:
+    """The reranker of the host's model process, with ``TimeBoxed``'s interface: the time
+    box and the one worker are the server's (a busy or timed-out rerank comes back
+    without scores, the query ranks without it)."""
+
+    @property
+    def reranker(self) -> "SharedReranker":
+        return self   # ``warm`` reads ``reranker.loaded``
+
+    @property
+    def loaded(self) -> bool:
+        from operating.search import model_server
+        try:
+            return bool(model_server.request({"op": "ping"}, 5.0).get("reranker"))
+        except (OSError, ValueError):
+            return False
+
+    def warm(self, wait: bool = False) -> None:
+        from operating.search import model_server
+        if wait:
+            model_server.ensure()
+        else:
+            threading.Thread(target=model_server.ensure, daemon=True).start()
+
+    def score(self, query: str, passages: Sequence[str], timeout: float
+              ) -> tuple[list[float] | None, str | None]:
+        from operating.search import model_server
+        try:
+            out = model_server.request({"op": "rerank", "query": query,
+                                        "passages": list(passages), "timeout": timeout},
+                                       timeout + 5.0)
+        except (OSError, ValueError) as exc:
+            return None, "reranker_unavailable:" + type(exc).__name__
+        if not out.get("ok"):
+            return None, "reranker_error:" + str(out.get("problem"))[:40]
+        return out.get("scores"), out.get("problem")
+
+
+def local_embedder() -> Embedder | None:
+    """This process's own embedder (the model server's, or ``PLX_SEARCH_MODELS=local``):
+    the configured embedder when it ships (``operating.embed.models.load``), else
+    the local model of ``PLX_EMBED_MODEL``; None when neither is available."""
     def make() -> Any:
         try:
             from operating.embed.models import load  # type: ignore[import-not-found]
@@ -212,10 +284,29 @@ def default_embedder() -> Embedder | None:
     return _default("embedder:" + embed_model_name(), make)
 
 
-def default_reranker() -> TimeBoxed | None:
+def local_reranker() -> TimeBoxed | None:
     if (os.environ.get("PLX_RERANK") or "on").lower() in ("off", "0", "false", "no"):
         return None
     return _default("reranker", lambda: TimeBoxed(LocalReranker()))
+
+
+def default_embedder() -> Any:
+    """The query embedder search uses: the host's shared model process (``shared``),
+    else this process's own (``local_embedder``); None when none is available (the dense
+    retriever is then skipped and the result says so)."""
+    if shared():
+        return _default("shared-embedder", SharedEmbedder)
+    return local_embedder()
+
+
+def default_reranker() -> Any:
+    """The reranker search uses: the shared model process's, else this process's own;
+    None when switched off (``PLX_RERANK=off``)."""
+    if (os.environ.get("PLX_RERANK") or "on").lower() in ("off", "0", "false", "no"):
+        return None
+    if shared():
+        return _default("shared-reranker", SharedReranker)
+    return local_reranker()
 
 
 _WARMING: dict[str, threading.Thread] = {}
@@ -250,6 +341,12 @@ def warm(*, wait: bool = False, timeout: float | None = None) -> dict[str, Any]:
     if wait:
         thread.join(timeout)
     off = (os.environ.get("PLX_RERANK") or "on").lower() in ("off", "0", "false", "no")
+    if shared():
+        embedder = _DEFAULTS.get("shared-embedder")
+        reranker = _DEFAULTS.get("shared-reranker")
+        return {"embedder": embedder is not None and embedder._model is not None
+                and not thread.is_alive(),
+                "reranker": None if off else bool(reranker is not None and reranker.loaded)}
     reranker = _DEFAULTS.get("reranker")
     return {"embedder": _DEFAULTS.get("embedder:" + embed_model_name()) is not None
             and not thread.is_alive(),

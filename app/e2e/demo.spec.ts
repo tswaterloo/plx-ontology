@@ -62,15 +62,14 @@ test("demo walkthrough", async ({ page }, info) => {
   await shot(page, "1-signin", project);
   await page.getByRole("button", { name: "Continue with demo sign-in" }).click();
 
-  // 2. Home: ask box, needs attention (longest late first), the data label in the banner.
+  // 2. Home: the headline and numbers first, then what needs you today; the data label in the banner.
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { level: 1 })).toContainText("Demo");
+  await expect(page.getByTestId("headline")).toContainText(/late|Nothing/);
   await expect(page.getByTestId("dev-banner")).toContainText("FIXTURE");
-  const late = page.getByTestId("late-pos").locator("li");
-  await expect(late.first()).toBeVisible();
-  const days = (await late.locator("span.tabular-nums").allInnerTexts()).map(Number);
-  expect(days.length).toBeGreaterThanOrEqual(2);
-  expect([...days].sort((a, b) => b - a)).toEqual(days);
+  await expect(page.getByTestId("stat-late")).toBeVisible();
+  // the oldest late PO is a tile; the list never repeats a "Suggested next step" per row
+  await expect(page.getByTestId("stat-oldest")).toContainText("days");
+  await expect(page.getByTestId("briefing").getByTestId("next-action")).toHaveCount(0);
   await shot(page, "2-home", project);
 
   // 3. Typo-tolerant autocomplete: "mapel" finds Maple Leaf Soapworks.
@@ -112,7 +111,7 @@ test("demo walkthrough", async ({ page }, info) => {
   // Sources: chips on facts; hover (or focus) shows the quoted passage.
   const chips = card.getByTestId("source-chip");
   expect(await chips.count()).toBeGreaterThanOrEqual(3);
-  const mailChip = chips.filter({ hasText: "Email from Maple Leaf Soapworks" }).first();
+  const mailChip = chips.filter({ hasText: "Maple Leaf Soapworks" }).first();
   if (phone) await mailChip.focus();
   else await mailChip.hover();
   await expect(page.getByTestId("source-preview")).toContainText("saponification line was down");
@@ -128,7 +127,7 @@ test("demo walkthrough", async ({ page }, info) => {
   const conflict = card.getByTestId("conflict-card");
   await expect(conflict).toContainText("2026-10-17");
   await expect(conflict).toContainText("2026-10-24");
-  await expect(conflict.getByText("Trusted")).toHaveCount(1);
+  await expect(conflict.getByText("Used")).toHaveCount(1);
   await expect(conflict).toContainText("system of record");
 
   await expect(card.getByTestId("not-found")).toContainText("confirmed new ship date");
@@ -171,7 +170,7 @@ test("demo walkthrough", async ({ page }, info) => {
   // 7. Open the object page from the answer.
   await card.getByTestId("subject-link").filter({ hasText: "PO 90412" }).click();
   await expect(page).toHaveURL(/\/object\/PurchaseOrder\//);
-  await expect(page.getByTestId("object-title")).toHaveText("PO 90412");
+  await expect(page.getByTestId("object-title")).toContainText("PO 90412");
   await expect(page.getByTestId("object-status")).toContainText("12 days late");
   await expect(page.getByTestId("late-lines")).toContainText("BAR-LAV-100");
   await expect(page.getByTestId("landed-cost")).toContainText("$10,080.00");
@@ -186,13 +185,17 @@ test("demo walkthrough", async ({ page }, info) => {
   // 8. Dark theme renders the same page.
   await page.emulateMedia({ colorScheme: "dark" });
   await page.reload();
-  await expect(page.getByTestId("object-title")).toHaveText("PO 90412");
+  await expect(page.getByTestId("object-title")).toContainText("PO 90412");
   await expect(page.locator("html")).toHaveClass(/dark/);
   await shot(page, "7-object-dark", project);
   await page.emulateMedia({ colorScheme: "light" });
 
-  // 9. Open a linked email as a source.
-  await page.getByTestId("linked").getByRole("link").first().click();
+  // 9. Open a linked email: in the evidence drawer, the page stays put; then its full page.
+  await page.getByTestId("linked").getByRole("button", { name: /Delay notice from Maple Leaf/ }).click();
+  const drawer = page.getByTestId("evidence-drawer");
+  await expect(drawer.getByTestId("source-text")).toContainText("saponification");
+  await shot(page, "8-source-drawer", project);
+  await drawer.getByRole("link", { name: "Open full page" }).click();
   await expect(page).toHaveURL(/\/source\?handle=/);
   await expect(page.getByTestId("source-text")).toContainText("saponification");
   await shot(page, "8-source", project);

@@ -836,9 +836,10 @@ def materials(call: Callable[[str, Mapping[str, Any]], Any], root: str, root_typ
         for assembly, order in list(assemblies.items())[:MAX_ASSEMBLIES]:
             budget.check()
             got = _around(call, assembly, ASSEMBLY_TO_ITEM, hidden)
-            if got is not None and not _reached(got, 0):
-                # the components may be recorded on the assembly order's twin (the FM AO
-                # of a Portal manufacturing order)
+            if got is not None and not _edges(got, ic.USES_ITEM):
+                # the components, or their firm items, may be recorded on the assembly
+                # order's twin (the FM AO of a Portal manufacturing order, whose own Portal
+                # lines name their item only as a lead)
                 for path in _twin_paths(ic.AO_TWIN, ASSEMBLY_TO_ITEM):
                     twin = _around(call, assembly, path, hidden)
                     if _reached(twin, 1):

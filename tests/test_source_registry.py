@@ -969,3 +969,32 @@ class DeclaredTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortalUnservedInventoryTests(unittest.TestCase):
+    """A table upstream adds (or the API
+    starts serving) fails here until it is classified, never silently held or forgotten."""
+
+    def test_every_unserved_portal_table_is_classified_exactly_once(self):
+        meta = sr.ROOT / "ontology/schema/generated/meta"
+        prisma = json.loads((meta / "portal_prisma.json").read_text())
+        served = {r["name"] for r in json.loads((meta / "portal_catalog.json").read_text())
+                  ["relations"]}
+        tables = {"public." + spec["table"]: model for group in ("models", "other_models")
+                  for model, spec in prisma[group].items()}
+        unserved = {t: m for t, m in tables.items() if t not in served}
+        rows = json.loads((sr.ROOT / "devloop/portal-unserved-tables.json").read_text())["tables"]
+        named = [r["table"] for r in rows]
+        self.assertEqual(len(named), len(set(named)))
+        self.assertEqual(set(named), set(unserved))
+        for row in rows:
+            with self.subTest(table=row["table"]):
+                self.assertEqual(row["model"], unserved[row["table"]])
+                self.assertIn(row["path"], {"mail", "sharepoint_lists", "sharepoint_files", "bc",
+                                            "reference_only", "none"})
+                self.assertIn(row["ask"], {"P1", "P2", "P3", None})
+                held = {"none": "none", "reference_only": "identity_only"}.get(row["path"],
+                                                                               "partial")
+                self.assertEqual(row["held"], held)
+                if row["path"] != "none" or row["ask"] is None:
+                    self.assertTrue(row.get("note"))   # why it is held, or never asked for

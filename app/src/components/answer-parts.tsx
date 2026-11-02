@@ -1,48 +1,210 @@
 "use client";
 
-import { AlertTriangle, Check, Clock, Dot, EyeOff, HelpCircle, Scale, ShieldCheck } from "lucide-react";
+import { AlertTriangle, EyeOff, Scale } from "lucide-react";
+import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { ago, formatDateTime, plural, SYSTEM_LABEL } from "@/lib/format";
-import type { Conflict, Fact, Freshness, Hidden, NotFoundItem } from "@/lib/types";
-import { SourceChip } from "./source-chip";
+import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
+import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
+import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
+import { mailField } from "./source-view";
 
-export function FactList({ facts }: { facts: Fact[] | undefined }) {
-  if (!facts || facts.length === 0) return null;
+const MONEY_LABEL = /\b(?:total|amount|cost|price|balance|value|revenue|margin|invoice)\b/i;
+const BARE_NUMBER = /^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$/;
+const GENERIC_LABEL = /^(?:body text|body|text|content|snippet|passage|body preview|message|quote)$/i;
+
+/** "Label: value" -> [label, value] when the start reads as a field label, else null. */
+export function splitLabel(text: string): [string, string] | null {
+  const m = /^([A-Za-z][\w ()/.&'-]{0,48}?):\s+([\s\S]+)$/.exec(text.trim());
+  if (!m) return null;
+  if (/[.!?]\s/.test(m[1])) return null;
+  return [m[1].trim(), m[2].trim()];
+}
+
+/** A field label as a reader says it: no "(BC)", no "fm", no doubled words. */
+export function cleanLabel(label: string): string {
+  return label
+    .replace(/\s*\((?:BC|Portal|Sage|FileMaker|FM)\)\s*$/i, "")
+    .replace(/\bfm\b\s*/gi, "")
+    .replace(/^(\w+)\s+\1\b/i, "$1")
+    .replace(/^Erp code$/i, "Code")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Where a quoted passage comes from, in words ("Email from ross@…", "The record"). */
+function said(s: Source | undefined): string {
+  if (!s) return "The source";
+  if (s.system === "Email") {
+    const from = mailField(s.fields, "from");
+    return from ? `Email from ${from}` : "The email";
+  }
+  if (s.system === "Teams") return "The Teams message";
+  if (s.system === "File") return "The document";
+  return "The record";
+}
+
+/**
+ * A fact as a reader reads it: "(BC)" and plumbing words out of its label, a bare total with
+ * its currency, a passage labelled "Body text" said as what it is ("Email from X: “…”").
+ */
+export function factText(f: Fact, currency?: string | null): string {
+  const text = readable(f.text);
+  const pair = splitLabel(text);
+  if (!pair) return text;
+  const [rawLabel, value] = pair;
+  const label = cleanLabel(rawLabel);
+  if (GENERIC_LABEL.test(label)) return `${said(f.sources[0])}: “${value.replace(/^“|”$/g, "")}”`;
+  if (currency && MONEY_LABEL.test(label) && BARE_NUMBER.test(value)) return `${label}: ${formatMoney(value.replace(/,/g, ""), currency)}`;
+  return `${label}: ${value}`;
+}
+
+/** The currency the facts state ("Currency: CAD", or a cited currency field), if one. */
+export function factsCurrency(facts: Fact[] | undefined): string | null {
+  for (const f of facts ?? []) {
+    const m = /^Currency(?:\s*\([^)]*\))?:\s*([A-Z]{3})\b/.exec(f.text.trim());
+    if (m) return m[1];
+    for (const s of f.sources) {
+      const c = Object.entries(s.fields ?? {}).find(([k]) => /(?:^|\.)(?:currency|currencyCode|currency_code)$/i.test(k));
+      if (c && /^[A-Z]{3}$/.test(c[1].trim().toUpperCase())) return c[1].trim().toUpperCase();
+    }
+  }
+  return null;
+}
+
+const UNCONFIRMED = new Set(["lead", "text_match", "not_established", "unchecked"]);
+
+/** Whether a fact is not confirmed against its record (it says so in words). */
+export function unconfirmed(f: Fact): boolean {
+  return !f.check || UNCONFIRMED.has(f.check);
+}
+
+/** One source line for a block: "From Business Central · PO 106093"; it opens the drawer. */
+export function SourceLine({ source, record, prefix = "From" }: { source: Source; record?: string | null; prefix?: string }) {
+  const [open, setOpen] = useState(false);
+  const sys = SYSTEM_LABEL[source.system] ?? source.system;
+  const name = sourceName(source, record);
+  const tail = name.startsWith(`${source.system} · `) ? name.slice(source.system.length + 3) : name === sys ? "" : name;
+  const text = [`${prefix} ${sys}`, tail, source.as_of ? `read ${formatDate(source.as_of, { short: true })}` : null].filter(Boolean).join(" · ");
+  const opens = !!source.handle || !!source.open_url;
   return (
-    <ul className="space-y-2.5" aria-label="Supporting facts">
-      {facts.map((f, i) => (
-        <li key={i} className="flex gap-2.5 text-[15px] leading-relaxed">
-          {f.check ? (
-            <Check className="mt-1 size-4 shrink-0 text-good" aria-label="Checked against its source" />
-          ) : (
-            <Dot className="mt-0.5 size-5 shrink-0 text-muted" aria-hidden />
-          )}
-          <span>
-            {f.text}{" "}
-            <span className="inline-flex flex-wrap gap-1 align-middle">
-              {f.sources.map((s, j) => (
-                <SourceChip key={j} source={s} />
-              ))}
-            </span>
-          </span>
-        </li>
-      ))}
-    </ul>
+    <p className="text-meta text-muted" data-testid="source-line">
+      {opens ? (
+        <button type="button" onClick={() => setOpen(true)} className="text-left underline-offset-2 hover:text-fg hover:underline cursor-pointer">
+          {text}
+        </button>
+      ) : (
+        text
+      )}
+      {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
+    </p>
   );
 }
 
-export function NotFoundSection({ items }: { items: NotFoundItem[] | undefined }) {
+/**
+ * The facts under an answer or on a record: 2-6 lines, each with at most two chips named by
+ * the record. When every fact cites the same one source, the chips go and one source line
+ * stands under the list. Unconfirmed facts say so in words; confirmed ones carry no tick.
+ */
+export function FactList({
+  facts,
+  record,
+  extra = [],
+  max,
+}: {
+  facts: Fact[] | undefined;
+  /** The reader's name for a source's record (the page's own record, the answer's one subject). */
+  record?: (s: Source) => string | null | undefined;
+  /** Extra plain lines (an answer's later paragraphs), shown first. */
+  extra?: React.ReactNode[];
+  max?: number;
+}) {
+  const [all, setAll] = useState(false);
+  const list = facts ?? [];
+  if (list.length === 0 && extra.length === 0) return null;
+  const currency = factsCurrency(list);
+  const handles = new Set(list.flatMap((f) => f.sources.map((s) => s.handle)));
+  const oneSource = list.length > 1 && handles.size === 1 && list.every((f) => f.sources.length > 0) ? list[0].sources[0] : null;
+  const shown = max && !all ? list.slice(0, Math.max(0, max - extra.length)) : list;
+  return (
+    <div className="space-y-2">
+      <ul className="space-y-2" aria-label="Supporting facts" data-testid="fact-list">
+        {extra.map((x, i) => (
+          <li key={`x${i}`} className="flex gap-2.5 text-body">
+            <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted" aria-hidden />
+            <span className="min-w-0 break-words">{x}</span>
+          </li>
+        ))}
+        {shown.map((f, i) => (
+          <li key={i} className="flex gap-2.5 text-body">
+            <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted" aria-hidden />
+            <span className="min-w-0 break-words">
+              {factText(f, currency)}
+              {unconfirmed(f) && <span className="text-muted"> (not confirmed)</span>}{" "}
+              {!oneSource && <SourceChips sources={f.sources} record={record} />}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {max && list.length + extra.length > max && (
+        <button type="button" onClick={() => setAll((v) => !v)} className="text-meta font-medium text-accent hover:underline cursor-pointer" aria-expanded={all}>
+          {all ? "Show fewer" : `Show all ${list.length + extra.length}`}
+        </button>
+      )}
+      {oneSource && <SourceLine source={oneSource} record={record?.(oneSource)} />}
+    </div>
+  );
+}
+
+/**
+ * A missing item as a task, the owner last: "Supplier confirmation: not found yet; mail and
+ * SharePoint aren't fully searched. Ask Purchasing." On the record's own page its name is
+ * dropped from the item ("… of Purchase order 106001").
+ */
+/** The server's plumbing words for a gap, said as a reader would. */
+const GAP_WORDS: [RegExp, string][] = [
+  [/^a value the question asks for$/i, "Part of what you asked"],
+  [/^(?:projection|store|index|mirror|readings?)$/i, "Some records"],
+];
+const WHERE_WORDS: [RegExp, string][] = [
+  [/^conflicting sources$/i, "the sources disagree on it"],
+  [/^schema drift$/i, "their format changed since they were read; the Workbench team can re-read them"],
+  [/^source stale$/i, "the source is older than the question needs"],
+];
+
+export function missingText(n: NotFoundItem, subject?: string | null): string {
+  let what = readable(n.what).replace(/\s*[.]$/, "");
+  for (const [re, w] of GAP_WORDS) if (re.test(what)) what = w;
+  const whereRaw = readable(n.where_it_would_live).replace(/\s*[.]$/, "");
+  for (const [re, w] of WHERE_WORDS) if (re.test(whereRaw)) return `${what}: ${w}.`;
+  if (subject) {
+    const esc = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    what = what.replace(new RegExp(`\\s+of\\s+(?:[A-Z][a-z]+(?:\\s[a-z]+)?\\s+)?${esc}$`), "");
+  }
+  const where = whereRaw;
+  if (!where) return `${what}.`;
+  const m = /^Ask ([^.]+)\.\s*(?:[^:.;]+:\s*)?(.*)$/.exec(where);
+  if (!m) return `${what}. ${where[0].toUpperCase()}${where.slice(1)}.`;
+  const rest = m[2]
+    .replace(/;?\s*not fully searched: none named/i, "")
+    .replace(/not fully searched: (.+)$/i, (_x, list: string) => `${list.replace(/, ([^,]+)$/, " and $1")} aren't fully searched`)
+    .replace(/,? as of [^;]+;/i, ";")
+    .replace(/searched: (.+)$/i, "searched $1")
+    .trim();
+  return `${what}${rest ? `: ${rest[0].toLowerCase()}${rest.slice(1)}` : ""}. Ask ${m[1].trim()}.`;
+}
+
+export function NotFoundSection({ items, title = "What we couldn't find", bare = false, subject }: { items: NotFoundItem[] | undefined; title?: string; bare?: boolean; subject?: string | null }) {
   if (!items || items.length === 0) return null;
   return (
-    <section className="rounded-xl border border-border bg-bg-subtle p-4" data-testid="not-found">
-      <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
-        <HelpCircle className="size-4 text-warn" aria-hidden /> Not found or not confirmed
-      </h3>
-      <ul className="space-y-1.5 text-sm">
+    <section className={cn(!bare && "rounded-xl border border-border bg-surface p-4")} data-testid="not-found">
+      {!bare && <h3 className="mb-2 text-section">{title}</h3>}
+      <ul className="space-y-1.5 text-row">
         {items.map((n, i) => (
-          <li key={i}>
-            <span className="text-fg">{n.what}</span>
-            {n.where_it_would_live && <span className="text-muted"> — would normally be in: {n.where_it_would_live}</span>}
+          <li key={i} className="flex gap-2">
+            <span className="text-risk" aria-hidden>
+              ?
+            </span>
+            <span>{missingText(n, subject)}</span>
           </li>
         ))}
       </ul>
@@ -82,10 +244,10 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
     <section
       role="note"
       aria-label="Items you don't have access to"
-      className="flex gap-3 rounded-xl border border-info/30 bg-info-soft p-4 text-sm"
+      className="flex gap-3 rounded-xl border border-border bg-surface-2 p-4 text-row"
       data-testid="hidden-notice"
     >
-      <EyeOff className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
+      <EyeOff className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
       <div className="space-y-1">
         <p className="font-medium text-fg">
           {unknown
@@ -112,86 +274,182 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
   );
 }
 
-export function ConflictCard({ conflict }: { conflict: Conflict }) {
+/** The field a conflict is about, in words ("currency", "PO status"). */
+export function conflictField(c: Conflict): string {
+  return fieldLabel(c.field)
+    .toLowerCase()
+    .replace(/\b(po|so|ao|eta|uom|gl|sku|id)\b/g, (w) => w.toUpperCase());
+}
+
+/** A system's name for one conflicting value: "Portal customer", "AR record", "Business Central". */
+function valueSystem(s: Source): string {
+  const name = sourceName(s);
+  return name.includes(" · ") ? name.replace(" · ", " ").replace(/^BC /, "Business Central ").replace(/^Portal (AR record)$/, "$1") : SYSTEM_LABEL[s.system] ?? s.system;
+}
+
+/** "Currency: Portal customer says CAD; AR record says USD (used)." */
+export function conflictSentence(c: Conflict): string {
+  const field = conflictField(c);
+  const parts = c.values.map((v) => `${valueSystem(v.source)} says ${withoutFloatNoise(v.value)}${v.trusted && c.values.filter((x) => x.trusted).length === 1 ? " (used)" : ""}`);
+  return `${field[0].toUpperCase()}${field.slice(1)}: ${parts.join("; ")}.`;
+}
+
+/**
+ * Systems that disagree, in suspect violet (a data problem, not a business one): one row per
+ * system with its value and source, the value we use marked "Used", and plain words when we
+ * are not picking one.
+ */
+export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: string | null }) {
   const trusted = conflict.values.filter((v) => v.trusted);
-  const what = conflict.subject ? `${conflict.field} (${conflict.subject})` : conflict.field;
+  const field = conflictField(conflict);
+  const what = conflict.subject ? `${field} (${conflict.subject})` : field;
+  const used = trusted.length === 1 ? trusted[0] : null;
   return (
-    <section aria-label={`Conflicting values for ${what}`} className="rounded-xl border border-warn/40 bg-warn-soft/60 p-4" data-testid="conflict-card">
-      <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold">
-        <Scale className="size-4 shrink-0 text-warn" aria-hidden />
-        The sources disagree on {what}
+    <section aria-label={`Conflicting values for ${what}`} className="rounded-xl border border-suspect-line bg-suspect-soft/60 p-4" data-testid="conflict-card">
+      <h3 className="mb-2 flex items-center gap-2 text-section text-fg">
+        <Scale className="size-4 shrink-0 text-suspect" aria-hidden />
+        The systems disagree on {what}
       </h3>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {conflict.values.map((v, i) => (
-          <div
-            key={i}
-            className={cn("min-w-0 rounded-lg border bg-surface p-3", v.trusted && trusted.length === 1 ? "border-good/50 ring-1 ring-good/30" : "border-border")}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span className="text-lg font-semibold tabular-nums">{v.value}</span>
-              {v.trusted && trusted.length === 1 && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-good-soft px-2 py-0.5 text-xs font-medium text-good">
-                  <ShieldCheck className="size-3" aria-hidden /> Trusted
-                </span>
-              )}
-            </div>
-            <div className="mt-2">
-              <SourceChip source={v.source} />
-            </div>
-            {v.why && <p className="mt-2 text-xs leading-relaxed text-muted">{v.why}</p>}
-          </div>
-        ))}
-      </div>
-      {trusted.length !== 1 && (
-        <p className="mt-3 text-sm text-muted">Neither value is confirmed; check with the record owner before acting.</p>
+      <table className="w-full text-row">
+        <caption className="sr-only">Values for {what}, by system</caption>
+        <tbody>
+          {conflict.values.map((v, i) => (
+            <tr key={i} className="border-t border-suspect-line/50 align-top first:border-0">
+              <th scope="row" className="py-2 pr-3 text-left font-normal text-muted">
+                {valueSystem(v.source)}
+              </th>
+              <td className="py-2 pr-3 font-semibold tabular-nums">
+                {withoutFloatNoise(v.value)}
+                {used === v && (
+                  <span className="ml-2 inline-flex h-5 items-center rounded-md border border-ok-line bg-ok-soft px-1.5 text-label text-ok">Used</span>
+                )}
+                {v.why && used === v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
+                {v.why && used !== v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
+              </td>
+              <td className="py-2 text-right">
+                <SourceChip source={v.source} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!used && (
+        <p className="mt-2 text-row text-muted">
+          Neither value is confirmed. We&apos;re not picking one. Ask {owner || "the record's owner"} which is right.
+        </p>
       )}
     </section>
   );
 }
 
-// How the last capture ended, said beside an out-of-date source.
-const CAPTURE_WORDS: Record<string, string> = {
-  complete: "",
-  partial: " (capture continuing)",
-  failed: " (last capture failed)",
-  never_captured: " (never captured)",
-};
+/** The server's precedence wording, said plainly. */
+function whyUsed(why: string): string {
+  const w = readable(why);
+  if (/trusted here|declared precedence/i.test(w)) {
+    const m = /with the (.+?) record, which is trusted here/i.exec(w);
+    return m ? `We use the ${m[1].replace(/^Portal ar customer$/i, "AR")} record for this field.` : "We use the other record for this field.";
+  }
+  return w;
+}
 
-export function FreshnessLabel({ freshness, now }: { freshness: Freshness | null | undefined; now?: Date }) {
+const WEEK = 7 * 24 * 3600;
+
+/**
+ * One grey line: "Data as of 29 Oct, 6:34 a.m.". Per-system times are in its tooltip.
+ * Amber appears only when a source this view relied on (`used`) is over a week old.
+ */
+export function FreshnessLabel({
+  freshness,
+  now,
+  used,
+}: {
+  freshness: Freshness | null | undefined;
+  now?: Date;
+  used?: string[];
+}) {
   if (!freshness || (!freshness.as_of && !freshness.label)) return null;
   const sources = freshness.sources ?? [];
-  const stale = sources.filter((s) => s.stale);
-  // a budgeted capture that continues next cycle: fresh by age, said beside its time
-  const continuing = sources.filter((s) => !s.stale && s.capture === "partial");
   const detail = sources
     .filter((s) => s.as_of)
-    .map((s) => `${SYSTEM_LABEL[s.system] ?? s.system}: ${formatDateTime(s.as_of)}`)
+    .map((s) => `${SYSTEM_LABEL[s.system] ?? s.system}: ${formatDateTime(s.as_of, now)}`)
     .join(" · ");
+  const old = sources.filter((s) => s.stale && (s.age_seconds ?? 0) > WEEK && (used ?? []).includes(s.system));
   return (
     <div className="space-y-1" data-testid="freshness">
-      <p className="inline-flex items-center gap-1.5 text-xs text-muted" title={detail || undefined}>
-        <Clock className="size-3.5" aria-hidden />
-        {freshness.as_of ? (
-          <>
-            Data as of {formatDateTime(freshness.as_of)}
-            <span aria-hidden>·</span>
-            {ago(freshness.as_of, now)}
-          </>
-        ) : (
-          freshness.label
-        )}
+      <p className="text-meta text-muted" title={detail || undefined}>
+        {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
       </p>
-      {continuing.length > 0 && (
-        <p className="text-xs text-muted" data-testid="capture-continuing">
-          Capture continuing: {continuing.map((s) => SYSTEM_LABEL[s.system] ?? s.system).join(", ")}
-        </p>
-      )}
-      {stale.length > 0 && (
-        <p className="inline-flex items-center gap-1.5 text-xs text-warn">
+      {old.length > 0 && (
+        <p className="inline-flex items-center gap-1.5 text-meta text-risk" data-testid="freshness-old">
           <AlertTriangle className="size-3.5" aria-hidden />
-          Out of date: {stale.map((s) => (SYSTEM_LABEL[s.system] ?? s.system) + CAPTURE_WORDS[s.capture ?? "complete"]).join(", ")}
+          {old.map((s) => `${SYSTEM_LABEL[s.system] ?? s.system} last read ${formatDate(s.as_of, { short: true, now })}`).join(" · ")}.
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * "What I checked": each system the answer read or searched, what, and as of when. An old
+ * source shows its date here; it turns amber only when over a week old and relied on.
+ */
+export function CheckedList({ freshness, facts, now }: { freshness: Freshness | null | undefined; facts: Fact[] | undefined; now?: Date }) {
+  const bySystem = new Map<string, Set<string>>();
+  for (const f of facts ?? [])
+    for (const s of f.sources) {
+      const set = bySystem.get(s.system) ?? new Set<string>();
+      set.add(s.handle);
+      bySystem.set(s.system, set);
+    }
+  const rows = (freshness?.sources ?? []).map((s) => {
+    const n = bySystem.get(s.system)?.size ?? 0;
+    const used = n > 0;
+    const old = used && s.stale && (s.age_seconds ?? 0) > WEEK;
+    return {
+      system: SYSTEM_LABEL[s.system] ?? s.system,
+      what: used ? `${plural(n, s.system === "Email" ? "message" : "record")} cited` : "Searched, nothing cited",
+      asOf: s.as_of ? formatDate(s.as_of, { short: true, now }) : "",
+      old,
+    };
+  });
+  for (const [sys, set] of bySystem)
+    if (!(freshness?.sources ?? []).some((s) => s.system === sys))
+      rows.push({ system: SYSTEM_LABEL[sys as keyof typeof SYSTEM_LABEL] ?? sys, what: `${plural(set.size, "record")} cited`, asOf: "", old: false });
+  if (rows.length === 0) return <p className="text-row text-muted">No source list came with this answer.</p>;
+  return (
+    <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)_auto] gap-x-4 gap-y-1.5 text-row" data-testid="checked-list">
+      {rows.map((r) => (
+        <div key={r.system} className="contents">
+          <dt className="font-medium">{r.system}</dt>
+          <dd className="text-muted">{r.what}</dd>
+          <dd className={cn("text-meta tabular-nums", r.old ? "text-risk" : "text-muted")}>{r.asOf}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** A disclosure in the answer's row: closed by default, a chevron, the count in its label. */
+export function Disclosure({
+  label,
+  children,
+  defaultOpen = false,
+  testId,
+}: {
+  label: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  testId?: string;
+}) {
+  return (
+    <details className="group rounded-lg border border-border bg-surface" open={defaultOpen} data-testid={testId}>
+      <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+        <span className="inline-block transition-transform group-open:rotate-90" aria-hidden>
+          ▸
+        </span>
+        <h3 className="font-medium">{label}</h3>
+      </summary>
+      <div className="space-y-3 border-t border-border px-3 py-3">{children}</div>
+    </details>
   );
 }

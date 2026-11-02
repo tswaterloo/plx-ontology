@@ -445,9 +445,10 @@ def default_engines() -> dict[str, Mapping[str, Callable[..., Any]]]:
     from .lot_impact import PLAN_ENGINES as LOT
     from .order_margin import PLAN_ENGINES as MARGIN
     from .people_graph import PLAN_ENGINES as PEOPLE
+    from .price_history import PLAN_ENGINES as PRICES
     from .vendor_terms import PLAN_ENGINES as VENDOR_TERMS
     return {**LANDED, **MARGIN, **DECISIONS, **CHAIN, **LINEAGE, **IMPACT, **LOT, **PEOPLE,
-            **VENDOR_TERMS}
+            **PRICES, **VENDOR_TERMS}
 
 
 def check_plan(doc: Mapping[str, Any], schema: SchemaView | None,

@@ -222,3 +222,389 @@ def fact_text(text: str, claim: Mapping[str, Any]) -> str:
             said = f"{kind} {said}"
     said = said[:1].upper() + said[1:]
     return f"{said}: {phrase}"
+
+
+# ---- a record's fields as a business reader sees them -----------------------------------
+
+# Systems a property name may start with (``bc_fully_received``): said after the field.
+SYSTEM_PREFIXES = {"bc": "BC", "portal": "Portal", "fm": "FileMaker", "sage": "Sage"}
+# Short words a field name spells in capitals.
+ACRONYMS = {"po": "PO", "so": "SO", "ao": "AO", "eta": "ETA", "uom": "UOM", "gl": "GL",
+            "sku": "SKU", "id": "ID", "url": "URL", "coa": "COA", "upc": "UPC"}
+# Fields that are keys, hashes or plumbing, never business facts.
+INTERNAL_FIELD = re.compile(
+    r"(?:^|[._])(?:id|uuid|guid|etag|sha256|content_sha256|digest|change_key|row_version|"
+    r"system_id|odata_etag|external_id|binding|lineage|native_key)$"
+    r"|^(?:external|internal|system|record)_?id$", re.I)
+# A property holding an amount of money (shown with the record's currency).
+MONEY_FIELD = re.compile(r"(?:^|_)(?:cost|costs|amount|total|price|subtotal|balance|"
+                         r"value|revenue|margin)(?:_|$)", re.I)
+
+
+NOT_MONEY = re.compile(r"qty|quantit|count|boxes|units|weight|percent|pct|rate|days|lines",
+                       re.I)
+
+
+def internal_field(name: str) -> bool:
+    """Whether a property is a key or plumbing (an id, a hash) rather than a fact."""
+    return bool(INTERNAL_FIELD.search(str(name or "").strip()))
+
+
+def field_label(name: str) -> str:
+    """``bc_fully_received`` -> ``Fully received (BC)``; ``po_number`` -> ``PO number``;
+    ``vendorName`` -> ``Vendor name``."""
+    raw = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(name or "").rsplit(".", 1)[-1])
+    parts = [p for p in re.split(r"[_\s]+", raw.lower()) if p]
+    system = None
+    if len(parts) > 1 and parts[0] in SYSTEM_PREFIXES:
+        system = SYSTEM_PREFIXES[parts.pop(0)]
+    said = " ".join(ACRONYMS.get(p, p) for p in parts) or "Value"
+    said = said[:1].upper() + said[1:]
+    return f"{said} ({system})" if system else said
+
+
+def record_currency(values: Any) -> Optional[str]:
+    """The one currency a record's values state (the Portal's ``CAD$`` is ``CAD``), else
+    None (none stated, or two)."""
+    from ontology.units import currency_code
+
+    codes = set()
+    for value in values or ():
+        if isinstance(value, Mapping) and str(value.get("property") or "").lower() in (
+                "currency", "currency_code"):
+            raw = value.get("value")
+            raw = raw.get("untrusted_text") if isinstance(raw, Mapping) else raw
+            code = currency_code(raw)[0] if isinstance(raw, str) else None
+            if code:
+                codes.add(code)
+    return codes.pop() if len(codes) == 1 else None
+
+
+def value_words(name: str, shown: str, currency: Optional[str]) -> str:
+    """A record's value as said beside its label: a currency spelling as its code
+    (``CAD$`` -> ``CAD``), an amount of money with the record's currency, an ISO date as
+    a date, ``_x0020_`` as the space it encodes."""
+    from ontology.units import currency_code
+
+    text = str(shown).replace("_x0020_", " ").strip()
+    key = str(name or "").lower()
+    if key in ("currency", "currency_code"):
+        return currency_code(text)[0] or text
+    if currency and MONEY_FIELD.search(key) and not NOT_MONEY.search(key) and re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return f"{money_words(text)} {currency}"
+    return date_words(text)
+
+
+def money_words(amount: str) -> str:
+    """``9680`` -> ``9,680.00``; ``0.4491`` keeps its places (never a float)."""
+    neg = amount.startswith("-")
+    whole, _, frac = amount.lstrip("-").partition(".")
+    grouped = re.sub(r"\B(?=(\d{3})+(?!\d))", ",", whole.lstrip("0") or "0")
+    frac = (frac + "00")[:max(2, len(frac))]
+    return f"{'-' if neg else ''}{grouped}.{frac}"
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+           "Dec")
+ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?"
+                      r"(?:Z|[+-]\d{2}:?\d{2})?)?\b")
+
+
+def date_words(text: str) -> str:
+    """Every ISO date or timestamp in ``text`` as ``Jul 10, 2026`` (the day the ISO text
+    states; a timestamp's time is not shown)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    def said(found: re.Match) -> str:
+        whole = found.group(0)
+        year, month, day = int(found.group(1)), int(found.group(2)), int(found.group(3))
+        if not 1 <= month <= 12:
+            return whole
+        if len(whole) > 10 and re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", whole):
+            try:   # a timestamp is the Toronto day it falls on
+                moment = datetime.fromisoformat(whole.replace("Z", "+00:00")).astimezone(
+                    ZoneInfo("America/Toronto"))
+                year, month, day = moment.year, moment.month, moment.day
+            except ValueError:
+                pass
+        return f"{_MONTHS[month - 1]} {day}, {year}"
+    return ISO_DATE.sub(said, text)
+
+
+def record_label(display: Optional[str], object_type: str, object_id: str) -> str:
+    """A related record's label: its display, else its kind in words, never its key
+    (``PurchaseOrderLine:bc.purchase_order_lines:{...}``)."""
+    if display and display.strip() and display.strip() != object_id:
+        return display.strip()
+    kind = words(re.sub(r"(?<=[a-z])(?=[A-Z])", "_", object_type or "Record"))
+    for long, short in RECORD_WORDS:
+        kind = kind.replace(long, short)
+    return (kind[:1].upper() + kind[1:]) if kind else "Record"
+
+
+# ---- the last pass over what the app shows ------------------------------------------------
+
+# A record or gap code a reader should never see, in plain words.
+CODE_WORDS = {"LINE_NOT_INVOICED": "line not invoiced",
+              "CLAIM_CHECK_FAILED": "figures not confirmed against the records",
+              "COST_NOT_VALUED": "cost not valued in BC",
+              "COST_NOT_YET_ACTUAL": "cost not yet final in BC",
+              "ORDER_MARGIN_NOT_READ": "margin could not be read",
+              "ORDER_LINES_INCOMPLETE": "order lines not all read",
+              "CITED_VALUE_UNRESOLVED": "a figure did not match its record"}
+PHRASES = ((re.compile(r"\bclaim check failed\b", re.I),
+            "figures not confirmed against the records"),
+           (re.compile(r"\bcheck(?:ed)? claims?\b", re.I), "checked figures"))
+XML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+CODE = re.compile(r"\b[A-Z]{2,}(?:_[A-Z]{2,})+\b")   # letters only: never an item code
+# "S-ORD101102: LINE_NOT_INVOICED: no posted invoice ..." : the code before its own words
+CODE_LABEL = re.compile(r"\b[A-Z]{2,}(?:_[A-Z]{2,})+:\s+(?=\w)")
+# Keys whose strings are identities, links, enums, source text or checked values: never
+# reworded.
+KEEP_KEYS = frozenset({"handle", "open_url", "object_id", "answer_id", "conversation_id",
+                       "question", "type", "kind", "state", "check", "system", "as_of", "at",
+                       "date", "amount", "currency", "outcome", "quote", "value", "event_type",
+                       "id", "rule", "intent", "step", "capture", "evidence", "first_seen",
+                       "plan", "contact_source", "margin_pct", "sources"})
+
+
+# A binary float's noise in a figure (``116.25000000000001``, ``18.599999999999998``): 7 or
+# more decimals that sit within a billionth of a figure of at most 4.
+FLOAT_NOISE = re.compile(r"(?<![\w.])(-?\d+\.\d{7,})(?![\w.])")
+
+
+def without_float_noise(text: str) -> str:
+    """Each figure carrying a float's noise written as the figure it is (``116.25``),
+    the fewest decimals (at most 4) within a billionth of it; a figure that really has
+    more places stays as written. The answer gate backs the rounded figure
+    (``claim_checks.rounded_from``)."""
+    from decimal import Decimal, InvalidOperation
+
+    def tidy(found: re.Match) -> str:
+        try:
+            value = Decimal(found.group(1))
+        except InvalidOperation:
+            return found.group(0)
+        slack = Decimal("1e-9") * max(Decimal(1), abs(value))
+        for places in range(0, 5):
+            near = value.quantize(Decimal(1).scaleb(-places))
+            if abs(near - value) <= slack:
+                return format(near, "f")
+        return found.group(0)
+    return FLOAT_NOISE.sub(tidy, text)
+
+
+def shown_words(text: str) -> str:
+    """A shown sentence without codes or escapes: ``_x0020_`` is a space, a code labelling
+    its own words goes, any other code reads as words (``CODE_WORDS``)."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = XML_ESCAPE.sub(lambda f: chr(int(f.group(1), 16)), text)
+    out = without_float_noise(out)
+    out = CODE_LABEL.sub("", out)
+    out = CODE.sub(lambda f: CODE_WORDS.get(f.group(0), f.group(0).replace("_", " ").lower())
+                   if "_" in f.group(0) else f.group(0), out)
+    for pattern, said in PHRASES:
+        out = pattern.sub(said, out)
+    return out
+
+
+def polished(model: Any) -> Any:
+    """A response model with every reader-facing sentence through ``shown_words``
+    (``KEEP_KEYS`` untouched)."""
+    def walk(value: Any, key: str = "") -> Any:
+        if key in KEEP_KEYS:
+            return value
+        if isinstance(value, str):
+            return shown_words(value)
+        if isinstance(value, list):
+            return [walk(v, key) for v in value]
+        if isinstance(value, dict):
+            return {k: walk(v, k) for k, v in value.items()}
+        return value
+    data = model.model_dump()
+    return type(model).model_validate(walk(data))
+
+
+def _listed(items: list[str]) -> str:
+    items = [i.strip() for i in items if i.strip()]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1] \
+        if items else ""
+
+
+# What a record held but short of its step has not done yet, by its kind: an order is
+# issued, a receipt or an invoice is posted, a shipment ships.
+HELD_WORDS = ((re.compile(r"\border\b", re.I), "not issued yet"),
+              (re.compile(r"receipt|invoice|posting|credit|payment|journal", re.I),
+               "not posted yet"),
+              (re.compile(r"shipment|delivery", re.I), "not shipped yet"))
+
+
+def held_words(stage: str) -> str:
+    """"not issued yet" (an order), "not posted yet" (a receipt, an invoice), "not shipped
+    yet" (a shipment), else "not at this step yet"."""
+    return next((said for rule, said in HELD_WORDS if rule.search(stage or "")),
+                "not at this step yet")
+
+
+def status_words(text: str) -> str:
+    """A record's process verdict ("Missing: supplier confirmation, receipt; held, its
+    status not reached yet: purchase order; not established: shipment; 1 more step not
+    visible to you") in plain sentences ("No supplier confirmation or receipt on record
+    yet. The purchase order is on record but not issued yet. ..."). Any other text is
+    returned as it is."""
+    if not isinstance(text, str) or not re.match(
+            r"^(?:Missing|Not established|Held, its status not reached yet): ", text):
+        return text
+    said = []
+    for part in text.split("; "):
+        head, _, rest = part.partition(": ")
+        head = head.strip().lower()
+        items = [i for i in rest.split(", ") if i.strip()]
+        if head == "missing" and items:
+            said.append(f"Not on record yet: {_listed(items)}.")
+        elif head.startswith("held, its status not reached yet") and items:
+            by: dict[str, list[str]] = {}
+            for item in items:
+                by.setdefault(held_words(item), []).append(item)
+            said += [f"On record but {words}: {_listed(group)}." for words, group in by.items()]
+        elif head == "not established" and items:
+            said.append(f"Not confirmed either way: {_listed(items)}.")
+        elif re.fullmatch(r"\d+ more steps? not visible to you", part.strip()):
+            n = int(part.split()[0])
+            said.append(f"{n} more step{'s are' if n != 1 else ' is'} in places you can't "
+                        "open.")
+        else:
+            said.append(part.strip().rstrip(".") + ".")
+    return " ".join(said)
+
+
+# ---- what to ask next ----------------------------------------------------------------------
+
+# A gap whose words name no business fact (the reader's own question, a source's state) is
+# no question to ask next.
+GENERIC_GAP = re.compile(r"^(?:a value the question asks for|part of what you asked|some "
+                         r"records|projection|store|index|mirror|readings?|records?)$", re.I)
+SOURCE_STATE = re.compile(r"conflicting sources|schema drift|source stale|stale|"
+                          r"not ingested|unavailable", re.I)
+# Words of a question that already ask what a template would (the template is skipped).
+ASKS = {"who": re.compile(r"\b(?:who|whom|contact|chase|owner|buyer|ask \w+)\b", re.I),
+        "changed": re.compile(r"\b(?:chang\w*|latest|update\w*|new|recent\w*|timeline|"
+                              r"history|going on)\b", re.I),
+        "late": re.compile(r"\b(?:late|overdue|delay\w*|eta|on time|behind)\b", re.I),
+        "open": re.compile(r"\b(?:open|outstanding|pending|orders|pos)\b", re.I),
+        "supplies": re.compile(r"\b(?:suppl\w*|vendor|source[sd]?)\b", re.I)}
+# Types whose records are links or bookkeeping, never a subject to ask about.
+INTERNAL_TYPE = re.compile(r"(?:Mapping|EntityMap|Map|Binding|Mirror|Lineage|Line)$")
+MAX_FOLLOW_UPS = 3
+
+
+def subject_name(object_type: str, label: str) -> Optional[str]:
+    """A record as the business names it in a question (``PO 106001``, a company's name);
+    None for a link record, a key or an empty label."""
+    text = " ".join(str(label or "").split())
+    if not text or INTERNAL_TYPE.search(object_type or "") or "://" in text \
+            or len(text) > 80 or re.search(r":[\w.]+[:{]", text):
+        return None
+    short = {"PurchaseOrder": "PO", "purchase_order": "PO", "SalesOrder": "SO",
+             "sales_order": "SO"}.get(object_type or "")
+    if short and re.fullmatch(r"\d[\w-]*", text):
+        return f"{short} {text}"
+    found = re.fullmatch(r"(po|so)[\s#-]*(\d[\w-]*)", text, re.I)
+    if found:
+        return f"{found.group(1).upper()} {found.group(2)}"
+    return text
+
+
+def _family(object_type: str) -> str:
+    """``order``, ``party`` (a vendor, customer or company), ``item`` or ``record``."""
+    kind = object_type or ""
+    if re.search(r"Order$|_order$", kind):
+        return "order"
+    if re.search(r"Vendor|Supplier|Customer|Company|Account|Party", kind, re.I):
+        return "party"
+    if re.search(r"^(?:Item|Product|Material|Sku)", kind, re.I):
+        return "item"
+    return "record"
+
+
+def _record_questions(family: str, name: str) -> list[tuple[str, str]]:
+    """(what it asks, the question) for one record, most useful first."""
+    if family == "order":
+        return [("who", f"Who should I chase about {name}?"),
+                ("late", f"Is {name} on time?"),
+                ("changed", f"What changed on {name} recently?")]
+    if family == "party":
+        return [("open", f"What's still open with {name}?"),
+                ("who", f"Who is our contact at {name}?")]
+    if family == "item":
+        return [("supplies", f"Who supplies {name}?"),
+                ("open", f"Which open orders need {name}?")]
+    return [("changed", f"What's the latest on {name}?"),
+            ("who", f"Who owns {name}?")]
+
+
+def follow_ups(question: str, answer: Any) -> list[str]:
+    """Up to ``MAX_FOLLOW_UPS`` questions to ask next, from this answer's own records
+    (its subjects) and what it could not confirm (its ``not_found`` and conflicts), never
+    from anything the answer does not show its reader: the payload is already trimmed for
+    them. A question carries no figure: it names a record or a missing fact in the words
+    the answer already shows (a gap's words carrying a number no subject names are
+    skipped). A question asking what the reader just asked is skipped. Deterministic."""
+    asked = " ".join(str(question or "").lower().split())
+    subjects = [(ref.type, name) for ref in getattr(answer, "subjects", None) or ()
+                if (name := subject_name(ref.type, ref.label))]
+    names = [name for _type, name in subjects]
+    # what the answer already says: who to ask and whether it is late need no question
+    said_text = " ".join([str(getattr(answer, "direct_answer", "") or "")] + [
+        str(fact.text) for fact in getattr(answer, "facts", None) or ()])
+    out: list[str] = []
+
+    def covered(intent: str) -> bool:
+        return bool(ASKS[intent].search(asked)) or (
+            intent in ("who", "late") and bool(ASKS[intent].search(said_text)))
+
+    def add(text: str) -> None:
+        said = " ".join(text.lower().split())
+        if said != asked and said not in {o.lower() for o in out}:
+            out.append(text)
+
+    primary = names[0] if names else None
+    for conflict in getattr(answer, "conflicts", None) or ():
+        field = words(str(conflict.field or ""))
+        if field and primary and not re.search(r"\d", field):
+            add(f"Which system is right about the {field} of {primary}?")
+            break
+    for item in getattr(answer, "not_found", None) or ():
+        what = " ".join(str(item.what or "").split()).rstrip(".")
+        if not what or GENERIC_GAP.match(what) or SOURCE_STATE.search(
+                item.where_it_would_live or "") or len(what) > 80:
+            continue
+        digits = re.findall(r"\d[\w-]*", what)
+        if any(not any(d in name for name in names) for d in digits):
+            continue
+        what = what if re.match(r"[A-Z]{2,}|[A-Z]\w*\s+\d", what) else what[:1].lower() + what[1:]
+        if not re.match(r"(?:a|an|the|its|their|our|any|no|which|who|what|when|where|"
+                        r"how|whether)\b|[A-Z]{2,}", what):
+            what = "the " + what
+        tail = f" for {primary}" if primary and primary.lower() not in what.lower() else ""
+        add(f"Who can confirm {what}{tail}?")
+        break
+    seen: set[str] = set()
+    for object_type, name in subjects[:3]:
+        family = _family(object_type)
+        if family in seen:
+            continue
+        seen.add(family)
+        for intent, text in _record_questions(family, name):
+            if not covered(intent):
+                add(text)
+                break
+    if primary and len(out) < MAX_FOLLOW_UPS:
+        for intent, text in _record_questions(_family(subjects[0][0]), primary):
+            if not covered(intent):
+                add(text)
+            if len(out) >= MAX_FOLLOW_UPS:
+                break
+    return out[:MAX_FOLLOW_UPS]

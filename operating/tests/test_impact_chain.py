@@ -81,14 +81,16 @@ def priced_lines(s, so, key, *, lines=(("1000.00", "100"), ("250.00", "10")), qt
 def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_status="CONFIRMED",
                   ao_status="Committed", value="1250.50", key="ic",
                   planned="2099-01-15", promise="2099-01-20", margin=None, posted=None,
-                  bc_root=False):
+                  bc_root=False, copy_status=None):
     """late PO -> line -> Portal item = FM packaging <- component -> FM AO <- allocation(s)
     -> FM order line -> FM order = Portal order (required date, finance-marked total).
     ``margin``: ``priced_lines`` keyword arguments for each Portal order (None: no lines).
     ``posted``: the line orders a BC item instead, reached from the Portal item only by the
     Portal entity map (``Product.bc_posted_as`` at this tier) and by a number match capped
     at lead (``bc_company_not_known``), as the live BC purchase orders do. ``bc_root``: the
-    late order is that BC purchase order itself (its line's expected date ``planned``)."""
+    late order is that BC purchase order itself (its line's expected date ``planned``).
+    ``copy_status``: the AO also has a Portal manufacturing-order copy (its twin) whose
+    status is this one, as an MO-FM migration snapshot keeps the status it was copied with."""
     if bc_root:
         # live shape (flagship probe 2026-10-27): an open BC order dated only by its open
         # line's expectedReceiptDate, the Portal order its number matches capped at lead
@@ -118,6 +120,10 @@ def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_sta
     ao = ids["ao"] = s.obj(f"AssemblyOrder:portal.fm_assembly_order:ao-{key}", "fm_bronze")
     s.val(ao, "status", "text", ao_status)
     s.link("AssemblyOrderComponent.component_of", comp, ao)
+    if copy_status is not None:
+        copy = s.obj(f"AssemblyOrder:portal.app_manufacturing_order:mo-{key}", "gold_etl_from_fm")
+        s.val(copy, "status", "text", copy_status)
+        s.link("AssemblyOrder.same_record_as", copy, ao, kind="same_record")
     for n in range(orders):
         alloc = s.obj(f"AssemblyOrderAllocation:portal.fm_order_entry_item_assembly:"
                       f"al-{key}-{n:03d}", "fm_bronze")
@@ -355,12 +361,22 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn("impact_value_1", names)
 
     def test_closed_orders_and_realized_assembly_orders_put_nothing_at_risk(self):
-        for kwargs in ({"so_status": "SHIPPED"}, {"ao_status": "Realized"}):
+        # FileMaker's status decides over a Portal copy's (a stale MO-FM snapshot), both ways
+        for kwargs, at_risk in (({"so_status": "SHIPPED"}, 0), ({"ao_status": "Realized"}, 0),
+                                ({"ao_status": "Realized", "copy_status": "SCHEDULED"}, 0),
+                                ({"ao_status": "Committed", "copy_status": "RELEASED"}, 1)):
             with self.subTest(**kwargs):
                 s = tp.Store()
                 ids = chain_fixture(s, **kwargs)
                 _out, entries = self.investigate(s, ids["po"])
-                self.assertEqual(entries["impact"]["value"], 0)
+                self.assertEqual(entries["impact"]["value"], at_risk)
+                st = pe._Store(store_file(s, tempfile.mkdtemp()))
+                try:
+                    table = table_of(s)
+                    found = ic.scan(st, lambda tool, args: table[tool]["handler"](args, STAFF))
+                finally:
+                    st.close()
+                self.assertEqual(found["orders_at_risk"], at_risk)
 
     def test_an_order_required_after_the_material_date_is_not_at_risk(self):
         s = tp.Store()

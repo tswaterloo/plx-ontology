@@ -282,6 +282,124 @@
       ]
     },
     {
+      "id": "ItemLedgerLot",
+      "description": "The lot (and lot expiry) of one posted BC item ledger entry, read from the standard ODataV4 web service ItemLedgerEntries (Page 38): API v2.0 itemLedgerEntries exposes no lot. One record per entry that carries a lot, keyed by the API v2.0 entry's id; an entry without a lot has none.",
+      "availability": {
+        "state": "partial",
+        "reason": "itemLedgerEntryLots: read per company by name after the company's itemLedgerEntries unit settled (integrations/bc_read.py BcCapture._capture_lots); live 2026-11-01 no entry of any of the three companies carries a lot (BC holds none yet), so the set is complete and empty until BC posts lot-tracked entries."
+      },
+      "bindings": [
+        {
+          "id": "bc.item_ledger_entry_lots",
+          "source": "bc",
+          "relation": "itemLedgerEntryLots",
+          "key": [
+            "id"
+          ],
+          "lineage": {
+            "from_capture": "bc_company"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_item_lot_page"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcbookkey.e32697"
+            }
+          ],
+          "note": "Field page of the item ledger: the record id is the API v2.0 item ledger entry's id; visible exactly as itemLedgerEntries is (capture_store.BC_FIELD_PAGES)."
+        }
+      ],
+      "properties": [
+        {
+          "name": "lot_number",
+          "value_type": "identifier",
+          "identifier_kind": "lot_number",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Lot_No",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "expiration_date",
+          "value_type": "date",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Expiration_Date",
+              "parser": "iso_date"
+            }
+          ]
+        },
+        {
+          "name": "entry_number",
+          "value_type": "integer",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Entry_No",
+              "parser": "integer_text"
+            }
+          ]
+        },
+        {
+          "name": "item_number",
+          "value_type": "identifier",
+          "identifier_kind": "item_code",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Item_No",
+              "parser": "identifier"
+            }
+          ]
+        },
+        {
+          "name": "location_code",
+          "value_type": "text",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Location_Code",
+              "parser": "trim"
+            }
+          ]
+        },
+        {
+          "name": "document_number",
+          "value_type": "identifier",
+          "identifier_kind": "bc_document_no",
+          "identifies": "reference",
+          "sources": [
+            {
+              "binding": "bc.item_ledger_entry_lots",
+              "path": "Document_No",
+              "parser": "identifier"
+            }
+          ]
+        }
+      ],
+      "display": [
+        "lot_number"
+      ],
+      "markings": [
+        "finance"
+      ],
+      "evidence": [
+        {
+          "kind": "ref",
+          "id": "workbench.bc_item_lot_page"
+        }
+      ]
+    },
+    {
       "id": "GeneralLedgerEntry",
       "description": "A posted G/L entry (BC). Freight and duty are expensed to G/L under ERP-D-015.",
       "availability": {
@@ -1915,6 +2033,41 @@
           ]
         }
       ]
+    },
+    {
+      "id": "ItemLedgerLot.of_entry",
+      "from": "ItemLedgerLot",
+      "to": "ItemLedgerEntry",
+      "name": "of_entry",
+      "reverse_name": "lot",
+      "cardinality": "N:1",
+      "description": "The item ledger entry this lot was read for (same id, same company).",
+      "bindings": [
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "bc.item_ledger_entry_lots",
+          "to_binding": "bc.item_ledger_entries",
+          "pairs": [
+            {
+              "from": "id",
+              "to": "id",
+              "compare": "identifier",
+              "identifier_kind": "bc_system_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "workbench.bc_item_lot_page"
+            },
+            {
+              "kind": "ref",
+              "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        }
+      ]
     }
   ],
   "event_types": [
@@ -2030,6 +2183,11 @@
       "kind": "workbench_code",
       "path": "integrations/live_source_grammar.py",
       "note": "BC_QUERY_SPECS itemLedgerEntries, generalLedgerEntries, agedAccountsReceivables/-Payables (keyed by customerId/vendorId, BC_RECORD_KEY_FIELD), customer/vendorPaymentJournals and customer/vendorPayments (lines of their journal by journalId, BC_LINE_PARENT_FIELD): field names from the BC API v2.0 resource reference (MicrosoftDocs dynamics365smb-devitpro-pb api-reference/v2.0). Captured by integrations.bc_read.BcCapture; a 404 listing is reason not_exposed. Field names and $select acceptance are checked by live check ``bc.ledgers`` (probe --finance-entities); unverified live until it passes."
+    },
+    "workbench.bc_item_lot_page": {
+      "kind": "workbench_code",
+      "path": "integrations/bc_read.py",
+      "note": "BusinessCentralReader.item_ledger_lots / BcCapture._capture_lots: ODataV4 web service ItemLedgerEntries (Page 38) Entry_No, Item_No, Lot_No, Expiration_Date, Location_Code, Document_No with $filter Lot_No ne '' (live_source_grammar bc.odata_item_ledger_entries), joined to the held API v2.0 item ledger entry by entry number; field names from the live ODataV4 $metadata of 2026-11-01."
     }
   }
 }

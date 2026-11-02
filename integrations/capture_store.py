@@ -243,7 +243,10 @@ BC_LINE_HEADERS: dict[str, str] = {
 # page serves (``purchaseOrderReferences``: ODataV4 Page 50 ``PurchaseOrder``'s
 # ``Your_Reference``, stored under the API v2.0 purchase order's GUID). They are fields of
 # that set's documents, so they are visible exactly as that set is: the set's resource only.
-BC_FIELD_PAGES: dict[str, str] = {"purchaseOrderReferences": "purchaseOrders"}
+# ``itemLedgerEntryLots``: ODataV4 Page 38 ``ItemLedgerEntries``' ``Lot_No`` /
+# ``Expiration_Date``, stored under the API v2.0 item ledger entry's GUID.
+BC_FIELD_PAGES: dict[str, str] = {"purchaseOrderReferences": "purchaseOrders",
+                                  "itemLedgerEntryLots": "itemLedgerEntries"}
 
 
 def _bc_path(parts: Sequence[str]) -> tuple[str, ...]:
@@ -714,12 +717,19 @@ class CaptureStore:
             row = self._db.execute(
                 "SELECT acl, recorded_at FROM unit_acl WHERE kind = ? AND unit = ?",
                 (kind.name, kind.unit(path))).fetchone()
-            if row is None or not capture_decides(row["recorded_at"], self._clock(),
-                                                  UNIT_ACL_MAX_AGE):
+            if row is None:
                 return False
             unit_acl = json.loads(row["acl"])
-            acls.append(unit_acl if kind.unit_acl_for is None
-                        else kind.unit_acl_for(unit_acl, payload))
+            applied = unit_acl if kind.unit_acl_for is None \
+                else kind.unit_acl_for(unit_acl, payload)
+            if not capture_decides(row["recorded_at"], self._clock(), UNIT_ACL_MAX_AGE):
+                # Past the bound: withheld, unless the audience opens a stale membership
+                # (an employee's declared full-read grant, ``_EmployeeItemAcl``); every
+                # other reader's audience has no such method.
+                stale = getattr(self.audience, "stale_unit_acl_allows", None)
+                if not callable(stale) or not stale(actor, applied, row["recorded_at"]):
+                    return False
+            acls.append(applied)
         if kind.current_acl and superseded:
             current = self._db.execute(
                 "SELECT payload FROM versions WHERE kind = ? AND path = ? "

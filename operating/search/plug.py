@@ -14,11 +14,15 @@ to the ranking it pages (``Ranked.mode``): a change mid-pagination is an error.
 """
 from __future__ import annotations
 
+import concurrent.futures as cf
 import datetime as dt
 import hashlib
 import json
 import os
 import sys
+import threading
+import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -27,8 +31,21 @@ from typing import Any, Iterator, Mapping, Sequence
 # Hits read per call: the tools page and cap after their own gates. The tool holds its
 # store lock meanwhile, so the reranked top stays small.
 FIND_K = 30
+# Hits ranked before the item gate (``ranked`` gates them on use, best first, until
+# FIND_K pass): the ranking runs beside the tool's own word-index search
+# (``prefetch``), and the per-item gate runs in the tool call, as every gate does.
+POOL_K = 2 * FIND_K
+# The longest a tool call waits for the ranking it started (``prefetch``); past it the
+# word index answers alone and says so (``search_fallback``).
+RANK_WAIT_S = 20.0
+_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-search")
 # An as_known_at this close to now is "now" (a cursor pins the first page's time).
 NOW_TOLERANCE = dt.timedelta(minutes=15)
+# A ranking is reused for the same reader and query this long (a next page, a repeated
+# search): its pages stay one order and the models do not run again. Its ids are gated
+# again on every use, so a grant revoked meanwhile still hides them.
+REUSE_SECONDS = 600.0
+REUSE_MAX = 64
 
 
 def enabled() -> bool:
@@ -84,16 +101,59 @@ def current() -> dict[str, Any] | None:
     return _CALL.get()
 
 
-def _rank(policy: Any, actor: Any, item_gate: Any, query: str, *,
-          kinds: Sequence[str] | None = None, k: int = FIND_K) -> Ranked:
+# key -> (made at, the policy it was made under (kept so its id is never reused while
+# the entry lives), the ranking)
+_RECENT: "OrderedDict[tuple, tuple[float, Any, Ranked]]" = OrderedDict()
+_RECENT_LOCK = threading.Lock()
+
+
+def _rank(policy: Any, actor: Any, query: str, *,
+          kinds: Sequence[str] | None = None, k: int = POOL_K) -> Ranked:
+    """The ranking of ``query`` for this reader before the item gate (``_gated``
+    applies it on use): the one made in the last
+    ``REUSE_SECONDS`` for the same policy, reader, query, kinds, k, database and
+    weights, else a new one (kept only when search ran)."""
+    try:
+        key: tuple | None = (id(policy), actor, query, tuple(kinds or ()), k,
+                             os.environ.get("PLX_PG_DSN"), os.environ.get("PLX_SEARCH_WEIGHTS"),
+                             os.environ.get("PLX_RERANK"))
+        hash(key)
+    except TypeError:
+        key = None   # an unhashable reader is never reused
+    now = time.monotonic()
+    if key is not None:
+        with _RECENT_LOCK:
+            found = _RECENT.get(key)
+            if found is not None and now - found[0] <= REUSE_SECONDS:
+                _RECENT.move_to_end(key)
+                return found[2]
+    result = _ranked_now(policy, actor, query, kinds=kinds, k=k)
+    if key is not None and result.problem is None:
+        with _RECENT_LOCK:
+            _RECENT[key] = (now, policy, result)
+            _RECENT.move_to_end(key)
+            while len(_RECENT) > REUSE_MAX:
+                _RECENT.popitem(last=False)
+    return result
+
+
+def _deferred(_actor: Any, _handle: str) -> bool:
+    """The item gate inside ``search``: every per-item decision is deferred to
+    ``_gated``, made in the tool call (the read policy's units and markings still filter
+    every row in SQL before anything is ranked)."""
+    return True
+
+
+def _ranked_now(policy: Any, actor: Any, query: str, *,
+                kinds: Sequence[str] | None = None, k: int = POOL_K) -> Ranked:
     import dataclasses
     from operating.search.config import load_weights
     from operating.search.core import search
     try:
         weights = load_weights()
-        weights = dataclasses.replace(weights, rerank_top=min(weights.rerank_top, k))
-        result = search(query, actor, k=k, kinds=kinds, policy=policy, item_gate=item_gate,
-                        weights=weights, hidden=False)
+        weights = dataclasses.replace(weights, rerank_top=min(weights.rerank_top, FIND_K))
+        result = search(query, actor, k=k, kinds=kinds, policy=policy, item_gate=_deferred,
+                        weights=weights, hidden=False, log=False)
     except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
         return Ranked(problem="search_unavailable:" + type(exc).__name__)
     if "no_read_policy" in result.notes:
@@ -105,27 +165,55 @@ def _rank(policy: Any, actor: Any, item_gate: Any, query: str, *,
         if isinstance(object_id, str) and object_id and object_id not in seen:
             seen.add(object_id)
             out.append(hit)
+    return Ranked(out, "hybrid")
+
+
+def _gated(result: Ranked, policy: Any, actor: Any, item_gate: Any) -> Ranked:
+    """``result`` as this reader may be shown it now: each hit through the item gate
+    (``SearchReader.item_allowed``: the per-item ACL of a mail, file or Teams item),
+    best first, until ``FIND_K`` pass; ``mode`` binds a cursor to that order."""
+    from operating.search.reader import SearchReader
+    if result.problem is not None:
+        return result
+    reader = SearchReader.from_policy(policy, actor, item_gate=item_gate)
+    out: list[dict[str, Any]] = []
+    for hit in result.hits:
+        if len(out) >= FIND_K:
+            break
+        if reader.item_allowed(hit.get("handle")):
+            out.append(hit)
     digest = hashlib.sha256(json.dumps([h["object_id"] for h in out]).encode()
                             ).hexdigest()[:16]
     return Ranked(out, "hybrid:" + digest)
 
 
 def prefetch(policy: Any, actor: Any, item_gate: Any, query: str) -> None:
-    """Run the ranking now (before the caller takes its store lock) for the call's
-    later ``ranked``; nothing when search is off or no call state is open."""
+    """Start the ranking now, beside the caller's own search (it runs on a search
+    thread: the database and the models, never the caller's store or gate), for the
+    call's later ``ranked``; nothing when search is off or no call state is open."""
     state = _CALL.get()
     if state is not None and enabled() and query not in state["prefetched"]:
-        state["prefetched"][query] = _rank(policy, actor, item_gate, query)
+        state["prefetched"][query] = _POOL.submit(_rank, policy, actor, query)
 
 
 def ranked(policy: Any, actor: Any, item_gate: Any, query: str) -> Ranked:
-    """The call's ranking of ``query`` (prefetched, else run now), recorded as the
-    call's mode. Search off: an empty ``index`` ranking."""
+    """The call's ranking of ``query`` (prefetched, else run now), gated for this
+    reader (``_gated``) and recorded as the call's mode. Search off: an empty
+    ``index`` ranking."""
     if not enabled():
         return Ranked()
     state = _CALL.get()
     found = state["prefetched"].get(query) if state is not None else None
-    result = found if found is not None else _rank(policy, actor, item_gate, query)
+    if found is None:
+        result = _rank(policy, actor, query)
+    else:
+        try:
+            result = found.result(timeout=RANK_WAIT_S)
+        except cf.TimeoutError:
+            result = Ranked(problem="search_timeout")
+        except Exception as exc:  # noqa: BLE001 - the word index answers, and says so
+            result = Ranked(problem="search_unavailable:" + type(exc).__name__)
+    result = _gated(result, policy, actor, item_gate)
     if state is not None:
         state["mode"], state["problem"] = result.mode, result.problem
     return result

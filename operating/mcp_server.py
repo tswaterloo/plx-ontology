@@ -38,11 +38,12 @@ from ontology.reviews import store_path as reviews_store_path
 from ontology.store_ddl import FORMAT as STORE_FORMAT
 
 from . import case_context_tools, case_verification, confirmation_forms, kind_confirmation
-from . import mcp_portfolio, ontology_tools, status_card
+from . import injection_guard, mcp_portfolio, ontology_tools, status_card
 from . import playbook_tools
 from . import ontology_tools_aggregate, ontology_tools_evidence, ontology_tools_process
-from . import meeting_agenda, ontology_tools_investigate, ontology_tools_traverse
-from . import action_tools, agent_definitions, answer_gate
+from . import meeting_agenda, ontology_tools_changes, ontology_tools_investigate
+from . import ontology_tools_traverse
+from . import action_tools, agent_definitions, answer_gate, tool_results
 from .agent_definitions import AgentDefinition, AgentRun
 from . import case_tools_host
 from .case_tools_host import PageNotRead, PagedRead
@@ -465,7 +466,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     # Case runtime; every call acts as the session
     # actor, under the host-configured source-mirror audience. Specs stay near the
     # contract's 600-character description budget (2026-10-03-host-tool-budget).
-    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews for this session; 0 releases, optional handoff note; also the holder employee restarted); another session's active claim refuses claims and writes case_claimed_until:<expires_at>. case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
+    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews; 0 releases, optional handoff note); another session's active claim refuses claims and writes case_claimed_until:<expires_at>. case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
      "inputSchema": _schema({"question": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "roots": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}, "maxItems": 20},
                              "audience": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "minItems": 1, "maxItems": 50},
@@ -476,7 +477,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "handoff": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "break_reason": {"type": "string", "minLength": 1, "maxLength": 4000}}),
      "annotations": _WRITES},
-    {"name": "plx.case_add_finding", "description": "Record a finding on a case. kind 'fact' needs a citation the session actor resolves (api://, original://, graph-mail:// such as plx.read cite_as, sharepoint://, bc://); 'interpretation' is labelled model output. Every number and ISO date in the statement (ids aside) needs a value_claims entry {value, citation + field or calculation, role, unit}, checked on read; the statement must state each text value it claims. A repeat finding merges (merged true). supersedes + supersede_reason replaces a finding. Link mode: pass only link {from_citation, to_citation, contract_id} (operating/link_contracts.json): records verified, contradicted, a lead, or nothing (record a gap). No business write.",
+    {"name": "plx.case_add_finding", "description": "Record a finding on a case. kind 'fact' needs a citation the session actor resolves (e.g. plx.read cite_as); 'interpretation' is model output. Each number and ISO date in the statement (ids aside) needs a value_claims entry {value, citation + field or calculation, role, unit}, checked on read. A repeat merges; supersedes + supersede_reason replaces one. Link mode: only link {from_citation, to_citation, contract_id}: verified, contradicted, a lead, or nothing. No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "statement": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "kind": {"type": "string", "enum": ["fact", "interpretation"]},
@@ -516,7 +517,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "value_claims": _VALUE_CLAIMS},
                             ["case_id", "missing", "why", "who_can_answer", "state"]),
      "annotations": _WRITES},
-    {"name": "plx.case_propose", "description": "Record a proposed action on a case, or read one back. Record: capability (an owner-system proposal type of operating/action_catalog.json offered on this host; its guards run on the cited rows now), payload, preconditions, citations, optional expected_effect {relation, key, values} and evidence {statement, value_claims} (a cited fact in the same transaction). Recorded only: never approved, never dispatched or executed. Verify mode: pass proposal_id (+ references, max_staleness): the effect's row is re-read for the session actor and effect_observed, effect_not_observed or unknown is recorded; a differing value is never echoed; attribution not_established. It writes no business system.",
+    {"name": "plx.case_propose", "description": "Record a proposed action on a case, or read one back. Record: capability (a proposal type of operating/action_catalog.json; its guards run on the cited rows now), payload, preconditions, citations, optional expected_effect {relation, key, values} and evidence {statement, value_claims}. Recorded only: never approved or dispatched. Verify mode: proposal_id (+ references, max_staleness) re-reads the effect's row as the session actor: effect_observed, effect_not_observed or unknown. It writes no business system.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "capability": {"type": "string", "minLength": 1, "maxLength": 200},
                              "payload": {"type": "object"},
@@ -553,7 +554,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "outcome": {"type": "string", "minLength": 1, "maxLength": 4000}},
                             ["case_id", "outcome"]),
      "annotations": _WRITES},
-    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Pass exactly one of: inbox_name (a PDF the operator placed in originals-inbox/<principal>/ on the host; its audience is exactly that principal; the file is consumed); drive_id + item_id (a SharePoint PDF read for the session actor through the GET-only reader, permissions checked first, bytes under max_bytes, re-gated live on every read); citation + reason (an attached original read again as a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes are kept with their SHA-256 and cited original://<id>[#page=<n>]; OCR text is machine-read, for a person to confirm. Records a cited fact finding. No business write.",
+    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Pass exactly one of: inbox_name (a PDF the operator placed in originals-inbox/<principal>/ on the host; its audience is exactly that principal; the file is consumed); drive_id + item_id (a SharePoint PDF read as the session actor, GET-only, permissions checked first, under max_bytes, re-gated on every read); citation + reason (an attached original read again as a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes are kept with their SHA-256, cited original://<id>[#page=<n>]; OCR text is machine-read. Records a cited fact finding. No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "inbox_name": {"type": "string", "minLength": 1, "maxLength": 200},
                              "inbox_principal": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -588,8 +589,10 @@ PLAYBOOK_TOOLS = frozenset(playbook_tools.TOOL_NAMES)
 # generic ontology tools (employee gate, one generation per call, the output boundary) and,
 # like the playbook tools, listed only to a session whose agent definition names it, so the
 # case listing stays within the 22-tool budget.
-AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL,)
-AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES)
+# plx.changes (operating/ontology_tools_changes.py) is served and listed the same way: only
+# to a session whose agent definition names it.
+AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL, ontology_tools_changes.TOOL)
+AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES)
 
 ACTION_TOOLS = frozenset({action_tools.TOOL_NAME})
 # plx.schema / plx.find / plx.object (operating.ontology_tools), plx.around /
@@ -607,7 +610,7 @@ GENERIC_TOOLS = frozenset().union(*(module.TOOL_NAMES for module in (
 # boundary like every other with their own envelopes kept and the strings their contract
 # types left bare (CONTRACT_TYPING), so wrapping never breaks a contract field such as an
 # object id or gap.subject, and any other bare string is still wrapped.
-SELF_ENVELOPING_TOOLS = GENERIC_TOOLS | PLAYBOOK_TOOLS
+SELF_ENVELOPING_TOOLS = GENERIC_TOOLS | PLAYBOOK_TOOLS | frozenset(ontology_tools_changes.TOOL_NAMES)
 # Every string their contract types, derived from the contract itself: pattern- or
 # enum-typed strings (object ids, handles, tiers, ...) when they match, and the plain
 # strings it allows (gap subjects, Workbench detail/hint/note, the agent's own queries).
@@ -661,7 +664,10 @@ HOME_CITATIONS = 5
 HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "receipt_without_qc",
               "order_without_customer_po", "late_order", "expired_quote",
               "conflicting_quantity", "missing_in_record", "order_at_risk", "po_impact",
-              "po_impact_margin", "systems_disagree")
+              "po_impact_margin", "systems_disagree", "eta_slipped", "lot_near_expiry",
+              "lot_on_hold", "quote_accepted_no_order", "invoice_quantity_mismatch",
+              "vendor_no_reply", "vendor_terms_unapplied", "negative_margin",
+              "undated_po")
 LATE_PO_KINDS = ("late_po", "unconfirmed_po")
 NARROWED_READ = 20000   # inbox items a kind-narrowed home question reads
 _PURCHASE_ORDERS = r"(?:purchase orders|pos)"
@@ -697,6 +703,25 @@ _HOME_PHRASES: tuple[tuple[re.Pattern[str], tuple[str, ...] | None], ...] = tupl
         (r"(?:which |what )?(?:quantities|quantity mismatches) (?:are wrong|disagree|conflict)",
          ("po_receipt_quantity_mismatch", "conflicting_quantity")),
     ))
+
+
+def _no_record_named(found: Any) -> bool:
+    """Whether a ``plx.find`` result names no record by the query's words: nothing found,
+    or only free-text candidates (``display_text``: a word of some mail, file or value,
+    never a typed identifier, alias or name the query resolves to). Home and portfolio
+    mode answer such a question; any identifier or name match wins (conservative
+    identity). A home phrase holds no digit and no identifier, so a free-text hit on it is
+    words in some document, never the record the question means."""
+    if not isinstance(found, dict):
+        return False
+    if found.get("status") == "not_found":
+        return True
+    candidates = found.get("candidates")
+    return (found.get("status") in ("found", "ambiguous") and isinstance(candidates, list)
+            and bool(candidates) and all(
+                isinstance(c, dict) and isinstance(c.get("matched"), dict)
+                and c["matched"].get("identifier_kind") == injection_guard.QUERY_TEXT_KIND
+                for c in candidates))
 
 
 def home_kinds(query: Any) -> tuple[str, ...] | None:
@@ -1571,6 +1596,58 @@ def _case_get_result(view: dict[str, Any], section: str | None, offset: int, lim
                   ("id", "seq", "bucket", "kind"))
 
 
+def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[str, Any],
+                    may_repair: bool, repairs_left: int,
+                    unread: Callable[[str, str], bool] | None
+                    ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """One answer submission through the one final-answer gate
+    (``answer_gate.gate_answer``) for ``server``'s session (its actor's re-reads), with the
+    evidence handles (``seen``), counts and currencies (``returned``) its tool results
+    returned: ``(result, gated, repairing)``, ``result`` as ``plx.case_get``'s answer mode
+    returns it. ``repairs_left``: the repaired submissions the session may still make
+    before this one. ``MCPServer._answer`` (an MCP client's submission) and the fast answer
+    (``operating.fast_answer``, code's own reads) both decide through it."""
+    # The client's prose is checked as stated (``check_text``), never used as the
+    # Ask's ``{id}`` templates.
+    claims_only = {key: value for key, value in answer.items() if key != "text"} \
+        if isinstance(answer, dict) else answer
+    gated = answer_gate.gate_answer(claims_only, server, seen=seen, returned=returned,
+                                    may_repair=may_repair, unread=unread)
+    repairing = gated["outcome"] == "repair"
+    text = {"text_check": answer_gate.check_text(answer["text"], gated["claims"], server,
+                                                 returned)} \
+        if isinstance(answer, dict) and "text" in answer else {}
+    # The final reply (``answer_gate.final_reply``, every answer path's): the
+    # submitted text and unknowns without what no passed claim backs, the withheld
+    # list at its end. A client states it as its answer text.
+    reply = None if repairing or not isinstance(answer, dict) else \
+        answer_gate.final_reply(answer.get("text", ""), gated["claims"],
+                                unsupported=gated["unsupported"],
+                                unknowns=gated["unknowns"])
+    # A final decision says its answerability (``answer_gate.answerability``): a
+    # passed claim, a document's stated gap included, is never a blocked answer.
+    state = answer_gate.answerability(gated)
+    final = {} if reply is None else {"answerability": {"state": state},
+                                     "instruction": " ".join(
+        [answer_gate.ANSWER_FINAL]
+        + ([answer_gate.ANSWER_NOT_BLOCKED] if state != "blocked" else [])
+        + ([answer_gate.WITHHOLD_REFUSED] if gated["unsupported"] else [])),
+        "reply": {key: reply[key] for key in ("text", "unknowns", "removed_sentences",
+                                              "removed_unknowns")},
+        # Each passed claim as a ready-to-copy answer value (``kept_value``'s form).
+        "answer_values": answer_gate.answer_values(
+            {"outcome": gated["outcome"], "claims": gated["claims"]})}
+    result = {**text, "outcome": gated["outcome"], "reason": gated["reason"],
+              "claims": gated["claims"], "dropped_claims": gated["dropped"],
+              "unsupported_claims": answer_gate.shown_unsupported(gated["unsupported"], None),
+              "unknowns": gated["unknowns"], "claim_checks": gated["checks"],
+              "repair": gated["repair"], **final,
+              # The repaired submissions this session may still make: a repair outcome
+              # counts the one it asks for (its next submission is decided as final).
+              "repairs_left": max(repairs_left, 0)}
+    return result, gated, repairing
+
+
 class MCPServer:
     """One stdio session bound to the host-configured case actor.
 
@@ -1692,6 +1769,10 @@ class MCPServer:
         # Repairs this session's final answers had (``plx.case_get`` answer mode): at most
         # ``answer_gate.MAX_REPAIRS`` over the session.
         self._answer_repairs = 0
+        # The last answer decision plx.case_get gave this session (``_answer``), and
+        # whether a later submission the gate could not decide cleared it
+        # (``_cleared_note``).
+        self._last_decision: dict[str, Any] | None = None
         # The session's agent (operating/agent_definitions.json; default: its
         # default_agent): only its tools are listed and its run decides every call.
         definition = (agent if isinstance(agent, AgentDefinition)
@@ -1848,16 +1929,34 @@ class MCPServer:
                                         escalation=self._escalation(name, built))
                 value = built if host_code else _firewall(built, name)
                 encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                encoded_is_value = True
                 if self._text is not None and not host_code:
-                    encoded = self._text
+                    encoded, encoded_is_value = self._text, False
                 payload = {"content": [{"type": "text", "text": encoded}],
                            "structuredContent": value, "isError": False}
                 # Ingestion freshness rides on every answer (no separate status tool);
                 # when the full unit list does not fit, only its summary does.
                 meta = self._freshness_meta()
-                for candidate in (meta, _meta_summary(meta)):
+                # A result that does not fit twice (its JSON text and structuredContent,
+                # the same value) is sent once, as its text, with a structured stub
+                # saying so in ``_meta`` (``tool_results``; every client reads it by
+                # ``tool_results.result_value``). No structuredContent then: a client
+                # that shows it in place of the text (Claude Code) shows the text whole.
+                # F23-0047 on v14: a 25 KB answer decision of plx.case_get was refused
+                # result_too_large after the gate had decided it, and the session lost its
+                # answer. A result whose text is a rendering of its own (``self._text``)
+                # has no JSON to fall back to.
+                tiers = [(meta, True), (_meta_summary(meta), True)]
+                if encoded_is_value:
+                    tiers.append((_meta_summary(meta), False))
+                for candidate, structured in tiers:
+                    if not structured:
+                        payload.pop("structuredContent", None)
                     payload["_meta"] = {FRESHNESS_META_KEY: candidate,
                                         AGENT_META_KEY: run.meta(escalation)}
+                    if not structured:
+                        payload["_meta"][tool_results.TEXT_ONLY_KEY] = dict(
+                            tool_results.TEXT_ONLY_STUB)
                     if self._unkept is not None:
                         payload["_meta"][EVIDENCE_META_KEY] = {"kept": False,
                                                                "reason": self._unkept}
@@ -1866,15 +1965,17 @@ class MCPServer:
                                             None if host_code else value)
                         return _result(request_id, payload)
                 return _result(request_id, _tool_error(
-                    "result_too_large: narrow the query or context bounds"))
+                    self._cleared_note(name, arguments)
+                    + "result_too_large: narrow the query or context bounds"))
             except (InputError, KeyError, ValueError, PermissionError) as exc:
                 run.record(name, error=True, host_code=host_code)
-                return _result(request_id, _tool_error(
+                return _result(request_id, _tool_error(self._cleared_note(name, arguments) + (
                     str(exc) if host_code else _client_error(str(exc), name,
-                                                             self._argument_names(name))))
+                                                             self._argument_names(name)))))
             except Exception:
                 run.record(name, error=True, host_code=host_code)
-                return _result(request_id, _tool_error("tool_execution_failed"))
+                return _result(request_id, _tool_error(self._cleared_note(name, arguments)
+                                                       + "tool_execution_failed"))
             finally:
                 _TO_CLIENT.reset(to_client)
                 _TOOL.reset(tool)
@@ -1986,56 +2087,38 @@ class MCPServer:
                          if isinstance(alias, str)}
         return [texts[key] for key in keys if key in texts]
 
+    def _cleared_note(self, name: str, arguments: Any) -> str:
+        """For a ``plx.case_get`` answer submission the gate could not decide (an error,
+        a result too large): when it gives another value for a claim this session's last
+        decision passed (``answer_gate.contradicted_claims``), that decision is cleared
+        and the agent is told so with this error (a repair turn); else nothing (the
+        earlier decision stands: the submission decided nothing)."""
+        if name != "plx.case_get" or not isinstance(arguments, dict) \
+                or not isinstance(arguments.get("answer"), dict) or self._last_decision is None:
+            return ""
+        claims = answer_gate.contradicted_claims(self._last_decision,
+                                                 arguments["answer"].get("claims"))
+        if not claims:
+            return ""
+        self._last_decision = None
+        return answer_gate.CLEARED_BY_CONTRADICTION.format(
+            count=len(claims), claims=", ".join(claims[:8])) + "\n"
+
     def _answer(self, answer: Any) -> dict[str, Any]:
         """``plx.case_get``'s answer mode: ``answer`` through the one final-answer gate
-        (``answer_gate.gate_answer``) with the evidence handles, counts and currencies this
+        (``answer_decision``) with the evidence handles, counts and currencies this
         session's tool results returned under the scope in force now (``_returned``), one
         repair over the session. Read-only; its result is never evidence."""
         returned = self._returned()
         seen = set(self._evidence["handles"])
-        # The client's prose is checked as stated (``check_text``), never used as the
-        # Ask's ``{id}`` templates.
-        claims_only = {key: value for key, value in answer.items() if key != "text"} \
-            if isinstance(answer, dict) else answer
-        gated = answer_gate.gate_answer(
-            claims_only, self, seen=seen, returned=returned,
-            may_repair=self._answer_repairs < answer_gate.MAX_REPAIRS, unread=self.unread)
-        repairing = gated["outcome"] == "repair"
+        result, gated, repairing = answer_decision(
+            answer, self, seen=seen, returned=returned,
+            may_repair=self._answer_repairs < answer_gate.MAX_REPAIRS,
+            repairs_left=answer_gate.MAX_REPAIRS - self._answer_repairs, unread=self.unread)
         if repairing:
             self._answer_repairs += 1
-        text = {"text_check": answer_gate.check_text(answer["text"], gated["claims"], self,
-                                                     returned)} \
-            if isinstance(answer, dict) and "text" in answer else {}
-        # The final reply (``answer_gate.final_reply``, every answer path's): the
-        # submitted text and unknowns without what no passed claim backs, the withheld
-        # list at its end. A client states it as its answer text.
-        reply = None if repairing or not isinstance(answer, dict) else \
-            answer_gate.final_reply(answer.get("text", ""), gated["claims"],
-                                    unsupported=gated["unsupported"],
-                                    unknowns=gated["unknowns"])
-        # A final decision says its answerability (``answer_gate.answerability``): a
-        # passed claim, a document's stated gap included, is never a blocked answer.
-        state = answer_gate.answerability(gated)
-        final = {} if reply is None else {"answerability": {"state": state},
-                                         "instruction": " ".join(
-            [answer_gate.ANSWER_FINAL]
-            + ([answer_gate.ANSWER_NOT_BLOCKED] if state != "blocked" else [])
-            + ([answer_gate.WITHHOLD_REFUSED] if gated["unsupported"] else [])),
-            "reply": {key: reply[key] for key in ("text", "unknowns", "removed_sentences",
-                                                  "removed_unknowns")},
-            # Each passed claim as a ready-to-copy answer value (``kept_value``'s form).
-            "answer_values": answer_gate.answer_values(
-                {"outcome": gated["outcome"], "claims": gated["claims"]})}
-        return {**text, "outcome": gated["outcome"], "reason": gated["reason"],
-                "claims": gated["claims"], "dropped_claims": gated["dropped"],
-                "unsupported_claims": answer_gate.shown_unsupported(gated["unsupported"],
-                                                                    None),
-                "unknowns": gated["unknowns"], "claim_checks": gated["checks"],
-                "repair": gated["repair"], **final,
-                # The repaired submissions this session may still make: a repair outcome
-                # counts the one it asks for (its next submission is decided as final).
-                "repairs_left": max(answer_gate.MAX_REPAIRS - self._answer_repairs
-                                    + (1 if repairing else 0), 0)}
+        self._last_decision = {"outcome": gated["outcome"], "claims": gated["claims"]}
+        return result
 
     def _bind(self, scope: str, items: dict[tuple[str, ...], str]) -> None:
         """Bring the kept evidence to ``scope`` and the item permissions ``items``: another
@@ -2307,7 +2390,7 @@ class MCPServer:
         # the late list may be asked with its own type named (object_type PurchaseOrder)
         typed = (set(kinds or ()) <= set(LATE_PO_KINDS) and bool(kinds)
                  and arguments.get("object_type") == "PurchaseOrder")
-        if (kinds is None or not isinstance(found, dict) or found.get("status") != "not_found"
+        if (kinds is None or not _no_record_named(found)
                 or set(arguments) - {"query", "limit", "response_format"}
                 - ({"object_type"} if typed else set())):
             return found
@@ -2354,7 +2437,7 @@ class MCPServer:
         plan with a ``portfolio_scope_required`` gap. As home mode: a record found by the
         words wins."""
         plan = mcp_portfolio.portfolio_plan(arguments.get("query"))
-        if plan is None or not isinstance(found, dict) or found.get("status") != "not_found":
+        if plan is None or not _no_record_named(found):
             return found
         root_type = plan["root"]["object_types"][0]
         scoped = bool(arguments.get("filters"))
@@ -3184,7 +3267,10 @@ def local_client(server: MCPServer, client_name: str
         if "error" in response or result.get("isError"):
             text = (result.get("content") or [{}])[0].get("text") or response.get("error")
             raise RuntimeError(f"{name} refused: {text}")
-        return result["structuredContent"]
+        try:
+            return tool_results.result_value(result)
+        except tool_results.ToolResultUnreadable as error:
+            raise RuntimeError(f"{name} refused: {error}") from error
 
     return call
 
@@ -3790,7 +3876,8 @@ def _session_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     # Re-read when the list file changes or every few minutes (``ReloadingExclusion``).
     from integrations.people_exclusion import ReloadingExclusion
     resolver = EmployeePermissionResolver(policy, portal_access, directory=directory,
-                                          people_exclusion=ReloadingExclusion.from_env(os.environ))
+                                          people_exclusion=ReloadingExclusion.from_env(
+                                              os.environ, state_dir=args.state_dir))
     ticket, replay_guard = None, None
     if args.session_ticket_env is not None:
         ticket = os.environ.get(args.session_ticket_env) or ""

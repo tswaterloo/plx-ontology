@@ -1,0 +1,25 @@
+import { describe, expect, it } from "vitest";
+import { headline } from "./home";
+import type { Briefing, BriefingItem, HomeResponse } from "./types";
+
+const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
+  ({ greeting_name: "V", examples: [], recent_questions: [], needs_attention: { status, late_total, late_pos: [] } }) as unknown as HomeResponse;
+const it_ = (contact: string | null) => ({ next_action: { text: "x", rule: "r", contact, suggestion_only: true } }) as unknown as BriefingItem;
+const brief = (items: BriefingItem[], extra: Partial<Briefing> = {}) => ({ status: "read", count: items.length, items, routing_basis: "employee", ...extra }) as Briefing;
+
+describe("Home headline", () => {
+  it("says what is late and how many need a call: those with someone to chase, else the top three", () => {
+    expect(headline(home(12), brief([it_("Bob"), it_(null), it_("Ann")]))?.text).toBe("12 purchase orders are late. 2 need a call today.");
+    expect(headline(home(12), brief([it_(null), it_(null), it_(null), it_(null)]))?.text).toBe("12 purchase orders are late. 3 need a call today.");
+    expect(headline(home(1), null)?.text).toBe("1 purchase order is late.");
+  });
+
+  it("says plainly when nothing is late, when nothing is routed, and claims nothing it could not read", () => {
+    expect(headline(home(0), brief([it_(null)]))).toEqual({ text: "Nothing is late today.", sub: "1 item to look at this week." });
+    expect(headline(home(5), brief([], { routing_basis: "no_department_on_record" }))?.text).toBe(
+      "No department is on record for you, so nothing is routed to you yet.",
+    );
+    expect(headline(home(5, "unavailable"), null)).toBeNull();
+    expect(headline(null, null)).toBeNull();
+  });
+});

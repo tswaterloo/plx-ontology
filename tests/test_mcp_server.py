@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 import subprocess
@@ -125,8 +126,9 @@ class MCPServerStdioTests(unittest.TestCase):
         tools = listing["result"]["tools"]
         names = [tool["name"] for tool in tools]
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(set(names), set(CASE_RUNTIME_TOOLS))
-        self.assertEqual(names, [tool["name"] for tool in TOOLS])
+        # the default agent also lists plx.changes
+        self.assertEqual(set(names), set(CASE_RUNTIME_TOOLS) | {"plx.changes"})
+        self.assertEqual(names, [tool["name"] for tool in TOOLS] + ["plx.changes"])
         for tool in tools:
             self.assertEqual(tool["annotations"]["readOnlyHint"],
                              tool["name"] not in CASE_WRITE_TOOLS, tool["name"])
@@ -141,7 +143,7 @@ class MCPServerStdioTests(unittest.TestCase):
         self.assertEqual(set(meta), {FRESHNESS_META_KEY, AGENT_META_KEY})
         self.assertEqual(meta[FRESHNESS_META_KEY], {"configured": False})
         self.assertEqual((meta[AGENT_META_KEY]["id"], meta[AGENT_META_KEY]["version"]),
-                         ("plx.agent.act", 1))
+                         ("plx.agent.act", 2))
 
     def test_case_host_lists_the_ontology_tools_within_the_budget(self):
         self.initialize()
@@ -308,6 +310,120 @@ class OntologyToolsOnTheCaseHostTests(unittest.TestCase):
         self.assertEqual(json.loads(result["content"][0]["text"]), result["structuredContent"])
         self.assertEqual(result["_meta"][FRESHNESS_META_KEY], {"configured": False})
         self.assertIn("freshness", result["structuredContent"]["meta"])
+
+    def test_a_result_that_fits_once_reaches_every_client_whole(self):
+        """A result too large to send twice is sent once, as its JSON text, with a
+        structured stub saying it was truncated and where the rest is (review of
+        519480fa3f: the in-process clients read only structuredContent and took None as
+        a success, or raised KeyError). Every client reads the whole value."""
+        from evals import harness_reads, runner
+        from operating import agent_loop, agent_session, tool_results
+        server, ops = self.client({"staff:operations"})
+
+        def same(value):  # each call names its result set afresh
+            return json.loads(re.sub(r'"set:[^"]*"', '"set"', json.dumps(value)))
+        arguments = {"query": "SO-2099-0042"}
+        whole = server.handle({"jsonrpc": "2.0", "id": 90, "method": "tools/call",
+                               "params": {"name": "plx.find", "arguments": arguments}})
+        agent_value = whole["result"]["structuredContent"]
+        host_value = ops("plx.find", arguments)
+        sent = len(json.dumps(whole["result"], ensure_ascii=False,
+                              separators=(",", ":")).encode())
+        twice = len(json.dumps(agent_value, ensure_ascii=False,
+                               separators=(",", ":")).encode())
+        self.assertGreater(twice, 1000)
+        with mock.patch.object(mcp_server, "MAX_RESULT_BYTES", sent - twice + 600):
+            response = server.handle({"jsonrpc": "2.0", "id": 91, "method": "tools/call",
+                                      "params": {"name": "plx.find",
+                                                 "arguments": arguments}})
+            result = response["result"]
+            self.assertFalse(result["isError"])
+            # No structuredContent (a client showing it in place of the text, Claude Code,
+            # shows the text whole); the stub saying so rides in _meta.
+            self.assertNotIn("structuredContent", result)
+            stub = result["_meta"][tool_results.TEXT_ONLY_KEY]
+            self.assertEqual(stub, tool_results.TEXT_ONLY_STUB)
+            self.assertTrue(stub["truncated"])
+            self.assertIn("content[0].text", stub["detail"])
+            self.assertEqual(same(json.loads(result["content"][0]["text"])), same(agent_value))
+            # The deep-investigation budget note appended as a text block of its own
+            # leaves the value readable.
+            from operating import deep_investigation as deep
+            noted = deep.with_note(result, {"steps_used": 1})
+            self.assertEqual(len(noted["content"]), 2)
+            self.assertEqual(same(tool_results.result_value(noted)), same(agent_value))
+            # The agent loop, host code, the eval harness reader, the eval case host and
+            # the reader host each get the whole value, never the stub or None.
+            value, failed = agent_loop._Session(server).call("plx.find", arguments)
+            self.assertEqual((same(value), failed), (same(agent_value), False))
+            self.assertEqual(same(ops("plx.find", arguments)), same(host_value))
+            self.assertEqual(same(harness_reads.Session(server).host_code(
+                "plx.find", arguments)), same(host_value))
+            case_host = object.__new__(runner.CaseHost)
+            with mock.patch.object(case_host, "_session", create=True), \
+                    mock.patch.object(case_host, "_request", create=True,
+                                      return_value=response):
+                self.assertEqual(same(case_host.call("plx.find", arguments)), same(agent_value))
+            reader = object.__new__(agent_session.ReaderHost)
+            with mock.patch.object(reader, "_exchange", create=True, return_value=response):
+                self.assertEqual(same(reader.call("plx.find", arguments)), same(agent_value))
+        # Unreadable text fails closed in every client, never a success of nothing.
+        broken = {"result": {"content": [{"type": "text", "text": "{cut"}], "isError": False,
+                             "_meta": {tool_results.TEXT_ONLY_KEY: dict(
+                                 tool_results.TEXT_ONLY_STUB)}}}
+        with mock.patch.object(server, "handle", return_value=broken):
+            self.assertTrue(agent_loop._Session(server).call("plx.find", arguments)[1])
+            with self.assertRaises(RuntimeError):
+                ops("plx.find", arguments)
+            self.assertEqual(harness_reads.Session(server).host_code("plx.find", arguments),
+                             {"ok": False, "error": "tool_result_unreadable"})
+        with mock.patch.object(case_host, "_session", create=True), \
+                mock.patch.object(case_host, "_request", create=True, return_value=broken):
+            self.assertEqual(case_host.call("plx.find", arguments),
+                             {"ok": False, "error": "tool_result_unreadable"})
+        with mock.patch.object(reader, "_exchange", create=True, return_value=broken):
+            self.assertEqual(reader.call("plx.find", arguments),
+                             {"error": {"code": "tool_result_unreadable"}})
+
+    def test_a_failed_resubmission_clears_a_passed_answer_only_when_it_contradicts_it(self):
+        """A later answer submission the gate could
+        not decide leaves the earlier passed decision standing, unless it gives another
+        value for one of its claims; then the decision is cleared and the agent is told
+        so with the gate's feedback (a repair turn)."""
+        from operating import answer_gate
+        server, _ = self.client({"staff:operations"})
+        local_client(server, "answer")   # initializes the session
+        handle = "original://doc-1"
+        decision = {"outcome": "answered", "claims": [{
+            "id": "m1", "check": {"status": "passed", "failures": []},
+            "value_claims": [{"citation": handle, "field": "row.status", "kind": "text",
+                              "value": "Released"}]}]}
+
+        ids = iter(range(70, 80))
+
+        def submit(value):
+            # An empty text is refused before the gate: a submission it never decided.
+            return server.handle({"jsonrpc": "2.0", "id": next(ids), "method": "tools/call",
+                                  "params": {"name": "plx.case_get", "arguments": {
+                                      "answer": {"text": "", "claims": [{
+                                          "text": "x", "citations": [handle],
+                                          "value_claims": [{"citation": handle,
+                                                            "field": field,
+                                                            "value": value}]}]}}}})["result"]
+        for field, value, cleared in (("row.name", "Held", False),
+                                      ("row.status", "released", False),
+                                      ("row.status", "Held", True)):
+            with self.subTest(field=field, value=value):
+                server._last_decision = decision
+                result = submit(value)
+                said = result["content"][0]["text"]
+                self.assertTrue(result["isError"])
+                self.assertIn("answer_invalid", said)
+                self.assertEqual(said.startswith("answer_cleared:"), cleared, said)
+                self.assertEqual(server._last_decision is None, cleared)
+        self.assertIn("m1", said)
+        self.assertEqual(said.split("\n")[0], answer_gate.CLEARED_BY_CONTRADICTION.format(
+            count=1, claims="m1"))
 
     def test_policy_grants_exact_units_the_mirror_audience_allows_now(self):
         keys = ["api:public.app_sales_order", "api:public.app_purchase_order",

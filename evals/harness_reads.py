@@ -42,6 +42,7 @@ import sys
 from typing import Any, BinaryIO, Sequence
 
 from evals.score import RECORD_SCHEMES
+from operating import tool_results
 
 HARNESS_READ = "harness/read"
 SEARCH_RANKED = "plx.search_ranked"   # host-code only, never a listed tool
@@ -64,7 +65,10 @@ class Session:
         result = response.get("result") or {}
         if "error" in response or result.get("isError"):
             return {"ok": False, "error": "tool_refused"}
-        return result.get("structuredContent")
+        try:
+            return tool_results.result_value(result)
+        except tool_results.ToolResultUnreadable:
+            return {"ok": False, "error": "tool_result_unreadable"}
 
     def read(self, name: Any, arguments: Any) -> Any:
         if not isinstance(name, str) or not isinstance(arguments, Mapping):

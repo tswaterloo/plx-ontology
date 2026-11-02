@@ -91,6 +91,57 @@ class ReportTest(unittest.TestCase):
         # no abstention at all: the share of justified ones has no data and fails too
         self.assertEqual((bar["abst"]["result"], bar["abst"]["why"]), ("fail", "no_data"))
 
+    def test_confident_wrong_is_split_in_three_kinds_and_the_bar_reads_false_statements(self):
+        # rank3 audit: 13 confident-wrong cards mixed stated falsehoods with answers that
+        # only missed a gap or carried another label. Each kind is counted apart, the
+        # total stays, and the shipped bar's <= 1% reads false statements only.
+        def value(*codes):
+            return {"name": "v", "passed": False, "codes": list(codes)}
+        runs = [score("i1", "wrong", codes=["value_mismatch"]),
+                score("i2", "wrong", codes=["gap_missing", "answerability_mismatch"]),
+                score("i3", "wrong", codes=["answerability_mismatch"]),
+                score("i4", "wrong", codes=["over_budget"]),   # unknown fault: fail closed
+                {**score("i5", "wrong"), "values": [value("value_missing")]},
+                {**score("i6", "wrong", codes=["gap_missing"]),
+                 "values": [value("value_missing"), value("unit_mismatch")]},
+                {**score("i7", "wrong", codes=["expected_fact_missing"]),
+                 "claim_checks": {"failed": 1}},
+                score("i8", "wrong", abstained=True, codes=["gap_missing"])]
+        items = {f"i{n}": card("a", f"A-{n}") for n in range(1, 9)}
+        bar = json.loads(rep.BAR_PATH.read_text("utf-8"))
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = rep.report([write_run(Path(tmp), "r1", runs)], compiled=(items, []),
+                             bar=bar)
+        t = doc["totals"]
+        self.assertEqual((t["confident_wrong"], t["confident_false_statement"],
+                          t["confident_incomplete"], t["confident_mislabelled"],
+                          t["unjustified_abstention"]), (7, 4, 2, 1, 1))
+        self.assertEqual(t["confident_false_statement_rate"], 0.5)
+        cw = next(target for target in doc["bar"]["targets"] if target["id"] == "confident_wrong")
+        self.assertEqual((cw["metric"], cw["result"]), ("confident_false_statement_rate", "fail"))
+        # Incomplete and mislabelled answers alone pass that bar and are still not correct.
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = rep.report([write_run(Path(tmp), "r1", runs[1:3])],
+                             compiled=({"i2": items["i2"], "i3": items["i3"]}, []), bar=bar)
+        cw = next(target for target in doc["bar"]["targets"] if target["id"] == "confident_wrong")
+        self.assertEqual((cw["value"], cw["result"], doc["totals"]["correct_raw"]),
+                         (0.0, "pass", 0))
+        self.assertIn("false statement", rep.markdown(doc))
+
+    def test_a_correct_run_on_unaudited_live_record_credit_is_not_audited(self):
+        # Scorer /27: live-record credit counts raw, audited only once its claims are.
+        def live(item_id, audited):
+            one = score(item_id, "correct")
+            one["evidence"].update(live_record_only=True, live_record_audited=audited)
+            return one
+        items = {"i1": card("a", "A-1"), "i2": card("a", "A-2")}
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = rep.report([write_run(Path(tmp), "r1", [live("i1", False),
+                                                          live("i2", True)])],
+                             compiled=(items, []))
+        self.assertEqual((doc["totals"]["correct_raw"], doc["totals"]["correct_audited"]),
+                         (2, 1))
+
     def test_stability_reads_the_latest_two_runs_of_one_version(self):
         items = {"i1": card("a", "A-1"), "i2": card("a", "A-2")}
         with tempfile.TemporaryDirectory() as tmp:

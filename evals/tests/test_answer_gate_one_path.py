@@ -63,7 +63,7 @@ class _Client:
     """A scripted MCP client of one stdio command (the agent's side of the session)."""
 
     def __init__(self, server, env):
-        self.child = subprocess.Popen([server["command"], *server["args"]], cwd=server["cwd"],
+        self.child = subprocess.Popen([server["command"], *server["args"]], cwd=server.get("cwd"),
                                       env={**env, **server["env"]}, stdin=subprocess.PIPE,
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                       text=True)
@@ -220,7 +220,7 @@ class OneGateTests(unittest.TestCase):
         self.assertEqual(transcript["agent"]["answer_gate"], {
             "submissions": 3, "outcomes": ["repair", "answered", "abstained"],
             "passed_claims": [0, 1, 0], "refused_claims": [1, 0, 1], "final": "abstained",
-            "repaired": True})
+            "repaired": True, "host_submitted": False})
         self.assertNotIn(handle, sc.canonical(transcript["agent"]["answer_gate"]))
 
     def test_the_scored_reply_holds_only_what_the_session_gate_passed(self):
@@ -229,22 +229,31 @@ class OneGateTests(unittest.TestCase):
         host = self.host()
         handle, field, value = self.record(self.in_process(host))
         cite = [{"l1_handle": handle, "field_path": field}]
-        for name, submitted, stated, kept in (
-                ("refused, restated", [_wrong(value)] * 2, _wrong(value), False),
-                ("passed", [value], value, True)):
+        # The host submits a reply the session never submitted (AL-02, GP-08, PS-10 on
+        # rank3) to the session's own gate: kept only as that gate decides, on the
+        # evidence that session read, never past it.
+        for name, submitted, stated, kept, read in (
+                ("refused, restated", [_wrong(value)] * 2, _wrong(value), False, True),
+                ("passed", [value], value, True, True),
+                ("never submitted, host passes it", [], value, True, True),
+                ("never submitted, host refuses it", [], _wrong(value), False, True),
+                ("never submitted, never read", [], value, False, False)):
             with self.subTest(name):
                 final = fx.final_text({
                     "format": sc.ANSWER_FORMAT, "answerability": "answerable",
                     "text": "The record states it.", "gaps": [],
                     "values": [{"name": "stated", "value": stated, "citations": cite}]})
 
-                def spawn(argv, cwd, env, timeout, submitted=submitted, final=final):
+                def spawn(argv, cwd, env, timeout, submitted=submitted, final=final,
+                          read=read):
                     server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
                         encoding="utf-8"))["mcpServers"]["plx"]
                     client = _Client(server, env)
                     try:
-                        client.call("plx.find", {"query": self.item["root"]["identifier"]})
-                        client.call("plx.read", {"citation": handle})
+                        if read:
+                            client.call("plx.find",
+                                        {"query": self.item["root"]["identifier"]})
+                            client.call("plx.read", {"citation": handle})
                         for said in submitted:
                             client.call("plx.case_get", {"answer": {
                                 "claims": [self.claim(handle, field, said)]}})
@@ -259,14 +268,27 @@ class OneGateTests(unittest.TestCase):
                     run_pin=self.pin_for(self.item))
                 stated_value = transcript["answer"]["values"][0]
                 reply = transcript["agent"]["final_reply"]
-                if kept:
+                record = transcript["agent"]["answer_gate"]
+                # The host submits whenever no decision of the session passed a claim.
+                self.assertEqual(record["host_submitted"], value not in submitted)
+                if value not in submitted:
+                    host_event = transcript["events"][-1]
+                    self.assertEqual((host_event["name"], host_event["submitted_by"]),
+                                     ("plx.case_get", "host"))
+                    self.assertEqual(record["final"] == "answered", kept)
+                if kept and not submitted:
+                    self.assertEqual((stated_value["value"], reply["withheld"]), (value, []))
+                elif kept:
                     self.assertEqual(transcript["final_text"], final)
                     self.assertEqual((stated_value["value"], stated_value["citations"]),
                                      (value, cite))
                     self.assertFalse(reply["rewritten"])
                 else:
                     self.assertEqual((reply["gate"], reply["withheld"]),
-                                     ("abstained", ["stated"]))
+                                     ("abstained" if submitted else "repair", ["stated"]))
+                    self.assertIsNone(stated_value["value"])
+                    if not submitted:
+                        continue
                     self.assertIsNone(stated_value["value"])
                     self.assertNotIn(_wrong(value), transcript["final_text"])
                     self.assertEqual(reply["agent_final_text"], final)

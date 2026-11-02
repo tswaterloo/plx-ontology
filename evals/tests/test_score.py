@@ -60,7 +60,7 @@ class ScoreTests(unittest.TestCase):
                              reported)
             # 2400 contradicts its cited row (2350): the claim gate fails it, not the bound
             self.assertEqual(result["passed"], reported == "2350", reported)
-        self.assertEqual(result["scorer"], "plx-eval-scorer/26")
+        self.assertEqual(result["scorer"], "plx-eval-scorer/27")
 
     def test_a_claim_value_unstated_gate_failure_blocks_like_the_other_gate_codes(self):
         """The claim gate's claim_value_unstated (a passing text, enum or date claim whose
@@ -1325,6 +1325,59 @@ class RubricEvidenceTests(unittest.TestCase):
             self.assertTrue(result["claim_checks"]["passed"], result)
             self.assertEqual((result["outcome"], result["evidence"]["label_only"]),
                              ("justified_abstention", True))
+
+    def test_a_passed_claim_on_the_cards_named_live_record_is_evidence(self):
+        """Scorer /27 (rank3 audit: EMD-07, PG-05 cited gate-passed Portal rows and were
+        scored label-only). A claim on a row the card names, on a column the card asks
+        about (its topic words), is evidence like a document quote: the record the
+        card's anchor names (the row holds that identifier whole), or for a card naming
+        none a row of a relation its live sources name. Never a row of another record or
+        relation, a column the card does not ask about, a row never served; and a run
+        resting on it alone is not audited until its claims are."""
+        question, asked = "What total amount does this order carry?", ["amount"]
+        total = fx.good_answer(answerability="partial", gaps=self.GAP,
+                               text="The order record states its total amount.",
+                               values=[{"name": "total", "value": "4410.50", "citations": [
+                                   {"l1_handle": fx.H_SO, "field_path": "row.total_amount"}]}])
+        batch = {"identifier": "fixture-map", "identifier_kind": sc.CARD_BATCH_KIND,
+                 "object_type": "UseCase"}
+        anchored = self.run_card(self.card(question, scoring={"topic_terms": asked}), total)
+        listed = self.run_card(self.card(question, root=batch, scoring={
+            "topic_terms": asked, "live_relations": ["public.app_sales_order"]}), total)
+        for result in (anchored, listed):
+            self.assertEqual((result["outcome"], result["evidence"]["paths"]),
+                             ("correct", ["live_record"]), result)
+            self.assertEqual((result["evidence"]["live_record_only"],
+                              result["evidence"]["live_record_audited"]), (True, False))
+        other_record = dict(self.card(question)["root"], identifier="SO-TEST-78")
+        for item, answer, read in (
+                (self.card(question, root=other_record, scoring={"topic_terms": asked}),
+                 total, True),
+                (self.card(question, root=batch, scoring={
+                    "topic_terms": asked,
+                    "live_relations": ["public.app_manufacturing_order"]}), total, True),
+                (self.card(question, root=batch, scoring={"topic_terms": asked}), total,
+                 True),
+                (self.card(question, scoring={"topic_terms": asked}), total, False),
+                # Review probe (7e89ad9ae8): a column the card does not ask about, on the
+                # named record or on a row of the card's own live relation.
+                (self.card(question, scoring={"topic_terms": ["stages"]}), total, True),
+                (self.card("What stages does the fixture map list?", root=batch, scoring={
+                    "topic_terms": ["stages"],
+                    "live_relations": ["public.app_sales_order"]}), self.answer(), True)):
+            with self.subTest(root=item["root"]["identifier"], read=read,
+                              question=item["question"]["text"]):
+                result = self.run_card(item, answer, read_order=read)
+                self.assertTrue(result["claim_checks"]["passed"], result)
+                self.assertEqual((result["outcome"], result["evidence"]["paths"]),
+                                 ("justified_abstention", []), result)
+        # The anchor is matched whole, never inside a longer value or a nested near miss;
+        # a bare number only in an identifier column, never a quantity.
+        self.assertTrue(sc._holds_identifier({"custom": {"fm": "PO#5447"}}, "PO5447"))
+        self.assertFalse(sc._holds_identifier({"number": "PO54471", "note": "PO5447 late"},
+                                              "PO5447"))
+        self.assertTrue(sc._holds_identifier({"vendorInvoiceNumber": "1399"}, "1399"))
+        self.assertFalse(sc._holds_identifier({"qty": 1399, "amount": "1399"}, "1399"))
 
     def test_a_card_resting_on_an_original_no_one_holds_blocks_a_failed_abstention(self):
         item = self.card(oracle={"derived_from": ["card:fixture-map/FX-01",

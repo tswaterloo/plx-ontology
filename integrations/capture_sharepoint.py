@@ -433,6 +433,16 @@ MAX_ACL_READS = LIST_MAX_ITEMS
 # is ``resolve_check.index_truncated`` and the check is never ok over it.
 INDEX_LIMIT = 100_000
 REPAIRS_PER_ROOT = 100
+# A text re-read whose refetch fails for that file alone is tried again after
+# REREAD_BACKOFF_HOURS * 2**(tries - 1) and, after REREAD_MAX_ATTEMPTS tries, recorded as
+# a named gap (``SharePointCaptureStore.reread_gaps``), never retried forever.
+REREAD_BACKOFF_HOURS = 6
+REREAD_MAX_ATTEMPTS = 5
+# A 5xx (or a cut-off download) on one file's refetch is that file's own failure when
+# other downloads of the run succeed; REREAD_OUTAGE_STREAK such failures in a row with no
+# download succeeding between them say the source as a whole is out
+# (:meth:`SharePointCapture._reread_stale`).
+REREAD_OUTAGE_STREAK = 3
 # Worker threads that extract the text (OCR included) of a walk's new files while the walk
 # reads the next ones (:class:`_Extraction`); 1: inline. Every source read stays on the
 # walking thread, one request at a time, through the one guarded client.
@@ -893,6 +903,23 @@ CREATE TABLE IF NOT EXISTS root_walks (
 -- started_at is when its first run started, delta_url the drive's change-feed cursor
 -- read before it, position the folders left (the cut one first, with the children it
 -- already holds) and the walk's gaps so far.
+-- A text re-read of a version whose refetch failed for that file alone (a 403/423 on
+-- the download, no download URL, bytes that differ from the item's size or hash): tries
+-- so far, the last failure's fixed-vocabulary token and time, and when it may be tried
+-- again (exponential backoff). gave_up_at: past REREAD_MAX_ATTEMPTS, a named gap.
+-- A failure of the source as a whole (throttling, no connection, a 5xx on every
+-- download, refused credentials) records no try, only last_at, so the version goes
+-- behind the others next run.
+CREATE TABLE IF NOT EXISTS text_reread_attempts (
+    l1_handle TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    attempts INTEGER NOT NULL,
+    last_error TEXT NOT NULL,
+    last_at TEXT NOT NULL,
+    next_at TEXT,
+    gave_up_at TEXT,
+    PRIMARY KEY (l1_handle, generation)
+);
 CREATE TABLE IF NOT EXISTS walk_positions (
     drive_id TEXT NOT NULL,
     root_path TEXT NOT NULL,
@@ -1570,7 +1597,10 @@ class SharePointCaptureStore:
         pending or had no engine, or an untyped OCR failure. Its bytes are kept."""
         if text_status is None or text_status in UNTYPED_OCR_FAILURES:
             return True
-        return text_status in TEXT_UNREAD and is_paged_file(record)
+        from .captured_text import IMAGE_OCR_SUFFIXES
+        name = str(record.get("name") or "").lower()
+        return text_status in TEXT_UNREAD and (is_paged_file(record)
+                                               or name.endswith(IMAGE_OCR_SUFFIXES))
 
     def _pending_rows(self, digest: str) -> list[sqlite3.Row]:
         """Current versions holding ``digest`` whose bytes a later reading needs."""
@@ -1679,6 +1709,100 @@ class SharePointCaptureStore:
                             "stored_bytes=? WHERE sha256=?", (self.now(), size, digest))
         blob_path(self.blobs, digest).unlink(missing_ok=True)
         return "dropped"
+
+    def reader_stale_rows(self, drive_id: str, root_path: str, limit: int
+                          ) -> list[dict[str, Any]]:
+        """Current versions under a root whose text an earlier reader could not read
+        (``failed``/``unsupported``) and the current one reads
+        (``captured_text.REREAD_GENERATION``): each is offered until it is read or given
+        up once per generation (an ``item_events`` row ``text_reread:<generation>``), not
+        while its backoff runs (``text_reread_attempts.next_at``). Never tried first, then
+        those with a try counted (fewest first), then those only the source failed (no try
+        counted), each the least recently tried first, then the oldest version: a file
+        that keeps failing never stands before the others."""
+        from .captured_text import REREAD_GENERATION, REREAD_SUFFIXES
+        names = " OR ".join("lower(json_extract(i.record, '$.name')) LIKE ?"
+                            for _ in REREAD_SUFFIXES)
+        return [dict(r) for r in self.db.execute(
+            "SELECT i.* FROM items i LEFT JOIN text_reread_attempts a "
+            "ON a.l1_handle = i.l1_handle AND a.generation = ? "
+            "WHERE i.drive_id=? AND i.root_path=? AND i.superseded_at IS NULL "
+            "AND i.content_status=? AND i.text_status IN ('failed', 'unsupported') "
+            f"AND ({names}) AND i.l1_handle NOT IN (SELECT l1_handle FROM item_events "
+            "WHERE event = ?) AND (a.next_at IS NULL OR a.next_at <= ?) "
+            "ORDER BY a.l1_handle IS NOT NULL, COALESCE(a.attempts, 0) = 0, "
+            "a.attempts, a.last_at, "
+            "i.version_id LIMIT ?",
+            (str(REREAD_GENERATION), drive_id, root_path, CAPTURED,
+             *(f"%{suffix}" for suffix in REREAD_SUFFIXES),
+             f"text_reread:{REREAD_GENERATION}", self.now(), limit)).fetchall()]
+
+    def mark_reread(self, handle: str) -> None:
+        """Record that the current reader generation tried a version's text again."""
+        from .captured_text import REREAD_GENERATION
+        with self.db:
+            self.db.execute("INSERT INTO item_events VALUES (?,?,?)",
+                            (handle, f"text_reread:{REREAD_GENERATION}", self.now()))
+
+    def note_reread_failure(self, handle: str, error: str, *, counted: bool,
+                            at: str | None = None) -> bool:
+        """Record a failed refetch of ``handle``'s original for a text re-read: ``error``
+        a fixed-vocabulary token, never a message or URL. ``counted`` (a failure of this
+        file alone): one more try, the next one after the backoff, and past
+        ``REREAD_MAX_ATTEMPTS`` the version is given up (marked tried, kept as a named
+        gap; returns True). Not ``counted`` (the source as a whole failed): no try is
+        recorded, only the time, so it goes behind the others next run. ``at``: when the
+        refetch failed (default now)."""
+        from .captured_text import REREAD_GENERATION
+        generation, now = str(REREAD_GENERATION), at or self.now()
+        row = self.db.execute("SELECT attempts FROM text_reread_attempts WHERE "
+                              "l1_handle=? AND generation=?", (handle, generation)).fetchone()
+        attempts = (0 if row is None else row["attempts"]) + (1 if counted else 0)
+        gave_up = counted and attempts >= REREAD_MAX_ATTEMPTS
+        next_at = (_stamp(self._clock() + timedelta(
+            hours=REREAD_BACKOFF_HOURS * 2 ** (attempts - 1)))
+            if counted and not gave_up else None)
+        with self.db:
+            self.db.execute(
+                "INSERT INTO text_reread_attempts VALUES (?,?,?,?,?,?,?) ON CONFLICT "
+                "(l1_handle, generation) DO UPDATE SET attempts=excluded.attempts, "
+                "last_error=excluded.last_error, last_at=excluded.last_at, "
+                "next_at=COALESCE(excluded.next_at, text_reread_attempts.next_at), "
+                "gave_up_at=excluded.gave_up_at",
+                (handle, generation, attempts, error, now, next_at,
+                 now if gave_up else None))
+        if gave_up:
+            self.mark_reread(handle)
+        return gave_up
+
+    def note_download_ok(self) -> None:
+        """Record that a download from the source succeeded now (``meta``
+        ``download_ok_at``): the evidence that a file failing again since is failing on
+        its own (``failed_since_download``)."""
+        with self.db:
+            self.db.execute("INSERT INTO meta VALUES ('download_ok_at', ?) ON CONFLICT "
+                            "(key) DO UPDATE SET value=excluded.value", (self.now(),))
+
+    def failed_since_download(self, handle: str) -> bool:
+        """Whether ``handle``'s re-read refetch failed before (this generation) and the
+        source has served a download since (``note_download_ok``, at or after it)."""
+        from .captured_text import REREAD_GENERATION
+        return self.db.execute(
+            "SELECT 1 FROM text_reread_attempts a JOIN meta m ON m.key='download_ok_at' "
+            "WHERE a.l1_handle=? AND a.generation=? AND m.value >= a.last_at",
+            (handle, str(REREAD_GENERATION))).fetchone() is not None
+
+    def reread_gaps(self, drive_id: str, root_path: str) -> list[dict[str, Any]]:
+        """The current versions under a root whose text re-read this generation gave up
+        after ``REREAD_MAX_ATTEMPTS`` failed refetches: handle, tries, last error token and
+        time. Their earlier text status stands; nothing is read for them."""
+        from .captured_text import REREAD_GENERATION
+        return [dict(r) for r in self.db.execute(
+            "SELECT a.l1_handle, a.attempts, a.last_error, a.last_at, a.gave_up_at "
+            "FROM text_reread_attempts a JOIN items i ON i.l1_handle = a.l1_handle "
+            "WHERE a.generation=? AND a.gave_up_at IS NOT NULL AND i.drive_id=? AND "
+            "i.root_path=? AND i.superseded_at IS NULL ORDER BY i.version_id",
+            (str(REREAD_GENERATION), drive_id, root_path)).fetchall()]
 
     def ocr_deferred_rows(self, drive_id: str, root_path: str, limit: int
                           ) -> list[dict[str, Any]]:
@@ -1954,13 +2078,20 @@ class SharePointCaptureStore:
                 break
             items.append({"drive_id": row["drive_id"], "item_id": row["item_id"],
                           "l1_handle": row["l1_handle"],
-                          "content_sha256": row["content_sha256"]})
+                          "content_sha256": row["content_sha256"],
+                          "recorded_at": row["recorded_at"]})
         return {"items": items, "truncated": truncated, "lineage": LINEAGE}
 
     def audience_check(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
         """A ``ReadPolicy`` audience check for the ``sharepoint`` prefix: a captured drive
         where this reader holds any grant; each item is re-gated by :meth:`item_gate`."""
-        return lambda actor, drive_id: drive_id in self._drives(actor, audience)
+        drives: dict[Any, frozenset[str]] = {}   # one read per reader per check built
+
+        def check(actor: Actor, drive_id: str) -> bool:
+            if actor not in drives:
+                drives[actor] = frozenset(self._drives(actor, audience))
+            return drive_id in drives[actor]
+        return check
 
     def item_gate(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
         """An ``operating.ontology_tools`` ``item_gate``: a ``sharepoint://`` handle is
@@ -2094,7 +2225,9 @@ FOLDER_COUNTS = ("folders_listed", "files_seen", "versions_new", "versions_super
                  "withheld", "provenance_dropped", "acl_reads", "feed_changes",
                  "permissions_reread", "list_items_read", "list_items_unavailable",
                  "contents_pruned", "list_items_reread", "contents_skipped",
-                 "originals_dropped", "ocr_deferred_refetch_failed")
+                 "originals_dropped", "ocr_deferred_refetch_failed", "texts_reread",
+                 "texts_reread_refetch_failed", "texts_reread_gaps",
+                 "texts_reread_auth_refused")
 
 
 def _count_text(status: str, counts: dict[str, int]) -> None:
@@ -2104,6 +2237,42 @@ def _count_text(status: str, counts: dict[str, int]) -> None:
         counts["texts_ocr"] += 1
     elif status == OCR_UNAVAILABLE:
         counts["texts_ocr_unavailable"] += 1
+
+
+# ``unavailable_detail`` tokens of a read that got no answer from the source at all.
+_CONNECTION_DETAILS = frozenset({"timeout", "urlerror", "conn_reset", "conn_refused",
+                                 "conn_aborted", "remote_closed", "tls_error", "dns_error",
+                                 "transport_failure", "download_incomplete"})
+
+
+# ``unavailable_detail`` tokens of a refused credential: the run's token, never one file.
+_AUTH_DETAILS = frozenset({"http_401", "token_refused", "token_invalid",
+                           "credentials_invalid", "missing_env"})
+
+
+def _refetch_failure(exc: BaseException) -> str:
+    """How a failed download counts: ``auth`` (a 401 or a refused/invalid token or
+    credential: the source as a whole refuses the run), ``outage`` (throttled: 429 or a
+    Retry-After; no connection, no status: the source as a whole is unhealthy),
+    ``server`` (a 5xx or a download cut off: this file's own failure, or an outage, as
+    the run's other downloads tell; :meth:`SharePointCapture._reread_stale`) or ``file``
+    (any other refusal of this one file)."""
+    from .live_source_guard import RETRIED_PREFIX, is_transport_failure
+    status = getattr(exc, "http_status", getattr(exc, "status", None))
+    detail = (unavailable_detail(exc) or "").removeprefix(RETRIED_PREFIX)
+    if not isinstance(status, int) or isinstance(status, bool):
+        found = re.fullmatch(r"http_(\d{3})", detail)   # the status named in the message
+        status = int(found.group(1)) if found else None
+    wait = getattr(exc, "retry_after_seconds", None)
+    if status == 401 or detail in _AUTH_DETAILS:
+        return "auth"
+    if status == 429 or (isinstance(wait, (int, float)) and not isinstance(wait, bool)):
+        return "outage"
+    if (status is not None and 500 <= status <= 599) or detail == "download_incomplete":
+        return "server"
+    if is_transport_failure(exc) or detail in _CONNECTION_DETAILS:
+        return "outage"
+    return "file"
 
 
 class _Extraction:
@@ -2126,12 +2295,13 @@ class _Extraction:
     def submit(self, item_id: str, content: bytes, record: Mapping[str, Any],
                finish: Callable[[tuple], None], *, defer_ocr: bool = False) -> None:
         if self.pool is None:
-            finish(capture_text(content, record, defer_ocr=defer_ocr))
+            finish(capture_text(content, record, defer_ocr=defer_ocr, image_ocr=True))
             return
         while len(self.pending) >= self.workers:
             self._harvest()
         self.pending.append((item_id, self.pool.submit(capture_text, content, record,
-                                                       defer_ocr=defer_ocr), finish))
+                                                       defer_ocr=defer_ocr, image_ocr=True),
+                             finish))
 
     def _harvest(self) -> None:
         _item, future, finish = self.pending.popleft()
@@ -2219,6 +2389,15 @@ class SharePointCapture:
         self._extraction = _Extraction(1)   # the walking root's (:meth:`_walk`)
         # The source's own Retry-After waits honoured (:meth:`_throttled`): count, seconds.
         self.retry_after_waits, self.retry_after_seconds = 0, 0.0
+        # Drives whose source failed as a whole on a re-read refetch this run; whether a
+        # refetch was refused for the run's credentials (no refetch follows this run);
+        # downloads that succeeded this run, and 5xx refetch failures in a row since the
+        # last one (:meth:`_reread_stale`).
+        self._reread_down: set[str] = set()
+        self._reread_auth = False
+        self._downloads_ok = 0
+        self._reread_streak = 0
+        self._reread_failed: set[str] = set()   # versions whose refetch failed this run
 
     def _spent(self) -> bool:
         now = self._checked_at = self._monotonic()
@@ -2308,7 +2487,8 @@ class SharePointCapture:
         """(content columns, the record the bytes belong to)."""
         columns, source, content = self._bytes(reader, record, counts)
         if content is not None:
-            self._text(columns, capture_text(content, source, defer_ocr=not self._ocr_now()),
+            self._text(columns, capture_text(content, source, defer_ocr=not self._ocr_now(),
+                                                    image_ocr=True),
                        counts)
         return columns, source
 
@@ -2352,6 +2532,7 @@ class SharePointCapture:
             return ({"content_status": EXCEEDS_CAP, "text_status": "not_read"},
                     read["record"], None)
         content = read["content"]
+        self._downloaded()
         digest = self.store.put_blob(content, kind="content")
         counts["contents_captured"] += 1
         counts["content_bytes"] += len(content)
@@ -2477,6 +2658,153 @@ class SharePointCapture:
         finally:
             extraction.close()
 
+    def _reread_stale(self, drive_id: str, root: str, counts: dict[str, int], *,
+                      share: float | None = None, reader: Any = None) -> None:
+        """Read again, once per reader generation, the current versions whose text an
+        earlier reader could not read and the current one reads (a workbook over the old
+        all-or-nothing bound, a legacy ``.xls``/``.doc``; ``reader_stale_rows``): from
+        the stored bytes, or a dropped original by one guarded GET checked against its
+        pin and never stored. Each read gets a new text (``fill_text``) and is marked tried
+        whatever the outcome, so a file the new reader cannot read either is never
+        offered again (no loop); bounded per root and by the run's budget (``share``:
+        that share of what is left at the call, as :meth:`_reextract`).
+
+        A refetch that fails: a file gone or withheld, or bytes other than its pin (it
+        changed; the walk captures the new version), is marked tried. A failure of that
+        file alone (a 403/423 on the download, no download URL, bytes that differ from
+        the item's size or hash) records a try and the pass moves on to the next file; it
+        is tried again after a backoff and given up as a named gap after
+        ``REREAD_MAX_ATTEMPTS`` (``note_reread_failure``, ``texts_reread_gaps``). A 5xx
+        (or a cut-off download) is held while the pass moves on: it is such a failure of
+        that file when a later download of the run succeeds, or at the pass's end when
+        an earlier one did or the source served a download since that file last failed;
+        when ``REREAD_OUTAGE_STREAK`` fail in a row with no download
+        succeeding between them the source is out. A failure of the source as a whole
+        (throttling, no connection, that streak) stops the drive's refetches for the rest
+        of the run, recording no try, so the next healthy run reads every file again. A
+        refused credential (a 401, a token refusal) stops every refetch of the run and
+        is counted as such (``texts_reread_auth_refused``), recording no try."""
+        until = None
+        if share is not None and self._deadline is not None:
+            now = self._monotonic()
+            until = now + share * max(0.0, self._deadline - now)
+
+        def finish(extracted: tuple[str, str | None], handle: str, original: str,
+                   content: bytes) -> None:
+            status, text = extracted
+            digest = None if text is None else self.store.put_blob(text.encode("utf-8"),
+                                                                    kind="text")
+            self.store.fill_text(handle, status, digest)
+            self.store.mark_reread(handle)
+            counts["texts_reread"] += 1
+            _count_text(status, counts)
+            self.store.settle_original(original, content=content)
+
+        held: list[tuple[str, str, str]] = []   # 5xx failures not yet told file from source
+
+        def settle(counted: bool | None) -> None:
+            """``None``: the pass ended with them unresolved: each its own failure when a
+            download of the run succeeded, or the source served one since its last
+            failure (``failed_since_download``); else the source's."""
+            for handle, error, at in held:
+                own = counted if counted is not None else bool(
+                    self._downloads_ok or self.store.failed_since_download(handle))
+                if self.store.note_reread_failure(handle, error, counted=own, at=at):
+                    counts["texts_reread_gaps"] += 1
+            held.clear()
+
+        extraction = _Extraction(self.extract_workers)
+        try:
+            for row in self.store.reader_stale_rows(drive_id, root, REPAIRS_PER_ROOT):
+                if self._spent() or (until is not None and self._checked_at >= until):
+                    break
+                try:
+                    content: bytes | None = self.store.blob(row["content_sha256"])
+                except (CaptureError, OSError):
+                    if reader is None or drive_id in self._reread_down or self._reread_auth \
+                            or row["l1_handle"] in self._reread_failed:
+                        continue   # offered again when a walk has a reader, the source up
+                    content, failure, error = self._refetch_outcome(reader, row)
+                    if content is not None:
+                        settle(True)   # the source serves downloads: theirs were their own
+                    else:
+                        counts["texts_reread_refetch_failed"] += 1
+                        self._reread_failed.add(row["l1_handle"])   # once a run
+                        if failure == "final":   # gone, withheld, altered
+                            self.store.mark_reread(row["l1_handle"])
+                            continue
+                        if failure == "server":
+                            # held until the run tells: a download succeeding later (or
+                            # one before, at the pass's end) makes it this file's own
+                            # failure; REREAD_OUTAGE_STREAK in a row with none between,
+                            # the source's
+                            held.append((row["l1_handle"], error, self.store.now()))
+                            self._reread_streak += 1
+                            if self._reread_streak < REREAD_OUTAGE_STREAK:
+                                continue
+                            failure = "outage"
+                        elif failure in ("outage", "auth"):
+                            held.append((row["l1_handle"], error, self.store.now()))
+                        if failure in ("outage", "auth"):
+                            # The source as a whole: no original of this drive (refused
+                            # credentials: of the run) is fetched again this run; none is
+                            # counted a try.
+                            settle(False)
+                            if failure == "auth":
+                                self._reread_auth = True
+                                counts["texts_reread_auth_refused"] += 1
+                            self._reread_down.add(drive_id)
+                            continue
+                        # this file alone
+                        if self.store.note_reread_failure(row["l1_handle"], error,
+                                                          counted=True):
+                            counts["texts_reread_gaps"] += 1
+                        continue
+                extraction.submit(row["item_id"], content, json.loads(row["record"]),
+                                  lambda found, handle=row["l1_handle"],
+                                  pin=row["content_sha256"], bytes_=content:
+                                  finish(found, handle, pin, bytes_))
+            extraction.drain()
+            settle(None)
+        finally:
+            extraction.close()
+
+    def _downloaded(self) -> None:
+        """A download of the run succeeded: the source serves downloads (recorded once a
+        run in the store, the evidence a later quiet run weighs a held 5xx against)."""
+        if not self._downloads_ok:
+            self.store.note_download_ok()
+        self._downloads_ok += 1
+        self._reread_streak = 0
+
+    def _refetch_outcome(self, reader: Any, row: Mapping[str, Any]
+                         ) -> tuple[bytes | None, str | None, str | None]:
+        """(the dropped original of ``row`` read again by one guarded GET when it hashes
+        to the version's pin, how a failure counts, its fixed-vocabulary token). How:
+        ``final`` (not found, not visible, bytes other than the pin), ``auth``, ``outage``
+        or ``server`` (:func:`_refetch_failure`) or ``file`` (any other failure, this file
+        alone: an ACL that could not be read, a refused download, no download URL, a size
+        or hash mismatch)."""
+        try:
+            read = self._throttled(lambda: reader.get_content(
+                self.actor, row["item_id"], max_bytes=self.max_content_bytes,
+                may_retry=lambda: not self._run_spent()))
+        except SourceNotFound:
+            return None, "final", "not_found"
+        except NotVisible as exc:
+            if getattr(exc, "undecided", None) == "acl_unreadable":
+                return None, "file", "acl_unreadable"
+            return None, "final", "not_visible"
+        except SourceUnavailable as exc:
+            return None, _refetch_failure(exc), unavailable_detail(exc) or "unclassified"
+        content = read.get("content")
+        if isinstance(content, bytes):
+            self._downloaded()
+        if not isinstance(content, bytes) or sha256(content).hexdigest() != \
+                row["content_sha256"]:
+            return None, "final", "pin_mismatch"
+        return content, None, None
+
     def _refetch(self, reader: Any, row: Mapping[str, Any]) -> bytes | None:
         """A dropped original of ``row`` read again (one guarded GET) when it still hashes
         to the version's pin, else None."""
@@ -2487,6 +2815,8 @@ class SharePointCapture:
         except (NotVisible, SourceNotFound, SourceUnavailable):
             return None
         content = read.get("content")
+        if isinstance(content, bytes):
+            self._downloaded()
         if not isinstance(content, bytes) or sha256(content).hexdigest() != \
                 row["content_sha256"]:
             return None
@@ -2745,6 +3075,7 @@ class SharePointCapture:
         if not self._spent():
             # Scanned pages a cut run left unread (``ocr_pending``) first, within a share.
             self._reextract(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
+            self._reread_stale(drive_id, root, counts, share=REEXTRACT_SHARE, reader=reader)
         self._extraction = _Extraction(self.extract_workers)
         try:
             while queue:
@@ -2943,6 +3274,10 @@ class SharePointCapture:
                     return None
                 counts["feed_changes"] += 1
                 self._capture_file(reader, drive_id, root, record, counts)
+            if not cut and not self._spent():
+                # Versions an earlier reader could not read: a followed root is walked in
+                # full only every ``full_walk_hours``, so they are read again here too.
+                self._reread_stale(drive_id, root, counts, reader=reader)
         except CaptureError as exc:
             if exc.code != "store_full":
                 raise
@@ -3085,6 +3420,7 @@ class SharePointCapture:
             if not self._spent():   # byte retries and OCR re-reads wait for a later run
                 self._repair(walk["reader"], drive_id, root, counts)
                 self._reextract(drive_id, root, counts, reader=walk["reader"])
+                self._reread_stale(drive_id, root, counts, reader=walk["reader"])
                 self._reread_columns(walk["reader"], drive_id, root, counts)
         except CaptureError as exc:
             if exc.code != "store_full":
@@ -3197,6 +3533,10 @@ class SharePointCapture:
         before any is reconciled (see :meth:`_finish`)."""
         self.list_item_columns = scope.list_item_columns
         self.permission_reread_hours = scope.permission_reread_hours
+        self._reread_down = set()
+        self._reread_auth = False
+        self._downloads_ok = self._reread_streak = 0
+        self._reread_failed = set()
         targets: list[dict[str, Any]] = []
         plans: list[tuple[dict[str, Any], Any, str, str, CaptureTarget]] = []
         walks: list[tuple[dict[str, Any], dict[str, Any]]] = []
@@ -3619,6 +3959,16 @@ def blocked_scope(entries: Sequence[Mapping[str, Any]], gaps: Sequence[str] = ()
     return budget_cut_block(units, carried=carried)
 
 
+def _spread(items: Sequence[Any], sample: int | None) -> list[Any]:
+    """``items``, or at most ``sample`` of them evenly spread (first and last kept)."""
+    if sample is None or len(items) <= sample:
+        return list(items)
+    if sample < 1:
+        raise ValueError("verify_sample must be at least 1")
+    step = (len(items) - 1) / max(1, sample - 1)
+    return [items[round(n * step)] for n in range(sample)]
+
+
 def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", default=None,
                         help="Workbench state directory (outside every git work tree); "
@@ -3645,6 +3995,10 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-store-bytes", type=int, default=MAX_STORE_BYTES,
                         help="bound on the capture store (SQLite + blobs); default "
                              "MAX_STORE_BYTES")
+    parser.add_argument("--verify-sample", type=int, default=None,
+                        help="resolve and re-hash at most this many captured handles after "
+                             "the run (spread over the index), so the self-check of a large "
+                             "store ends within the caller's grace; default every handle")
     parser.add_argument("--budget-seconds", type=float, default=None,
                         help="wall-time bound over all runs; a root it cuts is incomplete "
                              "with reason time_budget")
@@ -4010,13 +4364,23 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             from operating.captured_originals import sharepoint_items
             capture.named_items = sharepoint_items(state_dir)
         before = _progress_marks(store, actor, audience)
+        started_at = store.now()   # a version recorded from here on is new to this run
         raw_runs = [capture.run(scope) for _n in range(args.runs)]
         runs = [_report_run(n, run) for n, run in enumerate(raw_runs, 1)]
         # Offline resolution of what was captured (no source read).
         index = store.index(actor, audience, limit=INDEX_LIMIT)
-        resolved = sum(1 for item in index["items"]
+        # The offline self-check resolves (as three actors) and re-hashes each handle it
+        # checks: over a whole estate store (57k files live) that ran past the host's grace
+        # every cycle (child_timeout, live 2026-11-01 20:00Z: the walk ended at its budget,
+        # the process was killed in this loop), so a caller may sample it.
+        # Every version this run recorded is checked; only unchanged ones are sampled.
+        fresh = [i for i in index["items"] if (i.get("recorded_at") or "") >= started_at]
+        unchanged = [i for i in index["items"] if (i.get("recorded_at") or "") < started_at]
+        sampled = _spread(unchanged, getattr(args, "verify_sample", None))
+        checked = fresh + sampled
+        resolved = sum(1 for item in checked
                        if store.resolve(item["l1_handle"], actor, audience) is not None)
-        pinned = [i for i in index["items"] if i["content_sha256"]]
+        pinned = [i for i in checked if i["content_sha256"]]
         verified, failed_bytes = 0, {}
         for i in pinned:
             # Pinned bytes that fail the re-hash (or are gone, or fail any other way) are
@@ -4031,7 +4395,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         hidden_index = store.index(withheld, audience, limit=INDEX_LIMIT)
         hidden_counts = store.counts(withheld, audience)
         hidden_roots = store.completeness(withheld, audience)["roots"]
-        hidden_resolved = sum(1 for item in index["items"]
+        hidden_resolved = sum(1 for item in checked
                               if store.resolve(item["l1_handle"], withheld, audience)
                               is not None)
         walked = [(r["drive_id"], r["root_path"]) for r in store.db.execute(
@@ -4041,7 +4405,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
         folder_actor = Actor(audience.tenant, frozenset({folder_principal}), "restricted")
         folder_audience = folder_only_audience(audience, folder_principal, walked)
         folder_rows = store.index(folder_actor, folder_audience, limit=INDEX_LIMIT)["items"]
-        folder_resolved = sum(1 for item in index["items"]
+        folder_resolved = sum(1 for item in checked
                               if store.resolve(item["l1_handle"], folder_actor,
                                                folder_audience) is not None)
         counts = store.counts(actor, audience)
@@ -4096,7 +4460,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             # Over a truncated index (more than INDEX_LIMIT current files) the counts are
             # a lower bound: index_truncated, and the check is never ok.
             "resolve_check": {"index_truncated": index["truncated"] is not False,
-                              "handles_checked": len(index["items"]),
+                              "handles_checked": len(checked),
+                              "handles_indexed": len(index["items"]),
+                              "handles_new_checked": len(fresh),
+                              # True: unchanged handles were sampled (--verify-sample), so
+                              # ok is no check of every handle
+                              "sampled": len(sampled) < len(unchanged),
                               "resolved_offline": resolved,
                               "contents_checked": len(pinned),
                               "content_bytes_verified": verified,
@@ -4203,7 +4572,7 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                            and not report["estate"]["roots_other_gaps"]
                            and report["summary"]["roots_complete"])
         sound = bool(not report["resolve_check"]["index_truncated"]
-                     and resolved == len(index["items"]) and verified == len(pinned)
+                     and resolved == len(checked) and verified == len(pinned)
                      and not any(report["leak_check"].values()))
         report["ok"] = bool(settled and sound)
         if not sound:   # blocked only while the scope is the whole failure

@@ -739,7 +739,7 @@ def _identity_from_args(parser: argparse.ArgumentParser, args: argparse.Namespac
     if args.employee_policy is None:
         parser.error("a live console needs --employee-policy (or --fixture for a demo)")
     try:
-        resolver = employee_resolver(args.employee_policy, args.portal_access)
+        resolver = employee_resolver(args.employee_policy, args.portal_access, args.state_dir)
     except ValueError as error:
         parser.error(str(error))
     if args.tenant is not None and args.tenant != resolver.policy.tenant:
@@ -756,7 +756,8 @@ def _identity_from_args(parser: argparse.ArgumentParser, args: argparse.Namespac
         parser.error("session identity refused: " + error.reason)
 
 
-def employee_resolver(employee_policy: Path, portal_access: Path | None) -> Any:
+def employee_resolver(employee_policy: Path, portal_access: Path | None,
+                      state_dir: Path | None = None) -> Any:
     """The live console's ``EmployeePermissionResolver``: the employee policy and the Portal
     access snapshot (re-read per request; without one every employee is refused).
     ``ValueError`` names what is unusable."""
@@ -780,7 +781,8 @@ def employee_resolver(employee_policy: Path, portal_access: Path | None) -> Any:
     # path apply only while it is usable (unset or invalid: neither grants anything).
     from integrations.people_exclusion import ReloadingExclusion
     return EmployeePermissionResolver(policy, access,
-                                      people_exclusion=ReloadingExclusion.from_env(os.environ))
+                                      people_exclusion=ReloadingExclusion.from_env(
+                                          os.environ, state_dir=state_dir))
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ export function Feedback({ answerId }: { answerId: string }) {
 
   if (state === "up-sent" || state === "down-sent") {
     return (
-      <p role="status" className="text-xs text-muted" data-testid="feedback-thanks">
+      <p role="status" className="text-meta text-muted" data-testid="feedback-thanks">
         Thanks — {state === "up-sent" ? "glad it helped." : "we'll use this to improve answers."}
       </p>
     );
@@ -48,14 +48,14 @@ export function Feedback({ answerId }: { answerId: string }) {
 
   return (
     <div className="space-y-3" data-testid="feedback">
-      <div className="flex items-center gap-1">
-        <span className="mr-1 text-xs text-muted">Was this right?</span>
+      <div className="flex items-center justify-end gap-1">
         <button
           type="button"
           aria-label="Yes, this answer was right"
+          title="Was this right? Yes"
           onClick={() => submit(1)}
           disabled={state === "sending"}
-          className="rounded-md p-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer"
+          className="flex size-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer"
         >
           <ThumbsUp className="size-4" aria-hidden />
         </button>
@@ -63,10 +63,11 @@ export function Feedback({ answerId }: { answerId: string }) {
           type="button"
           aria-label="No, something was wrong"
           aria-expanded={state === "down-open"}
+          title="Was this right? No"
           onClick={() => setState(state === "down-open" ? "idle" : "down-open")}
           disabled={state === "sending"}
           className={cn(
-            "rounded-md p-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer",
+            "flex size-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer",
             state === "down-open" && "bg-surface-2 text-fg",
           )}
         >
@@ -82,7 +83,7 @@ export function Feedback({ answerId }: { answerId: string }) {
           }}
         >
           <fieldset>
-            <legend className="mb-2 text-sm font-medium">What was wrong?</legend>
+            <legend className="mb-2 text-row font-medium">What was wrong?</legend>
             <div className="flex flex-wrap gap-1.5">
               {REASONS.map((r) => {
                 const on = reasons.includes(r);
@@ -93,7 +94,7 @@ export function Feedback({ answerId }: { answerId: string }) {
                     aria-pressed={on}
                     onClick={() => setReasons(on ? reasons.filter((x) => x !== r) : [...reasons, r])}
                     className={cn(
-                      "rounded-full border px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                      "rounded-full border px-2.5 py-1 text-meta transition-colors cursor-pointer",
                       on ? "border-accent bg-accent-soft text-accent" : "border-border bg-surface text-fg hover:bg-surface-2",
                     )}
                   >
@@ -114,21 +115,21 @@ export function Feedback({ answerId }: { answerId: string }) {
               rows={2}
               maxLength={2000}
               placeholder="Tell us more (optional): what should it have said?"
-              className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-sm placeholder:text-muted focus:border-accent focus:outline-none"
+              className="w-full resize-none rounded-lg border border-control bg-surface px-3 py-2 text-row placeholder:text-muted focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:outline-none"
             />
           </div>
           <div className="flex justify-end gap-2">
             <button
               type="button"
               onClick={() => setState("idle")}
-              className="rounded-lg px-3 py-1.5 text-sm text-muted hover:bg-surface-2 cursor-pointer"
+              className="rounded-lg px-3 py-1.5 text-row text-muted hover:bg-surface-2 cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={reasons.length === 0 && note.trim() === ""}
-              className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
+              className="rounded-lg bg-accent px-3 py-1.5 text-row font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
             >
               Send feedback
             </button>
@@ -136,7 +137,7 @@ export function Feedback({ answerId }: { answerId: string }) {
         </form>
       )}
       {error && (
-        <p role="alert" className="text-xs text-bad">
+        <p role="alert" className="text-meta text-bad">
           {error}
         </p>
       )}

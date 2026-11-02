@@ -679,7 +679,7 @@ function casesView(target) {
 const GAP_KIND = {missing_in_record: "Missing in the record", conflicting_quantity: "Conflicting quantities", expired_quote: "Expired quote",
   unconfirmed_po: "Unconfirmed purchase order", late_po: "Late purchase order", po_receipt_quantity_mismatch: "Receipt quantity differs from the PO",
   receipt_without_qc: "Receipt with no quality check", order_without_customer_po: "Order with no customer PO",
-  systems_disagree: "Systems disagree"};
+  systems_disagree: "Systems disagree", undated_po: "Open, no due date recorded"};
 // The scheduled rules, named for a reader, and why one did not run.
 const HOME_RULE = {late_or_unconfirmed_po: "late or unconfirmed purchase orders", po_receipt_quantity_mismatch: "PO against receipt quantities",
   receipt_without_qc: "receipts with no quality check", order_without_customer_po: "orders with no customer PO", expired_quote: "expired quotes",

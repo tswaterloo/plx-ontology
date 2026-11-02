@@ -101,6 +101,7 @@ import re
 import sys
 import tempfile
 import time
+import uuid
 from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 from urllib.parse import parse_qsl, unquote, urlsplit
 
@@ -139,7 +140,8 @@ def company_key(company_id: str) -> str:
 
 
 def _entity_set(value: Any) -> str:
-    if not grammar.TYPES["entity_set"].valid(value):
+    if not (grammar.TYPES["entity_set"].valid(value)
+            or grammar.TYPES["plx_api_set"].valid(value)):
         raise ValueError("entity set not in the read allowlist")
     return value
 
@@ -234,6 +236,56 @@ REFERENCE_PAGE_SIZE = 1000
 # DROPPED`` ones are rows never stored.
 REFERENCE_DROPPED = ("no_number", "ambiguous_api_record", "duplicate_number", "vendor_mismatch")
 REFERENCE_COUNTS = (*REFERENCE_DROPPED, "no_api_record", "blank_reference", "stored")
+
+
+# The item-ledger lot field page (``capture_store.BC_FIELD_PAGES``): each item ledger entry's
+# ``Lot_No`` and ``Expiration_Date`` from the ODataV4 web service ``ItemLedgerEntries``
+# (Page 38; API v2.0 ``itemLedgerEntries`` exposes no lot), stored under the API v2.0 entry's
+# id, one unit per company with a pinned name (``BcCapture._capture_lots``). Only entries
+# that carry a lot are read (``grammar.BC_ODATA_LOT_FILTER``).
+# The capture store state naming the companies whose field pages are planned (a JSON list
+# of company GUIDs, written by every capture call).
+NAMED_COMPANIES_STATE = "bc:named_companies"
+LOT_SET = "itemLedgerEntryLots"
+LOT_PARENT_SET = "itemLedgerEntries"
+LOT_PAGE_SIZE = 1000
+# Pages one lot read follows (1,000 entries each); a longer listing is read truncated (the
+# unit partial, resumed whole next run), never silently whole.
+LOT_MAX_PAGES = 200
+LOT_DROPPED = ("no_entry_number", "ambiguous_api_record", "duplicate_entry", "item_mismatch")
+LOT_COUNTS = (*LOT_DROPPED, "no_api_record", "stored")
+
+
+# The contact relations of customers and vendors (API v2.0 ``contactsInformation``,
+# ``grammar.BC_PARTY_CONTACTS``): which customer or vendor each contact belongs to, read
+# as an ``$expand`` of the party listings (``BusinessCentralReader.party_contacts``), one
+# unit per company (``BcCapture._capture_party_contacts``). BC keys a relation by its
+# contact alone, within its party; the capture stores one record per (party, contact)
+# under ``party_contact_id`` (a name-based UUID of the two), so a contact related to a
+# customer and a vendor is two records.
+PARTY_CONTACT_SET = "contactsInformation"
+PARTY_CONTACT_PAGE_SIZE = 500
+# Party pages one read follows; a longer listing is read truncated (the unit partial).
+PARTY_CONTACT_MAX_PAGES = 200
+# BC ``relatedType`` (enum contactBusinessRelationLinkToTable) of each party set.
+PARTY_RELATED_TYPE = {"customers": "Customer", "vendors": "Vendor"}
+PARTY_CONTACT_DROPPED = ("bad_relation", "other_party", "duplicate_relation")
+_PARTY_CONTACT_NS = uuid.UUID("5d1f7a52-3c0e-4f7b-9a43-bc0c0a7ac7e1")
+
+
+def party_contact_id(party_set: str, party_id: str, contact_id: str) -> str:
+    """The store id of one contact relation: a name-based UUID of its party set, party
+    and contact (lower-case GUIDs), stable across captures."""
+    return str(uuid.uuid5(_PARTY_CONTACT_NS,
+                          f"{party_set}/{party_id.lower()}/{contact_id.lower()}"))
+
+
+def _entry_number(value: Any) -> str | None:
+    """An item ledger entry number as canonical decimal text (BC sends an integer; the
+    capture keeps every number as its decimal text), else None."""
+    text = str(value).strip() if isinstance(value, (int, str)) and not isinstance(
+        value, bool) else ""
+    return str(int(text)) if text.isdigit() and len(text) <= 12 else None
 
 
 class BusinessCentralReader:
@@ -417,6 +469,61 @@ class BusinessCentralReader:
         return {"source": "business-central", "environment": self.environment,
                 "company_id": company_id, "items": items, "completeness": completeness}
 
+    def item_ledger_lots(self, actor: Actor, company_id: str, company_name: str, *,
+                         page_size: int = LOT_PAGE_SIZE, max_pages: int = LOT_MAX_PAGES
+                         ) -> dict[str, Any]:
+        """The lot of every item ledger entry of one company that carries one, read from the
+        ODataV4 web service ``ItemLedgerEntries`` (Page 38): API v2.0 ``itemLedgerEntries``
+        exposes no lot. The one request shape is ``grammar.bc_odata_item_lot_query``
+        (``$select`` of ``BC_ODATA_LOT_FIELDS``, ``$filter=Lot_No ne ''``) on
+        ``Company('<company_name>')``; ``company_name`` must be the pinned name of
+        ``company_id`` (the caller checks it against the company listing). The lots are
+        fields of the company's item ledger, so the audience resource is
+        ``itemLedgerEntries``'. Items: ``{"entry", "fields", "etag"}`` (a row with no etag
+        is versioned by the digest of its fields); a row without an entry number is
+        counted ``no_entry_number``. Paged by nextLink within ``max_pages`` pages: a longer
+        listing is ``truncation_reason`` ``page_cap``, never complete."""
+        company_id = _guid(company_id, "company id")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) \
+                or not 1 <= page_size <= 1000:
+            raise ValueError("page_size must be 1..1000")
+        resource = self.resource(company_id, LOT_PARENT_SET)
+        self._audience.require(actor, resource)
+        url: str | None = grammar.url("bc.odata_item_ledger_entries",
+                                      grammar.bc_odata_item_lot_query(),
+                                      company=company_name, **self._where)
+        raws: list[Mapping[str, Any]] = []
+        pages, seen = 0, set()
+        while url is not None and pages < max_pages:
+            if url in seen:
+                raise nextlink_refused("business-central pagination loop (a nextLink "
+                                       "repeated a page)")
+            seen.add(url)
+            page, url = _shaped(lambda u: self._api.get_page(
+                u, headers={"Prefer": f"odata.maxpagesize={page_size}"}), url)
+            raws += page
+            pages += 1
+        items, withheld, unnumbered = [], 0, 0
+        for raw in raws:
+            fields = jsonable({name: raw.get(name) for name in grammar.BC_ODATA_LOT_FIELDS})
+            entry = _entry_number(fields.get("Entry_No"))
+            if entry is None:
+                unnumbered += 1
+                continue
+            if not self._audience.item_visible(actor, resource, self._source_acl()):
+                withheld += 1
+                continue
+            etag = raw.get("@odata.etag")
+            if not isinstance(etag, str) or not etag:
+                etag = "sha256:" + canonical_sha256(fields)
+            items.append({"entry": entry, "fields": fields, "etag": etag})
+        completeness = completeness_with_withheld(
+            {"complete": url is None, "pages_read": pages, "items_read": len(raws),
+             **({} if url is None else {"truncation_reason": "page_cap"})}, withheld)
+        completeness["no_entry_number"] = unnumbered
+        return {"source": "business-central", "environment": self.environment,
+                "company_id": company_id, "items": items, "completeness": completeness}
+
     def list_lines(self, actor: Actor, company_id: str, document_set: str, document_id: str, *,
                    select: Sequence[str] | None = None, page_size: int = 100,
                    max_pages: int = 5, max_items: int = 500,
@@ -453,6 +560,96 @@ class BusinessCentralReader:
                              parent_id=document_id)
         listing["document"] = {"entity_set": document_set, "id": document_id}
         return listing
+
+    def party_contacts(self, actor: Actor, company_id: str, party_set: str, *,
+                       page_size: int = PARTY_CONTACT_PAGE_SIZE,
+                       max_pages: int = PARTY_CONTACT_MAX_PAGES) -> dict[str, Any]:
+        """The contact relations of every customer (``party_set`` ``customers``) or vendor
+        (``vendors``) of one company: the party listing with each party's
+        ``contactsInformation`` expanded (``grammar.bc_party_contacts_query``: the party's
+        id and number only), one GET per page. The audience must grant the party set and
+        ``contactsInformation``. Items: ``{"id", "fields", "etag"}``, ``id`` from
+        ``party_contact_id``, ``fields`` the relation's own fields (BC's names) with
+        ``partySet`` and ``partyNumber``. A relation that is not a whole record of this
+        party (no contact GUID, ``relatedId`` another party, ``relatedType`` not the
+        party's kind) is dropped and counted; a party whose expansion BC did not return
+        whole (no list, or paged by a nested nextLink) is counted ``parties_unread`` and
+        the listing is not complete. Paged within ``max_pages``: longer is ``page_cap``."""
+        if party_set not in grammar.BC_PARTY_CONTACTS:
+            raise ValueError("entity set has no contact relations")
+        company_id = _guid(company_id, "company id")
+        resources = [self.resource(company_id, party_set),
+                     self.resource(company_id, PARTY_CONTACT_SET)]
+        for resource in resources:
+            self._audience.require(actor, resource)
+        query = grammar.bc_party_contacts_query(party_set)
+        _require_pinned(party_set, {"$select": query["$select"]})
+        kind = PARTY_RELATED_TYPE[party_set]
+        counts = dict.fromkeys(PARTY_CONTACT_DROPPED, 0)
+        items: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        url: str | None = None
+        pages, parties, unread, withheld = 0, 0, 0, 0
+        sent: set[str] = set()
+        while pages < max_pages:
+            key = url or self.collection_url(company_id, party_set, query)
+            if key in sent:
+                raise nextlink_refused("business-central pagination loop (a nextLink "
+                                       "repeated a page)")
+            sent.add(key)
+            raws, url = self._page(company_id, party_set, url, page_size, query)
+            pages += 1
+            for raw in raws:
+                parties += 1
+                party_id = raw.get("id") if isinstance(raw, Mapping) else None
+                nested = raw.get(PARTY_CONTACT_SET) if isinstance(raw, Mapping) else None
+                if (not isinstance(party_id, str) or _GUID.fullmatch(party_id) is None
+                        or not isinstance(nested, list)
+                        or f"{PARTY_CONTACT_SET}@odata.nextLink" in raw):
+                    unread += 1
+                    continue
+                party_id = party_id.lower()
+                number = raw.get("number") if isinstance(raw.get("number"), str) else None
+                for relation in nested:
+                    if not isinstance(relation, Mapping):
+                        counts["bad_relation"] += 1
+                        continue
+                    contact = relation.get("contactId")
+                    if not isinstance(contact, str) or _GUID.fullmatch(contact) is None:
+                        counts["bad_relation"] += 1
+                        continue
+                    if (str(relation.get("relatedId", "")).lower() != party_id
+                            or relation.get("relatedType") != kind):
+                        counts["other_party"] += 1
+                        continue
+                    record_id = party_contact_id(party_set, party_id, contact)
+                    if record_id in seen_ids:
+                        counts["duplicate_relation"] += 1
+                        continue
+                    seen_ids.add(record_id)
+                    fields = jsonable({k: v for k, v in relation.items()
+                                       if isinstance(k, str) and not k.startswith("@")})
+                    fields.update(partySet=party_set, partyNumber=number)
+                    if not all(self._audience.item_visible(actor, r, self._source_acl())
+                               for r in resources):
+                        withheld += 1
+                        continue
+                    etag = relation.get("@odata.etag")
+                    if not isinstance(etag, str) or not etag:
+                        etag = "sha256:" + canonical_sha256(fields)
+                    items.append({"id": record_id, "fields": fields, "etag": etag})
+            if url is None:
+                break
+        complete = url is None and not unread
+        completeness = completeness_with_withheld(
+            {"complete": complete, "pages_read": pages, "parties_read": parties,
+             "items_read": len(items) + withheld,
+             **({} if complete else {"truncation_reason": "page_cap" if url is not None
+                                     else "expansion_unread"})}, withheld)
+        completeness.update(parties_unread=unread, **counts)
+        return {"source": "business-central", "environment": self.environment,
+                "company_id": company_id, "party_set": party_set, "items": items,
+                "completeness": completeness}
 
     def find_by_number(self, actor: Actor, company_id: str, entity_set: str, number: str, *,
                        field: str = "number", max_matches: int = 50,
@@ -515,6 +712,12 @@ class BusinessCentralReader:
                        query: Mapping[str, str] | None = None) -> str:
         """The listing URL of one entity set (closed grammar); ``query`` must come from
         ``live_source_grammar.bc_query``."""
+        if entity_set in grammar.BC_PLX_API_SETS:
+            # A PLX API page is listed whole, under its own route, with no query option.
+            if query:
+                raise ValueError("a PLX API page is listed without query options")
+            return grammar.url("bc.plx_entities", company=_guid(company_id, "company id"),
+                               entity=entity_set, **self._where)
         return grammar.url("bc.entities", dict(query) if query else None,
                            company=_guid(company_id, "company id"),
                            entity=_entity_set(entity_set), **self._where)
@@ -700,7 +903,18 @@ CAPTURE_ENTITY_SETS = ("purchaseOrders", "purchaseReceipts", "purchaseInvoices",
                        "itemCategories", "currencyExchangeRates",
                        "customerPaymentJournals", "vendorPaymentJournals",
                        "agedAccountsReceivables", "agedAccountsPayables", "itemLedgerEntries",
-                       "accounts", "generalLedgerEntries")
+                       "accounts", "generalLedgerEntries",
+                       # Coverage (business rule 2026-11-01, hold everything):
+                       # the dimensions and their values, projects (jobs), fixed assets,
+                       # bank accounts, and PLX's own ship-to API page (listed under its
+                       # custom route, ``grammar.BC_PLX_API_SETS``). Employees stay out
+                       # (``grammar.BC_ENTITY_SETS``: no employees/payroll).
+                       "dimensions", "dimensionValues", "projects", "fixedAssets",
+                       "bankAccounts", "plxCustomerShipTos",
+                       # Which customer or vendor each contact belongs to,
+                       # read under the party listings
+                       # (``BcCapture._capture_party_contacts``).
+                       PARTY_CONTACT_SET)
 # Records read per capture call for unbounded journals; the run stays resumable, so
 # successive calls continue from the cursor (completeness says in_progress/record_cap).
 CAPTURE_RECORD_CAPS = {"itemLedgerEntries": 25000, "generalLedgerEntries": 25000}
@@ -1183,6 +1397,12 @@ class BcCapture:
         # A pinned company the listing did not show (a truncated or paged listing, or a
         # company BC no longer lists) is never captured: the run is not complete.
         report["pinned_companies_missing"] = len(set(pinned) - listed)
+        # The companies whose field pages (Page 50 references, Page 38 lots) this capture
+        # plans: those with a pinned name. The projection exempts only the others from
+        # those pages (``ontology.project_bc.BcCaptures.capture_gap``).
+        self.store.set_state(NAMED_COMPANIES_STATE, json.dumps(sorted(
+            company_id for company_id, _book in targets
+            if self.names.get(environment, {}).get(company_id))))
         entries = []
         for company_id, book in targets:
             entry = {"company_id": company_id, "book": book, "lineage": f"bc_{book}",
@@ -1198,7 +1418,11 @@ class BcCapture:
                             page_size, caps, mode)
         for company_id, entry in entries:
             for entity_set in entity_sets:
-                if entity_set not in root_sets:
+                if entity_set == PARTY_CONTACT_SET:
+                    # Listed only under its parties (a company-level listing answers 400).
+                    self._counted(entry, self._capture_party_contacts, actor, company_id,
+                                  entry["lineage"])
+                elif entity_set not in root_sets:
                     self._counted(entry, self._capture_set, actor, company_id, entity_set,
                                   entry["lineage"], page_size, caps.get(entity_set), mode)
                 if entity_set in grammar.BC_DOCUMENT_LINES:
@@ -1208,6 +1432,9 @@ class BcCapture:
                 self._counted(entry, self._capture_references, actor, company_id,
                               self.names[environment][company_id], entry["lineage"],
                               REFERENCE_PAGE_SIZE)
+            if self._lots_planned(environment, company_id, entity_sets):
+                self._counted(entry, self._capture_lots, actor, company_id,
+                              self.names[environment][company_id], entry["lineage"])
             if self._stopped is None:  # from the listing already read: no request
                 entry["units"].append(self._capture_company(
                     actor, company_id, listing["items"], entry["lineage"]))
@@ -1220,7 +1447,9 @@ class BcCapture:
         report["units_total"] = len(entries) * (
             len(entity_sets) + sum(1 for s in entity_sets if s in grammar.BC_DOCUMENT_LINES)
             + 1) + sum(1 for company_id, _entry in entries
-                       if self._references_planned(environment, company_id, entity_sets))
+                       if self._references_planned(environment, company_id, entity_sets)) \
+            + sum(1 for company_id, _entry in entries
+                  if self._lots_planned(environment, company_id, entity_sets))
         report["units_reached"] = len(units)
         report["units_complete"] = sum(1 for u in units if u.get("complete"))
         unserved = self._mark_unserved(report["companies"])
@@ -1249,13 +1478,15 @@ class BcCapture:
 
     def _company_proof(self, companies: Sequence[Mapping[str, Any]],
                        listed: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
-        """The counts-only record that the call read one company: ``environment``,
+        """The counts-only record that the call read the Workbench's BC book: ``environment``,
         ``company_name`` (as BC lists it) and ``po_count`` (the purchase orders the capture holds
         for it, None until that unit is complete), nothing else: no PO number, amount or id.
-        None unless exactly one company was captured."""
-        if len(companies) != 1:
+        The book is the one company captured, or among several the ``manufacturing`` book
+        (Production / My Company, the ledgers' required book); None when there is none."""
+        entry = (companies[0] if len(companies) == 1 else
+                 next((c for c in companies if c.get("book") == "manufacturing"), None))
+        if entry is None:
             return None
-        entry = companies[0]
         row = next((r for r in listed
                     if str(r.get("id", "")).lower() == entry["company_id"]), {})
         unit = next((u for u in entry["units"] if u.get("entity_set") == "purchaseOrders"), {})
@@ -1702,6 +1933,175 @@ class BcCapture:
             self.store.finish_run(run_id, "partial", reason=reason,
                                   detail={"references": counts})
         return self._unit_report(actor, unit, REFERENCE_SET, references=counts)
+
+    def _capture_party_contacts(self, actor: Actor, company_id: str,
+                                lineage: str) -> dict[str, Any]:
+        """The company's contact relations as unit ``bc:<company>/contactsInformation``:
+        which customer or vendor each contact belongs to, read in one traversal of the
+        customer and the vendor listings with their ``contactsInformation`` expanded
+        (``BusinessCentralReader.party_contacts``; audience: the party set and
+        ``contactsInformation``), one record per (party, contact) under
+        ``party_contact_id``. A relation that is no whole record of its party is counted,
+        never stored; a party BC returned without its whole expansion, or a listing cut by
+        the page bound, leaves the unit ``partial`` (``withheld_or_dropped`` /
+        ``truncated``), never complete. A party set not visible to ``actor`` is not read
+        and the unit is ``partial`` (``party_not_visible``)."""
+        environment = self.reader.environment.lower()
+        unit = bc_unit(company_id, PARTY_CONTACT_SET)
+        relation_resource = self.reader.resource(company_id, PARTY_CONTACT_SET)
+        if not self.reader._audience.allows(actor, relation_resource):
+            return {"entity_set": PARTY_CONTACT_SET, "unit": unit, "state": "not_visible",
+                    "complete": False}
+        if self._reusable(unit):
+            return self._unit_report(actor, unit, PARTY_CONTACT_SET, reused=True)
+        run = self.store.begin_run("bc", unit, [relation_resource])
+        if self._deferred(run):
+            return self._unit_report(actor, unit, PARTY_CONTACT_SET, deferred=True)
+        run_id = run["run_id"]
+        captured: list[CapturedRecord] = []
+        counts: dict[str, int] = dict.fromkeys(
+            ("parties_read", "parties_unread", *PARTY_CONTACT_DROPPED), 0)
+        withheld, cut, unseen = 0, None, []
+        for party_set in grammar.BC_PARTY_CONTACTS:
+            if not self.reader._audience.allows(actor,
+                                                self.reader.resource(company_id, party_set)):
+                unseen.append(party_set)
+                continue
+            try:
+                listing = self.reader.party_contacts(actor, company_id, party_set)
+            except SourceUnavailable as exc:
+                self._failure(run_id, exc, resumed=False)
+                return self._unit_report(actor, unit, PARTY_CONTACT_SET)
+            done = listing["completeness"]
+            for name in counts:
+                counts[name] += int(done.get(name) or 0)
+            withheld += int(done.get("withheld") or 0)
+            if not done.get("complete"):
+                cut = cut or done.get("truncation_reason") or "truncated"
+            for item in listing["items"]:
+                meta = {"environment": environment, "company_id": company_id,
+                        "entity_set": PARTY_CONTACT_SET, "id": item["id"],
+                        "etag": item["etag"], "last_modified": None,
+                        "source_acl": BusinessCentralReader._source_acl(),
+                        "content_sha256": canonical_sha256(item["fields"]),
+                        "live_citation": citation(environment, company_id, PARTY_CONTACT_SET,
+                                                  item["id"], item["etag"])}
+                captured.append(CapturedRecord(
+                    path=(environment, company_id, PARTY_CONTACT_SET, item["id"]),
+                    payload={"row": {"id": item["id"], **item["fields"]}, "meta": meta},
+                    source_version=item["etag"], lineage=lineage))
+        counts["stored"] = len(captured)
+        dropped = sum(counts[k] for k in PARTY_CONTACT_DROPPED) + counts["parties_unread"]
+        self.store.save_page(run_id, captured, None, withheld=withheld, dropped=dropped)
+        detail = {"party_contacts": counts, "party_sets_not_visible": unseen}
+        if not withheld and not dropped and cut is None and not unseen:
+            self.store.finish_run(run_id, "complete", detail=detail)
+        else:
+            reason = ("party_not_visible" if unseen
+                      else "withheld_or_dropped" if withheld or dropped else cut)
+            self.store.finish_run(run_id, "partial", reason=reason, detail=detail)
+        return self._unit_report(actor, unit, PARTY_CONTACT_SET, party_contacts=counts)
+
+    def _lots_planned(self, environment: str, company_id: str,
+                      entity_sets: Sequence[str]) -> bool:
+        """The call reads ``company_id``'s item-ledger lot field page: it captures
+        ``itemLedgerEntries`` and the pinned map names the company (as for the purchase
+        order references)."""
+        return (LOT_PARENT_SET in entity_sets
+                and bool(self.names.get(environment, {}).get(company_id)))
+
+    def _capture_lots(self, actor: Actor, company_id: str, company_name: str,
+                      lineage: str) -> dict[str, Any]:
+        """The company's item-ledger lot field page as unit ``bc:<company>/
+        itemLedgerEntryLots`` (``capture_store.BC_FIELD_PAGES``; audience: the
+        ``itemLedgerEntries`` resource): ``Lot_No``, ``Expiration_Date`` (with the entry's
+        ``Item_No``, ``Location_Code`` and ``Document_No``) of each entry that carries a lot,
+        read in one traversal of ODataV4 ``ItemLedgerEntries``
+        (``BusinessCentralReader.item_ledger_lots``) and stored under the API v2.0 entry whose
+        ``entryNumber`` is the row's ``Entry_No``, as held in this capture. Read only after
+        the company's ``itemLedgerEntries`` unit settled (else ``skipped``,
+        ``item_ledger_not_settled``: a lot is never joined to an entry the capture does not
+        hold). A row is stored only when exactly one held entry has its number and the item
+        numbers do not differ; every other row is counted, never stored (``LOT_DROPPED``,
+        and ``no_api_record``: an entry posted since the ledger's read, counted, which
+        leaves a complete traversal complete). A truncated or dropping read is ``partial``.
+        A company name the grammar refuses fails the unit ``company_name_refused`` before
+        any request. BC holding no lot at all is a complete unit of zero records."""
+        environment = self.reader.environment.lower()
+        resource = self.reader.resource(company_id, LOT_PARENT_SET)
+        unit = bc_unit(company_id, LOT_SET)
+        if not self.reader._audience.allows(actor, resource):
+            return {"entity_set": LOT_SET, "unit": unit, "state": "not_visible",
+                    "complete": False}
+        if not _settled(self.store.run("bc", bc_unit(company_id, LOT_PARENT_SET))):
+            return {"entity_set": LOT_SET, "unit": unit, "state": "skipped",
+                    "reason": "item_ledger_not_settled", "complete": False}
+        if not grammar.bc_company_name_ok(company_name):
+            return {"entity_set": LOT_SET, "unit": unit, "state": "failed",
+                    "reason": "company_name_refused", "complete": False}
+        if self._reusable(unit):
+            return self._unit_report(actor, unit, LOT_SET, reused=True)
+        run = self.store.begin_run("bc", unit, [resource])
+        if self._deferred(run):
+            return self._unit_report(actor, unit, LOT_SET, deferred=True)
+        run_id = run["run_id"]
+        try:
+            listing = self.reader.item_ledger_lots(actor, company_id, company_name)
+        except SourceUnavailable as exc:
+            self._failure(run_id, exc, resumed=False)
+            return self._unit_report(actor, unit, LOT_SET)
+        counts = dict.fromkeys(LOT_COUNTS, 0)
+        counts["no_entry_number"] = int(listing["completeness"].get("no_entry_number") or 0)
+        entries: dict[str, list[CapturedRecord]] = {}
+        for record in self.store.current_records("bc", bc_unit(company_id, LOT_PARENT_SET)):
+            number = _entry_number((record.payload.get("row") or {}).get("entryNumber"))
+            if number is not None:
+                entries.setdefault(number, []).append(record)
+        listed: dict[str, int] = {}
+        for item in listing["items"]:
+            listed[item["entry"]] = listed.get(item["entry"], 0) + 1
+        captured: list[CapturedRecord] = []
+        for item in listing["items"]:
+            fields, held = item["fields"], entries.get(item["entry"], [])
+            if listed[item["entry"]] > 1:
+                counts["duplicate_entry"] += 1
+                continue
+            if not held:
+                counts["no_api_record"] += 1
+                continue
+            if len(held) > 1:
+                counts["ambiguous_api_record"] += 1
+                continue
+            ledger = held[0]
+            theirs = (ledger.payload.get("row") or {}).get("itemNumber")
+            ours = fields.get("Item_No")
+            if (isinstance(theirs, str) and theirs.strip() and isinstance(ours, str)
+                    and ours.strip() and theirs.strip() != ours.strip()):
+                counts["item_mismatch"] += 1
+                continue
+            record_id = ledger.path[3]
+            meta = {"environment": environment, "company_id": company_id,
+                    "entity_set": LOT_SET, "id": record_id, "etag": item["etag"],
+                    "last_modified": None, "source_acl": BusinessCentralReader._source_acl(),
+                    "content_sha256": canonical_sha256(fields),
+                    "parent": ledger.source_version,
+                    "live_citation": citation(environment, company_id, LOT_SET,
+                                              record_id, item["etag"])}
+            captured.append(CapturedRecord(
+                path=(environment, company_id, LOT_SET, record_id),
+                payload={"row": {"id": record_id, **fields}, "meta": meta},
+                source_version=item["etag"], lineage=lineage))
+        counts["stored"] = len(captured)
+        withheld = int(listing["completeness"].get("withheld") or 0)
+        dropped = sum(counts[k] for k in LOT_DROPPED)
+        self.store.save_page(run_id, captured, None, withheld=withheld, dropped=dropped)
+        if listing["completeness"].get("complete") and not withheld and not dropped:
+            self.store.finish_run(run_id, "complete", detail={"lots": counts})
+        else:
+            reason = ("withheld_or_dropped" if withheld or dropped
+                      else listing["completeness"].get("truncation_reason") or "truncated")
+            self.store.finish_run(run_id, "partial", reason=reason, detail={"lots": counts})
+        return self._unit_report(actor, unit, LOT_SET, lots=counts)
 
     def _expands(self, actor: Actor, company_id: str, header_set: str) -> bool:
         """Whether a header page of ``header_set`` may carry its lines: the pinned metadata
@@ -2662,6 +3062,7 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
                   resolve_sample: int = 200, passes: int = 1,
                   retry: BoundedBackoff | None = None,
                   books: Mapping[str, Mapping[str, str]] | None = None,
+                  names: Mapping[str, Mapping[str, str]] | None = None,
                   monotonic: Callable[[], float] = time.monotonic,
                   mode: str = "auto", key_pass_last: bool = False,
                   audience: LiveSourceAudience | None = None,
@@ -2705,7 +3106,7 @@ def capture_probe(environ: Mapping[str, str] | None = None, *, sender=None,
     with tempfile.TemporaryDirectory() as scratch:
         store = CaptureStore(Path(db) if db else Path(scratch) / "capture.sqlite", audience)
         try:
-            capture = BcCapture(reader, store, books=books, monotonic=monotonic)
+            capture = BcCapture(reader, store, books=books, names=names, monotonic=monotonic)
             started = monotonic()
             # A pass after an unfinished pass (a stop, or a unit left resumable) continues
             # it: what this call already completed is reused, never read again

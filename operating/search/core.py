@@ -6,8 +6,11 @@
    graph neighbours, dense kNN over the chunks embedded so far, BM25 with OR semantics,
    trigram typo match), plus the hidden count.
 3. Fusion (RRF, or weighted sum), one candidate per source item (its best chunk) and per
-   duplicate group, cross-encoder rerank of the top ``rerank_top``, then the intent's
-   authority and recency weights.
+   duplicate group, cross-encoder rerank of the top ``rerank_top`` (each passage cut to
+   ``rerank_passage_chars``), then the intent's authority and recency weights and the
+   document priors ``plx.documents`` orders by (``operating.search.authority``: use-case
+   documents, originals and titles naming the question's identifier up, automated mail
+   down), scaled by ``authority.hybrid_scale``.
 4. The item gate on every hit about to be shown; a denied item is counted as hidden.
 5. Hidden counts by owner or team (never a title, snippet, sender or handle) and every
    query logged to ``search.query_log`` with each shown hit's signal values.
@@ -29,6 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from operating.search import authority as au
 from operating.search import retrievers as rt
 from operating.search.config import (Weights, dsn as default_dsn, load_owners,
                                      load_weights, owner_of)
@@ -36,6 +40,7 @@ from operating.search.fusion import authority_signal, final_score, fuse, recency
 from operating.search.reader import Query, SearchReader, as_query
 
 MAX_K = 100
+LEXICAL = ("exact_id", "bm25", "fuzzy")   # retrievers that match the question's words
 SNIPPET_CHARS = 300
 RERANK_PASSAGE_CHARS = 1200
 RERANK_FLOOR = 0.1
@@ -219,7 +224,7 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         if reranker is not None and reps and weights.rerank_top > 0:
             t = time.perf_counter()
             top = reps[:weights.rerank_top]
-            passages = [_passage(info[cid]) for cid, _ in top]
+            passages = [_passage(info[cid], weights.rerank_passage_chars) for cid, _ in top]
             scores, problem = reranker.score(query.question, passages,
                                              weights.rerank_timeout_s)
             if scores is not None and len(scores) == len(top):
@@ -230,7 +235,8 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             timings["rerank"] = _ms(t)
         elif reranker is None:
             notes.append("rerank_off")
-        scored = rank(reps, info, lists, rerank_scores, intent, now)
+        priors = _priors(weights, reps, info, query.id_tokens(), lists)
+        scored = rank(reps, info, lists, rerank_scores, intent, now, priors)
 
         t = time.perf_counter()
         hits: list[dict[str, Any]] = []
@@ -291,14 +297,40 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         conn.close()
 
 
+def _priors(weights: Weights, reps: Sequence[tuple[str, float]],
+            info: Mapping[str, Mapping[str, Any]], id_tokens: Sequence[str],
+            lists: Mapping[str, Sequence[tuple[str, float]]] | None = None
+            ) -> dict[str, float]:
+    """Each candidate's document prior (``authority.chunk_signals``), already scaled. A
+    use-case document or original is lifted only when a lexical retriever (exact id,
+    BM25, trigram) found it: a map that only reads alike stays where meaning puts it."""
+    rule = weights.authority
+    if rule is None or not rule.hybrid_scale:
+        return {}
+    catalog = au.catalog_keys()
+    lexical = {cid for name in LEXICAL for cid, _ in (lists or {}).get(name, ())}
+    out = {}
+    for cid, _ in reps:
+        signals = au.chunk_signals(rule, info[cid], catalog, id_tokens)
+        if cid not in lexical:
+            signals = [s for s in signals
+                       if s not in ("use_case_document", "captured_original")]
+        prior = rule.prior(signals)
+        if prior:
+            out[cid] = rule.hybrid_scale * prior
+    return out
+
+
 def rank(reps: Sequence[tuple[str, float]], info: Mapping[str, Mapping[str, Any]],
          lists: Mapping[str, Sequence[tuple[str, float]]], rerank_scores: Mapping[str, float],
-         intent: Any, now: dt.datetime) -> list[tuple[float, str, dict[str, Any]]]:
+         intent: Any, now: dt.datetime, priors: Mapping[str, float] | None = None
+         ) -> list[tuple[float, str, dict[str, Any]]]:
     """(score, chunk_id, signals) best first: the reranked candidates, then (only when a
     k reaches past the reranked top) the rest by their unreranked score; a reranked and
     an unreranked score are never compared. The rerank relevance counts relative to the
     best reranked candidate, floored at ``RERANK_FLOOR``: when the cross-encoder finds
-    every passage weak, it moves the order little. Pure: the tuning harness re-ranks
+    every passage weak, it moves the order little. ``priors``: each candidate's scaled
+    document prior (``_priors``), added to its score. Pure: the tuning harness re-ranks
     cached candidates with it (``operating/search/tune.py``)."""
     best = reps[0][1] if reps else 1.0
     top = max(max(rerank_scores.values(), default=0.0), RERANK_FLOOR)
@@ -314,7 +346,9 @@ def rank(reps: Sequence[tuple[str, float]], info: Mapping[str, Mapping[str, Any]
         score = final_score(fused_norm, None if reranked is None else reranked / top,
                             authority, recency, intent, exact=signals["exact_id"],
                             reranked_query=bool(rerank_scores))
-        signals.update(authority=round(authority, 4),
+        prior = (priors or {}).get(cid, 0.0)
+        score += prior
+        signals.update(authority=round(authority, 4), prior=round(prior, 4),
                        recency=None if recency is None else round(recency, 4),
                        rerank=None if reranked is None else round(reranked, 4),
                        fused=round(fused_norm, 4))
@@ -419,12 +453,12 @@ def _representatives(fused: Sequence[tuple[str, float]], info: Mapping[str, dict
     return out
 
 
-def _passage(row: Mapping[str, Any]) -> str:
+def _passage(row: Mapping[str, Any], limit: int = RERANK_PASSAGE_CHARS) -> str:
     """The contextual header (source, title, date, ids, what it is about) and the body:
     the header is what lets the cross-encoder see that a bare reply is about the order
     asked (0.21 against 0.01 without it on the fixture's late-order mail)."""
     return ((row.get("header") or row.get("title") or "") + "\n"
-            + (row.get("body") or ""))[:RERANK_PASSAGE_CHARS]
+            + (row.get("body") or ""))[:limit]
 
 
 def _pg_scope(conn: Any, target: str, reader: SearchReader, lane_a: Any,

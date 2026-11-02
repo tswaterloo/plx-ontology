@@ -127,14 +127,14 @@ function SignIn() {
                   {busy && entra ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <MicrosoftMark />}
                   Sign in with Microsoft
                 </button>
-                <p className="text-center text-xs text-muted">
+                <p className="text-center text-meta text-muted">
                   {entra
                     ? "Use your PLX work account. You'll only see what your role allows."
                     : "Microsoft sign-in is off on this demo server."}
                 </p>
                 {devAvailable && (
                   <div className="space-y-3 border-t border-border pt-4">
-                    <p className="flex items-center gap-1.5 text-xs font-medium text-warn">
+                    <p className="flex items-center gap-1.5 text-meta font-medium text-warn">
                       <FlaskConical className="size-3.5" aria-hidden /> DEV mode
                     </p>
                     {note && <p className="text-sm text-muted">{note}</p>}
@@ -147,7 +147,7 @@ function SignIn() {
                     >
                       {showTicket ? (
                         <div>
-                          <label htmlFor="ticket" className="mb-1 block text-xs text-muted">
+                          <label htmlFor="ticket" className="mb-1 block text-meta text-muted">
                             Access link or code
                           </label>
                           <input
@@ -156,14 +156,14 @@ function SignIn() {
                             autoComplete="off"
                             value={ticket}
                             onChange={(e) => setTicket(e.target.value.replace(/^.*#(?:ticket|access)=/, ""))}
-                            className="h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm focus:border-accent focus:outline-none"
+                            className="h-11 w-full rounded-xl border border-control bg-surface px-3 text-sm focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:outline-none"
                           />
                         </div>
                       ) : (
                         <button
                           type="button"
                           onClick={() => setShowTicket(true)}
-                          className="inline-flex items-center gap-1 text-xs text-muted hover:text-fg cursor-pointer"
+                          className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer"
                         >
                           <ChevronDown className="size-3" aria-hidden /> I have an access link
                         </button>

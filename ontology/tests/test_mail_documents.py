@@ -10,6 +10,7 @@ reach them per reader. No network, no credentials. Evidence: injected-transport.
 
 from __future__ import annotations
 
+from contextlib import closing
 import datetime as dt
 import json
 import os
@@ -26,7 +27,7 @@ from integrations.live_source_guard import BoundedBackoff
 from integrations.tests.test_capture_mail import (BOX_A, BOX_B, CAPTURE, ENV, READER_A, SCOPE,
                                                    Clock, FakeGraph, capture_audience,
                                                    file_attachment, reader_audience)
-from ontology import mentions, store_ddl
+from ontology import identifiers, mentions, store_ddl
 from ontology import schema as schema_loader
 from ontology.json_contract import validate
 from ontology.project import (CAPTURE_SOURCES, CapturedRecord, MailCaptures, build_store,
@@ -78,6 +79,12 @@ class MailDocumentsTests(unittest.TestCase):
                   subject="Freight")
         graph.put(BOX_B, "MSG-B1", "CKB-1", body="Finance note on PO100234.",
                   subject="Finance")
+        # A Portal sourcing request is not served by the reporting API: the brief email
+        # (and a copy in another mailbox) is the only record of SR-0042 a reader can reach.
+        graph.put(BOX_A, "MSG-SR", "CK-SR-1", subject="PLX sourcing brief SR-0042",
+                  body="VP-0003 holds SR-0042; SR-20260115-0003")   # preview: 40 chars
+        graph.put(BOX_B, "MSG-B-SR", "CKB-SR-1", subject="Sourcing cost SR-0042",
+                  body="Finance view of SR-0042.")
         cls.store = MailCaptureStore(cls.state, clock=Clock())
         api, _ = graph_read.build_graph(ENV, sender=graph,
                                         retry=BoundedBackoff(sleep=lambda s: None,
@@ -117,7 +124,7 @@ class MailDocumentsTests(unittest.TestCase):
             "SELECT object_id FROM objects WHERE object_type = 'Email' AND "
             "json_extract(native_key, '$.id') = ?", (message_id,)).fetchone()[0]
 
-    def tools(self, audience=None, api="api:*"):
+    def tools(self, audience=None, api="api:*", grammar=None):
         policy = ot.ReadPolicy(tenant="plx", audiences={
             api: {"staff:orders", "staff:outsider"},
             "mail:*": {"staff:orders", "staff:outsider"}},
@@ -127,7 +134,7 @@ class MailDocumentsTests(unittest.TestCase):
         base = ot.OntologyTools(reader, policy,
                                 item_gate=self.store.item_gate(audience or reader_audience()),
                                 schema=ot.SchemaView.from_compiled(self.compiled),
-                                grammar=None, contracts=CONTRACTS, clock=lambda: NOW)
+                                grammar=grammar, contracts=CONTRACTS, clock=lambda: NOW)
         return base, tt.TraverseTools(base)
 
     def ok(self, name, result):
@@ -143,7 +150,7 @@ class MailDocumentsTests(unittest.TestCase):
         types = dict(self.conn.execute("SELECT object_type, COUNT(*) FROM objects WHERE "
                                        "object_type IN ('Email', 'Attachment') "
                                        "GROUP BY object_type").fetchall())
-        self.assertEqual(types, {"Email": 3, "Attachment": 1})
+        self.assertEqual(types, {"Email": 5, "Attachment": 1})
         keys = {r[0] for r in self.conn.execute(
             "SELECT DISTINCT audience_key FROM objects WHERE object_type = 'Email'")}
         self.assertEqual(keys, {f"mail:{BOX_A}", f"mail:{BOX_B}"})
@@ -190,6 +197,163 @@ class MailDocumentsTests(unittest.TestCase):
         self.assertEqual({r for r in relations if before[r] != after[r]},
                          {"containerMembers", "documentFields"})
 
+    def test_a_refresh_reads_no_unchanged_message_and_resolves_only_what_moved(self):
+        """The document steps keep what they derived from each message and its attachments
+        (``ontology.mention_memo``): a refresh reads no unchanged message again, extracts
+        nothing and resolves again only the message naming an identifier whose index rows
+        changed (a purchase order's number moved); a message whose file reading failed
+        for a reason not remembered is read again by the next build. Every generation
+        equals a cold build with the same steps."""
+        from ontology import project, project_incremental as inc
+        from ontology.text_index import store_text_index
+
+        def portal(number):
+            return StaticPortal([
+                po("public.app_purchase_order", {"id": "p1"},
+                   {"id": "p1", "po_number": "PO100234"}),
+                po("public.app_purchase_order", {"id": "p2"},
+                   {"id": "p2", "po_number": "PO100235"}),
+                po("public.app_purchase_order", {"id": "p3"}, {"id": "p3", "po_number": number}),
+                po("public.generated_purchase_order", {"id": 9},
+                   {"id": 9, "ponumber": "PO100236"})])
+
+        def pinned(need):   # a world of a few rows: keep the incremental path under test
+            if need["mode"] == "cold" and "incremental" in need["estimates"]:
+                raise OSError("incremental_path_pinned")
+
+        steps = {"mentions": mentions.store_mention_links, "text_index": store_text_index}
+        read, extracted, resolved = [], [], []
+        load, extract, resolve = (MailCaptures._message_documents, mentions.document_mentions,
+                                  mentions._document_links)
+
+        def counted_load(mail, row, attached):
+            read.append(row["l1_handle"])
+            return load(mail, row, attached)
+
+        def counted_extract(document):
+            extracted.append(document.citation)
+            return extract(document)
+
+        def counted_resolve(conn, declared, document, *args):
+            resolved.append(document.citation)
+            return resolve(conn, declared, document, *args)
+        with tempfile.TemporaryDirectory() as tmp:
+            def build(number, remembered=True, **options):
+                read.clear(), extracted.clear(), resolved.clear()
+                with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail, \
+                        unittest.mock.patch.object(MailCaptures, "_message_documents",
+                                                   counted_load), \
+                        unittest.mock.patch.object(mentions, "document_mentions",
+                                                   counted_extract), \
+                        unittest.mock.patch.object(mentions, "_document_links",
+                                                   counted_resolve), \
+                        unittest.mock.patch.object(project, "readings_remembered",
+                                                   return_value=remembered):
+                    return inc.build_generation(
+                        Path(tmp) / "projection", self.compiled,
+                        {"portal_api": portal(number), "graph_mail": mail}, clock=lambda: NOW,
+                        post_project=steps, **options)
+
+            def cold(number, name):
+                with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail:
+                    return build_store(Path(tmp) / name, self.compiled,
+                                       {"portal_api": portal(number), "graph_mail": mail},
+                                       clock=lambda: NOW, post_project=steps)
+            messages = 5   # the fixture mailbox: MSG-1, MSG-2, MSG-B1, MSG-SR, MSG-B-SR
+            first = build("PO100236", remembered=False)
+            self.assertTrue(extracted and resolved)
+            self.assertEqual(len(read), 2 * messages)   # the two document steps
+            self.assertEqual(first.content_digest, cold("PO100236", "c1.sqlite")["content_digest"])
+            again = build("PO100236", space=pinned)   # no reading was kept as read: read again
+            self.assertEqual((len(read), extracted), (messages, []))
+            self.assertEqual(again.content_digest, first.content_digest)
+            moved = build("PO100299", space=pinned)
+            self.assertEqual(moved.mode, "incremental")
+            self.assertEqual(moved.content_digest,
+                             cold("PO100299", "c2.sqlite")["content_digest"])
+            self.assertEqual((read, extracted), ([], []))
+            self.assertEqual(resolved, [graph_read.mail_citation(BOX_A, "MSG-2", "CK-2-1")])
+            with closing(sqlite3.connect(Path(tmp) / "c1.sqlite")) as before, \
+                    closing(sqlite3.connect(moved.store)) as after:
+                query = "SELECT link_id, to_object, tier FROM links WHERE binding_kind = " \
+                        "'mention' ORDER BY link_id"
+                self.assertNotEqual(before.execute(query).fetchall(),
+                                    after.execute(query).fetchall())
+                text = "SELECT citation, field_path, object_id, text_digest FROM text_fields " \
+                       "ORDER BY 1, 2, 3"
+                self.assertEqual(before.execute(text).fetchall(), after.execute(text).fetchall())
+
+    def test_a_body_read_that_failed_once_is_read_again_by_the_next_refresh(self):
+        """A mail body blob whose read returned nothing
+        once (an OSError, altered bytes) was kept as read, so every later refresh served
+        the message without its body (no text index field, no mention). The group is not
+        kept: the next refresh reads it again and equals a cold build."""
+        from ontology import project_incremental as inc
+        from ontology.text_index import store_text_index
+
+        def portal(number):
+            return StaticPortal([
+                po("public.app_purchase_order", {"id": "p1"},
+                   {"id": "p1", "po_number": "PO100234"}),
+                po("public.app_purchase_order", {"id": "p3"}, {"id": "p3", "po_number": number})])
+
+        def pinned(need):
+            if need["mode"] == "cold" and "incremental" in need["estimates"]:
+                raise OSError("incremental_path_pinned")
+        steps = {"mentions": mentions.store_mention_links, "text_index": store_text_index}
+        real = MailCaptures._blob_text
+        with tempfile.TemporaryDirectory() as tmp:
+            def build(number, fail=False, **options):
+                with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail, \
+                        unittest.mock.patch.object(MailCaptures, "_blob_text",
+                                                   (lambda _s, _d: None) if fail else real):
+                    return inc.build_generation(
+                        Path(tmp) / "projection", self.compiled,
+                        {"portal_api": portal(number), "graph_mail": mail}, clock=lambda: NOW,
+                        post_project=steps, **options)
+            build("PO100236", fail=True)
+            after = build("PO100299", space=pinned)
+            with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail:
+                cold = build_store(Path(tmp) / "cold.sqlite", self.compiled,
+                                   {"portal_api": portal("PO100299"), "graph_mail": mail},
+                                   clock=lambda: NOW, post_project=steps)
+            query = "SELECT citation, field_path FROM text_fields WHERE field_path = " \
+                    "'row.body_text' ORDER BY 1"
+            with closing(sqlite3.connect(after.store)) as built, \
+                    closing(sqlite3.connect(Path(tmp) / "cold.sqlite")) as expected:
+                self.assertEqual(len(expected.execute(query).fetchall()), 5)
+                self.assertEqual(built.execute(query).fetchall(),
+                                 expected.execute(query).fetchall())
+            self.assertEqual(after.mode, "incremental")
+            self.assertEqual(after.content_digest, cold["content_digest"])
+
+    def test_a_file_reading_is_remembered_only_when_the_reading_memo_keeps_it(self):
+        """``ontology.project.readings_remembered`` reads ``captured_text``'s memo keys: a
+        reading that succeeded is remembered, one that failed transiently is not (a change
+        of the memo's key shape breaks this, not the document memo silently)."""
+        from integrations import captured_text
+        from ontology.project import readings_remembered
+
+        with MailCaptures(self.state, internal_domains=SCOPE.internal_domains) as mail:
+            rows = [{**json.loads(item[0]), "content_sha256": item[1], "text_status": item[2],
+                     "text_sha256": item[3]} for item in mail._conn.execute(
+                "SELECT metadata, content_sha256, text_status, text_sha256 FROM attachments "
+                "WHERE content_sha256 IS NOT NULL")]
+            self.assertTrue(rows)
+            with unittest.mock.patch.object(captured_text, "_CACHE",
+                                            captured_text._CACHE.empty()), \
+                    unittest.mock.patch.object(captured_text, "read_text",
+                                               side_effect=OSError("transient")):
+                for row in rows:
+                    self.assertIsNone(captured_text.captured_text(mail.blobs, row))
+                self.assertFalse(readings_remembered(mail.blobs, rows))
+            with unittest.mock.patch.object(captured_text, "_CACHE",
+                                            captured_text._CACHE.empty()):
+                for row in rows:
+                    captured_text.captured_text(mail.blobs, row)
+                    captured_text.container_members(mail.blobs, row)
+                self.assertTrue(readings_remembered(mail.blobs, rows))
+
     def test_a_captured_file_is_read_once_across_builds_under_the_same_reading_code(self):
         """Builds of one state directory keep the readings of captured files they made
         (``integrations.captured_text.KeptReadings``): the next build reads none of the
@@ -217,6 +381,10 @@ class MailDocumentsTests(unittest.TestCase):
                 first = build(state)
             self.assertTrue(reads)
             self.assertTrue((state / inc.READINGS).is_file())
+            # Without the document steps' memo (``ontology.mention_memo``, which would read
+            # no document at all) every document is read again, its files from the readings.
+            for path in state.glob("mentions.sqlite*"):
+                path.unlink()
             memo = captured_text._CACHE.empty()
             with unittest.mock.patch.object(captured_text, "_CACHE", memo), \
                     unittest.mock.patch.object(captured_text, "read_text",
@@ -391,6 +559,34 @@ class MailDocumentsTests(unittest.TestCase):
         back = traverse.call("plx.around", {"from": p1, "path": [
             {"link_type": LINK, "direction": "reverse"}], "tier_floor": "lead"}, OUTSIDER)
         self.assertNotIn("graph-mail://", json.dumps(back))
+
+    def test_an_unserved_portal_number_finds_only_the_mail_the_reader_may_see(self):
+        base, _traverse = self.tools(grammar=identifiers)   # the host's typed parsing
+
+        def found(actor):
+            out = base.call("plx.find", {"query": "SR-0042"}, actor)
+            self.assertNotIn("error", out, json.dumps(out)[:1500])
+            return ({c["object"]["object_id"] for c in out.get("candidates", ())},
+                    json.dumps(out))
+
+        ids, text = found(READER_A)
+        self.assertIn(self.email("MSG-SR"), ids)
+        self.assertNotIn(self.email("MSG-B-SR"), ids)   # the finance mailbox is withheld
+        self.assertNotIn("Finance view", text)
+        self.assertFalse(any(i.startswith("ShipRelease:") for i in ids))
+        # A number only the body holds is read from the text, and only that number:
+        # VP-0004 or SR-0003 (the same digits under another kind) find nothing.
+        def query(q, actor=READER_A):
+            out = base.call("plx.find", {"query": q}, actor)
+            return {c["object"]["object_id"] for c in out.get("candidates", ())}
+
+        self.assertEqual(query("VP-0003"), {self.email("MSG-SR")})
+        self.assertEqual(query("VP-0004"), set())
+        self.assertEqual(query("SR-0003"), set())
+        ids, text = found(OUTSIDER)
+        self.assertEqual(ids, set())
+        self.assertNotIn("graph-mail://", text)
+        self.assertEqual(query("VP-0003", OUTSIDER), set())
 
     def test_every_object_type_with_identifiers_has_a_declared_mention_link(self):
         declared = mentions.mention_link_types(self.compiled.link_types)
@@ -704,7 +900,7 @@ class ProbeWithMailTests(unittest.TestCase):
         Path(f"{tmp}/mirror-audience.json").write_text(json.dumps(narrowed), "utf-8")
         client = WorkbenchReadApiClient(BASE, KEY, fetch=FakeWorkbench())
         result = projection_probe(
-            client, f"{tmp}/mirror.sqlite", f"{tmp}/store.sqlite", claim_sample=50,
+            client, f"{tmp}/mirror.sqlite", f"{tmp}/store.sqlite", claim_sample=1000,
             mail={"scope": scope, "reader": GraphMailReader(api, audience),
                   "audience": audience, "capture_actor": reader_actor, "page_budget": 4,
                   **({"identity": identity} if identity is not None else {})},

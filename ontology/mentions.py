@@ -100,6 +100,7 @@ from urllib.parse import urlsplit
 # The page layout of a captured file's text: its own module, which the file readers use.
 from integrations.captured_pages import PAGE_BREAK, is_paged_file, text_pages
 from ontology import identifiers as ids
+from ontology.mention_memo import document_key, row_digest
 from ontology.store import held_stretches
 
 FORMAT = "plx-mentions/v1"
@@ -808,12 +809,9 @@ def _cited_version(conn: Any, citation: str) -> Any:
     return found
 
 
-def _store_candidates(conn: Any, mention: Mapping[str, Any], exclude: str,
-                      aliases: Any = None) -> list[Any]:
-    """Identifier-index rows that answer one mention: its kind and the kind's alias
-    kinds, each normalised by its own normaliser (as ``plx.find`` searches), then the
-    rows ``aliases`` (``ontology.reviews.BuildAliases``) gives for the same keys, over
-    the time no index row of the same object answers it (:func:`beside_index`)."""
+def candidate_keys(mention: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """The identifier keys one mention is looked up under: its kind and the kind's alias
+    kinds, each normalised by its own normaliser (as ``plx.find`` searches)."""
     keys: list[tuple[str, str]] = []
     for kind in (mention["identifier_kind"], *ids.alias_kinds(mention["identifier_kind"])):
         try:
@@ -823,9 +821,18 @@ def _store_candidates(conn: Any, mention: Mapping[str, Any], exclude: str,
             value = None
         if isinstance(value, str) and value and (kind, value) not in keys:
             keys.append((kind, value))
+    return keys
+
+
+def _store_candidates(conn: Any, mention: Mapping[str, Any], exclude: str,
+                      aliases: Any = None) -> list[Any]:
+    """Identifier-index rows that answer one mention: its kind and the kind's alias
+    kinds, each normalised by its own normaliser (as ``plx.find`` searches), then the
+    rows ``aliases`` (``ontology.reviews.BuildAliases``) gives for the same keys, over
+    the time no index row of the same object answers it (:func:`beside_index`)."""
     rows: list[Any] = []
     reviewed: list[Any] = []
-    for kind, value in keys:
+    for kind, value in candidate_keys(mention):
         rows += _query(
             conn, "SELECT i.object_id, o.object_type, i.identifier_kind, i.normalized, i.property, "
             "i.role, i.l1_handle, i.field_path, i.lineage, i.recorded_at, i.superseded_at, "
@@ -940,12 +947,18 @@ def store_mention_links(builder: Any, projector: Any, *,
     not part of the store DDL or its content digest)."""
     conn = builder.connection
     declared = mention_link_types(getattr(projector, "links", {}) or {})
-    if documents is None:
-        documents = _source_documents(projector)
+    groups = (source_document_groups(projector) if documents is None
+              else ((None, lambda d=d: ([d], True)) for d in documents))
     conn.execute(f"CREATE INDEX IF NOT EXISTS {HANDLE_INDEX} ON object_versions(l1_handle)")
     unanswered: dict[str, list[dict[str, Any]]] = {}
+    # A generation build (``ontology.project_incremental``) keeps what this step derived
+    # from each document (``ontology.mention_memo``) and names the identifier keys whose
+    # index rows it changed since the generation it started from.
+    context = getattr(projector, "build_context", None)
     try:
-        report = _store_links(builder, conn, declared, documents, aliases, unanswered)
+        report = _store_links(builder, conn, declared, groups, aliases, unanswered,
+                              context.document_memo() if context is not None else None,
+                              context.changed_key if context is not None else None)
         raised = corroborate_links(conn, corroborable_link_types(
             getattr(projector, "links", {}) or {}))
         report["counts"].update(propose_reference_aliases(conn, unanswered, aliases))
@@ -959,89 +972,217 @@ def store_mention_links(builder: Any, projector: Any, *,
 HANDLE_INDEX = "plx_mentions_version_by_handle"
 
 
-def _source_documents(projector: Any) -> Iterator[Document]:
+def _memo_code(declared: Mapping[tuple[str, str], str]) -> str:
+    """What a kept entry of ``ontology.mention_memo`` was derived under: the extractor and
+    the source of the modules that extract, resolve and write mention links, and the
+    declared link types."""
+    from pathlib import Path
+
+    digest = sha256(f"{extractor_version()}\n".encode())
+    for module in (__file__, ids.__file__, Path(__file__).with_name("mention_memo.py"),
+                   Path(__file__).with_name("reviews.py")):
+        digest.update(Path(module).read_bytes())
+    digest.update(json.dumps(sorted([list(k) + [v] for k, v in declared.items()]))
+                  .encode("utf-8"))
+    return digest.hexdigest()
+
+
+DocumentGroup = tuple[str | None, Callable[[], tuple[list[Document], bool]]]
+
+
+def source_document_groups(projector: Any) -> Iterator[DocumentGroup]:
+    """Every capture source's documents (``documents()``, sources in name order) in
+    groups ``(key, load)``: a source's own ``document_groups`` (the documents of one
+    captured record, under a key of what they are read from; ``load()`` gives them and
+    whether every file reading in them is remembered), else one group a document with no
+    key."""
     for name in sorted(getattr(projector, "sources", {}) or {}):
-        produce = getattr(projector.sources[name], "documents", None)
+        source = projector.sources[name]
+        groups = getattr(source, "document_groups", None)
+        if callable(groups):
+            yield from groups()
+            continue
+        produce = getattr(source, "documents", None)
         if callable(produce):
-            yield from produce()
+            for document in produce():
+                yield None, (lambda d=document: ([d], True))
+
+
+def _document_facts(document: Document) -> dict[str, Any]:
+    """What resolving a document's mentions reads of it beyond its mentions."""
+    return {"citation": document.citation, "kind": document.kind,
+            "sender_class": document.sender_class,
+            "copy_key": list(document.copy_key) if document.copy_key is not None else None,
+            "text_withheld": document.text_withheld}
+
+
+def _facts_document(facts: Mapping[str, Any]) -> Document:
+    """A document standing in for one the memo holds the facts of (no fields)."""
+    return Document(facts["citation"], facts["kind"], (), sender_class=facts["sender_class"],
+                    copy_key=tuple(facts["copy_key"]) if facts["copy_key"] else None,
+                    text_withheld=facts["text_withheld"])
 
 
 def _store_links(builder: Any, conn: Any, declared: Mapping[tuple[str, str], str],
-                 documents: Iterable[Document], aliases: Any,
-                 unanswered: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+                 groups: Iterable[DocumentGroup], aliases: Any,
+                 unanswered: dict[str, list[dict[str, Any]]], memo: Any = None,
+                 changed: Callable[[str, str], bool] | None = None) -> dict[str, Any]:
+    """Write every document's mention links (before corroboration). ``memo``
+    (``ontology.mention_memo.DocumentMemo``): a group of documents read as before is not
+    read again; a document's mentions are taken from the memo when it holds them under
+    the document's value, and its links too when they were written against the base
+    generation, its version rows read alike now and ``changed`` (an identifier key whose
+    index rows differ between the base and this generation; None: every key may) holds
+    for none of its keys."""
     extractor = extractor_version()
+    code = _memo_code(declared) if memo is not None else ""
     counts = {"documents": 0, "documents_not_projected": 0, "mentions": 0,
               "unparsed": 0, "not_found": 0, "field_not_projected": 0,
               "undeclared_target": 0, "ambiguous_mentions": 0, "links": 0,
               "reviewed_alias_links": 0, "reviewed_alias_links_open": 0,
               "documents_text_withheld": 0}
     rows: list[dict[str, Any]] = []
-    for document in documents:
-        seen: set[str] = set()   # one document's link ids (secondary readings repeat)
-        source = _store_version(conn, document.citation)
-        if source is None:
-            counts["documents_not_projected"] += 1
+
+    def written(resolved: Mapping[str, Any]) -> None:
+        nonlocal rows
+        _add_counts(counts, resolved["counts"])
+        for handle, numbers in resolved["unanswered"]:
+            unanswered.setdefault(handle, []).extend(numbers)
+        rows += resolved["rows"]
+        if len(rows) >= STORE_LINK_BATCH:
+            counts["links"] += builder.add("links", rows)
+            rows = []
+
+    def one(key: str | None, found: Any, document: Document) -> None:
+        if found is not None:
+            entry, valid = found
+            if valid and changed is not None and _still_resolves(
+                    conn, document, entry["resolved"], aliases, changed):
+                memo.still_valid(key)
+                written(entry["resolved"])
+                return
+        mentioned = found[0]["mentions"] if found is not None else document_mentions(document)
+        resolved = _document_links(conn, declared, document, mentioned, aliases, extractor)
+        if memo is not None:
+            memo.keep_mentions(key, code, {"document": _document_facts(document),
+                                           "mentions": mentioned, "resolved": resolved})
+        written(resolved)
+
+    for group, load in groups:
+        kept = memo.group(group) if memo is not None and group is not None else None
+        held = [(key, memo.mentions(key, code)) for key in kept] if kept is not None else None
+        if held is not None and all(found is not None for _, found in held):
+            for key, found in held:   # read as before: its documents are not read again
+                one(key, found, _facts_document(found[0]["document"]))
             continue
-        counts["documents"] += 1
-        counts["documents_text_withheld"] += document.text_withheld is not None
-        spans_of_doc = held_spans(source)
-        fields: dict[str, Any] = {document.citation: source}
-        for mention in document_mentions(document):
-            counts["mentions"] += 1
-            if not mention["normalized"]:
-                counts["unparsed"] += 1
-                continue
-            cited = fields.get(mention["citation"])
-            if mention["citation"] not in fields:
-                cited = fields[mention["citation"]] = _cited_version(conn, mention["citation"])
-            if cited is None:
-                counts["field_not_projected"] += 1   # e.g. an attachment not projected
-                continue
-            candidates = mention_candidates(conn, mention, source, aliases, spans_of_doc)
-            targets = sorted({row["object_id"] for row, _, _ in candidates})
-            # A supplier's number nothing answers now (none, or only a closed stretch: an
-            # alias since rejected) may be an alias lead.
-            if (all(window[1] is not None for _, window, _ in candidates)
-                    and ids.reference_alias_of(mention["identifier_kind"])
-                    and not (mention["quoted_history"] or mention.get("label_kind_conflict"))):
-                unanswered.setdefault(document.citation, []).append(
-                    _reference_mention(mention, cited))
-            if not targets:
-                counts["not_found"] += 1
-                continue
-            counts["ambiguous_mentions"] += len(targets) > 1   # operator count only
-            span = [mention["start"], mention["end"]]
-            group = _link_id(document.citation, mention["citation"], mention["field_path"],
-                             span)[len("mention:"):]
-            kept: set[tuple[str, str, int, str]] = set()
-            for row, window, held in candidates:
-                key = (row["object_id"], row["l1_handle"], held, candidate_piece(row))
-                if key in kept:
-                    continue   # one link per target version, whichever property matched
-                kept.add(key)
-                link_type = declared.get((source["object_type"], row["object_type"]))
-                if link_type is None:
-                    counts["undeclared_target"] += 1
-                    continue
-                link_id = _link_id(document.citation, mention["citation"],
-                                   mention["field_path"], span, row["object_id"],
-                                   row["l1_handle"]) + (f"#{held}" if held else "") \
-                    + candidate_piece(row)
-                if link_id in seen:
-                    continue
-                seen.add(link_id)
-                counts["reviewed_alias_links"] += "review_id" in row.keys()
-                counts["reviewed_alias_links_open"] += ("review_id" in row.keys()
-                                                        and window[1] is None)
-                rows.append(_store_link(document, mention, source, cited, row, window,
-                                        link_type, link_id, group, extractor))
-                if len(rows) >= STORE_LINK_BATCH:
-                    counts["links"] += builder.add("links", rows)
-                    rows = []
+        documents, remembered = load()
+        keys = []
+        for document in documents:
+            key = document_key(document) if memo is not None else None
+            keys.append(key)
+            one(key, memo.mentions(key, code) if memo is not None else None, document)
+        if memo is not None and group is not None and remembered:
+            memo.keep_group(group, keys)
     if rows:
         counts["links"] += builder.add("links", rows)
     return {"format": FORMAT, "extractor": extractor, "tier": TIER, "counts": counts,
             "link_tiers": {TIER: counts["links"]}}
+
+
+def _add_counts(counts: dict[str, int], more: Mapping[str, int]) -> None:
+    for name, amount in more.items():
+        counts[name] += amount
+
+
+def _still_resolves(conn: Any, document: Document, resolved: Mapping[str, Any],
+                    aliases: Any, changed: Callable[[str, str], bool]) -> bool:
+    """Whether a document's links written against the base generation are the ones it
+    resolves to now: its version row and every version its mentions cite read alike, no
+    key it was looked up under changed and no reviewed alias answers one."""
+    if row_digest(_store_version(conn, document.citation)) != resolved["source"]:
+        return False
+    for citation, digest in resolved["cited"].items():
+        if row_digest(_cited_version(conn, citation)) != digest:
+            return False
+    return not any(changed(kind, value) or (aliases is not None and aliases.holds(kind, value))
+                   for kind, value in resolved["keys"])
+
+
+def _document_links(conn: Any, declared: Mapping[tuple[str, str], str], document: Document,
+                    found: Sequence[Mapping[str, Any]], aliases: Any, extractor: str
+                    ) -> dict[str, Any]:
+    """One document's link rows (before corroboration) from its mentions ``found``, its
+    counts, unanswered reference numbers, and what it read: its version row's digest, each
+    cited version's and every identifier key it looked up (``_still_resolves``)."""
+    counts: dict[str, int] = {}
+
+    def count(name: str, amount: int | bool = 1) -> None:
+        counts[name] = counts.get(name, 0) + int(amount)
+    rows: list[dict[str, Any]] = []
+    unanswered: dict[str, list[dict[str, Any]]] = {}
+    keys: dict[tuple[str, str], None] = {}
+    seen: set[str] = set()   # one document's link ids (secondary readings repeat)
+    source = _store_version(conn, document.citation)
+    read = {"source": row_digest(source), "cited": {}}
+    if source is None:
+        count("documents_not_projected")
+        return {**read, "keys": [], "rows": [], "unanswered": [], "counts": counts}
+    count("documents")
+    count("documents_text_withheld", document.text_withheld is not None)
+    spans_of_doc = held_spans(source)
+    fields: dict[str, Any] = {document.citation: source}
+    for mention in found:
+        count("mentions")
+        if not mention["normalized"]:
+            count("unparsed")
+            continue
+        cited = fields.get(mention["citation"])
+        if mention["citation"] not in fields:
+            cited = fields[mention["citation"]] = _cited_version(conn, mention["citation"])
+            read["cited"][mention["citation"]] = row_digest(cited)
+        if cited is None:
+            count("field_not_projected")   # e.g. an attachment not projected
+            continue
+        keys.update(dict.fromkeys(candidate_keys(mention)))
+        candidates = mention_candidates(conn, mention, source, aliases, spans_of_doc)
+        targets = sorted({row["object_id"] for row, _, _ in candidates})
+        # A supplier's number nothing answers now (none, or only a closed stretch: an
+        # alias since rejected) may be an alias lead.
+        if (all(window[1] is not None for _, window, _ in candidates)
+                and ids.reference_alias_of(mention["identifier_kind"])
+                and not (mention["quoted_history"] or mention.get("label_kind_conflict"))):
+            unanswered.setdefault(document.citation, []).append(
+                _reference_mention(mention, cited))
+        if not targets:
+            count("not_found")
+            continue
+        count("ambiguous_mentions", len(targets) > 1)   # operator count only
+        span = [mention["start"], mention["end"]]
+        group = _link_id(document.citation, mention["citation"], mention["field_path"],
+                         span)[len("mention:"):]
+        kept: set[tuple[str, str, int, str]] = set()
+        for row, window, held in candidates:
+            key = (row["object_id"], row["l1_handle"], held, candidate_piece(row))
+            if key in kept:
+                continue   # one link per target version, whichever property matched
+            kept.add(key)
+            link_type = declared.get((source["object_type"], row["object_type"]))
+            if link_type is None:
+                count("undeclared_target")
+                continue
+            link_id = _link_id(document.citation, mention["citation"],
+                               mention["field_path"], span, row["object_id"],
+                               row["l1_handle"]) + (f"#{held}" if held else "") \
+                + candidate_piece(row)
+            if link_id in seen:
+                continue
+            seen.add(link_id)
+            count("reviewed_alias_links", "review_id" in row.keys())
+            count("reviewed_alias_links_open", "review_id" in row.keys() and window[1] is None)
+            rows.append(_store_link(document, mention, source, cited, row, window,
+                                    link_type, link_id, group, extractor))
+    return {**read, "keys": [list(k) for k in keys], "rows": rows,
+            "unanswered": sorted(unanswered.items()), "counts": counts}
 
 
 def _store_link(document: Document, mention: Mapping[str, Any], source: Any, cited: Any,
@@ -1420,16 +1561,29 @@ def corroborate_links(conn: Any, link_types: Iterable[str]) -> int:
     held = _suffix_holders(_domain_holders(conn, party["property"]))
     marks = ", ".join("?" for _ in types)
     raised, after = 0, ""
-    while True:
-        documents = [row[0] for row in conn.execute(
-            f"SELECT DISTINCT from_object FROM links WHERE binding_kind = ? AND tier = ? "
-            f"AND link_type IN ({marks}) AND from_object > ? ORDER BY from_object LIMIT ?",
-            (BINDING_KIND, TIER, *types, after, STORE_LINK_BATCH))]
-        if not documents:
-            return raised
-        after = documents[-1]
-        for document in documents:
-            raised += _corroborate_document(conn, document, types, held)
+    # The messages of each conversation, read once (each thread lookup read every
+    # conversation value: 94 ms a lead link, 2,400 s of a 0.5M-document build).
+    conn.execute(f"DROP TABLE IF EXISTS {_THREADS}")
+    conn.execute(f"CREATE TABLE {_THREADS} AS SELECT value, object_id, l1_handle FROM "
+                 "object_values WHERE property = ? AND value IS NOT NULL",
+                 (MENTION_FEATURES["petra_thread"]["document_property"],))
+    conn.execute(f"CREATE INDEX {_THREADS}_by_value ON {_THREADS.split('.')[1]}(value)")
+    try:
+        while True:
+            documents = [row[0] for row in conn.execute(
+                f"SELECT DISTINCT from_object FROM links WHERE binding_kind = ? AND tier = ? "
+                f"AND link_type IN ({marks}) AND from_object > ? ORDER BY from_object LIMIT ?",
+                (BINDING_KIND, TIER, *types, after, STORE_LINK_BATCH))]
+            if not documents:
+                return raised
+            after = documents[-1]
+            for document in documents:
+                raised += _corroborate_document(conn, document, types, held)
+    finally:
+        conn.execute(f"DROP TABLE IF EXISTS {_THREADS}")
+
+
+_THREADS = "temp.plx_mention_threads"   # conversation value -> message versions
 
 
 def _corroborate_document(conn: Any, document: str, types: Sequence[str],
@@ -1673,10 +1827,9 @@ def _petra_thread(conn: Any, row: Any, conversation: str
     prop = MENTION_FEATURES["petra_thread"]["document_property"]
     threads: dict[str, set[str]] = {}
     found: list[Any] = []
-    for sibling in _query(conn, "SELECT DISTINCT object_id, l1_handle FROM object_values "
-                          "WHERE property = ? AND value = ? AND object_id <> ? "
-                          "ORDER BY object_id, l1_handle",
-                          (prop, conversation, row["from_object"])).fetchall():
+    for sibling in _query(conn, f"SELECT DISTINCT object_id, l1_handle FROM {_THREADS} "
+                          "WHERE value = ? AND object_id <> ? ORDER BY object_id, l1_handle",
+                          (conversation, row["from_object"])).fetchall():
         named: list[Any] = []
         for link in _query(conn, "SELECT * FROM links WHERE from_object = ? AND to_object = ? "
                            "AND binding_kind = ? ORDER BY link_id",

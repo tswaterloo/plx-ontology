@@ -1021,14 +1021,11 @@ def _bind(conn: Any, ids: tuple[str, str], etag_of: str, digest: str, since: str
 TOOL: dict[str, Any] = {
     "name": "plx.document_fields",
     "description": (
-        "Portal-taxonomy metadata of one attached original (citation: its original:// file "
-        "citation, audience-checked and re-hashed). mode=propose: per Portal column "
-        "(PartyType, PartyRef, DocumentCategory, ItemRef, DocStatus, ...) a status, value, "
-        "rule and evidence spans; record numbers are candidates, never a winner. mode=request: "
-        "send the PERSON a confirmation form (MCP elicitation) for that proposal and/or "
-        "proposed_document_kind (expected_proposal_digest refuses a moved one); agent sessions "
-        "and clients without elicitation are refused; only the person's answer confirms. "
-        "mode=status: the current confirmation. Nothing is written to any source."),
+        "Portal-taxonomy metadata of one attached original (its original:// citation). "
+        "mode=propose: per Portal column (PartyType, PartyRef, DocumentCategory, ...) a status, "
+        "value, rule and evidence spans; record numbers are candidates. mode=request: send the "
+        "PERSON a confirmation form (MCP elicitation; agent sessions are refused); only the "
+        "person's answer confirms. mode=status: the current confirmation. Nothing is written."),
     "inputSchema": {
         "type": "object", "additionalProperties": False, "required": ["citation", "mode"],
         "properties": {

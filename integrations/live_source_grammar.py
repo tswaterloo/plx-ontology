@@ -90,7 +90,28 @@ BC_ENTITY_SETS = frozenset({
     "purchaseCreditMemos", "purchaseCreditMemoLines", "itemLedgerEntries",
     "generalLedgerEntries", "accounts", "dimensions", "dimensionValues",
     "agedAccountsReceivables", "agedAccountsPayables", "customerPaymentJournals",
-    "customerPayments", "vendorPaymentJournals", "vendorPayments"})
+    "customerPayments", "vendorPaymentJournals", "vendorPayments",
+    # Coverage: BC API v2.0 projects (jobs), fixed assets and bank
+    # accounts, read like every other master set (GET listings only).
+    "projects", "fixedAssets", "bankAccounts",
+    # Which customer or vendor a contact belongs to (API v2.0 ``contactInformation``:
+    # contactId, relatedId, relatedType). BC lists it only under its party (a company-level
+    # listing answers 400, live 2026-11-02): read only by ``bc_party_contacts_query``.
+    "contactsInformation"})
+# PLX's own read-only API pages (plx-customer-portal bc-extensions/plx-receipt-bridge,
+# ``APIPublisher 'plx'``, ``APIGroup 'integration'``, ``APIVersion 'v1.0'``; permission set
+# ``PLX WB READ``): listed GET-only under their own API route (``bc.plx_entities``), never
+# by any other path, key or navigation. ``plxCustomerShipTos`` is an editable page in BC
+# (table 222); the Workbench only ever lists it.
+BC_PLX_API_SETS = frozenset({"plxPostedSalesInvoices", "plxPostedSalesInvoiceLines",
+                             "plxSalesReceivablesSetups", "plxCustomerShipTos"})
+# Party set -> its contact relations (API v2.0 ``contactsInformation``, a contained
+# collection of customers and of vendors, $metadata 09a82605), read only as an
+# ``$expand`` of the party listing (``bc_party_contacts_query``): one GET per page of
+# parties, never one per party.
+BC_PARTY_CONTACTS: dict[str, str] = {"customers": "contactsInformation",
+                                     "vendors": "contactsInformation"}
+BC_PARTY_CONTACTS_SELECT = "id,number"
 # BC document header set -> its line set, read only through the nested
 # navigation ``<header>(<id>)/<lines>`` (one literal template per pair).
 BC_DOCUMENT_LINES: dict[str, str] = {
@@ -234,6 +255,8 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
               lambda v: quote(v, safe="")),
     ParamType("entity_set", lambda v: isinstance(v, str) and v in BC_ENTITY_SETS
               and v != "companies", r"[^/()]+", lambda v: v),
+    ParamType("plx_api_set", lambda v: isinstance(v, str) and v in BC_PLX_API_SETS,
+              r"[^/()]+", lambda v: v),
     ParamType("share_id", _share_id_ok, _SEG, lambda v: v),
     ParamType("teams_thread", _teams_thread_ok, _SEG, lambda v: v),
     ParamType("search_text", search_text_ok, r"[^/()']+", lambda v: quote(v, safe="")),
@@ -244,6 +267,7 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
 )}
 
 _BC = "/v2.0/{tenant:tenant}/{environment:environment}/api/v2.0"
+_BC_PLX = "/v2.0/{tenant:tenant}/{environment:environment}/api/plx/integration/v1.0"
 _CHANNEL = "/v1.0/teams/{team:guid}/channels/{channel:teams_thread}"
 TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.users": (GRAPH, "/v1.0/users"),
@@ -326,6 +350,9 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     # (integrations.capture_sharepoint_lists): the list itself (that it is a list, not a
     # document library), its items with their column values, and each item's permissions.
     "graph.site_list": (GRAPH, "/v1.0/sites/{site:site_id}/lists/{list:guid}"),
+    # A site's lists (ids, names, template and hidden/system facets): the list capture's
+    # per-site discovery; each list found is then read only as a named one is.
+    "graph.site_lists": (GRAPH, "/v1.0/sites/{site:site_id}/lists"),
     "graph.list_items": (GRAPH, "/v1.0/sites/{site:site_id}/lists/{list:guid}/items"),
     "graph.list_item_permissions": (GRAPH, "/v1.0/sites/{site:site_id}/lists/{list:guid}/items/"
                                     "{item:item_id}/permissions"),
@@ -364,12 +391,22 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "bc.metadata": (BC, _BC + "/$metadata"),
     "bc.entities": (BC, _BC + "/companies({company:guid})/{entity:entity_set}"),
     "bc.entity": (BC, _BC + "/companies({company:guid})/{entity:entity_set}({record:guid})"),
+    # PLX's read-only API pages (``BC_PLX_API_SETS``): a whole listing per company,
+    # nothing else (no key, navigation or schema document).
+    "bc.plx_entities": (BC, _BC_PLX + "/companies({company:guid})/{entity:plx_api_set}"),
     # The one ODataV4 web-service read (live check ``bc.purchase_reader``): Page 50 ``PurchaseOrder`` serves ``Your_Reference``
     # (the FileMaker PO number), which API v2.0 ``purchaseOrders`` does not expose. Only
     # this entity set, only by a pinned company name, only the query
     # ``bc_odata_purchase_order_query`` builds; no key, navigation or action ever.
     "bc.odata_purchase_orders": (BC, "/v2.0/{tenant:tenant}/{environment:environment}"
                                  "/ODataV4/Company('{company:bc_company_name}')/PurchaseOrder"),
+    # The item ledger's lots: the standard ODataV4 web service
+    # ``ItemLedgerEntries`` (Page 38) serves ``Lot_No`` and ``Expiration_Date``, which API
+    # v2.0 ``itemLedgerEntries`` does not expose. Only by a pinned company name, only the
+    # query ``bc_odata_item_lot_query`` builds; no key, navigation or action ever.
+    "bc.odata_item_ledger_entries": (BC, "/v2.0/{tenant:tenant}/{environment:environment}"
+                                     "/ODataV4/Company('{company:bc_company_name}')"
+                                     "/ItemLedgerEntries"),
     **{f"bc.lines.{parent}": (BC, _BC + "/companies({company:guid})/" + parent
                               + "({record:guid})/" + lines)
        for parent, lines in BC_DOCUMENT_LINES.items()},
@@ -844,9 +881,19 @@ def _continuation_values_ok(given: Mapping[str, str]) -> bool:
     return True
 
 
+def bc_party_contacts_query(entity_set: str) -> dict[str, str]:
+    """The one query of a party listing that carries its contact relations
+    (``BC_PARTY_CONTACTS``): the party's key and number, each with its
+    ``contactsInformation``. ValueError for any other set."""
+    if entity_set not in BC_PARTY_CONTACTS:
+        raise ValueError("entity set has no contact relations")
+    return {"$select": BC_PARTY_CONTACTS_SELECT, "$expand": BC_PARTY_CONTACTS[entity_set]}
+
+
 def bc_query_ok(entity_set: str, query: str) -> bool:
-    """Whether a raw query string is exactly one ``bc_query`` could have built
-    (for a guard-side check of a BC GET's query)."""
+    """Whether a raw query string is exactly one ``bc_query`` (or, on a party set,
+    ``bc_party_contacts_query``) could have built (for a guard-side check of a BC GET's
+    query)."""
     if not isinstance(query, str):
         return False
     if not query:
@@ -856,6 +903,10 @@ def bc_query_ok(entity_set: str, query: str) -> bool:
     except ValueError:
         return False
     given = dict(pairs)
+    if entity_set in BC_PARTY_CONTACTS and "$expand" in given:
+        return (len(given) == len(pairs) and _continuation_values_ok(given)
+                and {k: v for k, v in given.items() if k not in _BC_CONTINUATION}
+                == bc_party_contacts_query(entity_set))
     sent = given
     continuation = _BC_CONTINUATION
     if len(given) != len(pairs) or (set(given) - {"$filter", "$top", "$select", "$orderby",
@@ -938,6 +989,41 @@ def bc_odata_purchase_order_query(*, number: str | None = None,
     return query
 
 
+# ``bc.odata_item_ledger_entries`` (ODataV4 Page 38 ``ItemLedgerEntries``): exactly these
+# fields and the one filter ``Lot_No ne ''`` (only entries that carry a lot), always; the
+# nextLink continuation (the page key ``Entry_No`` is an integer). Field names: the live
+# ODataV4 ``$metadata`` of 2026-11-01.
+BC_ODATA_LOT_SELECT = "Entry_No,Item_No,Lot_No,Expiration_Date,Location_Code,Document_No"
+BC_ODATA_LOT_FIELDS = tuple(BC_ODATA_LOT_SELECT.split(","))
+BC_ODATA_LOT_FILTER = "Lot_No ne ''"
+
+
+def bc_odata_item_lot_query() -> dict[str, str]:
+    """The query of one ``bc.odata_item_ledger_entries`` read (no caller value in it)."""
+    return {"$select": BC_ODATA_LOT_SELECT, "$filter": BC_ODATA_LOT_FILTER}
+
+
+def bc_odata_item_lot_query_ok(query: str) -> bool:
+    """Whether a raw query is exactly ``bc_odata_item_lot_query``'s, plus the continuation
+    parameters (guard side, incl. nextLinks)."""
+    if not isinstance(query, str) or not query:
+        return False
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return False
+    given = dict(pairs)
+    rebuilt = bc_odata_item_lot_query()
+    if len(given) != len(pairs) or set(given) - _BC_CONTINUATION != set(rebuilt) \
+            or any(given[k] != v for k, v in rebuilt.items()):
+        return False
+    token, aid = given.get("$skiptoken"), given.get("aid")
+    if token is not None and not (1 <= len(token) <= 512 and all(
+            c in _ODATA_SKIPTOKEN_CHARS for c in token)):
+        return False
+    return aid is None or _continuation_values_ok({"aid": aid})
+
+
 def bc_odata_purchase_order_query_ok(query: str) -> bool:
     """Whether a raw query is exactly one ``bc_odata_purchase_order_query`` builds, plus
     the continuation parameters (guard side, incl. nextLinks)."""
@@ -988,6 +1074,8 @@ def bc_request_query_ok(path: str, query: str) -> bool:
         return False
     if op in ("bc.entity", "bc.metadata"):
         return query == ""
+    if op == "bc.plx_entities":   # a whole listing: page continuation only, no options
+        return _continuation_only(query)
     if op == "bc.companies":
         return _continuation_only(query)
     if op == "bc.entities":
@@ -997,6 +1085,8 @@ def bc_request_query_ok(path: str, query: str) -> bool:
         return bc_query_ok(BC_DOCUMENT_LINES[op[len("bc.lines."):]], query)
     if op == "bc.odata_purchase_orders":
         return bc_odata_purchase_order_query_ok(query)
+    if op == "bc.odata_item_ledger_entries":
+        return bc_odata_item_lot_query_ok(query)
     return False
 
 
@@ -1134,7 +1224,7 @@ def external_query_ok(op: str | None, query: str) -> bool:
     return all(isinstance(v, str) and checks[k](v) for k, v in given.items())
 
 
-__all__ = ["BC_ODATA_PO_FIELDS", "BC_ODATA_PO_SELECT", "BC_PINNED_COMPANY_NAMES",
+__all__ = ["BC_PARTY_CONTACTS", "BC_PARTY_CONTACTS_SELECT", "bc_party_contacts_query", "BC_ODATA_LOT_FIELDS", "BC_ODATA_LOT_FILTER", "BC_ODATA_LOT_SELECT", "BC_ODATA_PO_FIELDS", "BC_ODATA_PO_SELECT", "BC_PLX_API_SETS", "bc_odata_item_lot_query", "bc_odata_item_lot_query_ok", "BC_PINNED_COMPANY_NAMES",
            "bc_company_name_ok", "bc_odata_purchase_order_query",
            "bc_odata_purchase_order_query_ok", "BC_CALCULATED_FIELDS", "BC_DOCUMENT_LINES", "BC_ENTITY_SETS", "BC_LINE_PARENT_FIELD",
            "BC_RECORD_KEY_FIELD", "BC_INSTANT_FORMAT", "BC_KEY_SELECT",

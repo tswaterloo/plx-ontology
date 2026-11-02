@@ -44,20 +44,32 @@ CLI passes only the confirmed scope):
   or removed from the chat reads. A member must be on that allowlist, checked on the
   canonical directory identity before anything of theirs is listed; others are set
   aside (``outside_allowlist``). ``discovered_total`` counts the conversations found.
-  At most ``max_conversations`` are read per run, channels and chats taken in turn so
-  neither kind crowds out the other. Beyond the cap the runs rotate (``_rotate``): each
-  kind in unit order from just after the unit that kind last read (round to the
-  start), the kinds in turn from the one due; the cursor is a unit, never a position,
-  so a conversation added or removed between runs moves no other one, and repeated runs
-  read every conversation. The cursor and the units the current pass read complete live
-  in the store (``CaptureStore.state``, layout ``ROTATION_VERSION``: any other layout,
-  older or unreadable, starts the pass over with nothing visited): a unit counts as
-  visited only when its latest read finished complete (one cut short by a cap, refused
-  or failed is read again when the rotation comes round to it). Until every conversation
-  found is visited, discovery is ``cap:conversation_cap`` (``unvisited`` counts the
-  rest), so no run reports the pass complete while a conversation in it is cut off; then
-  a new pass starts. A run under the cap reads every conversation and clears the
-  rotation.
+* Schedule (2026-11-01: a fixed per-run cap and a rotation in id
+  order that a throttled read stopped left conversations unread for up to 60 hours and 398
+  memberships past their 48-hour bound): no fixed cap. Every run reads the conversations due (``_schedule``), most due
+  first, until its time budget: first those never read to a settled end, those whose
+  membership is three quarters of ``UNIT_ACL_MAX_AGE`` old or older and those whose members
+  Graph changed since (the chat listing's ``lastUpdatedDateTime``), the oldest membership
+  first; then those with a message in the last ``active_days`` (every run, newest first);
+  then those whose last settled read is ``refresh_hours`` old, the longest unseen first
+  (the dormant ones in fair rotation). The rest were read recently and wait. The persisted
+  cursor is the store's ledger (``SEEN``: per unit, its last settled read, newest message
+  held and any Retry-After), never a position, so conversations added or removed move no other.
+  A scope may still set ``max_conversations`` (a per-run cap: the most due first;
+  ``cap:conversation_cap``). ``unvisited`` counts the conversations found with no settled
+  read in the last ``refresh_hours``; a run is complete only when none is.
+* Throttling (coverage audit 2026-10-30: 959 chats paused on HTTP 429 in one cycle): each
+  conversation reads under its own ``HOLD_SCOPE``, so a Retry-After holds only its reads;
+  one that ends throttled (429 or 503 past the client's bounded retries) waits its own
+  Retry-After (the ledger's ``retry``, the store's ``retry_not_before``) while the others
+  go on (``cap:retry_after`` while one waits). After
+  ``MAX_TENANT_HOLDS`` holds the run starts no further conversation (``THROTTLED``).
+  Between the runs of one invocation the CLI waits the longest Retry-After Graph gave after a throttled run
+  (``THROTTLE_DEFAULT_SECONDS`` without one), or, once a run read every conversation due,
+  for the first one waiting out its Retry-After, at most ``THROTTLE_MAX_WAIT_SECONDS``
+  and never past the budget (``throttle_waits``); it stops after ``MAX_THROTTLED_RUNS``
+  throttled runs in a row, or once a run read every conversation due and none waits
+  (another run would read the same failures again: ``pass.stop`` ``read_all_due``).
 * Time budget: a run given ``out_of_time`` (the caller's deadline) starts no conversation
   and reads no further page once it says stop. A read stopped there keeps its cursor
   (``cap:time_budget``); the conversations not started stay due (the cursor stays before
@@ -77,7 +89,11 @@ CLI passes only the confirmed scope):
   stays blocked, naming the permission it needs (``ChannelMember.Read.All``).
 * Channel messages: ``messages/delta`` (root messages), and the ``replies`` of every
   root message the round lists, up to ``max_replies_per_message`` (a root cut there
-  stays ``cap:reply_cap`` and is listed again by every later run until it fits). The
+  stays ``cap:reply_cap`` and is listed again by every later run until it fits).
+  A later round also lists again the replies of the roots created, changed or replied to
+  in the last ``active_days`` (``MAX_RECENT_ROOTS``): the delta lists changed roots, and
+  a reply added to an older root does not make it list that root (2026-11-01: rounds
+  after the first read no reply). The
   first round reads the channel whole and keeps the ``@odata.deltaLink``; later
   rounds read only the changes since it. An expired delta token or continuation
   (HTTP 410, also the resumed cursor of a capped full round) restarts the round in
@@ -196,18 +212,18 @@ Chats need ``Chat.Read.All``: without it they stay their own blocked part
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from hashlib import sha256
 from html.parser import HTMLParser
-from itertools import zip_longest
 import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -219,9 +235,9 @@ from operating.case_mail_scope import MailScope
 from . import live_source_grammar as grammar
 from .capture_mail import (assert_outside_git, blocked_reason, check_state_dir,
                            directory_members, graph_block)
-from .capture_store import (CaptureError, CaptureStore, CapturedRecord, SourceKind,
-                            register_source_kind)
-from .live_source_guard import (LiveSourceAudience, ReadOnlyGuardError,
+from .capture_store import (UNIT_ACL_MAX_AGE, CaptureError, CaptureStore, CapturedRecord,
+                            SourceKind, register_source_kind)
+from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, ReadOnlyGuardError,
                                 RequestBudgetExhausted, SourceUnavailable,
                                 is_transport_failure, unavailable_detail)
 from .people_exclusion import ExclusionUnavailable, PeopleExcluded
@@ -290,16 +306,51 @@ CONVERSATION_RELATIONS = {"teams_channel": "channels", "teams_chat": "chats"}
 TEAMS_RELATION = "teams"
 MAX_PARTICIPANTS = 1000
 REASON_MAX = 64
-ROTATION = "teams_rotation"
+# The schedule's ledger (``_Ledger``, in the store's state): per conversation unit, when
+# its latest settled read ended (``seen``), its newest message held (``activity``) and the
+# time before which it is not read again (``retry``: its own Retry-After). Any other layout, or an unreadable one, starts with nothing seen.
+SEEN = "teams_seen"
+SEEN_VERSION = 1
+# Ledger writes during a run: every this many conversations read (a killed run loses at
+# most these, which are read again).
+LEDGER_FLUSH = 50
+# A membership this old is read first, oldest first, ahead of every other conversation:
+# three quarters of the bound the store serves it within (``UNIT_ACL_MAX_AGE``, 48 h).
+ACL_URGENT_FRACTION = 0.75
+# After
+# MAX_TENANT_HOLDS holds in one run it starts no further conversation (live 2026-11-01:
+# chat member reads answered 429 with a 12 s Retry-After every few hundred chats).
+TENANT_THROTTLE_STREAK = 3
+MAX_TENANT_HOLDS = 30
+# On every channel read, the replies of the roots active in the last ``active_days`` are
+# listed again (at most this many roots, most recent first): the channel delta lists
+# changed roots only, and a reply added to an older root does not make it list that root.
+MAX_RECENT_ROOTS = 200
 # The chat the last census stopped after when ``max_chats`` or the time budget cut it:
 # the next census starts past it (round to the start), so every chat is reached.
 CENSUS_CHAT_CURSOR = "teams_census_chats"
-ROTATION_VERSION = 2  # the layout _advance writes; any other starts the pass over
 TIME_BUDGET = "cap:time_budget"
+# Graph throttled the application tenant-wide (``TENANT_THROTTLE_STREAK`` reads in a row
+# throttled past the client's bounded Retry-After retries): the run starts no further
+# conversation. One conversation throttled alone waits its own Retry-After (``retry``)
+# while the others go on.
+THROTTLED = "cap:throttled"
+# Conversations found that wait out their own Retry-After this run.
+DEFERRED = "cap:retry_after"
+_THROTTLE_REASON = re.compile(r"(?:^|[:.])http_(?:429|503)$")
+# Between the runs of one invocation, a throttled run is followed by a wait: the longest
+# Retry-After Graph gave in it (else THROTTLE_DEFAULT_SECONDS), at most
+# THROTTLE_MAX_WAIT_SECONDS and never past the time budget; after MAX_THROTTLED_RUNS
+# throttled runs in a row the invocation stops (the next one resumes the rotation).
+THROTTLE_DEFAULT_SECONDS = 60.0
+THROTTLE_MAX_WAIT_SECONDS = 900.0
+MAX_THROTTLED_RUNS = 3
 CHECK_STATE = ("plx-workbench", "teams-capture-check")
 MAX_BUDGET_SECONDS = 86_400
 MAX_RUNS = 12  # one CLI invocation: --runs, then on until a full pass is read
 _ENUM = re.compile(r"[A-Za-z]{1,32}")
+# A chat listing's fields: ids, types and when members or name last changed (no content).
+CHAT_LISTING = "id,chatType,lastUpdatedDateTime"
 _RESYNC_CODES = frozenset({"resync_required", "sync_state_not_found"})
 # The census (``TeamsCapture.census``): names and 30-day counts, never content.
 CENSUS_FILE = "census.json"
@@ -307,9 +358,15 @@ CENSUS_SCHEMA = "plx-teams-census/v1"
 CENSUS_AREAS = ("purchasing", "qa", "rnd")
 COUNT_DAYS = 30
 CHANNEL_COUNT_REASON = "count_requires_content_read"
+# How long a census carries a chat it cleared whose members and name have not changed
+# (``TeamsCapture.census``): read again at least daily.
+CENSUS_CARRY = timedelta(hours=24)
 MESSAGE_COUNTS = ("teams_activity_report", "none")
+# The most chats a census reads and a scope lists (a confirmed scope lists every one a
+# census cleared): far above the tenant's (about 4,300 on 2026-11-01), never the bound.
+MAX_LISTED = 100_000
 REFUSALS = ("not_visible", PEOPLE_EXCLUDED, MEMBERS_UNREAD, "member_cap")
-_CENSUS_LIMITS = {"max_teams": (500, 1, 5000), "max_chats": (200, 0, 5000)}
+_CENSUS_LIMITS = {"max_teams": (500, 1, 5000), "max_chats": (200, 0, MAX_LISTED)}
 # Every Graph read a census may make (with the people guard's directory listing): team,
 # channel and chat listings, memberships, one record per cleared team, channel and chat,
 # and the tenant's activity report. No message, getAllMessages or subscription.
@@ -432,32 +489,58 @@ def _distinct(conversations: Iterable[Conversation]) -> list[Conversation]:
     return list(unique.values())
 
 
-def _in_turn(first: Sequence[Conversation], second: Sequence[Conversation]
-             ) -> list[Conversation]:
-    return [c for pair in zip_longest(first, second) for c in pair if c is not None]
+class _Ledger:
+    """The schedule's ledger (``SEEN``) over one run: read from the store, updated as each
+    conversation's read ends and written back every ``LEDGER_FLUSH`` reads and at the end
+    (by the thread that owns the store connection)."""
+
+    def __init__(self, store: CaptureStore) -> None:
+        self.store = store
+        try:
+            state = json.loads(store.state(SEEN) or "{}")
+        except ValueError:
+            state = None
+        units = state.get("units") if isinstance(state, dict) \
+            and state.get("version") == SEEN_VERSION else None
+        self.units: dict[str, dict[str, str]] = {
+            unit: {k: v for k, v in entry.items()
+                   if k in ("seen", "activity", "retry") and isinstance(v, str)}
+            for unit, entry in (units or {}).items()
+            if isinstance(unit, str) and isinstance(entry, dict)}
+        self.pending = 0
+
+    def record(self, conversation: Conversation, result: Mapping[str, Any]) -> None:
+        entry = self.units.setdefault(conversation.unit, {})
+        now = self.store.now()
+        if result.get("last_activity_at"):
+            entry["activity"] = result["last_activity_at"]
+        entry.pop("retry", None)
+        if result["status"] in SETTLED:
+            entry["seen"] = now
+        elif _throttled(result):
+            wait = float(result.get("retry_after_seconds") or THROTTLE_DEFAULT_SECONDS)
+            entry["retry"] = self.store.later(min(THROTTLE_MAX_WAIT_SECONDS, wait))
+        self.pending += 1
+        if self.pending >= LEDGER_FLUSH:
+            self.flush()
+
+    def flush(self) -> None:
+        self.store.set_state(SEEN, json.dumps({"version": SEEN_VERSION, "units": self.units},
+                                              sort_keys=True, separators=(",", ":")))
+        self.pending = 0
 
 
-def _after(group: Iterable[Conversation], unit: str | None) -> list[Conversation]:
-    """``group`` in unit order from the first unit after ``unit``, round to the start."""
-    ordered = sorted(group, key=lambda c: c.unit)
-    start = next((i for i, c in enumerate(ordered) if unit is not None and c.unit > unit), 0)
-    return ordered[start:] + ordered[:start]
-
-
-def _rotation(store: CaptureStore) -> dict[str, Any]:
-    """The stored rotation: each kind's last unit, the kind due (``next``) and the units
-    read in the current pass. An unreadable one, or one of another layout than
-    ``ROTATION_VERSION`` (its ``visited`` may mean something else), starts over with
-    nothing read."""
+def _acl_recorded(store: CaptureStore) -> dict[str, str]:
+    """When each Teams unit's membership was recorded (the store's ``unit_acl``
+    ``recorded_at``, the time ``UNIT_ACL_MAX_AGE`` is counted from), read on a read-only
+    connection of its own: the schedule refreshes the oldest first."""
+    db = sqlite3.connect(f"file:{store.path}?mode=ro", uri=True)
     try:
-        state = json.loads(store.state(ROTATION) or "{}")
-    except ValueError:
-        state = None
-    if not isinstance(state, dict) or state.get("version") != ROTATION_VERSION:
-        state = {}
-    found = {k: state[k] for k in ("channel", "chat", "next") if isinstance(state.get(k), str)}
-    visited = state.get("visited") if isinstance(state.get("visited"), list) else []
-    return {**found, "visited": [unit for unit in visited if isinstance(unit, str)]}
+        return {unit: at for unit, at in db.execute(
+            "SELECT unit, recorded_at FROM unit_acl WHERE kind IN (?, ?)",
+            (CHANNEL_KIND.name, CHAT_KIND.name))}
+    finally:
+        db.close()
 
 
 def _status(reasons: Iterable[str]) -> str:
@@ -475,7 +558,15 @@ def _enum(value: Any) -> str:
 MEMBER_CHATS = ("none", "mail_allowlist")
 _LIMITS = {"page_size": (50, 1, 50), "max_pages_per_run": (20, 1, 500),
            "max_items_per_run": (1000, 1, 20_000), "max_replies_per_message": (500, 1, 5000),
-           "max_conversations": (100, 1, 1000), "max_members": (5000, 1, 5000)}
+           "max_members": (5000, 1, 5000),
+           # The schedule (``TeamsCapture._schedule``): a conversation with a message in the
+           # last ``active_days`` is read every run; any other once its last settled read
+           # is ``refresh_hours`` old (at most half the membership bound, 48 hours; 0:
+           # every conversation every run).
+           "active_days": (7, 0, 90), "refresh_hours": (12, 0, 24)}
+# An optional per-run cap on the conversations read (none by default: the time budget
+# bounds a run); a run under it takes the most due first.
+MAX_CONVERSATIONS = (1, 1_000_000)
 
 
 class TeamsScope:
@@ -497,7 +588,7 @@ class TeamsScope:
     def __init__(self, document: Mapping[str, Any], *, allowlist: MailScope | None = None
                  ) -> None:
         allowed = {"schema", "note", "members", "member_chats", "teams", "chats", "census",
-                   *_LIMITS}
+                   "max_conversations", *_LIMITS}
         if (not isinstance(document, Mapping) or document.get("schema") != SCOPE_SCHEMA
                 or set(document) - allowed):
             raise TeamsCaptureError("scope_document_invalid")
@@ -507,6 +598,11 @@ class TeamsScope:
             if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
                 raise TeamsCaptureError(f"scope_{name}_invalid")
             setattr(self, name, value)
+        cap = document.get("max_conversations")
+        if cap is not None and (isinstance(cap, bool) or not isinstance(cap, int)
+                                or not MAX_CONVERSATIONS[0] <= cap <= MAX_CONVERSATIONS[1]):
+            raise TeamsCaptureError("scope_max_conversations_invalid")
+        self.max_conversations: int | None = cap
         member_chats = document.get("member_chats", "none")
         if member_chats not in MEMBER_CHATS:
             raise TeamsCaptureError("scope_member_chats_invalid")
@@ -557,14 +653,17 @@ class TeamsScope:
 
     @staticmethod
     def _list(document: Mapping[str, Any], name: str) -> list:
-        # Up to the census's largest cap: a confirmed scope lists what a census cleared.
+        # A confirmed scope lists every conversation a census cleared.
         value = document.get(name, [])
-        if not isinstance(value, list) or len(value) > 5000:
+        if not isinstance(value, list) or len(value) > MAX_LISTED:
             raise TeamsCaptureError(f"scope_{name}_invalid")
         return value
 
     def limits(self) -> dict[str, int]:
-        return {name: getattr(self, name) for name in _LIMITS}
+        found = {name: getattr(self, name) for name in _LIMITS}
+        if self.max_conversations is not None:
+            found["max_conversations"] = self.max_conversations
+        return found
 
     @classmethod
     def from_file(cls, path: str | Path, *, allowlist: MailScope | None = None
@@ -835,6 +934,12 @@ def _failure(part: str, op: str, exc: BaseException, blocked: list[dict[str, Any
     return blocked_reason(found)
 
 
+def _throttled(result: Mapping[str, Any]) -> bool:
+    """Whether a conversation's read ended throttled by Graph (429, or 503 Service
+    Unavailable: Graph's other throttling answer), past the client's own retries."""
+    return any(_THROTTLE_REASON.search(reason) for reason in result.get("reasons", ()))
+
+
 def _new_counts() -> dict[str, int]:
     return {"pages": 0, "messages_read": 0, "replies_read": 0, "versions_new": 0,
             "unchanged": 0, "provenance_dropped": 0, "replies_capped": 0,
@@ -889,7 +994,8 @@ class TeamsCapture:
     ``Retry-After``) holds every thread sharing the client (``BoundedBackoff.hold``)."""
 
     def __init__(self, store: CaptureStore, api: Any, audience: LiveSourceAudience,
-                 actor: Actor, *, workers: int = 1, home_tenant: str | None = None) -> None:
+                 actor: Actor, *, workers: int = 1, home_tenant: str | None = None,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         if isinstance(workers, bool) or not isinstance(workers, int) \
                 or not 1 <= workers <= MAX_WORKERS:
             raise ValueError(f"workers must be 1..{MAX_WORKERS}")
@@ -908,6 +1014,18 @@ class TeamsCapture:
         # Teams read this capture (``_team``), shared by the conversation threads.
         self._teams: dict[str, Mapping[str, Any] | None] = {}
         self._team_lock = threading.Lock()
+        # Set once a conversation's read was throttled (``THROTTLED``); shared by the
+        # conversation threads, so none starts after it.
+        self._throttle = threading.Event()
+        self._retry_after = [0.0]   # the longest Retry-After of a throttled read (shared)
+        self._streak = [0]          # conversation reads in a row that ended throttled
+        # A tenant-wide hold (monotonic end) and the holds this run (``_note``).
+        self._hold = [0.0, 0]
+        self._sleep = sleep
+        # Per chat unit, when Graph last changed its members or name (the chat listing's
+        # ``lastUpdatedDateTime``, no content): a membership recorded before it is read
+        # again first.
+        self.hints: dict[str, str] = {}
 
     def close(self) -> None:
         self.store.close()
@@ -997,8 +1115,8 @@ class TeamsCapture:
                                 "members_outside_allowlist": scope.outside_allowlist,
                                 "people_excluded": 0}
         if not self.audience.may_read_any(self.actor, "teams:"):
-            return [], [], {**info, "status": "not_visible", "reasons": ["not_visible"],
-                            "conversations": 0, "discovered_total": 0, "unvisited": 0}
+            return [], {**info, "status": "not_visible", "reasons": ["not_visible"],
+                        "discovered_total": 0, "unvisited": 0}
 
         def attempt(part: str, op: str, read: Callable[[], Any]) -> Any:
             try:
@@ -1031,11 +1149,12 @@ class TeamsCapture:
                         reasons.add("provenance_dropped")
             if with_chats:
                 for item in attempt("teams.chats", "graph.user_chats", lambda: self._listing(
-                        "graph.user_chats", {"$select": "id,chatType"}, reasons,
+                        "graph.user_chats", {"$select": CHAT_LISTING}, reasons,
                         user=user)) or []:
                     if _valid("teams_thread", item.get("id")):
                         chats.append(Conversation("chat", item["id"],
                                                   membership=_enum(item.get("chatType"))))
+                        self._hint(chats[-1], item)
                     else:
                         reasons.add("provenance_dropped")
         channels: list[Conversation] = []
@@ -1055,48 +1174,72 @@ class TeamsCapture:
                                                  _enum(item.get("membershipType"))))
                 else:
                     reasons.add("provenance_dropped")
-        channels, chats = _distinct(channels), _distinct(chats)
-        found = _in_turn(channels, chats)
-        conversations = (self._rotate(channels, chats, scope.max_conversations)
-                         if len(found) > scope.max_conversations else found)
-        return conversations, found, {**info, "status": _status(reasons),
-                                      "reasons": sorted(reasons),
-                                      "conversations": len(conversations),
-                                      "discovered_total": len(found), "unvisited": 0}
+        found = _distinct(channels) + _distinct(chats)
+        return found, {**info, "status": _status(reasons), "reasons": sorted(reasons),
+                       "discovered_total": len(found), "unvisited": 0}
 
-    def _rotate(self, channels: list[Conversation], chats: list[Conversation], cap: int
-                ) -> list[Conversation]:
-        """The ``cap`` conversations due."""
-        rotation = _rotation(self.store)
-        ordered = {"channel": _after(channels, rotation.get("channel")),
-                   "chat": _after(chats, rotation.get("chat"))}
-        first, second = (("chat", "channel") if rotation.get("next") == "chat"
-                         else ("channel", "chat"))
-        return _in_turn(ordered[first], ordered[second])[:cap]
+    def _hint(self, conversation: Conversation, item: Mapping[str, Any]) -> None:
+        if _instant(item.get("lastUpdatedDateTime")) is not None:
+            self.hints[conversation.unit] = item["lastUpdatedDateTime"]
 
-    def _advance(self, found: list[Conversation], taken: list[Conversation],
-                 results: Sequence[Mapping[str, Any]], rotating: bool) -> set[str]:
-        """Store the rotation after ``taken`` were read (the conversations due but not
-        taken, and a run that stops first, read them again) and return the units found
-        the pass leaves unvisited: each kind past its last one read, the other kind due
-        next, the units of the pass whose latest read finished complete (none once every
-        one found did). A read that ended otherwise unvisits its unit. A run under the cap
-        that read every conversation due clears the rotation."""
-        state: dict[str, Any] = {"version": ROTATION_VERSION}
-        unvisited: set[str] = set()
-        if rotating:
-            rotation = _rotation(self.store)
-            read = {c.unit for c in taken}
-            visited = ({*rotation["visited"]} - read) | {
-                c.unit for c, r in zip(taken, results) if r["status"] in SETTLED}
-            visited &= {c.unit for c in found}
-            unvisited = {c.unit for c in found} - visited
-            state.update({**rotation, **{c.kind: c.unit for c in taken},
-                          "visited": sorted(visited) if unvisited else []})
-            if taken:
-                state["next"] = "chat" if taken[-1].kind == "channel" else "channel"
-        self.store.set_state(ROTATION, json.dumps(state, sort_keys=True))
-        return unvisited
+    def _schedule(self, found: Sequence[Conversation], scope: TeamsScope, ledger: _Ledger
+                  ) -> tuple[list[Conversation], int]:
+        """(the conversations due this run, most due first; how many wait out a
+        Retry-After). No fixed cap: the run's time budget bounds
+        it (and ``max_conversations`` when a scope sets one). Due, in this order:
+
+        1. a conversation never read to a settled end, one whose membership is
+           ``ACL_URGENT_FRACTION`` of ``UNIT_ACL_MAX_AGE`` old or older, or one whose
+           members Graph changed since they were recorded (``hints``): the oldest
+           recorded membership first (none first), so no reader loses a conversation to
+           an old membership while another is read;
+        2. one active in the last ``active_days`` (its newest message held): every run,
+           newest first;
+        3. one whose last settled read or membership is ``refresh_hours`` old: the
+           longest unseen first (the fair round-robin of the dormant ones).
+
+        Any other was read recently enough and is not due. A conversation waiting out its
+        ``retry`` is not due until then."""
+        now = _instant(self.store.now())
+        acls = _acl_recorded(self.store)
+        urgent = UNIT_ACL_MAX_AGE * ACL_URGENT_FRACTION
+        refresh, active = timedelta(hours=scope.refresh_hours), timedelta(days=scope.active_days)
+        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        ranked, deferred = [], 0
+        for conversation in found:
+            entry = ledger.units.get(conversation.unit, {})
+            seen, activity = _instant(entry.get("seen")), _instant(entry.get("activity"))
+            retry = _instant(entry.get("retry"))
+            acl = _instant(acls.get(conversation.unit))
+            changed = _instant(self.hints.get(conversation.unit))
+            if retry is not None and retry > now:
+                deferred += 1
+                continue
+            if seen is None or (acl is not None and now - acl >= urgent) \
+                    or (changed is not None and acl is not None and changed > acl):
+                key = (0, (acl or oldest).timestamp())
+            elif activity is not None and now - activity <= active:
+                key = (1, -activity.timestamp())
+            elif now - min(seen, acl or seen) >= refresh:
+                key = (2, min(seen, acl or seen).timestamp())
+            else:
+                continue
+            ranked.append((key, conversation.unit, conversation))
+        due = [c for _k, _u, c in sorted(ranked, key=lambda r: (r[0], r[1]))]
+        return due, deferred
+
+    @staticmethod
+    def _unvisited(found: Sequence[Conversation], scope: TeamsScope, ledger: _Ledger,
+                   now: datetime, started: datetime) -> set[str]:
+        """The units found with no settled read in this run nor in the last
+        ``refresh_hours``: the sweep is complete when none is."""
+        refresh = timedelta(hours=scope.refresh_hours)
+        out = set()
+        for conversation in found:
+            seen = _instant(ledger.units.get(conversation.unit, {}).get("seen"))
+            if seen is None or (seen < started and now - seen >= refresh):
+                out.add(conversation.unit)
+        return out
 
     # -- one conversation -------------------------------------------------------
 
@@ -1208,7 +1351,8 @@ class TeamsCapture:
                            about: Mapping[str, Any]) -> None:
         """Save the conversation's own record (``CONVERSATION``) in this run, with the
         latest activity of the messages the store holds now, under the membership its
-        messages are saved with."""
+        messages are saved with; that activity goes to the run's result
+        (``last_activity_at``, the schedule's ``activity``)."""
         latest = None
         for r in self.store.current_records(conversation.source_kind.name, conversation.unit):
             if r.path[-1] == CONVERSATION:
@@ -1229,6 +1373,7 @@ class TeamsCapture:
                                   "source_api": "graph.chat" if conversation.kind == "chat"
                                   else "graph.team_channel"}},
             version, LINEAGE)], cursor)
+        about["result"]["last_activity_at"] = latest[1] if latest else None
 
     def _sent_by_excluded(self, raw: Any) -> bool:
         """Whether a listed message was sent by an excluded person (``from.user.id``)."""
@@ -1351,7 +1496,7 @@ class TeamsCapture:
         result["acl_source"] = acl["basis"]
         # Its name and times, requested only now the members cleared the people guard.
         about = {"details": self._details(conversation), "participants": participants,
-                 "basis": acl["basis"], "acl": acl,
+                 "basis": acl["basis"], "acl": acl, "result": result,
                  "team": self._team(conversation.team) if conversation.kind == "channel"
                  else None}
         kind = conversation.source_kind
@@ -1372,11 +1517,15 @@ class TeamsCapture:
         result["round"] = round_
         self.store.set_unit_acl(run_id, acl)
         counts["acl_refreshed"] = self._refresh_acl(conversation, run_id, url, acl)
-        if previous is not None and not run["resumed"] and previous.get("detail"):
-            # Roots whose replies a cap cut: listed again until they fit.
-            capped = json.loads(previous["detail"]).get("replies_capped") or []
+        if conversation.kind == "channel" and not run["resumed"]:
+            # Roots whose replies a cap cut (listed again until they fit), and the roots
+            # active lately: a reply added to an older root is not in the channel delta.
+            capped = (json.loads(previous["detail"]).get("replies_capped") or []
+                      if previous is not None and previous.get("detail") else [])
+            recent = self._recent_roots(conversation, scope) if round_ == "incremental" else []
+            roots = list(dict.fromkeys([*capped, *recent]))
             try:
-                self._relist(conversation, capped, acl, scope, run_id, url, counts)
+                self._relist(conversation, roots, acl, scope, run_id, url, counts)
             except SourceUnavailable as exc:
                 return self._paused(result, run_id, "teams.replies",
                                     "graph.channel_message_replies", exc, blocked, reasons)
@@ -1486,6 +1635,23 @@ class TeamsCapture:
         return (isinstance(page, Mapping) and page.get("value") == []
                 and page.get("@odata.nextLink") is None)
 
+    def _recent_roots(self, conversation: Conversation, scope: TeamsScope) -> list[str]:
+        """The held root messages of a channel created, changed or replied to in the
+        last ``active_days``, most recent first (at most ``MAX_RECENT_ROOTS``)."""
+        since = _instant(self.store.now()) - timedelta(days=scope.active_days)
+        latest: dict[str, datetime] = {}
+        for r in self.store.current_records(CHANNEL_KIND.name, conversation.unit):
+            row = r.payload.get("row") or {}
+            root = row.get("reply_to_id") or r.path[-1]
+            if root == CONVERSATION:
+                continue
+            for value in (row.get("created_at"), row.get("last_modified")):
+                moment = _instant(value)
+                if moment is not None and moment >= since and moment > latest.get(
+                        root, since - timedelta(seconds=1)):
+                    latest[root] = moment
+        return sorted(latest, key=lambda root: latest[root], reverse=True)[:MAX_RECENT_ROOTS]
+
     def _relist(self, conversation: Conversation, roots: Iterable[str], acl: Mapping[str, Any],
                 scope: TeamsScope, run_id: int, cursor: str, counts: dict[str, int]) -> None:
         for root in roots:
@@ -1554,78 +1720,168 @@ class TeamsCapture:
                 ) -> dict[str, Any]:
         """A read that failed keeps its run resumable (cursor kept) with the reason."""
         failed = self._failed(result, part, op, exc, blocked)
-        self.store.pause_run(run_id, reason=failed["reasons"][0])
+        wait = getattr(exc, "retry_after_seconds", None)
+        until = None
+        if getattr(exc, "http_status", None) in (429, 503) and isinstance(wait, (int, float)):
+            with self._team_lock:
+                self._retry_after[0] = max(self._retry_after[0], float(wait))
+            result["retry_after_seconds"] = float(wait)   # this conversation's own wait
+            until = self.store.later(min(THROTTLE_MAX_WAIT_SECONDS, float(wait)))
+        self.store.pause_run(run_id, reason=failed["reasons"][0], retry_not_before=until)
         return self._result(result, reasons | set(failed["reasons"]))
 
     # -- pass -----------------------------------------------------------------
 
     def run(self, scope: TeamsScope, out_of_time: Callable[[], bool] = lambda: False
             ) -> dict[str, Any]:
-        """Discover, then capture every conversation due once, none started once
-        ``out_of_time()`` (the caller's time budget); ``blocked_upstream`` lists the parts
-        Graph refused (missing permission). ``found_units`` and ``unvisited_units`` are
-        for the caller's pass accounting, never printed."""
+        """Discover, then capture every conversation due (``_schedule``) once, most due
+        first, none started once ``out_of_time()`` (the caller's time budget) or once
+        Graph throttles tenant-wide; ``blocked_upstream`` lists the parts Graph refused
+        (missing permission). ``found_units`` and ``unvisited_units`` are for the
+        caller's pass accounting, never printed."""
         blocked: list[dict[str, Any]] = []
         refused = self._people_refused(scope, blocked)
         if refused is not None:
             return refused
-        conversations, found, discovery = self.discover(scope, blocked)
-        results = self._capture_all(conversations, scope, blocked, out_of_time)
-        # Cut by time: a conversation not taken, or one the deadline paused (concurrent
-        # conversations may all have started before it, the deadline pausing them).
-        capped = len(found) > scope.max_conversations
-        cut = len(results) < len(conversations) or any(
+        found, discovery = self.discover(scope, blocked)
+        started = _instant(self.store.now())
+        ledger = _Ledger(self.store)
+        due, deferred = self._schedule(found, scope, ledger)
+        capped = scope.max_conversations is not None and len(due) > scope.max_conversations
+        conversations = due[:scope.max_conversations] if capped else due
+        self._throttle.clear()
+        self._retry_after[0] = 0.0
+        self._streak[0] = 0
+        self._hold[:] = [0.0, 0]
+        try:
+            done = self._capture_all(conversations, scope, blocked, out_of_time, ledger)
+        finally:
+            ledger.flush()
+        results = [r for r in done if r is not None]
+        throttled = self._throttle.is_set()
+        cut = len(results) < len(conversations) and not throttled or any(
             TIME_BUDGET in r["reasons"] for r in results)
-        unvisited = self._advance(found, conversations[:len(results)], results, capped or cut)
-        reasons = {*discovery["reasons"], *(["cap:conversation_cap"] if capped and unvisited
-                                            else []), *([TIME_BUDGET] if cut else [])}
+        now = _instant(self.store.now())
+        unvisited = self._unvisited(found, scope, ledger, now, started)
+        # The unvisited conversations waiting out their own Retry-After.
+        waiting = [w for c in found if c.unit in unvisited
+                   and (w := _instant(ledger.units.get(c.unit, {}).get("retry") or ""))
+                   and w > now]
+        reasons = {*discovery["reasons"],
+                   *(["cap:conversation_cap"] if capped and unvisited else []),
+                   *([TIME_BUDGET] if cut else []),
+                   *([THROTTLED] if throttled else []),
+                   *([DEFERRED] if waiting else [])}
         discovery = {**discovery, "status": _status(reasons), "reasons": sorted(reasons),
-                     "unvisited": len(unvisited)}
-        complete = discovery["status"] == "complete" and all(
+                     "conversations": len(conversations), "due": len(due),
+                     "deferred": deferred, "unvisited": len(unvisited)}
+        complete = discovery["status"] == "complete" and not unvisited and all(
             r["status"] in SETTLED for r in results)
         unique = list({json.dumps(p, sort_keys=True): p for p in blocked}.values())
         return {"complete": complete, "discovery": discovery, "conversations": results,
-                "blocked_upstream": unique,
+                "blocked_upstream": unique, "throttled": throttled,
+                "tenant_holds": self._hold[1],
+                "retry_after_seconds": self._retry_after[0],
+                # Seconds until the first conversation waiting out its Retry-After is due again.
+                "next_due_seconds": (min(w - now for w in waiting).total_seconds()
+                                     if waiting else None),
                 "complete_bound": sum(r["status"] in SETTLED for r in results),
                 "bound_total": len(results), "found_units": {c.unit for c in found},
-                "unvisited_units": unvisited,
+                "unvisited_units": unvisited, "sweep": self._sweep(found, ledger, now),
                 "people_excluded": discovery["people_excluded"] + sum(
                     r["status"] == PEOPLE_EXCLUDED for r in results),
                 "people_dropped": sum(r["counts"]["people_dropped"] for r in results)}
 
+    def _sweep(self, found: Sequence[Conversation], ledger: _Ledger, now: datetime
+               ) -> dict[str, Any]:
+        """Counts and ages over every conversation found: how long since the longest
+        unseen one was last read to a settled end (the achieved sweep interval, None
+        while one was never read), and the oldest recorded membership (hours)."""
+        seen = [_instant(ledger.units.get(c.unit, {}).get("seen")) for c in found]
+        acls = _acl_recorded(self.store)
+        acl_ages = [(now - at).total_seconds() / 3600 for c in found
+                    if (at := _instant(acls.get(c.unit))) is not None]
+        bound = UNIT_ACL_MAX_AGE.total_seconds() / 3600
+
+        def hours(moment: datetime | None) -> float:
+            return round((now - moment).total_seconds() / 3600, 2)
+        return {"found": len(found), "never_read": sum(m is None for m in seen),
+                "oldest_read_hours": (None if not seen or None in seen
+                                      else hours(min(seen))),
+                "membership_oldest_hours": round(max(acl_ages), 2) if acl_ages else None,
+                "membership_past_bound": sum(age > bound for age in acl_ages)}
+
+    def _note(self, result: Mapping[str, Any]) -> None:
+        """Past
+        that the run starts no further conversation."""
+        with self._team_lock:
+            self._streak[0] = self._streak[0] + 1 if _throttled(result) else 0
+            if self._streak[0] < max(TENANT_THROTTLE_STREAK, self.workers):
+                return
+            self._streak[0] = 0
+            if self._hold[1] >= MAX_TENANT_HOLDS:
+                self._throttle.set()
+                return
+            wait = float(result.get("retry_after_seconds") or THROTTLE_DEFAULT_SECONDS)
+            self._hold[:] = [time.monotonic() + min(THROTTLE_MAX_WAIT_SECONDS, wait),
+                             self._hold[1] + 1]
+
+    def _held(self) -> None:
+        """Before a conversation starts: wait out a tenant-wide hold still running."""
+        with self._team_lock:
+            left = self._hold[0] - time.monotonic()
+        if left > 0:
+            self._sleep(left)
+
     def _capture_all(self, conversations: Sequence[Conversation], scope: TeamsScope,
-                     blocked: list[dict[str, Any]], out_of_time: Callable[[], bool]
-                     ) -> list[dict[str, Any]]:
-        """Capture each conversation due, none started once ``out_of_time()``; the
-        results of the conversations taken, a prefix of ``conversations`` in their order
-        (one started after a later one was refused for time is read again next run).
-        With ``workers`` > 1 the conversations run on that many threads, each one
-        writing through its own connection to the store."""
-        if self.workers == 1 or len(conversations) < 2:
-            results = []
-            for conversation in conversations:
-                if out_of_time():
-                    break
-                results.append(self.capture(conversation, scope, blocked, out_of_time))
-            return results
-        def one(conversation: Conversation) -> dict[str, Any] | None:
-            if out_of_time():
+                     blocked: list[dict[str, Any]], out_of_time: Callable[[], bool],
+                     ledger: _Ledger) -> list[dict[str, Any] | None]:
+        """Capture each conversation due, none started once ``out_of_time()`` or Graph
+        throttles tenant-wide; the results in ``conversations`` order (None: not
+        started). Each read runs under its own ``HOLD_SCOPE`` (the conversation), so a
+        Retry-After Graph gives one conversation holds only its own reads. With
+        ``workers`` > 1 the conversations run on that many threads, each one writing
+        through its own connection to the store; the ledger is kept by this thread."""
+        results: list[dict[str, Any] | None] = [None] * len(conversations)
+
+        def one(conversation: Conversation, lane: "TeamsCapture") -> dict[str, Any] | None:
+            if out_of_time() or self._throttle.is_set():
                 return None
+            self._held()
+            if out_of_time() or self._throttle.is_set():
+                return None
+            token = HOLD_SCOPE.set(conversation.unit)
+            try:
+                result = lane.capture(conversation, scope, blocked, out_of_time)
+            finally:
+                HOLD_SCOPE.reset(token)
+            self._note(result)
+            return result
+
+        if self.workers == 1 or len(conversations) < 2:
+            for index, conversation in enumerate(conversations):
+                results[index] = one(conversation, self)
+                if results[index] is None:
+                    break
+                ledger.record(conversation, results[index])
+            return results
+
+        def threaded(conversation: Conversation) -> dict[str, Any] | None:
             lane = copy.copy(self)   # shares the client, the guard and the refused set
             lane.workers = 1
             lane.store = CaptureStore(self.store.path, self.audience)   # this thread's own
             try:
-                return lane.capture(conversation, scope, blocked, out_of_time)
+                return one(conversation, lane)
             finally:
                 lane.store.close()
         with ThreadPoolExecutor(min(self.workers, len(conversations)),
                                 thread_name_prefix="teams-capture") as pool:
-            done = list(pool.map(one, conversations))
-        results = []
-        for result in done:
-            if result is None:
-                break
-            results.append(result)
+            futures = {pool.submit(threaded, c): i for i, c in enumerate(conversations)}
+            for future in as_completed(futures):
+                index = futures[future]
+                results[index] = future.result()
+                if results[index] is not None:
+                    ledger.record(conversations[index], results[index])
         return results
 
     def _people_refused(self, scope: TeamsScope, blocked: list[dict[str, Any]]
@@ -1655,12 +1911,14 @@ class TeamsCapture:
         return {"complete": False, "discovery": discovery, "conversations": [],
                 "blocked_upstream": blocked, "complete_bound": 0, "bound_total": 0,
                 "found_units": set(), "unvisited_units": set(), "people_excluded": 0,
-                "people_dropped": 0}
+                "people_dropped": 0, "throttled": False, "retry_after_seconds": 0.0,
+                "next_due_seconds": None, "sweep": None}
 
     # -- census (names and counts, no content) ----------------------------------
 
     def census(self, scope: TeamsScope, blocked: list[dict[str, Any]],
-               out_of_time: Callable[[], bool] = lambda: False
+               out_of_time: Callable[[], bool] = lambda: False,
+               previous: Mapping[str, Any] | None = None
                ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """(the census counts, its private listing or None): every team of the tenant
         (``graph.teams``, ids only), each team's members read and cleared by the people
@@ -1674,12 +1932,26 @@ class TeamsCapture:
         private listing (names, ids, proposals; never a refused item) goes to the census
         file only, never to the report. Chats past ``max_chats`` or the time budget are
         reached in turn: a cut census stores the last chat it reached
-        (``CENSUS_CHAT_CURSOR``) and the next one starts after it, round to the start."""
+        (``CENSUS_CHAT_CURSOR``) and the next one starts after it, round to the start.
+
+        ``previous`` (the last census's private listing): a chat it cleared within
+        ``CENSUS_CARRY`` whose members and name Graph has not changed since (the listing's
+        ``lastUpdatedDateTime``, the same both times) and whose membership the capture
+        store holds is carried without a request, unless that membership names an excluded
+        person now (then refused, as a read would; a chat the capture refused holds none,
+        so it is read again). Every content read still reads and clears its members
+        first (``capture``), so a carried chat is never read on the census's word."""
         config = scope.census
         reasons: set[str] = set()
         refused = {kind: dict.fromkeys(REFUSALS, 0) for kind in ("teams", "channels", "chats")}
         n = dict.fromkeys(("teams", "teams_unlisted", "channels", "chats", "chats_unlisted",
-                           "accounts", "accounts_excluded"), 0)
+                           "chats_carried", "accounts", "accounts_excluded"), 0)
+        now = self.store.now()
+        carried = {c["chat_id"]: c for c in (previous or {}).get("chats") or []
+                   if isinstance(c, Mapping) and isinstance(c.get("chat_id"), str)
+                   and isinstance(c.get("updated_at"), str)
+                   and (at := _instant(c.get("checked_at"))) is not None
+                   and timedelta(0) <= _instant(now) - at < CENSUS_CARRY}
         chat_types: dict[str, int] = {}
         teams: list[dict[str, Any]] = []
         chats: list[dict[str, Any]] = []
@@ -1836,7 +2108,7 @@ class TeamsCapture:
             except PeopleExcluded:
                 return ("excluded",)   # none of their chats is listed
             listed = (attempt("teams.chats", "graph.user_chats", lambda: self._listing(
-                "graph.user_chats", {"$select": "id,chatType"}, reasons, user=user))
+                "graph.user_chats", {"$select": CHAT_LISTING}, reasons, user=user))
                 if user is not None else None) or []
             return ("ok", listed)
 
@@ -1853,6 +2125,7 @@ class TeamsCapture:
                 chat = item.get("id") if isinstance(item, Mapping) else None
                 if _valid("teams_thread", chat):
                     types.setdefault(chat, _enum(item.get("chatType")))
+                    self._hint(Conversation("chat", chat), item)
                 else:
                     reasons.add("provenance_dropped")
         n["chats"] = len(types)
@@ -1873,13 +2146,24 @@ class TeamsCapture:
                 # person, so not even its members are requested (counted, never named).
                 self.refused.add(chat.lower())
                 return ("refused", PEOPLE_EXCLUDED)
+            updated = self.hints.get(conversation.unit)
+            prior = carried.get(chat)
+            held = (self.store.unit_acl(CHAT_KIND.name, conversation.unit)
+                    if prior is not None and updated is not None
+                    and prior["updated_at"] == updated else None)
+            if held is not None:
+                if self.people.excluded(held.get("identities") or []):
+                    self.refused.add(chat.lower())
+                    return ("refused", PEOPLE_EXCLUDED)
+                return ("carried", {**prior, "chat_type": types[chat]})
             why = withheld(conversation, "graph.chat_members", "teams.chat_members")
             if why is not None:
                 return ("refused", why)
             record = attempt("teams.chat", "graph.chat", lambda c=conversation: self.api.get_json(
                 c.url("graph.chat", {"$select": "id,topic,chatType"})))
             return ("ok", {"chat_id": chat, "topic": _named(record, chat, "topic"),
-                           "chat_type": types[chat]})
+                           "chat_type": types[chat], "updated_at": updated,
+                           "checked_at": now})
 
         # Past the cap or the time budget the census rotates: it starts after the chat
         # the last cut census stopped at, never always at the same first ids.
@@ -1897,7 +2181,8 @@ class TeamsCapture:
             if read[0] == "refused":
                 refused["chats"][read[1]] += 1
                 continue
-            chats.append(read[1])
+            n["chats_carried"] += read[0] == "carried"
+            chats.append({k: v for k, v in read[1].items() if k != "proposed"})
         if reached:   # a census that reached no chat keeps the cursor it started from
             self.store.set_state(CENSUS_CHAT_CURSOR,
                                  window[reached - 1] if reached < len(types) else "")
@@ -2084,6 +2369,16 @@ def write_census(state_dir: str | Path, private: Mapping[str, Any] | None) -> bo
     return True
 
 
+def read_census(state_dir: str | Path) -> dict[str, Any] | None:
+    """The last census's private listing (``census_path``), or None when there is none
+    or it is not a census of this schema (nothing is then carried)."""
+    try:
+        found = json.loads(census_path(state_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return found if isinstance(found, dict) and found.get("schema") == CENSUS_SCHEMA else None
+
+
 def confirmation_block(code: str) -> dict[str, Any]:
     """The typed block of content waiting on the human confirmation (``code``: why
     none is usable). A later ask, never cleared by code."""
@@ -2264,11 +2559,19 @@ def _read_back(store: CaptureStore, units: Sequence[tuple[str, str]], actor: Act
 
 
 def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
+    discovery = run["discovery"]
     return {"run": number, "complete": run["complete"],
-            "discovery": {k: run["discovery"][k] for k in (
+            "discovery": {**{k: discovery[k] for k in (
                 "status", "reasons", "conversations", "discovered_total", "unvisited",
                 "members_outside_allowlist")},
+                **{k: discovery.get(k, 0) for k in ("due", "deferred")},
+                # Due now and not read this run (none: the rest is fresh or waiting).
+                "due_left": max(0, discovery.get("due", 0) - len(run["conversations"]))},
+            "next_due_seconds": run.get("next_due_seconds"),
             "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
+            "throttled": bool(run.get("throttled")),
+            "tenant_holds": run.get("tenant_holds", 0),
+            "retry_after_seconds": round(float(run.get("retry_after_seconds") or 0.0), 1),
             # Counts only: who was excluded is never reported.
             "people_excluded": run["people_excluded"], "people_dropped": run["people_dropped"],
             "conversations": [{"index": i, "kind": c["kind"], "membership": c["membership"],
@@ -2293,6 +2596,18 @@ def _member_groups(api: Any, identities: Iterable[str], allowlist: MailScope) ->
             if read.status == "read":
                 groups |= {f"group:{g}" for g in read.group_ids}
     return groups
+
+
+def _sweep_report(sweep: Mapping[str, Any] | None, runs: Sequence[Mapping[str, Any]],
+                  seconds: float) -> dict[str, Any] | None:
+    if sweep is None:
+        return None
+    settled = sum(r["complete_bound"] for r in runs)
+    rate = settled / (seconds / 3600) if seconds > 0 and settled else None
+    left = runs[-1]["discovery"]["unvisited"] if runs else 0
+    return {**sweep, "unvisited": left, "settled_reads": settled,
+            "settled_per_hour": round(rate, 1) if rate else None,
+            "eta_hours": 0.0 if not left else round(left / rate, 2) if rate else None}
 
 
 class RequestLog:
@@ -2375,12 +2690,12 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             "MICROSOFT_GRAPH_TENANT_ID")
         capture = TeamsCapture(store, api, audience, actors["capture"],
                                workers=getattr(args, "workers", None) or 1,
-                               home_tenant=env_tenant)
+                               home_tenant=env_tenant, sleep=sleep or time.sleep)
         log = RequestLog(transport, capture)
         runs, blocked, units, unvisited_first = [], [], {}, []
         captured: dict[str, str] = {}  # unit -> kind, of those with a page of content read
         # The census first (names and counts, no content), then content of what it cleared.
-        census, private = capture.census(scope, blocked, expired)
+        census, private = capture.census(scope, blocked, expired, read_census(state_dir))
         census["file"] = {"written": write_census(state_dir, private),
                           "outside_git_tree": True, "name": f"{STORE_DIR}/{CENSUS_FILE}"}
         # No human content confirmation. Content is read of
@@ -2401,10 +2716,36 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                    if content_scope else 0,
                    "chats_due": len(content_scope.chats) if content_scope else 0}
         first_found: set[str] | None = None
+        throttled_runs, throttle_waits = 0, []
+        pause = sleep or time.sleep
+        sweep, waited_out = None, False
         for number in range(1, max_runs + 1 if content_scope is not None else 1):
             if number > 1 and expired():
                 break
+            # Throttled tenant-wide: wait the longest Retry-After Graph gave. Nothing due
+            # but conversations waiting out its Retry-After: wait for the first, if it ends soon.
+            wait = None
+            if runs and not runs[-1]["conversations"] and not throttled_runs:
+                waited_out = True   # nothing was due after the wait: the next invocation
+                break
+            if throttled_runs:
+                if throttled_runs >= MAX_THROTTLED_RUNS:
+                    break
+                wait = runs[-1]["retry_after_seconds"] or THROTTLE_DEFAULT_SECONDS
+            elif runs and runs[-1]["discovery"]["due_left"] == 0:
+                wait = runs[-1]["next_due_seconds"]
+                if wait is None or wait > THROTTLE_MAX_WAIT_SECONDS:
+                    waited_out = True
+                    break
+            if wait is not None:
+                wait = min(THROTTLE_MAX_WAIT_SECONDS, wait)
+                if budget is not None and clock() - started + wait >= budget:
+                    break
+                pause(wait)
+                throttle_waits.append(round(wait, 1))
             run = capture.run(content_scope, expired)
+            sweep = run["sweep"]
+            throttled_runs = throttled_runs + 1 if run.get("throttled") else 0
             runs.append(_report_run(number, run))
             first_found = run["found_units"] if first_found is None else first_found
             unvisited_first.append(len(run["unvisited_units"] & first_found))
@@ -2494,12 +2835,20 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
             "content": content,
             "coverage": coverage,
             "runs": runs,
+            # Over every conversation the last run found: the achieved sweep interval (the
+            # longest since one was last read to a settled end), the never read, and the
+            # oldest membership; and the rate of this invocation (conversations read to a
+            # settled end per hour) with the hours it would take to read the rest at it.
+            "sweep": _sweep_report(sweep, runs, clock() - started),
+            # Seconds waited between runs after a throttled run (Retry-After-aware).
+            "throttle_waits": throttle_waits,
             # Falling is counted over the first run's conversations: one created mid-pass
             # is read in the pass (unvisited counts it) but never makes the pass rise.
             "pass": {"runs": len(runs), "last_run_complete": bool(last and last["complete"]),
                      "stop": ("blocked" if blocked else "no_content" if not runs
                               else "complete" if last["complete"]
-                              else "budget" if exhausted else "max_runs"),
+                              else "budget" if exhausted
+                              else "read_all_due" if waited_out else "max_runs"),
                      "unvisited": unvisited, "unvisited_first_run": unvisited_first,
                      "unvisited_falling": bool(unvisited_first) and all(
                          b <= a for a, b in zip(unvisited_first, unvisited_first[1:]))

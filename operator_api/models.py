@@ -324,6 +324,21 @@ class AnswerPayload(_Model):
         None, json_schema_extra=_optional,
         description="A customer's profitability and why an order lost money, when the "
                     "question asks it (optional: older clients ignore it).")
+    list_total: Optional[int] = Field(
+        None, json_schema_extra=_optional, ge=0,
+        description="When the answer lists only the first of a longer list (the late "
+                    "purchase orders): the whole list's size; the app offers 'show all' "
+                    "(GET /api/late).")
+    assistant_unavailable: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Why the assistant could not work the question (its usage limit, its "
+                    "sign-in, its time limit or an error), in words; the answer then shows "
+                    "what the records read without it show. Null when it ran.")
+    follow_ups: list[str] = Field(
+        default_factory=list, max_length=3, json_schema_extra=_optional,
+        description="Up to three questions to ask next, built only from this answer's own "
+                    "records and what it could not confirm (optional: older clients ignore "
+                    "it).")
 
 
 # ---- ask (SSE) -------------------------------------------------------------------------
@@ -409,6 +424,10 @@ class LatePo(_Model):
     due_date: Optional[str] = None
     days_late: Optional[int] = None
     open_lines: Optional[int] = None
+    amount: Optional[Money] = Field(None, description="The order's total in its own "
+                                    "currency, when this reader may open it.")
+    amount_suspect: Optional[str] = Field(None, description="Why the total is suspect "
+                                          "(shown as a check, never as fact).")
     reason: str
     open_url: str
     sources: list[Source] = Field(default_factory=list)
@@ -434,6 +453,22 @@ class NeedsAttention(_Model):
         None, json_schema_extra=_optional,
         description="Every late purchase order this reader may see; late_pos lists the "
                     "longest late of them.")
+    test_records_hidden: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="How many test or placeholder records were left out, in words "
+                    "('2 test records hidden'); null for none.")
+
+
+class LateList(_Model):
+    """Every late purchase order this reader may see, a page at a time, longest late first
+    (Home and the late-list answer show the first ones; "show all" pages the rest)."""
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    items: list[LatePo] = Field(default_factory=list)
+    more: bool = False
+    next_offset: int = Field(0, ge=0, description="Where the next page starts: past every "
+                             "order this page read, shown or left out (stable paging).")
+    as_of: Optional[str] = None
 
 
 class RecentQuestion(_Model):
@@ -543,6 +578,10 @@ class Profitability(_Model):
     breakdown: Optional[CostBreakdown] = None
     next_action: Optional[NextAction] = Field(None, description="A suggested next step "
                                                                 "from the facts only.")
+    test_records_hidden: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="How many test or placeholder records were left out, in words "
+                    "('2 test records hidden'); null for none.")
 
 
 class ObjectStatus(_Model):
@@ -596,6 +635,49 @@ class LateLine(_Model):
     sources: list[Source] = Field(default_factory=list)
 
 
+class CustomerAmount(_Model):
+    """A customer's total over a period, in one currency, from its own cited records."""
+    label: str = Field(description="What is summed, e.g. 'Invoiced (excluding tax)'.")
+    period: str = Field(description="e.g. 'last 12 months (since 2025-11-01)'.")
+    money: Money
+    count: int = Field(ge=0, description="The records summed.")
+    system: System
+    sources: list[Source] = Field(default_factory=list)
+
+
+class OrderRow(_Model):
+    object_id: str
+    label: str
+    open_url: str
+    date: Optional[str] = None
+    status: Optional[str] = None
+    amount: Optional[Money] = None
+    sources: list[Source] = Field(default_factory=list)
+
+
+class CustomerSummary(_Model):
+    """What a customer's own record links to, read as the reader: revenue per period and
+    currency, open and recent orders, contacts where captured, and its copies in other
+    systems; each figure with its sources. What could not be established is named."""
+    revenue: list[CustomerAmount] = Field(default_factory=list)
+    orders_total: Optional[int] = Field(None, description="Every order linked to the "
+                                        "record, counted over the whole set.")
+    orders_at_least: Optional[int] = Field(
+        None, description="When the total could not be counted: the orders read, at least "
+                          "this many (shown as 'n+'); never a capped count stated as exact.")
+    open_orders: Optional[int] = None
+    open_list: list[OrderRow] = Field(default_factory=list)
+    recent_orders: list[OrderRow] = Field(default_factory=list)
+    contacts: list[Person] = Field(default_factory=list)
+    also_in: list[ObjectRef] = Field(default_factory=list,
+                                     description="The same customer's record in another "
+                                                 "system, as the projection links them.")
+    same_name: list[ObjectRef] = Field(
+        default_factory=list, description="Other customers of the same name this reader "
+                                          "may see (copies of this one left out).")
+    not_established: list[str] = Field(default_factory=list)
+
+
 class ObjectPage(_Model):
     object_id: str
     type: str
@@ -617,6 +699,13 @@ class ObjectPage(_Model):
     trail: Optional[EvidenceTrail] = Field(None, description="A purchase order's lateness "
                                                              "trail (how we know).",
                                            json_schema_extra=_optional)
+    customer: Optional[CustomerSummary] = Field(
+        None, json_schema_extra=_optional,
+        description="A customer's revenue, orders and contacts (customers only).")
+    complete: bool = Field(
+        True, description="False on a quick first read (?quick=1): the record, its "
+                          "timeline and links without the checks (lateness, landed cost, "
+                          "people, how we know), which the full read adds.")
     freshness: Freshness
     access_label: Optional[str] = Field(
         None, description="'Viewing with full-read access' when served under the reader's "
@@ -661,3 +750,146 @@ class FeedbackResponse(_Model):
 
 AnyEvent = Union[UnderstandingEvent, StatusEvent, SourcesEvent, TokenEvent, AnswerPayload,
                  ErrorBody]
+
+
+# ---- briefing --------------------------------------------------------------------------
+
+EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
+                    "vendor_terms_unapplied", "negative_margin", "lot_near_expiry",
+                    "lot_on_hold", "quote_accepted_no_order", "quantity_mismatch",
+                    "customer_order_at_risk", "po_undated"]
+
+
+class BriefingItem(_Model):
+    """One event routed to this reader, as its own grant shows it."""
+    rank: int = Field(ge=1)
+    id: str
+    event_type: EventType
+    label: str = Field(description="The event type in words, e.g. 'Late purchase order'.")
+    evidence: Literal["live", "fixture-only"] = Field(
+        "fixture-only", description="'live': a recorded run of this event's check over this "
+                                    "data has found one; else 'fixture-only'.")
+    object_id: str
+    object_type: str
+    subject_label: str = Field(description="The record's display label for this reader.")
+    summary: str = Field(description="What happened; every date and figure is cited.")
+    why: Optional[str] = None
+    next_action: NextAction
+    amount: Optional[Money] = Field(None, description="Money involved: a cited figure this "
+                                                      "reader may open; null otherwise. When "
+                                                      "amount_suspect is set it is NOT a fact: "
+                                                      "show the reason, never the figure.")
+    amount_basis: Optional[str] = Field(None, description="What the amount is: total_cost, "
+                                                          "total_amount, loss, "
+                                                          "margin_at_stake; or, never "
+                                                          "ranked: unit_price_sum (a Portal "
+                                                          "total adding unit prices), "
+                                                          "portal_lines_unpriced, "
+                                                          "not_checked_against_lines.")
+    amount_suspect: Optional[str] = Field(None, description="Why the source's total looks "
+                                                            "wrong (suspect source data); "
+                                                            "never ranked by.")
+    amount_disagree: bool = Field(False, description="The total and its own lines disagree: "
+                                                     "both shown, neither ranked by.")
+    lines_sum: Optional[Money] = Field(None, description="What its lines sum to, when they "
+                                                         "disagree and this reader may open "
+                                                         "every line.")
+    orders_affected: Optional[int] = Field(None, ge=0)
+    days: Optional[int] = Field(None, description="Days late, slipped, waiting or to expiry, "
+                                                  "between cited dates.")
+    acknowledged: bool = False
+    new_since_visit: bool
+    new_this_generation: bool
+    first_seen: Optional[str] = None
+    open_url: str
+    sources: list[Source] = Field(default_factory=list)
+    trail: Optional[EvidenceTrail] = Field(None, description="How we know, read as this "
+                                                             "reader (top items only).")
+
+
+class BriefingGroup(_Model):
+    """Every item of one event type in the briefing: its count, and how many of those are
+    shown among the top items; the rest open as a list (``/api/briefing/items``)."""
+    event_type: EventType
+    label: str
+    count: int = Field(ge=0)
+    in_top: int = Field(ge=0)
+    new_since_visit: int = Field(ge=0)
+    acknowledged: int = Field(ge=0)
+
+
+class BriefingCheck(_Model):
+    """One check behind the event types, as this run left it: never a silent gap."""
+    check: str
+    label: str
+    status: Literal["complete", "partial", "not_checked", "failed"]
+    words: str = Field(description="e.g. 'vendor replies: not checked this run'.")
+
+
+class Briefing(_Model):
+    """Your briefing: the events routed to you that you may see, ranked; the top items one
+    by one and every other one in its type's group; each check's state; a preview of the
+    daily digest. Suggestions only; nothing is sent or written."""
+    status: Literal["read", "not_configured", "unavailable"]
+    count: int = Field(ge=0)
+    counts_exact: bool = Field(True, description="False: the read stopped at its cap and the "
+                                                 "counts are 'at least'.")
+    new_since_visit: int = Field(ge=0)
+    since_visit: bool = Field(False, description="Only what is new since your last visit.")
+    acknowledged: int = Field(0, ge=0)
+    late_total: Optional[int] = Field(None, ge=0, description="Late purchase orders: Home's "
+                                                              "count and rule.")
+    other_teams: int = Field(ge=0, description="Events you may see routed to other teams.")
+    hidden: Optional[int] = Field(None, ge=0, description="Events for your teams in places "
+                                                          "you can't open: counted, never "
+                                                          "named.")
+    hidden_by_type: dict[str, int] = Field(default_factory=dict, description="The hidden "
+                                           "count per event type (types whose policy gives "
+                                           "no count are absent).")
+    rank_basis: str
+    routing_basis: str
+    departments: list[str] = Field(default_factory=list)
+    last_visit: Optional[str] = None
+    as_of: Optional[str] = None
+    complete: bool
+    more: bool = False
+    items: list[BriefingItem] = Field(default_factory=list, description="The top items.")
+    groups: list[BriefingGroup] = Field(default_factory=list)
+    checks: list[BriefingCheck] = Field(default_factory=list)
+    types: list[BriefingEventType] = Field(default_factory=list)
+    today: str = Field("", description="Today in one line: what the latest check (or your "
+                                       "last visit) found new, worst first, else what is "
+                                       "still open.")
+    digest_preview: str = Field(description="The daily digest text this reader would get. "
+                                            "Preview only: never sent.")
+    digest_sent: Literal[False] = False
+    test_records_hidden: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="How many test or placeholder records were left out, in words "
+                    "('2 test records hidden'); null for none.")
+
+
+class BriefingEventType(_Model):
+    """One event type: its checks' state this run and whether a recorded run over this data
+    has found one of this type."""
+    event_type: EventType
+    label: str
+    status: Literal["complete", "partial", "not_checked", "failed"]
+    words: str
+    found_live: Optional[bool] = Field(None, description="Null where that is withheld.")
+    first_found: Optional[str] = None
+
+
+class BriefingItems(_Model):
+    """One event type's items of your briefing past the top ones, a page at a time (the
+    group's "+N more": never the top items again)."""
+    event_type: EventType
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    items: list[BriefingItem] = Field(default_factory=list)
+    more: bool = False
+
+
+class BriefingSeen(_Model):
+    ok: bool
+    at: Optional[str] = None

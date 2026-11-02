@@ -29,7 +29,10 @@ run, after the capture principal's live audience grants the list (no I/O otherwi
   ``sharepoint_list.item_permissions``) or 404 (``acl_endpoint_not_found``) of the beta read
   stops permission reads for the whole list in the run; such items, and any whose read
   failed, are kept with an ``unreadable`` ACL (served to no reader the audience requires a
-  source ACL of, so to no employee).
+  source ACL of, so to no employee). A read that failed transiently (408/429/5xx or no
+  answer) is read once more at the end of the list's listing, after a pause; an item read
+  then is saved again with its permissions (``acl_recovered``), one still failing stays
+  unreadable.
 
 Records (``integrations.capture_store.CaptureStore``, the store Teams and BC use): kind
 ``sharepoint_list``, path (Graph site id, list id, item id), cited
@@ -55,6 +58,24 @@ finished ``partial``, ``acl_unreadable`` or the blocked part's reason);
 ``deletions_proven`` is never claimed (``finish_run`` marks an item no longer listed
 ``missing_from_source_since``).
 
+Discovery (coverage audit 2026-10-30: one list captured, the lists available never
+counted). A scope's optional ``discover`` block (``{"sites": "all_tenant_sites",
+"exclude_lists": [list ids], "max_sites", "max_lists"}``) lists every site the
+application may read (``graph.sites_all``, ``graph_read.SharePointSites``), OneDrives
+left out (a person's site is read only when a scope names its list: no person's lists
+are enumerated past the people guard), then each site's lists (``graph.site_lists``,
+``$select=id,displayName,list,system``) and, for each list that is no library
+(``list.template`` ending ``Library``: the drive capture's), not hidden and not a
+system list and whose audience grant the capture principal holds (checked first: a list
+not granted has nothing read, its columns neither, ``lists_not_visible``), its columns
+(``graph.list_columns``): every column not hidden and not one
+of SharePoint's own bookkeeping columns (``SYSTEM_COLUMNS``), at most 100. Each list
+found is then captured exactly as a named one (audience grant per list first, item
+permissions per item). A named list keeps its own columns. ``discovery`` counts what
+was seen, left out and why; a site whose lists could not be read is counted
+(``sites_failed``) and keeps discovery incomplete, never silently empty. The CLI's
+``--discover-only`` lists nothing but the counts of what a run would capture.
+
 Storage: ``<state-dir>/sharepoint-list-capture/capture.db`` (private modes), outside every
 git work tree. Live-unverified until live check ``capture.sharepoint_list_items``
 passes: whether the application's grant reads the personal site the list lives on and
@@ -74,6 +95,7 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.types import Actor
@@ -98,7 +120,9 @@ CAPTURE_PRINCIPAL = "svc:sharepoint-list-capture"
 GRAPH_PERMISSIONS = ("Sites.Read.All",)
 _PERMISSION = {"graph.site_list": "Sites.Read.All", "graph.list_items": "Sites.Read.All",
                "graph.list_item_permissions": "Sites.Read.All",
-               "graph.list_item_permissions_beta": "Sites.Read.All"}
+               "graph.list_item_permissions_beta": "Sites.Read.All",
+               "graph.sites_all": "Sites.Read.All", "graph.site_lists": "Sites.Read.All",
+               "graph.list_columns": "Sites.Read.All"}
 ACL_V1, ACL_BETA = "graph.list_item_permissions", "graph.list_item_permissions_beta"
 MAX_FIELDS_BYTES = 64_000   # the bound of graph_read.SharePointReader.list_item_fields
 REASON_MAX = 64
@@ -111,6 +135,38 @@ _ROW_KEYS = ("createdDateTime", "lastModifiedDateTime", "createdBy", "lastModifi
 _LIMITS = {"page_size": (200, 1, 999), "max_pages_per_run": (50, 1, 500),
            "max_items_per_run": (5000, 1, 20_000)}
 _RESYNC_CODES = frozenset({"resync_required", "sync_state_not_found"})
+_DISCOVER_LIMITS = {"max_sites": (500, 1, 5000), "max_lists": (500, 1, 5000)}
+# SharePoint's own bookkeeping columns: never a list's content (its times and authors are
+# the item's createdDateTime/createdBy row keys already).
+SYSTEM_COLUMNS = frozenset({
+    "ContentType", "Attachments", "Edit", "LinkTitle", "LinkTitleNoMenu", "DocIcon",
+    "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor", "ComplianceAssetId",
+    "_ComplianceFlags", "_ComplianceTag", "_ComplianceTagWrittenTime",
+    "_ComplianceTagUserId", "_IsRecord", "_UIVersionString", "Created", "Modified",
+    "Author", "Editor", "ID", "_ColorTag", "SelectTitle", "SelectFilename", "_CopySource",
+    "_HasCopyDestinations", "_ModerationComments", "_ModerationStatus", "Order",
+    "GUID", "WorkflowVersion", "WorkflowInstanceID", "FileRef", "FileDirRef", "FSObjType",
+    "PermMask", "UniqueId", "ProgId", "ScopeId", "MetaInfo", "owshiddenversion",
+    "_Level", "_IsCurrentVersion", "Restricted", "OriginatorId", "NoExecute",
+    "ContentVersion", "_VirusStatus", "_VirusVendorID", "_VirusInfo", "SMTotalSize",
+    "SMLastModifiedDate", "SMTotalFileStreamSize", "SMTotalFileCount", "AccessPolicy",
+    "_CommentFlags", "_CommentCount", "_DisplayName", "BSN", "InstanceID",
+    "ParentVersionString", "ParentLeafName", "TemplateUrl", "xd_ProgID",
+    "xd_Signature", "HTML_x0020_File_x0020_Type", "_SourceUrl", "_SharedFileIndex",
+    "LinkFilenameNoMenu", "LinkFilename", "LinkFilename2", "File_x0020_Type",
+    "_EditMenuTableStart", "_EditMenuTableStart2", "_EditMenuTableEnd",
+    "ServerUrl", "EncodedAbsUrl", "BaseName", "SyncClientId", "_CheckinComment",
+    "CheckoutUser", "CheckedOutUserId", "IsCheckedoutToLocal", "CheckedOutTitle",
+    "_HasEncryptedContent", "_StubFile", "_ShortcutUrl", "_ShortcutSiteId",
+    "_ShortcutWebId", "_ShortcutUniqueId", "MediaServiceFastMetadata"})
+MAX_DISCOVERED_COLUMNS = 100
+
+
+# An item permission read that failed this way is re-read once at the end of its list's
+# listing, after a pause (``ListCapture._reread_transient``).
+TRANSIENT_ACL_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+ACL_RETRY_PAUSE_SECONDS = 10.0
+RETRY_BUDGET_SECONDS = 240   # the run's GET retry sleep, within the host's list timeout
 
 
 def _v1_refused(status: Any) -> bool:
@@ -191,13 +247,15 @@ class ListTarget:
 
 class ListScope:
     """``plx-sharepoint-list-capture-scope/v1``: ``lists`` (``{name, site_id, list_id,
-    columns}``, optional ``evidence`` and ``note``) and the per-run caps of ``_LIMITS``.
-    Anything unknown, duplicated or out of bounds is refused (``ListCaptureError``)."""
+    columns}``, optional ``evidence`` and ``note``), the optional ``discover`` block
+    (module docstring, Discovery) and the per-run caps of ``_LIMITS``. Anything unknown,
+    duplicated or out of bounds is refused (``ListCaptureError``)."""
 
     def __init__(self, document: Any) -> None:
         if not isinstance(document, Mapping) or document.get("schema") != SCOPE_SCHEMA \
-                or set(document) - {"schema", "note", "lists", *_LIMITS}:
+                or set(document) - {"schema", "note", "lists", "discover", *_LIMITS}:
             raise ListCaptureError("scope_invalid")
+        self.discover = _discover_config(document.get("discover"))
         entries = document.get("lists")
         if not isinstance(entries, list) or not 1 <= len(entries) <= 50:
             raise ListCaptureError("scope_lists_invalid")
@@ -229,6 +287,36 @@ class ListScope:
         return cls(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+def _discover_config(value: Any) -> dict[str, Any] | None:
+    """The scope's ``discover`` block, checked; None when absent."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) - {
+            "sites", "exclude_lists", "note", *_DISCOVER_LIMITS} \
+            or value.get("sites") != "all_tenant_sites":
+        raise ListCaptureError("scope_discover_invalid")
+    excluded = value.get("exclude_lists", [])
+    if not isinstance(excluded, list) or not all(
+            isinstance(e, str) and _valid("guid", e.lower()) for e in excluded):
+        raise ListCaptureError("scope_discover_invalid")
+    config: dict[str, Any] = {"exclude_lists": frozenset(e.lower() for e in excluded)}
+    for key, (default, low, high) in _DISCOVER_LIMITS.items():
+        found = value.get(key, default)
+        if isinstance(found, bool) or not isinstance(found, int) or not low <= found <= high:
+            raise ListCaptureError(f"scope_discover_{key}_invalid")
+        config[key] = found
+    return config
+
+
+def _new_discovery() -> dict[str, Any]:
+    return {"status": "not_requested", "sites_listed": 0, "sites_personal_skipped": 0,
+            "sites_read": 0, "sites_failed": 0, "lists_seen": 0, "lists_library": 0,
+            "lists_hidden_or_system": 0, "lists_excluded": 0, "lists_named": 0,
+            "lists_without_columns": 0, "lists_columns_failed": 0, "lists_discovered": 0,
+            "lists_not_visible": 0,
+            "lists_over_cap": 0, "provenance_dropped": 0, "reasons": []}
+
+
 # ------------------------------------------------------------------ capture
 
 def _failure(part: str, op: str, exc: BaseException, blocked: list[dict[str, Any]]) -> str:
@@ -249,7 +337,8 @@ def _failure(part: str, op: str, exc: BaseException, blocked: list[dict[str, Any
 def _new_counts() -> dict[str, int]:
     return {"pages": 0, "items_read": 0, "versions_new": 0, "unchanged": 0,
             "provenance_dropped": 0, "folders": 0, "acl_read": 0, "acl_read_beta": 0,
-            "acl_unreadable": 0, "round_restarts": 0}
+            "acl_unreadable": 0, "round_restarts": 0, "acl_transient": 0,
+            "acl_recovered": 0}
 
 
 def item_row(target: ListTarget, raw: Any) -> dict[str, Any] | str | None:
@@ -298,17 +387,135 @@ class ListCapture:
     (checked against the live audience per list before any of its I/O)."""
 
     def __init__(self, store: CaptureStore, api: Any, audience: LiveSourceAudience,
-                 actor: Actor) -> None:
+                 actor: Actor, *, sleep: Callable[[float], None] = time.sleep) -> None:
         self.store, self.api, self.audience, self.actor = store, api, audience, actor
+        self.targets: tuple[ListTarget, ...] = ()   # the lists the last run took
+        self._sleep = sleep
 
-    def run(self, scope: ListScope) -> dict[str, Any]:
+    def run(self, scope: ListScope, *, discover_only: bool = False) -> dict[str, Any]:
         blocked: list[dict[str, Any]] = []
-        results = [self.capture(target, scope, blocked) for target in scope.lists]
+        found, discovery = self.discover(scope, blocked)
+        self.targets = scope.lists + tuple(found)
+        results = ([] if discover_only else
+                   [self.capture(target, scope, blocked) for target in self.targets])
         unique = list({json.dumps(p, sort_keys=True): p for p in blocked}.values())
-        return {"complete": all(r["status"] == "complete" for r in results), "lists": results,
-                "blocked_upstream": unique,
+        return {"complete": discovery["status"] in ("not_requested", "complete")
+                and all(r["status"] == "complete" for r in results), "lists": results,
+                "blocked_upstream": unique, "discovery": discovery,
                 "complete_bound": sum(r["status"] == "complete" for r in results),
                 "bound_total": len(results)}
+
+    def discover(self, scope: ListScope, blocked: list[dict[str, Any]]
+                 ) -> tuple[list[ListTarget], dict[str, Any]]:
+        """The lists the scope's ``discover`` block finds beyond its named ones (module
+        docstring, Discovery), each with its readable columns; and the counts."""
+        from .graph_read import SharePointSites
+
+        report = _new_discovery()
+        config = scope.discover
+        if config is None:
+            return [], report
+        reasons: set[str] = set()
+        named = {(t.site_id, t.list_id) for t in scope.lists}
+        # The tenant's site host, from a named list's (its OneDrive host maps to it).
+        host = scope.lists[0].site_id.split(",", 1)[0].replace("-my.sharepoint.com",
+                                                                ".sharepoint.com")
+        try:
+            sites, completeness = SharePointSites(self.api, host).sites(
+                max_items=config["max_sites"])
+        except SourceUnavailable as exc:
+            report.update(status="incomplete",
+                          reasons=[_failure("sharepoint_list.sites", "graph.sites_all", exc,
+                                            blocked)])
+            return [], report
+        if completeness.get("truncated"):
+            reasons.add(f"cap:{completeness.get('truncation_reason') or 'sites'}")
+        report["sites_listed"] = len(sites)
+        report["provenance_dropped"] += completeness.get("provenance_dropped", 0)
+        found: list[ListTarget] = []
+        for site in sites:
+            if site["personal"] is not None or "-my.sharepoint.com" in site["host"]:
+                report["sites_personal_skipped"] += 1
+                continue
+            try:
+                lists, done = self.api.get_pages(grammar.url(
+                    "graph.site_lists", {"$select": "id,displayName,list,system"},
+                    site=site["id"]), max_pages=10, max_items=2000)
+            except SourceUnavailable as exc:
+                report["sites_failed"] += 1
+                reasons.add(_failure("sharepoint_list.site_lists", "graph.site_lists", exc,
+                                     blocked))
+                continue
+            report["sites_read"] += 1
+            if done.get("truncated"):
+                reasons.add("cap:site_lists")
+            for raw in lists:
+                report["lists_seen"] += 1
+                list_id = str(raw.get("id") or "").lower()
+                facet = raw.get("list") if isinstance(raw.get("list"), Mapping) else {}
+                template = facet.get("template")
+                name = raw.get("displayName")
+                if not _valid("guid", list_id) or not isinstance(name, str) or not name.strip():
+                    report["provenance_dropped"] += 1
+                    continue
+                if not isinstance(template, str) or template.endswith("Library"):
+                    report["lists_library"] += 1
+                    continue
+                if facet.get("hidden") or raw.get("system") is not None:
+                    report["lists_hidden_or_system"] += 1
+                    continue
+                if list_id in config["exclude_lists"]:
+                    report["lists_excluded"] += 1
+                    continue
+                if (site["id"].lower(), list_id) in named:
+                    report["lists_named"] += 1
+                    continue
+                if len(found) >= config["max_lists"]:
+                    report["lists_over_cap"] += 1
+                    reasons.add("cap:max_lists")
+                    continue
+                resource = f"sharepoint:list:{site['id'].lower()}:{list_id}"
+                if not self.audience.allows(self.actor, resource):
+                    # Not granted: nothing of it is read, its columns neither; it is
+                    # reported not_visible by its capture (no I/O there either).
+                    report["lists_not_visible"] += 1
+                    found.append(ListTarget(name.strip()[:200], site["id"].lower(), list_id,
+                                            ("Title",)))
+                    continue
+                columns = self._columns(site["id"].lower(), list_id, report)
+                if columns is None:
+                    reasons.add("list_columns_unread")
+                    continue
+                if not columns:
+                    report["lists_without_columns"] += 1
+                    continue
+                found.append(ListTarget(name.strip()[:200], site["id"].lower(), list_id,
+                                        columns))
+        report["lists_discovered"] = len(found)
+        if report["sites_failed"]:
+            reasons.add("sites_failed")
+        report["reasons"] = sorted(reasons)
+        report["status"] = "incomplete" if reasons else "complete"
+        return found, report
+
+    def _columns(self, site_id: str, list_id: str, report: dict[str, Any]
+                 ) -> tuple[str, ...] | None:
+        """A discovered list's readable columns (module docstring); None when the column
+        read failed (counted)."""
+        try:
+            raws, _done = self.api.get_pages(grammar.url(
+                "graph.list_columns", {"$select": "name,hidden"}, site=site_id,
+                list=list_id), max_pages=5, max_items=1000)
+        except SourceUnavailable:
+            report["lists_columns_failed"] += 1
+            return None
+        names = []
+        for raw in raws:
+            name = raw.get("name")
+            if (isinstance(name, str) and not raw.get("hidden") and name not in SYSTEM_COLUMNS
+                    and grammar.column_name_ok(name) and name not in names):
+                names.append(name)
+        return tuple(sorted(names)[:MAX_DISCOVERED_COLUMNS])
 
     def capture(self, target: ListTarget, scope: ListScope,
                 blocked: list[dict[str, Any]]) -> dict[str, Any]:
@@ -332,7 +539,7 @@ class ListCapture:
                                          "list_template_unknown"})
         run = self.store.begin_run(LIST_KIND.name, target.unit, [target.resource])
         run_id, reasons = run["run_id"], set()
-        acl_state: dict[str, str | None] = {"op": ACL_V1, "blocked": None}
+        acl_state: dict[str, Any] = {"op": ACL_V1, "blocked": None, "transient": {}}
         url = target.items_url(scope.page_size)
         if run["resumed"] and run["cursor"]:
             url, result["resumed_from"] = run["cursor"], "cursor"
@@ -386,6 +593,7 @@ class ListCapture:
             if next_url is None:
                 break
             url = next_url
+        self._reread_transient(target, run_id, acl_state, blocked, counts)
         if (self.store.run(LIST_KIND.name, target.unit) or {}).get("dropped"):
             reasons.add("provenance_dropped")
         acl = self._acl_reasons(acl_state, counts)
@@ -419,6 +627,14 @@ class ListCapture:
                                                 blocked)
                 elif op == ACL_BETA and status == 404:
                     state["blocked"] = "acl_endpoint_not_found"
+                elif status is None or status in TRANSIENT_ACL_STATUSES:
+                    # throttled or timed out (live 2026-11-01: 63 items of 6 lists were
+                    # unreadable at capture and read cleanly on a later single read):
+                    # re-read once at the end of the list's listing
+                    counts["acl_transient"] += 1
+                    transient = state.get("transient")
+                    if isinstance(transient, dict):
+                        transient[item_id] = True
                 break
             acl = permission_acl(perms, completeness)
             counts["acl_read" if acl["status"] == "read" else "acl_unreadable"] += 1
@@ -426,6 +642,41 @@ class ListCapture:
             return acl
         counts["acl_unreadable"] += 1
         return unreadable
+
+    def _reread_transient(self, target: ListTarget, run_id: int, state: dict[str, Any],
+                          blocked: list[dict[str, Any]], counts: dict[str, int]) -> None:
+        """Re-read, once, after ``ACL_RETRY_PAUSE_SECONDS``, the permissions of every item
+        whose permission read this listing failed transiently (throttled, 5xx, timeout).
+        An item read now is saved again with the permissions it carries now (its version
+        saved unreadable before stays as what the first read saw); one still failing stays
+        unreadable (served to no reader who needs a source ACL). Nothing else is read: the
+        rows are the run's own saved versions."""
+        pending = list(state.get("transient") or ())
+        state["transient"] = None   # a second failure is not queued again
+        if not pending or state["blocked"] is not None:
+            return
+        current = {record.path[2]: record for record in self.store.current_records(
+            LIST_KIND.name, target.unit, seen_in_run=run_id)}
+        self._sleep(ACL_RETRY_PAUSE_SECONDS)
+        records = []
+        for item_id in pending:
+            record = current.get(item_id)
+            if record is None or state["blocked"] is not None:
+                continue
+            acl = self._acl(target, item_id, state, blocked, counts)
+            # the item was counted unreadable by its first read; ``_acl`` counted this one
+            counts["acl_unreadable"] -= 1
+            if acl.get("status") != "read":
+                continue
+            counts["acl_recovered"] += 1
+            records.append(CapturedRecord(
+                record.path, {**record.payload,
+                              "meta": {**(record.payload.get("meta") or {}),
+                                       "source_acl": acl}},
+                record.source_version, LINEAGE))
+        if records:
+            saved = self.store.save_page(run_id, records, None)
+            counts["versions_new"] += saved["new_versions"]
 
     @staticmethod
     def _acl_reasons(state: Mapping[str, str | None], counts: Mapping[str, int]) -> set[str]:
@@ -469,6 +720,9 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
                         help="a principal the audience does not grant")
     parser.add_argument("--runs", type=int, default=2,
                         help="capture runs; run 2+ resumes a stopped run from its cursor")
+    parser.add_argument("--discover-only", action="store_true",
+                        help="list the sites and lists a run would capture (counts only) "
+                             "and read no list item")
 
 
 def _read_back(store: CaptureStore, units: Sequence[str], actor: Actor
@@ -491,7 +745,7 @@ def _read_back(store: CaptureStore, units: Sequence[str], actor: Actor
 
 
 def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
-    return {"run": number, "complete": run["complete"],
+    return {"run": number, "complete": run["complete"], "discovery": dict(run["discovery"]),
             "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
             "lists": [{"index": i, "status": r["status"], "reasons": r["reasons"],
                        "resumed_from": r["resumed_from"], "counts": dict(r["counts"])}
@@ -517,15 +771,21 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                                       ("withheld", args.withheld_principal))}
     store = open_store(args.state_dir, audience)
     try:
-        retry = BoundedBackoff(budget_seconds=60, **({"sleep": sleep} if sleep else {}))
+        # The retry budget covers every GET of the run (some 3,500 item permission reads
+        # over 17 lists live): 60 s ran out under throttling and left items unreadable.
+        retry = BoundedBackoff(budget_seconds=RETRY_BUDGET_SECONDS,
+                               **({"sleep": sleep} if sleep else {}))
         api, transport = build_graph(environ, sender=sender, retry=retry)
-        capture = ListCapture(store, api, audience, actors["capture"])
+        capture = ListCapture(store, api, audience, actors["capture"],
+                              **({"sleep": sleep} if sleep else {}))
         runs, blocked = [], []
-        for number in range(1, args.runs + 1):
-            run = capture.run(scope)
+        only = bool(getattr(args, "discover_only", False))
+        for number in range(1, (1 if only else args.runs) + 1):
+            run = capture.run(scope, discover_only=only)
             runs.append(_report_run(number, run))
             blocked += [p for p in run["blocked_upstream"] if p not in blocked]
-        units = [t.unit for t in scope.lists if store.run(LIST_KIND.name, t.unit) is not None]
+        units = [t.unit for t in capture.targets
+                 if store.run(LIST_KIND.name, t.unit) is not None]
         operator = [store.operator_completeness(actors["capture"], LIST_KIND.name, u)
                     for u in units]
         current = sum(o["records_current"] for o in operator)
@@ -549,6 +809,10 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                        else "incomplete"),
             "blocked_upstream": blocked,
             "runs": runs,
+            "discover_only": only,
+            "would_capture": {"lists_named": len(scope.lists),
+                              "lists_discovered": runs[-1]["discovery"]["lists_discovered"],
+                              "columns": sum(len(t.columns) for t in capture.targets)},
             "summary": {"lists": runs[-1]["bound_total"],
                         "lists_complete": runs[-1]["complete_bound"],
                         "units_captured": len(units), "items_current": current,

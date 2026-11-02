@@ -569,6 +569,14 @@ class ScannerTests(unittest.TestCase):
                 self.assertEqual(read(text), [])
         for text, expected in (
                 ("QRM-26037", [("eqms_number", "QRM-26037")]),
+                # Unserved Portal numbers, read only from the text that cites them; the
+                # ship release's SR-YYYYMMDD-NNNN never reads as a sourcing request.
+                ("Re: sourcing brief SR-0042 (package VP-0003) for CMR-0001; release "
+                 "SR-20260115-0003", [("sourcing_request_no", "SR-0042"),
+                                      ("vendor_package_no", "VP-0003"),
+                                      ("customer_material_request_no", "CMR-0001"),
+                                      ("ship_release", "SR-20260115-0003")]),
+                ("SR-12 and xSR-0042", []),
                 ("PO-00269", [("petra_po", "PO269")]),
                 ("F-18-0025 helper cost", [("formula_code", "F-18-0025")]),
                 ("F-26-1179 ingredient list", [("formula_code", "F-26-1179")]),

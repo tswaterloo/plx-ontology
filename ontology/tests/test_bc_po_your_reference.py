@@ -415,7 +415,7 @@ class YourReferenceLinkTests(unittest.TestCase):
 
     def test_the_build_steps_run_your_reference_after_twins_and_reviews(self):
         steps = build_steps.post_project(self.dir / "state", "plx")
-        self.assertIs(steps["your_reference"], ids.your_reference_step)
+        self.assertIs(steps["your_reference"].__wrapped__, ids.your_reference_step)
         order = sorted(steps)
         self.assertLess(order.index("twins"), order.index("your_reference"))
         self.assertLess(order.index("reviews"), order.index("your_reference"))

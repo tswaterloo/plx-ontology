@@ -153,6 +153,27 @@ _UPN = re.compile(r"^[a-z0-9._%+'-]{1,64}@[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$
 _GUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
+# The 404 error codes Graph answers for a directory user it reports no Exchange Online
+# mailbox for (unlicensed, inactive, soft-deleted or hosted on-premises; occasionally
+# transient, so re-checked every run): nothing to read through Graph, which is not a
+# mailbox the capture failed to see. Tokens of the guard's fixed vocabulary
+# (``live_source_guard.upstream_error_code``: ``MailboxNotEnabledForRESTAPI``).
+NO_MAILBOX_CODES = frozenset({"mailbox_not_enabled_for_restapi"})
+
+
+class MailboxAbsent(NotVisible):
+    """Graph reports no Exchange Online mailbox for a directory user (HTTP 404 with
+    a :data:`NO_MAILBOX_CODES` error code). A ``NotVisible``, so every reader that hides an
+    unreadable mailbox hides it too; a capture records it as ``no_mailbox``."""
+
+
+def hidden(exc: BaseException) -> NotVisible:
+    """The ``NotVisible`` a mail read answers for a Graph 404: ``MailboxAbsent`` when its
+    upstream error code says the user has no mailbox, else a plain ``NotVisible``."""
+    return MailboxAbsent() if getattr(exc, "error_code", None) in NO_MAILBOX_CODES \
+        else NotVisible()
+
+
 @dataclass(frozen=True)
 class Mailbox:
     """A mailbox resolved by the directory: canonical id plus every address."""
@@ -261,8 +282,8 @@ class GraphMailReader:
         if raw is None:
             try:
                 raw = self._api.get_json(lookup)
-            except SourceNotFound:
-                raise NotVisible() from None
+            except SourceNotFound as exc:
+                raise hidden(exc) from None
             if cache is not None and isinstance(raw, Mapping):
                 cache[key] = raw
         if not isinstance(raw, Mapping):
@@ -454,7 +475,9 @@ class GraphMailReader:
             try:
                 raws, completeness = self._api.get_pages(url, max_pages=20, max_items=2000,
                                                          headers=_IMMUTABLE)
-            except SourceNotFound:
+            except SourceNotFound as exc:
+                if isinstance(hidden(exc), MailboxAbsent):
+                    raise hidden(exc) from None   # the user has no Exchange Online mailbox
                 complete = False   # a folder gone between two listings
                 continue
             complete = complete and bool(completeness.get("complete"))
@@ -512,8 +535,8 @@ class GraphMailReader:
             seen.add(url)
             try:
                 page = self._api.get_json(url, headers=_IMMUTABLE)
-            except SourceNotFound:
-                raise NotVisible() from None
+            except SourceNotFound as exc:
+                raise hidden(exc) from None
             except ReadOnlyGuardError:
                 if url == first:
                     raise
@@ -552,7 +575,11 @@ class GraphMailReader:
                 raw = self._api.get_json(grammar.url("graph.mail_folder", {"$select": "id"},
                                                      user=box.object_id, folder=folder),
                                          headers=_IMMUTABLE)
-            except (SourceNotFound, ValueError):
+            except SourceNotFound as exc:
+                if isinstance(hidden(exc), MailboxAbsent):
+                    raise hidden(exc) from None   # no mailbox at all, not a missing folder
+                raw = None
+            except ValueError:
                 raw = None
             fid = raw.get("id") if isinstance(raw, Mapping) else None
             cache[key] = fid if grammar.TYPES["mail_id"].valid(fid) else None
@@ -686,8 +713,8 @@ class GraphMailReader:
             raw = self._api.get_json(grammar.url("graph.message", {"$select": select},
                                                  user=box.object_id, message=message_id),
                                      headers=headers)
-        except SourceNotFound:
-            raise NotVisible() from None
+        except SourceNotFound as exc:
+            raise hidden(exc) from None
         if not isinstance(raw, Mapping) or raw.get("id") != message_id:
             raise SourceUnavailable("Graph message read returned another identity")
         if not self._belongs(box, raw, {}, expected_folder_id):
@@ -731,8 +758,8 @@ class GraphMailReader:
         try:
             raws, completeness = self._api.get_pages(url, max_pages=ATTACHMENT_LIST_PAGES,
                                                      max_items=max_items, headers=_IMMUTABLE)
-        except SourceNotFound:
-            raise NotVisible() from None
+        except SourceNotFound as exc:
+            raise hidden(exc) from None
         items = []
         for raw in raws:
             attachment_id, name = raw.get("id"), raw.get("name")
@@ -796,8 +823,8 @@ class GraphMailReader:
                                                  attachment=attachment_id),
                                      headers=_IMMUTABLE,
                                      max_bytes=(cap * 4) // 3 + 64_000)
-        except SourceNotFound:
-            raise NotVisible() from None
+        except SourceNotFound as exc:
+            raise hidden(exc) from None
         metadata, content = decode_file_attachment(raw, attachment_id, max_bytes=cap)
         return {"message": message, "attachment": jsonable(metadata), "content": content,
                 "citation": mail_attachment_citation(message["citation"], attachment_id,

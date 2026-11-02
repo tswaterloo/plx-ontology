@@ -185,10 +185,11 @@ class PlansAreDataTests(unittest.TestCase):
         # evidence, F12 commercial chain links, F13 item lineage,
         # F14 late PO, F15 counterparty position, F16 impact chain, F17 lot impact, F18 people
         # on a record, F19 what we last said to a party, F26-F28 vendor terms (provenance,
-        # proposed updates, follow-ups); held-out F5/F6 have no plan.
+        # proposed updates, follow-ups), F30 an item's purchase price history and trend;
+        # held-out F5/F6 have no plan.
         self.assertEqual(set(families),
                          {"F1", "F2", "F3", "F4", "F7", "F10", "F11", "F12", "F13", "F14", "F15",
-                          "F16", "F17", "F18", "F19", "F26", "F27", "F28"})
+                          "F16", "F17", "F18", "F19", "F26", "F27", "F28", "F30"})
         evaluated = {json.loads(p.read_text("utf-8"))["family"]
                      for p in DEV.glob("dev-*.json")}
         self.assertLessEqual(evaluated, set(families))
@@ -1637,7 +1638,7 @@ class CaseHostToolsTests(Base):
         host = self.host(self.actor)
         self.assertEqual(set(host.table), {"plx.schema", "plx.find", "plx.object",
                                            "plx.around", "plx.timeline", "plx.process",
-                                           "plx.investigate", "plx.agenda"})
+                                           "plx.investigate", "plx.agenda", "plx.changes"})
         from operating.ontology_host import table_tool_names
         self.assertEqual(set(host.table), table_tool_names())
         result = host.call("plx.investigate", {"family": "F3", "root": self.root_of(item),

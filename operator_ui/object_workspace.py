@@ -713,6 +713,58 @@ class ObjectWorkspace:
                 **({"limit": limit} if limit is not None else {}))
             return {**base, **found}
 
+    def briefing(self, *, inbox: Any = None, since_visit: bool = False) -> dict[str, Any]:
+        """This reader's briefing (``operating.briefing``): the proactive events of the
+        gap inbox its grant shows, routed to it by department, ranked, with the count of
+        those routed to it that it may not see (never named) and what is new since its last
+        visit. ``not_configured`` without a grant or a store."""
+        from operating import briefing as bf
+        from operating import proactive_engine as pe
+
+        with self._request():
+            base = self._base()   # a refused store answers nothing
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                return {**base, **bf.build({"status": "not_configured"},
+                                           routing=bf.Routing(basis="not_configured"),
+                                           hidden=None, last_visit=None)}
+            may_read, held = grant()
+            return {**base, **bf.read(
+                pe.inbox_path(path) if inbox is None else inbox, path,
+                reader=pe.reader_key(self.actor), may_read=may_read, held=held,
+                decide=self.access.decide, routing=self.routing(),
+                since_visit=since_visit)}
+
+    def routing(self) -> Any:
+        """Where this reader's work is routed (``operating.briefing.Routing``): an
+        employee's Portal-confirmed and Entra departments and Portal role; a reader that is
+        no employee (a fixture or local session) is routed every visible event. An
+        employee whose rights cannot be resolved is routed nothing."""
+        from operating import briefing as bf
+        from operating.employee_permissions import employee_principals
+
+        if not employee_principals(self.actor):
+            return bf.Routing(basis="not_an_employee", everything=True)
+        gate = getattr(getattr(self.access, "runtime", None), "employee_gate", None)
+        try:
+            entitlement = gate.entitlement(self.actor) if gate is not None else None
+        except Exception:  # noqa: BLE001 - an unresolved employee is routed nothing
+            return bf.Routing(basis="rights_unresolved")
+        return bf.Routing.of(entitlement)
+
+    def briefing_seen(self, *, inbox: Any = None) -> str:
+        """Mark this reader's briefing seen now: its next "since your last visit"."""
+        from operating import proactive_engine as pe
+
+        with self._request():
+            self._base()
+            path = getattr(self.store_status, "store_path", None)
+            if path is None:
+                raise FileNotFoundError("store_not_configured")
+            return pe.record_visit(pe.inbox_path(path) if inbox is None else inbox,
+                                   pe.reader_key(self.actor))
+
     def status_card(self, object_id: str | None = None, *, object_type: str | None = None,
                     reference: str | None = None, as_of: date | None = None
                     ) -> dict[str, Any]:
@@ -2738,7 +2790,9 @@ def object_answers(card: Mapping[str, Any], around: Mapping[str, Any],
     confirmation = next((s for s in stages if s.get("stage") in confirming), None)
     if hop is None:
         supplier = _not_established(["this record is not an order linked to a supplier"])
-        supplier.update(facts=[], follow_ups=[])
+        # not a gap of this record: a customer or a supplier has no supplier of its own
+        # to confirm, so a page that shows answers leaves this one out
+        supplier.update(facts=[], follow_ups=[], applicable=False)
     else:
         result = hop.get("result") or {}
         found = [o for o in result.get("objects") or [] if isinstance(o, Mapping)]

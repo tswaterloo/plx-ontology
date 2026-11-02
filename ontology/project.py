@@ -111,7 +111,7 @@ from collections.abc import Mapping as _MappingBase
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
-from functools import lru_cache
+from functools import lru_cache, partial
 import hashlib
 import json
 from itertools import groupby
@@ -529,6 +529,47 @@ def _blob_state(blobs: Path, value: Any) -> tuple[Any, ...]:
     return tuple(out)
 
 
+def document_code() -> str:
+    """Digest of the code a source's documents are read with (``document_groups`` keys):
+    :func:`derivation_code` (the readers of captured files, the schema, the libraries), the
+    key the kept readings of files are held under (``captured_text.readings_code``) and
+    the modules that build ``ontology.mentions.Document`` values from rows."""
+    from integrations.captured_text import readings_code
+
+    root = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256(
+        f"plx-documents/v1\n{derivation_code()}\n{readings_code()}\n".encode())
+    for module in ("ontology/project.py", "ontology/mentions.py", "ontology/identifiers.py",
+                   "ontology/project_graph.py", "operating/doc_metadata_taxonomy.py",
+                   "integrations/captured_pages.py"):
+        path = root / module
+        digest.update(module.encode() + b"\n")
+        digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file()
+                      else b"missing")
+    return digest.hexdigest()
+
+
+def readings_remembered(blobs: Path, rows: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether the reading of each captured file of ``rows`` (its text and, when it may be
+    a container, its members) is one the process remembers: a read that failed for a
+    reason ``integrations.captured_text`` does not remember (a transient failure, bytes
+    gone) may read otherwise next time, so documents read with it are not kept as read
+    (``ontology.mention_memo`` groups)."""
+    from integrations import captured_text as ct
+
+    for row in rows:
+        digest = row.get("content_sha256")
+        if not isinstance(digest, str):
+            continue
+        name, mime = ct._name(row), ct._mime(row)
+        if (digest, mime, name, ct.ocr_digest(row)) not in ct._CACHE:
+            return False
+        if (digest, name, mime) not in ct._MEMBER_READINGS and \
+                ct._may_contain(blobs, digest, row):
+            return False
+    return True
+
+
 def derived_fingerprint(relation: str, records: Iterable[Any], blobs: Path) -> str:
     """The fingerprint of a relation derived from captured bytes (``documentFields``,
     ``containerMembers``), from what it is derived from instead of by deriving it: every
@@ -843,6 +884,42 @@ class MirrorCaptures:
             return None
         return _watermark(self, self._marks, self._opened, self._seen_at)
 
+    def relation_marks(self, relations: Sequence[str]) -> dict[str, Any] | None:
+        """relation -> its change mark in the snapshot of the last :meth:`records`: the
+        mirror's change epoch, generation and replacement rule, the global and the
+        relation's change counter (``integrations.source_mirror`` ``relation_change``,
+        moved by triggers on every write a projection reads). Equal marks, equal records
+        (``ontology.project_incremental``: the fingerprint is read back). None when the
+        file has no counters it can vouch for (no epoch, a trigger missing, a scoped
+        fallback reading another file) or with ``prisma_facts`` given."""
+        from integrations.source_mirror import CHANGE_EPOCH, CHANGE_TRIGGERS
+
+        if not self._snapshot:
+            raise ProjectionError("capture_snapshot_closed", "relation_marks")
+        if self._replacement_models is not None:
+            return None
+        names = {row[0] for row in self._conn.execute(
+            "SELECT name FROM main.sqlite_master WHERE type IN ('trigger', 'table')")}
+        if not CHANGE_TRIGGERS <= names or "relation_change" not in names or \
+                self._conn.execute("SELECT 1 FROM pragma_database_list WHERE name = "
+                                   "'shared'").fetchone() is not None:
+            return None
+        meta = dict(self._conn.execute(
+            "SELECT name, value FROM main.mirror_meta WHERE name IN (?, 'replacement_rule')",
+            (CHANGE_EPOCH,)).fetchall())
+        if meta.get(CHANGE_EPOCH) is None:
+            return None
+        counts = dict(self._conn.execute("SELECT relation, n FROM main.relation_change"))
+        # Whether a relation is held, and its columns (an earlier rule's labels are read
+        # by them), come from its relation_state row, rewritten whole by every sync.
+        state = {row[0]: hashlib.sha256(str(row[1]).encode()).hexdigest()
+                 for row in self._conn.execute(
+                     "SELECT relation, columns_json FROM main.relation_state")}
+        return {relation: [meta[CHANGE_EPOCH], self.generation, meta.get("replacement_rule"),
+                           self._seen_at, counts.get("", 0), counts.get(relation, 0),
+                           state.get(relation)]
+                for relation in dict.fromkeys(relations)}
+
     def fingerprint(self, relations: Sequence[str]) -> dict[str, str]:
         """relation -> SHA-256 of everything :meth:`records` yields for it that the
         projection reads (raw columns plus the completion times it resolves, and the
@@ -948,6 +1025,13 @@ class MailCaptures:
                "(SELECT MAX(x.version_id) FROM messages x WHERE x.mailbox_id = m.mailbox_id "
                "AND x.message_id = m.message_id)) AS gone FROM messages m WHERE m.version_id "
                "IN (SELECT MAX(version_id) FROM messages GROUP BY l1_handle)")
+    # The same rows for one attachment or one content digest: each message's latest
+    # interval found through its own handle (``version_id`` is the table's key, so being
+    # the largest of its handle is being in ``_LATEST``'s set), never the whole table's.
+    _ONE_ATTACHED = ("FROM attachments a JOIN messages m ON m.l1_handle = a.message_handle "
+                     "WHERE m.version_id = (SELECT MAX(x.version_id) FROM messages x WHERE "
+                     "x.l1_handle = m.l1_handle) AND a.l1_handle IS NOT NULL AND "
+                     "a.content_sha256 IS NOT NULL")
     # The attachments the projection reads, each with its message's latest interval row.
     _ATTACHED = ("FROM attachments a JOIN (" + _LATEST + ") m ON m.l1_handle = "
                  "a.message_handle WHERE a.l1_handle IS NOT NULL AND a.content_sha256 "
@@ -1130,51 +1214,82 @@ class MailCaptures:
         captured attachment under its own handle), each followed by its captured
         attachments as documents of their own (``ontology.project_graph``). Read in its
         own snapshot."""
+        for _key, load in self.document_groups():
+            yield from load()[0]
+
+    def document_groups(self) -> Iterator[tuple[str, Callable[[], tuple[list[Any], bool]]]]:
+        """``(key, load)`` per projected message version, in :meth:`documents` order:
+        ``load()`` gives its documents (the message, then each captured attachment and its
+        container members) and returns them with whether every file reading in them is
+        remembered (:func:`readings_remembered`); ``key`` digests what they are read
+        from: the message version's row (record, digest, body blob, interval) and its
+        attachments' (metadata, bytes and stored text digests), which forms of those blobs
+        are on disk, the internal domains and the code that reads them
+        (:func:`document_code`). Equal keys read equal documents."""
+        code = document_code()
+        # Streamed from a cursor (one message row at a time); the attachments of each row
+        # come from a second cursor on the same read-only connection.
+        for row in self._conn.execute(self._LATEST + " ORDER BY mailbox_id, message_id, "
+                                      "recorded_at, version_id"):
+            attached = self._conn.execute(
+                f"SELECT l1_handle, metadata, content_sha256, {self._text} FROM attachments "
+                "WHERE message_handle = ? AND l1_handle IS NOT NULL AND content_sha256 IS NOT "
+                "NULL ORDER BY attachment_id", (row["l1_handle"],)).fetchall()
+            key = hashlib.sha256(repr((
+                code, self.internal_domains,
+                [row[name] for name in ("l1_handle", "record", "digest", "body_sha256",
+                                        "recorded_at", "superseded_at", "gone")],
+                _blob_state(self.blobs, row["body_sha256"]),
+                [(tuple(item), _blob_state(self.blobs, item["content_sha256"]),
+                  _blob_state(self.blobs, item["text_sha256"])) for item in attached]
+            )).encode("utf-8")).hexdigest()
+            yield key, partial(self._message_documents, row, attached)
+
+    def _message_documents(self, row: Any, attached: Sequence[Any]
+                           ) -> tuple[list[Any], bool]:
         from ontology.identifiers import copy_key
         from ontology.mentions import Document, TextField, sender_class
         from ontology.project_graph import attachment_document, member_documents
 
-        # Streamed from a cursor (one message row at a time); the attachment names of
-        # each row come from a second cursor on the same read-only connection.
-        for row in self._conn.execute(self._LATEST + " ORDER BY mailbox_id, message_id, "
-                                      "recorded_at, version_id"):
-            record = self._message_row(row["record"])
-            handle = row["l1_handle"]
-            fields = []
-            if isinstance(record.get("subject"), str):
-                fields.append(TextField(handle, "row.subject", record["subject"]))
-            body = self._blob_text(row["body_sha256"])
-            if body is not None:
-                fields.append(TextField(handle, "row.body_text", body))
-            elif isinstance(record.get("body_preview"), str):
-                fields.append(TextField(handle, "row.body_preview", record["body_preview"]))
-            attached = self._conn.execute(
-                f"SELECT l1_handle, metadata, content_sha256, {self._text} FROM attachments "
-                "WHERE message_handle = ? AND l1_handle IS NOT NULL AND content_sha256 IS NOT "
-                "NULL ORDER BY attachment_id", (handle,)).fetchall()
-            for item in attached:
-                name = json.loads(item["metadata"]).get("name")
-                if isinstance(name, str):
-                    fields.append(TextField(item["l1_handle"], "row.name", name))
-            superseded, _missing = self._interval(row)
-            date = record.get("received_at") or record.get("sent_at")
-            yield Document(handle, "email", tuple(fields),
-                           sender_class=sender_class(record.get("from"), self.internal_domains,
-                                                     record.get("authentication_results")),
-                           digest=row["digest"], recorded_at=row["recorded_at"],
-                           superseded_at=superseded, date=date,
-                           copy_key=copy_key("mail", "messages", record))
-            for item in attached:
-                captured = {**json.loads(item["metadata"]),
-                            "content_sha256": item["content_sha256"],
-                            "text_status": item["text_status"],
-                            "text_sha256": item["text_sha256"]}
-                yield attachment_document(item["l1_handle"], captured, self.blobs,
-                                          recorded_at=row["recorded_at"],
-                                          superseded_at=superseded, date=date)
-                yield from member_documents(item["l1_handle"], captured, self.blobs,
-                                            recorded_at=row["recorded_at"],
-                                            superseded_at=superseded, date=date)
+        record = self._message_row(row["record"])
+        handle = row["l1_handle"]
+        fields = []
+        if isinstance(record.get("subject"), str):
+            fields.append(TextField(handle, "row.subject", record["subject"]))
+        body = self._blob_text(row["body_sha256"])
+        if body is not None:
+            fields.append(TextField(handle, "row.body_text", body))
+        elif isinstance(record.get("body_preview"), str):
+            fields.append(TextField(handle, "row.body_preview", record["body_preview"]))
+        for item in attached:
+            name = json.loads(item["metadata"]).get("name")
+            if isinstance(name, str):
+                fields.append(TextField(item["l1_handle"], "row.name", name))
+        superseded, _missing = self._interval(row)
+        date = record.get("received_at") or record.get("sent_at")
+        out = [Document(handle, "email", tuple(fields),
+                        sender_class=sender_class(record.get("from"), self.internal_domains,
+                                                  record.get("authentication_results")),
+                        digest=row["digest"], recorded_at=row["recorded_at"],
+                        superseded_at=superseded, date=date,
+                        copy_key=copy_key("mail", "messages", record))]
+        files = []
+        for item in attached:
+            captured = {**json.loads(item["metadata"]),
+                        "content_sha256": item["content_sha256"],
+                        "text_status": item["text_status"],
+                        "text_sha256": item["text_sha256"]}
+            files.append(captured)
+            out.append(attachment_document(item["l1_handle"], captured, self.blobs,
+                                           recorded_at=row["recorded_at"],
+                                           superseded_at=superseded, date=date))
+            out.extend(member_documents(item["l1_handle"], captured, self.blobs,
+                                        recorded_at=row["recorded_at"],
+                                        superseded_at=superseded, date=date))
+        # A body blob the row names that read as nothing (an OSError, altered bytes) may read
+        # next time: such a group is not kept as read (``readings_remembered``).
+        body_read = body is not None or not row["body_sha256"]
+        return out, body_read and readings_remembered(self.blobs, files)
 
 
 def _sender(record: str) -> dict[str, Any]:
@@ -1183,7 +1298,16 @@ def _sender(record: str) -> dict[str, Any]:
     return {"message_from": message.get("from"), "mailbox_upn": message.get("mailbox_upn")}
 
 
-def mail_attachment_sender(db: sqlite3.Connection, handle: str) -> dict[str, Any] | None:
+def attachment_mailboxes(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every captured mailbox holding an attachment (``mail_attachment_sender``'s own
+    party's mailboxes), on the capture connection ``db``."""
+    return [{"mailbox_upn": row[0]} for row in db.execute(
+        f"SELECT DISTINCT json_extract(m.record, '$.mailbox_upn') {MailCaptures._ATTACHED}")]
+
+
+def mail_attachment_sender(db: sqlite3.Connection, handle: str, *,
+                           mailboxes: list[dict[str, Any]] | None = None
+                           ) -> dict[str, Any] | None:
     """The sender provenance the mail projection reads the direction of the captured
     attachment ``handle`` from (``MailCaptures`` ``sender=True``), on the capture
     connection ``db``, for ``ontology.document_fields.pinned_document_row`` to read it
@@ -1193,10 +1317,11 @@ def mail_attachment_sender(db: sqlite3.Connection, handle: str) -> dict[str, Any
     theirs, never another mailbox's, and every captured mailbox holding an attachment
     (the own party's domains). The rows ``documentFields`` reads: each message's latest
     interval only. None when the capture holds no such attachment. Never shown to a
-    reader."""
+    reader. ``mailboxes``: ``attachment_mailboxes(db)`` as already read over the same
+    unchanged capture."""
     from ontology.document_fields import copy_mailbox
 
-    attached = MailCaptures._ATTACHED
+    attached = MailCaptures._ONE_ATTACHED
     found = db.execute(f"SELECT a.content_sha256, m.record {attached} AND a.l1_handle = ?",
                        (handle,)).fetchone()
     if found is None:
@@ -1206,9 +1331,9 @@ def mail_attachment_sender(db: sqlite3.Connection, handle: str) -> dict[str, Any
                                 for row in db.execute(f"SELECT m.record {attached} AND "
                                                       "a.content_sha256 = ?", (digest,)))
               if copy_mailbox(copy) == copy_mailbox(whose)]
-    mailboxes = [{"mailbox_upn": row[0]} for row in db.execute(
-        f"SELECT DISTINCT json_extract(m.record, '$.mailbox_upn') {attached}")]
-    return {**whose, "mailbox_copies": copies + mailboxes}
+    if mailboxes is None:
+        mailboxes = attachment_mailboxes(db)
+    return {**whose, "mailbox_copies": copies + list(mailboxes)}
 
 
 class SharePointCaptures:
@@ -1448,49 +1573,67 @@ class SharePointCaptures:
         ``integrations.captured_text``, shared with ``documentFields`` and resolve). The
         author of a file is unknown, so the sender class is ``unknown`` (external
         assertions)."""
+        for _key, load in self.document_groups():
+            yield from load()[0]
+
+    def document_groups(self) -> Iterator[tuple[str, Callable[[], tuple[list[Any], bool]]]]:
+        """``(key, load)`` per projected file version, as ``MailCaptures.document_groups``:
+        the version and its container members; ``key`` digests its row (record, digest,
+        bytes and stored text digests, interval), which forms of those blobs are on disk
+        and the code that reads them."""
+        if self._conn is None:
+            return
+        code = document_code()
+        for row in _sampled(self.sample, self._conn.execute(
+                self._LATEST + " ORDER BY drive_id, item_id, recorded_at, version_id")):
+            key = hashlib.sha256(repr((
+                code, [row[name] for name in ("l1_handle", "record", "digest",
+                                              "content_sha256", "text_status", "text_sha256",
+                                              "recorded_at", "superseded_at")],
+                _blob_state(self.blobs, row["content_sha256"]),
+                _blob_state(self.blobs, row["text_sha256"]))).encode("utf-8")).hexdigest()
+            yield key, partial(self._file_documents, row)
+
+    def _file_documents(self, row: Any) -> tuple[list[Any], bool]:
         from integrations.captured_text import captured_text
         from ontology.identifiers import copy_key
         from ontology.mentions import Document, TextField, file_text_fields
         from ontology.project_graph import member_documents
         from operating.doc_metadata_taxonomy import REF_COLUMNS, stated_metadata
 
-        if self._conn is None:
-            return
-        for row in _sampled(self.sample, self._conn.execute(
-                self._LATEST + " ORDER BY drive_id, item_id, recorded_at, version_id")):
-            record = json.loads(row["record"])
-            handle = row["l1_handle"]
-            fields = []
-            if isinstance(record.get("name"), str):
-                fields.append(TextField(handle, "row.name", record["name"]))
-            # A record number the Portal states in a Ref column is a mention of this file,
-            # cited to the captured column value (taxonomy.stated_metadata).
-            stated = stated_metadata(record)
-            for name in REF_COLUMNS if stated is not None else ():
-                if name in stated["columns"]:
-                    fields.append(TextField(handle, f"row.list_item_fields.fields.{name}",
-                                            record["list_item_fields"]["fields"][name]))
-            found = captured_text(self.blobs, {
-                **record, "content_sha256": row["content_sha256"],
-                "text_status": row["text_status"], "text_sha256": row["text_sha256"]})
-            # A file read on its first pages only: its name only, and why (no gap
-            # channel here).
-            withheld = None if found is None else found.text_withheld
-            if found is not None and found.text is not None and withheld is None:
-                fields.extend(file_text_fields(handle, "row.content_text", found.text,
-                                               paged=found.paged))
-            yield Document(handle, "sharepoint_file", tuple(fields), sender_class="unknown",
-                           digest=row["digest"], recorded_at=row["recorded_at"],
-                           superseded_at=row["superseded_at"],
-                           date=record.get("last_modified"),
-                           copy_key=copy_key("sharepoint", "driveItems",
-                                             {**record, "content_sha256": row["content_sha256"]}),
-                           text_withheld=withheld)
-            yield from member_documents(handle, {**record,
-                                                 "content_sha256": row["content_sha256"]},
-                                        self.blobs, recorded_at=row["recorded_at"],
-                                        superseded_at=row["superseded_at"],
-                                        date=record.get("last_modified"))
+        record = json.loads(row["record"])
+        handle = row["l1_handle"]
+        fields = []
+        if isinstance(record.get("name"), str):
+            fields.append(TextField(handle, "row.name", record["name"]))
+        # A record number the Portal states in a Ref column is a mention of this file,
+        # cited to the captured column value (taxonomy.stated_metadata).
+        stated = stated_metadata(record)
+        for name in REF_COLUMNS if stated is not None else ():
+            if name in stated["columns"]:
+                fields.append(TextField(handle, f"row.list_item_fields.fields.{name}",
+                                        record["list_item_fields"]["fields"][name]))
+        captured = {**record, "content_sha256": row["content_sha256"],
+                    "text_status": row["text_status"], "text_sha256": row["text_sha256"]}
+        found = captured_text(self.blobs, captured)
+        # A file read on its first pages only: its name only, and why (no gap
+        # channel here).
+        withheld = None if found is None else found.text_withheld
+        if found is not None and found.text is not None and withheld is None:
+            fields.extend(file_text_fields(handle, "row.content_text", found.text,
+                                           paged=found.paged))
+        out = [Document(handle, "sharepoint_file", tuple(fields), sender_class="unknown",
+                        digest=row["digest"], recorded_at=row["recorded_at"],
+                        superseded_at=row["superseded_at"],
+                        date=record.get("last_modified"),
+                        copy_key=copy_key("sharepoint", "driveItems",
+                                          {**record, "content_sha256": row["content_sha256"]}),
+                        text_withheld=withheld)]
+        out.extend(member_documents(handle, {**record, "content_sha256": row["content_sha256"]},
+                                    self.blobs, recorded_at=row["recorded_at"],
+                                    superseded_at=row["superseded_at"],
+                                    date=record.get("last_modified")))
+        return out, readings_remembered(self.blobs, [captured])
 
 
 def _bc_captures(path: str | Path, **options: Any) -> Any:
@@ -1562,6 +1705,43 @@ def binding_unit(binding_id: str) -> str:
     """The build unit of one binding: its objects, versions, values, identifiers and
     events (and every gap reported while projecting them)."""
     return f"b:{binding_id}"
+
+
+# A binding whose every row is a function of one object's own records (no link, lineage
+# hop, event, stand-in or ETL collapse reads another record: ``ontology.project_incremental``
+# ``isolated``) may be cut into shards by object id: shard ``k`` of ``n`` holds the objects
+# whose bucket (CRC-32 of the id, of ``SHARD_BUCKETS``) falls in its range. Each shard is a
+# build unit of its own (``shard_unit``), so a changed record re-projects its shard only.
+SHARD_BUCKETS = 4096
+
+
+def object_bucket(object_id: str) -> int:
+    """The shard bucket of an object id (stable across processes and platforms)."""
+    return zlib.crc32(object_id.encode("utf-8")) % SHARD_BUCKETS
+
+
+def shard_of(object_id: str, shards: int) -> int:
+    """The shard of ``shards`` (a power of two up to ``SHARD_BUCKETS``) holding an object."""
+    return object_bucket(object_id) * shards // SHARD_BUCKETS
+
+
+def shard_unit(binding_id: str, shard: int) -> str:
+    """The build unit of one shard of a sharded binding: its objects' rows and every gap
+    reported while projecting them. The binding's own unit (``binding_unit``) then holds
+    only what is reported of the binding as a whole or of a record that names no object."""
+    return f"b:{binding_id}#{shard}"
+
+
+def binding_key(b: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The binding key values of a captured row, or None when one is absent, blank or not
+    a scalar (the record names no object: ``binding_key_absent``)."""
+    key = {}
+    for path in b["key"]:
+        present, value = _cell(row, path)
+        if not present or _blank(value) or isinstance(value, (dict, list, float)):
+            return None
+        key[path] = value
+    return key
 
 
 def link_unit(link_id: str, index: int, lb: Mapping[str, Any],
@@ -2172,7 +2352,8 @@ class Projector:
                  as_known_at: Any = None, batch_size: int = DEFAULT_BATCH,
                  scratch_dir: str | Path | None = None,
                  scope: Iterable[str] | None = None,
-                 emit: Iterable[str] | None = None) -> None:
+                 emit: Iterable[str] | None = None,
+                 shards: Mapping[str, int] | None = None) -> None:
         self.schema = schema
         self.types: dict[str, Mapping[str, Any]] = dict(_get(schema, "object_types") or {})
         self.links: dict[str, Mapping[str, Any]] = dict(_get(schema, "link_types") or {})
@@ -2216,6 +2397,10 @@ class Projector:
         # in ``emit`` must have its dependencies in ``scope``. None = everything.
         self.scope = None if scope is None else frozenset(scope)
         self.emit = None if emit is None else frozenset(emit)
+        # Sharded bindings (binding -> shard count, ``shard_unit``): each object's rows and
+        # gaps are its shard's unit, and a partial build reads only the records of the
+        # shards in ``emit``. Only for bindings ``ontology.project_incremental.isolated``.
+        self.shards: dict[str, int] = {b: int(n) for b, n in (shards or {}).items() if n > 1}
         self._path_marks: dict[tuple[str, str], frozenset[str]] = {}
         self._company_unknown: dict[tuple[str, int], bool] = {}
         self._sigs: dict[tuple[str, str, str, str | None, str | None], int] = {}
@@ -2231,6 +2416,12 @@ class Projector:
 
     def _emits(self, unit: str) -> bool:
         return self.emit is None or unit in self.emit
+
+    def _unit_of(self, binding_id: str, object_id: str) -> str:
+        """The build unit of one object's rows: its shard's in a sharded binding."""
+        shards = self.shards.get(binding_id)
+        return (shard_unit(binding_id, shard_of(object_id, shards)) if shards
+                else binding_unit(binding_id))
 
     def _unit_of_link(self, link_type: str, kind: str | None, from_binding: str,
                       to_binding: str) -> str:
@@ -2495,6 +2686,7 @@ class Projector:
 
         rid = b["id"]
         held = 0  # staged rows whose rec is still the raw pickle (before prime)
+        sharded = self.shards.get(rid)
 
         def flush() -> None:
             nonlocal held
@@ -2526,16 +2718,17 @@ class Projector:
                 # Its scope's stood-for records are not held whole (``_whole_scopes``).
                 self.report.gap(whole[0], b["id"], rec.l1_handle)
                 continue
-            key = {}
-            for path in b["key"]:
-                present, value = _cell(rec.row, path)
-                if not present or _blank(value) or isinstance(value, (dict, list, float)):
-                    key = None
-                    break
-                key[path] = value
+            key = binding_key(b, rec.row)
             if key is None:
+                self.report.unit = binding_unit(rid)
                 self.report.gap("binding_key_absent", b["id"], rec.l1_handle)
                 continue
+            object_id = object_id_of(tid, b["id"], key)
+            if sharded:
+                # A record of a shard this build does not write is not read further.
+                unit = self.report.unit = shard_unit(rid, shard_of(object_id, sharded))
+                if not self._emits(unit):
+                    continue
             if "from_capture" in b["lineage"] and not (
                     rec.capture_lineage and _BC_LINEAGE.fullmatch(rec.capture_lineage)):
                 # The capture's company is its lineage; without one the version has no
@@ -2546,7 +2739,6 @@ class Projector:
             if merge is None and "stands_for" in b:
                 self.report.gap("binding_key_absent", b["id"], rec.l1_handle)
                 continue
-            object_id = object_id_of(tid, b["id"], key)
             raw = _rec_pickle(rec)
             hold = not self._recs.primed(rid)
             held += hold
@@ -2561,6 +2753,7 @@ class Projector:
                 self._tick()
                 flush()
         flush()
+        self.report.unit = binding_unit(rid)
         if minted is not None:
             self._collapse_reinserted(b)
         if "stands_for" in b:
@@ -2568,13 +2761,15 @@ class Projector:
         objects: list[dict[str, Any]] = []
         removals: list[dict[str, Any]] = []
         accepted: list[tuple[int]] = []
-        write = self._emits(binding_unit(b["id"]))
+        write = bool(sharded) or self._emits(binding_unit(b["id"]))
         cursor = self._db.execute(
             "SELECT object_id, seq, record_key, handle, start, end_, audience, missing, "
             "removals FROM stage WHERE binding = ? ORDER BY object_id, start, handle, seq",
             (b["id"],))
         for object_id, group in groupby(cursor, key=lambda row: row[0]):
             versions = list(group)
+            if sharded:   # only the records of the shards it writes were staged
+                self.report.unit = shard_unit(rid, shard_of(object_id, sharded))
             if len({row[2] for row in versions}) > 1:
                 # Several source records answer to one binding key: never guess which.
                 self.report.gap("binding_key_not_unique", b["id"], versions[0][3])
@@ -2619,6 +2814,7 @@ class Projector:
             builder.add("objects", objects)
             builder.add("object_removals", removals)
         self._db.executemany("INSERT INTO accepted (seq) VALUES (?)", accepted)
+        self.report.unit = binding_unit(rid)
 
     def _removals(self, object_id: str, missing: str | None,
                   stretches: Iterable[Sequence[Any]],
@@ -3147,7 +3343,8 @@ class Projector:
     def _lineage(self, version: _Version, stack: frozenset[str] = frozenset()) -> str | None:
         if version.lineage is not None:
             return version.lineage
-        unit, self.report.unit = self.report.unit, binding_unit(version.binding["id"])
+        unit, self.report.unit = self.report.unit, self._unit_of(version.binding["id"],
+                                                                 version.object_id)
         try:
             return self._lineage_of(version, stack)
         finally:
@@ -3341,7 +3538,8 @@ class Projector:
         values: list[dict[str, Any]] = []
         identifiers: list[dict[str, Any]] = []
         for bid in self._bound():
-            if not self._emits(binding_unit(bid)):
+            sharded = bid in self.shards   # only its written shards' versions were staged
+            if not sharded and not self._emits(binding_unit(bid)):
                 continue
             self.report.unit = binding_unit(bid)
             tid, binding = self.bindings[bid]
@@ -3353,6 +3551,8 @@ class Projector:
                        for source in prop["sources"] if source["binding"] == bid
                        and source.get("parser") != POST_PROJECT]
             for version in self._versions(bid):
+                if sharded:
+                    self.report.unit = self._unit_of(bid, version.object_id)
                 for prop, source in sourced:
                     self._value(version, t, tid, prop, source, unique_keys)
                 self._placeholders(version, t, tid)
@@ -3928,7 +4128,7 @@ class Projector:
                 "object_id": row[2], "l1_handle": row[3], "digest": row[4], "lineage": row[5],
                 "markings": _markings_text(self._type_marks(row[1])), "recorded_at": row[6],
                 "superseded_at": row[7]} for row in rows
-                if self._emits(binding_unit(row[8]))])
+                if self._emits(self._unit_of(row[8], row[2]))])
             last = rows[-1][0]
 
     def _write_links(self, builder: StoreBuilder) -> None:

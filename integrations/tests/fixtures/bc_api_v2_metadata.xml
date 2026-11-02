@@ -32,6 +32,11 @@
     <Property Name="systemModifiedBy" Type="Edm.Guid" />
     <NavigationProperty Name="companyInformation" Type="Collection(Microsoft.NAV.companyInformation)" ContainsTarget="true" />
     <NavigationProperty Name="locations" Type="Collection(Microsoft.NAV.location)" ContainsTarget="true" />
+    <NavigationProperty Name="dimensions" Type="Collection(Microsoft.NAV.dimension)" ContainsTarget="true" />
+    <NavigationProperty Name="dimensionValues" Type="Collection(Microsoft.NAV.dimensionValue)" ContainsTarget="true" />
+    <NavigationProperty Name="projects" Type="Collection(Microsoft.NAV.project)" ContainsTarget="true" />
+    <NavigationProperty Name="fixedAssets" Type="Collection(Microsoft.NAV.fixedAsset)" ContainsTarget="true" />
+    <NavigationProperty Name="bankAccounts" Type="Collection(Microsoft.NAV.bankAccount)" ContainsTarget="true" />
     <NavigationProperty Name="unitsOfMeasure" Type="Collection(Microsoft.NAV.unitOfMeasure)" ContainsTarget="true" />
     <NavigationProperty Name="itemCategories" Type="Collection(Microsoft.NAV.itemCategory)" ContainsTarget="true" />
     <NavigationProperty Name="currencies" Type="Collection(Microsoft.NAV.currency)" ContainsTarget="true" />
@@ -90,6 +95,62 @@
     <Property Name="experience" Type="Edm.String" />
     <Property Name="picture" Type="Edm.Stream" />
     <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <!-- dimensions, projects, fixed assets, bank accounts: the live $metadata of 2026-11-01 (lane coverage-more), navigations to types outside this fixture left out -->
+   <EntityType Name="dimension">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="consolidationCode" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="dimensionValues" Type="Collection(Microsoft.NAV.dimensionValue)" />
+   </EntityType>
+   <EntityType Name="dimensionValue">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="code" Type="Edm.String" />
+    <Property Name="dimensionId" Type="Edm.Guid" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="consolidationCode" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <NavigationProperty Name="dimension" Type="Microsoft.NAV.dimension" />
+   </EntityType>
+   <EntityType Name="project">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="fixedAsset">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="fixedAssetLocationCode" Type="Edm.String" />
+    <Property Name="fixedAssetLocationId" Type="Edm.Guid" />
+    <Property Name="classCode" Type="Edm.String" />
+    <Property Name="subclassCode" Type="Edm.String" />
+    <Property Name="blocked" Type="Edm.Boolean" />
+    <Property Name="serialNumber" Type="Edm.String" />
+    <Property Name="employeeNumber" Type="Edm.String" />
+    <Property Name="employeeId" Type="Edm.Guid" />
+    <Property Name="underMaintenance" Type="Edm.Boolean" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+   </EntityType>
+   <EntityType Name="bankAccount">
+    <Key><PropertyRef Name="id" /></Key>
+    <Property Name="id" Type="Edm.Guid" Nullable="false" />
+    <Property Name="number" Type="Edm.String" />
+    <Property Name="displayName" Type="Edm.String" />
+    <Property Name="lastModifiedDateTime" Type="Edm.DateTimeOffset" />
+    <Property Name="bankAccountNumber" Type="Edm.String" />
+    <Property Name="blocked" Type="Edm.Boolean" />
+    <Property Name="currencyCode" Type="Edm.String" />
+    <Property Name="currencyId" Type="Edm.Guid" />
+    <Property Name="iban" Type="Edm.String" />
+    <Property Name="intercompanyEnabled" Type="Edm.Boolean" />
    </EntityType>
    <EntityType Name="location">
     <Key><PropertyRef Name="id" /></Key>
@@ -217,6 +278,7 @@
     </NavigationProperty>
     <NavigationProperty Name="paymentTerm" Type="Microsoft.NAV.paymentTerm" />
     <NavigationProperty Name="shipmentMethod" Type="Microsoft.NAV.shipmentMethod" />
+    <NavigationProperty Name="contactsInformation" Type="Collection(Microsoft.NAV.contactInformation)" ContainsTarget="true" />
    </EntityType>
    <EntityType Name="vendor">
     <Key><PropertyRef Name="id" /></Key>
@@ -246,6 +308,22 @@
      <ReferentialConstraint Property="currencyId" ReferencedProperty="id" />
     </NavigationProperty>
     <NavigationProperty Name="paymentTerm" Type="Microsoft.NAV.paymentTerm" />
+    <NavigationProperty Name="contactsInformation" Type="Collection(Microsoft.NAV.contactInformation)" ContainsTarget="true" />
+   </EntityType>
+   <EntityType Name="contactInformation">
+    <Key><PropertyRef Name="contactId" /></Key>
+    <Property Name="contactId" Type="Edm.Guid" Nullable="false" />
+    <Property Name="contactNumber" Type="Edm.String" Nullable="false" />
+    <Property Name="contactName" Type="Edm.String" />
+    <Property Name="contactType" Type="Edm.String" />
+    <Property Name="relatedId" Type="Edm.Guid" Nullable="false" />
+    <Property Name="relatedType" Type="Edm.String" Nullable="false" />
+    <NavigationProperty Name="customer" Type="Microsoft.NAV.customer" Partner="contactsInformation" ContainsTarget="true">
+     <ReferentialConstraint Property="relatedId" ReferencedProperty="id" />
+    </NavigationProperty>
+    <NavigationProperty Name="vendor" Type="Microsoft.NAV.vendor" Partner="contactsInformation" ContainsTarget="true">
+     <ReferentialConstraint Property="relatedId" ReferencedProperty="id" />
+    </NavigationProperty>
    </EntityType>
    <EntityType Name="contact">
     <Key><PropertyRef Name="id" /></Key>
@@ -399,6 +477,7 @@
    </EntityType>
    <EntityType Name="salesOrder">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="externalDocumentNumber" Type="Edm.String" />
@@ -479,6 +558,7 @@
    </EntityType>
    <EntityType Name="salesInvoice">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="externalDocumentNumber" Type="Edm.String" />
@@ -599,6 +679,7 @@
    </EntityType>
    <EntityType Name="salesCreditMemo">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="externalDocumentNumber" Type="Edm.String" />
@@ -671,6 +752,7 @@
    </EntityType>
    <EntityType Name="purchaseOrder">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="orderDate" Type="Edm.Date" />
@@ -782,6 +864,7 @@
    </EntityType>
    <EntityType Name="purchaseInvoice">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="invoiceDate" Type="Edm.Date" />
@@ -855,6 +938,7 @@
    </EntityType>
    <EntityType Name="purchaseCreditMemo">
     <Key><PropertyRef Name="id" /></Key>
+    <Property Name="shortcutDimension1Code" Type="Edm.String" />
     <Property Name="id" Type="Edm.Guid" Nullable="false" />
     <Property Name="number" Type="Edm.String" />
     <Property Name="creditMemoDate" Type="Edm.Date" />
@@ -1075,6 +1159,11 @@
     <EntitySet Name="companies" EntityType="Microsoft.NAV.company" />
     <EntitySet Name="companyInformation" EntityType="Microsoft.NAV.companyInformation" />
     <EntitySet Name="locations" EntityType="Microsoft.NAV.location" />
+    <EntitySet Name="dimensions" EntityType="Microsoft.NAV.dimension" />
+    <EntitySet Name="dimensionValues" EntityType="Microsoft.NAV.dimensionValue" />
+    <EntitySet Name="projects" EntityType="Microsoft.NAV.project" />
+    <EntitySet Name="fixedAssets" EntityType="Microsoft.NAV.fixedAsset" />
+    <EntitySet Name="bankAccounts" EntityType="Microsoft.NAV.bankAccount" />
     <EntitySet Name="unitsOfMeasure" EntityType="Microsoft.NAV.unitOfMeasure" />
     <EntitySet Name="itemCategories" EntityType="Microsoft.NAV.itemCategory" />
     <EntitySet Name="currencies" EntityType="Microsoft.NAV.currency" />
@@ -1085,6 +1174,7 @@
     <EntitySet Name="customers" EntityType="Microsoft.NAV.customer" />
     <EntitySet Name="vendors" EntityType="Microsoft.NAV.vendor" />
     <EntitySet Name="contacts" EntityType="Microsoft.NAV.contact" />
+    <EntitySet Name="contactsInformation" EntityType="Microsoft.NAV.contactInformation" />
     <EntitySet Name="items" EntityType="Microsoft.NAV.item" />
     <EntitySet Name="salesQuotes" EntityType="Microsoft.NAV.salesQuote" />
     <EntitySet Name="salesQuoteLines" EntityType="Microsoft.NAV.salesQuoteLine" />

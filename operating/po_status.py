@@ -920,6 +920,38 @@ def _item_record(item: Any) -> str | None:
     return found if isinstance(found, str) and found else None
 
 
+def _item_handle(item: Any) -> str | None:
+    cite = item.get("citation") if isinstance(item, Mapping) else None
+    handle = cite.get("l1_handle") if isinstance(cite, Mapping) else None
+    return handle if isinstance(handle, str) else None
+
+
+def _undating_drafts(source: Any, records: Sequence[str],
+                     reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]]
+                     ) -> tuple[set[str], set[str]]:
+    """The BC records among ``records`` whose dates never date the order: a Draft whose
+    lines record no received quantity above 0, or whose lines this reader cannot read
+    (a date never decides late on a guess). A Draft received against keeps its dates.
+    Also the citation handles of those records' own values (a dated item a tool reader
+    cites by handle only)."""
+    out: set[str] = set()
+    handles: set[str] = set()
+    for record_id in records:
+        if system_of(record_id) != RECEIPT_AUTHORITY:
+            continue
+        values, evidence, _hidden = reads.get(record_id) or source.values(record_id)
+        if not bc_draft(values):
+            continue
+        triples = source.lines(record_id)[0]
+        received = triples not in (None, UNREAD) and any(
+            got is not UNREAD and got is not None and (_number(got) or Decimal(0)) > EPS
+            for _want, got, _unit in triples)
+        if not received:
+            out.add(record_id)
+            handles |= {h for h in (_item_handle(e) for e in evidence) if h}
+    return out, handles
+
+
 def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True) -> PoRead:
     """The one purchase-order reader. ``source`` reads for one caller with its own
     permission filtering and markings: ``twins(oid)`` -> (members, blind, identity marks);
@@ -952,8 +984,17 @@ def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True
         # a firm (``corroborated``) Portal-BC twin is not an identity (its status never
         # joins this PO's), but its dates are this order's: read through the link, cited
         dated = [*members, *(t for t in firm if t not in members)]
+        # a BC Draft never received against dates nothing (decision
+        # 2026-11-01-late-list-draft-twins rule 1): its header and line dates are draft
+        # or migration defaults, never the order's requested-by date
+        drafts, draft_handles = _undating_drafts(source, dated, reads)
+        dated = [d for d in dated if d not in drafts]
+        # still this order's firm twins (the engine joins them as one order); only
+        # their dates are left out
         out.date_twins, out.marks = list(firm), [*out.marks, *firm_marks]
-        raw = list(source.need_dates(oid, dated))
+        raw = [entry for entry in source.need_dates(oid, dated)
+               if _item_record(entry[2]) not in drafts
+               and _item_handle(entry[2]) not in draft_handles]
         out.need = need_date(raw)
         found = _date_conflict(raw)
         if found is not None:

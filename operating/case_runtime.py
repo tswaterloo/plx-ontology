@@ -114,9 +114,10 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
-from typing import Any, Collection, Iterator, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 
 from integrations.capture_store import CaptureError, CaptureStore, is_capture_handle
 from integrations.http import SourceUnavailable
@@ -447,7 +448,11 @@ class CaseRuntime:
         if people_exclusion is None:
             from integrations.people_exclusion import PeopleExclusion
             people_exclusion = PeopleExclusion.from_env(os.environ)
-        self.people_exclusion = people_exclusion
+        # Addresses and OneDrive owners decided offline by the mail capture's directory
+        # (``people_exclusion.with_directory``: one the directory does not map stays
+        # undecided); a bound guard decides them itself.
+        from integrations.people_exclusion import with_directory
+        self.people_exclusion = with_directory(people_exclusion, state_dir)
         if self.mail_scope.all_directory:
             self.mail_scope.attach_people(people_exclusion)
         self._address_exclusion: Any = _UNBOUND
@@ -526,6 +531,48 @@ class CaseRuntime:
                 and acl.get("status") == "derived" and acl.get("kind") == "mailbox_owner"):
             return MAILBOX_ACCESS_UNDETERMINED
         return EMPLOYEE_ACL_DENIED
+
+    def full_read_stale_allows(self, actor: Any, scheme: str, source_acl: Any,
+                               recorded_at: Any, *, modifier: Any = None,
+                               onedrive_owner: Any = None, journal: bool = True) -> bool:
+        """May ``actor`` open an item whose captured permission list (recorded at
+        ``recorded_at``) is past the capture-age bound? Only an employee holding a declared
+        full-read grant for the scope, under ``EmployeeEntitlement.full_read_stale_allows``
+        (the fresh item's exclusion, with every listed person, the recorded last modifier
+        and the OneDrive owner decidable and cleared; the exclusion loaded). Each open is
+        journalled with the list's age (``journal`` False: the caller journals once the
+        item is actually opened, ``journal_full_read_stale``); every other reader: False
+        (the bound decides, unchanged). An undated or future-dated list decides
+        nothing."""
+        try:
+            entitlement = actor if hasattr(actor, "full_read_stale_allows") \
+                else self.employee_gate.entitlement(actor)
+        except Exception:  # noqa: BLE001 - a refused or unresolved employee opens nothing
+            return False
+        if entitlement is None or not entitlement.full_read_stale_allows(
+                scheme, source_acl, modifier=modifier, onedrive_owner=onedrive_owner):
+            return False
+        if _stale_hours(recorded_at) is None:
+            return False
+        if journal:
+            self.journal_full_read_stale(entitlement, scheme, recorded_at)
+        return True
+
+    def journal_full_read_stale(self, entitlement: Any, scheme: str,
+                                recorded_at: Any) -> None:
+        """Journal one open under ``entitlement``'s full-read grant on a permission list
+        recorded at ``recorded_at`` (its age in whole hours); a journal never fails the
+        read."""
+        hours = _stale_hours(recorded_at)
+        if hours is None:
+            return
+        try:
+            from operator_ui.session_journal import record_full_read_stale
+            record_full_read_stale(self.state_dir, employee=entitlement.principal.principal,
+                                   access=entitlement.full_read_code(), source=scheme,
+                                   hours=hours)
+        except Exception as error:  # noqa: BLE001 - a journal never fails the read
+            print(f"session journal: write failed ({type(error).__name__})", file=sys.stderr)
 
     def _employee_acl_allows(self, actor: Actor, scheme: str, record: Any) -> bool:
         return self._employee_acl_denial(actor, scheme, record) is None
@@ -732,7 +779,8 @@ class CaseRuntime:
 
     # ---- captures (BC, Teams, Mission Control; captured mail and SharePoint) ----------
 
-    def _capture_resolve(self, handle: str, actor: Actor) -> dict[str, Any]:
+    def _capture_resolve(self, handle: str, actor: Actor, *, opening: bool = False
+                         ) -> dict[str, Any]:
         """The ``CaptureStore.resolve`` result of a BC, Teams, SharePoint list or MC
         capture handle for ``actor`` (gated by the caller's public method), or
         ``CitationUnresolvable``. The store is the host's, read on the runtime's one
@@ -758,7 +806,8 @@ class CaseRuntime:
         if source in ("teams-channel", "teams-chat", "sharepoint-list"):
             entitlement = self.employee_gate.entitlement(actor)
             if entitlement is not None:
-                audience = _EmployeeItemAcl(audience, entitlement, source)
+                audience = _EmployeeItemAcl(audience, entitlement, source,
+                                            stale=self.full_read_stale_allows)
         with self._capture_lock:
             try:
                 result = self._capture_read(path).read_as(audience).resolve(handle, actor)
@@ -786,6 +835,11 @@ class CaseRuntime:
             if people_excluded(self.people_exclusion, named):
                 # The guard was usable (``exclusion_refusal`` above): it decided.
                 raise gate_refusal("capture_citation_unresolvable", REFUSED)
+        stale_at = getattr(audience, "stale_opened_at", None)
+        if opening and stale_at is not None:
+            # Opened (every check above passed) on a membership past the bound under the
+            # full-read grant: journalled now, never for a refusal or a status check.
+            self.journal_full_read_stale(audience.entitlement, source, stale_at)
         return result
 
     def _capture_read(self, path: Path) -> CaptureStore:
@@ -883,7 +937,7 @@ class CaseRuntime:
         captures (``captures``), when they hold it; their gate refusing it is
         ``CitationUnresolvable``."""
         if _captured_handle(handle):
-            return _capture_view(self._capture_resolve(handle, actor))
+            return _capture_view(self._capture_resolve(handle, actor, opening=True))
         if handle.startswith(MAIL_SCHEME):
             return self.mail_capture(handle, actor)
         if self.captures is not None and handle.startswith(SHAREPOINT_SCHEME):
@@ -1315,6 +1369,11 @@ class CaseRuntime:
         if owner or people is not None:
             guard = self.address_exclusion()
             if guard is None:
+                # No directory listing: the captured directory decides what it maps
+                # (``people_exclusion.with_directory``); anything else stays undecided.
+                held = self.people_exclusion
+                guard = held if getattr(held, "directory_loaded", False) else None
+            if guard is None:
                 return FAILED
             try:
                 if owner:
@@ -1324,8 +1383,11 @@ class CaseRuntime:
             except Exception:  # noqa: BLE001 - undecidable: withheld
                 return FAILED
             if people is not None:
-                from .ontology_tools_evidence import people_excluded
-                if not getattr(guard, "bound", False):
+                from .ontology_tools_evidence import _strings, people_excluded
+                # Every person must be decidable: bound, an object id, or an address the
+                # attached directory maps.
+                if not getattr(guard, "bound", False) and not all(
+                        guard.decides(v) for v in _strings([people])):
                     return FAILED
                 try:
                     if people_excluded(guard, [people]):
@@ -1420,7 +1482,14 @@ class CaseRuntime:
         if self.live is not None and provenance.get("drive_id") in self.live.sharepoint:
             return self._original_source_gate({**provenance, "source": "sharepoint-drive"},
                                               actor)
-        return capture_decides(provenance.get("captured_at"), datetime.now(timezone.utc))
+        if capture_decides(provenance.get("captured_at"), datetime.now(timezone.utc)):
+            return True
+        # Past the bound: only under a declared full-read grant (creator and last modifier
+        # recorded and cleared, no excluded person on the recorded list).
+        return self.full_read_stale_allows(
+            actor, "sharepoint", provenance.get("source_acl"), provenance.get("captured_at"),
+            modifier=provenance.get("last_modified_by"),
+            onedrive_owner=provenance.get("onedrive_owner"))
 
     def _mail_original_gate(self, provenance: Mapping[str, Any], actor: Actor) -> bool:
         """May ``actor`` read the message a mail-attachment original came from, now?
@@ -1822,6 +1891,19 @@ _ITEM_ACL_STATUSES = {"sharepoint": ("read",), "graph-mail": ("derived",),
                       "sharepoint-list": ("read",)}
 
 
+def _stale_hours(recorded_at: Any) -> int | None:
+    """The age in whole hours of a permission list recorded at ``recorded_at`` (an aware
+    ISO time); None when undated, naive, unparsable or in the future (decides nothing)."""
+    try:
+        at = datetime.fromisoformat(str(recorded_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        return None
+    hours = int((datetime.now(timezone.utc) - at).total_seconds() // 3600)
+    return None if hours < 0 else hours
+
+
 class _EmployeeItemAcl:
     """The live audience as a capture store reads it for one employee: the audience still
     decides every resource (grant, tenant, clearance); the item's captured source ACL (the
@@ -1840,14 +1922,42 @@ class _EmployeeItemAcl:
     One gated call holds the one entitlement the employee gate resolved for it for the
     call's whole duration; a revocation lands on the next call (decided acceptable)."""
 
-    def __init__(self, audience: Any, entitlement: Any, scheme: str) -> None:
+    def __init__(self, audience: Any, entitlement: Any, scheme: str,
+                 stale: Callable[..., bool] | None = None) -> None:
         self.tenant = audience.tenant
         self._audience, self._entitlement = audience, entitlement
+        self._stale = stale
+        self._stale_seen: dict[tuple, bool] = {}
+        # When a membership past the bound was opened under the grant in this call (its
+        # recorded time): the caller journals it once the item is served.
+        self.stale_opened_at: Any = None
         self._statuses = _ITEM_ACL_STATUSES[scheme]
         self._scheme = scheme
 
     def allows(self, actor: Actor, resource: str) -> bool:
         return self._audience.allows(actor, resource)
+
+    def stale_unit_acl_allows(self, actor: Actor, unit_acl: Any, recorded_at: Any) -> bool:
+        """A unit membership past the capture-age bound (``CaptureStore``): opens only under
+        the employee's full-read grant (``CaseRuntime.full_read_stale_allows``, the chat's
+        members as its people), decided once per membership in this call. Decided, never
+        journalled here: a listing or a refused item is no open; ``stale_opened_at`` tells
+        the caller (``CaseRuntime._capture_resolve``) to journal a served one."""
+        if self._stale is None or not isinstance(unit_acl, Mapping):
+            return False
+        key = (str(recorded_at), json.dumps(unit_acl.get("identities"), sort_keys=True,
+                                            default=str))
+        if key not in self._stale_seen:
+            # decided only: the open is journalled by the caller once it is served
+            self._stale_seen[key] = bool(self._stale(self._entitlement, self._scheme,
+                                                     unit_acl, recorded_at, journal=False))
+        if self._stale_seen[key]:
+            self.stale_opened_at = recorded_at
+        return self._stale_seen[key]
+
+    @property
+    def entitlement(self) -> Any:
+        return self._entitlement
 
     def identities_for(self, actor: Actor) -> frozenset[str]:
         return self._entitlement.source_identities if self._entitlement.actor is not None \

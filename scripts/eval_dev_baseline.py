@@ -1501,9 +1501,13 @@ class VariantCut(Exception):
 
 # The mirror tables with no ``relation`` column: the file's own meta, the catalog and
 # AUTOINCREMENT counters kept whole, and the per-capture / per-scan rows removed with the
-# capture or scan they belong to (``_forget_relations``).
-_MIRROR_WHOLE = frozenset({"mirror_meta", "upstream_catalog", "sqlite_sequence"})
+# capture or scan they belong to (``_forget_relations``). The change counters
+# (``relation_change``) are kept whole too: a counter never goes back, so a forgotten
+# relation's rows, moved by their own deletion, never read as an earlier mark.
+_MIRROR_WHOLE = frozenset({"mirror_meta", "upstream_catalog", "sqlite_sequence",
+                           "relation_change"})
 _MIRROR_BY_PARENT = {"capture_state": ("capture_id", "capture"),
+                     "change_capture": ("capture_id", "capture"),
                      "absence_seen": ("scan_id", "absence_scan")}
 
 

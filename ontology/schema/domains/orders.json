@@ -1161,6 +1161,101 @@
               "id": "allowlist.public.order_entry"
             }
           ]
+        },
+        {
+          "name": "portal_updated_at",
+          "value_type": "text",
+          "description": "The Portal row's updated_at: naive UTC wall time as Prisma writes it, kept as text (it states no zone). The Portal's ETL and bridges bump it whether or not a field changed: a stamp, never proof of a change.",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "updated_at",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "fm_modified_at",
+          "value_type": "timestamp",
+          "description": "FileMaker's own edit time of the record (audittimestampmodified).",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry",
+              "path": "audittimestampmodified",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "app_* updated_at is also bumped by the ETL and bridges: a stamp, never proof of a change; FM audittimestampmodified is the FM edit time."
+            }
+          ]
+        },
+        {
+          "name": "bc_last_modified_at",
+          "value_type": "timestamp",
+          "description": "Business Central's lastModifiedDateTime: BC sets it on every write of the record (a source change signal).",
+          "sources": [
+            {
+              "binding": "bc.sales_orders",
+              "path": "lastModifiedDateTime",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/08-RESEARCH-LITERATURE.md",
+              "note": "Business Central API documents expose a read-only lastModifiedDateTime, set by BC on every write of the record (the BC capture reads incrementally on it, 07-ONTOLOGY-DESIGN 2026-10-02 bc-capture-incremental)."
+            }
+          ]
+        },
+        {
+          "name": "portal_created_at",
+          "value_type": "text",
+          "description": "The Portal row's created_at: naive UTC wall time as Prisma writes it, kept as text. When the Portal record was created (an FM migration copy: the copy's creation, not the FM record's).",
+          "sources": [
+            {
+              "binding": "portal.app_sales_order",
+              "path": "created_at",
+              "parser": "trim"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
+        },
+        {
+          "name": "fm_created_at",
+          "value_type": "timestamp",
+          "description": "FileMaker's own creation time of the record (audittimestampcreated).",
+          "sources": [
+            {
+              "binding": "portal.fm_order_entry",
+              "path": "audittimestampcreated",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/03-PORTAL.md#6",
+              "note": "Portal app_* timestamps are Prisma naive UTC (reporting API since mode timestamp-utc); updated_at is also bumped by the ETL; FM audittimestampcreated/modified are FileMaker's own times."
+            }
+          ]
         }
       ],
       "identity_keys": [
@@ -3597,6 +3692,51 @@
                 ]
               }
             ]
+          }
+        },
+        {
+          "name": "bc_last_modified_at",
+          "value_type": "timestamp",
+          "description": "Business Central's lastModifiedDateTime: BC sets it on every write of the record (a source change signal).",
+          "sources": [
+            {
+              "binding": "bc.sales_invoices",
+              "path": "lastModifiedDateTime",
+              "parser": "iso_timestamp"
+            },
+            {
+              "binding": "portal.bc_invoice_snapshot",
+              "path": "bc_last_modified_at",
+              "parser": "iso_timestamp"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "context_pack",
+              "ref": "devloop/CONTEXT/08-RESEARCH-LITERATURE.md",
+              "note": "Business Central API documents expose a read-only lastModifiedDateTime, set by BC on every write of the record (the BC capture reads incrementally on it, 07-ONTOLOGY-DESIGN 2026-10-02 bc-capture-incremental)."
+            }
+          ],
+          "authority": {
+            "precedence": [
+              {
+                "lineage": [
+                  "bc_manufacturing",
+                  "bc_distribution"
+                ],
+                "evidence": [
+                  {
+                    "kind": "ref",
+                    "id": "context.critique.r1"
+                  },
+                  {
+                    "kind": "ref",
+                    "id": "portal.bc_company_pins"
+                  }
+                ]
+              }
+            ],
+            "note": "BC's own record over the Portal's snapshot of it."
           }
         }
       ],

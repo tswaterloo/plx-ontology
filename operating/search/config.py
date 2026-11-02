@@ -54,6 +54,10 @@ class Weights:
     rerank_top: int
     rerank_timeout_s: float
     intents: Mapping[str, IntentWeights]
+    # The document priors both search paths order by (``operating.search.authority``).
+    authority: Any = None
+    # The longest passage (characters) the cross-encoder reads per candidate.
+    rerank_passage_chars: int = 1200
 
     def for_intent(self, intent: str | None) -> IntentWeights:
         """An unknown or missing intent reads the ``default`` weights."""
@@ -71,7 +75,8 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
     if not isinstance(raw, Mapping) or raw.get("schema") != "plx-search-weights/v1":
         raise WeightsError("weights_invalid:schema")
     allowed = {"schema", "notes", "fusion", "rrf_k", "candidates_per_retriever",
-               "rerank_top", "rerank_timeout_s", "intents", "tuned"}
+               "rerank_top", "rerank_timeout_s", "rerank_passage_chars", "intents", "tuned",
+               "authority"}
     unknown = set(raw) - allowed
     if unknown:
         raise WeightsError(f"weights_invalid:unknown_keys:{sorted(unknown)}")
@@ -94,12 +99,17 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
             {r: _number(retrievers[r], f"{name}.{r}", 0, 100) for r in RETRIEVERS},
             *(_number(spec[t], f"{name}.{t}", 0, 1) for t in FINAL_TERMS),
             _number(spec["half_life_days"], f"{name}.half_life_days", 0.1, 100000))
+    from operating.search import authority
+    if "authority" not in raw:
+        raise WeightsError("weights_invalid:authority")
     return Weights(
         raw["fusion"], _number(raw.get("rrf_k"), "rrf_k", 1, 1000),
         int(_number(raw.get("candidates_per_retriever"), "candidates", 1, 500)),
         int(_number(raw.get("rerank_top"), "rerank_top", 0, 200)),
         _number(raw.get("rerank_timeout_s"), "rerank_timeout_s", 0, 60),
-        intents)
+        intents, authority.parse(raw["authority"]),
+        int(_number(raw.get("rerank_passage_chars", 1200), "rerank_passage_chars",
+                    100, 4000)))
 
 
 _CACHE: dict[str, tuple[float, Weights]] = {}

@@ -24,9 +24,15 @@ Per card, from its headline score:
 - **correct with evidence**, raw: outcome ``correct`` (a rubric card is correct only with
   an evidenced claim, scorer /17); **audited**: and not resting only on own-document
   claims no audit judged (``evidence.own_document_only`` without ``own_document_audited``,
-  scorer /21);
-- **confident wrong** (the key risk number): ``wrong`` while stating an answer (not
-  abstained); ``confident_unsupported`` is its subset the claim gate refused;
+  scorer /21), nor only on live-record claims no audit judged (``live_record_only``
+  without ``live_record_audited``, scorer /27);
+- **confident wrong**: ``wrong`` while stating an answer (not abstained), the total kept
+  for continuity; ``confident_unsupported`` is its subset the claim gate refused. It is
+  split in three kinds (``evals.score.confident_wrong_kind``), each counted apart: a
+  **false statement** (the key risk number, the bar's ``<= 1%``), an **incomplete** answer
+  (it misses an expected gap, fact or value and states nothing false) and a
+  **mislabelled** one (only its answerability label is not the card's). Incomplete and
+  mislabelled answers are not correct; they are not false statements;
 - **justified abstention**: the scorer's ``justified_abstention`` (it named the gap and the
   card allows no answer); an **unjustified abstention** is ``wrong`` while abstaining;
 - **blocked**: the run says nothing about the agent (``blocked``: a failed session, an
@@ -59,6 +65,9 @@ BAR_PATH = ROOT / "evals" / "bar.json"
 BAR_FORMAT = "plx-eval-bar/v1"
 QUESTION_TYPES = ("lookup", "list", "why/trace", "compute", "document")
 GRADED = ("correct", "wrong", "justified_abstention", "blocked", "not_run")
+# The confident-wrong kinds counted apart (``evals.score.WRONG_KINDS``).
+CONFIDENT_KINDS = ("confident_false_statement", "confident_incomplete",
+                   "confident_mislabelled")
 _COMPUTE = re.compile(r"\b(how (much|many|long)|total|sum|average|per[- ]unit|margin|"
                       r"percent(age)?|days? of supply|is left|remaining)\b", re.I)
 _TRACE = re.compile(r"^\s*why\b|\b(why|trace|chain|traced|lineage|reach(ed)?|led to|"
@@ -147,8 +156,12 @@ def classify(score: Mapping[str, Any] | None) -> dict[str, Any]:
     return {"outcome": outcome,
             "correct_raw": outcome == "correct",
             "correct_audited": outcome == "correct" and not (
-                evidence.get("own_document_only") and not evidence.get("own_document_audited")),
+                evidence.get("own_document_only") and not evidence.get("own_document_audited"))
+            and not (evidence.get("live_record_only")
+                     and not evidence.get("live_record_audited")),
             "confident_wrong": outcome == "wrong" and not abstained,
+            **{f"confident_{kind}": scoring.confident_wrong_kind(score) == kind
+               for kind in scoring.WRONG_KINDS},
             "confident_unsupported": scoring.confident_unsupported(score)
             and outcome == "wrong",
             "unjustified_abstention": outcome == "wrong" and abstained,
@@ -165,7 +178,7 @@ def tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     n = len(rows)
     count = {key: sum(bool(r.get(key)) for r in rows) for key in (
         "correct_raw", "correct_audited", "confident_wrong", "confident_unsupported",
-        "unjustified_abstention")}
+        "unjustified_abstention", *CONFIDENT_KINDS)}
     outcomes = {o: sum(r["outcome"] == o for r in rows) for o in GRADED}
     abstentions = outcomes["justified_abstention"] + count["unjustified_abstention"]
     return {"cards": n, **outcomes, **count,
@@ -173,6 +186,7 @@ def tally(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "correct_with_evidence_raw_rate": rate(count["correct_raw"], n),
             "correct_with_evidence_audited_rate": rate(count["correct_audited"], n),
             "confident_wrong_rate": rate(count["confident_wrong"], n),
+            **{f"{key}_rate": rate(count[key], n) for key in CONFIDENT_KINDS},
             "justified_abstention_rate": rate(outcomes["justified_abstention"], n),
             "unsupported_or_blocked_rate": rate(outcomes["blocked"] + outcomes["not_run"], n),
             "abstentions": abstentions,
@@ -316,7 +330,10 @@ def markdown(doc: Mapping[str, Any]) -> str:
              f"| Gradable cards | {t['cards']} | |",
              f"| Correct with evidence, audited | {t['correct_audited']} | {_pct(t['correct_with_evidence_audited_rate'])} |",
              f"| Correct with evidence, raw | {t['correct_raw']} | {_pct(t['correct_with_evidence_raw_rate'])} |",
-             f"| Confident wrong (key risk) | {t['confident_wrong']} | {_pct(t['confident_wrong_rate'])} |",
+             f"| Confident wrong, all kinds | {t['confident_wrong']} | {_pct(t['confident_wrong_rate'])} |",
+             f"| of which a false statement (key risk) | {t['confident_false_statement']} | {_pct(t['confident_false_statement_rate'])} |",
+             f"| of which incomplete | {t['confident_incomplete']} | {_pct(t['confident_incomplete_rate'])} |",
+             f"| of which only mislabelled | {t['confident_mislabelled']} | {_pct(t['confident_mislabelled_rate'])} |",
              f"| of which the claim gate refused | {t['confident_unsupported']} | |",
              f"| Justified abstention | {t['justified_abstention']} | {_pct(t['justified_abstention_rate'])} |",
              f"| Unjustified abstention | {t['unjustified_abstention']} | |",
@@ -343,12 +360,13 @@ def markdown(doc: Mapping[str, Any]) -> str:
                                                          "by_question_type"),
                        ("Per layer", "by_layer")):
         lines += [f"## {title}", "", "| Group | Cards | Correct (audited) | Correct (raw) | "
-                  "Confident wrong | Justified abst. | Blocked/not run |",
+                  "Confident wrong (false) | Justified abst. | Blocked/not run |",
                   "|---|---|---|---|---|---|---|"]
         for name, g in doc[key].items():
             lines.append(f"| {name} | {g['cards']} | {g['correct_audited']} "
                          f"({_pct(g['correct_with_evidence_audited_rate'])}) | "
-                         f"{g['correct_raw']} | {g['confident_wrong']} | "
+                         f"{g['correct_raw']} | {g['confident_wrong']} "
+                         f"({g['confident_false_statement']}) | "
                          f"{g['justified_abstention']} | {g['unsupported_or_blocked']} |")
         lines.append("")
     if doc["stability"]["changed"]:

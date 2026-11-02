@@ -61,6 +61,7 @@ from ontology import identifiers as _ids
 from ontology.core import ValidationError
 from ontology.units import ISO_4217, SIGN_CURRENCIES, currency_reading, currency_token_pattern
 from . import child_process, doc_convert
+from . import legacy_office
 from .xlsx_extract import extract_xlsx_text
 
 
@@ -794,6 +795,11 @@ def local_image_ocr_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
+# The address-space cap of one image OCR process (``prlimit --as``): tesseract on a very
+# large image exits instead of growing without bound.
+IMAGE_OCR_MEMORY_BYTES = 2 * 1024 ** 3
+
+
 def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
     """OCR text of one raster image (PNG, JPEG, GIF, TIFF, BMP, WebP) by local tesseract,
     under the same envelope as the PDF OCR path: a private temporary file, a minimal
@@ -811,9 +817,12 @@ def local_image_text(content: bytes, *, timeout: float = 60.0) -> str:
         path.write_bytes(content)
         path.chmod(0o600)
         try:
-            result = child_process.run([tool, str(path), "stdout", "--psm", "3",
-                                        "-c", "preserve_interword_spaces=1"],
-                                       timeout=timeout, env=env)
+            command = [tool, str(path), "stdout", "--psm", "3",
+                       "-c", "preserve_interword_spaces=1"]
+            limiter = shutil.which("prlimit")
+            if limiter is not None:   # a memory cap: a huge image fails, never the host
+                command = [limiter, f"--as={IMAGE_OCR_MEMORY_BYTES}", "--", *command]
+            result = child_process.run(command, timeout=timeout, env=env)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise ValidationError("local_image_ocr_failed") from error
     if result.returncode != 0 or len(result.stdout) > 1_000_000:
@@ -1896,6 +1905,22 @@ HTML_SUFFIXES = (".html", ".htm", ".xhtml")
 MAX_HTML_BYTES = 2_000_000
 
 
+# An OOXML workbook by type or name (macro-enabled and template workbooks hold the same
+# cells; their macros are never read nor run).
+OOXML_WORKBOOK_TYPES = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.ms-excel.sheet.macroenabled.12",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+                        "application/vnd.ms-excel.template.macroenabled.12")
+OOXML_WORKBOOK_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm")
+
+
+def is_ooxml_workbook(kind: str, filename: str = "") -> bool:
+    """Whether a file of MIME ``kind`` (lower case, no parameters) named ``filename`` is
+    read as an OOXML workbook (``xlsx_extract``)."""
+    return kind in OOXML_WORKBOOK_TYPES or (
+        kind == "application/octet-stream" and filename.lower().endswith(OOXML_WORKBOOK_SUFFIXES))
+
+
 def is_plain_text(kind: str, filename: str = "") -> bool:
     """Whether a file of MIME ``kind`` (lower case, no parameters) named ``filename`` is
     read as UTF-8 text as written: plain text, Markdown, CSV or JSON by type or by name."""
@@ -1950,12 +1975,21 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
                        else "pdf_parse_error")
         elif (skipped := reading.skipped_pages) is not None:
             warnings += (f"pdf_pages_skipped_by_cap:{skipped[0]}-{skipped[1]}",)
-    elif kind == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or (
-            kind == "application/octet-stream" and filename.lower().endswith(".xlsx")):
+    elif is_ooxml_workbook(kind, filename) or legacy_office.is_misnamed_xlsx(kind, filename,
+                                                                             content):
         text, status, warnings, ranges, found_sheets = extract_xlsx_text(content, max_text=MAX_TEXT)
         method = "ooxml-cell-transcription"
         review_ranges = list(ranges)
         sheets = list(found_sheets)
+    elif legacy_office.is_xls(kind, filename, content):
+        text, status, warnings, ranges, found_sheets = legacy_office.extract_xls_text(
+            content, max_text=MAX_TEXT)
+        method = "biff8-cell-transcription"
+        review_ranges = list(ranges)
+        sheets = list(found_sheets)
+    elif legacy_office.is_doc(kind, filename, content):
+        text, status, warnings = legacy_office.extract_doc_text(content, max_text=MAX_TEXT)
+        method = "word97-text"
     elif _is_message(kind, filename):
         msg = kind in MSG_TYPES or filename.lower().endswith(".msg")
         text, warnings = (_msg_text if msg else _eml_text)(content)

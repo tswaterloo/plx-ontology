@@ -65,7 +65,19 @@ export function useThread() {
   useEffect(() => {
     turnsRef.current = turns;
   }, [turns]);
-  useEffect(() => () => ctrl.current?.abort(), []);
+  // Leaving the page stops the answer. React's development double mount runs this cleanup
+  // and mounts again at once: only a cleanup not followed by a mount aborts.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const c = ctrl.current;
+      setTimeout(() => {
+        if (!mounted.current) c?.abort();
+      }, 0);
+    };
+  }, []);
 
   const update = useCallback((id: string, fn: (t: Turn) => Turn) => {
     setTurns((ts) => ts.map((t) => (t.id === id ? fn(t) : t)));

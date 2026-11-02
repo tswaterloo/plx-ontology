@@ -192,7 +192,7 @@ def check_bc_projection(conn: sqlite3.Connection, schema: Any, *, sample: int = 
 
 
 def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None = None,
-         sender: Any = None, books: Any = None) -> int:
+         sender: Any = None, books: Any = None, names: Any = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m scripts.ontology_projection_bc_probe")
     parser.add_argument("--db", required=True, help="throwaway BC capture store file")
     parser.add_argument("--store", required=True, help="throwaway ontology store file")
@@ -214,7 +214,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         # from an earlier invocation is read again.
         capture = bc_read.capture_probe(environ, sender=sender, db=args.db,
                                         budget_seconds=budget, mode="full", passes=1,
-                                        resolve_sample=0, books=books,
+                                        resolve_sample=0, books=books, names=names,
                                         fresh_since=bc_read.session_fresh_since(environ))
         compiled = schema_loader.load_schema()
         built_at = time.monotonic()

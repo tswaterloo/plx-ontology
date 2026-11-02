@@ -164,7 +164,7 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
     w.link("PurchaseOrderLine.line_of", ids["short"], received_po)
     w.link("ReceiptLine.receives_line",
            w.obj("ReceiptLine", {"received_quantity": ("80", "kg", "received")}), ids["short"])
-    open_po = w.obj("PurchaseOrder", {"status": "Pending"})
+    open_po = ids["undated"] = w.obj("PurchaseOrder", {"status": "Pending"})   # no date
     receiving = w.obj("PurchaseOrderLine", {"ordered_quantity": ("100", "kg")})
     w.link("PurchaseOrderLine.line_of", receiving, open_po)                         # receiving
     w.link("ReceiptLine.receives_line",
@@ -260,11 +260,12 @@ class DetectorTest(Engine):
             ("po_receipt_quantity_mismatch", ids["short"]),
             ("conflicting_quantity", conflict_root),
             ("receipt_without_qc", ids["no_qc"]),
+            ("undated_po", ids["undated"]),   # open, no due date: its own group, never late
             ("order_without_customer_po", ids["no_customer_po"]),
             ("expired_quote", ids["expired"])})
         self.assertEqual(summary["scanned"], world.n)   # the whole store, not a sample
         self.assertEqual((summary["gaps_found"], summary["gaps_cited"],
-                          summary["gaps_uncited"]), (11, 11, 0))
+                          summary["gaps_uncited"]), (12, 12, 0))
         self.assertFalse(summary["scope_truncated"])
         self.assertEqual(summary["detectors"]["card_rules"], "not_configured")
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
@@ -273,7 +274,8 @@ class DetectorTest(Engine):
                           "status_unmapped": 1})
         self.assertEqual(summary["po_lateness"], {
             "pos": 16, "classes": {"open": 9, "closed": 3, "draft": 1, "unknown": 3},
-            "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2})
+            "evaluated": 6, "late": 4, "at_risk": 1, "unconfirmed": 2, "undated": 1,
+            "open_by_read": 9, "open_other": 4})
         self.assertEqual(summary["not_evaluated"]["po_receipt_quantity_mismatch"],
                          {"receipt_link_unsettled": 1, "sources_unreconciled": 1,
                           "unit_differs": 1})
@@ -635,7 +637,10 @@ class InboxTest(Engine):
         self.assertEqual(found["not_run"], {"card_rules": "not_configured",
                                             "order_without_customer_po": "not_configured",
                                             "orders_at_risk": "not_configured",
-                                            "receipt_without_qc": "blocked"})
+                                            "receipt_without_qc": "blocked",
+                                            "vendor_no_reply": "not_configured",
+                                            "vendor_terms_unapplied": "not_configured",
+                                            "negative_margin": "not_configured"})
         # every rule run, each complete: only then is the read complete
         def card(_tool, arguments):
             return {"object": {"object_id": arguments["object_id"]}, "leads": [],
@@ -829,7 +834,8 @@ class PoLatenessTest(Engine):
         self.assertIn("2026-11-02", found[("late_po", at_risk)]["summary"])
         self.assertEqual(summary["po_lateness"], {
             "pos": 4, "classes": {"open": 3, "closed": 1, "draft": 0, "unknown": 0},
-            "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0})
+            "evaluated": 3, "late": 1, "at_risk": 1, "unconfirmed": 0, "undated": 0,
+            "open_by_read": 3, "open_other": 2})
 
     def test_complete_closes_with_its_remainder_cancelled_and_sage_only_is_not_open(self):
         # Ross: a Complete header is closed whatever was received, the
@@ -910,7 +916,7 @@ class PoLatenessTest(Engine):
         self.confirm(w, bare, "2026-10-03")   # promise only: no date of any kind
         summary = self.run_engine(w)
         self.assertEqual({(g["kind"], g["object_id"]) for g in self.read()["gaps"]},
-                         {("late_po", dated)})
+                         {("late_po", dated), ("undated_po", bare)})
         self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
                          {"no_need_date": 1})
         self.assertEqual(summary["po_lateness"]["evaluated"], 1)
@@ -959,7 +965,7 @@ def single_query_values(self, types, props=None, *, objects=None):
     ``object_values`` view per call (the reference the faster read must equal)."""
     from ontology import store as ostore
     sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
-           "v.quantity_role, v.l1_handle, v.markings FROM objects o "
+           "v.quantity_role, v.l1_handle, v.markings, v.lineage FROM objects o "
            "JOIN object_values v ON v.object_id = o.object_id "
            "WHERE o.object_type IN (SELECT value FROM json_each(:types)) "
            "AND v.superseded_at IS NULL AND NOT " + ostore.removed_at_sql("o.object_id"))
@@ -1212,7 +1218,10 @@ class HomeLateRecallTest(Engine):
         by_lead = po(w, "Pending")
         self.bc_twin(w, by_lead, "2026-10-09", tier="lead")
         summary = self.run_engine(w)
-        self.assertNotIn(by_lead, {g["object_id"] for g in self.read()["gaps"]})
+        gaps = self.read()["gaps"]
+        self.assertNotIn(by_lead, {g["object_id"] for g in gaps
+                                   if g["kind"] in ("late_po", "unconfirmed_po")})
+        self.assertIn(("undated_po", by_lead), {(g["kind"], g["object_id"]) for g in gaps})
         self.assertEqual(
             summary["not_evaluated"]["late_or_unconfirmed_po"]["no_need_date"], 1)
 

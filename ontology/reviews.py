@@ -969,6 +969,10 @@ class BuildAliases:
     def rejected(self, subject: str, kind: str, normalized: str) -> bool:
         return (subject, kind, normalized) in self._rejected
 
+    def holds(self, kind: str, normalized: str) -> bool:
+        """Whether an alias decision names this key (``rows`` may answer it)."""
+        return (kind, normalized) in self._spans
+
     def rows(self, conn: sqlite3.Connection, kind: str, normalized: str
              ) -> list[dict[str, Any]]:
         key = (kind, normalized)

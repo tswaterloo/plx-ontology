@@ -431,6 +431,67 @@
     }
    ]
   },
+  "bankAccounts": {
+   "entity_type": "bankAccount",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    },
+    {
+     "name": "bankAccountNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "currencyCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "currencyId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "iban",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "intercompanyEnabled",
+     "type": "Edm.Boolean",
+     "nullable": true
+    }
+   ],
+   "navigation": []
+  },
   "companies": {
    "entity_type": "company",
    "scope": "environment",
@@ -1758,6 +1819,87 @@
     }
    ]
   },
+  "contactsInformation": {
+   "entity_type": "contactInformation",
+   "scope": "company",
+   "parents": [
+    "customers",
+    "vendors"
+   ],
+   "key": [
+    "contactId"
+   ],
+   "properties": [
+    {
+     "name": "contactId",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "contactNumber",
+     "type": "Edm.String",
+     "nullable": false
+    },
+    {
+     "name": "contactName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "contactType",
+     "type": "enum:contactType",
+     "nullable": true
+    },
+    {
+     "name": "relatedId",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "relatedType",
+     "type": "enum:contactBusinessRelationLinkToTable",
+     "nullable": false
+    }
+   ],
+   "navigation": [
+    {
+     "name": "customer",
+     "target": "customer",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "relatedId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "contact",
+     "target": "contact",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "contactId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "vendor",
+     "target": "vendor",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "relatedId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
   "countriesRegions": {
    "entity_type": "countryRegion",
    "scope": "company",
@@ -2437,6 +2579,107 @@
     }
    ]
   },
+  "fixedAssets": {
+   "entity_type": "fixedAsset",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "fixedAssetLocationCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "fixedAssetLocationId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "classCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "subclassCode",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "blocked",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "serialNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "employeeNumber",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "employeeId",
+     "type": "Edm.Guid",
+     "nullable": true
+    },
+    {
+     "name": "underMaintenance",
+     "type": "Edm.Boolean",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "fixedAssetLocation",
+     "target": "fixedAssetLocation",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "fixedAssetLocationId",
+       "id"
+      ]
+     ]
+    },
+    {
+     "name": "employee",
+     "target": "employee",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "employeeId",
+       "id"
+      ]
+     ]
+    }
+   ]
+  },
   "generalLedgerEntries": {
    "entity_type": "generalLedgerEntry",
    "scope": "company",
@@ -3042,6 +3285,62 @@
     }
    ],
    "navigation": []
+  },
+  "projects": {
+   "entity_type": "project",
+   "scope": "company",
+   "parents": [],
+   "key": [
+    "id"
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "type": "Edm.Guid",
+     "nullable": false
+    },
+    {
+     "name": "number",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "displayName",
+     "type": "Edm.String",
+     "nullable": true
+    },
+    {
+     "name": "lastModifiedDateTime",
+     "type": "Edm.DateTimeOffset",
+     "nullable": true
+    }
+   ],
+   "navigation": [
+    {
+     "name": "documentAttachments",
+     "target": "documentAttachment",
+     "collection": true,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    },
+    {
+     "name": "pdfDocument",
+     "target": "pdfDocument",
+     "collection": false,
+     "contained": true,
+     "constraints": [
+      [
+       "id",
+       "parentId"
+      ]
+     ]
+    }
+   ]
   },
   "purchaseCreditMemoLines": {
    "entity_type": "purchaseCreditMemoLine",
@@ -8618,6 +8917,13 @@
    "None",
    "Other",
    "Multiple"
+  ],
+  "contactBusinessRelationLinkToTable": [
+   "_x0020_",
+   "Customer",
+   "Vendor",
+   "Bank_x0020_Account",
+   "Employee"
   ],
   "contactType": [
    "Company",

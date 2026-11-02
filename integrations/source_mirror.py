@@ -1400,6 +1400,36 @@ CREATE TABLE IF NOT EXISTS relation_lineage (
 CREATE TABLE IF NOT EXISTS persisted_relation (
   relation TEXT PRIMARY KEY, freshness_json TEXT NOT NULL, attempted_at TEXT NOT NULL);
 """
+# Run after ``_migrate`` (the triggers name columns an older file gets there).
+_CHANGE_DDL = """
+-- Per-relation change counters (decision 2026-11-01-mirror-relation-marks): every
+-- write that changes what a projection reads of a relation (its rows, removals,
+-- the state and finish time of a capture its rows name) moves
+-- its counter, whatever path writes it, a migration at writer open included; ''
+-- moves on a mirror_meta change. change_capture: the captures rows name. A build
+-- whose marks are the ones it fingerprinted under reads the relation's fingerprint
+-- back (ontology.project.MirrorCaptures.relation_marks).
+CREATE TABLE IF NOT EXISTS relation_change (relation TEXT PRIMARY KEY, n INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS change_capture (capture_id INTEGER PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS change_row_current_insert AFTER INSERT ON row_current BEGIN INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT OR IGNORE INTO change_capture VALUES (NEW.capture_id); END;
+CREATE TRIGGER IF NOT EXISTS change_row_current_delete AFTER DELETE ON row_current BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_row_current_update AFTER UPDATE ON row_current WHEN OLD.relation IS NOT NEW.relation OR OLD.key_json IS NOT NEW.key_json OR OLD.run_index IS NOT NEW.run_index OR OLD.run_length IS NOT NEW.run_length OR OLD.row_json IS NOT NEW.row_json OR OLD.row_digest IS NOT NEW.row_digest OR OLD.capture_id IS NOT NEW.capture_id OR OLD.missing_from_source_since IS NOT NEW.missing_from_source_since BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT OR IGNORE INTO change_capture VALUES (NEW.capture_id); END;
+CREATE TRIGGER IF NOT EXISTS change_row_version_insert AFTER INSERT ON row_version BEGIN INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT OR IGNORE INTO change_capture VALUES (NEW.capture_id); INSERT OR IGNORE INTO change_capture VALUES (NEW.superseded_by_capture); END;
+CREATE TRIGGER IF NOT EXISTS change_row_version_delete AFTER DELETE ON row_version BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_row_version_update AFTER UPDATE ON row_version WHEN OLD.relation IS NOT NEW.relation OR OLD.key_json IS NOT NEW.key_json OR OLD.capture_id IS NOT NEW.capture_id OR OLD.run_index IS NOT NEW.run_index OR OLD.run_length IS NOT NEW.run_length OR OLD.row_json IS NOT NEW.row_json OR OLD.row_digest IS NOT NEW.row_digest OR OLD.last_seen_at IS NOT NEW.last_seen_at OR OLD.superseded_by_capture IS NOT NEW.superseded_by_capture BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT OR IGNORE INTO change_capture VALUES (NEW.capture_id); INSERT OR IGNORE INTO change_capture VALUES (NEW.superseded_by_capture); END;
+CREATE TRIGGER IF NOT EXISTS change_row_removal_insert AFTER INSERT ON row_removal BEGIN INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1;  END;
+CREATE TRIGGER IF NOT EXISTS change_row_removal_delete AFTER DELETE ON row_removal BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_row_removal_update AFTER UPDATE ON row_removal WHEN OLD.relation IS NOT NEW.relation OR OLD.key_json IS NOT NEW.key_json OR OLD.basis IS NOT NEW.basis OR OLD.since IS NOT NEW.since OR OLD.until IS NOT NEW.until OR OLD.replaced_basis IS NOT NEW.replaced_basis OR OLD.replaced_by IS NOT NEW.replaced_by BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1;  END;
+CREATE TRIGGER IF NOT EXISTS change_capture_state_insert AFTER INSERT ON capture_state WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = NEW.capture_id) BEGIN INSERT INTO relation_change (relation, n) VALUES (COALESCE((SELECT relation FROM capture WHERE capture_id = NEW.capture_id), ''), 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_capture_insert AFTER INSERT ON capture WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = NEW.capture_id) BEGIN INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_mirror_meta_insert AFTER INSERT ON mirror_meta BEGIN INSERT INTO relation_change (relation, n) VALUES ('', 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_capture_state_delete AFTER DELETE ON capture_state WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = OLD.capture_id) BEGIN INSERT INTO relation_change (relation, n) VALUES (COALESCE((SELECT relation FROM capture WHERE capture_id = OLD.capture_id), ''), 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_capture_delete AFTER DELETE ON capture WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = OLD.capture_id) BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_mirror_meta_delete AFTER DELETE ON mirror_meta BEGIN INSERT INTO relation_change (relation, n) VALUES ('', 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_capture_state_update AFTER UPDATE ON capture_state WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = NEW.capture_id) BEGIN INSERT INTO relation_change (relation, n) VALUES (COALESCE((SELECT relation FROM capture WHERE capture_id = OLD.capture_id), ''), 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT INTO relation_change (relation, n) VALUES (COALESCE((SELECT relation FROM capture WHERE capture_id = NEW.capture_id), ''), 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_capture_update AFTER UPDATE ON capture WHEN EXISTS (SELECT 1 FROM change_capture c WHERE c.capture_id = NEW.capture_id) AND (OLD.finished_at IS NOT NEW.finished_at OR OLD.relation IS NOT NEW.relation) BEGIN INSERT INTO relation_change (relation, n) VALUES (OLD.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; INSERT INTO relation_change (relation, n) VALUES (NEW.relation, 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+CREATE TRIGGER IF NOT EXISTS change_mirror_meta_update AFTER UPDATE ON mirror_meta WHEN OLD.value IS NOT NEW.value OR OLD.name IS NOT NEW.name BEGIN INSERT INTO relation_change (relation, n) VALUES ('', 1) ON CONFLICT(relation) DO UPDATE SET n = n + 1; END;
+"""
 # Columns added after the first release; ``_migrate`` adds them to older files.
 _ADDED_COLUMNS = {
     "row_current": ("missing_from_source_since TEXT", "missing_basis TEXT",
@@ -1428,7 +1458,13 @@ _ADDED_COLUMNS["row_current"] += (
     "sighting_floor INTEGER",)
 # Every table and index ``_DDL`` creates: a file holding them all needs no DDL at open.
 _DDL_OBJECTS = frozenset(re.findall(
-    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+(\w+)", _DDL))
+    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX|TRIGGER)\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+    _DDL + _CHANGE_DDL))
+# The change-counter triggers (``relation_change``): a file missing one has counters that
+# do not cover every write, so its writer open gives it a new ``change_epoch``.
+CHANGE_TRIGGERS = frozenset(re.findall(r"CREATE\s+TRIGGER\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+                                        _CHANGE_DDL))
+CHANGE_EPOCH = "change_epoch"
 _ROW_CURRENT_COLUMNS = ("relation, key_json, run_index, run_length, row_json, row_digest, "
                         "capture_id, first_seen_capture, first_seen_at, last_seen_capture, "
                         "last_seen_at, absent_since_capture, missing_from_source_since, "
@@ -1705,8 +1741,19 @@ class SourceMirror:
         self._db.execute("PRAGMA journal_mode = WAL")
         removals_new = self._db.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'row_removal'").fetchone() is None
+        counted = CHANGE_TRIGGERS <= {row[0] for row in self._db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'")}
         self._db.executescript(_DDL)
         self._migrate(removals_new)
+        if not counted:   # before any other write of the open, in one transaction
+            # The counters start now (no earlier mark of this file stands: a new epoch); a
+            # capture in progress may already be named by rows written before them.
+            self._db.executescript(
+                "BEGIN IMMEDIATE;" + _CHANGE_DDL
+                + "INSERT OR IGNORE INTO change_capture SELECT capture_id FROM capture_state "
+                "WHERE state = 'in_progress';"
+                f"INSERT OR REPLACE INTO mirror_meta VALUES ('{CHANGE_EPOCH}', "
+                f"'{secrets.token_hex(8)}');COMMIT;")
         self._db.execute("INSERT OR IGNORE INTO mirror_meta VALUES ('schema', "
                          "'plx-source-mirror/v1')")
         with self._write():
@@ -3834,8 +3881,9 @@ class SourceMirror:
         when the mirror file persists), which is how a relation too large for one
         budget completes; only a ``row_bound`` or ``paging_defect`` traversal is
         abandoned and starts over. ``order`` names relations to capture first, in
-        that order, inside the same budget; the rest follow by name (a name
-        not in the catalog, not visible or not selected is skipped), except that a
+        that order, inside the same budget; the rest follow stalest first (never
+        captured, then by their last finished capture, then by name; a name not in the
+        catalog, not visible or not selected is skipped), except that a
         large relation (``large_relation_rows`` or more in its last capture or its
         in-progress traversal) follows every other, smallest first, so a huge fill
         never starves the relations after it. ``relation_budget_seconds`` is each
@@ -3892,13 +3940,18 @@ class SourceMirror:
                        and (wanted is None or name in wanted))
         rank = {name: index for index, name in enumerate(dict.fromkeys(order or ()))}
         sizes = self._known_sizes()
+        last = self._last_captured()
         large = self._large_relation_rows
 
         def place(name: str) -> tuple[Any, ...]:
             size = sizes.get(name, 0)
             if name in rank:
-                return (0, rank[name], 0, name)
-            return (2, 0, size, name) if size >= large else (1, 0, 0, name)
+                return (0, rank[name], 0, 0, name)
+            # Stalest first: never captured (-1), then the earliest last capture (capture
+            # ids only grow), so a cycle its budget cuts is followed by one that starts
+            # where it stopped.
+            return ((2, 0, size, 0, name) if size >= large
+                    else (1, 0, 0, last.get(name, -1), name))
 
         names.sort(key=place)
         waits_before = len(self.throttle_waits)
@@ -3958,6 +4011,13 @@ class SourceMirror:
                 "absence_scan": absence_scan, "runs": runs, "workers": workers,
                 "throttle_waits": {"count": len(waits), "seconds": round(sum(waits), 3)},
                 "coverage": self._coverage(actor, audience, catalog, fetched_at, None)}
+
+    def _last_captured(self) -> dict[str, int]:
+        """relation -> the id of its last finished capture (``sync`` reads the stalest
+        first; ids only grow, so equal clock readings never tie)."""
+        return {row[0]: int(row[1]) for row in self._db.execute(
+            "SELECT relation, MAX(capture_id) FROM capture WHERE finished_at IS NOT NULL "
+            "GROUP BY relation")}
 
     def _known_sizes(self) -> dict[str, int]:
         """relation -> its size as far as the mirror knows: the rows of its in-progress

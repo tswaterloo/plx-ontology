@@ -156,3 +156,90 @@ class FactText(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowUps(unittest.TestCase):
+    """What to ask next: only from the answer's own records, gaps and conflicts as shown
+    to its reader; never a figure the answer does not name, never the question again."""
+
+    @staticmethod
+    def answer(subjects=(), not_found=(), conflicts=(), direct="", facts=(), hidden=None):
+        from operator_api import models as m
+        src = m.Source(system="BC", handle="bc://x/1", label="Record")
+        return m.AnswerPayload(
+            answer_id="a", question="q", outcome="partial", direct_answer=direct,
+            facts=[m.Fact(text=t, sources=[src]) for t in facts],
+            not_found=[m.NotFound(what=w, where_it_would_live=where) for w, where in not_found],
+            hidden=hidden or m.Hidden(count=0, by_owner=[]),
+            conflicts=[m.Conflict(field=f, values=[
+                m.ConflictValue(value="a", source=src, trusted=False, why=""),
+                m.ConflictValue(value="b", source=src, trusted=False, why="")])
+                for f in conflicts],
+            freshness=m.Freshness(as_of=None),
+            subjects=[m.ObjectRef(object_id=f"{t}:{i}", type=t, label=label, open_url="/o")
+                      for i, (t, label) in enumerate(subjects)],
+            conversation_id="c", latency_ms=1)
+
+    def test_records_gaps_and_conflicts_become_questions_without_repeating_the_answer(self):
+        got = p.follow_ups("is po 4471 late", self.answer(
+            subjects=[("PurchaseOrder", "4471"), ("Vendor", "Acme Resins Ltd")],
+            not_found=[("Vendor confirmation of the ship date", "vendor mail")],
+            direct="PO 4471 is late; ask Purchasing."))
+        self.assertEqual(got, ["Who can confirm the vendor confirmation of the ship date "
+                               "for PO 4471?", "What changed on PO 4471 recently?",
+                               "What's still open with Acme Resins Ltd?"])
+        got = p.follow_ups("what is the status of po 4471", self.answer(
+            subjects=[("PurchaseOrder", "po 4471")], conflicts=["status"]))
+        self.assertEqual(got[0], "Which system is right about the status of PO 4471?")
+        self.assertLessEqual(len(got), p.MAX_FOLLOW_UPS)
+
+    def test_nothing_unknown_or_unshown_becomes_a_question(self):
+        from operator_api import models as m
+        hidden = m.Hidden(count=2, by_owner=[m.HiddenOwner(owner_or_team="SECRET-TEAM",
+                                                           count=2, named=True)])
+        got = p.follow_ups("q", self.answer(
+            subjects=[("PurchaseOrderLine", "line 1"), ("ItemMapping", "map"),
+                      ("PurchaseOrder", "PurchaseOrder:bc.purchase_orders:{x}")],
+            # a gap's generic words, a source's state and a figure no subject names
+            not_found=[("A value the question asks for", "x"), ("Ship date", "source stale"),
+                       ("Invoice of 18,901.08", "mail")],
+            hidden=hidden))
+        self.assertEqual(got, [])
+        self.assertEqual(p.follow_ups("q", self.answer()), [])
+        # an unknown record type still asks only generic, figure-free questions
+        got = p.follow_ups("q", self.answer(subjects=[("Gizmo", "Blue gizmo")]))
+        self.assertEqual(got, ["What's the latest on Blue gizmo?", "Who owns Blue gizmo?"])
+
+    def test_the_reader_s_own_question_is_never_offered_back(self):
+        got = p.follow_ups("Who should I chase about PO 4471?", self.answer(
+            subjects=[("PurchaseOrder", "4471")]))
+        self.assertNotIn("Who should I chase about PO 4471?", got)
+        self.assertTrue(got)
+
+    def test_any_number_of_records_gives_at_most_three_distinct_questions(self):
+        for n in (1, 10, 60):
+            got = p.follow_ups("q", self.answer(
+                subjects=[("PurchaseOrder", str(1000 + i)) for i in range(n)],
+                not_found=[(f"Receipt for PO {1000 + i}", "BC") for i in range(n)]))
+            self.assertTrue(1 <= len(got) <= p.MAX_FOLLOW_UPS, (n, got))
+            self.assertEqual(len(set(got)), len(got))
+            self.assertTrue(all(q.endswith("?") for q in got))
+
+
+class FloatNoise(unittest.TestCase):
+    def test_a_float_s_noise_reads_as_its_figure_and_a_real_precision_stays(self):
+        from operator_api import models as m
+        self.assertEqual(p.shown_words("billed at 116.25000000000001 per KG, net "
+                                       "18.599999999999998; 0.30000000000000004"),
+                         "billed at 116.25 per KG, net 18.6; 0.3")
+        for kept in ("pi 3.14159265358", "id 1.2345678.9", "SKU-116.25000000000001x",
+                     "116.25"):
+            self.assertEqual(p.shown_words(kept), kept)
+        fact = m.Fact(text="Unit cost: 116.25000000000001",
+                      sources=[m.Source(system="BC", handle="bc://x/1", label="PO line",
+                                        fields={"directUnitCost": "116.25000000000001"})])
+        shown = p.polished(fact)
+        # the sentence reads rounded; the cited source stays exactly as the record holds it
+        self.assertEqual((shown.text, shown.sources[0].fields["directUnitCost"],
+                          shown.sources[0].handle),
+                         ("Unit cost: 116.25", "116.25000000000001", "bc://x/1"))

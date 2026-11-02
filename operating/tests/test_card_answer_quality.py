@@ -252,6 +252,53 @@ class QuotedValueAndTruncatedReadTests(SharePointHostCase):
         self.assertEqual(refused["claims"], [])
         self.assertNotIn("app_step", json.dumps(refused))
 
+    def test_a_file_cited_whole_with_the_page_field_is_told_its_text_field(self):
+        # F24-0006, F24-0011, F24-0046 (v14): a captured file cited whole with field
+        # "text" (a page's) was refused "not an original page" with nothing to act on.
+        # The claim is refused as shape with the field to use; with it, it passes.
+        handle = self.handle(MAP)
+        server = self.server(EMPLOYEE)
+        self.ok(server, "plx.read", {"citation": handle})
+        answer = _answer(handle, MAP_VALUE)
+        answer["answer"]["claims"][0]["value_claims"][0]["field"] = "text"
+        refused = self.submit(server, answer)
+        (entry,) = refused["unsupported_claims"]
+        self.assertEqual(entry["reason"], "value_claims_invalid")
+        self.assertIn("row.content_text", entry["detail"]["untrusted_text"])
+        fixed = self.submit(server, _answer(handle, MAP_VALUE))
+        self.assertEqual(fixed["outcome"], "answered", json.dumps(fixed)[:1500])
+
+    def test_an_answer_decision_too_large_to_send_twice_is_sent_once_as_its_text(self):
+        # F23-0047 (v14): the gate decided a resubmission, then the reply (its JSON text
+        # and structuredContent, the same value twice) went over the result bound and
+        # was refused result_too_large: the decision was lost. Now it is sent once.
+        handle = self.handle(MAP)
+        server = self.server(EMPLOYEE)
+        self.ok(server, "plx.read", {"citation": handle})
+        lines = ([f"Step {n},app_step,step qty,mapped" for n in range(12)] * 2)[:20]
+        claims = [{"text": "The process map lists a step. " + "It is mapped. " * 60,
+                   "citations": [handle], "value_claims": [
+                       {"value": line, "citation": handle, "field": "row.content_text"}]}
+                  for line in lines]
+        raw = _client(server, "plx.case_get", {"answer": {
+            "claims": claims, "text": "The map lists its steps."}})
+        self.assertFalse(raw["isError"], raw)
+        text = raw["content"][0]["text"]
+        decision = json.loads(text)
+        self.assertEqual(decision["outcome"], "answered", text[:1500])
+        self.assertEqual(len(decision["claims"]), len(lines))
+        # No structured content (Claude Code shows the text whole); the stub saying so is
+        # in _meta, and every client reads the text (``tool_results.result_value``).
+        from operating import tool_results
+        self.assertNotIn("structuredContent", raw)
+        self.assertEqual(raw["_meta"][tool_results.TEXT_ONLY_KEY], tool_results.TEXT_ONLY_STUB)
+        self.assertEqual(tool_results.result_value(raw), decision)
+        self.assertGreater(len(text.encode()) * 2, 48000)
+        # One that fits twice still carries both, the same value.
+        small = _client(server, "plx.case_get", {"answer": {
+            "claims": claims[:1], "text": "The map lists a step."}})
+        self.assertEqual(small["structuredContent"], json.loads(small["content"][0]["text"]))
+
     def test_a_claim_on_a_truncated_read_is_partial_until_its_passage_is_read(self):
         from operating.answer_gate import UNREAD_PART
         handle = self.handle(MAP)
@@ -444,6 +491,88 @@ PROBE_HEAD = ("Lot record. " * 40)[:186] + "Qty shipped 150 units on the lot.\n"
 PROBE_TEXT = (PROBE_HEAD + "".join(f"Line {n}: routine note, nothing to report here.\n"
                                    for n in range(10))
               + "Refund 15 dollars.\nShipment released to quarantine hold pending review.\n")
+
+
+MODAL = "01FILEP"   # proposal.md: what is, beside what is only proposed or targeted
+MODAL_TEXT = ("Freight and duty are expensed to the packaging account today.\n"
+              "Target design: screening cost waits in a clearing account until conversion.\n"
+              "A clearing account for screening is still to approve.\n"
+              "| Deposits | A deposit like PO-4417's is shown on the order |\n")
+
+
+class SourceModalityTests(SharePointHostCase):
+    """SC-08, PS-A3 (v13 review): a passage the document states as a target, still to
+    approve or as an example passed the gate and the answer stated it as what applies.
+    The gate keeps such a claim and adds one unknown naming the source's own modality,
+    so the decision is partial; a passage stated as fact stays answerable. Every answer
+    path gets it: the MCP session here, the console Ask through the same gate."""
+    scanned = False
+
+    def seed(self):
+        from integrations.tests.test_capture_sharepoint import RICARDO, SALES, seeded_drive
+        drive = seeded_drive()
+        drive.file(MODAL, "proposal.md", "01LOTS", MODAL_TEXT.encode(), mime="text/plain",
+                   acl=(RICARDO, SALES))
+        return drive
+
+    def decide(self, value, quote=None):
+        from operating.tests.test_case_tools_host import _client as client
+        handle = self.handle(MODAL)
+        server = self.server(EMPLOYEE)
+        self.ok(server, "plx.read", {"citation": handle})
+        answer = _answer(handle, value, "The proposal says so.")
+        if quote:
+            answer["answer"]["claims"][0]["value_claims"][0]["quote"] = quote
+        result = client(server, "plx.case_get", answer)
+        self.assertFalse(result["isError"], result)
+        return result["structuredContent"]
+
+    def test_a_passage_stated_as_proposed_or_targeted_makes_the_answer_partial(self):
+        from operating.answer_gate import MODALITY_UNKNOWN
+        fact = self.decide("Freight and duty are expensed to the packaging account today.")
+        self.assertEqual(fact["outcome"], "answered", json.dumps(fact)[:1500])
+        self.assertEqual((fact["answerability"]["state"], fact["unknowns"]),
+                         ("answerable", []))
+        for value, quote, said in (
+                ("screening cost waits in a clearing account until conversion", None,
+                 "a target"),
+                ("A clearing account for screening", "A clearing account for screening "
+                 "is still to approve.", "still to be approved"),
+                ("is shown on the order", None, "an example")):
+            with self.subTest(value=value):
+                out = self.decide(value, quote)
+                self.assertEqual(out["outcome"], "answered", json.dumps(out)[:1500])
+                self.assertEqual(len(out["claims"]), 1)   # kept, never refused
+                self.assertEqual(out["answerability"]["state"], "partial")
+                self.assertEqual([u["untrusted_text"] for u in out["unknowns"]],
+                                 [MODALITY_UNKNOWN.format(modality=said)])
+                # The final reply keeps the unknown: it states no number or name.
+                self.assertEqual(out["reply"]["unknowns"], out["unknowns"])
+
+
+class SourceModalityWordsTests(unittest.TestCase):
+    """A negated modality word ("no longer pending approval", "not
+    proposed") still added a false "not established" unknown, and common hedges
+    (indicative, estimated, tentative, pending sign-off) were not read at all."""
+
+    def test_a_negated_modality_says_none_and_common_hedges_are_read(self):
+        from operating.source_modality import stated_modality
+        for sentence, said in (
+                ("The PO is no longer pending approval.", []),
+                ("The plan was not proposed by the buyer.", []),
+                ("The order has not been proposed again.", []),
+                ("This file is not a draft.", []),
+                ("Prices are indicative only.", ["indicative"]),
+                ("The estimated freight is 300.", ["estimated"]),
+                ("A tentative ship date of May 3 holds.", ["tentative"]),
+                ("Pending sign-off by finance.", ["still to be approved"]),
+                # A pattern that carries its own negator still reads as the hedge.
+                ("The rate is not yet approved.", ["still to be approved"]),
+                # One negated and one plain use: the plain one is said.
+                ("Not proposed by us; the target design is proposed.",
+                 ["proposed", "a target"])):
+            with self.subTest(sentence):
+                self.assertEqual(stated_modality(sentence, sentence[:14]), said)
 
 
 class CutWindowTests(SharePointHostCase):

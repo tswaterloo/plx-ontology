@@ -32,6 +32,9 @@ FILLING = "api://silver.production_tasks/%7B%22id%22%3A14355%7D@g-9"
 CLEARANCE = "api://silver.production_tasks/%7B%22id%22%3A14354%7D@g-9"
 MO = "api://public.app_manufacturing_order/%7B%22id%22%3A%22mo-10718%22%7D@g-1"
 PO_LINE = "api://public.app_purchase_order_line/%7B%22id%22%3A%22pol-0%22%7D@g-5"
+# A line whose quantity no role contract covers (a Portal PO line's has one since the
+# glycerin answer, 2026-11-01).
+QUOTE_LINE = "api://public.app_quote_line/%7B%22id%22%3A%22ql-0%22%7D@g-5"
 DAMAGE = "api://silver.assembly_order_damage/%7B%22id%22%3A5445%7D@g-2"
 ROWS = {
     ITEM: {"relation": "silver.assembly_order_items",
@@ -51,6 +54,8 @@ ROWS = {
              "row": {"id": 5445, "assembly_item_id": 58383, "qty_damaged": 3.0}},
     PO_LINE: {"relation": "public.app_purchase_order_line",
               "row": {"id": "pol-0", "code": "P-02458", "quantity": 12500.0, "uom": "EA"}},
+    QUOTE_LINE: {"relation": "public.app_quote_line",
+                 "row": {"id": "ql-0", "code": "P-02458", "quantity": 12500.0, "uom": "EA"}},
 }
 
 
@@ -189,7 +194,7 @@ class StructuredClaimTests(unittest.TestCase):
         # A Line clearance task's qty: the conditional contract covers Filling tasks only.
         for handle, field, role in ((CLEARANCE, "row.qty", "filled"),
                                     (MO, "row.qty_sample", "produced"),
-                                    (PO_LINE, "row.quantity", "ordered")):
+                                    (QUOTE_LINE, "row.quantity", "ordered")):
             with self.subTest(field=field, role=role):
                 value = ROWS[handle]["row"][field[4:]]
                 result = gate(f"{value}.", [handle], [vc(str(value), handle, field, role)])
@@ -230,6 +235,58 @@ class StructuredClaimTests(unittest.TestCase):
                 vc("1509", ITEM, "row.quantity", "planned")], rows=kept)),
                 ["claim_changed_since"])
 
+    def test_a_source_that_moved_on_refuses_only_a_cited_value_that_changed(self):
+        """Live (Vince, PO#1195): a Portal row cited from the served projection was
+        refused once the live mirror held a newer revision, though the cited field was
+        the same there. The current revision decides the cited value: unchanged, the
+        claim passes on it; changed, it is refused saying what it is now; no current
+        revision readable, it is refused."""
+        current = ITEM.replace("@g-8", "@g-9")
+        cited = {**ROWS[ITEM], "status": "changed_since", "changed_since": True,
+                 "current_citation": current}
+        newer = {**ROWS[ITEM], "row": {**ROWS[ITEM]["row"], "assembly_order_id": 10719}}
+        claim = [vc("1509", ITEM, "row.quantity", "planned")]
+        ahead = gate("planned 1509", [ITEM], claim,
+                     rows={**ROWS, ITEM: cited, current: newer})
+        self.assertTrue(ahead["passed"], ahead["failures"])
+        self.assertEqual(checked(ahead)[0]["current_citation"], current)
+        changed = gate("planned 1509", [ITEM], claim, rows={
+            **ROWS, ITEM: cited, current: {**newer, "row": {**newer["row"], "quantity": 1600.0}}})
+        self.assertEqual(codes(changed), ["claim_changed_since"])
+        self.assertIn("now 1600.0", changed["failures"][0]["detail"])
+        self.assertIn(current, changed["failures"][0]["detail"])
+        for rows in ({**ROWS, ITEM: cited},                              # current unreadable
+                     {**ROWS, ITEM: cited, current: {**newer, "changed_since": True}},
+                     {**ROWS, ITEM: {**cited, "current_citation": None}}):  # none named
+            with self.subTest(rows=sorted(rows)):
+                self.assertEqual(codes(gate("planned 1509", [ITEM], claim, rows=rows)),
+                                 ["claim_changed_since"])
+        # A calculation over a moved-on row reads it the same way, input by input.
+        shortfall = [vc("6", role="planned_not_produced", calculation="C1")]
+        self.assertTrue(gate("A shortfall of 6.", [ITEM], shortfall,
+                             rows={**ROWS, ITEM: cited, current: newer})["passed"])
+        moved = gate("A shortfall of 6.", [ITEM], shortfall, rows={
+            **ROWS, ITEM: cited, current: {**newer, "row": {**newer["row"],
+                                                           "actual_amount": 1504.0}}})
+        self.assertEqual(codes(moved), ["claim_changed_since"])
+        self.assertIn("row.actual_amount changed since", moved["failures"][0]["detail"])
+
+    def test_a_portal_po_line_quantity_carries_its_ordered_and_received_roles(self):
+        # Live (Vince, glycerin): "no role contract covers the Portal line quantity".
+        rows = {PO_LINE: {"relation": "public.app_purchase_order_line", "row": {
+            "id": "pol-0", "quantity": 12500.0, "quantity_received": 12000.0, "uom": "EA"}}}
+        for text, value, field, role in (("ordered 12500", "12500", "row.quantity", "ordered"),
+                                         ("received 12000", "12000", "row.quantity_received",
+                                          "received")):
+            with self.subTest(role=role):
+                out = gate(text, [PO_LINE], [vc(value, PO_LINE, field, role)], rows=rows,
+                           calculations=[])
+                self.assertTrue(out["passed"], out["failures"])
+        # The contract types the column: another role on it is still refused.
+        self.assertEqual(codes(gate("received 12500", [PO_LINE], [
+            vc("12500", PO_LINE, "row.quantity", "received")], rows=rows, calculations=[])),
+            ["claim_role_mismatch"])
+
     def test_a_decimal_comma_is_no_thousands_separator(self):
         # Review p0-b: to_decimal stripped every comma, so a cell "1,5" held 15.
         rows = {PO_LINE: {"relation": "public.app_purchase_order_line",
@@ -267,11 +324,13 @@ class StructuredClaimTests(unittest.TestCase):
                              (value, field))
 
     def test_units_must_match_the_contract_or_the_recorded_unit(self):
-        self.assertEqual(codes(gate("12500.0 kg", [PO_LINE],
-                                    [vc("12500.0", PO_LINE, "row.quantity", unit="kg")])),
+        # The PO line quantity's role contract types it ordered; its unit is recorded.
+        self.assertEqual(codes(gate("12500.0 kg ordered", [PO_LINE],
+                                    [vc("12500.0", PO_LINE, "row.quantity", "ordered",
+                                        unit="kg")])),
                          ["claim_unit_mismatch"])
-        result = gate("12500.0 EA", [PO_LINE], [vc("12500.0", PO_LINE, "row.quantity",
-                                                   unit="EA")])
+        result = gate("12500.0 EA ordered", [PO_LINE], [vc("12500.0", PO_LINE, "row.quantity",
+                                                           "ordered", unit="EA")])
         self.assertTrue(result["passed"])
         self.assertEqual(checked(result)[0]["unit_basis"], "recorded_calculation")
         # No unit recorded anywhere: the stated unit passes, counted as unverified.
@@ -1177,12 +1236,12 @@ class ProseTests(unittest.TestCase):
             "Send it for Q9 by 9/30.    too.")
 
     def test_text_claims_cover_codes_with_digits(self):
-        claims = [vc("P-02458", PO_LINE, "row.code"),
-                  vc("12500.0", PO_LINE, "row.quantity", unit="EA")]
+        claims = [vc("P-02458", QUOTE_LINE, "row.code"),
+                  vc("12500.0", QUOTE_LINE, "row.quantity", unit="EA")]
         self.assertTrue(gate("Purchase order line for code P-02458: quantity 12500.0, uom EA.",
-                             [PO_LINE], claims)["passed"])
-        self.assertEqual(codes(gate("Line P-02458.", [PO_LINE])), ["claim_unstructured"])
-        self.assertEqual(codes(gate("Line P-02459.", [PO_LINE], [vc("P-02459", PO_LINE,
+                             [QUOTE_LINE], claims)["passed"])
+        self.assertEqual(codes(gate("Line P-02458.", [QUOTE_LINE])), ["claim_unstructured"])
+        self.assertEqual(codes(gate("Line P-02459.", [QUOTE_LINE], [vc("P-02459", QUOTE_LINE,
                                                                      "row.code")])),
                          ["claim_value_mismatch"])  # the failing claim still blocks
 
@@ -2227,9 +2286,9 @@ class OriginalTextQuoteTests(unittest.TestCase):
                  self.FILE, "row.content_text"),
                 ("P-01274", "P-01274 11 shipper box", self.PAGE, "text"),
                 # Any other cell: the quote verbatim in it, a number cell that number.
-                ("P-02458", "P-02458", PO_LINE, "row.code"),
-                ("12500", "12500", PO_LINE, "row.quantity"),
-                ("12500", "12,500.0", PO_LINE, "row.quantity")):
+                ("P-02458", "P-02458", QUOTE_LINE, "row.code"),
+                ("12500", "12500", QUOTE_LINE, "row.quantity"),
+                ("12500", "12,500.0", QUOTE_LINE, "row.quantity")):
             with self.subTest(quote=quote):
                 out = check(value, quote, handle, field)
                 self.assertTrue(out["passed"], out["failures"])
@@ -2246,9 +2305,9 @@ class OriginalTextQuoteTests(unittest.TestCase):
                 ("approved", "The re-quote was not approved.", self.REFUSAL,
                  "row.body_text"),
                 ("P-01274", "11 shipper box", self.PAGE, "text"),
-                ("P-02458", "P-02458 lid", PO_LINE, "row.code"),
-                ("12500", "12500 EA", PO_LINE, "row.quantity"),
-                ("12500", "12501", PO_LINE, "row.quantity")):
+                ("P-02458", "P-02458 lid", QUOTE_LINE, "row.code"),
+                ("12500", "12500 EA", QUOTE_LINE, "row.quantity"),
+                ("12500", "12501", QUOTE_LINE, "row.quantity")):
             with self.subTest(quote=quote, value=value):
                 self.assertIn("claim_value_mismatch", codes(check(value, quote, handle,
                                                                    field)))
@@ -2256,13 +2315,13 @@ class OriginalTextQuoteTests(unittest.TestCase):
         for claim in ({"value": "1503", "calculation": "C7", "quote": "1503 units"},
                       {"value": "1", "op": "count", "of": [{"citation": MO}],
                        "quote": "one"},
-                      dict(vc("P-02458", PO_LINE, "row.code"), quote=""),
-                      dict(vc("P-02458", PO_LINE, "row.code"), quote=["P-02458"]),
-                      dict(vc("P-02458", PO_LINE, "row.code"), quote="x" * 501)):
+                      dict(vc("P-02458", QUOTE_LINE, "row.code"), quote=""),
+                      dict(vc("P-02458", QUOTE_LINE, "row.code"), quote=["P-02458"]),
+                      dict(vc("P-02458", QUOTE_LINE, "row.code"), quote="x" * 501)):
             with self.subTest(claim=claim):
                 with self.assertRaisesRegex(claim_checks.ValidationError,
                                             "invalid_value_claim_quote:0"):
-                    claim_checks.parse_value_claims([claim], [MO, PO_LINE], ["C7"])
+                    claim_checks.parse_value_claims([claim], [MO, QUOTE_LINE], ["C7"])
 
     def test_a_short_or_negated_quote_is_refused(self):
         """Any token-bounded substring verified, however short
@@ -3057,7 +3116,9 @@ class GateCorrectValueTests(unittest.TestCase):
         # input, an input the item does not cite, a copied input, no expression.
         for claim, code in (
                 (expression("18801.08", "x0 - 100", [deposit]), "value_claim_expression_literal"),
-                # Each input once (x0 / x0, x0 - x0 + x1 build a constant).
+                # No input builds a constant or a multiple of itself (x0 / x0, x0 - x0
+                # + x1, x0 + x0); one standing in several terms is
+                # ``test_one_figure_applied_to_several_lines_is_one_input``.
                 (expression("1", "x0 / x0", [deposit]), "value_claim_expression_repeated_input"),
                 (expression("18514.39", "x0 - x0 + x1", [deposit, fifteen]),
                  "value_claim_expression_repeated_input"),
@@ -3066,8 +3127,6 @@ class GateCorrectValueTests(unittest.TestCase):
                 (expression("18901.08", "x0", [deposit, fifteen]),
                  "value_claim_expression_unused_input"),
                 (expression("18901.08", "x0 + y", [deposit]), "value_claim_expression_name"),
-                (expression("37802.16", "x0 + x1", [deposit, deposit]),
-                 "value_claim_duplicate_input"),
                 (dict(expression("1", "x0", [deposit]), expression=""),
                  "invalid_value_claim_expression"),
                 ({**expression("1", "x0", [deposit]), "of": [{**deposit, "citation": PAGE_OTHER,
@@ -3079,6 +3138,79 @@ class GateCorrectValueTests(unittest.TestCase):
                 with self.assertRaises(ValidationError) as raised:
                     self.page([claim])
                 self.assertTrue(str(raised.exception).startswith(code), str(raised.exception))
+
+    def test_one_figure_applied_to_several_lines_is_one_input(self):
+        """A12 (v13): cartons at a pack size the text prints once, applied to two kit
+        lines, were refused (repeated input) though the scorer recomputes the same
+        expression. One input may stand in several additive terms with different other
+        inputs; it never cancels itself or multiplies itself into a constant."""
+        page = "original://packs#page=1"
+        text = ("| Lines | Units | Per case |\n| singles | 4,800 | 48 |\n| kit A | 960 | "
+                "labels |\n| kit B | 240 | labels |\nAt the system's 12 kits per case the "
+                "total would differ.")
+        rows = {page: {"original_id": "packs", "page": 1, "text": text, "text_source": "pdf"}}
+        singles = {"value": "4,800", "quote": "| singles | 4,800 |"}
+        per = {"value": "48", "quote": "| 4,800 | 48 |"}
+        kit_a = {"value": "960", "quote": "| kit A | 960 |"}
+        twelve = {"value": "12", "quote": "12 kits per case"}
+        kit_b = {"value": "240", "quote": "| kit B | 240 |"}
+
+        def computed(value, expr, *inputs):
+            claim = {"value": value, "op": "expression", "expression": expr, "of": [
+                {"citation": page, "field": "text", **given} for given in inputs]}
+            return gate("", [page], [claim], rows=rows, calculations=())
+        out = computed("200", "x0 / x1 + x2 / x3 + x4 / x3", singles, per, kit_a, twelve,
+                       kit_b)
+        self.assertTrue(out["passed"], out["failures"])
+        # Legitimate forms: one rate applied to two quantities, factored or not, a
+        # quantity-times-price sum over distinct lines, and a single multiplication.
+        for value, expr, inputs in (
+                ("276480", "(x0 + x1) * x2", (singles, kit_a, per)),
+                ("276480", "x0 * x2 + x1 * x2", (singles, kit_a, per)),
+                ("241920", "x0 * x1 + x2 * x3", (singles, per, kit_a, twelve)),
+                ("230400", "x0 * x1", (singles, per))):
+            with self.subTest(passes=expr):
+                out = computed(value, expr, *inputs)
+                self.assertTrue(out["passed"], out["failures"])
+        # The same figure quoted at its one place twice is that one input again (A12 on
+        # v14 listed the pack size twice): judged as x3 in two terms, it passes; the
+        # same aliasing never lets a figure divide or cancel itself.
+        out = computed("200", "x0 / x1 + x2 / x3 + x4 / x5", singles, per, kit_a, twelve,
+                       kit_b, dict(twelve, quote="system's 12 kits"))
+        self.assertTrue(out["passed"], out["failures"])
+        out = computed("1", "x0 / x1", twelve, dict(twelve, quote="system's 12 kits"))
+        self.assertEqual(codes(out), ["claim_value_mismatch"], out)
+        self.assertIn("value_claim_expression_repeated_input", out["failures"][0]["detail"])
+        # A12 (rank3): the pack size listed twice exactly as written is that one figure in
+        # two roles, judged as above: it passes as x3 dividing two kit lines, and a copy
+        # that adds the figure to itself or divides it by itself is still refused.
+        out = computed("200", "x0 / x1 + x2 / x3 + x4 / x5", singles, per, kit_a, twelve,
+                       kit_b, twelve)
+        self.assertTrue(out["passed"], out["failures"])
+        for value, expr in (("24", "x0 + x1"), ("1", "x0 / x1"),
+                            ("4812", "x0 + x1 + x2"), ("400", "(x0 + x1) / x2")):
+            with self.subTest(copied=expr):
+                inputs = (twelve, twelve, singles) if "x2" in expr else (twelve, twelve)
+                out = computed(value, expr, *inputs)
+                self.assertEqual(codes(out), ["claim_value_mismatch"], out)
+                self.assertIn("value_claim_expression_repeated_input",
+                              out["failures"][0]["detail"])
+        # A wrong result still fails on the recompute.
+        self.assertEqual(codes(computed("201", "x0 / x1 + x2 / x3 + x4 / x3", singles, per,
+                                        kit_a, twelve, kit_b)), ["claim_value_mismatch"])
+        # Judged on the expansion into monomials, so no factoring hides a double count:
+        # (x0 + x1) * x2 + x0 * x2 is 2*x0*x2 + x1*x2, kit A
+        # counted twice; x0 * x1 + x0 * (x1 + x2) is 2*x0*x1 + x0*x2. A term that
+        # cancels itself away (coefficient 0) builds a figure from nothing.
+        for expr in ("x0 + x0 + x1", "x0 * x1 + x0 * x1", "x0 * (x1 - x0)",
+                     "(x0 + x1) - x0 - x1", "(x0 + x1) * x2 + x0 * x2",
+                     "x0 * x1 + x0 * (x1 + x2)", "x0 * x1 + x0 * (x1 + x2) - x0 * x2",
+                     "x0 + x0 * x1", "x0 / (x0 + x1)", "x0 / (x1 + x1) + x2"):
+            with self.subTest(refused=expr):
+                with self.assertRaises(ValidationError) as raised:
+                    computed("1", expr, singles, per, kit_a)
+                self.assertTrue(str(raised.exception).startswith(
+                    "value_claim_expression_repeated_input"), str(raised.exception))
 
     def test_a_markdown_heading_run_is_no_number_label(self):
         # A05's page: "Stages 4–6\n\n### 15% deposit" read "#" as the number sign of

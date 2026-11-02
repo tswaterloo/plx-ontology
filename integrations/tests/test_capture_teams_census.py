@@ -488,6 +488,45 @@ class CardinalityTests(CensusCase):
                 self.assertEqual(report["content"]["channels_due"], 2 + extra)
                 self.assertEqual(self.read(graph)[0], set(channels))
 
+    def test_an_unchanged_cleared_chat_is_carried_and_every_content_read_clears_it_again(self):
+        """A chat the last census cleared, unchanged since (``lastUpdatedDateTime``), is
+        carried without its members read by the census; the capture still reads and
+        clears its members before any message, so a person excluded meanwhile stops it."""
+        graph = self.fixture()
+        graph.chat_updated = "2026-10-20T08:00:00.000Z"
+        members = rf"/v1\.0/chats/{re.escape(CHAT)}/members"
+
+        def member_reads() -> int:
+            return sum(1 for p in self.paths(graph) if re.fullmatch(members, p))
+        self.confirm()
+        # Every conversation read every run (refresh_hours 0), so each run reads the chat.
+        scope = json.loads((ROOT / "examples" / "teams_capture_scope.live-check.json")
+                           .read_text(encoding="utf-8"))
+        path = Path(self.home) / "scope.json"
+        path.write_text(json.dumps({**scope, "refresh_hours": 0}), encoding="utf-8")
+        reports = []
+        for change in (None, None, "updated", "excluded"):
+            if change == "updated":
+                graph.chat_updated = "2026-10-21T08:00:00.000Z"
+            if change == "excluded":   # an excluded person joins; Graph's listing says not
+                graph.chat_members.append((EXCLUDED, EXCLUDED_ADDRESS))
+            graph.calls.clear()
+            reports.append((self.run_cli(graph, scope=str(path))[1], member_reads(), len([
+                p for p in self.paths(graph) if p.startswith(f"/v1.0/chats/{CHAT}/messages")])))
+        carried = [(r["census"]["chats_carried"], reads, messages)
+                   for r, reads, messages in reports]
+        # Read by the census and the capture; carried (the capture's read only); read
+        # again once changed; carried, but the capture's own read refuses it unread.
+        self.assertEqual(carried, [(0, 2, 1), (1, 1, 1), (0, 2, 1), (1, 1, 0)])
+        chat = [c for c in reports[-1][0]["runs"][0]["conversations"] if c["kind"] == "chat"]
+        self.assertEqual(chat[0]["status"], capture_teams.PEOPLE_EXCLUDED)
+        # Refused by the capture, it holds no membership: the next census reads it again.
+        graph.calls.clear()
+        report = self.run_cli(graph, scope=str(path))[1]
+        self.assertEqual(report["census"]["chats_carried"], 0)
+        self.assertEqual(report["census"]["chats_refused"]["people_excluded"], 1)
+        self.assertEqual(member_reads(), 1)
+
     def test_concurrent_reads_list_and_capture_exactly_what_one_at_a_time_does(self):
         """The census and the capture on eight threads (the CLI's default) and on one:
         the same listing, the same conversations read, the same counts; an excluded
@@ -508,12 +547,17 @@ class CardinalityTests(CensusCase):
             self.assertFalse([p for p in self.paths(graph) if p.startswith(f"/v1.0/teams/{TEAM}")
                               and p != f"/v1.0/teams/{TEAM}/members"])
             census = report["census"]
+            listing = self.census_file()
+            for chat in listing.get("chats", []):
+                chat.pop("checked_at")   # when this census read it (carried by the next)
             outcomes[workers] = (
-                self.census_file(), self.read(graph),
+                listing, self.read(graph),
                 {k: census[k] for k in ("teams", "teams_cleared", "teams_refused",
                                         "channels", "channels_cleared", "chats",
                                         "chats_cleared", "status")},
-                report["status"], code, sorted(self.paths(graph)))
+                # The requests made (how often a never-settled one is read again depends
+                # on which thread finished first: the oldest membership goes first).
+                report["status"], code, sorted(set(self.paths(graph))))
         one, many = outcomes.values()
         self.assertEqual(one, many)
         self.assertEqual(one[2]["teams_refused"]["people_excluded"], 1)

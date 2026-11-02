@@ -846,13 +846,13 @@ class ClaudeCodeAgentTests(Temp):
         self.assertEqual(transcript["agent"]["allowed_tools"],
                          ["plx.find", "plx.source_citation"])
         self.assertEqual(argv[argv.index("--model") + 1], "opus")
-        # The host is served only through the tool gate, which allows the same tools.
-        gated = seen["config"]["mcpServers"]["plx"]["args"]
-        host = fx.FakeHost().mcp_server()
-        self.assertEqual(gated[:3], ["-m", "operating.agent_session", "gate"])
-        self.assertEqual(gated[gated.index("--") + 1:], [host["command"], *host["args"]])
-        self.assertEqual([gated[i + 1] for i, arg in enumerate(gated) if arg == "--allow"],
-                         ["plx.find", "plx.source_citation"])
+        # The host is served only through the tool gate the host process holds
+        # (``HostGate``): the session's MCP server is a relay to it, naming no host
+        # command, no credential and no tool of its own.
+        gated = seen["config"]["mcpServers"]["plx"]
+        self.assertEqual(gated["args"][:4], ["-m", "operating.agent_session", "connect",
+                                             "--to"])
+        self.assertEqual(set(gated["env"]), {"PYTHONPATH"})
         self.assertEqual(seen["cwd_files"], [])  # an empty session directory
         for name in ("ANTHROPIC_API_KEY", "PLX_WORKBENCH_API_KEY",
                      "MICROSOFT_GRAPH_CLIENT_SECRET", "BC_CLIENT_SECRET", "DATABASE_URL",
@@ -871,6 +871,37 @@ class ClaudeCodeAgentTests(Temp):
         self.assertFalse(result["passed"] or sc.confident_unsupported(result))
         # The host's MCP start-up gets its own bound, past Claude Code's default.
         self.assertEqual(seen["env"]["MCP_TIMEOUT"], str(runner.MCP_STARTUP_MS))
+
+    def test_the_host_submits_only_what_no_passed_decision_covers(self):
+        # EMD-A1, QO-C2 (rank3): the one gate call carried "}}}" for "}}" and never
+        # reached the gate; AL-02 never called it. The host submits the reply's values
+        # (or the call recovered from its surplus closing brackets, nothing else) to the
+        # session's gate; after a passed decision it submits nothing.
+        from operating import agent_session as sess
+        answer = {"claims": [{"text": "x", "citations": ["api://a/1@g-1"],
+                              "value_claims": [{"value": "7", "citation": "api://a/1@g-1",
+                                                "field": "row.qty"}]}]}
+        def malformed(tail):
+            return [{"seq": 0, "type": "tool_call", "name": "plx.case_get", "is_error": True,
+                     "arguments": {"__unparsedToolInput": {
+                         "raw": json.dumps({"answer": answer}) + tail}}}]
+        self.assertEqual(sess.host_submission(malformed("}"), "prose only"), answer)
+        for tail in ("x}", ",{}"):
+            self.assertIsNone(sess.host_submission(malformed(tail), "prose only"))
+        reply = fx.final_text(fx.good_answer())
+        built = sess.host_submission([], reply)
+        cited = [c["citations"][0]["l1_handle"] for c in fx.good_answer()["values"]
+                 if c.get("value") is not None]
+        self.assertEqual([c["value_claims"][0]["citation"] for c in built["claims"]], cited)
+        self.assertEqual(built["unknowns"], [v["name"] for v in fx.good_answer()["values"]
+                                             if v.get("value") is None])
+        passed = [{"seq": 0, "type": "tool_call", "name": "plx.case_get",
+                   "arguments": {"answer": answer}, "is_error": False,
+                   "result": {"outcome": "answered", "claims": [{
+                       "id": "m1", "check": {"status": "passed"},
+                       "value_claims": [{"value": "7", "citation": "api://a/1@g-1",
+                                         "field": "row.qty"}]}]}}]
+        self.assertIsNone(sess.host_submission(passed, reply))
 
     def test_a_timed_out_session_keeps_its_calls_and_states_no_answer(self):
         # Reproduced live: 64 card sessions hit the session timeout and their transcripts
@@ -908,9 +939,8 @@ class ClaudeCodeAgentTests(Temp):
         partial = "\n".join(json.dumps(line) for line in lines)
 
         def spawn(argv, cwd, env, timeout):
-            gate = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
-                encoding="utf-8"))["mcpServers"]["plx"]["args"]
-            log = Path(gate[gate.index("--timing") + 1])
+            # The host's gate keeps its wall-clock log beside the session directory.
+            log = Path(cwd).parent / "gate-timing.jsonl"
             log.write_text("".join(json.dumps(entry) + "\n" for entry in (
                 {"event": "start", "id": 7, "name": "plx.find",
                  "arguments": {"query": "PO-1"}, "at": 1000.0},
@@ -1104,7 +1134,8 @@ class CaseHostInjectedTransportTests(Temp):
                               input="".join(json.dumps(m) + "\n" for m in messages))
         self.assertEqual(done.returncode, 0, done.stderr[-400:])
         tools = json.loads(done.stdout.splitlines()[1])["result"]["tools"]
-        self.assertEqual({tool["name"] for tool in tools}, set(CASE_RUNTIME_TOOLS))
+        # the default agent also lists plx.changes
+        self.assertEqual({tool["name"] for tool in tools}, set(CASE_RUNTIME_TOOLS) | {"plx.changes"})
 
     def test_fixture_host_is_refused_on_live_state(self):
         from operating.session_identity import bind_state_dir
@@ -1216,7 +1247,7 @@ class RealAgentEvalTests(Temp):
             messages += [{"jsonrpc": "2.0", "id": 10 + n, "method": "tools/call",
                           "params": {"name": name, "arguments": arguments}}
                          for n, (name, arguments) in enumerate(calls)]
-            done = subprocess.run([server["command"], *server["args"]], cwd=server["cwd"],
+            done = subprocess.run([server["command"], *server["args"]], cwd=server.get("cwd"),
                                   env={**env, **server["env"]}, capture_output=True, text=True,
                                   timeout=timeout, input="".join(json.dumps(m) + "\n"
                                                                  for m in messages))

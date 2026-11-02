@@ -156,7 +156,7 @@ def _resolver(args: argparse.Namespace) -> Any:
     if policy is None:
         raise TicketRefused("employee_policy_not_configured")
     try:
-        return employee_resolver(policy, portal)
+        return employee_resolver(policy, portal, getattr(args, "state_dir", None))
     except ValueError:
         raise TicketRefused("employee_policy_unusable") from None
 

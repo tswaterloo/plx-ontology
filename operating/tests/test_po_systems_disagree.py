@@ -24,11 +24,12 @@ from ontology import identifiers, store_ddl
 from ontology import identity_scoring as ids
 from ontology.project import build_store
 from ontology.tests.test_bc_po_your_reference import (
-    FULL, NOW, PORTAL_ONLY, SCHEMA, T, Source, bc_po, bid, po, portal_po, ref)
+    COMPANY, FULL, GEN, NOW, PORTAL_ONLY, SCHEMA, T, Source, bc_po, bid, po, portal_po, ref)
 from operating import ontology_tools as ot
 from operating import ontology_tools_process as op
 from operating import ontology_tools_traverse as tt
 from operating import po_status as ps
+from operating import proactive_engine as pe
 from operating import status_card
 from operating.tests.test_proactive_engine import Engine, World, handle
 from tests.test_ontology_tools_review import CONTRACTS
@@ -59,7 +60,7 @@ class ProcessTest(unittest.TestCase):
 
     def world(self, bc_received="4", fully=False, portal_received="10", status="Complete",
               portal_expected="2026-09-01", bc_expected=None, bc_status="Open",
-              posted=False, renumbered="null"):
+              posted=False, renumbered="null", fm_twin=False, line_expected=None):
         self.n += 1
         path = self.dir / f"store{self.n}.sqlite"
         header = {**portal_po(1, "PO7001", fm="PO7001"), "status": status,
@@ -67,6 +68,12 @@ class ProcessTest(unittest.TestCase):
         # no FM twin, never renumbered: the identity keys are read, and null
         header["custom_fields"].update(fmGeneratedPoId=None, renumberedTo=None)
         others = []
+        if fm_twin:
+            # the order's FileMaker twin by the stable key, and another Portal order (a
+            # Portal-native one) that carries no FM key at all: its key is absent there
+            header["custom_fields"].update(fmGeneratedPoId=1)
+            native = {**portal_po(4, "PO7004"), "status": "Pending"}
+            others.append(native)
         if renumbered != "null":
             # "unserved": the reporting API carries no renumberedTo on any order;
             # "partly": another order carries one, this one none (absent, not null)
@@ -87,14 +94,18 @@ class ProcessTest(unittest.TestCase):
                  **({"requestedReceiptDate": bc_expected} if bc_expected else {})}
         line = {"id": "c0000000-0000-4000-8000-000000000001", "documentId": bid(1),
                 "quantity": "10", "receivedQuantity": bc_received,
-                "unitOfMeasureCode": "EA"}
+                "unitOfMeasureCode": "EA",
+                **({"expectedReceiptDate": line_expected} if line_expected else {})}
         bc = Source("bc", {"purchaseOrders": [order], "purchaseOrderLines": [line]},
                     [ref(1, "PO106001", "PO7001")])
         portal = Source("portal_api", {
+            **({"public.generated_purchase_order": [
+                {"id": 1, "ponumber": "PO7001", "status": "B.Order"}]} if fm_twin else {}),
             "public.app_purchase_order": [header, *others],
             "public.app_purchase_order_line": [{
                 "id": "l1", "purchase_order_id": "p1", "quantity": "10",
                 "quantity_received": portal_received, "uom": "EA"}]})
+        self.sources = (portal, bc)   # the raw rows, for the oracle (OracleParityTest)
         build_store(path, SCHEMA, {"bc": bc, "portal_api": portal},
                     normalizer=identifiers.normalize, clock=lambda: NOW,
                     post_project={"your_reference": ids.your_reference_step})
@@ -224,6 +235,38 @@ class ProcessTest(unittest.TestCase):
         self.assertNotEqual(entry["state"], "late", entry)
         self.assertIn("could not read a key", json.dumps(entry))
         self.assertNotIn("link_key_not_served", json.dumps(entry))
+
+    def test_an_fm_key_absent_on_another_order_never_hides_this_orders_due_date(self):
+        # live 2026-11-01 (PO late questions abstained): every Portal order's lateness
+        # read "due date unproven" because some Portal-native order carries no FM key,
+        # though this order's own FM twin is linked by its key. Only a key that could
+        # point at this order (the far side) leaves the twins unproven. The due date is
+        # the BC lines' expected receipt date (no header holds one).
+        path = self.world(fm_twin=True, portal_expected=None, line_expected="2026-09-01")
+        with sqlite3.connect(path) as conn:
+            report = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
+                                             "'build_report'").fetchone()[0])
+            twins = conn.execute("SELECT count(*) FROM links WHERE link_type = "
+                                 "'PurchaseOrder.same_record_as' AND binding_kind = "
+                                 "'same_record'").fetchone()[0]
+        self.assertTrue(any(g["code"] == "path_absent" and "fm_generated_po_id" in g["where"]
+                            for g in report["gaps"]), report["gaps"])
+        self.assertGreaterEqual(twins, 1)
+        entry, _ = self.lateness(path, FULL)
+        self.assertEqual((entry["state"], entry["late"], entry.get("governing_date")),
+                         ("late", True, "2026-09-01"), entry)
+        # from the BC order the far side is the Portal orders' renumberedTo, which the
+        # native order does not carry: an order it could name is unproven, so no verdict
+        entry, _ = self.lateness(path, FULL, po("bc", 1))
+        self.assertNotEqual(entry["state"], "late", entry)
+        self.assertIn("could not read a key", json.dumps(entry))
+        # the Portal-side reader still sees no BC date and no verdict resting on it
+        entry, text = self.lateness(path, PORTAL_ONLY)
+        self.assertNotEqual(entry["state"], "late")
+        self.assertNotIn(BC_HANDLE, text)
+        # the native order itself has no FM key: its twins stay unproven, never late
+        entry, _ = self.lateness(path, FULL, po("api", 4))
+        self.assertNotEqual(entry["state"], "late", entry)
 
     def assert_late_from_both(self, path):
         for root in (po("api", 1), po("bc", 1)):
@@ -465,6 +508,94 @@ class EngineTest(Engine):
             may_read=lambda key: key == "api:b")], [second])
         self.assertEqual(self.late_items(may_read=lambda key: key == "api:a"), [])
 
+    def test_a_bc_draft_twins_line_date_never_dates_an_open_order(self):
+        # 11 Pending or B.Order
+        # orders dated only by a BC Draft twin's line date (2026-07-14) were late on Home.
+        # They read open with no due date, in their own undated group; a Draft received
+        # against (released, then reopened) still dates its order; nothing lost or doubled
+        for count in (1, 10, 60):
+            with self.subTest(n=count):
+                w = World()
+                undated, dated = [], []
+                for i in range(2 * count):
+                    received = i % 2   # odd: the Draft has a received line
+                    portal = w.obj("PurchaseOrder", {"status": "Pending"}, audience="api:a",
+                                   binding="portal.app_purchase_order")
+                    w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                        "ordered_quantity": ("10", "ea"),
+                        "received_quantity": ("0", "ea", "received")},
+                        audience="api:a"), portal)
+                    draft = w.obj("PurchaseOrder", {"bc_status": "Draft",
+                                                    "bc_fully_received": "false"},
+                                  audience="bc:x", binding="bc.purchase_orders")
+                    w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                        "ordered_quantity": ("10", "ea"),
+                        "received_quantity": (str(4 * received), "ea", "received"),
+                        "bc_expected_receipt_date": "2026-07-14"}, audience="bc:x"), draft)
+                    w.link("PurchaseOrder.bc_posted_as", portal, draft, "verified")
+                    (dated if received else undated).append((portal, draft))
+                summary = self.run_engine(w)
+                gaps = self.read(limit=5000)["gaps"]
+                late = {g["object_id"] for g in gaps if g["kind"] in ("late_po",
+                                                                      "unconfirmed_po")}
+                self.assertFalse(late & {r for pair in undated for r in pair})
+                self.assertEqual(len(late), count)
+                self.assertEqual(summary["po_lateness"]["late"], count)
+                open_undated = [g for g in gaps if g["kind"] == pe.UNDATED_KIND]
+                self.assertEqual(sorted(g["object_id"] for g in open_undated),
+                                 sorted(p for p, _ in undated))
+                self.assertTrue(all("days_late" not in g["follow_up"]
+                                    for g in open_undated))
+                self.assertEqual(summary["po_lateness"]["undated"], count)
+                self.store.unlink()
+                self.inbox.unlink(missing_ok=True)
+
+    def test_an_order_one_twin_dates_is_never_also_undated(self):
+        # One released BC order (no date of its own) with two Portal
+        # twins, one dated and one not, was counted late AND undated, and a reader of the
+        # undated twin was told it is never late. One order, one verdict, every reader
+        w = World()
+        bc = w.obj("PurchaseOrder", {"bc_status": "Open", "bc_fully_received": "false"},
+                   audience="bc:x", binding="bc.purchase_orders")
+        dated = self.open_portal(w)
+        bare = w.obj("PurchaseOrder", {"status": "Pending"}, audience="api:b",
+                     binding="portal.app_purchase_order")
+        w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+            "ordered_quantity": ("10", "ea"), "received_quantity": ("0", "ea", "received")},
+            audience="api:b"), bare)
+        for portal in (dated, bare):
+            w.link("PurchaseOrder.bc_posted_as", portal, bc, "verified")
+        summary = self.run_engine(w)
+        lateness = summary["po_lateness"]
+        self.assertEqual((lateness["late"], lateness["undated"]), (1, 0), lateness)
+        self.assertEqual(lateness["open_by_read"],
+                         lateness["late"] + lateness["undated"] + lateness["open_other"])
+        for may_read in (lambda key: True, lambda key: key == "api:b",
+                         lambda key: key in ("api:b", "bc:x")):
+            self.assertFalse([g for g in self.read(limit=1000, may_read=may_read)["gaps"]
+                              if g["kind"] == pe.UNDATED_KIND])
+
+    def test_a_draft_twins_lines_are_never_late_lines(self):
+        # decision 2026-11-01 (lead, on the review's open question): rule 1 covers the
+        # line-level late_order rule too; a Draft received against keeps its line dates
+        w = World()
+        orders = {}
+        for received in ("0", "4"):
+            draft = w.obj("PurchaseOrder", {"bc_status": "Draft", "po_number": f"PO10{received}"},
+                          audience="bc:x", binding="bc.purchase_orders")
+            for got in (received, "0"):
+                w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": ("10", "ea"),
+                    "received_quantity": (got, "ea", "received"),
+                    "bc_expected_receipt_date": "2026-07-14"}, audience="bc:x"), draft)
+            orders[received] = draft
+        summary = self.run_engine(w)
+        line_late = {g["object_id"] for g in self.read(limit=1000)["gaps"]
+                     if g["kind"] == "late_order"}
+        self.assertNotIn(orders["0"], line_late)
+        self.assertIn(orders["4"], line_late)
+        self.assertEqual(summary["not_evaluated"]["late_order"]["draft_dates_nothing"], 1)
+
     def test_one_bc_order_with_two_portal_twins_is_one_order(self):
         w = World()
         bc = self.bc_open(w)
@@ -601,3 +732,59 @@ class ConflictUnitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OracleParityTest(ProcessTest):
+    """The product's late list equals the independent oracle's on the same raw rows
+    (``evals.oracle.po_lateness``): the rows are
+    projected through the real projector for the engine and read raw by the oracle."""
+
+    def late_both(self, **world):
+        from datetime import date
+        from evals.oracle import po_lateness as oracle
+        path = self.world(**world)
+        portal, bc = self.sources
+        cite = lambda rel, row: f"api://{rel}/{row.get('id')}@{GEN}-1"   # noqa: E731
+        raw_portal = {rel: [{"row": row, "citation": cite(rel, row)} for row in rows]
+                      for rel, rows in portal.rows.items()}
+        raw_bc = [{"company_id": COMPANY, "entity_set": entity_set, "fields": row,
+                   "citation": f"bc://production/{COMPANY}/{entity_set}/{row['id']}@{GEN}-1"}
+                  for entity_set, rows in bc.rows.items() for row in rows]
+        raw_bc += [{"company_id": COMPANY, "entity_set": oracle.BC_REFERENCES,
+                    "fields": {**fields, "id": oid},
+                    "citation": f"bc://production/{COMPANY}/{oracle.BC_REFERENCES}/{oid}"}
+                   for oid, fields in bc.references]
+        found = oracle.late_orders(raw_portal, raw_bc, date(2026, 10, 2))
+        oracle_late = bool(found["late"])
+        result = pe._late_or_unconfirmed_po(pe._Store(path), date(2026, 10, 2))
+        return oracle_late, result["counts"]["late"] > 0, found, result["counts"]
+
+    def test_the_late_list_equals_the_oracles_on_every_draft_case(self):
+        cases = {
+            "draft_unreceived": dict(status="Pending", bc_status="Draft", bc_received="0",
+                                     portal_received="0", portal_expected=None,
+                                     line_expected="2026-09-01"),
+            "draft_received": dict(status="Pending", bc_status="Draft", bc_received="4",
+                                   portal_received="0", portal_expected=None,
+                                   line_expected="2026-09-01"),
+            "draft_received_in_full": dict(status="Pending", bc_status="Draft",
+                                           bc_received="10", portal_received="0",
+                                           portal_expected=None,
+                                           line_expected="2026-09-01"),
+            "released": dict(status="Pending", bc_status="Open", bc_received="4",
+                             portal_received="0", portal_expected=None,
+                             line_expected="2026-09-01"),
+            "portal_draft_released_bc": dict(status="DRAFT", bc_status="Open",
+                                             bc_received="4", portal_received="0",
+                                             portal_expected=None,
+                                             line_expected="2026-09-01")}
+        # a Draft received against dates its order:
+        # late on both sides
+        expected = {"draft_unreceived": False, "draft_received": True,
+                    "draft_received_in_full": False, "released": True,
+                    "portal_draft_released_bc": True}
+        for name, world in cases.items():
+            with self.subTest(case=name):
+                oracle_late, product_late, found, counts = self.late_both(**world)
+                self.assertEqual(oracle_late, product_late, (found["counts"], counts))
+                self.assertEqual(product_late, expected[name], counts)

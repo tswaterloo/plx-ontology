@@ -91,8 +91,10 @@ if str(ROOT) not in sys.path:  # run as a file: the repository's packages
     sys.path.insert(0, str(ROOT))
 
 from evals import runner  # noqa: E402
+from operating import tool_results  # noqa: E402
 from evals import score as scoring  # noqa: E402
 from scripts import eval_real_agent as era  # noqa: E402
+from operator_ui.session_journal import run_journal_scope  # noqa: E402
 
 SCHEMA = "plx-eval-objective-agent/v1"
 OBJECTIVES_FORMAT = "plx-eval-objectives/v1"
@@ -324,7 +326,10 @@ class ObjectiveHost:
                 parsed = None
             return parsed if isinstance(parsed, Mapping) else {
                 "ok": False, "error": "tool_error", "message": text[:2000]}
-        return content
+        try:
+            return tool_results.result_value(result)
+        except tool_results.ToolResultUnreadable:
+            return {"ok": False, "error": "tool_result_unreadable"}
 
     def read(self, name: str, arguments: dict[str, Any]) -> Any:
         return self.base.read(name, arguments)
@@ -860,6 +865,7 @@ def evaluate(parts: Mapping[str, Sequence[Mapping[str, Any]]], blocked: list[dic
     return report
 
 
+@run_journal_scope
 def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          environ: Mapping[str, str] | None = None,
          live_sources: Callable[..., Any] | None = None,
@@ -890,6 +896,8 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     run.add_argument("--folder", default="inbox")
     run.add_argument("--sharepoint-path", action="append", default=[])
     args = parser.parse_args(argv)
+    from operator_ui.session_journal import isolate_journal
+    isolate_journal(args.work_dir / "journal")   # never the host's own journal
     environ = os.environ if environ is None else environ
     evidence = "injected-transport" if agent is not None else "real-claude-session"
     if agent is None and shutil.which(args.claude_bin) is None:

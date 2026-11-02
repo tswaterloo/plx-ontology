@@ -1597,6 +1597,93 @@ class StoredTextLookupTests(SharePointHostCase):
                              [self.handle(f"01N{added - 1:03d}")])
 
 
+class CapturedFilePageTests(SharePointHostCase):
+    """The captured files naming a query's identifier are gated only as far as the page
+    can show them (best first by their cheap prior: a name naming the identifier, a
+    use-case document), and the answer says it was cut; a page never holds a file the
+    reader may not open."""
+
+    scanned = False
+    WANTED = "PO2777777"
+
+    def ask(self, actor, limit):
+        return self.ok(self.server(actor, portal_granted=False), "plx.documents",
+                       {"query": self.WANTED, "sources": ["sharepoint"], "limit": limit})
+
+    def test_matches_past_the_page_are_not_gated_and_the_titled_file_comes_first(self):
+        from operating.case_tools_host import CaptureCaseHostTools as Host
+        added, limit, titled = 0, 5, "01TITLE"
+        for count in (1, 10, 60):
+            for number in range(added, added + count):
+                self.drive.file(f"01P{number:03d}", f"p{number}.txt", "01LOTS",
+                                f"Purchase order {self.WANTED} line {number}".encode(),
+                                mime="text/plain", acl=(RICARDO, SALES))
+            added += count
+            if count == 1:
+                # The one file whose name names the identifier, captured after a plain one.
+                self.drive.file(titled, f"{self.WANTED} packet.txt", "01LOTS",
+                                f"Packet for {self.WANTED}".encode(), mime="text/plain",
+                                acl=(RICARDO, SALES))
+            self.capture.run(scope())
+            gated: list[str] = []
+            real = Host.captured
+
+            def counted(host, actor, handle, **kwargs):
+                gated.append(handle)
+                return real(host, actor, handle, **kwargs)
+            with mock.patch.object(Host, "captured", counted):
+                answer = self.ask(EMPLOYEE, limit)
+            listed = [d["citation"] for d in answer["documents"]]
+            matching = added + 1   # the plain files and the titled one
+            self.assertEqual(len(listed), min(matching, limit), count)
+            self.assertEqual(len(set(listed)), len(listed))
+            self.assertEqual(listed[0], self.handle(titled), count)
+            wanted = {self.handle(f"01P{n:03d}") for n in range(added)} | {
+                self.handle(titled)}
+            self.assertLessEqual(len([h for h in gated if h in wanted]), limit + 1, count)
+            completeness = answer["completeness"]
+            if matching > limit:
+                self.assertTrue(completeness["truncated"], completeness)
+                self.assertIsNone(completeness.get("total"), completeness)
+                self.assertIn("scan_cap", [g["reason"] for g in answer["gaps"]])
+            else:
+                self.assertTrue(completeness["complete"], completeness)
+            # A reader the files are not shared with gets none of them, cut or not.
+            self.assertEqual(self.ask(OUTSIDER, limit)["documents"], [])
+
+
+class SentSizeTests(CapturedFilePageTests):
+    """A documents page is fitted to the response bound as it is sent to a client (every
+    text wrapped by the output boundary, the freshness meta's reserve counted), never
+    fitted unwrapped and then refused whole as result_too_large."""
+
+    def test_a_page_over_the_bound_once_wrapped_is_trimmed_never_refused(self):
+        from operating import mcp_server
+        for number in range(12):
+            self.drive.file(f"01S{number:03d}", f"s{number}.txt", "01LOTS",
+                            f"Purchase order {self.WANTED} line {number}".encode(),
+                            mime="text/plain", acl=(RICARDO, SALES))
+        self.capture.run(scope())
+        server = self.server(EMPLOYEE, portal_granted=False)
+        args = {"query": self.WANTED, "sources": ["sharepoint"], "limit": 10}
+        whole = self.ok(server, "plx.documents", args)
+        bound = int(mcp_server._envelope_bytes(whole) * 0.75)   # the page as sent is over it
+        with mock.patch.object(mcp_server, "MAX_RESULT_BYTES", bound):
+            fitted = _client(self.server(EMPLOYEE, portal_granted=False),
+                             "plx.documents", args)
+        self.assertFalse(fitted["isError"], fitted)
+        answer = fitted["structuredContent"]
+        # What is sent (already wrapped) fits the bound.
+        self.assertLessEqual(mcp_server._envelope_bytes(answer), bound)
+        self.assertTrue(answer["documents"])
+        reasons = [g["reason"] for g in answer["gaps"]]
+        # Fitted by the host's own steps, said in the answer: per-file labels folded
+        # into one, or the page trimmed (result_trimmed).
+        self.assertTrue("result_trimmed" in reasons
+                        or reasons.count("as_of_capture") < len(answer["documents"]),
+                        reasons)
+
+
 class IndexCodeTests(unittest.TestCase):
     """The kept identifier index is keyed by a digest of every input its entries are made
     from: a change to any of them rebuilds it, never reuses entries made by other code."""

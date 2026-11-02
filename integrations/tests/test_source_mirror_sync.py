@@ -814,6 +814,9 @@ class LineageTests(SyncTestCase):
         citation = mirror.rows(OPS, "public.customer")["rows"][0]["citation"]
         mirror.close()
         with contextlib.closing(sqlite3.connect(str(self.path))) as db:
+            for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                                      "AND name LIKE 'change_%'").fetchall():
+                db.execute(f"DROP TRIGGER {name}")   # a file that old had no change counters
             for table, columns in (("row_current", ("missing_from_source_since",
                                                     "missing_basis", "lineage",
                                                     "lineage_basis")),

@@ -251,16 +251,127 @@ def _by_rule(readings: Sequence[Reading], governs: str | None
     return None
 
 
+# ------------------------------------------------------------------- tolerances
+#
+# Not every difference is a disagreement. Three kinds never are, and are never shown as
+# "the sources disagree" (``not_a_disagreement``):
+#
+# * rounding: numbers that agree once the more precise is rounded to the places the
+#   least precise states (1257 and 1257.17; 1257.17 and 1257.1666666666667), within
+#   ``ROUNDING_SHARE`` of their size (0 and 0.4 still disagree), and only within one
+#   currency (1000 CAD and 1000.4 USD are two amounts);
+# * currency spellings: ``CAD`` and the Portal's ``CAD$`` are one currency
+#   (``ontology.units.currency_code``, the one currency table);
+# * each system's own number: a record's number or id field (a PO number)
+#   whose values differ only across systems is each system numbering the same linked
+#   record (BC's PO100095 and the Portal's PO#4442); two numbers inside one system still
+#   disagree.
+#
+# A measure that is not the same measure is not compared either: the Portal's purchase
+# order ``total_cost`` adds its lines' unit prices (with tax), not quantity x price,
+# so
+# beside another system's order
+# total it is dropped as a different figure (``_comparable``), never a side of a conflict.
+
+ROUNDING_SHARE = Decimal("0.005")
+# a record's own number or id (a lot code or an item code is shared, and can disagree)
+_IDENTIFIER_FIELD = re.compile(r"^(?:(?:po|so|order|purchase order|sales order|document|"
+                               r"record|external|portal|bc|fm po)[ _])?(?:number|no|num|id)$",
+                               re.I)
+_PORTAL_UNIT_PRICE_TOTAL = re.compile(r"(?:^|\.)total_cost$")
+
+
+def _number(value: Any) -> Decimal | None:
+    key = value_key(value)
+    if not key or not key.startswith("n:"):
+        return None
+    return Decimal(key[2:])
+
+
+def _places(value: Any) -> int:
+    text = " ".join(str(_envelope_text(value) if isinstance(value, Mapping) else value)
+                    .split()).replace(",", "")
+    return len(text.split(".", 1)[1]) if "." in text else 0
+
+
+def rounding_only(values: Sequence[Any]) -> bool:
+    """Whether numbers differ only by rounding (module note above)."""
+    numbers = [_number(v) for v in values]
+    if len(numbers) < 2 or any(n is None for n in numbers):
+        return False
+    places = min(_places(v) for v in values)
+    step = Decimal(1).scaleb(-places)
+    rounded = {n.quantize(step) for n in numbers}  # type: ignore[union-attr]
+    if len(rounded) != 1:
+        return False
+    size = max(abs(n) for n in numbers)  # type: ignore[arg-type]
+    spread = max(numbers) - min(numbers)  # type: ignore[type-var,operator]
+    return size > 0 and spread <= size * ROUNDING_SHARE
+
+
+def currency_key(value: Any) -> str | None:
+    """A currency cell's ISO code by the one currency table, else None."""
+    from ontology.units import currency_code
+    raw = _envelope_text(value) if isinstance(value, Mapping) else value
+    return currency_code(raw)[0] if isinstance(raw, str) else None
+
+
+def _comparable(field: str, readings: Sequence[Reading]) -> list[Reading]:
+    """``readings`` without a Portal unit-price total beside another system's total."""
+    portal = [r for r in readings if r.system == "Portal" and "purchase_order" in r.handle
+              and _PORTAL_UNIT_PRICE_TOTAL.search(str(r.field_path or ""))]
+    if portal and len(portal) < len(readings) and "total" in field.lower():
+        return [r for r in readings if r not in portal]
+    return list(readings)
+
+
+def not_a_disagreement(field: str, readings: Sequence[Reading]) -> bool:
+    """Whether the readings' differences are rounding, a currency spelling or each
+    system's own number (the tolerances above)."""
+    values = [r.value for r in readings]
+    currencies = {currency_key(r.currency) or r.currency for r in readings if r.currency}
+    if len(currencies) <= 1 and rounding_only(values):
+        # a sub-unit difference within one currency; 1000 CAD and 1000.4 USD differ
+        return True
+    if "currency" in field.lower():
+        codes = {currency_key(v) for v in values}
+        if len(codes) == 1 and None not in codes:
+            return True
+    if _IDENTIFIER_FIELD.search(field.strip()):
+        by_value: dict[str | None, set[str]] = {}
+        for r in readings:
+            by_value.setdefault(value_key(r.value), set()).add(r.system)
+        systems = list(by_value.values())
+        if all(len(s) == 1 for s in systems) and \
+                len(set().union(*systems)) == len(systems):
+            return True
+    return False
+
+
+def display_value(value: Any) -> str:
+    """A value as a person reads it: a number with more than four decimals is shown with
+    two (1257.1666666666667 -> 1257.17); anything else as ``shown``."""
+    number = _number(value)
+    if number is not None and _places(value) > 4:
+        return format(number.quantize(Decimal("0.01")).normalize(), "f") \
+            if abs(number) >= 1 else format(number.quantize(Decimal("0.0001")).normalize(), "f")
+    return shown(value)
+
+
 def resolve(field: str, readings: Iterable[Reading], *, governs: str | None = None,
             now: dt.datetime | None = None, subject: str | None = None
             ) -> dict[str, Any] | None:
     """The contract's conflict ``{field, values:[{value, source, trusted, why}]}`` (plus
     ``rule``, ``subject`` and each value's ``as_of``/``age``) for readings the reader may
-    open, or None when fewer than two distinct values remain."""
+    open, or None when fewer than two distinct values remain, or when they differ only
+    by rounding, a currency spelling or each system's own number (``not_a_disagreement``)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     present = [r for r in readings if value_key(r.value) is not None
                and isinstance(r.handle, str) and r.handle]
+    present = _comparable(field, present)
     if len({value_key(r.value) for r in present}) < 2:
+        return None
+    if not_a_disagreement(field, present):
         return None
     present = present[:MAX_VALUES * 2]
     same_place = len({r.handle.split("#", 1)[0] for r in present}) == 1
@@ -285,7 +396,8 @@ def resolve(field: str, readings: Iterable[Reading], *, governs: str | None = No
             age = age_words(r.as_of, now)
             if rule == "newest" or (now - r.as_of).days > STALE_DAYS:
                 why += f" Read {age}."
-        values.append({"value": shown(r.value), "source": r.handle, "trusted": r in trusted,
+        values.append({"value": display_value(r.value), "source": r.handle,
+                       "trusted": r in trusted,
                        "why": why, "system": r.system,
                        "as_of": r.as_of.isoformat() if r.as_of else None, "age": age,
                        **({"unit": r.unit} if r.unit else {}),
@@ -408,7 +520,7 @@ def resolution(conflict: Mapping[str, Any], *, dated: Mapping[str, Any] | None =
         return None
     trusted_handles = {(v["source"], v["value"]) for v in found["values"] if v["trusted"]}
     index = [i for i, r in enumerate(readings)
-             if (r.handle, shown(r.value)) in trusted_handles]
+             if (r.handle, display_value(r.value)) in trusted_handles]
     why = next((v["why"] for v in found["values"] if v["trusted"]), found["values"][0]["why"])
     return {"rule": found["rule"], "trusted": index[:12], "note": why[:600],
             "as_of": [r.as_of.isoformat() if r.as_of else None for r in readings][:12]}

@@ -1767,8 +1767,8 @@
             },
             "upstream_ask": {
               "type": "string",
-              "description": "A design question id (Qn), or for a BC set or page what it waits on: bc_api_v2:<name> (BC must serve it under api/v2.0) or workbench_grammar:<name> (a custom API route the Workbench's GET-only grammar does not admit); ontology/generator/bc.py UPSTREAM_ASKS.",
-              "pattern": "^(Q[0-9]{1,2}|(bc_api_v2|workbench_grammar):[A-Za-z][A-Za-z0-9]{0,79})$"
+              "description": "A design question id (Qn), or for a BC set or page what it waits on: bc_api_v2:<name> (BC must serve it under api/v2.0) or workbench_grammar:<name> (a custom API route the Workbench's GET-only grammar does not admit); bc_publish:<name> (the PLX extension must publish it) or workbench_projection:<name> (captured whole, no type generated yet); ontology/generator/bc.py UPSTREAM_ASKS.",
+              "pattern": "^(Q[0-9]{1,2}|(bc_api_v2|workbench_grammar|bc_publish|workbench_projection):[A-Za-z][A-Za-z0-9]{0,79})$"
             }
           },
           "if": {

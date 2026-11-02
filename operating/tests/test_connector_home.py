@@ -13,10 +13,12 @@ fake drive): injected-transport, never live.
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
+import sqlite3
 import tempfile
 from time import monotonic
 from types import SimpleNamespace
@@ -70,9 +72,13 @@ class Host(CaseHostTools):
     """The reader's host over a fixture store: the policy grants ``units`` and holds
     ``held``; ``plx.find`` matches only ``named`` queries (else not_found)."""
 
-    def __init__(self, store, *, units=("api:a", "api:b", UNIT), held=EVERY, named=()):
+    def __init__(self, store, *, units=("api:a", "api:b", UNIT), held=EVERY, named=(),
+                 texts=None):
         super().__init__(runtime=None, actor=READER, store_path=store)
         self.units, self.held, self.named = units, held, frozenset(named)
+        # ``texts``: the matched kinds of the candidates every other query finds (the
+        # hybrid word search's free-text hits are ``display_text``)
+        self.texts = texts
         self.finds = 0
         self._stub = SimpleNamespace(item_gate=lambda _actor, _handle: False, policy=None)
 
@@ -94,6 +100,13 @@ class Host(CaseHostTools):
             return {"status": "found", "candidates": [{"object": {
                 "object_id": "PurchaseOrder:fx:1", "object_type": "PurchaseOrder"}}],
                 "gaps": [], "completeness": NOT_FOUND["completeness"], "meta": META}
+        if self.texts:
+            return {"status": "found" if len(self.texts) == 1 else "ambiguous",
+                    "candidates": [{"object": {"object_id": f"Attachment:fx:{n}",
+                                               "object_type": "Attachment"},
+                                    "matched": {"identifier_kind": kind}}
+                                   for n, kind in enumerate(self.texts)],
+                    "gaps": [], "completeness": NOT_FOUND["completeness"], "meta": META}
         return json.loads(json.dumps(NOT_FOUND))
 
 
@@ -267,6 +280,41 @@ class HomeModeTest(Base):
             with self.subTest(query=query):
                 self.assertEqual(mcp_server.home_kinds(query), kinds)
 
+    def test_free_text_hits_on_a_home_phrase_never_hide_the_late_list(self):
+        # Live: the hybrid word search finds mail attachments sharing the words "late"
+        # or "POs" for every home phrase, so home mode never answered and the late count
+        # was abstained. A free-text hit names no record; an identifier or name match
+        # still wins (conservative identity).
+        world, ids = seeded()
+        self.engine(world, ids["coverage"])
+        clean = self.find(Host(self.store), {"query": "how many POs are late rn"})
+        for texts in (["display_text"], ["display_text"] * 8):
+            with self.subTest(hits=len(texts)):
+                found = self.find(Host(self.store, texts=texts),
+                                  {"query": "how many POs are late rn"})
+                self.assertEqual(found["status"], "home")
+                self.assertEqual(found["home"]["gaps"], clean["home"]["gaps"])
+                self.assertTrue(found["home"]["gaps"])
+        for texts in (["petra_po"], ["display_text", "supplier_name"]):
+            with self.subTest(texts=texts):
+                found = self.find(Host(self.store, texts=texts),
+                                  {"query": "how many POs are late rn"}, check=False)
+                self.assertNotIn("home", found)
+
+    def test_an_inbox_an_earlier_engine_wrote_still_reads(self):
+        # The live inbox was written before the engine kept detector history: reading
+        # it raised "no such table" and every home answer said unreadable.
+        world, ids = seeded()
+        self.engine(world, ids["coverage"])
+        before = self.find(Host(self.store), {"query": "what is at risk"})
+        with closing(sqlite3.connect(pe.inbox_path(self.store))) as conn:
+            conn.execute("DROP TABLE detector_history")
+            conn.execute("DROP TABLE IF EXISTS kind_history")
+            conn.commit()
+        after = self.find(Host(self.store), {"query": "what is at risk"})
+        self.assertEqual(after["home"]["inbox"], "read")
+        self.assertEqual(after["home"]["gaps"], before["home"]["gaps"])
+
     def test_no_inbox_no_store_or_a_broken_inbox_is_said_never_clean(self):
         seeded()[0].build(self.store)
         unscheduled = self.find(Host(self.store), {"query": "what is at risk"})
@@ -388,12 +436,12 @@ class HomeModeTest(Base):
         names = {tool["name"] for tool in TOOLS}
         self.assertIn("plx.find", names)
         self.assertNotIn("plx.home", names)
-        self.assertEqual(CONTRACTS["limits"]["max_case_host_tools"], 22)
+        self.assertEqual(CONTRACTS["limits"]["max_case_host_tools"], 23)
         from operating import agent_definitions
         definitions = agent_definitions.load()
         for agent in ("plx.agent.act", "plx.agent.investigate"):
             self.assertIn("plx.find", definitions.get(agent).tools)
-            self.assertLessEqual(len(definitions.get(agent).tools), 22)
+            self.assertLessEqual(len(definitions.get(agent).tools), 23)
 
 
 class PrimerTest(Base):
@@ -467,7 +515,7 @@ class LiveCheckTest(unittest.TestCase):
         self.assertTrue(summary["primer"])
         self.assertIn("plx.find", summary["tools"])
         self.assertNotIn("plx.home", summary["tools"])
-        self.assertLessEqual(summary["tool_count"], 22)
+        self.assertLessEqual(summary["tool_count"], 23)
         self.assertGreaterEqual(summary["gaps_cited"], 1)
         self.assertLessEqual(len(summary["top"]), 3)
         self.assertLessEqual({row["kind"] for row in summary["top"]}, set(mcp_server.HOME_KINDS))

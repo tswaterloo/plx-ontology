@@ -15,6 +15,9 @@ const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   compress: false, // never buffer the answer stream; Caddy compresses static assets
+  // the dev rewrite's proxy gives up at 30 s by default; a record page takes up to ~2 min
+  // to gather (production goes through Caddy, not this rewrite)
+  experimental: { proxyTimeout: 300_000 },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiOrigin}/api/:path*` }];
   },

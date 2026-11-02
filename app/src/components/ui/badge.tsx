@@ -3,13 +3,14 @@ import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/types";
 
 const TONES: Record<Tone, string> = {
-  neutral: "bg-surface-2 text-fg border-border",
-  good: "bg-good-soft text-good border-good/30",
-  warn: "bg-warn-soft text-warn border-warn/30",
-  bad: "bg-bad-soft text-bad border-bad/30",
-  info: "bg-info-soft text-info border-info/30",
+  neutral: "bg-neutral-soft text-fg border-neutral-line",
+  good: "bg-ok-soft text-ok border-ok-line",
+  warn: "bg-risk-soft text-risk border-risk-line",
+  bad: "bg-late-soft text-late border-late-line",
+  info: "bg-new-soft text-new border-new-line",
 };
 
+/** A neutral tag (or an older tone). Status badges use StatusBadge. */
 export function Badge({
   tone = "neutral",
   className,
@@ -18,7 +19,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
+        "inline-flex min-h-[22px] items-center gap-1 rounded-md border px-2 text-label",
         TONES[tone] ?? TONES.neutral,
         className,
       )}

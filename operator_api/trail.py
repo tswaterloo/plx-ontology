@@ -454,12 +454,14 @@ def for_answer(backend: Any, view: Any, question: str, roots: Sequence[Mapping[s
 def for_page(backend: Any, view: Any, oid: str, label: str, *,
              object_url: Callable[[str, str], str], open_url: Callable[[str], str],
              host_schemes: Sequence[str],
-             late: Sequence[tuple[Any, Optional[str]]] = ()) -> Optional[m.EvidenceTrail]:
-    """A purchase order page's trail (the same as the answer's), or None."""
+             late: Sequence[tuple[Any, Optional[str]]] = (),
+             seconds: float = PO_SECONDS) -> Optional[m.EvidenceTrail]:
+    """A purchase order page's trail (the same as the answer's), or None; ``seconds``:
+    its time, checked between its reads (the trail stops itself, it is not cut after)."""
     mapper = Mapper(backend, view, object_url=object_url, open_url=open_url,
                     host_schemes=host_schemes)
     try:
-        return po_trails(mapper, view, [oid], {oid: label},
+        return po_trails(mapper, view, [oid], {oid: label}, seconds=seconds,
                          late={po.object_id: (po, run_at) for po, run_at in late})
     except Exception as error:  # noqa: BLE001 - the page stands without it
         logging.getLogger("operator_api.trail").warning("page trail not built: %s",

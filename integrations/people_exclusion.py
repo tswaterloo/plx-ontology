@@ -23,6 +23,7 @@ object ID or address: errors, reprs and reports carry codes and counts only.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import re
 import subprocess
@@ -129,6 +130,10 @@ class PeopleExclusion:
         self._onedrive: frozenset[str] = frozenset()
         self._bound = False
         self._bind_failed = False
+        # A captured directory (``attach_directory``): address -> object id and OneDrive
+        # path -> object id of every user it lists; None: not loaded.
+        self._directory: dict[str, str] | None = None
+        self._directory_onedrive: dict[str, str] = {}
         self.dropped = 0
 
     def __repr__(self) -> str:
@@ -228,20 +233,69 @@ class PeopleExclusion:
         self._onedrive = frozenset(onedrive)
         self._bound = True
 
+    def attach_directory(self, users: Iterable[tuple[Any, Any, Iterable[Any]]]) -> None:
+        """Decide addresses offline from a captured directory listing: ``users`` is (object
+        id, that user's UPN, its other identities: SMTP addresses). An address or UPN the
+        listing maps to exactly one object id is decided by that id (addresses are unique
+        in the tenant, so one held by a user the list does not exclude is no excluded
+        person's); a OneDrive path only by the UPN it is made from (as ``bind`` does: an
+        alias whose path form matches another user's OneDrive decides nothing); anything
+        the listing does not map, or maps to two ids, stays undecided (withheld). Replaces
+        any directory attached before."""
+        addresses: dict[str, str] = {}
+        onedrive: dict[str, str] = {}
+        clashes: set[str] = set()
+
+        def held(table: dict[str, str], key: str, oid: str) -> None:
+            if table.get(key, oid) != oid:
+                clashes.add(key)
+            table[key] = oid
+
+        for oid, upn, identities in users:
+            if not is_object_id(oid):
+                continue
+            oid = oid.lower()
+            for value in (upn, *(identities or ())):
+                if isinstance(value, str) and "@" in value:
+                    held(addresses, value.strip().lower(), oid)
+            if isinstance(upn, str) and "@" in upn:
+                held(onedrive, onedrive_path(upn.strip().lower()), oid)
+        for key in clashes:
+            addresses.pop(key, None)
+            onedrive.pop(key, None)
+        self._directory, self._directory_onedrive = addresses, onedrive
+
+    @property
+    def directory_loaded(self) -> bool:
+        return self._directory is not None
+
+    def decides(self, value: Any) -> bool:
+        """Whether ``is_excluded`` can decide ``value`` now (an object id; an address once
+        bound, or one the attached directory maps)."""
+        if self.unavailable or not isinstance(value, str) or not value.strip():
+            return False
+        lowered = value.strip().lower()
+        return is_object_id(lowered) or self._bound or (
+            self._directory is not None and lowered in self._directory)
+
     # ---------------------------------------------------------------- checks
 
     def is_excluded(self, value: Any) -> bool:
         """Whether one object ID or address is an excluded person's. An address is
-        decided only once bound; an unbound guard refuses to decide one."""
+        decided once bound, or by the attached directory's object id for it; otherwise
+        the guard refuses to decide one."""
         self.require()
         if not isinstance(value, str) or not value:
             return False
         lowered = value.strip().lower()
         if is_object_id(lowered):
             return lowered in self._ids
-        if not self._bound:
+        if self._bound:
+            return lowered in self._addresses
+        oid = None if self._directory is None else self._directory.get(lowered)
+        if oid is None:
             raise ExclusionUnavailable("excluded_people_unresolved")
-        return lowered in self._addresses
+        return oid in self._ids
 
     def excluded(self, identities: Iterable[Any]) -> bool:
         return any(self.is_excluded(value) for value in identities)
@@ -253,6 +307,17 @@ class PeopleExclusion:
 
     def refuse_onedrive_path(self, path: str | None) -> None:
         """Refuse a personal site whose ``/personal/<segment>`` is an excluded UPN's."""
+        if not self._bound and self._directory is not None:
+            # The attached directory: the path must be a listed user's, not an excluded one.
+            self.require()
+            if not isinstance(path, str):
+                return
+            oid = self._directory_onedrive.get(path.lower())
+            if oid is None:
+                raise ExclusionUnavailable("excluded_people_unresolved")
+            if oid in self._ids:
+                raise PeopleExcluded("onedrive_owner")
+            return
         self.require_bound()
         if isinstance(path, str) and path.lower() in self._onedrive:
             raise PeopleExcluded("onedrive_owner")
@@ -277,8 +342,9 @@ class ReloadingExclusion:
     guard (fail closed). Attribute reads go to the current guard."""
 
     def __init__(self, environ: Mapping[str, str], *, ttl: float = 300.0,
-                 config: Path = CONFIG, clock: Any = None) -> None:
+                 config: Path = CONFIG, clock: Any = None, state_dir: Any = None) -> None:
         import time
+        self._state_dir = state_dir   # the mail capture's directory is attached from it
         self._environ = dict(environ)
         self._ttl, self._config = ttl, config
         self._clock = clock or time.monotonic
@@ -306,7 +372,9 @@ class ReloadingExclusion:
         now, stamp = self._clock(), self._file_stamp()
         if self._guard is None or stamp != self._stamp or now - self._at >= self._ttl:
             try:
-                self._guard = PeopleExclusion.from_env(self._environ, config=self._config)
+                self._guard = with_directory(
+                    PeopleExclusion.from_env(self._environ, config=self._config),
+                    self._state_dir)
             except Exception:  # noqa: BLE001 - an unreadable list refuses everything
                 self._guard = PeopleExclusion(unavailable="excluded_people_file_unreadable")
             self._stamp, self._at = stamp, now
@@ -317,6 +385,60 @@ class ReloadingExclusion:
 
     def __repr__(self) -> str:
         return f"ReloadingExclusion({self.current()!r})"
+
+
+# A captured mailbox identity checked longer ago than this decides nothing (an address
+# may have been given to someone else since): ``mail_capture_directory``.
+DIRECTORY_MAX_AGE = timedelta(days=7)
+
+
+def mail_capture_directory(state_dir: Any, *, now: datetime | None = None
+                           ) -> list[tuple[str, str, list[str]]] | None:
+    """The directory the mail capture recorded under ``state_dir`` (``mail-capture``:
+    each captured mailbox's object id, UPN and SMTP addresses), read-only: only the
+    mailboxes whose identity was checked within ``DIRECTORY_MAX_AGE`` of ``now``. None
+    when there is no capture, it cannot be read, or none of it is that recent (not loaded:
+    nothing is then decided by it, so what only it could decide stays withheld)."""
+    import sqlite3
+    if state_dir is None:
+        return None
+    path = Path(state_dir) / "mail-capture" / "capture.db"
+    if not path.is_file():
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        try:
+            rows = db.execute("SELECT mailbox_id, upn, identities, identity_checked_at "
+                              "FROM mailboxes").fetchall()
+        finally:
+            db.close()
+        users = []
+        for oid, upn, identities, checked in rows:
+            try:
+                at = datetime.fromisoformat(str(checked).replace("Z", "+00:00"))
+            except ValueError:
+                continue   # undated: decides nothing
+            if at.tzinfo is None or not now - DIRECTORY_MAX_AGE <= at <= now:
+                continue   # past the bound, or in the future
+            users.append((oid, upn, list(json.loads(identities))))
+        return users or None
+    except (sqlite3.Error, ValueError, TypeError, OSError):
+        return None
+
+
+def with_directory(guard: Any, state_dir: Any) -> Any:
+    """A copy of ``guard`` (a ``PeopleExclusion``) with the mail capture's directory under
+    ``state_dir`` attached, when it is unbound and has none; else ``guard`` itself."""
+    import copy
+    if not isinstance(guard, PeopleExclusion) or guard.bound or guard.directory_loaded:
+        return guard
+    users = mail_capture_directory(state_dir)
+    if users is None:
+        return guard
+    held = copy.copy(guard)
+    held.attach_directory(users)
+    return held
 
 
 def from_api(api: Any) -> PeopleExclusion:

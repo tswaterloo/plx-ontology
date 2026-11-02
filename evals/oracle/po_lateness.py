@@ -7,7 +7,16 @@ product's projection, links or tools) and applies the lateness model of
 * open: a Portal status ``SUBMITTED`` or ``PARTIAL``, or a BC purchase order with
   ``fullyReceived`` false; closed by a Portal status ``DRAFT``, ``RECEIVED`` or a cancel
   value, a BC ``fullyReceived`` true or a BC status ``Draft``. An order is open when one
-  of its records says open and none says closed (FileMaker and Sage decide nothing);
+  of its records says open and none says closed (FileMaker and Sage decide nothing). A BC
+  ``Draft`` twin of a Portal order whose lines record no received quantity above 0 states
+  no receipt state and never dates the order (neither open nor closed, its lines and dates
+  not the order's): the Portal order is judged on its own status and lines, and a
+  FileMaker-era issued word (``Pending``, ``B.Order``) is open while a line is open, unless
+  FileMaker disputes it or its received quantity is unknown (needs check, never late); a
+  released BC order (Open, not fully received) outranks a Portal ``DRAFT``; a BC-only Draft
+  stays closed. A Draft twin received against (a line received above 0) is real activity:
+  its lines state the receipt (open while one is open) and its dates date the order. The
+  owner's late-list rule, decided 2026-11-01
 * an open line: ordered quantity above zero and received (none read as 0) below it;
 * the governing date, by the model's authority precedence: FileMaker ``datearrive``
   first, then Portal ``expected_date``, then BC (the line's ``expectedReceiptDate``, else
@@ -50,11 +59,12 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import re
 from typing import Any, Mapping, Sequence
 
 from . import po_reference
-from .keys import FM_PO, PO, PO_FM_SOURCES, PO_LINE, RECEIPT
+from .keys import FM_PO, FM_PO_ITEM, FM_RECEIPT_RAW, PO, PO_FM_SOURCES, PO_LINE, RECEIPT
 from .source import decimal_of, field_value, instant, key_text
 
 # The business's time zone, America/New_York, by its own rule (the oracle may not import
@@ -64,12 +74,19 @@ from .source import decimal_of, field_value, instant, key_text
 EST, EDT = timedelta(hours=-5), timedelta(hours=-4)
 US_RULE_SINCE = 2007
 PORTAL_OPEN = frozenset({"SUBMITTED", "PARTIAL"})
+# FileMaker-era issued words the Portal header holds (Pending, a back order): issued, so the
+# order is open while one of its lines is (the product's late-list rule, ``po_status``
+# ISSUED_WORDS; decision 2026-11-01 above). Complete closes whatever was received.
+PORTAL_ISSUED = frozenset({"PENDING", "B.ORDER"})
+FM_CLOSED = frozenset({"COMPLETE", "CANCEL", "CANCELLED", "CANCELED"})
 PORTAL_CLOSED = frozenset({"DRAFT", "RECEIVED", "CANCELLED", "CANCELED", "CANCEL"})
 BC_ORDERS, BC_LINES, BC_RECEIPTS = "purchaseOrders", "purchaseOrderLines", "purchaseReceipts"
 BC_REFERENCES = "purchaseOrderReferences"   # ODataV4 Page 50: No, Your_Reference
 ENTITY_MAP = "public.app_bc_entity_map"     # the Portal's own BC identity bridge
+FM_RECEIPT_PACK = "public.receipt_packaging"  # FileMaker QC receiving log, packaging
 _FM_CLASH = re.compile(r"-fm-?\d+$")       # PO2-FM-106: an FM clash-series number
 ZERO = decimal_of("0")
+EPS = decimal_of("0.0001")   # the Portal's received-in-full tolerance (po-fulfillment-status.ts)
 
 
 def business_today(now: datetime | None = None) -> date:
@@ -112,16 +129,65 @@ def _bool(value: Any) -> bool | None:
 
 def _decides(group: Mapping[str, Any]) -> bool:
     says_open = says_closed = False
+    # A released BC order (Open, not fully received) outranks a Portal DRAFT (decision
+    # 2026-11-01, rule 3).
+    released = any(str(r["fields"].get("status") or "").strip().upper() == "OPEN"
+                   and _bool(r["fields"].get("fullyReceived")) is False for r in group["bc"])
     for item in group["portal"]:
         status = item["row"].get("status")
-        says_open |= status in PORTAL_OPEN
-        says_closed |= status in PORTAL_CLOSED
+        word = str(status or "").strip().upper()
+        says_open |= status in PORTAL_OPEN or word in PORTAL_ISSUED
+        says_closed |= status in PORTAL_CLOSED and not (released and word == "DRAFT")
     for item in group["bc"]:
+        if "lines_open" in item:
+            # a Draft twin received against: real
+            # activity, its lines state the receipt (open while one is open)
+            says_open |= item["lines_open"]
+            says_closed |= not item["lines_open"]
+            continue
         received = _bool(item["fields"].get("fullyReceived"))
         says_open |= received is False
         says_closed |= received is True
         says_closed |= str(item["fields"].get("status") or "").strip().upper() == "DRAFT"
     return says_open and not says_closed
+
+
+def _not_late_by_fm(group: Mapping[str, Any], portal_lines: Mapping[str, Sequence[Any]],
+                      fm_items: Mapping[str, Sequence[Any]],
+                      qc_received: Mapping[str, Decimal]) -> bool:
+    """A Portal order whose lines say nothing received while it has a FileMaker twin: the
+    Portal's received quantity is ETL-seeded 0, so FileMaker's QC receiving log (receipt
+    rows' ``sumqty`` by ``idpogenitem``) is the received quantity, when the FileMaker
+    items' ordered total is the Portal's (the only proof the QC quantity is in its unit):
+    the product's rule (``operating/po_status.py`` module doc), so an order FileMaker
+    received in full is closed, never late.
+
+    Needs check (decision 2026-11-01, rule 2): a Pending or B.Order order whose
+    FileMaker twin disagrees on its status (FileMaker Complete or Cancel) or whose received
+    quantity is unknown (Portal lines received 0 while the FileMaker ordered total is not
+    the Portal's) is never counted late: True here too (out of the late count)."""
+    if len(group["portal"]) != 1 or len(group["fm"]) != 1:
+        return False
+    word = str(group["portal"][0]["row"].get("status") or "").strip().upper()
+    fm_word = str(group["fm"][0]["row"].get("status") or "").strip().upper()
+    if word in PORTAL_ISSUED and fm_word in FM_CLOSED:
+        return True   # status disputed: needs check
+    lines = portal_lines.get(key_text(group["portal"][0]["row"].get("id")) or "", ())
+    ordered = sum((decimal_of(i["row"].get("quantity")) or ZERO for i in lines), ZERO)
+    received = sum((decimal_of(i["row"].get("quantity_received")) or ZERO for i in lines), ZERO)
+    items = fm_items.get(key_text(group["fm"][0]["row"].get("id")) or "", ())
+    fm_ordered = sum((decimal_of(i["row"].get("qty")) or ZERO for i in items), ZERO)
+    if not lines or received > ZERO:
+        return False
+    if not items or fm_ordered != ordered:
+        return word in PORTAL_ISSUED   # quantities unknown: needs check
+    fm_received = sum((qc_received.get(key_text(i["row"].get("id")) or "", ZERO)
+                       for i in items), ZERO)
+    return fm_received + EPS >= ordered
+
+
+def _draft(record: Mapping[str, Any]) -> bool:
+    return str(record["fields"].get("status") or "").strip().upper() == "DRAFT"
 
 
 def _open_quantity(ordered: Any, received: Any) -> bool:
@@ -181,6 +247,15 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
     portal_lines: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in portal.get(PO_LINE) or ():
         portal_lines[key_text(item["row"].get("purchase_order_id")) or ""].append(item)
+    fm_items: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in portal.get(FM_PO_ITEM) or ():
+        fm_items[key_text(item["row"].get("idpogen")) or ""].append(item)
+    qc_received: dict[str, Decimal] = defaultdict(Decimal)
+    for relation in (FM_RECEIPT_RAW, FM_RECEIPT_PACK):
+        for item in portal.get(relation) or ():
+            got = decimal_of(item["row"].get("sumqty"))
+            if got is not None:
+                qc_received[key_text(item["row"].get("idpogenitem")) or ""] += got
     portal_receipts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in portal.get(RECEIPT) or ():
         portal_receipts[key_text(item["row"].get("purchase_order_id")) or ""].append(item)
@@ -197,6 +272,26 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
 
     out_groups, late, opened, undated = [], [], 0, 0
     for group in groups:
+        # The late-list rule: a BC
+        # Draft twin of a Portal order whose lines record no
+        # received quantity above 0 states no receipt state; the Portal order is judged on
+        # its own records. Its rows still name and cite the group.
+        def own_lines(h: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+            return bc_lines.get((str(h.get("company_id") or "").lower(),
+                                 str(h["fields"].get("id") or "").lower()), ())
+
+        def received_against(h: Mapping[str, Any]) -> bool:
+            return any((decimal_of(r["fields"].get("receivedQuantity")) or ZERO) > ZERO
+                       for r in own_lines(h))
+        # A Draft twin received against is real
+        # activity: its lines state the receipt and its dates date the order.
+        judged = {**group, "bc": [
+            {**h, "lines_open": any(_open_quantity(r["fields"].get("quantity"),
+                                                   r["fields"].get("receivedQuantity"))
+                                    for r in own_lines(h))}
+            if group["portal"] and _draft(h) else h
+            for h in group["bc"]
+            if not (group["portal"] and _draft(h) and not received_against(h))]}
         numbers = sorted({n for n in (
             [key_text(i["row"].get("po_number")) for i in group["portal"]]
             + [key_text(field_value(i["row"], "custom_fields.fmPoNumber"))
@@ -213,7 +308,7 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
                  + [("bc", r["citation"], r["fields"].get("quantity"),
                      r["fields"].get("receivedQuantity"),
                      _day(r["fields"].get("expectedReceiptDate")))
-                    for h in group["bc"]
+                    for h in judged["bc"]
                     for r in bc_lines.get((str(h.get("company_id") or "").lower(),
                                            str(h["fields"].get("id") or "").lower()), ())])
         receipts = ([i["citation"] for p in group["portal"]
@@ -225,7 +320,8 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
                   "records": sorted({h["citation"] for h in headers}
                                     | {line[1] for line in lines} | set(receipts))}
         out_groups.append(record)
-        if not _decides(group):
+        if not _decides(judged) or _not_late_by_fm(group, portal_lines, fm_items,
+                                                     qc_received):
             continue
         opened += 1
         # The governing header date by precedence, with the record it is read from.
@@ -236,7 +332,10 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
             if day is not None:
                 header_date = (day, item["citation"])
                 break
-        bc_header = next(((d, r["citation"]) for r in group["bc"]
+        # A Draft twin states no receipt state, but its dates are still the order's dates.
+        # A Draft twin's dates never date the order (decision 2026-11-01, rule 1): the
+        # BC dates are the issued (judged) BC records' only.
+        bc_header = next(((d, r["citation"]) for r in judged["bc"]
                           for d in [_day(r["fields"].get("requestedReceiptDate"))]
                           if d is not None), None)
         bc_dates = {(line[4], line[1]) for line in lines if line[0] == "bc" and line[4]}

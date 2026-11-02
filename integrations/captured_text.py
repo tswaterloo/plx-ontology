@@ -153,9 +153,23 @@ _TEXT_BOUND_ERRORS = frozenset({"extracted document text exceeds bound",
 _WORKBOOK_TEXT = 1_000_000   # a workbook's text read for its first characters
 
 
+# Raster images the capture may OCR-read locally (tesseract, ``document_understanding
+# .local_image_text``; never a network service), opted in per capture (``image_ocr``).
+# HEIC is left out: tesseract's image library does not read it.
+IMAGE_OCR_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp")
+IMAGE_OCR_TIMEOUT_SECONDS = 60.0
+
+
+def _ocr_image(name: str, mime: str) -> bool:
+    kind = mime.split(";", 1)[0].strip().lower()
+    return (name.lower().endswith(IMAGE_OCR_SUFFIXES)
+            or kind in {"image/png", "image/jpeg", "image/tiff", "image/bmp", "image/gif",
+                        "image/webp"})
+
+
 def capture_text(content: bytes, record: Mapping[str, Any], *,
-                 max_chars: int | None = None, defer_ocr: bool = False
-                 ) -> tuple[str, str | None]:
+                 max_chars: int | None = None, defer_ocr: bool = False,
+                 image_ocr: bool = False) -> tuple[str, str | None]:
     """(text status, text to store) of newly captured bytes (``record``: the file's
     ``name``, ``mime_type`` or ``content_type`` and optional ``original_url``). A
     failure is a status, never an exception. ``max_chars``: text over the extractor's
@@ -172,6 +186,19 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
         return TEXT_EXCEEDS_BOUND, None
     url = record.get("original_url")
     mime, name = _mime(record), _name(record)
+    if image_ocr and _ocr_image(name, mime):
+        # A raster image (a scan, a photographed label or CoA): its text is OCR text,
+        # untrusted like a scanned page's, pinned as ``extracted_ocr``.
+        from .document_understanding import local_image_ocr_available, local_image_text
+        if not local_image_ocr_available():
+            return OCR_UNAVAILABLE, None
+        if defer_ocr:
+            return OCR_PENDING, None
+        try:
+            text = local_image_text(content, timeout=IMAGE_OCR_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001 - a failed OCR run is a typed status
+            return f"{OCR_FAILED}:recognize_exit", None
+        return (TEXT_OCR, text) if text.strip() else (OCR_NO_TEXT, None)
     paged = is_paged_file({"mime_type": mime, "name": name})
     engine = paged and local_ocr_available()
     ocr = engine and not defer_ocr
@@ -209,7 +236,8 @@ def _first_chars(content: bytes, mime: str, name: str, max_chars: int
     extractor's bound, read by the extractor's own readers without that bound and without
     OCR: a PDF page without a text layer leaves it ``ocr_unavailable``."""
     from .doc_convert import convertible_kind
-    from .document_understanding import is_plain_text, read_pages
+    from .document_understanding import is_ooxml_workbook, is_plain_text, read_pages
+    from .legacy_office import extract_xls_text, is_misnamed_xlsx, is_xls
     from .xlsx_extract import extract_xlsx_text
 
     kind = mime.split(";", 1)[0].strip().lower()
@@ -223,9 +251,10 @@ def _first_chars(content: bytes, mime: str, name: str, max_chars: int
             text = _joined(found.text, found.spans) if readable == "pdf" else found.text
             blank = readable == "pdf" and any(
                 not found.text[p["start"]:p["end"]].strip() for p in found.spans)
-        elif kind == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" or (
-                kind == "application/octet-stream" and name.lower().endswith(".xlsx")):
-            text, status, *_ = extract_xlsx_text(content, max_text=_WORKBOOK_TEXT)
+        elif is_ooxml_workbook(kind, name) or is_xls(kind, name, content) or \
+                is_misnamed_xlsx(kind, name, content):
+            text, status, *_ = (extract_xls_text if is_xls(kind, name, content)
+                                else extract_xlsx_text)(content, max_text=_WORKBOOK_TEXT)
             if status != "extracted":
                 return "failed", None
         elif is_plain_text(kind, name):
@@ -736,6 +765,14 @@ class KeptReadings:
             self._db.close()
 
 
+# What the current readers read that an earlier one could not (a capture re-reads a
+# stored ``failed``/``unsupported`` version of these once per generation:
+# ``SharePointCaptureStore.reader_stale_rows``). Bump the generation when a reader
+# change makes more of these readable; add the suffixes it newly reads.
+REREAD_GENERATION = "2026-11-01-image-ocr"
+REREAD_SUFFIXES = (".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".doc", ".dot",
+                   *IMAGE_OCR_SUFFIXES)
+
 # The modules that read a captured file's bytes into the text a reading holds (PDF pages,
 # OCR, Office, ``.msg``, spreadsheets, the converter children), named one by one: what
 # else the repository changes (the projection, its steps, the host) reads no file, so it
@@ -743,6 +780,7 @@ class KeptReadings:
 READING_MODULES = ("integrations.captured_text", "integrations.captured_pages",
                    "integrations.document_understanding", "integrations.doc_convert",
                    "integrations.office_text", "integrations.xlsx_extract",
+                   "integrations.legacy_office",
                    "integrations.child_process", "operating.msg_reader")
 # The installed libraries those modules read files with (PDF, Office through markitdown
 # and the converters it loads); the same list as ``ontology.project``'s
@@ -1129,7 +1167,7 @@ def split_member(handle: Any) -> tuple[str, str, str | None] | None:
 
 
 __all__ = ["COMPRESSED_SUFFIX", "DROPPED_SUFFIX", "KeptReadings", "READING_LIBRARIES",
-           "READING_MODULES", "readings_code", "blob_path", "decode_reading",
+           "READING_MODULES", "REREAD_GENERATION", "REREAD_SUFFIXES", "readings_code", "blob_path", "decode_reading",
            "encode_reading", "file_type", "inflate", "read_dropped", "reading_key", "readings_of",
            "write_dropped",
            "CapturedText", "ContainerReading", "LIMIT_ERRORS", "MAX_CACHED_CHARS",

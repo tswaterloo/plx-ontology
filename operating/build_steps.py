@@ -57,6 +57,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+import functools
 import sqlite3
 import threading
 from typing import Any, Callable
@@ -213,6 +214,7 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
 def _named(name: str, step: Step) -> Step:
     """``step``, naming itself on an exception it raises (``build_step``: the step's
     name, never its data), so a failed build says where (``operating.host``'s reason)."""
+    @functools.wraps(step)
     def run(builder: Any, projector: Any) -> dict[str, Any]:
         try:
             return step(builder, projector)

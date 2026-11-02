@@ -58,6 +58,52 @@ from typing import Any, Mapping, Sequence
 
 
 JOURNAL_FILE = "console-journal.sqlite"
+# A run that reads a host's state but is not that host's own service (an evaluation
+# scoreboard) journals here instead, an absolute directory of its own run
+# (``isolate_journal``), never in the host's state directory.
+JOURNAL_DIR_ENV = "PLX_WORKBENCH_JOURNAL_DIR"
+
+
+def journal_dir(state_dir: str | Path) -> Path:
+    """The directory the journal of ``state_dir`` is written in: ``JOURNAL_DIR_ENV`` when
+    set (it must be absolute: a relative one raises ``OSError``, so nothing is written
+    anywhere, never in the state directory), else ``state_dir``."""
+    override = os.environ.get(JOURNAL_DIR_ENV)
+    if override is None:
+        return Path(state_dir)
+    path = Path(override)
+    if not override or not path.is_absolute():
+        raise OSError("journal_dir_not_absolute")
+    return path
+
+
+def isolate_journal(directory: str | Path) -> Path:
+    """Journal this process, and every host it starts, in ``directory`` (created 0700):
+    for an evaluation run, a directory inside its own run directory. Its entry point is
+    wrapped in ``run_journal_scope`` so a caller in the same process (a test) gets its own
+    setting back."""
+    path = Path(directory).resolve()
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.environ[JOURNAL_DIR_ENV] = str(path)
+    return path
+
+
+def run_journal_scope(entry: Any) -> Any:
+    """``entry`` (an evaluation run's ``main``) with ``JOURNAL_DIR_ENV`` as it was before
+    restored when it returns or raises."""
+    import functools
+
+    @functools.wraps(entry)
+    def scoped(*args: Any, **kwargs: Any) -> Any:
+        saved = os.environ.get(JOURNAL_DIR_ENV)
+        try:
+            return entry(*args, **kwargs)
+        finally:
+            if saved is None:
+                os.environ.pop(JOURNAL_DIR_ENV, None)
+            else:
+                os.environ[JOURNAL_DIR_ENV] = saved
+    return scoped
 # ``operator_ui.console_ticket`` appends one row per host mint and revoke here (beside the
 # journal, in the state directory); ``summary`` reads who minted each session from it.
 AUDIT_FILE = "console-ticket-audit.jsonl"
@@ -80,7 +126,7 @@ _ROUTES = frozenset({"/api/session", "/api/cases", "/api/objects", "/api/object"
                      "/api/object-case", "/api/object-review", "/api/object-follow-up",
                      "/api/object-action", "/api/object-ask", "/api/investigate-record",
                      "/api/object-replay", "/api/objective", "/api/status-card",
-                     "/api/ask", "/api/source"})
+                     "/api/ask", "/api/source", "/full-read/stale-acl"})
 _PREFIXES = ("/api/case-citation", "/api/case-original-pdf", "/api/case-document-metadata",
              "/api/case/")
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -207,7 +253,38 @@ def case_counts(view: Any) -> dict[str, int] | None:
     return counts or None
 
 
+# An item opened under a full-read grant on a captured permission list older than the
+# capture-age bound (``EmployeeEntitlement.full_read_stale_allows``): one row per open, with
+# the list's age in whole hours (``record_full_read_stale``).
+STALE_ROUTE = "/full-read/stale-acl"
+_STALE_SOURCES = frozenset({"sharepoint", "teams-chat", "teams-channel"})
+
+
+def stale_counts(value: Any) -> dict[str, int] | None:
+    hours = _int((value or {}).get("acl_age_hours")) if isinstance(value, Mapping) else None
+    return None if hours is None else {"acl_age_hours": hours}
+
+
+def stale_note(hours: int) -> str:
+    return f"opened on a permission list {hours} h old under full-read"
+
+
+def record_full_read_stale(state_dir: str | Path, *, employee: str, access: str | None,
+                           source: str, hours: int) -> None:
+    """Journal one open under a full-read grant on a stale permission list (counts and
+    enums: the employee principal, the grant's code, the source enum, the age in hours).
+    Raises ``sqlite3.Error``/``OSError`` only."""
+    from types import SimpleNamespace
+    session = SimpleNamespace(employee=SimpleNamespace(principal=employee), access=access,
+                              proof=None, session_ref=None)
+    SessionJournal.for_state_dir(state_dir).record(
+        method="GET", path=STALE_ROUTE, status=200, session=session,
+        refusal=source.replace("-", "_") if source in _STALE_SOURCES else "other",
+        value={"acl_age_hours": hours})
+
+
 _COUNTERS = {"/api/object": panel_counts, "/api/object-ask": ask_counts,
+             STALE_ROUTE: stale_counts,
              "/api/objective": ask_counts,
              "/api/investigate": investigate_counts, "/api/case/": case_counts}
 
@@ -259,12 +336,16 @@ class SessionJournal:
 
     @classmethod
     def for_state_dir(cls, state_dir: str | Path) -> "SessionJournal":
-        return cls(Path(state_dir) / JOURNAL_FILE)
+        """The journal of ``state_dir`` (in ``journal_dir``)."""
+        return cls(journal_dir(state_dir) / JOURNAL_FILE)
 
     def record(self, *, method: str, path: str, status: int, session: Any = None,
                refusal: str | None = None, object_id: Any = None,
                value: Any = None) -> None:
-        """Record one answered request. Raises ``sqlite3.Error``/``OSError`` only."""
+        """Record one answered request. Raises ``sqlite3.Error``/``OSError``; a read-ahead
+        session (``PROOF_WARM``) answers no request and is refused."""
+        if getattr(session, "proof", None) == "warm_ahead":
+            raise PermissionError("warm_session_serves_nothing")
         route = route_of(path)
         session_ref = getattr(session, "session_ref", None)
         employee = getattr(getattr(session, "employee", None), "principal", None)
@@ -302,11 +383,17 @@ class SessionJournal:
         minters = self.minted_by()
         sessions: dict[str, dict[str, Any]] = {}
         unauthenticated: dict[str, int] = {}
+        stale: list[dict[str, Any]] = []
         with closing(sqlite3.connect(self.path)) as db:
             rows = db.execute("SELECT at, session_ref, method, route, status, refusal, "
                               "object_type, panels, proof, access FROM request ORDER BY id"
                               ).fetchall()
         for at, ref, method, route, status, refusal, object_type, panels, proof, access in rows:
+            if route == STALE_ROUTE:
+                hours = (json.loads(panels) if panels else {}).get("acl_age_hours")
+                stale.append({"at": at, "source": refusal, "access": access,
+                              "note": stale_note(hours) if isinstance(hours, int) else None})
+                continue
             if ref is None:
                 key = f"{status}:{refusal or 'none'}"
                 unauthenticated[key] = unauthenticated.get(key, 0) + 1
@@ -336,7 +423,7 @@ class SessionJournal:
                     if count:
                         entry["views_with"][name] = entry["views_with"].get(name, 0) + 1
         return {"schema": "plx-console-journal-summary/v1", "sessions": sessions,
-                "unauthenticated": unauthenticated}
+                "unauthenticated": unauthenticated, "full_read_stale_opens": stale}
 
 
 def _columns(db: sqlite3.Connection) -> set[str]:

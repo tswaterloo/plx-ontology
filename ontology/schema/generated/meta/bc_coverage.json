@@ -17,11 +17,11 @@
  },
  "counts": {
   "entity_sets_in_pin": 150,
-  "generated_entity_sets": 9,
+  "generated_entity_sets": 14,
   "curated_entity_sets": 27,
-  "object_types": 9,
-  "link_types": 22,
-  "properties": 137,
+  "object_types": 14,
+  "link_types": 30,
+  "properties": 175,
   "not_served_types": 7
  },
  "entity_sets": {
@@ -183,6 +183,29 @@
     "file": "domains/bc_finance.json"
    }
   },
+  "dimensions": {
+   "object_type": "RelBcDimensions",
+   "binding": "gen.bc.dimensions"
+  },
+  "dimensionValues": {
+   "object_type": "RelBcDimensionValues",
+   "binding": "gen.bc.dimension_values"
+  },
+  "projects": {
+   "object_type": "RelBcProjects",
+   "binding": "gen.bc.projects"
+  },
+  "fixedAssets": {
+   "object_type": "RelBcFixedAssets",
+   "binding": "gen.bc.fixed_assets"
+  },
+  "bankAccounts": {
+   "object_type": "RelBcBankAccounts",
+   "binding": "gen.bc.bank_accounts"
+  },
+  "contactsInformation": {
+   "excluded": "$metadata key ['contactId'] is not the capture's record key ['id']"
+  },
   "purchaseOrderLines": {
    "bound_by": {
     "object_type": "PurchaseOrderLine",
@@ -256,12 +279,6 @@
   "currencies": {
    "not_captured": "served, outside the capture scope"
   },
-  "dimensionValues": {
-   "not_captured": "served, outside the capture scope"
-  },
-  "dimensions": {
-   "not_captured": "served, outside the capture scope"
-  },
   "paymentMethods": {
    "not_captured": "served, outside the capture scope"
   },
@@ -286,7 +303,7 @@
    "object_type": "RelBcPlxCustomerShipTos",
    "upstream_name": "plxCustomerShipTos",
    "declared_by": "generated",
-   "code": "custom_api"
+   "code": "custom_api_captured"
   },
   "plxPostedSalesInvoiceLines": {
    "object_type": "RelBcPlxPostedSalesInvoiceLines",
@@ -323,11 +340,6 @@
  "navigation_not_bound": [
   {
    "from": "purchaseOrders",
-   "navigation": "dimensionValue",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "purchaseOrders",
    "navigation": "currency",
    "reason": "target entity type not in the capture scope"
   },
@@ -353,22 +365,12 @@
   },
   {
    "from": "purchaseInvoices",
-   "navigation": "dimensionValue",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "purchaseInvoices",
    "navigation": "currency",
    "reason": "target entity type not in the capture scope"
   },
   {
    "from": "purchaseInvoices",
    "navigation": "pdfDocument",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "salesOrders",
-   "navigation": "dimensionValue",
    "reason": "target entity type not in the capture scope"
   },
   {
@@ -394,11 +396,6 @@
   {
    "from": "salesInvoices",
    "navigation": "currency",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "salesInvoices",
-   "navigation": "dimensionValue",
    "reason": "target entity type not in the capture scope"
   },
   {
@@ -423,11 +420,6 @@
   },
   {
    "from": "salesCreditMemos",
-   "navigation": "dimensionValue",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "salesCreditMemos",
    "navigation": "currency",
    "reason": "target entity type not in the capture scope"
   },
@@ -453,11 +445,6 @@
   },
   {
    "from": "purchaseCreditMemos",
-   "navigation": "dimensionValue",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "purchaseCreditMemos",
    "navigation": "currency",
    "reason": "target entity type not in the capture scope"
   },
@@ -479,11 +466,6 @@
   {
    "from": "purchaseCreditMemos",
    "navigation": "pdfDocument",
-   "reason": "target entity type not in the capture scope"
-  },
-  {
-   "from": "salesQuotes",
-   "navigation": "dimensionValue",
    "reason": "target entity type not in the capture scope"
   },
   {
@@ -537,6 +519,11 @@
    "reason": "target entity type not in the capture scope"
   },
   {
+   "from": "customers",
+   "navigation": "contactsInformation",
+   "reason": "line set lacks documentId"
+  },
+  {
    "from": "vendors",
    "navigation": "currency",
    "reason": "target entity type not in the capture scope"
@@ -557,9 +544,9 @@
    "reason": "target entity type not in the capture scope"
   },
   {
-   "from": "contacts",
-   "navigation": "contactInformation",
-   "reason": "target entity type not in the capture scope"
+   "from": "vendors",
+   "navigation": "contactsInformation",
+   "reason": "line set lacks documentId"
   },
   {
    "from": "contacts",
@@ -584,6 +571,21 @@
   {
    "from": "accounts",
    "navigation": "trialBalance",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "projects",
+   "navigation": "pdfDocument",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "fixedAssets",
+   "navigation": "fixedAssetLocation",
+   "reason": "target entity type not in the capture scope"
+  },
+  {
+   "from": "fixedAssets",
+   "navigation": "employee",
    "reason": "target entity type not in the capture scope"
   },
   {
@@ -634,6 +636,32 @@
    "field": "customer",
    "to": "customers",
    "reason": "both ends curated"
+  },
+  {
+   "from": "contacts",
+   "field": "contactInformation",
+   "to": "contactsInformation",
+   "reason": "target relation not served",
+   "link": {
+    "name": "contact_information",
+    "cardinality": "N:1",
+    "description": "contacts.id = contactsInformation.contactId (NavigationProperty contactInformation ReferentialConstraint); compared within one BC company.",
+    "pairs": [
+     {
+      "from": "id",
+      "to": "contactId",
+      "compare": "identifier",
+      "identifier_kind": "bc_system_id"
+     }
+    ],
+    "evidence": [
+     {
+      "kind": "workbench_code",
+      "path": "ontology/schema/generated/meta/bc_metadata.json",
+      "note": "contact -> contactInformation: NavigationProperty contactInformation ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+     }
+    ]
+   }
   },
   {
    "from": "customerPayments",
@@ -834,6 +862,10 @@
   "salesQuotes.discountAmount": "money: currency from the record's currencyCode column; tax basis unknown: salesQuotes declares no pricesIncludeTax (finance-marked)",
   "salesQuotes.totalAmountExcludingTax": "money: currency from the record's currencyCode column (finance-marked)",
   "salesQuotes.totalAmountIncludingTax": "money: currency from the record's currencyCode column (finance-marked)",
-  "salesQuotes.totalTaxAmount": "money: currency from the record's currencyCode column (finance-marked)"
+  "salesQuotes.totalTaxAmount": "money: currency from the record's currencyCode column (finance-marked)",
+  "bankAccounts.bankAccountNumber": "finance+l5-marked (relation_markings)",
+  "bankAccounts.iban": "finance+l5-marked (relation_markings)",
+  "fixedAssets.employeeNumber": "pii-marked (relation_markings)",
+  "fixedAssets.employeeId": "pii-marked (relation_markings)"
  }
 }

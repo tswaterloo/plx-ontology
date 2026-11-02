@@ -147,7 +147,7 @@ compact enough to capture every mailbox continuously:
   are re-read from Graph on demand (``refetch_original``: one GET, checked against the
   pin, never stored).
 * The originals kept for a pending reading are bounded (``max_pending_ocr_bytes``,
-  default 1 GiB): past it, a new PDF attachment is not downloaded
+  default 8 GiB): past it, a new PDF attachment is not downloaded
   (``content_status`` ``deferred:ocr_backlog``; its folder ``incomplete`` with reason
   ``attachments_deferred``) and a later round reads it once OCR has drained the backlog.
 * A scope's ``ocr`` ``deferred`` (or ``compact --defer-ocr``) drops the bytes of scans
@@ -172,10 +172,12 @@ never addresses, subjects, bodies, names or ids)::
 from __future__ import annotations
 
 import argparse
+from bisect import insort
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 import contextvars
+import itertools
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -184,7 +186,10 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import struct
+import subprocess
 import sys
+import threading
 import time
 import zlib
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
@@ -205,16 +210,20 @@ from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
                             checkpoint, wal_journal)
 from .graph_evidence import (FILE_ATTACHMENT_TYPE, MAX_ATTACHMENT_BYTES,
                              is_mail_attachment_citation, mail_attachment_citation)
-from .graph_read import MAX_ATTACHMENTS_LISTED
+from .graph_read import MAX_ATTACHMENTS_LISTED, MailboxAbsent
 from .people_exclusion import (ExclusionUnavailable, PeopleExcluded, PeopleExclusion,
                                is_object_id)
-from .live_source_guard import (LiveSourceAudience, NotVisible, SourceUnavailable,
+from .live_source_guard import (HOLD_SCOPE, LiveSourceAudience, NotVisible, SourceUnavailable,
                                 is_nextlink_refusal, unavailable_detail)
 from .plx_hub_guard import GRAPH_BLOCKS, upstream_blocks
 
 SCOPE_SCHEMA = "plx-mail-capture-scope/v1"
 ALL_FOLDERS = "all"   # a scope's folders: every folder of the mailbox
 HISTORIES = ("window", "all")
+# The mail every first-tier mailbox gets before any older mail (``priority`` recent_days),
+# and how recently a mailbox received mail to count as active (``active_days``).
+RECENT_DAYS = 730
+ACTIVE_DAYS = 30
 OCR_MODES = ("inline", "deferred")   # a scope's ``ocr`` (CaptureScope)
 STORE_DIR = "mail-capture"
 DB_FILE = "capture.db"
@@ -356,7 +365,8 @@ class CaptureScope:
                  all_mailbox_folders: Sequence[str] | str = ("inbox",),
                  allowlisted_folders: Sequence[str] | None = None,
                  allowlist: MailScope | None = None, exclude: Iterable[str] = (),
-                 history: str = "window", ocr: str = "inline") -> None:
+                 history: str = "window", ocr: str = "inline",
+                 priority: Mapping[str, Any] | None = None) -> None:
         if history not in HISTORIES:
             raise CaptureError("scope_history_invalid")
         if ocr not in OCR_MODES:
@@ -414,8 +424,34 @@ class CaptureScope:
                 raise CaptureError("scope_exclude_invalid")
             excluded.add(address.lower())
         self.excluded = frozenset(excluded)
+        # Without a ``priority`` section a run takes its folders in schedule order only.
+        self.prioritized = priority is not None
+        self._priority(priority or {})
         if not self.mailboxes and not self.all_mailboxes and not self.outside_allowlist:
             raise CaptureError("scope_empty")
+
+    def _priority(self, priority: Any) -> None:
+        """``priority`` (:class:`MailPriority`): ``mailboxes`` (addresses or object ids read
+        first, in this order), ``recent_days`` (the history every first-tier mailbox gets
+        before any older mail, default :data:`RECENT_DAYS`) and ``active_days`` (a mailbox
+        with mail received this recently, or none captured yet, is active)."""
+        if not isinstance(priority, Mapping) or set(priority) - {
+                "mailboxes", "recent_days", "active_days", "note"}:
+            raise CaptureError("scope_priority_invalid")
+        first = priority.get("mailboxes", [])
+        if isinstance(first, (str, bytes)) or not isinstance(first, Sequence) or any(
+                not isinstance(a, str) or not (_UPN.fullmatch(a.lower())
+                                               or grammar.TYPES["user_id"].valid(a.lower()))
+                for a in first):
+            raise CaptureError("scope_priority_invalid")
+        days = {}
+        for key, default in (("recent_days", RECENT_DAYS), ("active_days", ACTIVE_DAYS)):
+            value = priority.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 36500:
+                raise CaptureError("scope_priority_invalid")
+            days[key] = value
+        self.priority_mailboxes = tuple(dict.fromkeys(a.lower() for a in first))
+        self.recent_days, self.active_days = days["recent_days"], days["active_days"]
 
     def excludes(self, identities: Iterable[str]) -> bool:
         """Whether any of a mailbox's identities is on the exclusion list."""
@@ -444,7 +480,7 @@ class CaptureScope:
     def from_json(cls, document: Any, *, allowlist: MailScope | None = None
                   ) -> "CaptureScope":
         allowed = {"schema", "note", "window_days", "internal_domains", "mailboxes",
-                   "all_mailboxes", "allowlisted_mailboxes", "history", "ocr"}
+                   "all_mailboxes", "allowlisted_mailboxes", "history", "ocr", "priority"}
         if (not isinstance(document, dict) or document.get("schema") != SCOPE_SCHEMA
                 or set(document) - allowed or not isinstance(document.get("mailboxes", []),
                                                              list)):
@@ -471,7 +507,7 @@ class CaptureScope:
                    else listed.get("folders", ["inbox", "sentitems"]), allowlist=allowlist,
                    exclude=[e["address"] for e in exclude],
                    history=document.get("history", "window"),
-                   ocr=document.get("ocr", "inline"))
+                   ocr=document.get("ocr", "inline"), priority=document.get("priority"))
 
     @classmethod
     def from_file(cls, path: str | Path, *, allowlist: MailScope | None = None
@@ -598,6 +634,17 @@ _FOLDER_LISTING_DDL = """CREATE TABLE IF NOT EXISTS mailbox_folders (
     total INTEGER,
     listed_at TEXT NOT NULL,
     PRIMARY KEY (mailbox_id, folder_id))"""
+# The scheduling aggregates of ``MailPriority``, kept up to date incrementally (each run
+# adds the versions stored since ``meta`` ``priority_through``): per folder its held
+# versions' oldest and newest received time, and per folder and sender (a SHA-256 of the
+# lowered address, never the address) how many and whether the sender is automated.
+# Dropped whole by an exclusion purge and rebuilt by the next run.
+_PRIORITY_DDL = (
+    "CREATE TABLE IF NOT EXISTS priority_folders (mailbox_id TEXT NOT NULL, folder_id TEXT "
+    "NOT NULL, oldest TEXT, newest TEXT, PRIMARY KEY (mailbox_id, folder_id))",
+    "CREATE TABLE IF NOT EXISTS priority_senders (mailbox_id TEXT NOT NULL, folder_id TEXT "
+    "NOT NULL, sender TEXT NOT NULL, automated INTEGER NOT NULL, n INTEGER NOT NULL, "
+    "PRIMARY KEY (mailbox_id, folder_id, sender))")
 # The one exception to append-only attachment text: an exclusion purge
 # (``MailCaptureStore.purge_withheld``) drops the trigger, deletes and re-creates it in one
 # transaction.
@@ -679,7 +726,9 @@ _ATTACHMENT_COLUMNS = ("(message_handle, attachment_id, l1_handle, mailbox_id, m
 # ``MAX_PENDING_OCR_BYTES``: past it, new PDF attachments are not downloaded
 # (``content_status`` ``deferred:ocr_backlog``) until the OCR backlog drains.
 DROP_ORIGINALS_ABOVE = 256 * 1024
-MAX_PENDING_OCR_BYTES = 1 << 30
+# 8 GiB (was 1 GiB): at 1 GiB the backlog was full live (2026-11-01: 742 MB pending, 19,804
+# PDFs not downloaded, their folders re-read), so OCR gated the capture of attachments.
+MAX_PENDING_OCR_BYTES = 8 << 30
 ATTACHMENT_DEFERRED = "deferred:ocr_backlog"
 _COMPRESSED_KINDS = ("body", "text")
 # attachments.content_status of bytes that failed verification (module docstring).
@@ -711,6 +760,13 @@ def visibility_scope() -> Iterator[None]:
         _VISIBILITY.reset(token)
 
 
+def call_memo() -> dict[Any, Any] | None:
+    """The memo of the tool call in progress (:func:`visibility_scope`), else None: what
+    a call decides once over an unchanged store (the guard and the store do not change
+    within one call) is kept here, keyed by its own name."""
+    return _VISIBILITY.get()
+
+
 class MailCaptureStore:
     """The capture store under ``<state_dir>/mail-capture`` (see module docstring).
 
@@ -739,10 +795,17 @@ class MailCaptureStore:
         # else the process environment's; this deny list, else the shipped one.
         self.people = people
         self.deny = deny
-        self.db = sqlite3.connect(self.path, timeout=30)
+        # One connection, one writer: the lanes of a run share it, each call under
+        # ``lock`` (``MailCapture`` lanes), so the store never sees two writers.
+        self.db = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
+        self.lock = threading.RLock()
         os.chmod(self.path, 0o600)
         self.db.row_factory = sqlite3.Row
         wal_journal(self.db)
+        # WAL with synchronous NORMAL: a commit is not fsynced (a checkpoint is), so the
+        # many small commits of each message cost no disk flush; a power loss can lose
+        # the last commits, never consistency, and every cursor is stored after its rows.
+        self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master "
                                                 "WHERE type='table'")}
@@ -777,6 +840,8 @@ class MailCaptureStore:
                 if name not in columns:
                     self.db.execute(f"ALTER TABLE folders ADD COLUMN {name} TEXT")
             self.db.execute(_FOLDER_LISTING_DDL)
+            for statement in _PRIORITY_DDL:
+                self.db.execute(statement)
             # Compact storage: the size of a blob's stored form (NULL: its bytes, as
             # before) and when its original was dropped (``settle_original``).
             have = {r[1] for r in self.db.execute("PRAGMA table_info(blobs)")}
@@ -785,7 +850,15 @@ class MailCaptureStore:
                     self.db.execute(f"ALTER TABLE blobs ADD COLUMN {name} {kind}")
             for name, on in (("attachments_by_content", "attachments(content_sha256)"),
                              ("attachments_by_text", "attachments(text_sha256)"),
-                             ("messages_by_body", "messages(body_sha256)")):
+                             ("messages_by_body", "messages(body_sha256)"),
+                             ("messages_by_folder", "messages(mailbox_id, folder_id)"),
+                             # The per-folder checks every round ends with, and the
+                             # backlog each commit re-measures, read through these, never a
+                             # scan of the whole store (measured 2026-11-01 at 636k
+                             # messages: 0.2-3.6 s each, about 1-4 s per folder round).
+                             ("attachments_by_status", "attachments(content_status, mailbox_id)"),
+                             ("attachments_by_text_status", "attachments(text_status)"),
+                             ("message_events_by_handle", "message_events(l1_handle, event)")):
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {on}")
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
@@ -817,6 +890,7 @@ class MailCaptureStore:
             raise CaptureError("store_missing")
         store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True,
                                    timeout=timeout, check_same_thread=False)
+        store.lock = threading.RLock()
         store._read_only = True
         store.db.row_factory = sqlite3.Row
         try:
@@ -1167,10 +1241,16 @@ class MailCaptureStore:
         read (captured before attachment text), and PDFs whose scanned pages were not
         OCR-read (no engine then, or a failure from before the OCR tool exits were typed
         by tool, ``UNTYPED_OCR_FAILURES``): a later round re-reads their stored bytes,
-        once, since the new reading is typed by tool and is not among those. ``None`` for
+        once, since the new reading is typed by tool and is not among those; and readings
+        an extraction process did not finish (:data:`EXTRACTION_GAPS`), again until
+        :data:`EXTRACTION_RETRIES` more of them did not either (then a named gap for good,
+        its original kept). ``None`` for
         the mailbox or folder: every one (the run's OCR backlog), newest version first."""
+        # One folder: through the folder index (m.mailbox_id, m.folder_id); every one:
+        # through the attachments' text status.
         where = " AND ".join(["1=1"] + (["a.mailbox_id=?"] if mailbox_id is not None else [])
-                             + (["m.folder_id=?"] if folder_id is not None else []))
+                             + (["m.mailbox_id=a.mailbox_id AND m.folder_id=?"]
+                                if folder_id is not None else []))
         order = ("m.version_id DESC" if mailbox_id is None or folder_id is None
                  else "m.version_id")
         unread = ",".join("?" * len(TEXT_UNREAD))
@@ -1179,11 +1259,15 @@ class MailCaptureStore:
             f"AND m.superseded_at IS NULL WHERE {where} AND "
             "a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
             f"({unread}) OR (a.text_status IN (?,?) AND NOT EXISTS (SELECT 1 FROM message_events e "
-            f"WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted'))) ORDER BY {order}, "
-            "a.attachment_id LIMIT ?",
+            f"WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted')) OR "
+            "(a.text_status IN (?,?) AND (SELECT COUNT(*) FROM message_events e "
+            "WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted') < ?)) "
+            f"ORDER BY {order}, a.attachment_id LIMIT ?",
             (*[v for v in (mailbox_id, folder_id) if v is not None], *TEXT_UNREAD,
-             *UNTYPED_OCR_FAILURES, limit)).fetchall()
-        return [dict(r) for r in rows if r["text_status"] is None or is_paged_file(
+             *UNTYPED_OCR_FAILURES, *EXTRACTION_GAPS, EXTRACTION_RETRIES,
+             limit)).fetchall()
+        return [dict(r) for r in rows if r["text_status"] is None
+                or r["text_status"] in EXTRACTION_GAPS or is_paged_file(
             {"mime_type": (meta := json.loads(r["metadata"])).get("content_type"),
              "name": meta.get("name")})]
 
@@ -1258,21 +1342,24 @@ class MailCaptureStore:
         """Whether a later round reads an attachment's text from its stored bytes again
         (:meth:`text_unread`): never read, a scan whose OCR is pending or had no engine,
         or an OCR failure from before failures were typed. Its bytes are kept."""
-        if text_status is None or text_status in UNTYPED_OCR_FAILURES:
-            return True
+        if text_status is None or text_status in UNTYPED_OCR_FAILURES \
+                or text_status in EXTRACTION_GAPS:
+            return True   # an extraction gap keeps its original for good
         return text_status in TEXT_UNREAD and is_paged_file(
             {"mime_type": metadata.get("content_type"), "name": metadata.get("name")})
 
     def _pending_rows(self, digest: str | None = None) -> list[sqlite3.Row]:
         """Captured attachments of current versions whose bytes a later reading needs
         (:meth:`_awaits_reading`), with their blob's size; of one blob, or of all."""
-        unread = (*TEXT_UNREAD, *UNTYPED_OCR_FAILURES)
+        unread = (*TEXT_UNREAD, *UNTYPED_OCR_FAILURES, *EXTRACTION_GAPS)
         marks = ",".join("?" * len(unread))
         rows = self.db.execute(
             "SELECT a.content_sha256 AS digest, a.l1_handle, a.metadata, a.text_status, "
             "a.text_sha256, b.bytes FROM "
             "attachments a JOIN blobs b ON b.sha256=a.content_sha256 AND b.dropped_at IS NULL "
-            "WHERE a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
+            # ``+``: through the text-status index (the few awaiting a reading), never the
+            # content-status one (every captured attachment).
+            "WHERE +a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
             f"({marks})) AND EXISTS (SELECT 1 FROM messages m WHERE m.l1_handle="
             "a.message_handle AND m.superseded_at IS NULL)"
             + ("" if digest is None else " AND a.content_sha256=?"),
@@ -1521,6 +1608,10 @@ class MailCaptureStore:
         self.db = sqlite3.connect(self.path, timeout=30)
         self.db.row_factory = sqlite3.Row
         wal_journal(self.db)
+        # WAL with synchronous NORMAL: a commit is not fsynced (a checkpoint is), so the
+        # many small commits of each message cost no disk flush; a power loss can lose
+        # the last commits, never consistency, and every cursor is stored after its rows.
+        self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.execute("PRAGMA foreign_keys = ON")
 
     def degraded(self, mailbox_id: str, folder_id: str, limit: int) -> list[dict[str, Any]]:
@@ -1542,8 +1633,9 @@ class MailCaptureStore:
         bytes failed verification (``mismatch:*``)."""
         sql = ("SELECT COUNT(*) FROM attachments a JOIN messages m ON "
                "m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
-               "a.mailbox_id=? AND a.content_status LIKE ?")
-        params: list[Any] = [mailbox_id, _MISMATCH]
+               "a.mailbox_id=? AND a.content_status >= ? AND a.content_status < ?")
+        # ``mismatch:*`` as a range of the status index (LIKE would scan).
+        params: list[Any] = [mailbox_id, _MISMATCH[:-1], _MISMATCH[:-2] + ";"]
         if folder_id is not None:
             sql += " AND m.folder_id=?"
             params.append(folder_id)
@@ -1747,6 +1839,10 @@ class MailCaptureStore:
                     "DELETE FROM messages WHERE l1_handle IN (SELECT h FROM "
                     "temp.purge_messages) OR mailbox_id IN (SELECT id FROM "
                     "temp.purge_boxes)").rowcount
+                # The scheduling aggregates counted the purged mail: rebuilt next run.
+                db.execute("DELETE FROM priority_folders")
+                db.execute("DELETE FROM priority_senders")
+                db.execute("DELETE FROM meta WHERE key='priority_through'")
                 for table in ("folders", "mailbox_directory"):
                     db.execute(f"DELETE FROM {table} WHERE mailbox_id IN (SELECT id FROM "
                                "temp.purge_boxes)")
@@ -2047,7 +2143,13 @@ class MailCaptureStore:
         ``check(actor, mailbox_id)`` is true only for a captured mailbox this reader
         may see now (identity set and owner ACL recorded at capture, the reader's
         audience), so projected mail objects are re-gated per reader."""
-        return lambda actor, mailbox_id: mailbox_id in self._visible(actor, audience)
+        visible: dict[Any, frozenset[str]] = {}   # one read per reader per check built
+
+        def check(actor: Actor, mailbox_id: str) -> bool:
+            if actor not in visible:
+                visible[actor] = frozenset(self._visible(actor, audience))
+            return mailbox_id in visible[actor]
+        return check
 
     def item_gate(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
         """An ``operating.ontology_tools`` ``item_gate`` for projected mail: a
@@ -2215,6 +2317,11 @@ class MailCaptureStore:
                 "m.l1_handle=a.message_handle AND m.superseded_at IS NULL)",
                 (mailbox_id,)).fetchone()[0]
             truncated = self.truncated_lists(mailbox_id)
+            if folders and all(f["status"] == NO_MAILBOX for f in folders):
+                # No Exchange Online mailbox: nothing exists to hold, so nothing is bound.
+                mailboxes.append({"mailbox": mailbox_id, "folders": [], "complete": True,
+                                  "status": NO_MAILBOX, "versions": 0, "current_messages": 0})
+                continue
             mailboxes.append({"mailbox": mailbox_id, "folders": folders,
                               "mismatched_attachments": self.mismatched(mailbox_id),
                               "complete": (bool(folders) and all(f["complete"] for f in folders)
@@ -2243,6 +2350,8 @@ class MailCaptureStore:
         """What this capture holds of one mailbox (the object id a ``graph-mail://``
         handle names), for one reader: ``source`` (``mail:<mailbox>``, the source that
         would hold its messages), ``status`` -- ``captured`` (every folder complete),
+        ``no_mailbox`` (Graph reports no Exchange Online mailbox: Graph 404
+        ``MailboxNotEnabledForRESTAPI``),
         ``incomplete`` (``reasons``: the folders' recorded reasons, e.g. ``forbidden``)
         or ``not_captured`` -- never captured (excluded, not yet reached, not
         openable) or withheld from this reader; the two read the same."""
@@ -2253,6 +2362,9 @@ class MailCaptureStore:
             return out
         rows = self.db.execute("SELECT status, reason FROM folders WHERE mailbox_id=?",
                                (key,)).fetchall()
+        if rows and all(r["status"] == NO_MAILBOX for r in rows):
+            out.update(status=NO_MAILBOX, reasons=[NO_MAILBOX])
+            return out
         reasons = sorted({r["reason"] or r["status"] for r in rows if r["status"] != "complete"})
         if self.truncated_lists(key):
             reasons = sorted({*reasons, "attachment_lists_truncated"})
@@ -2371,7 +2483,18 @@ class MailCaptureStore:
 # an Exchange application access policy) or not visible to the capture actor stays
 # incomplete with that reason until a later run reads it; it is re-probed after every
 # other unit, never treated as work the budget left.
-TERMINAL_REASONS = frozenset({"forbidden", "not_visible", "source_error:http_403"})
+# ``no_mailbox``: Graph reports no Exchange Online mailbox for the directory user (404
+# ``MailboxNotEnabledForRESTAPI``, ``graph_read.MailboxAbsent``: unlicensed, inactive,
+# deleted or on-premises): nothing to read through Graph, re-checked every run; never
+# reported as mail the capture failed to read.
+NO_MAILBOX = "no_mailbox"
+TERMINAL_REASONS = frozenset({"forbidden", "not_visible", NO_MAILBOX, "source_error:http_403"})
+
+
+def hidden_reason(exc: BaseException) -> str:
+    """The recorded reason of a mailbox or folder a read answered ``NotVisible`` for:
+    ``no_mailbox`` when the user has no mailbox at all, else ``not_visible``."""
+    return NO_MAILBOX if isinstance(exc, MailboxAbsent) else "not_visible"
 
 
 def terminal_reason(reason: str | None) -> bool:
@@ -2581,14 +2704,452 @@ MAX_WORKERS = 16
 TURN = "turn"
 # The mailbox folder listing (``folders`` all) is read again after this long.
 FOLDER_RELIST_SECONDS = 6 * 3600
+# How often a run re-measures its OCR backlog (``MailCapture._check_backlog``).
+BACKLOG_CHECK_SECONDS = 30.0
 # The OCR backlog a run queues at its start (``_OcrQueue``), newest versions first.
 OCR_BACKLOG_PER_RUN = 2000
-# What the host and the CLI capture with (``MailCapture``): four concurrent reads per
-# mailbox (Exchange's per-mailbox limit), two pages per folder per turn, OCR beside the
-# capture on up to four threads (each runs one local OCR process at a time).
+# What the host and the CLI capture with (``MailCapture``): eight mailboxes at once
+# (``lanes``), four concurrent reads per mailbox (Exchange's per-mailbox limit), two pages
+# per folder per turn, attachment text read by extraction processes (measured
+# 2026-10-31: text extraction held the capture's one interpreter lock, about 0.1-0.2 s of
+# CPU per message), OCR beside the capture on up to four threads (each runs one local OCR
+# process at a time). Page size stays 100: a listing is one GET per 100 messages against
+# about 2.5 GETs per message, and 200 pages of full headers near the guard's 4 MB bound.
+_CPUS = os.cpu_count() or 2
 PRODUCTION: dict[str, Any] = {"workers": 4, "pages_per_turn": 2, "defer_ocr": True,
-                              "ocr_workers": max(1, min(4, (os.cpu_count() or 2) // 2)),
-                              "page_size": 100}
+                              "ocr_workers": max(1, min(4, _CPUS // 2)),
+                              "page_size": 100, "lanes": max(1, min(12, _CPUS * 3 // 4)),
+                              "extract_workers": max(1, min(6, _CPUS // 2 - 2))}
+
+
+# ---------------------------------------------------------------- what a run reads first
+
+# What changed in a held folder whose delta was last read
+# over :data:`FRESH_SECONDS` ago; then the first-tier mailboxes' recent mail
+# (``recent_days``), the scope's ``priority`` mailboxes first; their older history; every
+# other mailbox, recent mail first; the deltas read within the hour; then the
+# notification-heavy folders; then the folders with a terminal reason. Every band is still
+# read in full. (A delta read again every turn would spend each budget on the same
+# complete folders: test_capture_mail SchedulerTests.)
+(FRESH_DUE, FIRST_RECENT, FIRST_HISTORY, OTHER_RECENT, OTHER_HISTORY, FRESH, BULK,
+ LAST) = range(8)
+BAND_NAMES = ("fresh_due", "first_recent", "first_history", "other_recent", "other_history",
+              "fresh", "bulk", "terminal")
+FRESH_SECONDS = 3600
+# A folder is notification-heavy once this many of its current messages are held and one
+# sender sends this share of them, or automated senders (``automated_sender``) this share.
+BULK_SAMPLE = 200
+BULK_TOP_SENDER = 0.8
+BULK_AUTOMATED = 0.4
+_AUTOMATED = re.compile(r"(?:no-?reply|do-?not-?reply|notification|notify|alert|"
+                        r"mailer-daemon|postmaster|automated|bounce)", re.I)
+
+
+def automated_sender(address: Any) -> bool:
+    """Whether an address's local part names an automated sender (no-reply, alerts,
+    notifications, bounces): a scheduling hint only, never a filter."""
+    return isinstance(address, str) and "@" in address \
+        and _AUTOMATED.search(address.rsplit("@", 1)[0]) is not None
+
+
+class MailPriority:
+    """The band of each unit of a run (see :data:`BAND_NAMES`), read from the store at
+    the run's start: per folder its held senders and its oldest held message, per mailbox
+    when it last received mail. A first-tier mailbox is one the scope's ``priority``
+    names, else one whose account is enabled and that is active (mail received in the
+    last ``active_days``, or none held yet: never read). ``rank`` orders the mailboxes of
+    one band: the scope's ``priority`` mailboxes in its order, then all others together."""
+
+    def __init__(self, store: Any, scope: Any, opened: Mapping[str, Sequence[str]],
+                 *, disabled: Iterable[str] = ()) -> None:
+        self.store = store
+        now = store._clock()
+        self.horizon = _stamp(now - timedelta(days=scope.recent_days))
+        active_since = _stamp(now - timedelta(days=scope.active_days))
+        self._update(store)
+        newest: dict[str, str] = {}
+        # Per folder the oldest received time held and the last version it covers
+        # (``_recent`` then reads only the versions stored after it).
+        self.oldest: dict[tuple[str, str], tuple[str | None, int]] = {}
+        through = self._through(store)
+        for row in store.db.execute("SELECT * FROM priority_folders"):
+            key = (row["mailbox_id"], row["folder_id"])
+            self.oldest[key] = (row["oldest"], through)
+            if row["newest"] and row["newest"] > newest.get(row["mailbox_id"], ""):
+                newest[row["mailbox_id"]] = row["newest"]
+        senders: dict[tuple[str, str], list[tuple[int, bool]]] = {}
+        for row in store.db.execute("SELECT mailbox_id, folder_id, automated, n "
+                                    "FROM priority_senders"):
+            senders.setdefault((row["mailbox_id"], row["folder_id"]), []).append(
+                (row["n"], bool(row["automated"])))
+        self.bulk = {key for key, held in senders.items() if self._bulk(held)}
+        identities = {m: set() for m in opened}
+        for row in store.db.execute("SELECT mailbox_id, upn, identities FROM mailboxes"):
+            if row["mailbox_id"] in identities:
+                identities[row["mailbox_id"]] |= {row["upn"].lower(), row["mailbox_id"],
+                                                  *(str(i).lower() for i in
+                                                    json.loads(row["identities"]))}
+        named = {}
+        for mailbox_id, known in identities.items():
+            for position, address in enumerate(scope.priority_mailboxes):
+                if address in known:
+                    named[mailbox_id] = min(position, named.get(mailbox_id, position))
+        off = {str(m).lower() for m in disabled}
+        self.first = {m for m in opened if m in named or (
+            m not in off and newest.get(m, active_since) >= active_since)}
+        # The scope's priority mailboxes in its order; every other mailbox shares one rank,
+        # so their folders take turns (every mailbox's newest pages before a second turn).
+        self.rank = {m: named.get(m, len(scope.priority_mailboxes)) for m in opened}
+
+    @staticmethod
+    def _through(store: Any) -> int:
+        row = store.db.execute("SELECT value FROM meta WHERE key='priority_through'"
+                               ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    @classmethod
+    def _update(cls, store: Any) -> None:
+        """Add the versions stored since the last run to the aggregates (one pass over
+        those only, by version id), so a run's start costs what was stored since."""
+        through = cls._through(store)
+        folders: dict[tuple[str, str], list[str]] = {}
+        senders: dict[tuple[str, str, str], list[int]] = {}
+        last = through
+        for row in store.db.execute(
+                "SELECT version_id, mailbox_id, folder_id, json_extract(record, "
+                "'$.received_at') AS r, lower(json_extract(record, '$.from')) AS f "
+                "FROM messages WHERE version_id > ? ORDER BY version_id", (through,)):
+            last = row["version_id"]
+            key, received = (row["mailbox_id"], row["folder_id"]), row["r"] or ""
+            if received:
+                span = folders.setdefault(key, [received, received])
+                span[0], span[1] = min(span[0], received), max(span[1], received)
+            sender = row["f"] or ""
+            held = senders.setdefault((*key, sha256(sender.encode("utf-8")).hexdigest()),
+                                      [0, int(automated_sender(sender))])
+            held[0] += 1
+        if last == through:
+            return
+        with store.db:
+            store.db.executemany(
+                "INSERT INTO priority_folders VALUES (?,?,?,?) ON CONFLICT (mailbox_id, "
+                "folder_id) DO UPDATE SET oldest=min(coalesce(oldest, excluded.oldest), "
+                "excluded.oldest), newest=max(coalesce(newest, excluded.newest), "
+                "excluded.newest)", [(*k, v[0], v[1]) for k, v in folders.items()])
+            store.db.executemany(
+                "INSERT INTO priority_senders VALUES (?,?,?,?,?) ON CONFLICT (mailbox_id, "
+                "folder_id, sender) DO UPDATE SET n=n+excluded.n",
+                [(*k, v[1], v[0]) for k, v in senders.items()])
+            store.db.execute("INSERT OR REPLACE INTO meta VALUES ('priority_through', ?)",
+                             (str(last),))
+
+    @staticmethod
+    def _bulk(held: Sequence[tuple[int, bool]]) -> bool:
+        total = sum(n for n, _automated in held)
+        if total < BULK_SAMPLE:
+            return False
+        automated = sum(n for n, is_automated in held if is_automated)
+        return max(n for n, _automated in held) >= BULK_TOP_SENDER * total \
+            or automated >= BULK_AUTOMATED * total
+
+    def _recent(self, state: Mapping[str, Any] | None, folder_id: str | None) -> bool:
+        """Whether the folder still has mail within ``recent_days`` to read: its windowed
+        round is not done, or its history (read newest first) has not passed the horizon."""
+        if state is None or not state["delta_url"] or state["next_url"]:
+            return True
+        if folder_id is None:
+            return True
+        key = (state["mailbox_id"], folder_id)
+        oldest, through = self.oldest.get(key, (None, 0))
+        # Only the versions stored since it last looked (the folder index, by version id).
+        row = self.store.db.execute(
+            "SELECT MIN(json_extract(record, '$.received_at')), MAX(version_id) FROM "
+            "messages WHERE mailbox_id=? AND folder_id=? AND version_id > ?",
+            (*key, through)).fetchone()
+        if row[1] is not None:
+            found = row[0]
+            oldest = found if oldest is None or (found is not None and found < oldest) \
+                else oldest
+            self.oldest[key] = (oldest, row[1])
+        return oldest is None or oldest > self.horizon
+
+    def key(self, unit: tuple[str, str]) -> tuple[int, int]:
+        """(band, mailbox rank) of a unit as its folder stands now."""
+        mailbox_id, _folder = unit
+        state = self.store.folder_state(*unit)
+        rank = self.rank.get(mailbox_id, len(self.rank))
+        if state is not None and terminal_reason(state["reason"]) \
+                and state["status"] != "complete":
+            return LAST, rank
+        folder_id = state["folder_id"] if state is not None else None
+        if (mailbox_id, folder_id) in self.bulk:
+            return BULK, rank
+        if state is not None and state["status"] == "complete":
+            due = _stamp(self.store._clock() - timedelta(seconds=FRESH_SECONDS))
+            return (FRESH_DUE if (state["last_run_at"] or "") < due else FRESH), rank
+        first = mailbox_id in self.first
+        if self._recent(state, folder_id):
+            return (FIRST_RECENT if first else OTHER_RECENT), rank
+        return (FIRST_HISTORY if first else OTHER_HISTORY), rank
+
+
+# ---------------------------------------------------------------- inside one mailbox
+
+# Exchange answers at most four concurrent requests per mailbox per app: every read of one
+# mailbox, from any lane or reader thread, holds one of its MAILBOX_CONCURRENCY permits.
+MAILBOX_CONCURRENCY = 4
+_GATED_READS = frozenset({"get_message", "list_attachments", "get_attachment",
+                          "resolve_folder", "message_delta", "message_pages", "list_folders"})
+
+
+class _GatedReader:
+    """The reader with every read of a mailbox holding one of that mailbox's
+    :data:`MAILBOX_CONCURRENCY` permits (a listing: one per page); everything else as
+    the reader has it."""
+
+    def __init__(self, reader: Any) -> None:
+        self._reader = reader
+        self._gates: dict[str, threading.BoundedSemaphore] = {}
+        self._lock = threading.Lock()
+        self.held = 0          # permits held now, across mailboxes (tests)
+        self.most: dict[str, int] = {}   # per mailbox the most held at once (tests)
+        self._now: dict[str, int] = {}
+
+    def gate(self, mailbox: str) -> threading.BoundedSemaphore:
+        with self._lock:
+            return self._gates.setdefault(str(mailbox).lower(),
+                                          threading.BoundedSemaphore(MAILBOX_CONCURRENCY))
+
+    @contextmanager
+    def _permit(self, mailbox: str) -> Iterator[None]:
+        key = str(mailbox).lower()
+        with self.gate(key):
+            with self._lock:
+                self._now[key] = self._now.get(key, 0) + 1
+                self.most[key] = max(self.most.get(key, 0), self._now[key])
+            try:
+                yield
+            finally:
+                with self._lock:
+                    self._now[key] -= 1
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._reader, name)
+        if name not in _GATED_READS or not callable(value):
+            return value
+
+        def read(actor: Any, mailbox: str, *args: Any, **kwargs: Any) -> Any:
+            if name in ("message_delta", "message_pages"):
+                return self._pages(mailbox, value(actor, mailbox, *args, **kwargs))
+            with self._permit(mailbox):
+                return value(actor, mailbox, *args, **kwargs)
+        return read
+
+    def _pages(self, mailbox: str, pages: Iterator[Any]) -> Iterator[Any]:
+        while True:
+            with self._permit(mailbox):
+                try:
+                    page = next(pages)
+                except StopIteration:
+                    return
+            yield page
+
+
+class _Rows(list):
+    """Rows a locked ``execute`` read whole (``_LockedStore``): a cursor's reading API."""
+
+    def fetchall(self) -> list:
+        return self
+
+    def fetchone(self) -> Any:
+        return self[0] if self else None
+
+
+class _LockedDb:
+    def __init__(self, db: sqlite3.Connection, lock: Any) -> None:
+        self._db, self._lock = db, lock
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> _Rows:
+        with self._lock:
+            return _Rows(self._db.execute(sql, params).fetchall())
+
+
+class _LockedStore:
+    """The store as the lanes of one run share it: every call, and every query of its
+    connection, under the store's one lock (one connection, one writer; the Graph reads
+    of each lane run outside it). Attributes are read through; setting one is refused."""
+
+    def __init__(self, store: "MailCaptureStore") -> None:
+        object.__setattr__(self, "_store", store)
+        object.__setattr__(self, "lock", store.lock)
+        object.__setattr__(self, "db", _LockedDb(store.db, store.lock))
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._store, name)
+        if not callable(value):
+            return value
+        lock = self.lock
+
+        def locked(*args: Any, **kwargs: Any) -> Any:
+            with lock:
+                return value(*args, **kwargs)
+        return locked
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(name)
+
+
+# ---------------------------------------------------------------- text beside the capture
+
+# A reading an extraction process did not finish: past its time (the pdf parsers have no
+# bound of their own; the process is killed and replaced) or the process died (a parser
+# crash, killed for memory). A named gap, never ``failed``: the original is kept and a
+# later round reads it again in an extraction process, at most EXTRACTION_RETRIES times.
+EXTRACTION_TIMED_OUT = "extraction_timed_out"
+EXTRACTION_CRASHED = "extraction_crashed"
+EXTRACTION_GAPS = (EXTRACTION_TIMED_OUT, EXTRACTION_CRASHED)
+EXTRACTION_RETRIES = 2
+# The longest one reading may take: an attachment's text (``EXTRACT_SECONDS``) and an OCR
+# reading of a scan (``OCR_EXTRACT_SECONDS``: page by page, each tool call bounded).
+EXTRACT_SECONDS = 600.0
+OCR_EXTRACT_SECONDS = 1800.0
+# The environment of an extraction process: what its parsers and OCR tools need to run,
+# nothing else (no token, key, secret or exclusion list; it reads bytes, never a source).
+EXTRACTION_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+
+
+def extraction_env(environ: Mapping[str, str]) -> dict[str, str]:
+    """The scrubbed environment an extraction process starts with (:data:`EXTRACTION_ENV`)."""
+    return {name: environ[name] for name in EXTRACTION_ENV if environ.get(name)}
+
+
+def extract_attachment(content: bytes, attachment: Mapping[str, Any], defer_ocr: bool,
+                       defer_all: bool, *, readings: bool = True
+                       ) -> tuple[str, str | None, dict[str, Any] | None]:
+    """(text status, text, readings) of attachment bytes: the reader side's text work, in
+    an extraction process (``integrations.extract_worker``) or inline. ``readings``
+    False: the text only (an OCR reading, settled by the store afterwards)."""
+    status, text = capture_text(content, attachment, defer_ocr=defer_ocr)
+    return status, text, (_readings(content, attachment, status, text, defer_ocr=defer_all)
+                          if readings else None)
+
+
+class _ExtractionLost(Exception):
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+class _Extractors:
+    """``workers`` extraction processes (``integrations.extract_worker``), each started
+    with :func:`extraction_env` only and serving one reading at a time. A reading past
+    ``seconds``, or whose process died, ends that one process (killed, its group too)
+    and a new one takes its place; it is that reading's named gap
+    (:data:`EXTRACTION_GAPS`) and no other reading in flight is touched. Answers are
+    JSON (never pickle) from a process with no credential."""
+
+    def __init__(self, workers: int, seconds: float,
+                 environ: Mapping[str, str] | None = None) -> None:
+        self.seconds = seconds
+        self._env = extraction_env(os.environ if environ is None else environ)
+        self._idle: list[subprocess.Popen] = []
+        self._ready = threading.Condition()
+        self._closed = False
+        self._idle = [self._start() for _ in range(workers)]
+
+    def _start(self) -> "subprocess.Popen":
+        return subprocess.Popen([sys.executable, "-m", "integrations.extract_worker"],
+                                cwd=str(REPO_ROOT), env=self._env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+
+    @staticmethod
+    def _end(process: "subprocess.Popen") -> None:
+        from . import child_process
+
+        child_process.stop(process)
+        for pipe in (process.stdin, process.stdout):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def pids(self) -> list[int]:
+        with self._ready:
+            return [p.pid for p in self._idle]
+
+    def read(self, content: bytes, attachment: Mapping[str, Any], *, defer_ocr: bool,
+             defer_all: bool, readings: bool = True
+             ) -> tuple[str, str | None, dict[str, Any] | None]:
+        with self._ready:
+            while not self._idle:
+                if self._closed:
+                    raise CaptureError("extractors_closed")
+                self._ready.wait()
+            process = self._idle.pop()
+        try:
+            answer = self._ask(process, content, {
+                "attachment": dict(attachment), "defer_ocr": defer_ocr,
+                "defer_all": defer_all, "readings": readings})
+        except _ExtractionLost as lost:
+            self._end(process)
+            process = self._start()
+            return lost.status, None, None
+        finally:
+            with self._ready:
+                if self._closed:
+                    self._end(process)
+                else:
+                    self._idle.append(process)
+                self._ready.notify()
+        status, text, made = answer
+        return status, text, made
+
+    def _ask(self, process: "subprocess.Popen", content: bytes, request: Mapping[str, Any]
+             ) -> list[Any]:
+        from .extract_worker import HEADER
+
+        deadline = time.monotonic() + self.seconds
+        header = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        try:
+            process.stdin.write(HEADER.pack(len(header), len(content)) + header + content)
+            process.stdin.flush()
+        except (BrokenPipeError, OSError):
+            raise _ExtractionLost(EXTRACTION_CRASHED) from None
+        size = struct.unpack(">Q", self._take(process, 8, deadline))[0]
+        try:
+            answer = json.loads(self._take(process, size, deadline))
+        except ValueError:
+            raise _ExtractionLost(EXTRACTION_CRASHED) from None
+        if not (isinstance(answer, list) and len(answer) == 3 and isinstance(answer[0], str)
+                and (answer[1] is None or isinstance(answer[1], str))
+                and (answer[2] is None or isinstance(answer[2], dict))):
+            raise _ExtractionLost(EXTRACTION_CRASHED)
+        return answer
+
+    @staticmethod
+    def _take(process: "subprocess.Popen", size: int, deadline: float) -> bytes:
+        import select
+
+        fd, chunks, left = process.stdout.fileno(), [], size
+        while left:
+            wait = deadline - time.monotonic()
+            if wait <= 0 or not select.select([fd], [], [], wait)[0]:
+                raise _ExtractionLost(EXTRACTION_TIMED_OUT)
+            chunk = os.read(fd, min(left, 1 << 20))
+            if not chunk:
+                raise _ExtractionLost(EXTRACTION_CRASHED)
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+
+    def close(self) -> None:
+        with self._ready:
+            self._closed = True
+            idle, self._idle = self._idle, []
+            self._ready.notify_all()
+        for process in idle:
+            self._end(process)
 
 
 class _OcrQueue:
@@ -2600,10 +3161,14 @@ class _OcrQueue:
     pending for the next run; ``close`` cancels the ones not started and waits for the
     running ones."""
 
-    def __init__(self, store: MailCaptureStore, workers: int, spent: Callable[[], bool]
-                 ) -> None:
+    def __init__(self, store: MailCaptureStore, workers: int, spent: Callable[[], bool],
+                 *, processes: bool = False) -> None:
         self.store, self._spent = store, spent
         self._pool = ThreadPoolExecutor(workers, thread_name_prefix="mail-ocr")
+        # ``processes``: each reading in an extraction process of its own (bounded by
+        # OCR_EXTRACT_SECONDS, scrubbed environment), never a parse in this process.
+        self._extractors = (_Extractors(workers, OCR_EXTRACT_SECONDS) if processes
+                            else None)
         self._pending: dict[str, tuple[Future, str]] = {}
         self.counts = {"queued": 0, "read": 0, "texts_ocr": 0, "texts_ocr_unavailable": 0,
                        "left_pending": 0, "failed": 0, "originals_dropped": 0}
@@ -2615,14 +3180,17 @@ class _OcrQueue:
                                     digest)
         self.counts["queued"] += 1
 
-    def _read(self, digest: str, metadata: Mapping[str, Any]) -> tuple[str, str | None] | None:
+    def _read(self, digest: str, metadata: Mapping[str, Any]
+              ) -> tuple[str, str | None, dict[str, Any] | None] | None:
         if self._spent():
             return None
         try:
             content = self.store.blob(digest)   # the blob file only: no database access
         except (CaptureError, OSError):
             return None   # bytes missing or altered: left as they are, never re-read
-        return capture_text(content, metadata)
+        if self._extractors is not None:   # with the readings to settle its original with
+            return self._extractors.read(content, metadata, defer_ocr=False, defer_all=False)
+        return (*capture_text(content, metadata), None)
 
     def drain(self, *, wait: bool = False) -> int:
         """Store the readings done (each a new text version), then drop each original
@@ -2643,19 +3211,22 @@ class _OcrQueue:
             if found is None:
                 self.counts["left_pending"] += 1
                 continue
-            status, text = found
+            status, text, made = found
             self.store.fill_text(handle, status, self.store.put_text(text))
             stored += 1
             self.counts["read"] += 1
             self.counts["texts_ocr"] += status == TEXT_OCR
             self.counts["texts_ocr_unavailable"] += status == OCR_UNAVAILABLE
-            self.counts["originals_dropped"] += _settle(self.store, digest) == "dropped"
+            self.counts["originals_dropped"] += _settle(self.store, digest,
+                                                        readings=made) == "dropped"
         return stored
 
     def close(self) -> dict[str, int]:
         for future, _digest in self._pending.values():
             future.cancel()
         self._pool.shutdown(wait=True)
+        if self._extractors is not None:
+            self._extractors.close()
         self.drain(wait=True)
         return dict(self.counts)
 
@@ -2796,7 +3367,8 @@ class MailCapture:
                  monotonic: Callable[[], float] = time.monotonic,
                  workers: int = 1, pages_per_turn: int | None = None,
                  defer_ocr: bool = False, ocr_workers: int = 0,
-                 max_pending_ocr_bytes: int | None = MAX_PENDING_OCR_BYTES) -> None:
+                 max_pending_ocr_bytes: int | None = MAX_PENDING_OCR_BYTES,
+                 lanes: int = 1, extract_workers: int = 0) -> None:
         if page_budget is not None and (isinstance(page_budget, bool)
                                         or not isinstance(page_budget, int) or page_budget < 1):
             raise CaptureError("page_budget_invalid")
@@ -2804,7 +3376,9 @@ class MailCapture:
                 budget_seconds, (int, float)) or not budget_seconds >= 0):
             raise CaptureError("budget_seconds_invalid")
         for value, low, code in ((workers, 1, "workers_invalid"),
-                                 (ocr_workers, 0, "ocr_workers_invalid")):
+                                 (ocr_workers, 0, "ocr_workers_invalid"),
+                                 (lanes, 1, "lanes_invalid"),
+                                 (extract_workers, 0, "extract_workers_invalid")):
             if isinstance(value, bool) or not isinstance(value, int) \
                     or not low <= value <= MAX_WORKERS:
                 raise CaptureError(code)
@@ -2818,17 +3392,21 @@ class MailCapture:
         self.max_pending_ocr_bytes = max_pending_ocr_bytes
         # Whether the OCR backlog is at its bound (read by reader threads, set here).
         self._backlog_full = False
+        self._backlog_checked = float("-inf")
+        self._pending_measured = self._pending_added = 0
         # The scope's ``ocr`` ``deferred`` (``run`` takes it): scans' bytes dropped.
         self._defer_all = False
-        # Originals stored this message, settled once their rows are written.
-        self._unsettled: dict[str, tuple[bytes, Mapping[str, Any] | None]] = {}
+        # Originals stored this message, settled once their rows are written (per lane).
+        self._lane = threading.local()
         self._monotonic = monotonic
         self._deadline = None if budget_seconds is None else monotonic() + budget_seconds
         if isinstance(attachment_list_cap, bool) or not isinstance(attachment_list_cap, int) \
                 or not 1 <= attachment_list_cap <= MAX_ATTACHMENTS_LISTED:
             raise CaptureError("attachment_list_cap_invalid")
         self.attachment_list_cap = attachment_list_cap
-        self.store, self.reader, self.actor = store, reader, actor
+        # Every read of a mailbox holds one of its permits (MAILBOX_CONCURRENCY), whichever
+        # lane or reader thread sends it.
+        self.store, self.reader, self.actor = store, _GatedReader(reader), actor
         self.page_size = page_size
         self.throttle_waits = tuple(float(w) for w in throttle_waits)
         self._sleep = sleep
@@ -2841,11 +3419,62 @@ class MailCapture:
         self.defer_ocr = defer_ocr
         self.ocr_workers = ocr_workers
         self._ocr: _OcrQueue | None = None
-        self._pool: ThreadPoolExecutor | None = None
+        self.lanes = lanes
+        self.extract_workers = extract_workers
+        self._pools: dict[int, ThreadPoolExecutor] = {}   # per lane thread
+        self._pools_lock = threading.Lock()
+        self._extractor: _Extractors | None = None
+        self._extractor_lock = threading.Lock()
+        self._priority: MailPriority | None = None
+        # Mailbox ids the directory lists with their account disabled (the run's
+        # ``directory`` callable fills it): never first-tier unless the scope names them.
+        self.disabled_mailboxes: set[str] = set()
         self._pages_read: dict[tuple[str, str], int] = {}   # per folder, this object's runs
 
     def _spent(self) -> bool:
         return self._deadline is not None and self._monotonic() >= self._deadline
+
+    def _unsettled_now(self) -> dict[str, tuple[bytes, Mapping[str, Any] | None]]:
+        if not hasattr(self._lane, "unsettled"):
+            self._lane.unsettled = {}
+        return self._lane.unsettled
+
+    def _reader_pool(self) -> ThreadPoolExecutor:
+        """This lane's reader threads (``workers``: Exchange's concurrent reads per
+        mailbox, so one lane never holds more than that on its mailbox)."""
+        with self._pools_lock:
+            pool = self._pools.get(threading.get_ident())
+            if pool is None:
+                pool = self._pools[threading.get_ident()] = ThreadPoolExecutor(
+                    self.workers, thread_name_prefix="mail-read")
+            return pool
+
+    def _extract(self, content: bytes, attachment: Mapping[str, Any]
+                 ) -> tuple[str, str | None, dict[str, Any] | None]:
+        """:func:`extract_attachment`, in the extraction processes when there are any
+        (``extract_workers``: text extraction is CPU work that would hold this process's
+        interpreter lock from every lane; :class:`_Extractors`), else inline. A reading
+        past :data:`EXTRACT_SECONDS`, or whose process died, is that reading's named gap
+        (:data:`EXTRACTION_GAPS`, its original kept, read again later in a process); the
+        other readings in flight and the capture go on."""
+        defer_ocr, defer_all = self.defer_ocr or self._defer_all, self._defer_all
+        if not self.extract_workers:
+            return extract_attachment(content, attachment, defer_ocr, defer_all)
+        with self._extractor_lock:
+            if self._extractor is None:
+                self._extractor = _Extractors(self.extract_workers, EXTRACT_SECONDS)
+            extractors = self._extractor
+        return extractors.read(content, attachment, defer_ocr=defer_ocr, defer_all=defer_all)
+
+    def _read_again(self, content: bytes, metadata: Mapping[str, Any]
+                    ) -> tuple[str, str | None, dict[str, Any] | None]:
+        """A stored attachment read again, OCR included, in an extraction process, with
+        the readings its original is settled with (so the store never parses it)."""
+        with self._extractor_lock:
+            if self._extractor is None:
+                self._extractor = _Extractors(self.extract_workers, EXTRACT_SECONDS)
+            extractors = self._extractor
+        return extractors.read(content, metadata, defer_ocr=False, defer_all=self._defer_all)
 
     # ---------------------------------------------------------------- per message
     #
@@ -2897,12 +3526,9 @@ class MailCapture:
         if listed is not None and reported is not None and listed != reported:
             entry["content_status"] = MISMATCH_SIZE   # not the attachment listed
             return entry
-        status, text = capture_text(read["content"], read["attachment"],
-                                    defer_ocr=self.defer_ocr or self._defer_all)
+        status, text, readings = self._extract(read["content"], read["attachment"])
         entry.update(content=read["content"], read=dict(read["attachment"]),
-                     text_status=status, text=text,
-                     readings=_readings(read["content"], read["attachment"], status, text,
-                                        defer_ocr=self._defer_all))
+                     text_status=status, text=text, readings=readings)
         return entry
 
     def _commit_attachment(self, message: Mapping[str, Any], entry: dict[str, Any],
@@ -2925,7 +3551,7 @@ class MailCapture:
                 return entry
             entry.update(content_status="captured", content_sha256=digest, metadata=read,
                          text_sha256=self.store.put_text(text))
-            self._unsettled[digest] = (content, readings)
+            self._unsettled_now()[digest] = (content, readings)
             counts["attachments_captured"] += 1
             counts["attachment_bytes"] += len(content)
             _count_text(entry["text_status"], counts)
@@ -3015,6 +3641,13 @@ class MailCapture:
 
     def _commit_message(self, folder_id: str, fetched: Mapping[str, Any],
                         counts: dict[str, int]) -> None:
+        # One message's rows, blobs and settled originals as one step of the one writer:
+        # no other lane's settle runs between its bytes and the rows that need them.
+        with self.store.lock:
+            self._commit_message_locked(folder_id, fetched, counts)
+
+    def _commit_message_locked(self, folder_id: str, fetched: Mapping[str, Any],
+                               counts: dict[str, int]) -> None:
         if fetched.get("vanished"):
             counts["vanished"] += 1  # moved or deleted since the page; delta reports it
             return
@@ -3038,17 +3671,31 @@ class MailCapture:
     def _settle_new(self, counts: dict[str, int]) -> None:
         """Settle the originals stored since the last call, their rows now written
         (``MailCaptureStore.settle_original``), then re-measure the OCR backlog."""
-        unsettled, self._unsettled = self._unsettled, {}
+        unsettled = self._unsettled_now()
+        self._lane.unsettled = {}
         for digest, (content, readings) in unsettled.items():
-            counts["originals_dropped"] += _settle(self.store, digest, content=content,
-                                                   readings=readings,
-                                                   defer_ocr=self._defer_all) == "dropped"
+            outcome = _settle(self.store, digest, content=content, readings=readings,
+                              defer_ocr=self._defer_all)
+            counts["originals_dropped"] += outcome == "dropped"
+            if outcome == "kept_pending":   # the backlog grew by these bytes
+                self._pending_added += len(content)
         if unsettled:
             self._check_backlog()
 
-    def _check_backlog(self) -> None:
-        self._backlog_full = (self.max_pending_ocr_bytes is not None and
-                              self.store.pending_ocr_bytes() >= self.max_pending_ocr_bytes)
+    def _check_backlog(self, *, now: bool = False) -> None:
+        """Whether the OCR backlog is at its bound: measured (``pending_ocr_bytes``) at
+        most every :data:`BACKLOG_CHECK_SECONDS` unless ``now``, plus the originals kept
+        for a reading since (it was measured after every stored message, under the store
+        lock every lane waits on)."""
+        if self.max_pending_ocr_bytes is None:
+            return
+        # The wall clock, not the budget's (injected) one: this is no budget.
+        if now or time.monotonic() >= self._backlog_checked + BACKLOG_CHECK_SECONDS:
+            self._backlog_checked = time.monotonic()
+            self._pending_measured = self.store.pending_ocr_bytes()
+            self._pending_added = 0
+        self._backlog_full = (self._pending_measured + self._pending_added
+                              >= self.max_pending_ocr_bytes)
 
     def _observed(self, outcome: str, counts: dict[str, int]) -> bool:
         if outcome == "new":
@@ -3080,8 +3727,7 @@ class MailCapture:
                 self._capture_message(mailbox_id, folder_id, item, counts)
                 self._drain_ocr()
             return True
-        if self._pool is None:
-            self._pool = ThreadPoolExecutor(self.workers, thread_name_prefix="mail-read")
+        pool = self._reader_pool()
         ahead: list[tuple[str, Future | None]] = []
         position = 0
 
@@ -3090,8 +3736,9 @@ class MailCapture:
             if outcome != "new":
                 return outcome, None
             known = self.store.captured_attachments(mailbox_id, item["id"])
-            return outcome, self._pool.submit(self._prefetch, mailbox_id, folder_id, item,
-                                              known)
+            # The lane's context (its ``HOLD_SCOPE``) goes with each read.
+            return outcome, pool.submit(contextvars.copy_context().run, self._prefetch,
+                                        mailbox_id, folder_id, item, known)
         try:
             for n in range(len(items)):
                 spent = self._spent()
@@ -3128,8 +3775,10 @@ class MailCapture:
                              json.loads(row["metadata"]))
 
     def _drain_ocr(self) -> None:
-        if self._ocr is not None and self._ocr.drain():
-            self._check_backlog()
+        if self._ocr is not None:
+            with self.store.lock:
+                if self._ocr.drain():
+                    self._check_backlog()
 
     def _repair_degraded(self, mailbox_id: str, folder_id: str,
                          counts: dict[str, int]) -> None:
@@ -3201,12 +3850,17 @@ class MailCapture:
                 content = self.store.blob(row["content_sha256"])
             except (CaptureError, OSError):
                 continue   # bytes missing or altered: left as they are, never re-read
-            status, text = capture_text(content, json.loads(row["metadata"]))
+            metadata = json.loads(row["metadata"])
+            made = None
+            if self.extract_workers:   # never a parse in this process (a gap may hang)
+                status, text, made = self._read_again(content, metadata)
+            else:
+                status, text = capture_text(content, metadata)
             self.store.fill_text(row["l1_handle"], status, self.store.put_text(text))
             counts["texts_reextracted"] += 1
             _count_text(status, counts)
             counts["originals_dropped"] += _settle(self.store, row["content_sha256"],
-                                                   content=content) == "dropped"
+                                                   content=content, readings=made) == "dropped"
 
     # ---------------------------------------------------------------- per folder
 
@@ -3294,7 +3948,7 @@ class MailCapture:
                                       reason=None)
                 result["resumed_from"] = "next_url" if state["next_url"] else "delta_url"
         except (NotVisible, SourceUnavailable) as exc:
-            reason = _failure(exc) if isinstance(exc, SourceUnavailable) else "not_visible"
+            reason = _failure(exc) if isinstance(exc, SourceUnavailable) else hidden_reason(exc)
             store.save_folder(mailbox_id, folder_key, status="incomplete",
                               reason=reason, last_run_at=store.now())
             result["blocked"] = _blocked("folder", exc)
@@ -3420,8 +4074,8 @@ class MailCapture:
                 if exc.code != "store_full":
                     raise
                 reason = "store_full"
-            except NotVisible:
-                reason = "not_visible"
+            except NotVisible as exc:
+                reason = hidden_reason(exc)
             except SourceUnavailable as exc:
                 detail = unavailable_detail(exc) or "unclassified"
                 if _transient(detail) and throttles < len(self.throttle_waits):
@@ -3444,12 +4098,13 @@ class MailCapture:
                     except (NotVisible, SourceUnavailable) as again:
                         exc = again
                         detail = (unavailable_detail(again) or "unclassified"
-                                  if isinstance(again, SourceUnavailable) else "not_visible")
+                                  if isinstance(again, SourceUnavailable)
+                                  else hidden_reason(again))
                 if restarted:
                     result["round"] = kind
                     continue
                 if not isinstance(exc, SourceUnavailable):
-                    reason = "not_visible"
+                    reason = hidden_reason(exc)
                 else:
                     if is_nextlink_refusal(exc):
                         # A refused continuation is never followed or resumed: drop both
@@ -3494,9 +4149,13 @@ class MailCapture:
             if self.page_budget is not None and \
                     self._pages_read.get(unit, 0) >= self.page_budget:
                 return "page_budget"
-            if turn is not None and pages_used >= turn:
+            # A turn spent by the round's own delta page still reads one history page:
+            # else a folder whose turn is one page re-reads its delta every turn and its
+            # history never moves (pages_per_turn 1).
+            if turn is not None and pages_used >= turn and counts["backfill_pages"] > read:
                 return TURN
             return None
+        read = counts["backfill_pages"]
         if exhausted() is not None:
             return stop(exhausted())
         try:
@@ -3524,8 +4183,8 @@ class MailCapture:
             if exc.code != "store_full":
                 raise
             return stop("store_full")
-        except NotVisible:
-            return stop("not_visible")
+        except NotVisible as exc:
+            return stop(hidden_reason(exc))
         except SourceUnavailable as exc:
             if is_nextlink_refusal(exc):
                 store.save_folder(mailbox_id, folder_key, backfill_next_url=None)
@@ -3538,33 +4197,87 @@ class MailCapture:
     def _turns(self, ordered: Sequence[tuple[str, str]]) -> dict[tuple[str, str], Any]:
         """Capture ``ordered`` folders in turns: each reads at most ``pages_per_turn``
         pages, then the next folder takes its turn; the folders with more to read come
-        back, in the same order, until none has or the time budget is spent (a folder
-        cut by it then ends ``time_budget``). One result per folder: its last turn's,
-        with the counts of every turn. Without ``pages_per_turn``, one call each."""
+        back until none has or the time budget is spent (a folder cut by it then ends
+        ``time_budget``). One result per folder: its last turn's, with the counts of
+        every turn. Without ``pages_per_turn``, one call each.
+
+        Order: by band (:class:`MailPriority`, when the run has one; a folder's band is
+        taken again after each turn, so its older history waits for the next band),
+        then by mailbox rank, then in turn: a folder that comes back goes after the
+        others of its band and mailbox. ``lanes`` threads take turns at once, each on a
+        different mailbox (never two lanes on one mailbox, so a mailbox never has more
+        than ``workers`` reads in flight), every store call through the one store lock;
+        with one lane the turns run on this thread."""
         done: dict[tuple[str, str], Any] = {}
-        queue = list(ordered)
-        while queue:
-            again = []
-            for unit in queue:
-                result = self.capture_folder(*unit, turn=self.pages_per_turn)
-                before = done.get(unit)
-                if before is not None:
-                    for key, value in before["counts"].items():
-                        result["counts"][key] += value
-                    result.pop("deferred", None)   # it was read in an earlier turn
-                    # How the run started it (its first turn), never how a turn resumed.
-                    result["resumed_from"] = before.get("resumed_from")
-                    if before.get("round") is not None:
-                        result["round"] = before["round"]
-                done[unit] = result
-                if result.get("reason") == TURN:
-                    if self._spent():
-                        self.store.save_folder(*unit, status="incomplete", reason=TIME_BUDGET,
-                                               last_run_at=self.store.now())
-                        result["reason"] = TIME_BUDGET
-                    else:
-                        again.append(unit)
-            queue = again
+        sequence = itertools.count()
+        queue: list[tuple[int, int, int, tuple[str, str]]] = []
+        busy: set[str] = set()
+        ready = threading.Condition()
+
+        def key(unit: tuple[str, str]) -> tuple[int, int]:
+            if self._priority is None:
+                return 0, 0
+            with self.store.lock:
+                return self._priority.key(unit)
+
+        for unit in ordered:
+            queue.append((*key(unit), next(sequence), unit))
+        queue.sort()
+
+        def take() -> tuple[str, str] | None:
+            with ready:
+                while True:
+                    for index, entry in enumerate(queue):
+                        if entry[3][0] not in busy:
+                            del queue[index]
+                            busy.add(entry[3][0])
+                            return entry[3]
+                    if not busy:
+                        return None
+                    ready.wait()
+
+        def lane() -> None:
+            while (unit := take()) is not None:
+                again = False
+                try:
+                    token = HOLD_SCOPE.set(unit[0])   # a Retry-After holds this mailbox
+                    try:
+                        result = self.capture_folder(*unit, turn=self.pages_per_turn)
+                    finally:
+                        HOLD_SCOPE.reset(token)
+                    before = done.get(unit)
+                    if before is not None:
+                        for name, value in before["counts"].items():
+                            result["counts"][name] += value
+                        result.pop("deferred", None)   # it was read in an earlier turn
+                        # How the run started it (its first turn), never how a turn resumed.
+                        result["resumed_from"] = before.get("resumed_from")
+                        if before.get("round") is not None:
+                            result["round"] = before["round"]
+                    done[unit] = result
+                    if result.get("reason") == TURN:
+                        if self._spent():
+                            self.store.save_folder(*unit, status="incomplete",
+                                                   reason=TIME_BUDGET,
+                                                   last_run_at=self.store.now())
+                            result["reason"] = TIME_BUDGET
+                        else:
+                            again = True
+                    entry = (*key(unit), next(sequence), unit) if again else None
+                finally:
+                    with ready:
+                        busy.discard(unit[0])
+                        if again:
+                            insort(queue, entry)
+                        ready.notify_all()
+
+        if self.lanes == 1:
+            lane()
+            return done
+        with ThreadPoolExecutor(self.lanes, thread_name_prefix="mail-lane") as lanes:
+            for future in [lanes.submit(contextvars.copy_context().run, lane)
+                           for _ in range(self.lanes)]:
+                future.result()
         return done
 
     def _every_folder(self, mailbox_id: str) -> tuple[tuple[str, ...], bool]:
@@ -3589,6 +4302,8 @@ class MailCapture:
                     self.store.save_folder_listing(
                         mailbox_id, [{"id": f["folder_id"], "total": f["total"]}
                                      for f in stored])
+            except MailboxAbsent:
+                raise   # no Exchange Online mailbox: the run records it, nothing to read
             except (NotVisible, SourceUnavailable):
                 whole = False
         if not stored:
@@ -3606,11 +4321,17 @@ class MailCapture:
     def _close_pools(self) -> dict[str, int]:
         """Stop the reader pool and the OCR queue (its readings not started stay pending
         for the next run); the OCR counts."""
-        if self._pool is not None:
-            self._pool.shutdown(wait=True)
-            self._pool = None
+        with self._pools_lock:
+            pools, self._pools = list(self._pools.values()), {}
+        for pool in pools:
+            pool.shutdown(wait=True)
+        with self._extractor_lock:
+            extractor, self._extractor = self._extractor, None
         ocr, self._ocr = self._ocr, None
-        return ocr.close() if ocr is not None else {}
+        counts = ocr.close() if ocr is not None else {}
+        if extractor is not None:
+            extractor.close()
+        return counts
 
     def _people_blocked(self, scope: CaptureScope,
                         exc: BaseException | None = None) -> dict[str, Any]:
@@ -3704,8 +4425,10 @@ class MailCapture:
                         entry.update(status="people_excluded", complete=False)
                         mailboxes.append(entry)
                     continue
-                except NotVisible:
-                    entry.update(status="not_visible", complete=False)
+                except NotVisible as exc:
+                    # no_mailbox at the user lookup too: counted done, as when listed.
+                    entry.update(status=hidden_reason(exc),
+                                 complete=hidden_reason(exc) == NO_MAILBOX)
                     mailboxes.append(entry)
                     continue
                 except SourceUnavailable as exc:
@@ -3729,9 +4452,15 @@ class MailCapture:
                 mailboxes.append(entry)
             # A mailbox whose scope is every folder: its folders as listed (cached).
             unlisted: set[str] = set()
+            absent: set[str] = set()
             for mailbox_id, folders in list(opened.items()):
                 if folders == (ALL_FOLDERS,):
-                    opened[mailbox_id], whole = self._every_folder(mailbox_id)
+                    try:
+                        opened[mailbox_id], whole = self._every_folder(mailbox_id)
+                    except MailboxAbsent:
+                        absent.add(mailbox_id)   # bound, terminal: nothing to read via Graph
+                        del opened[mailbox_id]
+                        continue
                     if not whole:
                         unlisted.add(mailbox_id)
             # Every folder of every opened mailbox, captured in the scheduler's order
@@ -3739,19 +4468,33 @@ class MailCapture:
             units = [(mailbox_id, folder) for mailbox_id, folders in opened.items()
                      for folder in folders]
             self._defer_all = scope.ocr == "deferred"
-            self._check_backlog()
+            self._check_backlog(now=True)
             if self.ocr_workers and self._ocr is None and _ocr_engine():
-                self._ocr = _OcrQueue(self.store, self.ocr_workers, self._spent)
+                self._ocr = _OcrQueue(self.store, self.ocr_workers, self._spent,
+                                      processes=self.extract_workers > 0)
                 for row in self.store.text_unread(None, None, OCR_BACKLOG_PER_RUN):
                     self._ocr.submit(row["l1_handle"], row["content_sha256"],
                                      json.loads(row["metadata"]))
+            self._priority = (MailPriority(self.store, scope, opened,
+                                           disabled=self.disabled_mailboxes)
+                              if scope.prioritized else None)
+            real = self.store
+            if self.lanes > 1:
+                self.store = _LockedStore(real)   # one writer for every lane
             try:
                 done = self._turns(schedule_units(
-                    units, lambda unit: folder_standing(self.store.folder_state(*unit))))
+                    units, lambda unit: folder_standing(real.folder_state(*unit))))
             finally:
+                self.store = real
                 ocr = self._close_pools()
         for entry in mailboxes:
-            if "mailbox_id" in entry:
+            if entry.get("mailbox_id") in absent:
+                # Nothing to hold: done for its scope, recorded so every reader of the
+                # store (coverage, completeness) says no_mailbox, never a read gap.
+                self.store.save_folder(entry["mailbox_id"], "inbox", status=NO_MAILBOX,
+                                       reason=NO_MAILBOX, last_run_at=self.store.now())
+                entry.update(status=NO_MAILBOX, complete=True)
+            elif "mailbox_id" in entry:
                 entry["folders"] = [done[(entry["mailbox_id"], folder)]
                                     for folder in opened[entry["mailbox_id"]]]
                 # Complete only when every folder is, and was brought current this run.
@@ -3762,11 +4505,12 @@ class MailCapture:
                 if entry["mailbox_id"] in unlisted:
                     entry["folder_listing"] = "incomplete"
         bound = [(f["complete"], f["reason"]) for m in mailboxes for f in m["folders"]]
-        bound += [(False, m["status"]) for m in mailboxes if not m["folders"]
-                  for _folder in targets[m["index"]][1]]
+        bound += [(m["status"] == NO_MAILBOX, m["status"]) for m in mailboxes
+                  if not m["folders"] for _folder in targets[m["index"]][1]]
         return {"mailboxes": mailboxes, "directory": directory_status,
                 "mailboxes_listed": len(targets) - named, "mailboxes_excluded": excluded,
                 "people_excluded": people_excluded, "people_blocked": None, "purged": purged,
+                "mailboxes_absent": len(absent),
                 "complete": (bool(mailboxes) and all(m["complete"] for m in mailboxes)
                              and directory_status in (None, "complete")),
                 "complete_bound": sum(1 for done, _r in bound if done),
@@ -3780,17 +4524,25 @@ class MailCapture:
                 "ocr": ocr}
 
 
-def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None
+def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None,
+                      *, disabled: set[str] | None = None
                       ) -> tuple[list[tuple[str, str]], str, int]:
     """The one directory reader: ``(object id, mail)`` of every member user with a mail
     address, kept only when ``allowed([id, mail])``; guests are skipped. Also returns the
-    status (``complete`` or ``truncated:<reason>``) and how many ``allowed`` refused."""
-    url = grammar.url("graph.users", {"$select": "id,mail,userType", "$top": "999"})
+    status (``complete`` or ``truncated:<reason>``) and how many ``allowed`` refused.
+    ``disabled``: filled with the listed ids whose account is disabled
+    (``accountEnabled`` false; a scheduling hint, never a filter)."""
+    url = grammar.url("graph.users", {"$select": "id,mail,userType,accountEnabled",
+                                      "$top": "999"})
     users, completeness = api.get_pages(url, max_pages=50, max_items=5000)
     members = {str(u["id"]).lower(): u["mail"].lower() for u in users
                if grammar.TYPES["user_id"].valid(str(u.get("id") or ""))
                and isinstance(u.get("mail"), str) and u["mail"]
                and u.get("userType") != "Guest"}
+    if disabled is not None:
+        disabled.update(str(u["id"]).lower() for u in users
+                        if u.get("accountEnabled") is False and str(u.get("id") or "").lower()
+                        in members)
     found = [(i, mail) for i, mail in sorted(members.items())
              if allowed is None or allowed([i, mail])]
     status = ("complete" if completeness["complete"]
@@ -3798,15 +4550,15 @@ def directory_members(api: Any, allowed: Callable[[Sequence[str]], bool] | None 
     return found, status, len(members) - len(found)
 
 
-def directory_mailboxes(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None
-                        ) -> tuple[list[str], str, int]:
+def directory_mailboxes(api: Any, allowed: Callable[[Sequence[str]], bool] | None = None,
+                        *, disabled: set[str] | None = None) -> tuple[list[str], str, int]:
     """Every member user of the tenant directory with a mail address (object ids),
     via the guarded, paged ``/users`` GET (``@odata.nextLink`` within the guard's
     caps), kept only when ``allowed([id, mail])`` (``CaptureScope.directory_allows``:
     not excluded); guests have no mailbox here and are skipped. Returns the ids, the
     status ``complete`` or ``truncated:<reason>`` (a run with a truncated listing is
     never complete) and the number of member mailboxes ``allowed`` refused."""
-    found, status, refused = directory_members(api, allowed)
+    found, status, refused = directory_members(api, allowed, disabled=disabled)
     return [i for i, _mail in found], status, refused
 
 
@@ -3895,6 +4647,10 @@ def add_cli_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ocr-workers", type=int, default=PRODUCTION["ocr_workers"],
                         help="threads OCR-reading scanned attachments beside the capture "
                              "(0: OCR inline)")
+    parser.add_argument("--lanes", type=int, default=PRODUCTION["lanes"],
+                        help="mailboxes captured at once (one writer to the store)")
+    parser.add_argument("--extract-workers", type=int, default=PRODUCTION["extract_workers"],
+                        help="processes reading attachment text (0: inline)")
     parser.add_argument("--max-store-bytes", type=int, default=None,
                         help="bound on the capture store (SQLite + blobs); a folder that "
                              "would pass it stops incomplete with reason store_full")
@@ -3926,6 +4682,7 @@ def _report_run(number: int, run: Mapping[str, Any]) -> dict[str, Any]:
             "complete_bound": run["complete_bound"], "bound_total": run["bound_total"],
             "incomplete_reasons": run["incomplete_reasons"],
             "people_excluded": run.get("people_excluded", 0),
+            "mailboxes_absent": run.get("mailboxes_absent", 0),
             "purged": dict(run.get("purged") or dict.fromkeys(PURGE_COUNTS, 0)),
             "mailboxes": mailboxes}
 
@@ -3967,11 +4724,13 @@ def run_cli(args: argparse.Namespace, *, environ: Mapping[str, str] | None = Non
                               budget_seconds=getattr(args, "budget_seconds", None),
                               workers=getattr(args, "workers", 1),
                               pages_per_turn=getattr(args, "pages_per_turn", None),
-                              defer_ocr=bool(ocr_workers), ocr_workers=ocr_workers)
+                              defer_ocr=bool(ocr_workers), ocr_workers=ocr_workers,
+                              lanes=getattr(args, "lanes", 1),
+                              extract_workers=getattr(args, "extract_workers", 0))
         runs, refused = [], []
         for number in range(1, args.runs + 1):
             run = capture.run(scope, directory=lambda: directory_mailboxes(
-                api, scope.directory_allows))
+                api, scope.directory_allows, disabled=capture.disabled_mailboxes))
             runs.append(_report_run(number, run))
             runs[-1]["ocr"] = {k: v for k, v in (run.get("ocr") or {}).items()
                                if isinstance(v, int)}

@@ -28,7 +28,7 @@ import sys
 from time import monotonic
 from typing import Any, Callable, Mapping, Sequence
 
-from operating import po_status
+from operating import po_status, tool_results
 
 SCHEMA = "plx-connector-home-check/v2"
 TOP = 3
@@ -82,6 +82,17 @@ def _text(value: Any) -> Any:
     return value.get("untrusted_text") if isinstance(value, dict) else value
 
 
+def _structured(called: Mapping[str, Any]) -> Any:
+    """A tools/call result's value (``tool_results.result_value``), None when refused or
+    unreadable."""
+    if called.get("isError"):
+        return None
+    try:
+        return tool_results.result_value(called)
+    except tool_results.ToolResultUnreadable:
+        return None
+
+
 def _reader_run(server: Any) -> dict[str, Any]:
     started = monotonic()
     replies = {reply.get("id"): reply for reply in _stdio(server)}
@@ -89,7 +100,7 @@ def _reader_run(server: Any) -> dict[str, Any]:
     init = (replies.get(1) or {}).get("result") or {}
     listed = ((replies.get(2) or {}).get("result") or {}).get("tools") or []
     called = (replies.get(3) or {}).get("result") or {}
-    found = called.get("structuredContent") if not called.get("isError") else None
+    found = _structured(called)
     home = (found or {}).get("home") if (found or {}).get("status") == "home" else None
     row: dict[str, Any] = {
         "transport": "stdio", "seconds": seconds,
@@ -168,7 +179,7 @@ def _portfolio_run(server: Callable[[], Any], host: Any, gated: Any,
     late_rows: list[dict[str, Any]] = []
     for i, question in enumerate(PORTFOLIO_QUESTIONS):
         called = (replies.get(3 + i) or {}).get("result") or {}
-        found = (called.get("structuredContent") or {}) if not called.get("isError") else {}
+        found = _structured(called) or {}
         portfolio = found.get("portfolio") if found.get("status") == "portfolio" else None
         portfolio = portfolio or {}
         rows = portfolio.get("rows") or []
@@ -195,7 +206,7 @@ def _portfolio_run(server: Callable[[], Any], host: Any, gated: Any,
             said = None if called.get("isError") else _verdict_state(
                 ((called.get("content") or [{}])[0]).get("text"))
             structured = None if called.get("isError") else _f14_state(
-                called.get("structuredContent"))
+                _structured(called))
             card = status_card.verdict(
                 lambda name, arguments: host.call(name, arguments, gated), object_id,
                 as_of=_today(),

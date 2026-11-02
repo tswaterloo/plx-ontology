@@ -1,0 +1,139 @@
+{
+  "tool": "plx.changes",
+  "examples": [
+    {
+      "name": "a_status_change_listed_an_etl_restamp_counted",
+      "input": {
+        "since": "2099-01-15T00:00:00Z",
+        "object_types": [
+          "AssemblyOrder",
+          "PurchaseOrder"
+        ],
+        "limit": 1
+      },
+      "output": {
+        "since": "2099-01-15T00:00:00Z",
+        "object_types": [
+          "AssemblyOrder",
+          "PurchaseOrder"
+        ],
+        "changes": [
+          {
+            "object": {
+              "object_id": "PurchaseOrder:portal.app_purchase_order:{\"id\":\"po-new\"}",
+              "object_type": "PurchaseOrder",
+              "display": {
+                "untrusted_text": "PO100003",
+                "origin": {
+                  "citation": "api://public.app_purchase_order/%7B%22id%22%3A%22po-new%22%7D@fx-20",
+                  "field_path": "row.po_number"
+                }
+              },
+              "lineage": "gold_native_staging"
+            },
+            "kind": "first_captured",
+            "captured_at": "2099-01-20T00:00:00.000000Z",
+            "previous_captured_at": null,
+            "source_stamps": [
+              {
+                "stamp": "bumped_by_etl",
+                "value": {
+                  "property": "portal_updated_at",
+                  "value_type": "text",
+                  "value": {
+                    "untrusted_text": "2099-01-16T00:00:00",
+                    "origin": {
+                      "citation": "api://public.app_purchase_order/%7B%22id%22%3A%22po-new%22%7D@fx-20",
+                      "field_path": "row.updated_at"
+                    }
+                  },
+                  "citation": {
+                    "l1_handle": "api://public.app_purchase_order/%7B%22id%22%3A%22po-new%22%7D@fx-20",
+                    "field_path": "row.updated_at",
+                    "digest": "277b64413884949e4ed1c652dddaca6598394ebff19476a91d6829a52de21e8f",
+                    "lineage": "gold_native_staging"
+                  },
+                  "authority_rank": null,
+                  "markings": []
+                }
+              }
+            ],
+            "fields": []
+          }
+        ],
+        "counts": {
+          "changed": 62,
+          "first_captured": 1,
+          "removed": 0,
+          "restamped": 1,
+          "first_captured_earlier": 1
+        },
+        "by_type": {
+          "AssemblyOrder": {
+            "changed": 61,
+            "first_captured": 0,
+            "removed": 0,
+            "restamped": 1
+          },
+          "PurchaseOrder": {
+            "changed": 1,
+            "first_captured": 1,
+            "removed": 0,
+            "restamped": 0
+          }
+        },
+        "basis": "captured versions compared on the values this reader may read; the systems' write stamps (bc_last_modified_at, fm_modified_at, portal_updated_at) never count as a change by themselves; portal_updated_at is bumped by the Portal ETL; new means created at or after since",
+        "gaps": [
+          {
+            "state": "unknown",
+            "reason": "not_captured_since",
+            "subject": "portal_api",
+            "detail": "the projection's last capture of portal_api is unknown, before the asked time: changes after it are not seen"
+          }
+        ],
+        "withheld": {
+          "properties": null,
+          "objects": null,
+          "reason": "marking_and_audience"
+        },
+        "meta": {
+          "schema_digest": "1f6aabe3e0f04701407711ec6ab6477458301099d5fb6cfdd808f5f1b5cefd69",
+          "as_known_at": "2099-01-25T00:00:00Z",
+          "freshness": [
+            {
+              "captured_at": null,
+              "completeness": "partial",
+              "lag_seconds": null,
+              "source": "portal_api",
+              "stale": false
+            }
+          ]
+        },
+        "completeness": {
+          "complete": false,
+          "truncated": true,
+          "reason": "page_cap",
+          "returned": 1,
+          "total": 63,
+          "next_cursor": "chg1:1:8e259f3335a0"
+        }
+      }
+    },
+    {
+      "name": "an_undeclared_type_is_refused",
+      "input": {
+        "since": "2099-01-15T00:00:00Z",
+        "object_types": [
+          "NoSuchType"
+        ]
+      },
+      "output": {
+        "error": {
+          "code": "unknown_object_type",
+          "message": "not declared: NoSuchType",
+          "hint": "plx.schema lists the object types"
+        }
+      }
+    }
+  ]
+}

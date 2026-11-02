@@ -197,6 +197,10 @@ class AskStream(unittest.TestCase):
         self.assertTrue(answer["facts"] and all(f["sources"] for f in answer["facts"]))
         self.assertTrue(answer["conflicts"][0]["values"][0]["trusted"])
         self.assertEqual(sum(1 for v in answer["conflicts"][0]["values"] if v["trusted"]), 1)
+        # what to ask next: a few questions about the answer's own record, never the question
+        self.assertTrue(1 <= len(answer["follow_ups"]) <= 3, answer["follow_ups"])
+        self.assertNotIn(answer["question"], answer["follow_ups"])
+        self.assertTrue(all(q.endswith("?") for q in answer["follow_ups"]))
 
     def test_hidden_items_are_counts_by_owner_only(self):
         client = signed_in()

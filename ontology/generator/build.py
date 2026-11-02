@@ -160,8 +160,10 @@ def generate(facts: Mapping[str, Any], link_contracts: Mapping[str, Any],
                 **({"value_storage": storage[name]} if name in storage else {}),
             }],
             "properties": properties,
-            **({"markings": sorted(overrides.domain_markings[rel["domain"]])}
-               if rel.get("domain") in overrides.domain_markings else {}),
+            **({"markings": marked} if (marked := sorted(
+                set(overrides.domain_markings.get(rel.get("domain"), ()))
+                | set(overrides.relation_markings.get((facts["source"], name),
+                                                      ((), {}))[0]))) else {}),
             "identity_keys": [{
                 "name": identity["key_name"],
                 "properties": [prop_of[(name, c)] for c in rel["key"]],
@@ -576,4 +578,15 @@ def _mark_by_name(overrides: Overrides, family: str,
                            if marking == rule.marking else
                            f"{marking}-marked {p['value_type']} (scoped_markings, in place of "
                            f"{rule.marking}): {rule.applied}")
+    # relation_markings' columns: stricter than their type, whatever their names
+    for (source, relation), (_type, columns) in overrides.relation_markings.items():
+        if source != family:
+            continue
+        for column, markings in columns.items():
+            p = by_prop.get((relation, column))
+            if p is None:
+                raise ValueError(f"markings.json relation_markings: {relation}.{column} "
+                                 "is no generated column")
+            p["markings"] = sorted(set(p.get("markings", ())) | set(markings))
+            report[f"{relation}.{column}"] = f"{'+'.join(markings)}-marked (relation_markings)"
     return report

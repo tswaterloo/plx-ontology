@@ -138,6 +138,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import sys
 import threading
@@ -149,7 +150,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from evals import runner
 from evals import score as scoring
+from operating import deep_investigation as deep
 from operating import eval_principal
+from operator_ui.session_journal import run_journal_scope
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "plx-eval-case-card-answers/v1"
@@ -468,6 +471,39 @@ def _with_source_documents(sets: Mapping[str, tuple[Mapping[str, Any], str]],
     return out
 
 
+# The live sources whose rows a card names as its records (``live_relations``): a served or
+# partly served Portal reporting API (Portal, FileMaker and Sage relations) or Business
+# Central reader. Their relation text names the relations (``public.app_purchase_order``,
+# ``sage.po_header``) or BC entity sets (``purchaseOrders``) the scorer matches a cited
+# row's relation against (``evals.score.evidence_claims``, path ``live_record``).
+LIVE_READERS = frozenset({"served", "partial"})
+_API_RELATION = re.compile(r"\b(?:public|sage)\.[a-z_][a-z0-9_]*\b")
+_BC_ENTITY_SET = re.compile(r"(?:^|,)\s*([a-z]+[A-Z][A-Za-z]*)\b")
+
+
+def live_relations(doc: Mapping[str, Any], card: Mapping[str, Any]) -> list[str]:
+    """The record relations of the live sources a card names (``LIVE_READERS``): each
+    ``public.*``/``sage.*`` relation of a Portal reporting API source as the mirror names
+    it, and each BC entity set a Business Central source lists first in a comma list
+    (``bc.<entitySet>``, as the BC capture names its rows' relation). A source no Workbench
+    reader serves, or of another system, names none."""
+    sources = {s.get("id"): s for s in doc.get("live_sources") or ()
+               if isinstance(s, Mapping)}
+    out: set[str] = set()
+    for sid in card.get("live_sources") or ():
+        source = sources.get(sid)
+        if source is None or source.get("reader") not in LIVE_READERS \
+                or not isinstance(source.get("relation"), str):
+            continue
+        system, relation = str(source.get("system") or ""), source["relation"]
+        if system in ("portal", "portal-reporting-api"):
+            out.update(_API_RELATION.findall(relation))
+        elif system in ("bc", "business-central"):
+            head = relation.split("(", 1)[0].split(";", 1)[0]
+            out.update(f"bc.{name}" for name in _BC_ENTITY_SET.findall(head))
+    return sorted(out)[:40]
+
+
 def _proposal_item(case: str, doc: Mapping[str, Any], sha: str, card: Mapping[str, Any],
                    number: int, *, now: str, anchor: Mapping[str, str] | None = None,
                    pins: Sequence[str] = ()) -> dict[str, Any]:
@@ -513,7 +549,9 @@ def _proposal_item(case: str, doc: Mapping[str, Any], sha: str, card: Mapping[st
         "label": {"status": "oracle_only",
                   "note": (f"PROPOSED {layer} card {card['id']} ({case}): a rubric, never "
                            f"gold. Criterion: {card.get('criterion', '')}")[:2000]},
-        "scoring": {"citations_required": True, "gap_honesty": True},
+        "scoring": {"citations_required": True, "gap_honesty": True,
+                    **({"live_relations": relations}
+                       if (relations := live_relations(doc, card)) else {})},
         "created_at": now}
 
 
@@ -1086,6 +1124,7 @@ def live_host(environ: Mapping[str, str], args: argparse.Namespace,
 
 # --------------------------------------------------------------------------- main
 
+@run_journal_scope
 def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          make_host: Callable[[], Any] | None = None,
          environ: Mapping[str, str] | None = None,
@@ -1113,7 +1152,13 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
                           "failing cards of an earlier run; the verifier never sets it)")
     run.add_argument("--budget-seconds", type=float, default=DEFAULT_BUDGET_SECONDS)
     run.add_argument("--timeout", type=int, default=300, help="one session's timeout")
-    run.add_argument("--max-turns", type=int, default=25)
+    run.add_argument("--max-turns", type=int, default=deep.MAX_TURNS)
+    run.add_argument("--session-budget", type=float, default=deep.SESSION_SECONDS,
+                     help="one session's deep-investigation budget in seconds, enforced by "
+                          "the tool gate as the app's Ask enforces it (0: none; --timeout "
+                          "stays the hard cap)")
+    run.add_argument("--max-steps", type=int, default=deep.MAX_STEPS,
+                     help="tool calls a session may make besides the answer gate's (0: none)")
     run.add_argument("--claude-bin", default="claude")
     run.add_argument("--model")
     run.add_argument("--reader-env", default=real.READER_ENV,
@@ -1133,6 +1178,8 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     args = parser.parse_args(argv)
     if args.per_case < 0:
         parser.error("--per-case must be 0 (every card) or a positive count")
+    from operator_ui.session_journal import isolate_journal
+    isolate_journal(args.work_dir / "journal")   # never the host's own journal
     picked = [part.strip() for part in args.items.split(",") if part.strip()]
     environ = os.environ if environ is None else environ
     injected = agent is not None
@@ -1162,8 +1209,10 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
         rows = None
         if not blocked:
             if agent is None:
-                agent = runner.ClaudeCodeAgent(binary=args.claude_bin, model=args.model,
-                                               timeout=args.timeout, max_turns=args.max_turns)
+                agent = runner.ClaudeCodeAgent(
+                    binary=args.claude_bin, model=args.model, timeout=args.timeout,
+                    max_turns=args.max_turns, budget_seconds=args.session_budget or None,
+                    max_steps=args.max_steps or None)
             order = {case: i for i, case in enumerate(chosen)}
             entries = sorted((r for r in compiled if r["case"] in order),
                              key=lambda r: order[r["case"]])

@@ -34,11 +34,11 @@
   },
   {
    "id": "RelBcPlxCustomerShipTos",
-   "description": "Generated not_served type: the BC entity set or API page plxCustomerShipTos (custom_api). No record is readable; a served value naming it is a plain reference, never a link.",
+   "description": "Generated not_served type: the BC entity set or API page plxCustomerShipTos (custom_api_captured). Held in the capture, never projected; a served value naming it is a plain reference, never a link.",
    "availability": {
     "state": "not_served",
-    "reason": "[custom_api] plxCustomerShipTos is an AL API page of a PLX extension, served under its own custom API route (api/<publisher>/<group>/<version>), not api/v2.0: the pinned api/v2.0 $metadata does not describe it and the Workbench's closed BC request grammar reads api/v2.0 only. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxCustomerShipTos.Page.al@52c9116f77ab:25).",
-    "upstream_ask": "workbench_grammar:plxCustomerShipTos"
+    "reason": "[custom_api_captured] plxCustomerShipTos is an AL API page of a PLX extension, captured whole from its own custom API route (api/plx/integration/v1.0, GET listings only); the pinned api/v2.0 $metadata does not describe it, so no type is generated: held in the capture, not projected. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxCustomerShipTos.Page.al@52c9116f77ab:25).",
+    "upstream_ask": "workbench_projection:plxCustomerShipTos"
    },
    "bindings": [],
    "properties": [],
@@ -62,8 +62,8 @@
    "description": "Generated not_served type: the BC entity set or API page plxPostedSalesInvoiceLines (custom_api). No record is readable; a served value naming it is a plain reference, never a link.",
    "availability": {
     "state": "not_served",
-    "reason": "[custom_api] plxPostedSalesInvoiceLines is an AL API page of a PLX extension, served under its own custom API route (api/<publisher>/<group>/<version>), not api/v2.0: the pinned api/v2.0 $metadata does not describe it and the Workbench's closed BC request grammar reads api/v2.0 only. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxPostedSalesInvoiceLines.Page.al@52c9116f77ab:20).",
-    "upstream_ask": "workbench_grammar:plxPostedSalesInvoiceLines"
+    "reason": "[custom_api] plxPostedSalesInvoiceLines is an AL API page of a PLX extension, served under its own custom API route (api/plx/integration/v1.0), not api/v2.0: that route's live $metadata (2026-11-01) does not list it and a listing answers 404, so the extension version carrying it is not published in this environment. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxPostedSalesInvoiceLines.Page.al@52c9116f77ab:20).",
+    "upstream_ask": "bc_publish:plxPostedSalesInvoiceLines"
    },
    "bindings": [],
    "properties": [],
@@ -87,8 +87,8 @@
    "description": "Generated not_served type: the BC entity set or API page plxPostedSalesInvoices (custom_api). No record is readable; a served value naming it is a plain reference, never a link.",
    "availability": {
     "state": "not_served",
-    "reason": "[custom_api] plxPostedSalesInvoices is an AL API page of a PLX extension, served under its own custom API route (api/<publisher>/<group>/<version>), not api/v2.0: the pinned api/v2.0 $metadata does not describe it and the Workbench's closed BC request grammar reads api/v2.0 only. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxPostedSalesInvoices.Page.al@52c9116f77ab:25).",
-    "upstream_ask": "workbench_grammar:plxPostedSalesInvoices"
+    "reason": "[custom_api] plxPostedSalesInvoices is an AL API page of a PLX extension, served under its own custom API route (api/plx/integration/v1.0), not api/v2.0: that route's live $metadata (2026-11-01) does not list it and a listing answers 404, so the extension version carrying it is not published in this environment. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxPostedSalesInvoices.Page.al@52c9116f77ab:25).",
+    "upstream_ask": "bc_publish:plxPostedSalesInvoices"
    },
    "bindings": [],
    "properties": [],
@@ -112,8 +112,8 @@
    "description": "Generated not_served type: the BC entity set or API page plxSalesReceivablesSetups (custom_api). No record is readable; a served value naming it is a plain reference, never a link.",
    "availability": {
     "state": "not_served",
-    "reason": "[custom_api] plxSalesReceivablesSetups is an AL API page of a PLX extension, served under its own custom API route (api/<publisher>/<group>/<version>), not api/v2.0: the pinned api/v2.0 $metadata does not describe it and the Workbench's closed BC request grammar reads api/v2.0 only. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxSalesReceivablesSetup.Page.al@52c9116f77ab:21).",
-    "upstream_ask": "workbench_grammar:plxSalesReceivablesSetups"
+    "reason": "[custom_api] plxSalesReceivablesSetups is an AL API page of a PLX extension, served under its own custom API route (api/plx/integration/v1.0), not api/v2.0: that route's live $metadata (2026-11-01) does not list it and a listing answers 404, so the extension version carrying it is not published in this environment. The Portal names it (plx-customer-portal:bc-extensions/plx-receipt-bridge/src/PlxSalesReceivablesSetup.Page.al@52c9116f77ab:21).",
+    "upstream_ask": "bc_publish:plxSalesReceivablesSetups"
    },
    "bindings": [],
    "properties": [],

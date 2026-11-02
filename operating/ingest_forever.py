@@ -92,6 +92,7 @@ MODE = "capture_clis"   # the host config's ``ingest.mode``
 DEFAULT_GRACE_SECONDS, MAX_GRACE_SECONDS = 180, 1800
 DEFAULT_TIMEOUT_SECONDS = 600   # a source whose CLI takes no budget
 MAX_BUDGET_SECONDS = 7200
+SHAREPOINT_VERIFY_SAMPLE = 500   # handles the SharePoint CLI's self-check resolves
 MAX_PARALLEL = 7   # capture children at once (``ingest.max_parallel``; default: one each)
 # Continuous mode (``Continuous``): a source that finished runs again this long after
 # (``min_interval_seconds`` of its section); a failed or blocked one waits twice as long
@@ -233,6 +234,10 @@ def _graph_argv(command: str) -> Callable[[Path, Mapping[str, Any]], list[str]]:
             args += ["--principal", options["principal"]]
         if options.get("named_originals") is True:   # case originals' items first
             args += ["--named-originals"]
+        if command == "sharepoint-capture":
+            # the post-run self-check samples its handles: unsampled, it outran the grace
+            # every cycle on the whole estate (child_timeout)
+            args += ["--verify-sample", str(SHAREPOINT_VERIFY_SAMPLE)]
         return args + _budget(options)
     return argv
 
@@ -844,21 +849,32 @@ def duplicates(state: Path, spec: SourceSpec, sources: Mapping[str, SourceSpec],
 
 # ------------------------------------------------------------------ the host's ingest mode
 
+# ``ingest.build_inputs``: ``live`` (a build opens the capture stores themselves, so no
+# capture of a store it reads runs beside it: ``Continuous`` build exclusion) or
+# ``snapshot`` (a build opens a consistent copy of each store made when it starts, so every
+# capture keeps running beside it and the build runs on its own thread:
+# ``operating.host.Host.snapshot_inputs``).
+BUILD_INPUTS = ("live", "snapshot")
+
+
 def ingest_settings(value: Any) -> dict[str, Any]:
     """The host config's ``ingest`` section: ``mode`` :data:`MODE`, ``grace_seconds``
-    (the time a child gets past its budget) and ``max_parallel`` (capture children at
+    (the time a child gets past its budget), ``max_parallel`` (capture children at
     once, 1 to :data:`MAX_PARALLEL`; absent: one per configured source, at most
-    :data:`MAX_PARALLEL`); anything else is refused."""
+    :data:`MAX_PARALLEL`) and ``build_inputs`` (:data:`BUILD_INPUTS`, default ``live``);
+    anything else is refused."""
     if not isinstance(value, Mapping) or set(value) - {"mode", "grace_seconds",
-                                                       "max_parallel"} \
-            or value.get("mode") != MODE:
+                                                       "max_parallel", "build_inputs"} \
+            or value.get("mode") != MODE \
+            or value.get("build_inputs", "live") not in BUILD_INPUTS:
         raise IngestError("ingest_config_invalid")
     grace = value.get("grace_seconds", DEFAULT_GRACE_SECONDS)
     parallel = value.get("max_parallel")
     if not _number(grace, 1, MAX_GRACE_SECONDS) or parallel is not None and (
             type(parallel) is not int or not 1 <= parallel <= MAX_PARALLEL):
         raise IngestError("ingest_config_invalid")
-    return {"mode": MODE, "grace_seconds": grace, "max_parallel": parallel}
+    return {"mode": MODE, "grace_seconds": grace, "max_parallel": parallel,
+            "build_inputs": value.get("build_inputs", "live")}
 
 
 def max_parallel(settings: Mapping[str, Any], configured: int) -> int:
@@ -981,7 +997,11 @@ class Continuous:
     killed; each capture resumes from its own cursor next time, and a stopped run is
     never recorded as a failure), then the outcomes finished so far are refreshed
     (``refresh(outcomes, reason, exclusion)``) and :meth:`run` returns.
-    ``max_refreshes`` (tests, ``serve --max-cycles``): stop after that many refreshes."""
+    ``max_refreshes`` (tests, ``serve --max-cycles``): stop after that many refreshes.
+
+    ``background`` (``ingest.build_inputs`` ``snapshot``): a refresh runs on its own
+    thread while this one goes on starting and reaping captures; one refresh at a time
+    (the sources finishing meanwhile go into the next), and a stop waits for it."""
 
     def __init__(self, table: Mapping[str, SourceSpec],
                  sections: Mapping[str, Mapping[str, Any]], state: Path,
@@ -992,7 +1012,8 @@ class Continuous:
                  cwd: Path = ROOT, max_refreshes: int = 0,
                  monotonic: Callable[[], float] = time.monotonic,
                  wait_idle: Callable[[float], Any] = time.sleep,
-                 build_reads: Callable[[], Sequence[Path]] = tuple) -> None:
+                 build_reads: Callable[[], Sequence[Path]] = tuple,
+                 background: bool = False) -> None:
         self.table, self.state, self.environ = table, state, environ
         self.sections = {name: sections[name] for name in table if name in sections}
         self.grace, self.children, self.cwd = grace, children, cwd
@@ -1001,6 +1022,7 @@ class Continuous:
         self.max_refreshes, self.monotonic, self.wait_idle = (max_refreshes, monotonic,
                                                               wait_idle)
         self.build_reads = build_reads
+        self.background = background
 
     def _interval(self, name: str, failures: int) -> float:
         base = self.sections[name].get("min_interval_seconds", DEFAULT_MIN_INTERVAL_SECONDS)
@@ -1032,6 +1054,17 @@ class Continuous:
         waited_for: set[str] = set()
         held_back: set[str] = set()
         pool = ThreadPoolExecutor(max_workers=self.parallel, thread_name_prefix="ingest")
+        build: threading.Thread | None = None
+        failed: list[BaseException] = []
+
+        def building() -> bool:
+            return build is not None and build.is_alive()
+
+        def refresh_on_thread(*args: Any) -> None:
+            try:
+                self.refresh(*args)
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the scheduler
+                failed.append(exc)
 
         def finished(name: str, result: Mapping[str, Any]) -> None:
             if result.get("error_code") == STOPPED:
@@ -1067,9 +1100,13 @@ class Continuous:
                             _guarded_run, self.table[name], self.sections[name],
                             self.state, self.environ, grace=self.grace, cwd=self.cwd,
                             children=self.children, cancel=cancel)
+                if failed:
+                    raise failed.pop()
                 if running:
                     wait(list(running.values()), timeout=POLL_SECONDS,
                          return_when=FIRST_COMPLETED)
+                elif building():
+                    build.join(POLL_SECONDS)
                 elif reason is None and not pending:
                     nearest = min(due.values()) - self.monotonic()
                     self.wait_idle(max(0.01, min(POLL_SECONDS, nearest)))
@@ -1080,7 +1117,7 @@ class Continuous:
                     if waited_since is None:
                         waited_since = self.monotonic()
                     waited_for.update(blocking)
-                elif pending:
+                elif pending and not building():
                     batch, pending = pending, {}
                     exclusion = {
                         "exclusive": sorted(set(batch) & self.exclusive()),
@@ -1089,15 +1126,31 @@ class Continuous:
                         else round(self.monotonic() - waited_since, 3),
                         "held_back": sorted(held_back)}
                     waited_since, waited_for, held_back = None, set(), set()
-                    self.refresh(batch, reason, exclusion)
+                    if self.background:
+                        # Its inputs are snapshots: captures go on while it builds; the
+                        # sources finishing meanwhile wait for the next refresh.
+                        # A daemon: a signal that ends this process ends the build too,
+                        # which leaves the committed generation served as it was.
+                        build = threading.Thread(target=refresh_on_thread, name="ingest-build",
+                                                 args=(batch, reason, exclusion), daemon=True)
+                        build.start()
+                    else:
+                        self.refresh(batch, reason, exclusion)
                     refreshes += 1
                     if self.max_refreshes and refreshes >= self.max_refreshes:
                         reason = reason or "max_refreshes"
-                if reason is not None and not running and not pending:
+                if reason is not None and not running and not pending and not building():
                     break
+        except BaseException:
+            build = None   # a signal or failure: the build is not waited for
+            raise
         finally:
             cancel.set()
             pool.shutdown(wait=True)   # every child stopped and reaped before returning
+            if build is not None:
+                build.join()   # a stop waits for the build: the next one starts from it
+        if failed:
+            raise failed.pop()
         return {"state": "stopped", "reason": reason, "refreshes": refreshes,
                 "runs": {name: runs[name] for name in self.sections},
                 "stopped_sources": sorted(set(stopped))}

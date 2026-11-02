@@ -170,6 +170,54 @@ class SameFactDifferentValues(unittest.TestCase):
         self.assertEqual(by_source(card)[BC_PO]["as_of"], "2026-10-01T00:00:00+00:00")
 
 
+class NotADisagreement(unittest.TestCase):
+    """Rounding, a currency spelling, each system's own number and the Portal's unit-price
+    total are never "the sources disagree"; a real difference still is."""
+
+    BC = "bc://production/c/purchaseOrders/p1@e"
+    PORTAL = "api://public.app_purchase_order/%7B%22id%22%3A%22fm-po-1%22%7D@v"
+
+    def resolve(self, field, left, right, paths=(None, None), right_handle=None):
+        return ac.resolve(field, [
+            ac.Reading(value=left, handle=self.BC, field_path=paths[0]),
+            ac.Reading(value=right, handle=right_handle or self.PORTAL, field_path=paths[1])])
+
+    def test_differences_that_are_no_disagreement(self):
+        self.assertIsNone(self.resolve("ordered boxes", "1257", "1257.1666666666667"))
+        self.assertIsNone(self.resolve("ordered boxes", "1257.17", "1257.1666666666667"))
+        self.assertIsNone(self.resolve("currency", "CAD", "CAD$"))
+        self.assertIsNone(self.resolve("po number", "PO100095", "PO#4442"))
+        # the Portal's total_cost adds unit prices with tax: 375.04926 is (84.3 + 218.97
+        # + 28.632) x 1.13, BC's 827.11 is quantity x price; not the same figure
+        self.assertIsNone(self.resolve("total cost", "827.11", "375.04926",
+                                       ("row.totalAmountIncludingTax", "row.total_cost")))
+
+    def test_real_differences_still_disagree(self):
+        for field, left, right in (("ordered boxes", "1200", "1257.17"),
+                                   ("ordered boxes", "0", "0.4"),
+                                   ("currency", "USD", "CAD$"),
+                                   ("total cost", "827.11", "900")):
+            with self.subTest(field=field, left=left, right=right):
+                self.assertIsNotNone(self.resolve(field, left, right))
+        # two numbers inside one system are two numbers
+        self.assertIsNotNone(self.resolve("po number", "PO100095", "PO100096",
+                                          right_handle=self.BC + "2"))
+        # rounding is tolerated within one currency only
+        found = ac.resolve("total", [
+            ac.Reading(value="1000", handle=self.BC, currency="CAD"),
+            ac.Reading(value="1000.4", handle=self.PORTAL, currency="USD")])
+        self.assertIsNotNone(found)
+        self.assertIsNone(ac.resolve("total", [
+            ac.Reading(value="1000", handle=self.BC, currency="CAD"),
+            ac.Reading(value="1000.4", handle=self.PORTAL, currency="CAD$")]))
+        # a lot code is shared across systems: a difference is real
+        self.assertIsNotNone(self.resolve("lot number", "L-1", "L-2"))
+
+    def test_a_long_decimal_is_shown_as_a_person_reads_it(self):
+        found = self.resolve("ordered boxes", "1200", "1257.1666666666667")
+        self.assertEqual([v["value"] for v in found["values"]], ["1200", "1257.17"])
+
+
 class DocumentContradictsItself(unittest.TestCase):
     def test_same_label_two_values_cites_both_places(self):
         parts = [("page 1", "Purchase order 4410\nDelivery date: 2026-11-06\nQty: 120"),

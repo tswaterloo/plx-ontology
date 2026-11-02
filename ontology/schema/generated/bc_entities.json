@@ -8,6 +8,187 @@
  },
  "object_types": [
   {
+   "id": "RelBcBankAccounts",
+   "description": "BC API v2.0 entity set bankAccounts (entity type bankAccount), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.bank_accounts",
+     "source": "bc",
+     "relation": "bankAccounts",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet bankAccounts (company scope, entity type bankAccount) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "bankAccount Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "number",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "displayName",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ]
+    },
+    {
+     "name": "bank_account_number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "bankAccountNumber",
+       "parser": "as_is"
+      }
+     ],
+     "markings": [
+      "finance",
+      "l5"
+     ]
+    },
+    {
+     "name": "blocked",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "blocked",
+       "parser": "boolean_text"
+      }
+     ]
+    },
+    {
+     "name": "currency_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "currencyCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "currency_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "currencyId",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "iban",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "iban",
+       "parser": "as_is"
+      }
+     ],
+     "markings": [
+      "finance",
+      "l5"
+     ]
+    },
+    {
+     "name": "intercompany_enabled",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "gen.bc.bank_accounts",
+       "path": "intercompanyEnabled",
+       "parser": "boolean_text"
+      }
+     ]
+    }
+   ],
+   "markings": [
+    "finance"
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "bankAccount Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet bankAccounts (company scope, entity type bankAccount) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+    }
+   ]
+  },
+  {
    "id": "RelBcCompanyInformation",
    "description": "BC API v2.0 entity set companyInformation (entity type companyInformation), one record per company and id; generated from the pinned $metadata.",
    "availability": {
@@ -557,6 +738,456 @@
    ]
   },
   {
+   "id": "RelBcDimensionValues",
+   "description": "BC API v2.0 entity set dimensionValues (entity type dimensionValue), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.dimension_values",
+     "source": "bc",
+     "relation": "dimensionValues",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet dimensionValues (company scope, entity type dimensionValue) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "dimensionValue Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "code",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "dimension_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "dimensionId",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "displayName",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "consolidation_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "consolidationCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "gen.bc.dimension_values",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "dimensionValue Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet dimensionValues (company scope, entity type dimensionValue) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+    }
+   ]
+  },
+  {
+   "id": "RelBcDimensions",
+   "description": "BC API v2.0 entity set dimensions (entity type dimension), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.dimensions",
+     "source": "bc",
+     "relation": "dimensions",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet dimensions (company scope, entity type dimension) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "dimension Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimensions",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimensions",
+       "path": "code",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimensions",
+       "path": "displayName",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "consolidation_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.dimensions",
+       "path": "consolidationCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "gen.bc.dimensions",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "dimension Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet dimensions (company scope, entity type dimension) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+    }
+   ]
+  },
+  {
+   "id": "RelBcFixedAssets",
+   "description": "BC API v2.0 entity set fixedAssets (entity type fixedAsset), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.fixed_assets",
+     "source": "bc",
+     "relation": "fixedAssets",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet fixedAssets (company scope, entity type fixedAsset) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "fixedAsset Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "number",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "displayName",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "fixed_asset_location_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "fixedAssetLocationCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "fixed_asset_location_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "fixedAssetLocationId",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "class_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "classCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "subclass_code",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "subclassCode",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "blocked",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "blocked",
+       "parser": "boolean_text"
+      }
+     ]
+    },
+    {
+     "name": "serial_number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "serialNumber",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "employee_number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "employeeNumber",
+       "parser": "as_is"
+      }
+     ],
+     "markings": [
+      "pii"
+     ]
+    },
+    {
+     "name": "employee_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "employeeId",
+       "parser": "as_is"
+      }
+     ],
+     "markings": [
+      "pii"
+     ]
+    },
+    {
+     "name": "under_maintenance",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "underMaintenance",
+       "parser": "boolean_text"
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "gen.bc.fixed_assets",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "fixedAsset Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet fixedAssets (company scope, entity type fixedAsset) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+    }
+   ]
+  },
+  {
    "id": "RelBcItemCategories",
    "description": "BC API v2.0 entity set itemCategories (entity type itemCategory), one record per company and id; generated from the pinned $metadata.",
    "availability": {
@@ -899,6 +1530,110 @@
      "path": "portal/scripts/business-central/ensure-ownership-locations.ts",
      "commit": "52c9116f77ab",
      "lines": "62"
+    }
+   ]
+  },
+  {
+   "id": "RelBcProjects",
+   "description": "BC API v2.0 entity set projects (entity type project), one record per company and id; generated from the pinned $metadata.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "gen.bc.projects",
+     "source": "bc",
+     "relation": "projects",
+     "key": [
+      "id"
+     ],
+     "lineage": {
+      "from_capture": "bc_company"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "EntitySet projects (company scope, entity type project) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "project Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ],
+     "note": "Lineage bc_<book> of the capture company; record key <company>/<id> (integrations/bc_read.py BcCapture)."
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.projects",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "number",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.projects",
+       "path": "number",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "display_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "gen.bc.projects",
+       "path": "displayName",
+       "parser": "as_is"
+      }
+     ]
+    },
+    {
+     "name": "last_modified_date_time",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "gen.bc.projects",
+       "path": "lastModifiedDateTime",
+       "parser": "iso_timestamp"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "project Key id (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "workbench_code",
+     "path": "ontology/schema/generated/meta/bc_metadata.json",
+     "note": "EntitySet projects (company scope, entity type project) (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
     }
    ]
   },
@@ -2480,6 +3215,37 @@
    ]
   },
   {
+   "id": "PurchaseCreditMemo.dimension_value",
+   "from": "PurchaseCreditMemo",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "purchase_credit_memos",
+   "cardinality": "N:1",
+   "description": "purchaseCreditMemos.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.purchase_credit_memos",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "purchaseCreditMemo -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "PurchaseCreditMemoLine.location",
    "from": "PurchaseCreditMemoLine",
    "to": "RelBcLocations",
@@ -2538,6 +3304,37 @@
        "kind": "workbench_code",
        "path": "ontology/schema/generated/meta/bc_metadata.json",
        "note": "purchaseCreditMemoLine -> unitOfMeasure: NavigationProperty unitOfMeasure ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PurchaseInvoice.dimension_value",
+   "from": "PurchaseInvoice",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "purchase_invoices",
+   "cardinality": "N:1",
+   "description": "purchaseInvoices.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.purchase_invoices",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "purchaseInvoice -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
       }
      ]
     }
@@ -2608,6 +3405,37 @@
    ]
   },
   {
+   "id": "PurchaseOrder.dimension_value",
+   "from": "PurchaseOrder",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "purchase_orders",
+   "cardinality": "N:1",
+   "description": "purchaseOrders.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.purchase_orders",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "purchaseOrder -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "PurchaseOrderLine.location",
    "from": "PurchaseOrderLine",
    "to": "RelBcLocations",
@@ -2666,6 +3494,38 @@
        "kind": "workbench_code",
        "path": "ontology/schema/generated/meta/bc_metadata.json",
        "note": "purchaseOrderLine -> unitOfMeasure: NavigationProperty unitOfMeasure ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "RelBcDimensionValues.dimension",
+   "from": "RelBcDimensionValues",
+   "to": "RelBcDimensions",
+   "name": "dimension",
+   "reverse_name": "dimension_values",
+   "cardinality": "N:1",
+   "description": "dimensionValues.dimensionId = dimensions.id (contained dimension.dimensionValues, the line names its header by dimensionId); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.bc.dimension_values",
+     "to_binding": "gen.bc.dimensions",
+     "pairs": [
+      {
+       "from": "dimensionId",
+       "to": "id",
+       "compare": "identifier",
+       "identifier_kind": "bc_system_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "dimensionValue -> dimension: contained dimension.dimensionValues, the line names its header by dimensionId (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
       }
      ]
     }
@@ -2864,6 +3724,68 @@
    ]
   },
   {
+   "id": "RelBcSalesQuotes.dimension_value",
+   "from": "RelBcSalesQuotes",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "sales_quotes",
+   "cardinality": "N:1",
+   "description": "salesQuotes.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "gen.bc.sales_quotes",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesQuote -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SalesCreditMemo.dimension_value",
+   "from": "SalesCreditMemo",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "sales_credit_memos",
+   "cardinality": "N:1",
+   "description": "salesCreditMemos.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.sales_credit_memos",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesCreditMemo -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "SalesCreditMemoLine.location",
    "from": "SalesCreditMemoLine",
    "to": "RelBcLocations",
@@ -2928,6 +3850,37 @@
    ]
   },
   {
+   "id": "SalesInvoice.dimension_value",
+   "from": "SalesInvoice",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "sales_invoices",
+   "cardinality": "N:1",
+   "description": "salesInvoices.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.sales_invoices",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesInvoice -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "SalesInvoiceLine.location",
    "from": "SalesInvoiceLine",
    "to": "RelBcLocations",
@@ -2986,6 +3939,37 @@
        "kind": "workbench_code",
        "path": "ontology/schema/generated/meta/bc_metadata.json",
        "note": "salesInvoiceLine -> unitOfMeasure: NavigationProperty unitOfMeasure ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "SalesOrder.dimension_value",
+   "from": "SalesOrder",
+   "to": "RelBcDimensionValues",
+   "name": "dimension_value",
+   "reverse_name": "sales_orders",
+   "cardinality": "N:1",
+   "description": "salesOrders.shortcutDimension1Code = dimensionValues.code (NavigationProperty dimensionValue ReferentialConstraint); compared within one BC company.",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "bc.sales_orders",
+     "to_binding": "gen.bc.dimension_values",
+     "pairs": [
+      {
+       "from": "shortcutDimension1Code",
+       "to": "code",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/schema/generated/meta/bc_metadata.json",
+       "note": "salesOrder -> dimensionValue: NavigationProperty dimensionValue ReferentialConstraint (pinned $metadata, evidence_mode live-capture, sha256 09a82605df00)"
       }
      ]
     }

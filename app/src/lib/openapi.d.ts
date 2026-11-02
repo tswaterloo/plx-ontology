@@ -80,6 +80,69 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/briefing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Briefing
+         * @description Your briefing: the events routed to you that you may see, ranked by impact; the
+         *     top ones each with why, a suggested next action and how we know, every other one
+         *     counted in its type's group; each check's state; and a preview of the daily
+         *     digest (never sent). ``view=since_visit``: only what is new since your last visit.
+         */
+        get: operations["briefing_api_briefing_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/briefing/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Briefing Items
+         * @description One event type's items of your briefing, a page at a time (a group's "+N more").
+         */
+        get: operations["briefing_items_api_briefing_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/briefing/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Briefing Seen
+         * @description Mark your briefing seen now: the next "since your last visit" starts here.
+         */
+        post: operations["briefing_seen_api_briefing_seen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/feedback": {
         parameters: {
             query?: never;
@@ -106,6 +169,27 @@ export type paths = {
         };
         /** Home */
         get: operations["home_api_home_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/late": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Late List
+         * @description Every late purchase order you may see, a page at a time, longest late first
+         *     (Home shows the first ones: "show all").
+         */
+        get: operations["late_list_api_late_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -206,6 +290,11 @@ export type components = {
             access_label: string | null;
             /** Answer Id */
             answer_id: string;
+            /**
+             * Assistant Unavailable
+             * @description Why the assistant could not work the question (its usage limit, its sign-in, its time limit or an error), in words; the answer then shows what the records read without it show. Null when it ran.
+             */
+            assistant_unavailable?: string | null;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
             /** Conversation Id */
@@ -219,10 +308,20 @@ export type components = {
             direct_answer: string;
             /** Facts */
             facts?: components["schemas"]["Fact"][];
+            /**
+             * Follow Ups
+             * @description Up to three questions to ask next, built only from this answer's own records and what it could not confirm (optional: older clients ignore it).
+             */
+            follow_ups?: string[];
             freshness: components["schemas"]["Freshness"];
             hidden: components["schemas"]["Hidden"];
             /** Latency Ms */
             latency_ms: number;
+            /**
+             * List Total
+             * @description When the answer lists only the first of a longer list (the late purchase orders): the whole list's size; the app offers 'show all' (GET /api/late).
+             */
+            list_total?: number | null;
             /** Not Found */
             not_found?: components["schemas"]["NotFound"][];
             /**
@@ -294,6 +393,300 @@ export type components = {
             mode: "entra" | "dev" | "mock";
             /** Sign In Available */
             sign_in_available: boolean;
+        };
+        /**
+         * Briefing
+         * @description Your briefing: the events routed to you that you may see, ranked; the top items one
+         *     by one and every other one in its type's group; each check's state; a preview of the
+         *     daily digest. Suggestions only; nothing is sent or written.
+         */
+        Briefing: {
+            /**
+             * Acknowledged
+             * @default 0
+             */
+            acknowledged: number;
+            /** As Of */
+            as_of?: string | null;
+            /** Checks */
+            checks?: components["schemas"]["BriefingCheck"][];
+            /** Complete */
+            complete: boolean;
+            /** Count */
+            count: number;
+            /**
+             * Counts Exact
+             * @description False: the read stopped at its cap and the counts are 'at least'.
+             * @default true
+             */
+            counts_exact: boolean;
+            /** Departments */
+            departments?: string[];
+            /**
+             * Digest Preview
+             * @description The daily digest text this reader would get. Preview only: never sent.
+             */
+            digest_preview: string;
+            /**
+             * Digest Sent
+             * @default false
+             * @constant
+             */
+            digest_sent: false;
+            /** Groups */
+            groups?: components["schemas"]["BriefingGroup"][];
+            /**
+             * Hidden
+             * @description Events for your teams in places you can't open: counted, never named.
+             */
+            hidden?: number | null;
+            /**
+             * Hidden By Type
+             * @description The hidden count per event type (types whose policy gives no count are absent).
+             */
+            hidden_by_type?: {
+                [key: string]: number;
+            };
+            /**
+             * Items
+             * @description The top items.
+             */
+            items?: components["schemas"]["BriefingItem"][];
+            /** Last Visit */
+            last_visit?: string | null;
+            /**
+             * Late Total
+             * @description Late purchase orders: Home's count and rule.
+             */
+            late_total?: number | null;
+            /**
+             * More
+             * @default false
+             */
+            more: boolean;
+            /** New Since Visit */
+            new_since_visit: number;
+            /**
+             * Other Teams
+             * @description Events you may see routed to other teams.
+             */
+            other_teams: number;
+            /** Rank Basis */
+            rank_basis: string;
+            /** Routing Basis */
+            routing_basis: string;
+            /**
+             * Since Visit
+             * @description Only what is new since your last visit.
+             * @default false
+             */
+            since_visit: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "read" | "not_configured" | "unavailable";
+            /**
+             * Test Records Hidden
+             * @description How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.
+             */
+            test_records_hidden?: string | null;
+            /**
+             * Today
+             * @description Today in one line: what the latest check (or your last visit) found new, worst first, else what is still open.
+             * @default
+             */
+            today: string;
+            /** Types */
+            types?: components["schemas"]["BriefingEventType"][];
+        };
+        /**
+         * BriefingCheck
+         * @description One check behind the event types, as this run left it: never a silent gap.
+         */
+        BriefingCheck: {
+            /** Check */
+            check: string;
+            /** Label */
+            label: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "complete" | "partial" | "not_checked" | "failed";
+            /**
+             * Words
+             * @description e.g. 'vendor replies: not checked this run'.
+             */
+            words: string;
+        };
+        /**
+         * BriefingEventType
+         * @description One event type: its checks' state this run and whether a recorded run over this data
+         *     has found one of this type.
+         */
+        BriefingEventType: {
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            /** First Found */
+            first_found?: string | null;
+            /**
+             * Found Live
+             * @description Null where that is withheld.
+             */
+            found_live?: boolean | null;
+            /** Label */
+            label: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "complete" | "partial" | "not_checked" | "failed";
+            /** Words */
+            words: string;
+        };
+        /**
+         * BriefingGroup
+         * @description Every item of one event type in the briefing: its count, and how many of those are
+         *     shown among the top items; the rest open as a list (``/api/briefing/items``).
+         */
+        BriefingGroup: {
+            /** Acknowledged */
+            acknowledged: number;
+            /** Count */
+            count: number;
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            /** In Top */
+            in_top: number;
+            /** Label */
+            label: string;
+            /** New Since Visit */
+            new_since_visit: number;
+        };
+        /**
+         * BriefingItem
+         * @description One event routed to this reader, as its own grant shows it.
+         */
+        BriefingItem: {
+            /**
+             * Acknowledged
+             * @default false
+             */
+            acknowledged: boolean;
+            /** @description Money involved: a cited figure this reader may open; null otherwise. When amount_suspect is set it is NOT a fact: show the reason, never the figure. */
+            amount?: components["schemas"]["Money"] | null;
+            /**
+             * Amount Basis
+             * @description What the amount is: total_cost, total_amount, loss, margin_at_stake; or, never ranked: unit_price_sum (a Portal total adding unit prices), portal_lines_unpriced, not_checked_against_lines.
+             */
+            amount_basis?: string | null;
+            /**
+             * Amount Disagree
+             * @description The total and its own lines disagree: both shown, neither ranked by.
+             * @default false
+             */
+            amount_disagree: boolean;
+            /**
+             * Amount Suspect
+             * @description Why the source's total looks wrong (suspect source data); never ranked by.
+             */
+            amount_suspect?: string | null;
+            /**
+             * Days
+             * @description Days late, slipped, waiting or to expiry, between cited dates.
+             */
+            days?: number | null;
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            /**
+             * Evidence
+             * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
+             * @default fixture-only
+             * @enum {string}
+             */
+            evidence: "live" | "fixture-only";
+            /** First Seen */
+            first_seen?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @description The event type in words, e.g. 'Late purchase order'.
+             */
+            label: string;
+            /** @description What its lines sum to, when they disagree and this reader may open every line. */
+            lines_sum?: components["schemas"]["Money"] | null;
+            /** New Since Visit */
+            new_since_visit: boolean;
+            /** New This Generation */
+            new_this_generation: boolean;
+            next_action: components["schemas"]["NextAction"];
+            /** Object Id */
+            object_id: string;
+            /** Object Type */
+            object_type: string;
+            /** Open Url */
+            open_url: string;
+            /** Orders Affected */
+            orders_affected?: number | null;
+            /** Rank */
+            rank: number;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * Subject Label
+             * @description The record's display label for this reader.
+             */
+            subject_label: string;
+            /**
+             * Summary
+             * @description What happened; every date and figure is cited.
+             */
+            summary: string;
+            /** @description How we know, read as this reader (top items only). */
+            trail?: components["schemas"]["EvidenceTrail"] | null;
+            /** Why */
+            why?: string | null;
+        };
+        /**
+         * BriefingItems
+         * @description One event type's items of your briefing past the top ones, a page at a time (the
+         *     group's "+N more": never the top items again).
+         */
+        BriefingItems: {
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            /** Items */
+            items?: components["schemas"]["BriefingItem"][];
+            /**
+             * More
+             * @default false
+             */
+            more: boolean;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /** BriefingSeen */
+        BriefingSeen: {
+            /** At */
+            at?: string | null;
+            /** Ok */
+            ok: boolean;
         };
         /** Candidate */
         Candidate: {
@@ -423,6 +816,75 @@ export type components = {
             per_unit: string | null;
             /** Sources */
             sources?: components["schemas"]["Source"][];
+        };
+        /**
+         * CustomerAmount
+         * @description A customer's total over a period, in one currency, from its own cited records.
+         */
+        CustomerAmount: {
+            /**
+             * Count
+             * @description The records summed.
+             */
+            count: number;
+            /**
+             * Label
+             * @description What is summed, e.g. 'Invoiced (excluding tax)'.
+             */
+            label: string;
+            money: components["schemas"]["Money"];
+            /**
+             * Period
+             * @description e.g. 'last 12 months (since 2025-11-01)'.
+             */
+            period: string;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * System
+             * @enum {string}
+             */
+            system: "BC" | "Portal" | "Sage" | "FileMaker" | "Email" | "Teams" | "File" | "MC";
+        };
+        /**
+         * CustomerSummary
+         * @description What a customer's own record links to, read as the reader: revenue per period and
+         *     currency, open and recent orders, contacts where captured, and its copies in other
+         *     systems; each figure with its sources. What could not be established is named.
+         */
+        CustomerSummary: {
+            /**
+             * Also In
+             * @description The same customer's record in another system, as the projection links them.
+             */
+            also_in?: components["schemas"]["ObjectRef"][];
+            /** Contacts */
+            contacts?: components["schemas"]["Person"][];
+            /** Not Established */
+            not_established?: string[];
+            /** Open List */
+            open_list?: components["schemas"]["OrderRow"][];
+            /** Open Orders */
+            open_orders?: number | null;
+            /**
+             * Orders At Least
+             * @description When the total could not be counted: the orders read, at least this many (shown as 'n+'); never a capped count stated as exact.
+             */
+            orders_at_least?: number | null;
+            /**
+             * Orders Total
+             * @description Every order linked to the record, counted over the whole set.
+             */
+            orders_total?: number | null;
+            /** Recent Orders */
+            recent_orders?: components["schemas"]["OrderRow"][];
+            /** Revenue */
+            revenue?: components["schemas"]["CustomerAmount"][];
+            /**
+             * Same Name
+             * @description Other customers of the same name this reader may see (copies of this one left out).
+             */
+            same_name?: components["schemas"]["ObjectRef"][];
         };
         /** DevLoginRequest */
         DevLoginRequest: {
@@ -712,8 +1174,41 @@ export type components = {
             /** Sources */
             sources?: components["schemas"]["Source"][];
         };
+        /**
+         * LateList
+         * @description Every late purchase order this reader may see, a page at a time, longest late first
+         *     (Home and the late-list answer show the first ones; "show all" pages the rest).
+         */
+        LateList: {
+            /** As Of */
+            as_of?: string | null;
+            /** Items */
+            items?: components["schemas"]["LatePo"][];
+            /**
+             * More
+             * @default false
+             */
+            more: boolean;
+            /**
+             * Next Offset
+             * @description Where the next page starts: past every order this page read, shown or left out (stable paging).
+             * @default 0
+             */
+            next_offset: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
         /** LatePo */
         LatePo: {
+            /** @description The order's total in its own currency, when this reader may open it. */
+            amount?: components["schemas"]["Money"] | null;
+            /**
+             * Amount Suspect
+             * @description Why the total is suspect (shown as a check, never as fact).
+             */
+            amount_suspect?: string | null;
             /** Days Late */
             days_late?: number | null;
             /** Due Date */
@@ -832,6 +1327,11 @@ export type components = {
              * @enum {string}
              */
             status: "read" | "not_configured" | "unavailable";
+            /**
+             * Test Records Hidden
+             * @description How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.
+             */
+            test_records_hidden?: string | null;
         };
         /** NextAction */
         NextAction: {
@@ -872,8 +1372,16 @@ export type components = {
              * @description 'Viewing with full-read access' when served under the reader's declared full-read grant.
              */
             access_label?: string | null;
+            /**
+             * Complete
+             * @description False on a quick first read (?quick=1): the record, its timeline and links without the checks (lateness, landed cost, people, how we know), which the full read adds.
+             * @default true
+             */
+            complete: boolean;
             /** Conflicts */
             conflicts?: components["schemas"]["Conflict"][];
+            /** @description A customer's revenue, orders and contacts (customers only). */
+            customer?: components["schemas"]["CustomerSummary"] | null;
             /** Facts */
             facts?: components["schemas"]["Fact"][];
             freshness: components["schemas"]["Freshness"];
@@ -952,6 +1460,22 @@ export type components = {
             order: components["schemas"]["ObjectRef"];
             /** @default null */
             revenue: components["schemas"]["Money"] | null;
+        };
+        /** OrderRow */
+        OrderRow: {
+            amount?: components["schemas"]["Money"] | null;
+            /** Date */
+            date?: string | null;
+            /** Label */
+            label: string;
+            /** Object Id */
+            object_id: string;
+            /** Open Url */
+            open_url: string;
+            /** Sources */
+            sources?: components["schemas"]["Source"][];
+            /** Status */
+            status?: string | null;
         };
         /** Person */
         Person: {
@@ -1091,6 +1615,11 @@ export type components = {
             ranking: string | null;
             /** @default null */
             revenue: components["schemas"]["Money"] | null;
+            /**
+             * Test Records Hidden
+             * @description How many test or placeholder records were left out, in words ('2 test records hidden'); null for none.
+             */
+            test_records_hidden?: string | null;
             /**
              * Verdict
              * @description Stated only when every invoiced order of the period has a checked margin; null otherwise.
@@ -1518,6 +2047,118 @@ export interface operations {
             };
         };
     };
+    briefing_api_briefing_get: {
+        parameters: {
+            query?: {
+                view?: "all" | "since_visit";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Briefing"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    briefing_items_api_briefing_items_get: {
+        parameters: {
+            query: {
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+                offset?: number;
+                limit?: number;
+                view?: "all" | "since_visit";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingItems"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    briefing_seen_api_briefing_seen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefingSeen"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     feedback_api_feedback_post: {
         parameters: {
             query?: never;
@@ -1598,6 +2239,47 @@ export interface operations {
             };
         };
     };
+    late_list_api_late_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LateList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     me_api_me_get: {
         parameters: {
             query?: never;
@@ -1638,7 +2320,10 @@ export interface operations {
     };
     object_page_api_object__object_type___object_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description A first read without the checks (complete=false), shown while the full page is read */
+                quick?: boolean;
+            };
             header?: never;
             path: {
                 object_type: string;

@@ -21,9 +21,19 @@ class Labels(unittest.TestCase):
                                             0).title)
 
     def test_an_at_risk_record_reads_by_its_label_and_a_quantity_conflict_in_words(self):
+        def pair(left, right):
+            return [{"kind": "value_disagreement", "subject": "AssemblyOrder.ordered_boxes",
+                     "values": [{"value_type": "quantity", "value": left, "unit": "box",
+                                 "quantity_role": "ordered", "l1_handle": "api://a/1@g",
+                                 "field_path": "row.x"},
+                                {"value_type": "quantity", "value": right, "unit": "box",
+                                 "quantity_role": "ordered", "l1_handle": "api://b/2@g",
+                                 "field_path": "row.y"}]}]
+        # one quantity rounded two ways is no risk at all
+        self.assertEqual(pg._conflicting_quantities(pair("1257", "1257.1666666666667")), [])
         summary = pg._conflicting_quantities([{
             "kind": "value_disagreement", "subject": "AssemblyOrder.ordered_boxes",
-            "values": [{"value_type": "quantity", "value": "1257", "unit": "box",
+            "values": [{"value_type": "quantity", "value": "1200", "unit": "box",
                         "quantity_role": "ordered", "l1_handle": "api://a/1@g",
                         "field_path": "row.x"},
                        {"value_type": "quantity", "value": "1257.1666666666667",
@@ -35,13 +45,13 @@ class Labels(unittest.TestCase):
         _late, risk = be.attention_items({"gaps": [gap]}, {})
         self.assertEqual(risk[0].label, "Assembly order")
         self.assertEqual(risk[0].reason, "Assembly order ordered boxes: sources report "
-                                         "different ordered quantity values (1257 box and "
+                                         "different ordered quantity values (1200 box and "
                                          "1257.17 box)")
         _late, risk = be.attention_items({"gaps": [gap]}, {"AssemblyOrder:x:1": "AO-1"})
         self.assertEqual(risk[0].label, "AO-1")
         # an inbox built before the engine rounded reads the same
         old = dict(gap, summary="AssemblyOrder.ordered_boxes: sources report different "
-                                "ordered quantity values (1257, 1257.1666666666667 box)")
+                                "ordered quantity values (1200, 1257.1666666666667 box)")
         self.assertEqual(be.attention_items({"gaps": [old]}, {})[1][0].reason,
                          risk[0].reason)
         self.assertEqual(pg.shown_numbers([Decimal("6.888"), Decimal("6.889")]),

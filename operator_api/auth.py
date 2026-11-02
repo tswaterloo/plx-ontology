@@ -237,7 +237,9 @@ def configured_employee(resolver: Any, object_id: str) -> Callable[[], SessionId
     exactly as a signed-in employee is (Portal role ∩ Entra groups), proof
     ``configured_employee`` so every record says it was not a sign-in. Never over live
     state (the caller binds the state directory as ``dev``,
-    ``session_identity.bind_state_dir``): live state takes ``ticket_identity``."""
+    ``session_identity.bind_state_dir``): live state takes ``ticket_identity``. The app's
+    read-ahead never uses it either: it follows a real session with
+    ``session_identity.warm_session``, which serves nothing."""
     from operating.employee_permissions import EmployeePrincipal
 
     def identity() -> SessionIdentity:

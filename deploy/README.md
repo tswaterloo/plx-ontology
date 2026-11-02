@@ -126,6 +126,27 @@ with the data label (e.g. FIXTURE); staff should only ever use Entra mode.
   (`app/src/proxy.ts`, `app/src/lib/csp.ts`); Caddy adds a deny-all policy on `/api/*`.
 - Backups and security scans are tracked outside this module.
 
+## Search
+
+The app's agents and tools search with hybrid search (`operating/search`: BM25, trigram,
+bge-m3 dense, exact identifiers and record links, then the authority order of
+`operating/search/weights.json`) when the API serves a live host (`--host-config`). The API
+sets `PLX_SEARCH=hybrid` (and `PLX_PG_DSN` from `--pg-dsn`) in its own environment unless
+`PLX_SEARCH` is already set, and every agent host it starts inherits them
+(`operator_api.backend.default_search`, `operating.agent_session.SEARCH_ENV`).
+
+- Turn it off: `PLX_SEARCH=keyword` in `/etc/plx/workbench-api.env`, then
+  `sudo systemctl restart plx-api`. Any value other than `hybrid` is the word index alone.
+- `--mock` keeps the word index (its fixtures have no search tables).
+- A search that cannot run hybrid (no database, a timeout) falls back to the word index and
+  the answer says so (`search_fallback`).
+- The models (about 3.4 GB) load once per host user in `operating.search.model_server`,
+  started by the first search and stopped after 30 idle minutes; every API, agent and
+  scoreboard process asks it through a private spool directory instead of loading its own
+  copy.
+  `PLX_SEARCH_MODELS=local` loads them per process (avoid: 3.4 GB each).
+- `PLX_APP_HYBRID_SEARCH` is no longer read; remove it from the env file.
+
 ## Demo host
 
 The running demo's host-specific setup (checkout, user, keys, access link) is in
@@ -149,3 +170,32 @@ reviewed change:
    if the API is told about origins explicitly.
 5. Re-run the `caddy adapt` check above and `sudo ss -ltnp | grep caddy`, and
    record the listeners in this README.
+
+## Continuous ingest (`deploy/systemd/plx-ingest.service`)
+
+Every capture source in its own loop, all at once, one writer per store (each source is
+one capture process writing its own store; the mail capture reads eight mailboxes at once
+through its one store connection), and the projection built from store snapshots on its
+own thread, so mail never waits for SharePoint or for a build. Replaces the serial
+`operating.host run` cycle (`cold_cycle.sh`); never run both on one state directory (the
+host's cycle lock refuses the second).
+
+1. Wait for the running cycle to end (or stop it); nothing else may hold
+   `<state>/host/cycle.lock`.
+2. Write the continuous config from the cycle config (outside Git, mode 0600):
+   ```sh
+   python3 scripts/ingest_continuous_config.py --from /data/scratch/cfg/ingest_cold.local.json \
+       --out /data/scratch/cfg/ingest_continuous.local.json --priority-mailbox <first mailbox> ...
+   ```
+   It keeps every scope, audience and budget, adds each source's cadence
+   (`min_interval_seconds`: mail and SharePoint back to back, Teams every 30 min) and
+   `ingest.build_inputs: "snapshot"`; with `--priority-mailbox` it writes the mail scope
+   beside it with that `priority` order.
+3. `/etc/plx/ingest.env`: `PLX_INGEST_STATE=/data/plx-state` and
+   `PLX_INGEST_CONFIG=/data/scratch/cfg/ingest_continuous.local.json`; then
+   `sudo cp deploy/systemd/plx-ingest.service /etc/systemd/system/ && sudo systemctl
+   daemon-reload && sudo systemctl start plx-ingest`.
+4. Watch: `python3 -m operating.host status --state-dir /data/plx-state` (per source its
+   generation, last capture and blocked parts) and `journalctl -u plx-ingest` (one JSON line
+   per refresh: counts and codes only). Stop cleanly with `touch
+   /data/plx-state/host/ingest.stop` (remove it before the next start).

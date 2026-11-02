@@ -433,7 +433,21 @@ SCORE_FORMAT = "plx-eval-score/v1"
 #    (``document_text_unread``), never wrong. A fact carries a polarity (``NEGATORS``,
 #    ``_fact_in``): a negated mention never states a positive fact, and a negative fact
 #    is stated only where its clause negates it.
-SCORER_VERSION = "plx-eval-scorer/26"
+# 27: a rubric item's gate-passed claim on the card's named live record is evidence
+#    (``evidence_claims`` path ``live_record``), as a document quote is: a served Portal,
+#    FileMaker, Sage or Business Central row (``api://``, ``bc://``) the harness re-read,
+#    on a field that is not file metadata. A card that names its record (its root, the
+#    card's anchor) credits only a row holding that identifier as one whole value
+#    (``_holds_identifier``: PO5447, never PO100041 for PO#4144); a card that names none
+#    credits a row of a relation its served live sources name (``scoring.live_relations``,
+#    compiled by scripts/eval_case_cards.py ``live_relations``), never one of another
+#    relation however close its topic. The claim must also be about what the card asks:
+#    its cited column's words or its role share a card-specific word (``_asked_column``,
+#    ``topic_terms``). A bare-number anchor (``1399``) is matched only in an identifier
+#    column. A correct run resting only on live-record (and own-document) claims is not
+#    audited until its claims are (``live_record_only``, ``live_record_audited``). No run
+#    scores lower than under /26.
+SCORER_VERSION = "plx-eval-scorer/27"
 # The last segments of a record field that are file or message metadata
 # (``metadata_field``), case-folded with ``_`` and ``-`` dropped.
 METADATA_FIELD_NAMES = frozenset({
@@ -518,9 +532,19 @@ _HANDLE_SHA = re.compile(r"[#&]sha256=([0-9a-f]{64})(?=&|$)")
 # lower-case letter; ``SKU`` or ``DPO`` is no name (``person_value``).
 _NAME_TOKEN = re.compile(r"^[^\W\d_](?:[^\W\d_]|['’-](?=[^\W\d_]))*\.?$")
 # How a claim is evidence for a rubric item (``evidence_paths``), in the order tried: the
-# item's pinned original, an original the card names, a card identifier, the card's topic
-# words, the card set's own source document (scorer /21).
-EVIDENCE_PATHS = ("pin", "named_original", "identifier", "topic", "own_document")
+# item's pinned original, an original the card names, a card identifier, the card's named
+# live record (scorer /27), the card's topic words, the card set's own source document
+# (scorer /21).
+EVIDENCE_PATHS = ("pin", "named_original", "identifier", "live_record", "topic",
+                  "own_document")
+# The live record schemes (``live_record``): a Portal reporting API row (Portal, FileMaker,
+# Sage) and a Business Central capture row.
+LIVE_RECORD_SCHEMES = ("api://", "bc://")
+# The evidence paths a correct run may not rest on alone until an audit judged its claims
+# (``own_document_audited``): a card set's own document, a card's named live record.
+UNAUDITED_PATHS = ("own_document", "live_record")
+# A compiled card's root kind that names no record (its batch: ``_proposal_item``).
+CARD_BATCH_KIND = "case_card_batch"
 # Words a person's name has at most (``Giulia Sellitto``, ``Mary Ann Smith``): a value
 # of more is never read as one name.
 MAX_NAME_TOKENS = 4
@@ -1726,7 +1750,9 @@ def evidence_claims(item: Mapping[str, Any], transcript: Mapping[str, Any],
     ``MIN_TOPIC_WORDS`` distinct card words (``card_words``) in its value and quote, or
     in that title, and one card-specific word (``topic_terms``: not the case's or set's
     title words, not on more than ``TOPIC_MAX_SHARE`` of the set's cards, not generic)
-    in its value or quote itself. A generic word (``order``, ``portal``), a title naming
+    in its value or quote itself; or the card's named live record (``live_record``:
+    a Portal, Sage or BC row that is the card's record, or of a relation the card's live
+    sources name when it names none). A generic word (``order``, ``portal``), a title naming
     the case, a person's name or an e-mail address ties a claim to no card. A claim on
     the card set's own source document (scorer /21: its cited read is one of the item's
     ``scoring.source_documents``, ``source_digests``) is evidence. A claim on another
@@ -1772,28 +1798,101 @@ def evidence_claims(item: Mapping[str, Any], transcript: Mapping[str, Any],
             title = _record_title(read)
             said, titled_words = _words(text), _words(title)
             shared = (said & words17) | (titled_words & titled)
+            field = claim.get("field")
             ties = (("pin", lambda: any(resolves_to_pin(read, pin) for pin in pins)),
                     ("named_original",
                      lambda: record.startswith("original://") and record[11:] in named),
                     ("identifier", lambda: bool(_identifiers(_ADDRESS.sub(
                         " ", f"{text} {record} {title}")) & idents)),
+                    ("live_record", lambda: live_record(item, handle, read)
+                     and _asked_column(field, claim.get("role"), topic)),
                     ("topic", lambda: len(shared) >= MIN_TOPIC_WORDS and bool(said & topic)),
                     ("own_document",
                      lambda: own_open and bool(source_digests(handle, read) & own)))
             # A file's metadata (its content type, name, size, dates, text status) says
-            # nothing the document states: never a topic or own-document tie (scorer /24).
-            # The own-document path takes only the document's text (``document_text``).
-            field = claim.get("field")
+            # nothing the document states: never a live-record, topic or own-document tie
+            # (scorer /24). The own-document path takes only the document's text
+            # (``document_text``).
             if metadata_field(field):
                 ties = ties[:3]
             elif not document_text(field):
-                ties = ties[:4]
+                ties = ties[:5]
             path = next((name for name, holds in ties if holds()), None)
             if path:
                 said_as = next((q for q in quotes if q.strip()), None)
                 paths.append((path, audit_digest(said_as if said_as is not None
                                                  else claim.get("value"))))
     return paths
+
+
+def _asked_column(field: Any, role: Any, topic: frozenset[str]) -> bool:
+    """Whether a live-record claim is about what the card asks: its cited column's words
+    (``row.duties_cost``: duties, cost; ``expiryDate``: expiry, date) or its quantity
+    role share a card-specific word (``topic_terms``). A record's other fields (its
+    number, its dates) are no answer to the card, however exactly they are cited."""
+    column = field.rsplit(".", 1)[-1] if isinstance(field, str) else ""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", column).replace("_", " ")
+    return bool((_words(spaced) | _words(column) | _words(role or "")) & topic)
+
+
+def card_record(item: Mapping[str, Any]) -> str | None:
+    """The record a compiled card names (its root's identifier: the card's anchor, a PO
+    or an invoice number), or None for a card rooted at its batch."""
+    root = item.get("root") if isinstance(item.get("root"), Mapping) else {}
+    identifier = root.get("identifier")
+    if root.get("identifier_kind") == CARD_BATCH_KIND or not isinstance(identifier, str) \
+            or not identifier.strip():
+        return None
+    return identifier
+
+
+def _bare(text: Any) -> str:
+    """An identifier as compared whole: case-folded, letters and digits only."""
+    return "".join(ch for ch in _fold(text) if ch.isalnum())
+
+
+# A column that holds a record's own identifier (``po_number``, ``number``, ``No``,
+# ``vendorInvoiceNumber``, ``fmPoNumber``, ``id``, ``code``): where a bare-number anchor
+# (``1399``) is looked for, never a quantity or amount.
+_ID_COLUMN_NAME = re.compile(r"(?:^|_)(?:number|no|num|nr|id|code|ref|reference)$"
+                             r"|(?:Number|No|Id|Code|Ref|Reference)$", re.I)
+
+
+def _holds_identifier(row: Any, identifier: str, depth: int = 3, column: str = "") -> bool:
+    """Whether a row holds ``identifier`` as one whole value (``_bare``: ``PO#5447`` and
+    ``PO5447`` alike) in a cell or a cell's nested field (a Portal PO's
+    ``custom_fields.fmPoNumber``), never inside a longer value or as another number; a
+    bare-number anchor (``1399``) only in an identifier column (``_ID_COLUMN_NAME``)."""
+    wanted = _bare(identifier)
+    if not wanted or depth < 0:
+        return False
+    numeric = wanted.isdigit()
+    cells = row.items() if isinstance(row, Mapping) else \
+        [(column, cell) for cell in row] if isinstance(row, list) else ()
+    return any(_holds_identifier(cell, identifier, depth - 1, str(key))
+               if isinstance(cell, (Mapping, list))
+               else isinstance(cell, (str, int)) and not isinstance(cell, bool)
+               and _bare(cell) == wanted
+               and (not numeric or bool(_ID_COLUMN_NAME.search(str(key))))
+               for key, cell in cells)
+
+
+def live_record(item: Mapping[str, Any], handle: str, read: Any) -> bool:
+    """Whether a claim's cited record is the card's named live record (path
+    ``live_record``, scorer /27): a Portal reporting API or Business Central row
+    (``LIVE_RECORD_SCHEMES``) the harness re-read whole, that is the record the card names
+    (``card_record``: the row holds its identifier, ``_holds_identifier``) or, for a card
+    that names none, a row of a relation its served live sources name
+    (``scoring.live_relations``). Fail closed: an unread row, another scheme or a card
+    naming neither is no live record."""
+    if not handle.startswith(LIVE_RECORD_SCHEMES) or not isinstance(read, Mapping) \
+            or read.get("ok") is not True or not isinstance(read.get("row"), Mapping):
+        return False
+    named = card_record(item)
+    if named is not None:
+        return _holds_identifier(read["row"], named)
+    relations = (item.get("scoring") or {}).get("live_relations")
+    return isinstance(relations, list) and read.get("relation") in relations
 
 
 def uncited_expected(item: Mapping[str, Any]) -> list[str]:
@@ -2858,7 +2957,15 @@ def score(item: Mapping[str, Any], transcript: Mapping[str, Any], *,
                      and all(path == "own_document" for path in paths),
                      "own_document_quotes": [quote for path, quote in counted
                                              if path == "own_document"],
-                     "own_document_audited": own_document_audited(item, counted)},
+                     "own_document_audited": own_document_audited(item, counted),
+                     # A correct outcome resting only on live-record (and own-document)
+                     # claims is audited claim by claim too (scorer /27): its live-record
+                     # claims' digests in the card's audit list.
+                     **({"live_record_only": outcome_name == "correct" and all(
+                         path in UNAUDITED_PATHS for path in paths),
+                         "live_record_audited": own_document_audited(
+                             item, counted, "live_record")}
+                        if "live_record" in paths else {})},
         "metrics": {"tool_calls": tool_calls,
                     "input_tokens": usage.get("input_tokens"),
                     "output_tokens": usage.get("output_tokens"),
@@ -2929,6 +3036,41 @@ def confident_unsupported(result: Mapping[str, Any]) -> bool:
         or bool((result.get("claim_checks") or {}).get("failed")))
 
 
+# The kinds of a confident wrong answer (``confident_wrong_kind``), from the most to the
+# least severe: a stated falsehood, an answer that leaves out what the card expects without
+# stating anything false, and an answerability label the card does not expect.
+WRONG_KINDS = ("false_statement", "incomplete", "mislabelled")
+# Codes that only say something expected is missing from an answer: the item's
+# (``gap_missing``, ``expected_fact_missing``) and a value's (``value_missing``,
+# ``absence_not_reported``). ``answerability_mismatch`` alone is the label.
+INCOMPLETE_CODES = frozenset({"gap_missing", "expected_fact_missing"})
+INCOMPLETE_VALUE_CODES = frozenset({"value_missing", "absence_not_reported"})
+LABEL_CODES = frozenset({"answerability_mismatch"})
+
+
+def confident_wrong_kind(result: Mapping[str, Any]) -> str | None:
+    """The kind (``WRONG_KINDS``) of a confident wrong run (``wrong`` without abstaining),
+    None for any other: ``mislabelled`` when its only fault is its answerability label,
+    ``incomplete`` when it otherwise only misses an expected gap, fact or value (a label
+    beside that is still incomplete), else ``false_statement``: a value, unit, role,
+    currency or calculation that disagrees, a claim the gate refused, a contradictory or
+    misstated gap, a violation, or any code not named here (fail closed: an unknown
+    fault counts against the false-statement bar)."""
+    if outcome_of(result) != "wrong" or result.get("abstained"):
+        return None
+    codes = set(result.get("codes") or ())
+    value_codes = {code for value in result.get("values") or ()
+                   if isinstance(value, Mapping) and value.get("passed") is False
+                   for code in value.get("codes") or ()}
+    if result.get("violations") or codes - INCOMPLETE_CODES - LABEL_CODES \
+            or value_codes - INCOMPLETE_VALUE_CODES \
+            or (result.get("claim_checks") or {}).get("failed"):
+        return "false_statement"
+    if codes & INCOMPLETE_CODES or value_codes:
+        return "incomplete"
+    return "mislabelled" if codes & LABEL_CODES else "false_statement"
+
+
 def answer_rates(*, runs: int, answered: int, correct: int,
                  unsupported: int) -> dict[str, float | None]:
     """The B1 selective-prediction rates, the one computation every eval path reports:
@@ -2944,17 +3086,18 @@ def answer_rates(*, runs: int, answered: int, correct: int,
             "confident_unsupported_rate": _rate(unsupported, answered)}
 
 
-def own_document_audited(item: Mapping[str, Any],
-                         counted: Sequence[tuple[str, str]]) -> bool:
-    """Whether an audit judged every own-document claim of a run (``evidence_claims``):
-    the card's ``scoring.own_document_audited`` lists each one's ``audit_digest``, under a
-    real ISO date. A new claim on an audited card, a malformed audit or none: False."""
+def own_document_audited(item: Mapping[str, Any], counted: Sequence[tuple[str, str]],
+                         path_name: str = "own_document") -> bool:
+    """Whether an audit judged every own-document claim of a run (``evidence_claims``;
+    ``path_name``: the claims of that path instead, ``live_record``): the card's
+    ``scoring.own_document_audited`` lists each one's ``audit_digest``, under a real ISO
+    date. A new claim on an audited card, a malformed audit or none: False."""
     audit = (item.get("scoring") or {}).get("own_document_audited")
     if not isinstance(audit, Mapping) or not audit_date(audit.get("date")) \
             or not isinstance(audit.get("quotes"), list):
         return False
     known = {q for q in audit["quotes"] if isinstance(q, str) and _DOCUMENT.match(q)}
-    own = [quote for path, quote in counted if path == "own_document"]
+    own = [quote for path, quote in counted if path == path_name]
     return bool(own) and all(quote in known for quote in own)
 
 
@@ -3132,8 +3275,10 @@ __all__ = ["ANSWER_FORMAT", "BLOCKED_TRIPWIRE", "DRIFT_TRIPWIRE_SHARE", "EXPOSED
            "OUTCOMES", "READ_GAP", "READ_GAP_VALUE_CODES", "SCORE_FORMAT", "TRANSCRIPT_FORMAT",
            "UNSCORED", "UNSCORED_MARK", "unscored_mark",
            "ScoreError", "abstained", "aggregate", "action_calls", "answer_problems",
-           "answer_rates", "blocked_share", "confident_unsupported", "evaluate_expression",
-           "card_identifiers", "card_words", "evidence_paths", "evidenced_claims",
+           "answer_rates", "blocked_share", "confident_unsupported", "confident_wrong_kind",
+           "evaluate_expression",
+           "card_identifiers", "card_record", "card_words", "evidence_paths",
+           "live_record", "evidenced_claims",
            "generic_terms", "own_document_evidence", "own_document_only",
            "own_document_unaudited", "own_document_audited", "audit_digest",
            "audit_date", "evidence_claims",

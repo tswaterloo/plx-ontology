@@ -57,6 +57,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .ontology_tools import (_ITEM_ACL_SCHEMES, TOOL_NAMES, OntologyTools, ReadPolicy,
@@ -98,11 +99,11 @@ def _review_store_gap(result: Any, error: Any, contract: Mapping[str, Any] | Non
 def table_tool_names() -> frozenset[str]:
     """The tools ``tool_table`` serves (``CaseHostTools.table``): none may be registered
     over them (``CaseHostTools.register_tool``)."""
-    from . import (meeting_agenda, ontology_tools_investigate, ontology_tools_process,
-                   ontology_tools_traverse)
+    from . import (meeting_agenda, ontology_tools_changes, ontology_tools_investigate,
+                   ontology_tools_process, ontology_tools_traverse)
     return frozenset(TOOL_NAMES) | frozenset(ontology_tools_traverse.TOOL_NAMES) | frozenset(
         ontology_tools_process.TOOL_NAMES) | frozenset(ontology_tools_investigate.TOOL_NAMES) \
-        | frozenset(meeting_agenda.TOOL_NAMES)
+        | frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES)
 
 
 class _LazyProcess:
@@ -163,6 +164,9 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     # plx.agenda: a meeting's agenda read through this same table (operating/meeting_agenda.py).
     from . import meeting_agenda
     meeting_agenda.register(table, schema if schema is not None else tools.schema)
+    # plx.changes: what changed since a time, over this table's store and read policy.
+    from . import ontology_tools_changes
+    ontology_tools_changes.register(table, tools, prime=True)
     return table
 
 
@@ -221,6 +225,26 @@ def store_bc_units(reader: StoreReader) -> dict[str, str]:
     return units
 
 
+_BC_UNITS: dict[tuple[int, int], dict[str, str]] = {}
+_BC_UNITS_LOCK = threading.Lock()
+
+
+def served_bc_units(reader: StoreReader, identity: tuple[int, int] | None) -> dict[str, str]:
+    """``store_bc_units`` of a served generation, read once per process per generation
+    file (``identity``: its device and inode; a generation is never written again);
+    None: read every time."""
+    if identity is None:
+        return store_bc_units(reader)
+    with _BC_UNITS_LOCK:
+        held = _BC_UNITS.get(identity)
+    if held is None:
+        held = store_bc_units(reader)
+        with _BC_UNITS_LOCK:
+            _BC_UNITS.clear()   # one served generation at a time
+            _BC_UNITS[identity] = held
+    return dict(held)
+
+
 def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
                      audience_keys: Iterable[str] = (),
                      bc_lookup: Any = None,
@@ -251,7 +275,8 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
     (``brain:<namespaceKey>``, granted when the ``plx-knowledge-namespaces/v1`` document at
     ``knowledge_namespaces``, read now, lets the employee-gated actor read the namespace:
     a personal or unknown namespace never, nor any when the document is absent, unreadable
-    or malformed). Exact keys only, so no family counts as fully covered. A marking is
+    or malformed). Exact keys only; the BC units are also listed (``ReadPolicy.units``), so
+    a reader granted every BC unit the store holds covers BC. A marking is
     held only by the principals the host config grants it (``marking_grants``, checked by
     ``check_marking_grants``); none granted: held by nobody."""
     principals = frozenset(actor.principals)
@@ -356,8 +381,15 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
         entitlement = gate.entitlement(actor) if gate is not None else None
     except Exception:  # noqa: BLE001 - a refused or unresolved employee holds no more
         entitlement = None
+    # BC is decided unit by unit as mail and SharePoint are: every BC unit the store holds
+    # (and every one decided above) is listed, so a reader granted all of them reads the
+    # whole family (``covers_family``: a BC record reached through a Portal twin is then
+    # proven visible) and one lacking any, a held unit left undecided included, does not.
+    units: dict[str, tuple[str, ...]] = {}
+    if bc_units:
+        units["bc"] = tuple(sorted(set(bc_units) | {k for k in grants if k.startswith("bc:")}))
     return ReadPolicy(actor.tenant, grants,
-                      full_read_marking_grants(marking_grants, entitlement))
+                      full_read_marking_grants(marking_grants, entitlement), units)
 
 
 # A granted principal: ``<kind>:<name>``, both parts non-empty, no whitespace.
@@ -561,8 +593,10 @@ class CaseHostTools:
                                     captured_bound=captured,
                                     freshness_clock=self.freshness_clock).items()
                        if source != self.exclude_source}
+            from .ontology_tools_traverse import kept_audience_keys
+            kept_audience_keys(reader)   # the generation's kept facts: no object scan
             self._reader_keys = reader.audience_keys()
-            self._bc_units = store_bc_units(reader)
+            self._bc_units = served_bc_units(reader, self._store_identity)
             self._bc_lookup = lookups.get("bc")
             policy = ReadPolicy(self.actor.tenant, {})  # decided again on every call
             resolver = SourceResolver(self.schema, lookups, normalizer=identifiers.normalize,

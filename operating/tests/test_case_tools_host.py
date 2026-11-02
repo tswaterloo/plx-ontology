@@ -75,7 +75,9 @@ def _client(server: MCPServer, name: str, arguments: dict) -> dict:
 class ListingTests(unittest.TestCase):
     def test_the_host_lists_22_tools_and_every_retired_tool_names_a_listed_successor(self):
         names = [tool["name"] for tool in TOOLS]
-        self.assertEqual(len(names), CONTRACTS["limits"]["max_case_host_tools"])
+        # the catalogue; plx.agenda and plx.changes are listed only to the agents naming
+        # them, which stay within the budget
+        self.assertLessEqual(len(names), CONTRACTS["limits"]["max_case_host_tools"])
         self.assertEqual(len(names), 22)
         self.assertLessEqual({"plx.read", "plx.identity", "plx.documents", "plx.aggregate",
                               "plx.compare", "plx.process"}, set(names))
@@ -251,6 +253,164 @@ class ReadParityTests(case_tools.CaseToolsTestCase):
             "citation": raw["content_citation"], "find": "never written"})
         self.assertEqual((missing["matches"]["hits"], missing["matches"]["total_hits"]),
                          ([], 0))
+
+    def test_a_document_contradicting_itself_is_a_conflict_gap_on_every_read_of_it(self):
+        """RRO-01, RRO-06, RRO-14 (v13): a map says near its top it was built from files
+        that a line far below says were not provided; three answers about it, reading some
+        windows or finding some phrases, never named the conflict. Every read of the
+        document's text (whole, a window, a find) now names it as a conflicting_sources
+        gap with both lines, numbered as the file is (after the extraction's part
+        marker); a page read or a document without one gets none."""
+        from types import SimpleNamespace
+        from operating.document_conflicts import stated_conflicts
+        paged = PagedRead(SimpleNamespace(contracts=CONTRACTS, limits={
+            "max_untrusted_text_chars": 4000, "max_result_bytes": 64000}), None)
+        body = (["# Order map", "Built from the files you sent: the order thread, the "
+                 "\"Closing Figures\" sheet and the customer ledger."]
+                + [f"Stage {n}: the order moves on." for n in range(60)]
+                + ["Attachments not provided: AB-77 Closing Figures.pdf, LEDGER09 "
+                   "LEDGER.pdf.", "(page 2 not provided)", "The deposit was received."])
+        text = "\n[Part: map.md]\n" + "\n".join(body)
+        citation = "original://co-map"
+        raw = {"content": text, "content_field": "text", "content_citation": citation}
+        base = {"citation": citation, "status": "resolved", "gaps": [],
+                "completeness": {"complete": True}, "meta": {}}
+        held, absent = 2, len(body) - 2   # the file's own line numbers
+        for arguments in ({"citation": citation}, {"citation": citation, "text_offset": 0},
+                          {"citation": citation, "find": "deposit"},
+                          {"citation": citation, "line": 1}):
+            with self.subTest(arguments=arguments):
+                out = paged._with_conflicts(dict(base), raw, arguments)
+                if "find" in arguments:
+                    out = paged._find(out, raw, arguments)
+                elif len(arguments) > 1:
+                    out = paged._window(out, raw, arguments)
+                (gap,) = [g for g in out["gaps"] if g["reason"] == "conflicting_sources"]
+                self.assertEqual(validate(gap, CONTRACTS["$defs"]["gap"], root=CONTRACTS), [])
+                self.assertEqual(gap["state"], "unknown")
+                self.assertTrue(gap["subject"].startswith(
+                    f"lines {held} and {absent} of {citation}"), gap["subject"])
+                said = gap["source_text"]["untrusted_text"]
+                self.assertIn(f"line {held}: Built from the files you sent", said)
+                self.assertIn(f"line {absent}: Attachments not provided", said)
+                # The source's words stay in the envelope, never in the subject or detail.
+                self.assertNotIn("Closing", gap["subject"] + gap["detail"])
+        # The file's line numbers: line reads it, a window and a find name it so.
+        line = paged._window(dict(base), raw, {"citation": citation, "line": absent})
+        self.assertEqual(line["content"]["untrusted_text"], body[absent - 1])
+        self.assertEqual(line["text_window"]["first_line"], absent)
+        hits = paged._find(dict(base), raw, {"citation": citation, "find": "not provided"})
+        self.assertEqual([hit["line"] for hit in hits["matches"]["hits"]],
+                         [absent, absent + 1])
+        # The part marker is no line of the file: a hit inside it is no place of the
+        # document (it was reported as line 1, which reads the file's first line); a hit
+        # on the file's own first line is line 1.
+        hits = paged._find(dict(base), raw, {"citation": citation, "find": "map"})
+        self.assertEqual([hit["line"] for hit in hits["matches"]["hits"]], [1])
+        self.assertEqual(hits["matches"]["total_hits"], 1)
+        marker = paged._find(dict(base), raw, {"citation": citation, "find": "map.md"})
+        self.assertEqual((marker["matches"]["hits"], marker["matches"]["total_hits"]),
+                         ([], 0))
+        # A page read is one page, not the document; a field of a row is no document.
+        for arguments in ({"citation": citation + "#page=1"},
+                          {"citation": citation, "page": 1},
+                          {"citation": citation, "field_path": "row.note"}):
+            with self.subTest(none=arguments):
+                self.assertEqual(paged._with_conflicts(dict(base), raw, arguments)["gaps"],
+                                 [])
+        # No conflict: an item named by generic words (page 2), a process word (received),
+        # a negated holding, or a text with several parts numbered as the whole text.
+        for lines in (["(page 2 not provided)", "Page 2 was provided later."],
+                      ["The deposit was received.", "Deposit: not provided."],
+                      ["We have not provided the ledger sheet.",
+                       "Ledger sheet: not provided."]):
+            with self.subTest(lines=lines):
+                self.assertEqual(stated_conflicts("\n".join(lines)), [])
+        two = "\n[Part: a.md]\nx\n[Part: b.md]\n" + "\n".join(body)
+        (found,) = stated_conflicts(two)
+        self.assertEqual(found["held_line"], held + 4)
+
+    def test_a_document_conflict_scan_is_bounded_and_keeps_every_line(self):
+        # N = 1, 10, 60 contradicting pairs in one text: each found once, at most
+        # MAX_CONFLICTS kept, in their order, within a time budget.
+        import time
+        from operating.document_conflicts import MAX_CONFLICTS, stated_conflicts
+        for count in (1, 10, 60):
+            lines = [f"Built from the files you sent: sheet{chr(97 + n % 26)}"
+                     f"{chr(97 + n // 26)} report." for n in range(count)]
+            lines += [f"Not provided: sheet{chr(97 + n % 26)}{chr(97 + n // 26)} report."
+                      for n in range(count)] + ["filler line"] * 20000
+            started = time.monotonic()
+            found = stated_conflicts("\n".join(lines))
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertEqual([(f["held_line"], f["absent_line"]) for f in found],
+                             [(n + 1, count + n + 1) for n in range(min(count,
+                                                                         MAX_CONFLICTS))])
+
+    def test_a_document_conflict_scan_is_capped_cached_and_says_where_it_stopped(self):
+        """The scan was unbounded and reran on every read (12 s per
+        read on a 2.5 MB text, 125 s on an adversarial list), and a contract's "provided
+        that" or "as provided in" read as what the document was given. The scan now stops
+        at its size, item and time bounds with a conflict_scan_partial gap naming the
+        line, runs once per text version, and a condition or reference is no holding."""
+        import time
+        from types import SimpleNamespace
+        from unittest import mock
+        from operating import document_conflicts as dc
+        # A contract's condition or reference is no holding; a true holding still is.
+        for held in ("Provided that the buyer pays, the master schedule terms apply.",
+                     "Delivery is as provided in the master schedule terms.",
+                     "Unless otherwise provided, the master schedule terms apply.",
+                     "Provided, however, that the master schedule terms apply."):
+            with self.subTest(held=held):
+                self.assertEqual(dc.stated_conflicts(
+                    held + "\nNot provided: master schedule terms."), [])
+        (found,) = dc.stated_conflicts("The master schedule terms were provided by the "
+                                       "buyer.\nNot provided: master schedule terms.")
+        self.assertEqual((found["held_line"], found["absent_line"]), (1, 2))
+        # The true conflict past a long contract-like text is found (well inside the cap).
+        filler = ["Goods shall be provided by the seller under these terms."] * 4000
+        text = "\n".join(["Built from the files you sent: the Closing Figures sheet."]
+                         + filler + ["Not provided: Closing Figures sheet."])
+        started = time.monotonic()
+        scan = dc.scan_conflicts(text)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual([(f["held_line"], f["absent_line"]) for f in scan["conflicts"]],
+                         [(1, 4002)])
+        self.assertIsNone(scan["stopped_at_line"])
+        # Cached per text version: a second read of the same text scans nothing.
+        with mock.patch.object(dc, "_scan", side_effect=AssertionError("rescanned")):
+            self.assertEqual(dc.scan_conflicts(text), scan)
+        # Past the size bound: the lines after it are not scanned and the read says so.
+        big = text + "\n" + "\n".join(["Built from: Ledger Nine sheet."] + filler * 5
+                                       + ["Not provided: Ledger Nine sheet."])
+        with mock.patch.object(dc, "MAX_SCAN_CHARS", len(text) + 1):
+            scan = dc.scan_conflicts(big)
+        self.assertEqual(len(scan["conflicts"]), 1)
+        self.assertEqual(scan["stopped_at_line"], 4003)
+        # An adversarial text (every held line holding every word of every item, items
+        # never in order) stops at the time bound with a marker, never runs unbounded.
+        words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+        adversarial = "\n".join(
+            ["Built from the files you sent: " + " ".join(words * 8)] * 2500
+            + ["Not provided: " + ", ".join(["alpha charlie"] * 20)] * 200)
+        started = time.monotonic()
+        with mock.patch.object(dc, "MAX_SCAN_SECONDS", 0.2):
+            scan = dc.scan_conflicts(adversarial)
+        self.assertLess(time.monotonic() - started, 1.2)
+        self.assertEqual(scan["conflicts"], [])
+        self.assertGreaterEqual(scan["stopped_at_line"], 2501)
+        # The read names a stopped scan as a gap, with the line it stopped at.
+        paged = PagedRead(SimpleNamespace(contracts=CONTRACTS, limits={
+            "max_untrusted_text_chars": 4000, "max_result_bytes": 64000}), None)
+        base = {"citation": "original://big", "status": "resolved", "gaps": [],
+                "completeness": {"complete": True}, "meta": {}}
+        out = paged._with_conflicts(dict(base), {"content": adversarial},
+                                    {"citation": "original://big"})
+        (gap,) = out["gaps"]
+        self.assertEqual(validate(gap, CONTRACTS["$defs"]["gap"], root=CONTRACTS), [])
+        self.assertEqual((gap["state"], gap["reason"]), ("unknown", "conflict_scan_partial"))
+        self.assertIn(f"stopped at line {scan['stopped_at_line']} ", gap["subject"])
 
     def test_a_file_citation_lists_every_extraction_version(self):
         self.local_ocr = False

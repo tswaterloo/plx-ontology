@@ -94,10 +94,25 @@ Completeness, per unit (``mc:<scope>/<collection>``), never an atomic snapshot:
   task MC no longer shows (``not_found``) is dropped, so the run ends ``partial``. A
   task the listing shows in another project has its current gates and events saved
   again under the new project in the same cycle, before any detail read.
-  ``task_events`` is ``partial`` (``source_window:last_25``) when a task returned MC's
-  whole 25-event window: older history was not read.
+  ``task_events`` keeps every event it ever read (a run with a full window is
+  ``partial``, so an event that left MC's window is never marked missing) and accounts
+  each task's history (``HISTORY_STATES``, stored per scope, reported as
+  ``event_history`` counts): MC's read tools serve only the latest 25 events of a task
+  (``mc_get_task`` takes the task id alone: tools/list, 2026-10-31), so a task's history
+  is whole when a read returned fewer, or when every later full window reached back to
+  an event already held. The run is ``partial`` with reason ``source_window:last_25``
+  while any task's history is not whole, else ``source_window:accumulated`` (the store
+  holds every event, MC still serves a window). Older history needs an upstream event
+  cursor.
 * ``buckets``: one ``mc_list_buckets`` read (``count`` must match the list), redacted as
   above.
+* ``projects``: every project the operator may see, from the context
+  reads already used, never ``mc_list_projects`` (never sent): ``mc_get_context`` scoped by
+  one listed task id answers every visible project with its detail, archived ones included,
+  and the compact context names MC's default list and each project's ``status``; a project
+  only the full answer lists is ``retired_in_mc`` ``project_archived``. Each project record
+  is keyed and gated by its own project id (``PROJECT_COLLECTIONS``). ``complete``; with no
+  task listed the compact rows alone, ``partial`` (``no_anchor_task``).
 * ``knowledge``: ``mc_search_knowledge`` per configured query: a ranked top-k, so always
   ``partial`` (``ranked_search``) and never evidence that an entry does not exist;
   redacted as above.
@@ -209,9 +224,10 @@ if __name__ == "__main__":
 KIND = "mission_control"
 SCHEME = "mc"
 LINEAGE = "mission_control"
-COLLECTIONS = ("tasks", "approvals", "task_events", "buckets", "knowledge")
-# Collections MC scopes per project (module docstring, Permissions).
-PROJECT_COLLECTIONS = frozenset({"tasks", "approvals", "task_events", "buckets"})
+COLLECTIONS = ("tasks", "approvals", "task_events", "buckets", "knowledge", "projects")
+# Collections MC scopes per project (module docstring, Permissions); a project record is
+# keyed by its own project id.
+PROJECT_COLLECTIONS = frozenset({"tasks", "approvals", "task_events", "buckets", "projects"})
 UNPARENTED = "unparented"  # a bucket without a project (MC: shared-like)
 CAPTURE_DIR, CAPTURE_FILE = "mc-capture", "capture.sqlite"
 # The only MC tools a capture calls.
@@ -252,6 +268,14 @@ _GATE_ID = re.compile(r"^apg_[A-Za-z0-9_-]{1,80}$")
 # MCP_AGENT_SERVICE_PRINCIPAL_IDS, e.g. sp_mcp_workbench).
 _PRINCIPAL = re.compile(r"^sp_[a-z0-9_]{1,60}$")
 VIEW_STATE = "mission_control:view:"  # + scope: the scope's pinned MC view (store state)
+# + scope: each task's event-history state (``_history``), JSON {task id: state}.
+HISTORY_STATE = "mission_control:event_history:"
+# Per task: ``whole`` (MC returned fewer than its window once, and every later full window
+# reached back to an event already held: the store holds the task's whole history),
+# ``since_first_read`` (its first read was a full window: history older than that window
+# is beyond MC's read tools, everything since is held), ``gap`` (a full window that
+# reached back to no event held: events between two reads were lost).
+HISTORY_STATES = ("whole", "since_first_read", "gap")
 _USABLE_CHECKOUT = re.compile(r"dsp_[A-Za-z0-9]{8,}")
 _CHECKOUT_ID = re.compile(r"dsp_[A-Za-z0-9]+")  # PLX_MC read-actions.ts CHECKOUT_ID_RE
 _SEQ = re.compile(r"^[0-9]{1,20}$")
@@ -656,8 +680,8 @@ class McSourcesCapture:
         collections: list[str] = []
         failure = self._pin_view(spec) if self.mc is not None else None
         if failure is not None:  # no read without its view: the units fail, reported
-            collections = ["tasks", "buckets"] + (["knowledge"] if spec.knowledge_queries
-                                                  else [])
+            collections = ["tasks", "buckets", "projects"] + (
+                ["knowledge"] if spec.knowledge_queries else [])
             for collection in collections:
                 self._failed(self._begin(spec, collection)["run_id"], failure)
         elif self.mc is not None:
@@ -668,6 +692,8 @@ class McSourcesCapture:
                 collections += ["approvals", "task_events"]
             self._buckets(spec)
             collections.append("buckets")
+            self._projects(spec, min(projects) if projects else None)
+            collections.append("projects")
             if spec.knowledge_queries:
                 self._knowledge(spec)
                 collections.append("knowledge")
@@ -826,6 +852,13 @@ class McSourcesCapture:
         gates_run = self._begin(spec, "approvals")
         events_run = self._begin(spec, "task_events")
         self._rekey_moved(projects, gates_run, events_run)
+        history_key = HISTORY_STATE + spec.scope
+        history = _history_state(self.store.state(history_key))
+        held: dict[str, set[str]] = {}
+        for path, _capture in self.store.current_versions(KIND, unit_of(spec.scope,
+                                                                       "task_events")):
+            task, _sep, local = path[-1].partition("~")
+            held.setdefault(task, set()).add(local)
         cursors = [gates_run["cursor"] if gates_run["resumed"] else None,
                    events_run["cursor"] if events_run["resumed"] else None]
         after = min(cursors) if all(cursors) else None
@@ -854,21 +887,31 @@ class McSourcesCapture:
                     return
                 gates += self._gates(spec, task_id, data, projects[task_id])
                 task_events = [e for e in data.get("events") or [] if isinstance(e, dict)]
-                windowed |= len(task_events) >= EVENT_WINDOW
-                events += self._events(spec, task_id, task_events, projects[task_id])
+                full = len(task_events) >= EVENT_WINDOW
+                windowed |= full
+                read = self._events(spec, task_id, task_events, projects[task_id])
+                history[task_id] = _history(history.get(task_id), full, {
+                    r.path[-1].partition("~")[2] for r in read}, held.get(task_id, set()))
+                events += read
             marks = ("windowed",) if windowed else ()
             self.store.save_page(gates_run["run_id"], gates, chunk[-1], dropped=dropped)
             self.store.save_page(events_run["run_id"], events, chunk[-1], dropped=dropped,
                                  marks=marks)
+            self.store.set_state(history_key, json.dumps(
+                {t: h for t, h in sorted(history.items()) if t in projects}, sort_keys=True))
         if len(pending) > len(reads):
             for run in (gates_run, events_run):
                 self.store.pause_run(run["run_id"], reason="cap:max_task_reads")
             return
         self.store.finish_run(gates_run["run_id"], "complete", detail=self._detail())
         windowed = "windowed" in self.store.run_marks(events_run["run_id"])
+        counts = {state: sum(1 for t in task_ids if history.get(t) == state)
+                  for state in HISTORY_STATES}
+        whole = all(history.get(t) == "whole" for t in task_ids)
         self.store.finish_run(events_run["run_id"], "partial" if windowed else "complete",
-                              reason="source_window:last_25" if windowed else None,
-                              detail=self._detail())
+                              reason=(None if not windowed else "source_window:accumulated"
+                                      if whole else "source_window:last_25"),
+                              detail={**self._detail(), "event_history": counts})
 
     def _gates(self, spec: CaptureSpec, task_id: str, data: Mapping[str, Any],
                project: str) -> list[CapturedRecord]:
@@ -924,6 +967,58 @@ class McSourcesCapture:
         self.store.save_page(run, records, None, dropped=dropped)
         self.store.finish_run(run, "complete", detail=self._detail())
 
+    def _projects(self, spec: CaptureSpec, anchor: str | None) -> None:
+        """Every MC project the operator may see, from the context reads the capture already
+        uses (``mc_list_projects`` stays never sent): ``mc_get_context`` scoped by one task
+        id (``anchor``, a task this cycle listed) answers every visible project with its
+        detail, archived ones included (PLX_MC@9d0ab43 actions.ts ``actionGetContext``: a
+        ``taskIds`` filter keeps retired work), and the compact context names MC's default
+        (non-archived) list with each project's ``status``. A project the full answer lists
+        and the default one does not is recorded with ``retired_in_mc``
+        ``project_archived``. Each project record is keyed (and gated) by its own project
+        id. No anchor (no task listed): the compact rows alone, ``partial``
+        (``no_anchor_task``: archived projects and the detail are not read)."""
+        run = self._begin(spec, "projects")["run_id"]
+        try:
+            compact = self.mc.get_context(depth="compact")["data"]
+            full = (self.mc.get_context(depth="full", task_ids=[anchor])["data"]
+                    if anchor is not None else None)
+            default_rows = compact.get("projects")
+            rows = full.get("projects") if full is not None else default_rows
+            if not isinstance(default_rows, list) or not isinstance(rows, list):
+                raise McAnswerRefused("context_lacks_projects")
+        except (UpstreamError, SourceUnavailable, ReadOnlyGuardError) as error:
+            self._failed(run, error)
+            return
+        default = {row["id"]: row for row in default_rows
+                   if isinstance(row, dict) and isinstance(row.get("id"), str)}
+        records, dropped, seen = [], 0, set()
+        for row in rows:
+            project = row.get("id") if isinstance(row, dict) else None
+            if not isinstance(project, str) or _PROJECT_ID.fullmatch(project) is None \
+                    or project in seen:
+                dropped += 1
+                continue
+            seen.add(project)
+            listed = default.get(project)
+            kept = {**row, "status": (listed or {}).get("status", row.get("status")),
+                    "retired_in_mc": None if listed is not None else "project_archived"}
+            arguments = ({"depth": "full", "taskIds": [anchor]} if full is not None
+                         else {"depth": "compact"})
+            records.append(self._record(spec, "projects", project, kept,
+                                        {"tool": "mc_get_context", "arguments": arguments,
+                                         "ids": {"project_id": project}},
+                                        "sha256:" + _digest(kept), project=project))
+        self.store.save_page(run, records, None, dropped=dropped)
+        if full is None:
+            self.store.finish_run(run, "partial", reason="no_anchor_task",
+                                  detail=self._detail())
+        elif dropped:
+            self.store.finish_run(run, "partial", reason="withheld_or_dropped",
+                                  detail=self._detail())
+        else:
+            self.store.finish_run(run, "complete", detail=self._detail())
+
     def _knowledge(self, spec: CaptureSpec) -> None:
         run = self._begin(spec, "knowledge")["run_id"]
         hits: dict[str, dict[str, Any]] = {}
@@ -955,6 +1050,32 @@ class McSourcesCapture:
         self.store.finish_run(run, "partial",
                               reason=failure[0] if failure else "ranked_search",
                               error=failure[1] if failure else None, detail=self._detail())
+
+
+def _history_state(raw: str | None) -> dict[str, str]:
+    """The stored per-task event-history states; anything unreadable starts over (every
+    task then counts from its next read: never whole on a guess)."""
+    try:
+        found = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {t: h for t, h in found.items() if isinstance(t, str) and h in HISTORY_STATES}
+
+
+def _history(before: str | None, full: bool, read: set[str], held: set[str]) -> str:
+    """A task's event-history state after one read (``HISTORY_STATES``): ``read`` the
+    event ids this read returned, ``held`` those the store held before it, ``full`` it
+    returned MC's whole window. A window that reached back to an event already held is
+    contiguous with what is held (MC serves the newest first)."""
+    if not full:
+        return "whole"   # MC returned the task's every event
+    if before is None:   # a first read, or a store captured before states were kept
+        return "gap" if held and not read & held else "since_first_read"
+    if before == "gap":
+        return "gap"
+    return before if read & held else "gap"
 
 
 def store_path(state_dir: str | Path) -> Path:

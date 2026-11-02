@@ -1,0 +1,34 @@
+{
+ "schema": "plx-sharepoint-list-capture-scope/v1",
+ "note": "Live-check scope of capture.sharepoint_list_items (live check ``capture.sharepoint_list_items``): the one named list of integrations/sharepoint_list_capture_scope.json, without its discover block, so the check stays the bounded read of the Vendor Quotes list it was written for. Discovery has its own check (capture.sharepoint_list_discovery). Configuration, never a grant.",
+ "lists": [
+  {
+   "name": "Vendor Quotes",
+   "site_id": "petrasoap-my.sharepoint.com,b24e2c51-3e21-4af0-9fef-9297bf862d56,b7c22764-d859-4b4e-881d-74facc556f19",
+   "list_id": "d3711ac7-1291-4801-a2a3-da3717934fac",
+   "columns": [
+    "Title",
+    "ProjectTitle",
+    "VendorName",
+    "VendorContactName",
+    "VendorEmail",
+    "PackagingType",
+    "PackagingSize",
+    "MOQ",
+    "LeadTimeWeeks",
+    "INCOTerms",
+    "SamplesAvailable",
+    "ReviewStatus",
+    "QuotedUnitPrice",
+    "ToolingCostUSD",
+    "PriceBreaks",
+    "SpecNotes",
+    "QuoteValidUntil"
+   ],
+   "evidence": "plx-customer-portal:portal/src/app/api/rfq/submit/route.ts@31a2623f3ac0:176"
+  }
+ ],
+ "page_size": 200,
+ "max_pages_per_run": 50,
+ "max_items_per_run": 5000
+}
