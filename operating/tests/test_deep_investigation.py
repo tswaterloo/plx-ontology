@@ -227,7 +227,9 @@ class AgentBudget(Temp):
             run = agent.run("p", Host())
         ((deadline, steps, ends),) = made
         self.assertEqual(steps, 2)
-        self.assertAlmostEqual(ends - deadline, deep.RESERVE_SECONDS, delta=1)
+        # research ends 60 s before a 150 s session's end, as at any budget its 40 %
+        self.assertAlmostEqual(ends - deadline, 60, delta=1)
+        self.assertAlmostEqual(150 - deep.deadlines(150)[0], 60, delta=0.01)
         self.assertEqual({k: run.agent["budget"][k] for k in (
             "steps_used", "max_steps", "refused_after_budget", "budget_seconds")},
             {"steps_used": 2, "max_steps": 2, "refused_after_budget": 1,
@@ -601,9 +603,23 @@ class StoppedResearch(Temp):
         # the host process (served by the host's gate, ``HostGate``) got the limits
         seen["env"] = json.loads(env_seen.read_text(encoding="utf-8"))
         self.assertEqual(seen["env"][call_limits.LIMITS_ENV], "on")
-        # every call ends SUBMIT_SECONDS before the session's 150 s
+        # every call ends 50 s before the session's 150 s (a third of any budget)
         self.assertAlmostEqual(float(seen["env"][call_limits.DEADLINE_ENV]) - time.time(),
-                               150 - deep.SUBMIT_SECONDS, delta=10)
+                               100, delta=10)
         # the agent's own words stand when it said so itself
         own = "I stopped researching at the time limit; not yet checked: the receipt."
         self.assertEqual(agent_session.research_stopped(own), own)
+
+
+class AnswerBudget(unittest.TestCase):
+    def test_one_ask_has_one_wall_budget_and_the_session_gets_what_is_left(self):
+        self.assertEqual(deep.ANSWER_SECONDS, 60)
+        self.assertEqual(deep.answer_budget(0, deep.SESSION_SECONDS), 60)
+        self.assertEqual(deep.answer_budget(12.5, deep.SESSION_SECONDS), 47.5)
+        # never under the floor a session needs to answer at all; never over its own
+        self.assertEqual(deep.answer_budget(45, deep.SESSION_SECONDS),
+                         deep.MIN_SESSION_SECONDS)
+        self.assertEqual(deep.answer_budget(0, 30), 30)
+        self.assertIsNone(deep.answer_budget(5, None))
+        research, calls = deep.deadlines(60)
+        self.assertEqual((research, calls), (36, 40))

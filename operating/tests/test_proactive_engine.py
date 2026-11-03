@@ -667,7 +667,7 @@ class InboxTest(Engine):
             now[0] = 61.0
             return {"object": {"object_id": arguments.get("object_id")}, "leads": [],
                     "conflicts": []}
-        def swallowing(_st, _as_of, call, _bound):   # as impact_chain: a failed call is
+        def swallowing(_st, _as_of, call, _bound, first=()):  # as impact_chain: a failed call is
             for _ in range(2):                         # "undetermined", the scan complete
                 with contextlib.suppress(Exception):
                     call("plx.process", {"object_id": "x"})

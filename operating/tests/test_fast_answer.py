@@ -11,9 +11,11 @@ nothing of a record it may not read.
 
 from __future__ import annotations
 
+import contextlib
 import copy
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+import itertools
 import json
 import re
 import unittest
@@ -58,6 +60,9 @@ class UnderstandTests(unittest.TestCase):
             "ship date for S-ORD101085?": ("order_shipped", "S-ORD101085"),
             "what was Maple Soap Co's balance in Sage": ("open_ar",
                                                                  "Maple Soap Co"),
+            # a possessive after a name's period or parenthesis is not the name's
+            "what was Maple Soap Co.'s balance in Sage": ("open_ar", "Maple Soap Co"),
+            "what was Maple Soap (East)'s balance in Sage": ("open_ar", "Maple Soap (East)"),
             "who set up PO#7123?": ("po_people", "PO#7123"),
             "last person to edit PO#7123?": ("po_people", "PO#7123"),
             "whats the last email we had with TOWN OF EXAMPLE": ("customer_last_mail",
@@ -314,6 +319,61 @@ class FastAnswerTests(EmployeeDoorTestCase):
                 self.assertIsNone(out)                    # B's own read: refused
         self.assertEqual(served, [OID_A, OID_B])          # A's second read was A's cache
 
+    def test_a_recipe_still_reading_past_the_answers_budget_declines_and_says_nothing(self):
+        reads_made = []
+
+        def slow(reads, ask, draft):
+            for _ in range(5):
+                reads_made.append(reads.call("plx.object", {"object_id": PO}))
+            draft.sentences.append("A guess.")
+        clock = itertools.count(0, 20)   # each clock read is 20 s after the last
+        with mock.patch.dict(fast_answer._RECIPES, {"po_status": slow}), \
+                mock.patch.object(fast_answer.time, "monotonic",
+                                  side_effect=lambda: float(next(clock))):
+            ran, why = self.answer(OID_A, "status on PO5447?")
+        self.assertIsNone(ran)
+        self.assertEqual(why, ["time_budget"])
+        self.assertLess(len(reads_made), 5)
+        # The budget is the answer's own: the next answer reads afresh.
+        ran, why = self.answer(OID_A, "status on PO#9999?")
+        self.assertIsNotNone(ran, why)
+
+    def test_one_answers_reads_decide_the_readers_policy_once_and_the_next_answer_anew(self):
+        """An answer's reads share the policy decided at its start (as the console pins
+        one per request), not one decision per read; the next answer decides it again,
+        so a grant revoked between answers applies to it; past ``POLICY_PIN_SECONDS``
+        each read decides it again."""
+        reads = fast_answer.Reads.of_server(self.server(OID_A))
+        host = reads.host
+        decided = []
+        policy_now = host.policy_now
+
+        def counted(actor):
+            decided.append(actor)
+            return policy_now(actor)
+
+        def three_reads():
+            with reads.request():
+                for _ in range(3):
+                    out = reads.call("plx.object", {"object_id": PO})
+                    self.assertEqual(out["object"]["object_id"], PO)
+        with mock.patch.object(host, "policy_now", side_effect=counted):
+            three_reads()
+            self.assertEqual(len(decided), 1)
+            three_reads()
+            self.assertEqual(len(decided), 2)            # the next answer: decided anew
+            from operating import ontology_host
+            with mock.patch.object(ontology_host, "POLICY_PIN_SECONDS", -1.0):
+                three_reads()
+            self.assertEqual(len(decided), 2 + 1 + 3)    # pin expired: every read decides
+        # Another reader's call inside a pinned answer never reads the pinned policy.
+        with reads.request():
+            other = mock.Mock(principals=frozenset({"someone-else"}))
+            with mock.patch.object(host, "policy_now", return_value="other") as now:
+                self.assertEqual(host.policy_for(other), "other")
+                now.assert_called_once_with(other)
+            self.assertIsNot(host.policy_for(reads._gated), "other")
+
 
 def _cell(text, handle, field="row.number"):
     return {"untrusted_text": text, "origin": {"citation": handle, "field_path": field}}
@@ -343,111 +403,152 @@ def _run(recipe, answers, ask):
     return draft, reads
 
 
+class SharedPoNumberTests(unittest.TestCase):
+    """A number Business Central and the Portal both hold names one order only when an
+    identity link joins them: "whats going on w/ po PO100040" was answered "received,
+    Complete in the Portal" from the Portal's own PO100040 (another supplier's order)
+    while Business Central's PO100040 was 111 days late."""
+
+    BC = 'PurchaseOrder:bc.purchase_orders:{"id":"bc-1"}'
+    PORTAL = 'PurchaseOrder:portal.app_purchase_order:{"id":"cm-1"}'
+
+    def found(self):
+        return {"candidates": [
+            {"object": {"object_id": oid, "object_type": "PurchaseOrder",
+                        "display": "PO100040"}, "tier": "verified",
+             "matched": {"raw": "PO100040", "normalized": "PO100040"}}
+            for oid in (self.PORTAL, self.BC)]}
+
+    def answers(self, name, arguments):
+        if name == "plx.find":
+            return self.found()
+        return {}
+
+    def test_different_orders_sharing_the_number_are_asked_when_the_recipe_asks(self):
+        ask = fast_answer.Ask("po_status", "PO100040", None)
+        with mock.patch("operating.why_trail.same_records", return_value=False):
+            with self.assertRaises(fast_answer._Choice):
+                fast_answer._po_root(StubReads(self.answers), ask, self.found(),
+                                     ("portal.app_purchase_order", "bc.purchase_orders"),
+                                     ask_which=True)
+            picked = fast_answer._po_root(StubReads(self.answers), ask, self.found(),
+                                          ("bc.purchase_orders", "portal.app_purchase_order"))
+        self.assertEqual(picked["object"]["object_id"], self.BC)
+
+    def test_one_order_held_in_both_systems_is_read_as_one(self):
+        ask = fast_answer.Ask("po_status", "PO100040", None)
+        with mock.patch("operating.why_trail.same_records", return_value=True):
+            picked = fast_answer._po_root(StubReads(self.answers), ask, self.found(),
+                                          ("portal.app_purchase_order", "bc.purchase_orders"))
+        self.assertEqual(picked["object"]["object_id"], self.PORTAL)
+
+
 class NewRecipeTests(unittest.TestCase):
     """The recipes added for counts, shipments, Sage, people, mail, Teams and files, each
     at its output boundary over stubbed tool results: what is said is cited, what the
     reader may not see or the reads leave unsure declines."""
 
-    def batches(self, n, *, withheld=False, page=50, released=(), cancelled=(),
-                portal_only=(), lineage="fm_bronze"):
-        """``n`` batches each held in FileMaker (``lineage``) and in the Portal's copy, but
-        those FileMaker ``released`` or ``cancelled`` (its record off the held list, its
-        Portal copy still on it) and ``portal_only`` ones (no FileMaker batch at all)."""
-        def record(i, system):
-            binding, key = (("portal.fm_batch", i) if system != "gold_etl_from_fm"
-                            else ("portal.app_batch_record", f"c{i}"))
-            return {"object": {"object_id": f"Batch:{binding}:{{\"id\":\"{key}\"}}",
-                               "object_type": "Batch", "lineage": system,
-                               "display": _cell(f"BC-{20000 + i}", f"api://{binding}/{i}",
-                                                "row.batch_name")}}
-        everything, held = {}, []
-        for i in range(n):
-            copy = record(i, "gold_etl_from_fm")
-            everything.setdefault(f"BC-{20000 + i}", []).append(copy)
-            held.append(copy)
-            if i in portal_only:
-                continue
-            fm = record(i, lineage)
-            everything[f"BC-{20000 + i}"].append(fm)
-            if i not in released and i not in cancelled:
-                held.append(fm)
+    def held(self, records, codes, *, cap=50, **result):
+        """plx.aggregate's count_distinct of the batch code over FileMaker's held batches:
+        ``records`` FileMaker records holding ``codes`` distinct codes, a citation each up
+        to ``cap`` (a ``citations_capped`` gap past it)."""
+        handles = [f"api://public.batch/%7B%22id%22%3A{11000 + i}%7D@g" for i in range(records)]
+        group = {"key": {}, "value": str(codes), "inputs": records, "markings": [],
+                 "inputs_citations": [{"l1_handle": h, "field_path": "row.namebatch_c"}
+                                      for h in handles[:cap]]}
+        out = {"groups": [group], "partial": False, "completeness": {"complete": True},
+               "gaps": [{"reason": "citations_capped"}] if records > cap else []}
+        out.update(result)
 
         def answers(name, args):
-            codes = next((f["value"] for f in args["filters"] if f["op"] == "in"), None)
-            rows = held if codes is None else [r for c in codes for r in everything.get(c, ())]
-            start = int(args.get("cursor") or 0)
-            more = start + page < len(rows)
-            return {"candidates": rows[start:start + page] + rows[start:start + 1],
-                    "gaps": [{"reason": "marking_withheld"}] if withheld else [],
-                    "completeness": {"next_cursor": str(start + page) if more else None}}
-        return answers
+            return copy.deepcopy(out) if name == "plx.aggregate" else None
+        return answers, handles
 
-    def test_a_count_is_every_batch_the_reader_sees_once_or_declines(self):
-        """Each physical batch once (FileMaker and the Portal both hold it), by FileMaker's
-        hold: none lost, none twice, N=1/10/60."""
+    def gated(self, draft, reads, rows):
+        """The draft's values through the claim gate, bound to what its reads returned."""
+        from operating import agent_session, claim_checks
+        returned = {"counts": [], "currencies": {}}
+        for name, args in reads.calls:
+            claim_checks.returned_evidence(name, args, reads.answers(name, args), returned)
+        # As the fast path submits it (``host_submission``: each value one claim citing at
+        # most the gate's per-claim citations), each claim parsed against its own citations.
+        block = {"format": fast_answer.ANSWER_FORMAT, "answerability": "answerable",
+                 "text": " ".join(draft.sentences), "values": draft.values, "gaps": []}
+        submission = agent_session.host_submission(
+            [], block["text"] + "\n\n```json\n" + json.dumps(block) + "\n```")
+        self.assertEqual(len(submission["claims"]), len(draft.values))
+        items = []
+        for at, claim in enumerate(submission["claims"]):
+            parsed = claim_checks.parse_value_claims(claim["value_claims"],
+                                                     claim["citations"], [])
+            items.append({"id": f"F{at}", "texts": [claim["text"]], "value_claims": parsed,
+                          "citations": [{"handle": h, "status": "resolved"}
+                                        for h in claim["citations"]]})
+        return claim_checks.check_items(items, rows=rows.get, calculations=(),
+                                        returned=returned)
+
+    def test_a_hold_count_is_one_exact_distinct_count_the_gate_binds(self):
+        """One aggregate, its distinct batch codes and the records holding them both said
+        and both exact under the gate (N=1/10/60, past the citation cap too); "N distinct
+        batches (M records)" only where a code is on two records."""
         ask = fast_answer.Ask("batch_hold_count", "", None)
-        for n in (1, 10, 60):
-            with self.subTest(n=n):
-                draft, reads = _run(fast_answer.batch_hold_count, self.batches(n), ask)
-                count = next(v for v in draft.values if v["name"] == "on_hold_count")
-                self.assertEqual(count["value"], str(n))      # none lost, none twice
-                inputs = [i["l1_handle"] for i in count["calculation"]["inputs"]]
-                self.assertEqual(len(set(inputs)), n)
-                self.assertTrue(all("fm_batch" in h for h in inputs))   # the system of record
-                self.assertEqual([v["name"] for v in draft.values
-                                  if v["name"].endswith("_count")], ["on_hold_count"])
-                self.assertEqual(len([c for c in reads.calls if c[0] == "plx.find"]),
-                                 (2 * n + 49) // 50)          # no twin lookup needed
-                self.assertIn("system of record", " ".join(draft.sentences))
-        # a filtered value withheld from the reader: no count at all
-        with self.assertRaises(fast_answer.Unanswerable):
-            _run(fast_answer.batch_hold_count, self.batches(3, withheld=True), ask)
-        with self.assertRaises(fast_answer.Unanswerable):     # none seen is no proof of none
-            _run(fast_answer.batch_hold_count, self.batches(0), ask)
-        with self.assertRaises(fast_answer.Unanswerable):     # an unknown system of a batch
-            _run(fast_answer.batch_hold_count, self.batches(2, lineage="bc_manufacturing"),
-                 ask)
-        with self.assertRaises(fast_answer.Unanswerable):     # more than the gate can check
-            _run(fast_answer.batch_hold_count, self.batches(fast_answer.MAX_COUNTED + 1), ask)
+        for records, codes in ((1, 1), (10, 10), (60, 60), (10, 9), (166, 165)):
+            with self.subTest(records=records, codes=codes):
+                answers, handles = self.held(records, codes)
+                draft, reads = _run(fast_answer.batch_hold_count, answers, ask)
+                self.assertEqual([c[0] for c in reads.calls], ["plx.aggregate"])
+                filters = {(f["property"], f["op"]) for f in reads.calls[0][1]["filters"]}
+                self.assertIn(("batch_number", "absent"), filters)   # FileMaker's records
+                values = {v["name"]: v for v in draft.values}
+                self.assertEqual(values["on_hold_count"]["value"], str(codes))
+                self.assertEqual(values["on_hold_count"]["calculation"]["op"],
+                                 "count_distinct")
+                said = " ".join(draft.sentences)
+                if records == codes:
+                    self.assertNotIn("on_hold_records", values)
+                    self.assertNotIn("distinct", said.split(" you can")[0])
+                else:
+                    self.assertEqual(values["on_hold_records"]["value"], str(records))
+                    self.assertIn(f"{codes} distinct batches ({records} records)", said)
+                self.assertIn("not compared", said)
+                rows = {h: {"relation": "public.batch", "key": {"id": 11000 + i},
+                            "row": {"id": 11000 + i}} for i, h in enumerate(handles)}
+                result = self.gated(draft, reads, rows)
+                self.assertTrue(result["passed"], result["failures"])
+                self.assertEqual({c["bound"] for e in result["items"] for c in e["claims"]},
+                                 {"exact"})
 
-    def test_two_systems_disagreeing_on_a_hold_count_by_filemaker_and_say_so(self):
-        """FileMaker released or cancelled while the Portal's copy still shows the hold:
-        not counted, a disagreement said; a batch only the Portal's copy holds is said and
-        never counted."""
+    def test_a_hold_count_cut_withheld_or_not_filemakers_declines(self):
         ask = fast_answer.Ask("batch_hold_count", "", None)
-        draft, _reads = _run(fast_answer.batch_hold_count, self.batches(
-            60, released={3, 55}, cancelled={7}, portal_only={9, 10}), ask)
-        values = {v["name"]: v for v in draft.values}
-        self.assertEqual(values["on_hold_count"]["value"], "55")
-        self.assertEqual(values["disagree_count"]["value"], "3")
-        self.assertTrue(all("fm_batch" in i["l1_handle"]
-                            for i in values["disagree_count"]["calculation"]["inputs"]))
-        self.assertEqual(values["portal_only_count"]["value"], "2")
-        said = " ".join(draft.sentences)
-        self.assertNotIn("BC-20003", said.split(":", 1)[1].split(".")[0])   # not counted
-        self.assertIn("disagree", said)
-        self.assertIn("not counted", said)
+        for name, (records, codes, result, why) in {
+                "partial": (166, 165, {"partial": True}, "count_cut"),
+                "not complete": (166, 165, {"completeness": {"complete": False}}, "count_cut"),
+                "a value withheld": (166, 165, {"gaps": [{"reason": "citations_capped"},
+                                                         {"reason": "marking_withheld"}]},
+                                     "count_cut"),
+                "refused": (5, 5, {"refused": {"filters": "x"}}, "count_cut"),
+                "no value": (5, 5, {"groups": [{"key": {}, "value": None, "inputs": 5}]},
+                             "count_cut"),
+                "two groups": (5, 5, {"groups": [{"value": "1"}, {"value": "2"}]},
+                               "count_not_one"),
+                "none held": (0, 0, {}, "nothing_counted"),
+                "more codes than records": (5, 6, {}, "batch_record_unexpected"),
+        }.items():
+            with self.subTest(name), self.assertRaises(fast_answer.Unanswerable) as no:
+                _run(fast_answer.batch_hold_count, self.held(records, codes, **result)[0], ask)
+            self.assertEqual(str(no.exception), why)
+        answers, _handles = self.held(3, 3)
 
-    def test_a_staging_test_record_is_said_apart_never_counted(self):
-        """The schema's staging lineage (public.batch id >= 9000000, a TEST-BC- name) is no
-        FileMaker batch: the count says it apart and goes on (the live-ops keys skip it)."""
-        ask = fast_answer.Ask("batch_hold_count", "", None)
-        real = self.batches(3)
-        staging = [{"object": {"object_id": f"Batch:portal.fm_batch:{{\"id\":{9000000 + i}}}",
-                               "object_type": "Batch", "lineage": "gold_native_staging",
-                               "display": _cell(f"TEST-BC-{i}", f"api://portal.fm_batch/t{i}",
-                                                "row.namebatch_c")}} for i in range(2)]
-
-        def answers(name, args):
-            out = real(name, args)
-            held = not any(f["op"] == "in" for f in args["filters"])
-            return {**out, "candidates": out["candidates"] + (staging if held else [])}
-        draft, _reads = _run(fast_answer.batch_hold_count, answers, ask)
-        values = {v["name"]: v["value"] for v in draft.values}
-        self.assertEqual((values["on_hold_count"], values["staging_count"]), ("3", "2"))
-        self.assertNotIn("TEST-BC", draft.sentences[0])
-        self.assertNotIn("disagree_count", values)
-        self.assertNotIn("portal_only_count", values)
+        def portal(name, args):                 # a cited record that is no FileMaker batch
+            out = answers(name, args)
+            out["groups"][0]["inputs_citations"][1]["l1_handle"] = \
+                "api://public.app_batch_record/c1@g"
+            return out
+        with self.assertRaises(fast_answer.Unanswerable) as no:
+            _run(fast_answer.batch_hold_count, portal, ask)
+        self.assertEqual(str(no.exception), "batch_record_unexpected")
+        with self.assertRaises(fast_answer.Unanswerable):     # the tool refuses
+            _run(fast_answer.batch_hold_count, lambda name, args: None, ask)
 
     def one_batch(self, fm, portal, *, code="BC-26100A", lineage="fm_bronze"):
         """One batch code's records: FileMaker's (status, QC status) rows and the Portal
@@ -471,6 +572,9 @@ class NewRecipeTests(unittest.TestCase):
             if name == "plx.find":
                 self.assertEqual(args["filters"], [
                     {"property": "batch_code", "op": "in", "value": [code]}])
+                # The code is looked up in the identifier index (a query), never by a
+                # scan of every batch (a filter-only find: minutes under load).
+                self.assertEqual(args.get("query"), code)
                 return {"candidates": objects, "completeness": {}}
             return {"status": "resolved", "citation": args["citation"],
                     "fields": rows[args["citation"]]}
@@ -625,6 +729,37 @@ class NewRecipeTests(unittest.TestCase):
         with self.assertRaises(fast_answer.Unanswerable):   # two balances: no one figure
             _run(fast_answer.open_ar, self.sage("1234.56", "100"), ask)
 
+    def test_a_sage_card_past_a_full_first_find_is_looked_for_once_more(self):
+        """Ten other cards fill the first find (the name held in other systems, near names
+        ranked first): the Sage card is found by one wider find, never declined; not found
+        even then, the fast path declines."""
+        ask = fast_answer.Ask("open_ar", "Maple Soap Co", "sage")
+        others = [{"object": {"object_id": f"Customer:bc.customers:{{\"id\": \"{i}\"}}",
+                              "object_type": "Customer",
+                              "display": _cell(f"Maple Soap Co {i}", f"bc://c/{i}",
+                                               "row.displayName")}}
+                  for i in range(fast_answer.FIND_LIMIT)]
+        for wide_has_it in (True, False):
+            with self.subTest(wide_has_it=wide_has_it):
+                sage = self.sage("1234.56", "1234.56")
+
+                def answers(name, args):
+                    out = sage(name, args)
+                    if name == "plx.find":
+                        out = {"candidates": others[:args["limit"]] + (
+                            out["candidates"] if args["limit"] > fast_answer.FIND_LIMIT
+                            and wide_has_it else [])}
+                    return out
+                if not wide_has_it:
+                    with self.assertRaises(fast_answer.Unanswerable):
+                        _run(fast_answer.open_ar, answers, ask)
+                    continue
+                draft, reads = _run(fast_answer.open_ar, answers, ask)
+                self.assertEqual([a["limit"] for n, a in reads.calls if n == "plx.find"],
+                                 [fast_answer.FIND_LIMIT, fast_answer.WIDE_FIND_LIMIT])
+                self.assertIn("balance due in Sage (customer MAPLE01) is 1234.56 CAD",
+                              " ".join(draft.sentences))
+
     def mail(self, docs, gaps=()):
         card = {"object": {"object_id": "Customer:bc.customers:{}", "object_type": "Customer",
                            "display": _cell("TOWN OF EXAMPLE", "bc://c/1", "row.displayName")}}
@@ -655,10 +790,18 @@ class NewRecipeTests(unittest.TestCase):
         self.assertIn('you can see was sent on 2026-10-01, subject "Statement"', said)
         self.assertIn("some mailboxes are outside what you can read", said)
         self.assertEqual(draft.answerability, "partial")
-        tie = [dict(docs[1], citation="graph-mail://m/3"), docs[1]]
+        tie = [dict(docs[1], citation="graph-mail://m/3",
+                    title=_cell("Invoice", "graph-mail://m/3", "row.subject")), docs[1]]
         for broken in (docs[:1], tie):             # only a notice; two at one instant
             with self.assertRaises(fast_answer.Unanswerable):
                 _run(fast_answer.customer_last_mail, self.mail(broken), ask)
+        # Copies of one message in two mailboxes (one subject, direction and instant) are
+        # that message, said once from its first copy, never a tie.
+        copy = dict(docs[1], citation="graph-mail://m/0",
+                    title=_cell("Statement", "graph-mail://m/0", "row.subject"))
+        for found in ([docs[1], copy], [copy, docs[1]]):
+            self.assertEqual(fast_answer._latest_message(found)["citation"],
+                             "graph-mail://m/0")
 
     def test_same_named_cards_mail_is_read_together_and_the_newest_names_its_card(self):
         """Several Business Central cards of one name (more than an open-AR answer reads):
@@ -1095,5 +1238,242 @@ class ChangesRecipeTests(unittest.TestCase):
                 "changes": [], "gaps": [], "withheld": {}})
 
 
+class PriceRecipeTests(unittest.TestCase):
+    """The price recipes over the price_history engine's real output for N=1/10/60 posted
+    invoice lines, the lines' own entries on later answer pages (an item bought often):
+    the computed last and previous prices carry each line's citation, so the answer is
+    stated and cited, never declined for want of a page."""
+
+    LINE = "PurchaseInvoiceLine:bc.purchase_invoice_lines:{{\"id\": \"l{}\"}}"
+    HEAD = "PurchaseInvoice:bc.purchase_invoices:{{\"id\": \"h{}\"}}"
+
+    def history(self, lines):
+        from datetime import date, timedelta
+        from operating import price_history
+        evidence = {"invoice_cost": [], "invoice_date": []}
+        edges = []
+        for i in range(lines):
+            line, head = self.LINE.format(i), self.HEAD.format(i)
+            evidence["invoice_cost"].append({
+                "name": f"invoice_cost_{i}", "kind": "property", "object_id": line,
+                "value": str(Decimal("100") - Decimal(i) / 2), "unit": "KG",
+                "currency": "CAD", "check": "passed",
+                "citation": {"l1_handle": f"bc://pil/{i}", "field_path": "row.unitCost"}})
+            evidence["invoice_date"].append({
+                "name": f"invoice_date_{i}", "kind": "property", "object_id": head,
+                "value": (date(2026, 1, 1) + timedelta(days=i)).isoformat()})
+            edges.append({"from": line, "to": head,
+                          "link_type": "PurchaseInvoiceLine.line_of"})
+        args = {"series": [{"id": "invoices", "label": "posted invoices",
+                            "price": "invoice_cost", "date": "invoice_date",
+                            "header_link": "PurchaseInvoiceLine.line_of"}]}
+        run = price_history.plan_run(args, evidence, edges, items={}, name="price_trend",
+                                     as_of="2026-11-01", resolver=None, actor=None,
+                                     complete=True, covers=lambda _s: True)
+        # the first page: the computed (answer-level) entries only, the lines' later
+        return {"answerability": {"state": "answerable"}, "conflicts": [],
+                "gaps": run["gaps"], "answer": [e for e in run["entries"]
+                                                if e.get("kind") == "computed"]}
+
+    def answers(self, vendor_name):
+        invoice = {"object_id": "PurchaseInvoice:bc.purchase_invoices:{}",
+                   "object_type": "PurchaseInvoice", "display": _cell("PI-9", "bc://pi/9")}
+        card = {"object_id": "Supplier:bc.vendors:{}", "object_type": "Supplier",
+                "display": _cell("Acme Supply Card Name", "bc://v/1", "row.displayName")}
+
+        def answers(name, args):
+            if name == "plx.around" and len(args["path"]) == 1:
+                return {"objects": [invoice], "completeness": {"truncated": False}}
+            if name == "plx.around":
+                return {"objects": [card], "completeness": {"truncated": False}}
+            if name == "plx.read" and args["citation"] == "bc://pi/9":
+                return {"status": "resolved", "citation": "bc://pi/9", "fields": {
+                    "row.vendorName": vendor_name, "row.vendorNumber": "V100"}}
+            return None
+        return answers
+
+    def recipe(self, recipe, lines, answers=None):
+        result = self.history(lines)
+        with mock.patch.object(fast_answer, "_price_history",
+                               return_value=("Product:bc.items:{}", "R-1", result)):
+            return _run(recipe, answers or (lambda _n, _a: None),
+                        fast_answer.Ask(recipe.__name__, "R-1", None))
+
+    def test_the_trend_states_both_prices_cited_to_their_lines_past_the_first_page(self):
+        for lines in (10, 60):
+            with self.subTest(lines=lines):
+                draft, _ = self.recipe(fast_answer.price_trend, lines)
+                values = {v["name"]: v for v in draft.values}
+                said = " ".join(draft.sentences)
+                self.assertIn("is going down", said)
+                last, before = lines - 1, lines - 2
+                self.assertEqual(values["last_price"]["citations"][0]["l1_handle"],
+                                 f"bc://pil/{last}")
+                self.assertEqual(values["previous_price"]["citations"][0]["l1_handle"],
+                                 f"bc://pil/{before}")
+                self.assertIn(f"{Decimal(100) - Decimal(last) / 2} CAD per KG", said)
+        with self.assertRaises(fast_answer.Unanswerable):   # one price: no direction
+            self.recipe(fast_answer.price_trend, 1)
+
+    def test_the_last_paid_vendor_is_the_one_its_invoice_records(self):
+        for lines in (1, 10, 60):
+            with self.subTest(lines=lines):
+                draft, reads = self.recipe(fast_answer.last_price, lines,
+                                           self.answers("Acme Supply"))
+                values = {v["name"]: v for v in draft.values}
+                self.assertEqual(values["vendor"]["citations"][0],
+                                 {"l1_handle": "bc://pi/9", "field_path": "row.vendorName"}
+                                 | {k: v for k, v in values["vendor"]["citations"][0].items()
+                                    if k not in ("l1_handle", "field_path")})
+                self.assertEqual(values["last_price"]["citations"][0]["l1_handle"],
+                                 f"bc://pil/{lines - 1}")
+                self.assertIn("last bought from Acme Supply (vendor V100)",
+                              " ".join(draft.sentences))
+                self.assertEqual([len(a["path"]) for n, a in reads.calls
+                                  if n == "plx.around"], [1])   # no vendor card read
+        # an invoice that records no vendor name: the vendor card it is billed by
+        draft, _ = self.recipe(fast_answer.last_price, 10, self.answers(""))
+        self.assertIn("last bought from Acme Supply Card Name", " ".join(draft.sentences))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class RankedListTests(unittest.TestCase):
+    """A list question ranked by amount, days late or date: Home's list ranked by the
+    figure it carries, each named record read and cited from its card."""
+    NOW = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)
+
+    def test_ranking_words_are_read_once_and_a_family_that_cannot_rank_declines(self):
+        for question, want in (
+                ("biggest late po by $$", ("late_po_count", ("amount", "desc"), 1)),
+                ("top 3 late POs by amount", ("late_po_count", ("amount", "desc"), 3)),
+                ("which late pos are oldest", ("late_po_count", ("days_late", "desc"), None)),
+                ("any lots expiring this week", ("lots_expiring", ("date", "asc"), None)),
+                ("how many POs are late", ("late_po_count", None, None)),
+                ("sort late pos by date", None),            # a ranking it cannot do
+                ("biggest open orders for Acme", None),      # never an unranked list
+                ("lots that expired last week", None)):
+            with self.subTest(question=question):
+                ask = fast_answer.understand(question, self.NOW)
+                self.assertEqual(ask and (ask.intent, ask.rank, ask.top), want)
+        self.assertEqual(fast_answer.understand("any lots expiring this week", self.NOW).within, 7)
+
+    def late(self, totals, *, count=None, cards=None):
+        gaps = []
+        for i, total in enumerate(totals):
+            gap = {"kind": "late_po", "days_late": 10 + i, "citations": [f"api://po/{i}"],
+                   "object_id": f"PurchaseOrder:portal.app_purchase_order:{{\"id\":{i}}}"}
+            if total is not None:
+                gap["amount"] = {"value": total[0], "currency": total[1],
+                                 "citation": f"api://po/{i}"}
+            gaps.append(gap)
+
+        def answers(name, args):
+            if name == "plx.find":
+                return {"status": "home", "completeness": {"complete": True}, "home": {
+                    "inbox": "read", "stale": False, "unrecognized": 0,
+                    "late_orders": {"count": len(totals) if count is None else count,
+                                    "complete": True}, "gaps": gaps,
+                    "run_at": "2026-11-03T00:04Z"}}
+            i = int(re.search(r"(\d+)\}$", args["object_id"]).group(1))
+            total = (cards or {}).get(i, totals[i])
+            values = [{"property": "po_number", "value": f"PO1000{i:02d}",
+                       "citation": {"l1_handle": f"api://po/{i}", "field_path": "row.po"}}]
+            if total is not None:
+                values += [{"property": "total_cost", "value": total[0], "citation": {
+                    "l1_handle": f"api://po/{i}", "field_path": "row.total"}},
+                    {"property": "currency", "value": total[1], "citation": {
+                        "l1_handle": f"api://po/{i}", "field_path": "row.currency"}}]
+            return {"status": "resolved", "values": values}
+        return answers
+
+    def test_the_biggest_late_po_is_the_largest_cited_total_of_the_whole_late_list(self):
+        ask = fast_answer.understand("biggest late po by $$", self.NOW)
+        for n in (1, 10, 50):
+            with self.subTest(n=n):
+                totals = [(f"{100 * ((i * 7) % n) + 5}.50", "USD") for i in range(n)]
+                draft, reads = _run(fast_answer.late_po_count, self.late(totals), ask)
+                best = max(range(n), key=lambda i: Decimal(totals[i][0]))
+                self.assertIn(f"PO1000{best:02d} (USD {totals[best][0]})", draft.sentences[0])
+                self.assertEqual(len(reads.calls), 2)   # Home, then the one card it names
+                self.assertTrue(all(v["citations"][0]["l1_handle"] == f"api://po/{best}"
+                                    for v in draft.values))
+        top3 = fast_answer.understand("top 3 late pos by amount", self.NOW)
+        draft, _r = _run(fast_answer.late_po_count, self.late(
+            [("5", "USD"), ("30", "USD"), None, ("20", "USD")]), top3)
+        self.assertIn("PO100001 (USD 30), PO100003 (USD 20), PO100000 (USD 5)",
+                      draft.sentences[0])
+        self.assertEqual(draft.answerability, "partial")   # one order has no usable total
+        for answers in (self.late([("5", "USD")] * 3, count=60),         # page short of Home
+                        self.late([("5", "USD"), ("9", "EUR")]),         # never compared
+                        self.late([None, None]),                         # nothing to rank
+                        self.late([("5", "USD")], cards={0: ("7", "USD")})):   # card moved
+            with self.assertRaises(fast_answer.Unanswerable):
+                _run(fast_answer.late_po_count, answers, ask)
+
+    def lots(self, days, *, complete=True, cards=None):
+        gaps = [{"kind": "lot_near_expiry", "days_to_expiry": d, "citations": [f"api://lot/{i}"],
+                 "object_id": f"Lot:portal.lot:{{\"id\":{i}}}"} for i, d in enumerate(days)]
+
+        def answers(name, args):
+            if name == "plx.find":
+                self.assertEqual(args["query"], fast_answer.LOT_QUERY)
+                return {"status": "home", "completeness": {"complete": complete}, "home": {
+                    "inbox": "read", "stale": False, "unrecognized": 0, "gaps": gaps,
+                    "as_of": "2026-11-02", "rules": [], "not_run": []}}
+            i = int(re.search(r"(\d+)\}$", args["object_id"]).group(1))
+            day = (cards or {}).get(i) or (date(2026, 11, 2) + timedelta(days=days[i])).isoformat()
+            return {"status": "resolved", "values": [
+                {"property": "lot_number", "value": f"L-{i:03d}", "citation": {
+                    "l1_handle": f"api://lot/{i}", "field_path": "row.lotno"}},
+                {"property": "expiry_date", "value": day, "citation": {
+                    "l1_handle": f"api://lot/{i}", "field_path": "row.expirydate"}}]}
+        return answers
+
+    def test_lots_expiring_this_week_are_the_briefings_near_expiry_lots_in_the_window(self):
+        ask = fast_answer.understand("any lots expiring this week", self.NOW)
+        reads_now = mock.patch.object(fast_answer, "reads_now", lambda reads: self.NOW)
+        with reads_now:
+            # today 2026-11-03 (as_of 11-02 + 1) through 11-10 (as_of + 8)
+            draft, reads = _run(fast_answer.lots_expiring,
+                                self.lots([0, 1, 3, 8, 9, 20], complete=False), ask)
+            self.assertIn("L-001 on 2026-11-03; L-002 on 2026-11-05; L-003 on 2026-11-10",
+                          draft.sentences[0])
+            self.assertNotIn("L-000", draft.sentences[0])     # expired yesterday
+            self.assertNotIn("L-004", draft.sentences[0])
+            self.assertEqual(len(reads.calls), 4)
+            for answers in (self.lots([1, 3, 5], complete=False),   # cut inside the window
+                            self.lots([3, 1, 9]),                    # not soonest first
+                            self.lots([20, 25]),                     # none in the window
+                            self.lots([1, 2], cards={1: "2026-12-01"}),   # card moved
+                            self.lots(list(range(1, 9)) * 3)):        # too many to name
+                with self.assertRaises(fast_answer.Unanswerable):
+                    _run(fast_answer.lots_expiring, answers, ask)
+
+
+class HomeGapFiguresTests(unittest.TestCase):
+    def test_a_home_gap_carries_the_briefings_ranking_amount_and_a_lots_expiry_days(self):
+        """Home shows the figure the briefing ranks by, only a usable one the reader was
+        shown with its citation, and a near-expiry lot's days to expiry."""
+        from operating.mcp_server import _home_gap
+        base = {"id": "pe-0123456789abcdef", "kind": "late_po", "state": "open",
+                "object_id": "PurchaseOrder:portal.app_purchase_order:x",
+                "object_type": "PurchaseOrder", "first_seen": "2026-11-01",
+                "last_seen": "2026-11-02", "summary": "late", "days_late": 4,
+                "citations": ["api://public.app_purchase_order/x@0-1"],
+                "follow_up": {"priority": "high"}}
+        amount = {"value": "1234.50", "currency": "USD", "basis": "total_cost",
+                  "handle": "api://public.app_purchase_order/x@0-1"}
+        shown = _home_gap({**base, "event": {"amount": amount}})
+        self.assertEqual(shown["amount"], {"value": "1234.50", "currency": "USD",
+                                           "citation": amount["handle"]})
+        for event in ({"amount": {**amount, "suspect": "far above its history"}},
+                      {"amount": {**amount, "lines": {"verdict": "disagree"}}},
+                      {"amount": {**amount, "handle": "api://other/y@0-1"}}, {}):
+            self.assertNotIn("amount", _home_gap({**base, "event": event}))
+        lot = _home_gap({**base, "kind": "lot_near_expiry", "object_type": "Lot",
+                         "object_id": "Lot:portal.lot:x", "days_late": None,
+                         "event": {"days": 6}})
+        self.assertEqual(lot["days_to_expiry"], 6)

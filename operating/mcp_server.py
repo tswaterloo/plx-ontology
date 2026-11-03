@@ -835,6 +835,9 @@ _HOME_PHRASES: tuple[tuple[re.Pattern[str], tuple[str, ...] | None], ...] = tupl
         (rf"(?:show me |show |list )?{_LATE} sales orders", ("late_order",)),
         (r"(?:which |what )?quotes (?:have )?(?:expired|lapsed)", ("expired_quote",)),
         (r"(?:show me |show |list )?(?:expired|lapsed) quotes", ("expired_quote",)),
+        (r"(?:which |what |any )?lots (?:are )?(?:expiring|near(?:ing)? expiry|about to "
+         r"expire|close to expiry)(?: soon| this week| this month)?", ("lot_near_expiry",)),
+        (r"(?:show me |show |list )?(?:expiring|near expiry) lots", ("lot_near_expiry",)),
         (r"(?:which |what )?receipts (?:have no|are missing|without) (?:a )?qc(?: record)?",
          ("receipt_without_qc",)),
         (r"(?:which |what )?(?:quantities|quantity mismatches) (?:are wrong|disagree|conflict)",
@@ -961,6 +964,15 @@ def _home_gap(gap: Any) -> dict[str, Any] | None:
         shown["next_question"] = {"untrusted_text": follow["missing"], "origin": origin}
     if type(gap.get("days_late")) is int and gap["days_late"] >= 0:
         shown["days_late"] = gap["days_late"]
+    event = gap.get("event") if isinstance(gap.get("event"), dict) else {}
+    if gap.get("kind") == "lot_near_expiry" and type(event.get("days")) is int \
+            and event["days"] >= 0:
+        shown["days_to_expiry"] = event["days"]
+    from .briefing import ranking_amount
+    amount = ranking_amount(gap)   # already this reader's (proactive_engine._shown)
+    if amount is not None and amount[2] in handles:
+        shown["amount"] = {"value": format(amount[0], "f"), "currency": amount[1],
+                           "citation": amount[2]}
     contracts = ontology_tools.load_contracts()
     return shown if not validate(shown, _HOME_GAP, root=contracts, limit=1) else None
 

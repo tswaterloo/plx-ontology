@@ -357,6 +357,20 @@ def _item(gap: Mapping[str, Any], order: int, since: str | None, run_at: str | N
                 acknowledged=gap.get("state") == "acknowledged")
 
 
+def ranking_amount(gap: Mapping[str, Any]) -> tuple[Decimal, str, str] | None:
+    """(value, currency, its cited handle) of a gap's amount when the briefing would rank
+    by it (``rank``'s usable amount: not suspect, its lines not disagreeing, a basis
+    that is the record's own total); None otherwise."""
+    item = _item(gap, 0, None, None)
+    event = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
+    amount = event.get("amount") if isinstance(event.get("amount"), Mapping) else {}
+    handle = amount.get("handle")
+    if item is None or not item.amount or item.suspect or item.disagree is not None \
+            or item.basis in UNRANKED_BASES or not isinstance(handle, str):
+        return None
+    return item.amount[0], item.amount[1], handle
+
+
 def rank(items: list[Item]) -> tuple[list[Item], str]:
     """The items worst first (``RANK_BASIS``). Money is placed within its own currency:
     each usable amount's place among the amounts of that currency (0 the largest), so

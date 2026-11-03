@@ -1384,6 +1384,10 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str,
                            "cells": [], "code": None}
     if calc["op"] == "expression":
         return _recompute_expression(calc, evidence, out)
+    if calc["op"] == "count_distinct":
+        # Its value is a tool's count of distinct values over records it cites a sample
+        # of: nothing the harness re-reads recomputes it.
+        return {**out, "code": "calculation_not_recomputable"}
     rows = _rows(evidence)
     numbers: list[Decimal] = []
     units, currencies, sources = set(), set(), set()

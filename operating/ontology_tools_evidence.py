@@ -401,8 +401,9 @@ class RuntimeCitations(CitationReader):
 
     def tenant_domains(self) -> frozenset[str] | None:
         """The case mail scope's internal domains and every domain of a captured
-        mailbox's addresses (as ``_sender_excluded`` reads them); None when neither is
-        known."""
+        mailbox's addresses (as ``_sender_excluded`` reads them), less shared mail
+        providers' (``ontology.mentions.own_mail_domains``: a mailbox with a gmail.com
+        alias never makes every gmail.com sender ours); None when none is known."""
         domains = {d.lower() for d in getattr(getattr(self.runtime, "mail_scope", None),
                                               "internal_domains", ()) if isinstance(d, str)}
         if self.mail_capture_dir is not None:
@@ -417,7 +418,8 @@ class RuntimeCitations(CitationReader):
                                         if i.count("@") == 1}
             except (OSError, sqlite3.Error, ValueError):
                 pass   # unreadable: the domains stay those of the mail scope
-        return frozenset(domains) or None
+        from ontology.mentions import own_mail_domains
+        return own_mail_domains(domains) or None
 
     # ---- helpers -----------------------------------------------------------
 
@@ -1602,7 +1604,10 @@ class EvidenceTools:
                 raise ToolError("invalid_input", "participant searches mail: sources must "
                                 "include graph_mail")
             sources = ["graph_mail"]
-            if ot._OBJECT_ID.match(participant.strip()) and self.reader is not None:
+            # Our own domains: an object's addresses are widened to their domains
+            # outside ours, and mail only addressed to an outside participant counts
+            # when one of us sent it (``_participant_documents``).
+            if self.reader is not None:
                 tenant = self.reader.tenant_domains()
         since = _parse_time(arguments["since"]) if arguments.get("since") else None
         until = (_parse_time(arguments["until"], end_of_day=True)
@@ -1860,11 +1865,16 @@ class EvidenceTools:
                                           bool]:
         """The mail whose sender, To or CC is ``participant`` (an address, a domain, or
         an object id: the addresses this reader may see on that record, its firm twins
-        and its contacts (``_party_contacts``), and, when our own domains are known (``tenant``), their domains outside
-        ours and the shared providers'), as (ids, id -> (direction, matched_by), what was
-        searched, cut). ``direction`` is ``from_them`` when a participant sent it, else
-        ``to_them``. Every value read is gated as any other (``_visible_value``); the
-        newest ``DOC_SCAN_CAP`` within since/until are kept (an older cut is said)."""
+        and its contacts (``_party_contacts``), and, when our own domains are known
+        (``tenant``), their domains outside ours and the shared providers'), as (ids,
+        id -> (direction, matched_by), what was searched, cut). ``direction`` is
+        ``from_them`` when a participant sent it, else ``to_them``: a message an outside
+        participant (one not at our own domains) only received is listed only when one
+        of us sent it (``_sent_by_us``; our domains unknown: never, and a
+        ``recipient_matches_unchecked`` gap says so), so a third party's mass mailing
+        that lists them is not mail with them. Every value read is gated as any other
+        (``_visible_value``); the newest ``DOC_SCAN_CAP`` within since/until are kept
+        (an older cut is said)."""
         text = participant.strip().lower()
         addresses: set[str] = set()
         domains: set[str] = set()
@@ -1908,22 +1918,46 @@ class EvidenceTools:
         rows, more = self._participant_rows(scope, needles)
         cut |= more
         roles: dict[str, tuple[str, str]] = {}
+        # Messages an outside participant only received: mail with them only when one of
+        # us sent it (a third party's mailing listing them among its recipients is no
+        # mail with them), checked on the sender below.
+        received_only: set[str] = set()
+        received_ours: set[str] = set()
         for row in rows:
-            match = None
+            match, internal = None, False
             for found in _ADDRESS.finditer(str(row["value"]).lower()):
+                hit = None
                 if found[0] in wanted and found[0] in addresses:
-                    match = "address"
-                    break
-                if any(_within(found[1], d) for d in domains & wanted):
-                    match = match or "domain"
+                    hit = "address"
+                elif any(_within(found[1], d) for d in domains & wanted):
+                    hit = "domain"
+                if hit is None:
+                    continue
+                internal |= tenant is not None and any(_within(found[1], t) for t in tenant)
+                match = "address" if "address" in (match, hit) else hit
             if match is None:
                 continue
             direction = "from_them" if row["property"] == "sender" else "to_them"
+            if direction == "to_them":
+                (received_ours if internal else received_only).add(row["object_id"])
             old = roles.get(row["object_id"])
             if old is not None:
                 direction = "from_them" if "from_them" in (old[0], direction) else direction
                 match = "address" if "address" in (old[1], match) else match
             roles[row["object_id"]] = (direction, match)
+        unchecked = sorted(oid for oid in received_only - received_ours
+                           if roles[oid][0] == "to_them")
+        if unchecked:
+            ours = self._sent_by_us(scope, unchecked, tenant)
+            dropped = [oid for oid in unchecked if oid not in ours]
+            for oid in dropped:
+                del roles[oid]
+            if dropped and tenant is None:
+                gaps.append(_gap("unknown", "recipient_matches_unchecked",
+                                 f"participant:{participant}"[:700],
+                                 f"{len(dropped)} message(s) only addressed to the "
+                                 "participant were left out: our own mail domains are not "
+                                 "known here, so whether one of us sent them is unknown"))
         dates = self._document_dates(scope, sorted(roles))
         dated = []
         for oid in roles:
@@ -1939,6 +1973,29 @@ class EvidenceTools:
             dated, cut = dated[:DOC_SCAN_CAP], True
         kept = {oid for _, oid in dated}
         return kept, {oid: roles[oid] for oid in kept}, needles, cut
+
+    def _sent_by_us(self, scope: Any, ids: Sequence[str],
+                    tenant: frozenset[str] | None) -> set[str]:
+        """The messages of ``ids`` whose sender this reader may see and is one of us
+        (``ontology.mentions.sent_from_own_domain``: at one of our own domains
+        ``tenant``, or our help desk's host under our name); none when our domains are
+        unknown. A sender the reader may not see (an excluded person's, a withheld
+        value) is never ours here."""
+        from ontology.mentions import sent_from_own_domain
+        if not tenant or not ids:
+            return set()
+        verdicts: dict[str, set[bool]] = {}
+        for row in self.store.conn.execute(
+                f"""SELECT v.object_id, v.value FROM object_values v
+                    WHERE v.object_id IN (SELECT value FROM json_each(:ids))
+                    AND v.property = 'sender' AND v.value IS NOT NULL
+                    AND {tt._visible_value('v', scope.gate)}""",
+                scope.params(ids=json.dumps(sorted(ids)))):
+            senders = [found[1] for found in _ADDRESS.finditer(str(row["value"]).lower())]
+            verdicts.setdefault(row["object_id"], set()).add(
+                len(senders) == 1 and sent_from_own_domain(senders[0], tenant))
+        # Every sender value read must be ours: one that is not, or none, is not ours.
+        return {oid for oid, seen in verdicts.items() if seen == {True}}
 
     def _party_contacts(self, scope: Any, ids: Sequence[str]) -> tuple[list[str], bool]:
         """The contacts of the party records ``ids`` this reader may see: those a visible

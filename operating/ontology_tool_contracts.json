@@ -3061,7 +3061,7 @@
                           "type": "integer",
                           "minimum": 0,
                           "description": "A late purchase order's days past its requested-by date (late_po overdue, unconfirmed_po); unconfirmed_po: no supplier confirmation is linked, late_po: one is."
-                        },
+                        }, "days_to_expiry": {"type": "integer", "minimum": 0, "description": "A near-expiry lot's days from the inbox's as_of to its recorded expiry date (lot_near_expiry)."}, "amount": {"type": "object", "additionalProperties": false, "required": ["value", "currency", "citation"], "description": "The record's own cited total the briefing ranks by (not suspect, its lines not disagreeing), shown only to a reader who may open it; amounts in different currencies are never compared.", "properties": {"value": {"type": "string", "pattern": "^-?[0-9]{1,15}(?:\\.[0-9]{1,6})?$"}, "currency": {"type": "string", "pattern": "^[A-Z]{3}$"}, "citation": {"$ref": "#/$defs/handle"}}},
                         "citations": {
                           "type": "array",
                           "items": {
@@ -5436,7 +5436,7 @@
             "type": "string",
             "minLength": 3,
             "maxLength": 700,
-            "description": "An e-mail address, a domain (@acme.com) or a Customer/Supplier/Contact object_id (a record searches its addresses, its firm twins' and its BC contacts' and their people's): only mail from or to it, newest first, each with direction and matched_by."
+            "description": "An e-mail address, a domain (@acme.com) or a Customer/Supplier/Contact object_id (a record searches its addresses, its firm twins' and its BC contacts' and their people's): only mail from it or to it (an outside party: sent by one of us), newest first, each with direction and matched_by."
           },
           "sources": {
             "type": "array",
@@ -5647,7 +5647,7 @@
                         "from_them",
                         "to_them"
                       ],
-                      "description": "participant mode: from_them when a participant sent it, else to_them (a participant is in To or CC)."
+                      "description": "participant mode: from_them when a participant sent it, else to_them (a participant is in To or CC; an outside one only when one of us sent it)."
                     },
                     "matched_by": {
                       "type": "string",

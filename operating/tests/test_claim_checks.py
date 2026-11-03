@@ -2917,6 +2917,82 @@ class AskClaimFormTests(unittest.TestCase):
                                     calculations=(), returned=home(75, True, page))),
                          ["claim_value_mismatch"])
 
+    def test_a_complete_distinct_count_binds_only_a_distinct_claim(self):
+        """"How many batches are on hold": one ``plx.aggregate`` ``count_distinct`` states
+        the distinct codes (exact, citations a sample past the cap) and, in its inputs, the
+        records holding them. A ``count_distinct`` claim binds only to such a complete
+        entry; a cut aggregate, a capped listing short of the cap, a record it does not
+        list, a count as known then, or a plain count claimed as distinct is refused."""
+        from operating import ontology_tools_aggregate as oa
+        rows = dict(receipt(index) for index in range(120))
+        handles = list(rows)
+        capped = {"state": "unknown", "reason": "citations_capped", "subject": "members"}
+
+        def distinct(value, inputs, listed, *, measure="count_distinct", arguments=None,
+                     **result):
+            group = {"key": {}, "value": None if value is None else str(value),
+                     "inputs": inputs, "markings": [],
+                     "inputs_citations": [{"l1_handle": h, "field_path": "row.id"}
+                                          for h in listed]}
+            out = {"groups": [group], "partial": False, "gaps": [],
+                   "completeness": {"complete": True, "truncated": False}}
+            out.update(result)
+            return claim_checks.returned_evidence("plx.aggregate", {
+                "object_type": "Receipt", **(arguments or {}),
+                "measure": {"op": measure, "property": "receipt_number"}}, out)
+
+        def run(claim, returned, cited=None):
+            cited = cited or [given["citation"] for given in claim["of"]]
+            return gate(f"{claim['value']} batches.", cited, [claim], rows=rows,
+                        calculations=(), returned=returned)
+        listed = handles[:oa.MAX_CITATIONS]
+        sample = [{"citation": h} for h in listed[:10]]
+        whole = distinct(119, 120, listed, gaps=[capped])
+        for claim in (op("119", "count_distinct", sample), op("120", "count", sample)):
+            with self.subTest(claim=claim["op"]):
+                result = run(claim, whole)
+                self.assertTrue(result["passed"], result["failures"])
+                self.assertEqual(checked(result)[0]["bound"], "exact")
+        for size in (1, 10, 40):                       # all cited, no cap: N=1/10/40
+            with self.subTest(size=size):
+                cites = [{"citation": h} for h in handles[:size]]
+                result = run(op(str(max(size - 1, 1)), "count_distinct", cites),
+                             distinct(max(size - 1, 1), size, handles[:size]))
+                self.assertTrue(result["passed"], result["failures"])
+        refused = {
+            "a plain count claimed as distinct": (op("119", "count_distinct", sample),
+                                                  distinct(119, 119, listed, gaps=[capped],
+                                                           measure="count")),
+            "a distinct value claimed as a record count": (op("119", "count", sample), whole),
+            "partial": (op("119", "count_distinct", sample),
+                        distinct(119, 120, listed, gaps=[capped], partial=True)),
+            "another gap": (op("119", "count_distinct", sample), distinct(
+                119, 120, listed, gaps=[capped, {"reason": "cross_system_twins"}])),
+            "not complete": (op("119", "count_distinct", sample), distinct(
+                119, 120, listed, gaps=[capped], completeness={"complete": False})),
+            "no value": (op("119", "count_distinct", sample),
+                         distinct(None, 120, listed, gaps=[capped])),
+            "short of the cap": (op("119", "count_distinct", sample),
+                                 distinct(119, 120, listed[:49], gaps=[capped])),
+            "records unlisted, no cap": (op("119", "count_distinct", sample),
+                                         distinct(119, 120, listed)),
+            "more values than records": (op("121", "count_distinct", sample),
+                                         distinct(121, 120, listed, gaps=[capped])),
+            "a record it does not list": (op("119", "count_distinct",
+                                             [{"citation": handles[100]}]), whole),
+            "as known then": (op("119", "count_distinct", sample), distinct(
+                119, 120, listed, gaps=[capped],
+                arguments={"as_known_at": "2026-01-01T00:00:00Z"})),
+            "another value": (op("118", "count_distinct", sample), whole),
+        }
+        for name, (claim, returned) in refused.items():
+            with self.subTest(refused=name):
+                self.assertEqual(codes(run(claim, returned)), ["claim_value_mismatch"])
+        with self.assertRaises(ValueError):            # a count names no quantity role
+            claim_checks.parse_value_claims(
+                [op("119", "count_distinct", sample, role="received")],
+                [h["citation"] for h in sample], [])
+
     def test_a_count_is_exact_only_when_a_complete_count_entry_binds_it(self):
         """An Ask that saw 12 receipts and cited 8 must not
         pass "8 receipts"; a count is exact only over a complete count a tool returned."""

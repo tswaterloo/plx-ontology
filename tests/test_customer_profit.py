@@ -473,8 +473,61 @@ class CustomerProfitTests(unittest.TestCase):
         # The 2 most recent by first posted invoice (or order date): SO-104, SO-101.
         self.assertEqual([o["number"] for o in got["orders"]], ["SO-101", "SO-104"])
         self.assertTrue(got["trail"][1]["label"].startswith(
-            "Worst of the 2 most recent order(s) in the last 12 months; 2 more in the period "
+            "Worst of the 2 most recent orders in the last 12 months; 2 more in the period "
             "not read"))
+
+    def test_an_answer_out_of_time_ranks_what_it_read_and_says_the_rest_was_not_read(self):
+        # The clock moves one second each time the budget is checked: once at the start,
+        # once per order of the customer before its dates are read (5 here: SO-101..105),
+        # once before each order's margin is read. Past the budget no further order is
+        # read; the order asked about is read first; never a total over a subset.
+        customer = self.world.customer("C-50")
+        whole = cp.profitability(self.world.call, customer, today=TODAY)
+        for budget in (10_000.0, None):
+            with self.subTest(budget=budget):   # a budget never reached changes nothing
+                same = cp.profitability(self.world.call, customer, today=TODAY,
+                                        budget_seconds=budget)
+                self.assertEqual((same["totals"], same["coverage"]),
+                                 (whole["totals"], whole["coverage"]))
+
+        def ticking():
+            ticks = iter(range(100_000))
+            return lambda: float(next(ticks))
+        calls = []
+
+        def call(name, arguments):
+            calls.append(name)
+            return self.world.call(name, arguments)
+        got = cp.profitability(call, customer, today=TODAY, focus="SO-102",
+                               budget_seconds=0.0, clock=ticking())
+        self.assertEqual(got["coverage"]["read"], 0)
+        self.assertTrue(got["coverage"]["timed_out"])
+        self.assertEqual(got["totals"]["margin"], None)
+        self.assertNotIn("plx.investigate", calls)
+        so102 = next(o for o in whole["orders"] if o["number"] == "SO-102")
+        for read_n in (1, 2, 3):
+            with self.subTest(read=read_n):
+                got = cp.profitability(self.world.call, customer, today=TODAY,
+                                       focus="SO-102", budget_seconds=float(6 + read_n),
+                                       clock=ticking())
+                read = [o["number"] for o in got["orders"]]
+                self.assertEqual(len(read), read_n)
+                self.assertIn("SO-102", read)                  # the order asked about first
+                self.assertTrue(got["coverage"]["timed_out"])
+                self.assertEqual(got["coverage"]["in_period"], 4)
+                self.assertEqual((got["totals"]["revenue"], got["totals"]["margin"]),
+                                 (None, None))                 # never a total of a subset
+                gap = next(g for g in got["gaps"] if g["code"] == "ORDERS_NOT_ALL_READ")
+                # It says what was read: the order asked about first, then the most recent.
+                said = "the order you asked about (SO-102)" + (
+                    "" if read_n == 1 else f" and the {read_n - 1} most recent other order"
+                    + ("" if read_n == 2 else "s"))
+                self.assertIn(said + " were read before the answer's time ran out",
+                              gap["detail"])
+                self.assertNotIn(f"the {read_n} most recent", json.dumps(got, default=str))
+                self.assertIn(f"{4 - read_n} more in the period not read", gap["detail"])
+                mine = next(o for o in got["orders"] if o["number"] == "SO-102")
+                self.assertEqual(mine["margin"], so102["margin"])   # what was read is whole
 
     def test_named_order_period_and_mixed_currency(self):
         got = cp.profitability(self.world.call, self.world.customer("C-50"), today=TODAY,
@@ -515,6 +568,24 @@ class RestrictedReaderTests(unittest.TestCase):
         self.assertIn("3 of 4 order(s) in the last 12 months rest on records you may not "
                       "read", got["next_action"]["text"])
 
+    def test_an_open_order_value_is_stated_only_to_a_reader_shown_the_amounts(self):
+        """The open value of orders not invoiced is the finance-marked order amount: a
+        reader without finance learns the orders are drafts, never what they are worth."""
+        from operator_api.tests.test_profit_ask import draft_records
+        for markings, value in ((store_ddl.MARKINGS, {"CAD": Decimal("1250.50")}),
+                                (tuple(m for m in store_ddl.MARKINGS if m != "finance"), {})):
+            with self.subTest(finance="finance" in markings):
+                world = World(self, records=draft_records(), markings=markings)
+                got = cp.profitability(world.call, world.customer("C-52"), today=TODAY)
+                opened = got["open_orders"]
+                self.assertEqual((opened["count"], opened["statuses"], opened["value"]),
+                                 (2, {"Draft": 2}, value))
+                words = cp.open_words(opened)
+                self.assertTrue(words.startswith("both are drafts in Business Central"))
+                self.assertEqual("1,250.50" in words, bool(value))
+                if not value:
+                    self.assertNotIn("1250", json.dumps(got, default=str))
+
     def test_orders_the_reader_may_not_read_are_neither_counted_nor_named(self):
         sets = ("companies", "customers", "itemLedgerEntries", "items", "purchaseOrders",
                 "purchaseOrderLines", "salesCreditMemos", "salesCreditMemoLines",
@@ -540,6 +611,7 @@ class QuestionTests(unittest.TestCase):
     def test_question_words(self):
         self.assertTrue(cp.profit_question("Is Northwind profitable?"))
         self.assertTrue(cp.profit_question("why are we losing money on Acme"))
+        self.assertTrue(cp.profit_question("is dandylion making us money or nah"))
         self.assertFalse(cp.profit_question("where is PO 106001"))
         self.assertEqual(cp.customer_words("Is Northwind Test Foods profitable and why not?"),
                          "Northwind Test Foods")
@@ -549,6 +621,15 @@ class QuestionTests(unittest.TestCase):
         self.assertEqual(cp.customer_words("why did Acme Foods lose money on S-ORD101106"),
                          "Acme Foods")
         self.assertEqual(cp.customer_words("is NOPO02 profitable"), "NOPO02")
+        # chat shorthand names nobody; a question across customers names no one customer
+        # ("most" was looked up as a name and offered six "Zips CarWash- MOSTL" cards)
+        self.assertEqual(cp.customer_words("is dandylion making us money or nah"),
+                         "dandylion")
+        for across in ("who's our most profitable customer this yr and why",
+                       "top 5 customers by margin", "which customers lose us money",
+                       "which customer makes us the most money"):
+            self.assertEqual(cp.customer_words(across), "", across)
+        self.assertEqual(cp.customer_words("is Best Buy profitable?"), "Best Buy")
         p = cp.period_of("profitable over the last 6 months", TODAY)
         self.assertEqual((p.start, p.end), (date(2026, 4, 30), TODAY))
         self.assertEqual(cp.period_of("is it profitable", TODAY).start, date(2025, 10, 30))

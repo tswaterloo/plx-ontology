@@ -1518,6 +1518,56 @@ def shared_mail_domain(domain: str) -> bool:
     return registrable_domain(domain).split(".")[0] in SHARED_MAIL_BRANDS
 
 
+def own_mail_domains(domains: Iterable[Any]) -> frozenset[str]:
+    """Our own mail domains among ``domains`` (lower case): a shared provider's (free
+    mail, ISP mail, a marketplace host, ``shared_mail_domain``) is never ours, even when
+    one of our mailboxes has an address there; else every user of that provider would
+    count as one of us. Our verified or configured domains and our mailboxes' domains
+    pass through it alike."""
+    out = set()
+    for value in domains:
+        domain = str(value or "").strip().strip(".").lower()
+        if domain and ids.valid("dns_domain", domain) and not shared_mail_domain(domain):
+            out.add(domain)
+    return frozenset(out)
+
+
+# A service host's tenant label shorter than this is no name of ours (``ab.zendesk.com``).
+_OWN_LABEL_MIN = 4
+
+
+# hosted help desks and mail services that send for a company under its own name
+# (``acme.zendesk.com``); only these hosts can carry our name, so a look-alike
+# ``acme.example.com`` is never us
+SERVICE_MAIL_HOSTS = frozenset({
+    "zendesk.com", "freshdesk.com", "helpscoutapp.com", "gorgias.com", "kustomerapp.com",
+    "intercom-mail.com", "hubspotemail.net", "mailchimpapp.net", "service-now.com",
+    "zohodesk.com", "desk.com", "shopifyemail.com", "myshopify.com",
+})
+
+
+def sent_from_own_domain(domain: Any, own: Iterable[str] | None) -> bool:
+    """Whether a sender at ``domain`` is one of us, given our own domains ``own``
+    (``own_mail_domains``): at or under one of them, or on a service host under our own
+    name, the one label left of the host's registrable domain being the name of one of
+    our registrable domains (``acme.zendesk.com`` for ``acme.com``: our help desk sending
+    for us; only a known service host, ``SERVICE_MAIL_HOSTS``). A shared provider's domain is never ours; our domains unknown: never."""
+    if not isinstance(domain, str) or not own:
+        return False
+    domain = domain.strip().strip(".").lower()
+    own = own_mail_domains(own)
+    if not domain or not own or shared_mail_domain(domain):
+        return False
+    if any(domain_under(domain, d) for d in own):
+        return True
+    host = registrable_domain(domain)
+    if host == domain or host not in SERVICE_MAIL_HOSTS:
+        return False
+    label = domain[:-len(host) - 1].rsplit(".", 1)[-1]
+    names = {d.split(".")[0] for d in own if registrable_domain(d) == d}
+    return len(label) >= _OWN_LABEL_MIN and label in names
+
+
 def party_domain(party_domains: Sequence[tuple[str, str]], counterparts: Sequence[str],
                  holders: Callable[[str], set[str]], party: str) -> dict[str, Any] | None:
     """The ``party_domain`` feature: a counterparty mail domain at or under one of the
@@ -2208,4 +2258,5 @@ __all__ = ["BINDING_KIND", "DOCUMENT_KINDS", "Document", "EXTERNAL_UNCONFIRMABLE
            "CORROBORATING_FEATURES", "corroborable_link_types", "corroborate_links",
            "corroboration_handles", "corroboration_objects", "date_order", "day", "reader_view",
            "domain_under", "mail_domain", "party_domain", "petra_thread",
-           "registrable_domain", "shared_mail_domain", "website_domain"]
+           "own_mail_domains", "registrable_domain", "sent_from_own_domain",
+           "shared_mail_domain", "website_domain"]

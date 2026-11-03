@@ -1616,7 +1616,10 @@ class StoredTextLookupTests(SharePointHostCase):
         counted = mock.patch.object(document_understanding, "extract_document",
                                     side_effect=document_understanding.extract_document)
         with mock.patch.object(captured_text, "_CACHE", captured_text._CACHE.empty()), \
-                mock.patch.dict(case_tools_host._INDEXES, clear=True), counted as extract:
+                mock.patch.dict(case_tools_host._INDEXES, clear=True), \
+                mock.patch.dict(case_tools_host._SNAPSHOTS, clear=True), \
+                mock.patch.dict(case_tools_host._VERSIONS, clear=True), \
+                mock.patch.object(case_tools_host, "warm_sharepoint"), counted as extract:
             yield extract
 
     def ask(self, actor, query):
@@ -1754,6 +1757,57 @@ class StoredTextLookupTests(SharePointHostCase):
             answer = self.ask(EMPLOYEE, f"PO2{added - 1:05d}")
             self.assertEqual([d["citation"] for d in answer["documents"]],
                              [self.handle(f"01N{added - 1:03d}")])
+
+
+    def test_a_second_readers_session_reuses_the_stores_file_reads_until_it_changes(self):
+        # The reader-independent reads of every captured file (names, identifier index)
+        # are made once per capture state, not once per reader session: a later session
+        # reads no record for them, and a new capture is read again.
+        from operating import case_tools_host
+        with self.new_process():
+            first = self.ask(EMPLOYEE, "PO999999")
+            with mock.patch.object(case_tools_host, "_file_names",
+                                   side_effect=AssertionError("names read again")), \
+                    mock.patch.object(case_tools_host, "_file_index",
+                                      side_effect=AssertionError("index read again")):
+                again = self.ask(EMPLOYEE, "PO999999")
+            for answer in (first, again):
+                answer.get("meta", {}).pop("as_known_at", None)
+            self.assertEqual(again, first)
+            self.drive.file("01NEW", "fresh.txt", "01LOTS", b"Purchase order PO277777",
+                            mime="text/plain", acl=(RICARDO, SALES))
+            self.capture.run(scope())
+            # After a capture only the versions it added are parsed: every other file's
+            # record was read once and is not read again.
+            tokens = mock.patch.object(case_tools_host, "_name_tokens",
+                                       side_effect=case_tools_host._name_tokens)
+            with tokens as parsed:
+                found = self.ask(EMPLOYEE, "PO277777")
+            self.assertEqual([d["citation"] for d in found["documents"]],
+                             [self.handle("01NEW")])
+            self.assertEqual(parsed.call_count, 1)
+
+    def test_the_hosts_warm_up_reads_the_stores_files_before_any_question(self):
+        # Started with the host's tools: the reader-independent reads are made in the
+        # background, so the first question reads no record and finds the same files.
+        from operating import case_tools_host
+        with self.new_process():
+            expected = self.ask(EMPLOYEE, "PO999999")
+        warm = case_tools_host.warm_sharepoint
+        with self.new_process():
+            with mock.patch.dict(case_tools_host._WARMING, clear=True):
+                thread = warm(self.state, every=None)
+                self.assertIsNotNone(thread)
+                thread.join(60)
+                self.assertFalse(thread.is_alive())
+            with mock.patch.object(case_tools_host, "_file_names",
+                                   side_effect=AssertionError("names read again")), \
+                    mock.patch.object(case_tools_host, "_file_index",
+                                      side_effect=AssertionError("index read again")):
+                first = self.ask(EMPLOYEE, "PO999999")
+            for answer in (first, expected):
+                answer.get("meta", {}).pop("as_known_at", None)
+            self.assertEqual(first, expected)
 
 
 class CapturedFilePageTests(SharePointHostCase):

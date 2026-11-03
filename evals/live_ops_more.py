@@ -336,7 +336,8 @@ def quotes_without_order(world: lk.World) -> list[lk.Candidate]:
         lk._fact("absent", "no_accepted_quote", [], (), value="accepted",
                  accept=["no accepted quote", "no quotes accepted", "none accepted",
                          "no quote has been accepted", "none are accepted", "all draft",
-                         "still draft", "only draft"],
+                         "still draft", "only draft", "none ... is accepted",
+                         "none ... are accepted", "none ... has been accepted"],
                  contradicts=["quote was accepted", "was accepted", "were accepted"])],
         ["portal mirror app_quote.status", "BC salesQuotes.status"],
         "no Portal or BC quote is accepted, so none waits for an order")]
@@ -404,7 +405,13 @@ def _latest(messages: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     if not dated:
         return None
     last = max(dated, key=lambda m: (m["at"], m["handle"]))
-    return None if sum(m["at"] == last["at"] for m in dated) > 1 else last
+    tied = [m for m in dated if m["at"] == last["at"]]
+    # Copies of one message (``lk.copy_key``) delivered at one instant to two mailboxes
+    # are one message, not a tie: the first copy by handle stands for it.
+    keys = {lk.copy_key(m) for m in tied}
+    if len(tied) > 1 and (len(keys) != 1 or None in keys):
+        return None
+    return min(tied, key=lambda m: m["handle"])
 
 
 def customer_last_mail(world: lk.World) -> list[lk.Candidate]:
@@ -419,7 +426,8 @@ def customer_last_mail(world: lk.World) -> list[lk.Candidate]:
             continue
         out.append(lk.Candidate(customer, "Customer", {"customer": customer}, [
             lk._fact("message", "last_message", [last["handle"]], ("graph-mail",),
-                     message_id=last["message_id"], quote=str(last.get("subject"))[:300],
+                     message_id=last["message_id"], copies=lk.copies(last, messages),
+                     quote=str(last.get("subject"))[:300],
                      mail=True, **lk.FORMS["last_vendor_message"])],
             ["mail capture: current messages whose sender or a recipient is at the domain of "
              "the customer's BC customers.email; the latest received_at"],

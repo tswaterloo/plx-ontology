@@ -31,7 +31,9 @@ for a Portal/FileMaker/Sage mirror row, ``graph-mail``):
   member, no ``known`` form and not in the question;
 * ``message``: one captured mail message (``message_id``, ``quote``); stated only when a
   claim the gate passed cites that message (the quote is what it says, for the reader of
-  the key);
+  the key). The same message sits in several mailboxes, each copy its own captured record:
+  ``copies`` lists the other copies' ids (``evals.live_ops_keys.copy_key``: the same
+  internet message id), and citing any copy cites the message;
 * ``document``: one captured record of another system (a Teams message, a SharePoint
   file, a Mission Control task); stated only when a claim the gate passed cites that
   record (its handle without the version);
@@ -138,7 +140,7 @@ def key_problems(key: Any) -> list[str]:
     known = {"id", "kind", "value", "label", "accept", "polarity", "contradicts",
              "members", "pattern", "known", "message_id", "quote", "tolerance",
              "tolerance_pct", "records", "allowed", "markings", "mail", "unit",
-             "nothing_exists", "unsigned", "amount"}
+             "nothing_exists", "unsigned", "amount", "copies"}
     for index, fact in enumerate(facts):
         where = f"fact{index}"
         if not isinstance(fact, Mapping) or fact.get("kind") not in FACT_KINDS:
@@ -171,6 +173,10 @@ def key_problems(key: Any) -> list[str]:
             problems.append(f"{where}_document")
         if kind == "message" and not (fact.get("message_id") and fact.get("quote")):
             problems.append(f"{where}_message")
+        if "copies" in fact and (kind != "message" or not isinstance(fact["copies"], list)
+                                 or not all(isinstance(c, str) and c
+                                            for c in fact["copies"])):
+            problems.append(f"{where}_copies")
         if kind not in ("absent",) and not fact.get("records"):
             problems.append(f"{where}_records_missing")
     return problems
@@ -265,6 +271,11 @@ def _within(got: Decimal, fact: Mapping[str, Any], value: Any = None) -> bool:
     return abs(got - want) <= slack
 
 
+# A time unit right after a figure: the figure is a duration ("131 days", "3 wks").
+_DURATION = re.compile(r"\s*(?:-\s*)?(?:days?|wks?|weeks?|months?|mos?|years?|yrs?|hours?|hrs?|"
+                       r"minutes?|mins?)\b", re.I)
+
+
 def _label_stems(fact: Mapping[str, Any]) -> list[list[str]]:
     """Each of the fact's labels (``label``: a word or phrase, or a list of them), as stems."""
     labels = fact.get("label") or []
@@ -286,11 +297,15 @@ def _labelled_numbers(text: str, fact: Mapping[str, Any]) -> list[tuple[Decimal,
     labels = _label_stems(fact)
     if not labels:
         return []
+    # a figure with a time unit after it ("131 days late") is a duration: never the figure
+    # of a fact that names no time unit (a count of late orders is not their days late)
+    durations = not any(_DURATION.fullmatch(" " + w) for stems in labels for w in stems)
     found = []
     for clause in _clauses(text):
         words = list(scoring._WORD.finditer(clause))
         stemmed = [scoring._stem(w.group(0)) for w in words]
-        quantities = [n for n in _numbers(clause) if not _names_something(clause, n[0])]
+        quantities = [n for n in _numbers(clause) if not _names_something(clause, n[0])
+                      and not (durations and _DURATION.match(clause, n[1]))]
         labelled = any(_has_label(stemmed, stems) for stems in labels)
         if labelled and (len(quantities) == 1 or exact_count(fact)):
             # the clause's one figure is the label's ("We currently have 14 purchase
@@ -431,8 +446,14 @@ def denied(clause: str, start: int) -> bool:
     return len(_QUOTES.findall(clause[:start])) % 2 == 1
 
 
+# A yes/no answer word opening a clause, set off by a colon, comma or dash ("No: nothing
+# on record ...", "No, none is accepted").
+_ANSWER_WORD = re.compile(r"\s*(?:no|yes)\s*[:,\u2013\u2014-]\s")
+
+
 def asserted(text: Any, form: str, claim_aware: bool = False) -> bool:
-    """Whether ``text`` asserts ``form`` (its words in a row, each by its stem): in a clause
+    """Whether ``text`` asserts ``form`` (its words in a row, each by its stem; a form in
+    parts split by ``...`` has each part in a row, in order, in one clause): in a clause
     that does not leave the matter open (``HEDGES``, ``UNDECIDED``) and with no negator in
     the ``evals.score.NEGATION_WINDOW`` words before it (a negator inside the form is the
     form's own: ``not late``). "Whether it is late cannot be decided" asserts neither
@@ -441,10 +462,11 @@ def asserted(text: Any, form: str, claim_aware: bool = False) -> bool:
     contradicts the key."""
     if not isinstance(text, str):
         return False
-    words = [scoring._stem(w) for w in scoring._WORD.findall(
-        re.sub(r"n[’']t\b", " not", scoring._fold(form)))]
-    if not words:
+    parts = [[scoring._stem(w) for w in scoring._WORD.findall(
+        re.sub(r"n[’']t\b", " not", scoring._fold(part)))] for part in form.split("...")]
+    if not all(parts):
         return False
+    words, rest = parts[0], parts[1:]
     for clause in _clauses(text):
         found = list(scoring._WORD.finditer(clause))
         stems = [scoring._stem(m.group(0)) for m in found]
@@ -453,14 +475,54 @@ def asserted(text: Any, form: str, claim_aware: bool = False) -> bool:
         for i in range(len(stems) - len(words) + 1):
             if stems[i:i + len(words)] != words:
                 continue
-            outside = stems[:i] + stems[i + len(words):]
-            before = [m.group(0) for m in found[max(0, i - scoring.NEGATION_WINDOW):i]]
+            # a form in parts ("none ... accepted"): each later part follows in the same
+            # clause, in order, the words between them free ("none of the quotes you can
+            # see is accepted")
+            spans, at = [(i, i + len(words))], i + len(words)
+            for more in rest:
+                hit = next((j for j in range(at, len(stems) - len(more) + 1)
+                            if stems[j:j + len(more)] == more), None)
+                if hit is None:
+                    break
+                spans.append((hit, hit + len(more)))
+                at = hit + len(more)
+            if len(spans) != len(parts) or any(
+                    scoring.NEGATORS & {m.group(0) for m in found[a:b]}
+                    or not _part_gap_ok(clause, found, a, b)
+                    for (_x, a), (b, _y) in zip(spans, spans[1:])):
+                continue   # a negator, a joined second claim or a long gap breaks the form
+            inside = {k for a, b in spans for k in range(a, b)}
+            outside = [w for k, w in enumerate(stems) if k not in inside]
+            # a clause's leading "No:" / "No," answers the question; it negates nothing after it
+            lead = 1 if found and _ANSWER_WORD.match(clause) else 0
+            before = [m.group(0) for m in found[max(lead, i - scoring.NEGATION_WINDOW):i]]
             if (HEDGES & set(outside)) or (scoring.NEGATORS & set(before)):
                 continue
             if claim_aware and denied(clause, found[i].start()):
                 continue
             return True
     return False
+
+
+
+# the words between a form's parts ("none OF THE QUOTES is accepted") may only qualify the
+# first part: a short run, with no conjunction or clause punctuation that would start a
+# second claim ("none was rejected AND Q-5 is accepted" is not "none ... is accepted")
+_PART_GAP_MAX = 6
+_PART_GAP_JOINS = frozenset({"and", "but", "so", "or", "while", "whereas", "although",
+                             "though", "then", "because", "since", "yet", "however"})
+_PART_GAP_PUNCT = re.compile(r"[,;:()\u2014\u2013]|\s-\s")
+
+
+def _part_gap_ok(clause: str, found: Sequence[Any], a: int, b: int) -> bool:
+    gap = found[a:b]
+    if len(gap) > _PART_GAP_MAX:
+        return False
+    if any(m.group(0).lower() in _PART_GAP_JOINS for m in gap):
+        return False
+    start = found[a - 1].end() if a > 0 else 0
+    end = found[b].start() if b < len(found) else len(clause)
+    return not _PART_GAP_PUNCT.search(clause[start:end])
 
 
 def stated(fact: Mapping[str, Any], text: str, values: Sequence[Any]) -> bool:
@@ -580,8 +642,9 @@ def evidenced(fact: Mapping[str, Any], claims: Sequence[Mapping[str, Any]]) -> b
     if fact["kind"] == "absent":
         return True
     if fact["kind"] == "message":
+        ids = {fact["message_id"], *(fact.get("copies") or ())}
         return any(c["system"] == "graph-mail" and c["identity"] is not None
-                   and c["identity"][1] == fact["message_id"] for c in claims)
+                   and c["identity"][1] in ids for c in claims)
     want = {_identity(h) for h in fact.get("records") or ()} - {None}
     if fact["kind"] == "document":   # stated and evidenced only by citing that record
         return any(c["identity"] in want for c in claims)
@@ -631,14 +694,16 @@ def verdict(item: Mapping[str, Any], key: Mapping[str, Any], transcript: Mapping
     claims = _claims(answer, checked, scoring.served_handles(transcript))
     passed_values = [c["said"] for c in claims]
     answer_values = [v for v in answer.get("values") or [] if isinstance(v, Mapping)]
+    named = _named_numbers(text, checked)
     codes: list[str] = []
     for fact in shown:
-        said = stated(fact, text, passed_values) or (
+        read = named if fact["kind"] == "number" else text
+        said = stated(fact, read, passed_values) or (
             fact["kind"] in ("message", "document") and evidenced(fact, claims))
-        wrong = contradicted(fact, text, answer_values, question,
+        wrong = contradicted(fact, read, answer_values, question,
                              claims_made=bool(claims) and not said)
         rows.append({"id": fact.get("id"), "kind": fact["kind"], "stated": said,
-                     "partly": not said and partly_stated(fact, text, passed_values),
+                     "partly": not said and partly_stated(fact, read, passed_values),
                      "evidenced": said and evidenced(fact, claims),
                      "contradicted": wrong})
     leaks = [fact.get("id") for fact in hidden if _distinctive(fact)
@@ -674,6 +739,19 @@ def verdict(item: Mapping[str, Any], key: Mapping[str, Any], transcript: Mapping
     if outcome == "abstained":
         result["justified"] = not shown
     return result
+
+
+def _named_numbers(text: str, checked: Mapping[int, Mapping[str, Any]]) -> str:
+    """``text`` with every all-digit record identifier the answer cites (a value the gate
+    passed on an identifier column, ``106001`` on BC ``row.number``) marked as a name
+    (``#106001``, ``_names_something``): it names an order, it never states a quantity."""
+    names = {str(claim.get("value")) for entry in checked.values()
+             for claim in (entry or {}).get("claims") or () if isinstance(claim, Mapping)
+             and scoring._claim_ok(claim) and str(claim.get("value") or "").isdigit()
+             and scoring._ID_COLUMN_NAME.search(str(claim.get("field") or "").rpartition(".")[2])}
+    for name in sorted(names, key=len, reverse=True):
+        text = re.sub(rf"(?<![\w.,#/-]){re.escape(name)}(?![\w-]|[.,]\d)", f"#{name}", text)
+    return text
 
 
 def _mentioned(fact: Mapping[str, Any], text: str, values: Sequence[Any]) -> bool:

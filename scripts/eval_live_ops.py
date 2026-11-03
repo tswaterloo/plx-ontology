@@ -64,6 +64,7 @@ from evals import runner
 from evals import score as scoring
 from evals.oracle import po_lateness
 from evals.oracle.source import canonical, instant
+from ontology.mentions import own_mail_domains, sent_from_own_domain, shared_mail_domain
 
 ROOT = Path(__file__).resolve().parents[1]
 CARDS = ROOT / "evals" / "live_ops" / "cards.json"
@@ -213,14 +214,34 @@ def bc_records(db: Path, sets: Sequence[str]) -> tuple[list[dict[str, Any]], str
         conn.close()
 
 
+def own_domains(conn: sqlite3.Connection) -> frozenset[str]:
+    """Our own mail domains, as the app reads them (``RuntimeCitations.tenant_domains``):
+    every domain of a captured mailbox's UPN and recorded addresses, less shared mail
+    providers' (``ontology.mentions.own_mail_domains``)."""
+    found: set[str] = set()
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+                        "name = 'mailboxes'").fetchone():
+        return frozenset()
+    for upn, identities in conn.execute("SELECT upn, identities FROM mailboxes"):
+        values = [upn]
+        try:
+            listed = json.loads(identities or "[]")
+        except ValueError:
+            listed = []
+        values += listed if isinstance(listed, list) else []
+        found |= {str(v).rsplit("@", 1)[1] for v in values
+                  if isinstance(v, str) and v.count("@") == 1}
+    return own_mail_domains(found)
+
+
 def mail_messages(db: Path) -> tuple[list[dict[str, Any]], str]:
     """The current captured messages whose subject or preview names a PO-shaped token,
-    read-only; ``external``: the sender's domain is no captured mailbox's."""
+    read-only; ``external``: the sender is not one of us (``own_domains``,
+    ``sent_from_own_domain``)."""
     conn = _ro(db)
     try:
         meta = dict(conn.execute("SELECT key, value FROM meta"))
-        internal = {upn.rsplit("@", 1)[-1].casefold()
-                    for (upn,) in conn.execute("SELECT upn FROM mailboxes")}
+        internal = own_domains(conn)
         out = []
         for handle, message_id, record in conn.execute(
                 "SELECT l1_handle, message_id, record FROM messages WHERE superseded_at IS "
@@ -236,8 +257,9 @@ def mail_messages(db: Path) -> tuple[list[dict[str, Any]], str]:
                         "message_id": identity[1] if identity else message_id,
                         "from": sender,
                         "subject": row.get("subject"), "preview": row.get("body_preview"),
-                        "received_at": row.get("received_at"),
-                        "external": sender.rsplit("@", 1)[-1].casefold() not in internal})
+                        "received_at": row.get("received_at"), "sent_at": row.get("sent_at"),
+                        "internet_message_id": row.get("internet_message_id"),
+                        "external": not sent_from_own_domain(_domain(sender), internal)})
         return out, str(meta.get("generation") or "")
     finally:
         conn.close()
@@ -431,9 +453,16 @@ def sharepoint_files(state: Path) -> list[dict[str, Any]]:
         conn.close()
 
 
+def _domain(address: Any) -> str | None:
+    found = re.search(r"@([\w.-]+)", str(address or ""))
+    return found.group(1).strip(".").casefold() if found else None
+
+
 def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Current messages from or to a customer's own domain (its BC customers.email, a
-    domain no other customer and no public mailbox provider shares), read-only. A customer
+    """Current messages from a customer's own domain (its BC customers.email, a domain no
+    other customer and no shared mail provider shares), or from one of us
+    (``own_domains``, ``sent_from_own_domain``: never a free-mail sender, whatever
+    mailbox holds the message) to that domain, read-only. A customer
     is its name case-folded: "CITY OF MISSISSAUGA" and "City of Mississauga" are one
     customer with each card's domain, and its messages are listed under each spelling."""
     owners: dict[str, set[str]] = defaultdict(set)
@@ -445,25 +474,42 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
             owners[email.rsplit("@", 1)[-1].strip().casefold()].add(name.casefold())
             spellings[name.casefold()].add(name)
     domains = {d: next(iter(n)) for d, n in owners.items()
-               if len(n) == 1 and d not in PUBLIC_DOMAINS}
+               if len(n) == 1 and d not in PUBLIC_DOMAINS and not shared_mail_domain(d)}
     if not db.is_file() or not domains:
         return []
     conn = _ro(db)
     out = []
     try:
+        ours = own_domains(conn)
+        # sender domain, holding mailbox's domain -> one of us (the holding mailbox's
+        # domain is ours too: a capture listing no mailboxes still knows its own)
+        us: dict[tuple[Any, Any], bool] = {}
         for handle, message_id, record in conn.execute(
                 "SELECT l1_handle, message_id, record FROM messages WHERE superseded_at IS "
                 "NULL AND removed_reason IS NULL"):
             row = json.loads(record)
-            people = [str(row.get("from") or "")] + re.findall(r"[\w.%+-]+@[\w.-]+",
-                                                               str(row.get("to") or ""))
-            hit = {domains[p.rsplit("@", 1)[-1].casefold()] for p in people
-                   if p.rsplit("@", 1)[-1].casefold() in domains}
+            sender = _domain(row.get("from"))
+            box = _domain(row.get("mailbox_upn"))
+            if (sender, box) not in us:
+                us[(sender, box)] = sent_from_own_domain(sender, ours | {box} - {None})
+            # a mail we had with the customer: the customer wrote it, or one of us wrote it
+            # to the customer. A third party's mailing that only lists a customer address
+            # among its recipients (a newsletter to sixteen people) is no mail with them.
+            if sender in domains:
+                hit = {domains[sender]}
+            elif us[(sender, box)]:
+                hit = {domains[d] for d in map(_domain, re.findall(
+                    r"[\w.%+-]+@[\w.-]+", f"{row.get('to') or ''} {row.get('cc') or ''}"))
+                    if d in domains}
+            else:
+                continue
             if len(hit) != 1:
                 continue
             identity = scoring.record_identity(handle)
             out.extend({"handle": handle, "message_id": identity[1] if identity else message_id,
                         "customer": name, "subject": row.get("subject"),
+                        "from": row.get("from"), "sent_at": row.get("sent_at"),
+                        "internet_message_id": row.get("internet_message_id"),
                         "at": row.get("received_at")}
                        for name in sorted(spellings[next(iter(hit))]))
         return out
@@ -811,6 +857,7 @@ class RoutedAgent:
 
     def run(self, prompt: str, host: Any) -> Any:
         declined: list[str] = []
+        began = time.monotonic()
         route = self._shortcut()
         if route == "profit":
             ran = self._profit(host, declined)
@@ -846,6 +893,13 @@ class RoutedAgent:
         # The question's first reads, as the app's Ask makes them (``gated_run``).
         told = getattr(self.agent, "for_question", None)
         agent = told(self.question) if told is not None else self.agent
+        # The Ask's one wall budget: the session gets what the routes before it left.
+        given = getattr(agent, "budget_seconds", None)
+        if given is not None:
+            import copy
+            from operating import deep_investigation as deep
+            agent = copy.copy(agent)
+            agent.budget_seconds = deep.answer_budget(time.monotonic() - began, given)
         result = agent.run(prompt, host)
         result.agent["routed"] = "agent"
         if declined:
@@ -1001,7 +1055,9 @@ def late_text(payload: Any, events: Sequence[Mapping[str, Any]]) -> str:
                 or origin.get("citation") not in cited or origin["citation"] in seen:
             continue
         seen.add(origin["citation"])
-        values.append({"name": f"late_purchase_order_{len(values) + 1}", "value": text,
+        # named by its place in the list, never by a figure word: the grader reads a value
+        # as its name and its value ("late purchase order 1" would state a late count of 1)
+        values.append({"name": f"listed_purchase_order_{len(values) + 1}", "value": text,
                        "citations": [{"l1_handle": origin["citation"],
                                       "field_path": origin.get("field_path")}]})
     return app_text(payload, values)

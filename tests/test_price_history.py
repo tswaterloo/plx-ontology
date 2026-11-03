@@ -216,6 +216,23 @@ class PriceHistoryTests(unittest.TestCase):
                 self.assertTrue({"price_history_truncated", "price_history_incomplete"}
                                 & reasons(out), reasons(out))
 
+    def test_a_budget_spent_on_order_reads_leaves_the_receipt_trend_whole(self):
+        # sixty Portal orders spend the step budget in the order steps alone: the posted
+        # receipts were read whole, so their trend stands; the orders' never does
+        orders = [(f"2099-{1 + n // 28:02d}-{1 + n % 28:02d}", "Open", str(40 + n), "EA")
+                  for n in range(60)]
+        store, rows = world(receipts=[("2099-01-05", "121", "KG"), ("2099-01-20", "110", "KG")],
+                            orders=orders)
+        out = investigate(store, rows, STAFF)
+        got = named(out)
+        self.assertIn("step_budget_exhausted", out["answerability"]["reasons"])
+        self.assertEqual(got["price_trend"]["value"], "down")
+        self.assertEqual(got["price_trend_receipts_direction"]["value"], "down")
+        self.assertIsNone(got["price_trend_orders_direction"]["value"])
+        cut = {g.get("concerns") for g in out["gaps"] if g["reason"] == "price_history_truncated"}
+        self.assertIn("price_trend_orders_direction", cut)
+        self.assertNotIn("price_trend_receipts_direction", cut)
+
     def test_engine_arguments_that_do_not_check_are_refused(self):
         schema = ot.default_schema()
         plan = json.loads((oi.PLAN_DIR / "price_history.json").read_text("utf-8"))
@@ -226,7 +243,9 @@ class PriceHistoryTests(unittest.TestCase):
                        lambda a: a["series"][0].update(date="invoice_date"),
                        lambda a: a["series"][1].pop("status_in"),
                        lambda a: a["series"][2].update(header_link="Nothing.links"),
-                       lambda a: a.update(extra=True)):
+                       lambda a: a.update(extra=True),
+                       lambda a: a["series"][0].update(steps=["no_such_step"]),
+                       lambda a: a["series"][1].update(steps=["receipt_lines"])):
             broken = json.loads(json.dumps(plan))
             mutate(broken["evidence"][-1]["engine_args"])
             self.assertTrue(oi.check_plan(broken, schema, CONTRACTS), series)

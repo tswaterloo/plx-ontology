@@ -1057,6 +1057,10 @@ class WorkspaceBackend:
         shortcut = ask_shortcut(request)
         if shortcut == "late_list":
             answer = yield from self._late_ask(reader, request, conversation, ms)
+        elif shortcut == "at_risk":
+            # customer orders a late PO holds up, from the reader's own chain findings;
+            # an order or customer with none goes on (the agent walks its materials)
+            answer = yield from self._at_risk_ask(reader, request, conversation, ms)
         elif shortcut == "profit":
             # A customer the question names (or the customer record it is asked about),
             # answered from checked order margins; a question naming no readable customer
@@ -1136,8 +1140,38 @@ class WorkspaceBackend:
                                                      named=self.test_named())
             inbox = aged_to_today(inbox, self.today() if self.today else None)
             late, _risk = attention_items(inbox, labels, suppliers=suppliers)
+            chains = at_risk_gaps(view)
+            if chains is not None:
+                inbox = {**inbox, "gaps": [g for g in inbox.get("gaps") or ()
+                                           if g.get("kind") not in AT_RISK_KINDS] + chains}
             with view._request():
                 return late_answer(self, view, request, inbox, late, conversation, ms)
+        return job
+
+    def _at_risk_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
+                     ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+        yield "status", m.StatusEvent(step="searching", message="Reading the customer "
+                                      "orders late purchase orders hold up", elapsed_ms=ms())
+        try:
+            return self.reads.run(reader, self.at_risk_job(request, conversation, ms),
+                                  timeout=READ_TIMEOUT_SECONDS)
+        except (TimeoutError, PermissionError):
+            return None   # the agent answers
+
+    def at_risk_job(self, request: m.AskRequest, conversation: str, ms: Callable[[], int]
+                    ) -> Callable[[Any], Optional[m.AnswerPayload]]:
+        """Which customer orders late purchase orders put at risk (``order_at_risk`` and
+        ``po_impact`` gaps of the reader's inbox: ``operating.impact_chain``'s walk PO ->
+        line -> item -> assembly component -> assembly order -> order line -> customer
+        order, each record cited), or those of one order or customer the question names.
+        None: a named order or customer with no such finding (the agent path answers)."""
+        def job(view: Any) -> Optional[m.AnswerPayload]:
+            try:
+                inbox = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS)
+            except TypeError:   # a workspace that reads no kinds: every gap, one page
+                inbox = view.gap_inbox()
+            with view._request():
+                return at_risk_answer(self, view, request, inbox, conversation, ms)
         return job
 
     def _fast_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
@@ -1249,13 +1283,21 @@ class WorkspaceBackend:
                 else:
                     exact, candidates = [], []
                     # "Name (number)", as a did-you-mean choice reads: found by its number,
-                    # picked only when the name is the customer's too; else by the words.
-                    for query, wanted in ([(named[1], {normal_name(named[0]),
-                                                       normal_name(named[1])})] if named
-                                          else []) + [(normal_name(words) or words,
-                                                       {normal_name(words)})]:
-                        exact, candidates = find_customers(view, query, wanted)
-                        if len(exact) == 1:
+                    # picked only when the name is the customer's too; then the name as
+                    # written whole after "on"/"for" (its inner words kept: "House of
+                    # Wax"), an exact name only; else by the words.
+                    phrases = [(normal_name(p), {normal_name(p)}, True)
+                               for p in customer_profit.customer_phrases(question)
+                               if normal_name(p) != normal_name(words)]
+                    for query, wanted, whole in ([(named[1], {normal_name(named[0]),
+                                                              normal_name(named[1])}, False)]
+                                                 if named else []) + phrases + [
+                            (normal_name(words) or words, {normal_name(words)}, False)]:
+                        found_exact, found = find_customers(view, query, wanted)
+                        if whole and not found_exact:
+                            continue   # a phrase that is no customer's exact name: unused
+                        exact, candidates = found_exact, found
+                        if len(exact) == 1 or (whole and exact):
                             break
                     if not candidates:
                         return None
@@ -1446,7 +1488,14 @@ class WorkspaceBackend:
             ran = session.result()
         except errors.UserFacing:
             raise
-        except Exception:  # noqa: BLE001 - the host did not start: the quicker answer
+        except Exception as error:  # noqa: BLE001 - the host did not start: the quicker answer
+            # the reason in the server log (its type and code only, never a value)
+            logging.getLogger("operator_api.ask").warning(json.dumps(
+                {"agent_not_started": type(error).__name__,
+                 "code": next((str(c) for c in (getattr(error, "code", None),
+                                                 *getattr(error, "args", ())[:1])
+                               if isinstance(c, str) and re.fullmatch(r"[a-z_]{1,60}", c)),
+                              None)}))
             yield "status", m.StatusEvent(
                 step="searching", message="The full check could not start; giving the "
                                           "quicker answer", elapsed_ms=ms())
@@ -1613,6 +1662,7 @@ class WorkspaceBackend:
                                     "Business Central, the Portal or captured mail and files"))
         not_found = dedupe_not_found(not_found)
         did_you_mean, promoted = business_choices(out.get("ambiguous") or ())
+        did_you_mean = told_apart(view, did_you_mean)
         subjects = [m.ObjectRef(object_id=r["object_id"],
                                 type=str(r.get("object_type") or "Object"),
                                 label=str(r.get("mention") or r.get("object_type") or
@@ -1862,8 +1912,10 @@ class WorkspaceBackend:
                 oid = gap.get("object_id")
                 late = gap.get("days_late") is not None
                 if not isinstance(oid, str) or oid in labels or \
-                        wanted[late] >= LATE_LIST_LIMIT:
-                    continue      # every subject Home shows is labelled, no more
+                        wanted[late] >= LATE_LIST_LIMIT + BRIEFING_TEST_SLACK:
+                    # every subject Home shows is labelled, no more: the slack labels the
+                    # orders that move up when a test record is left out (``without_tests``)
+                    continue
                 wanted[late] += 1
                 card = view._call("plx.object", {"object_id": oid})
                 labels[oid] = plain((card.get("object") or {}).get("display")) or ""
@@ -2012,21 +2064,10 @@ class WorkspaceBackend:
         named = self.test_named()
         found = briefing_aged(view.briefing(since_visit=since_visit),
                               self.today() if self.today else None)
-        # test and placeholder records are left out of the top (judged on the label
-        # each reads as), the count says how many fewer there are
-        candidates = (found.get("items") or [])[:bf.TOP_ITEMS + BRIEFING_TEST_SLACK]
-        labels = briefing_labels(view, candidates)
-        with view._request():
-            makers = {i["object_id"]: supplier_of(view, i["object_id"], view._call(
-                "plx.object", {"object_id": i["object_id"]})) or ""
-                for i in candidates if i.get("object_type") == "PurchaseOrder"}
-        tests = [i for i in candidates if briefing_test(i, labels, named, makers)]
-        if tests:
-            found = {**found, "items": [i for i in found.get("items") or ()
-                                        if i not in tests],
-                     "count": max(0, int(found.get("count") or 0) - len(tests)),
-                     "tests_hidden": len(tests)}
-            found["today"] = bf.today_line(found)   # said of what is left
+        # test and placeholder records are left out (judged on the label each reads as,
+        # in the top and among every late order, as Home judges them), the count says how
+        # many fewer there are
+        found, labels = briefing_without_tests(view, found, named)
         items = (found.get("items") or [])[:bf.TOP_ITEMS]
         trails: dict[str, Any] = {}
         with view._request():
@@ -2050,10 +2091,12 @@ class WorkspaceBackend:
         from operating import briefing as bf
 
         def job(view: Any) -> tuple[list[Any], list[Any], dict[str, str]]:
-            found = view.briefing(since_visit=since_visit)
-            # the group's "+N more": its items past the top ones (those are shown already)
-            members = [i for i in found.get("items") or () if i["event_type"] == event_type
-                       and i["rank"] > bf.TOP_ITEMS]
+            found, _ = briefing_without_tests(view, view.briefing(since_visit=since_visit),
+                                              self.test_named())
+            # the group's "+N more": its items past the top ones (those are shown already;
+            # a test record left out moves the next item into the top)
+            ranked = sorted(found.get("items") or (), key=lambda i: i["rank"])
+            members = [i for i in ranked[bf.TOP_ITEMS:] if i["event_type"] == event_type]
             page = members[offset:offset + limit]
             return members, page, briefing_labels(view, page)
 
@@ -2272,6 +2315,47 @@ def briefing_test(item: Mapping[str, Any], labels: Mapping[str, str],
     from .test_records import is_test
     oid = item.get("object_id")
     return is_test((labels.get(oid),), named, ((suppliers or {}).get(oid),))
+
+
+def briefing_without_tests(view: Any, found: Mapping[str, Any], named: frozenset[str]
+                           ) -> tuple[dict[str, Any], dict[str, str]]:
+    """The briefing without its test and placeholder records (``briefing_test``), judged
+    on the top items (with ``BRIEFING_TEST_SLACK``) and on every late order, as Home
+    judges its late list; its count, its late total and each group's count and "in top"
+    are said of what is left. Returns it and the judged items' labels."""
+    from operating import briefing as bf
+
+    items = list(found.get("items") or ())
+    judged = list({i["object_id"]: i for i in [
+        *items[:bf.TOP_ITEMS + BRIEFING_TEST_SLACK],
+        *(i for i in items if i.get("event_type") == "po_late")]}.values())
+    labels = briefing_labels(view, judged)
+    with view._request():
+        makers = {i["object_id"]: supplier_of(view, i["object_id"], view._call(
+            "plx.object", {"object_id": i["object_id"]})) or ""
+            for i in judged if i.get("object_type") == "PurchaseOrder"}
+    tests = {i["object_id"] for i in judged if briefing_test(i, labels, named, makers)}
+    if not tests:
+        return dict(found), labels
+    kept = [i for i in items if i.get("object_id") not in tests]
+    gone: dict[str, int] = {}
+    for i in items:
+        if i.get("object_id") in tests:
+            gone[i.get("event_type")] = gone.get(i.get("event_type"), 0) + 1
+    top = kept[:bf.TOP_ITEMS]
+    total = found.get("late_total")
+    out = {**found, "items": kept,
+           "count": max(0, int(found.get("count") or 0) - (len(items) - len(kept))),
+           "tests_hidden": len(items) - len(kept),
+           "groups": [{**g, "count": max(0, int(g.get("count") or 0)
+                                         - gone.get(g.get("event_type"), 0)),
+                       "in_top": sum(1 for i in top if i.get("event_type")
+                                     == g.get("event_type"))}
+                      for g in found.get("groups") or ()],
+           **({"late_total": max(0, total - gone.get("po_late", 0))}
+              if isinstance(total, int) else {})}
+    out["today"] = bf.today_line(out)   # said of what is left
+    return out, labels
 
 
 def briefing_labels(view: Any, items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -2604,10 +2688,53 @@ def ask_shortcut(request: m.AskRequest) -> Optional[str]:
     intent = picked_question(request) or request.question
     if not request.object_id and late_list_question(request.question):
         return "late_list"
+    if not request.object_id and (orders_at_risk_question(request.question)
+                                  or late_for_target(request.question)):
+        return "at_risk"
     if (profit_question(intent) or order_margin_question(intent)) and (
             not request.object_id or customer_object(request.object_id)):
         return "profit"
     return None
+
+
+_AT_RISK = re.compile(r"\bat[\s-]+risk\b|\bheld\s+up\b|\bhold(?:s|ing)?\s+up\b|"
+                      r"\baffect(?:ed|s)?\b|\bimpact(?:ed|s)?\b|\bdelay(?:ed|s)?\b|"
+                      r"\bblock(?:ed|s)?\b", re.IGNORECASE)
+_CUSTOMER_ORDERS = re.compile(r"\b(?:customer|sales|client)(?:'s)?\s+orders?\b|\bSOs\b",
+                              re.IGNORECASE)
+_LATE_SUPPLY = re.compile(r"\blate\b|\bslipp\w*|\bPOs?\b|\bpurchase\s+orders?\b|"
+                          r"\bmaterials?\b|\bsuppl(?:y|ies|ier)\b", re.IGNORECASE)
+# "what's late for SO 470", "which materials are late for Acme", "late materials on X"
+_LATE_FOR = re.compile(
+    r"(?:\bwhat(?:'s|\s+is|\s+are|s)?|\bwhich\s+(?:materials?|POs?|purchase\s+orders?|"
+    r"items?|components?)(?:\s+(?:is|are))?|\bany(?:thing)?|\blate\s+(?:materials?|POs?|"
+    r"purchase\s+orders?|items?|components?))\s+(?:late\s+|holding\s+up\s+)?"
+    r"(?:for|on|holding\s+up)\s+(?P<target>[^?]{2,80}?)\s*[?.!]*$", re.IGNORECASE)
+
+
+def orders_at_risk_question(question: str) -> bool:
+    """Whether ``question`` asks which customer orders late supply puts at risk ("which
+    customer orders are at risk from late POs", "sales orders held up by late materials")."""
+    q = question or ""
+    return bool(_CUSTOMER_ORDERS.search(q) and _AT_RISK.search(q) and _LATE_SUPPLY.search(q)
+                and (_LATE_WORD.search(q) or _SLIP_WORD.search(q)))
+
+
+_SLIP_WORD = re.compile(r"\bdelay(?:ed|s)?\b|\bslipp\w*|\bwaiting\b", re.IGNORECASE)
+_LATE_WORD = re.compile(r"\blate\b|\bheld\s+up\b|\bholding\s+up\b|\bat[\s-]+risk\b|"
+                        r"\boverdue\b|\bbehind\b", re.IGNORECASE)
+
+
+def late_for_target(question: str) -> Optional[str]:
+    """The order or customer a "what's late for X" question names (``X``), else None."""
+    q = (question or "").strip()
+    found = _LATE_FOR.search(q)
+    if not found or not _LATE_WORD.search(q):   # "what is on SO 470" is not about lateness
+        return None
+    target = re.sub(r"^(?:the\s+)?(?:customer|client|order|sales\s+order)\s+", "",
+                    found.group("target").strip(), flags=re.IGNORECASE)
+    target = re.sub(r"\s+(?:right\s+now|now|today|rn)$", "", target, flags=re.IGNORECASE)
+    return target.strip() or None
 
 
 def late_list_question(question: str) -> bool:
@@ -2639,9 +2766,36 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     as_of = inbox.get("days_as_of") or (inbox.get("run_at") if isinstance(
         inbox.get("run_at"), str) else None)
     facts = []
+    gaps = [g for g in inbox.get("gaps") or () if isinstance(g, Mapping)
+            and isinstance(g.get("object_id"), str)]
+    days_of = {g["object_id"]: (g.get("event") or {}).get("days") for g in gaps
+               if g.get("kind") == "order_at_risk"}
+    holds: dict[str, list[str]] = {}      # late PO -> the customer orders it holds up
+    for order, pos in held_up_by(gaps).items():
+        for po_id in pos:
+            holds.setdefault(po_id, []).append(order)
+    impact = {g["object_id"]: g for g in gaps if g.get("kind") == "po_impact"}
+    labels: dict[str, str] = {}
     for po in late:
         sources = [backend._source(view, s.handle) for s in po.sources]
-        facts.append(m.Fact(text=f"{po.label}: {po.days_late} days late. {po.reason}"[:1000],
+        orders = sorted(holds.get(po.object_id) or (), key=lambda o: -int(days_of.get(o) or 0))
+        held = ""
+        if orders:
+            held = " Holds up customer order" + ("s " if len(orders) > 1 else " ") + ", ".join(
+                f"{_display_of(view, o, labels) or 'an order'}"
+                + (f" ({days_of[o]} days at risk)" if days_of.get(o) is not None else "")
+                for o in orders[:4]) + "."
+            sources += [backend._source(view, h) for h in (impact.get(po.object_id) or {}).get(
+                "citations") or () if isinstance(h, str)][:MAX_CHAIN_SOURCES]
+        elif po.object_id in impact:
+            # an older finding that names no order: what it found, without guessing which
+            event = impact[po.object_id].get("event") or {}
+            n, days = event.get("orders_affected"), event.get("days")
+            if isinstance(n, int) and n > 0:
+                held = (f" Holds up {n} customer order{'s' if n != 1 else ''}"
+                        + (f" (worst {days} days at risk)" if days is not None else "") + ".")
+        reason = po.reason if re.search(r"[.!?]$", po.reason) else po.reason + "."
+        facts.append(m.Fact(text=f"{po.label}: {po.days_late} days late. {reason}{held}"[:1000],
                             sources=sources, check="computed_from_cited_records"))
     when = f" as of {as_of[:10]}" if as_of else ""
     total = len(late)
@@ -2671,8 +2825,11 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         total = max(len(late), int(inbox.get("late_total") or late_total(inbox)))
         named = "; ".join(f"{po.label}" + (f" from {po.supplier}" if po.supplier else "")
                           + f" ({po.days_late} days)" for po in late[:3])
-        shown = ("All of them are listed below, longest late first." if total == len(late)
-                 else f"{len(late)} of {total} shown below, longest late first.")
+        # the list's order said without a second figure beside the late count: "12 of 23
+        # are late" would read as a second answer to "how many are late"
+        shown = ("All of them are listed below, oldest due date first." if total == len(late)
+                 else "The first one is listed below." if len(late) == 1
+                 else f"The first {len(late)} are listed below, oldest due date first.")
         direct = (f"{total} purchase order{'s' if total != 1 else ''} you can see "
                   f"{'are' if total != 1 else 'is'} late{when}. Longest late: {named}. "
                   f"{shown}")
@@ -2687,6 +2844,180 @@ def late_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                   for po in late[:MAX_FACTS]],
         did_you_mean=[], conversation_id=conversation, latency_ms=ms(),
         list_total=total if late and total > len(late) else None)
+
+
+ORDER_TWIN_LINK = "SalesOrder.same_record_as"
+AT_RISK_KINDS = ("order_at_risk", "po_impact")
+MAX_CHAIN_SOURCES = 12
+
+
+def at_risk_gaps(view: Any) -> Optional[list[Mapping[str, Any]]]:
+    """The reader's ``order_at_risk`` and ``po_impact`` gaps, read by their kinds (past the
+    inbox's first page); None for a workspace that cannot read by kind."""
+    try:
+        got = view.gap_inbox(limit=LATE_COUNT_LIMIT, kinds=AT_RISK_KINDS)
+    except TypeError:
+        return None
+    return [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+
+
+def held_up_by(gaps: Sequence[Mapping[str, Any]]) -> dict[str, set[str]]:
+    """Customer order -> the late purchase orders holding it up, joined from the chain ends
+    the reader's own ``order_at_risk`` and ``po_impact`` gaps name (their events' ``pos``
+    and ``orders``); an end is kept only when the reader's inbox shows that record's own
+    gap, so a record the reader may not see is never named."""
+    shown = {g.get("object_id") for g in gaps}
+    feeds: dict[str, set[str]] = {}
+    for gap in gaps:
+        event = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
+        if gap.get("kind") == "order_at_risk":
+            feeds.setdefault(gap["object_id"], set()).update(
+                p for p in event.get("pos") or () if p in shown)
+    for gap in gaps:
+        event = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
+        if gap.get("kind") == "po_impact":
+            for order in event.get("orders") or ():
+                if order in feeds:
+                    feeds[order].add(gap["object_id"])
+    return feeds
+
+
+def _name_forms(name: str) -> tuple[str, ...]:
+    """A customer's display and, when it carries one, the name before its parenthetical
+    ("Acme Supply (ACME CO.)": also "Acme Supply") and the name inside it."""
+    found = re.match(r"^\s*(.+?)\s*\(([^()]+)\)\s*$", name or "")
+    return (name, found.group(1), found.group(2)) if found else (name,)
+
+
+def _display_of(view: Any, oid: str, cache: dict[str, str]) -> str:
+    if oid not in cache:
+        card = view._call("plx.object", {"object_id": oid}) or {}
+        cache[oid] = (plain((card.get("object") or {}).get("display")) or "") \
+            if not card.get("error") else ""
+    return cache[oid]
+
+
+def _linked(view: Any, oid: str, link: str, direction: str) -> list[str]:
+    got = view._call("plx.around", {"from": oid, "limit": 20, "path": [
+        {"link_type": link, "direction": direction}]}) or {}
+    return [o["object_id"] for o in got.get("objects") or ()
+            if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)]
+
+
+def at_risk_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
+                   inbox: Mapping[str, Any], conversation: str, ms: Callable[[], int]
+                   ) -> Optional[m.AnswerPayload]:
+    """The customer orders at risk from late purchase orders the reader may see, worst
+    first: each order with its customer, its days at risk, the late PO(s) its chain starts
+    from and the chain's cited records as its sources. A PO or an order is named only when
+    the reader's inbox shows that record's own gap (a chain end the reader may not see is
+    never named). With an order or customer named (``late_for_target``), only that one's;
+    None when it has none (the agent path walks its materials live)."""
+    from operating.customer_profit import normal_name
+
+    gaps = [g for g in inbox.get("gaps") or () if isinstance(g, Mapping)
+            and isinstance(g.get("object_id"), str)]
+    risky = [g for g in gaps if g.get("kind") == "order_at_risk"]
+    feeds = held_up_by(gaps)
+    target = late_for_target(request.question)
+    if target and not risky:
+        return None      # nothing at risk to narrow: the next path reads the record named
+    labels: dict[str, str] = {}
+    held: dict[str, list[str]] = {}
+
+    def customers_of(oid: str) -> list[str]:
+        """The customers of the order and its twins, read once per order when needed."""
+        if oid not in held:
+            held[oid] = [c for o in [oid, *_linked(view, oid, ORDER_TWIN_LINK, "forward"),
+                                     *_linked(view, oid, ORDER_TWIN_LINK, "reverse")]
+                         for c in _linked(view, o, CUSTOMER_ORDERS, "forward")]
+        return held[oid]
+    if target:
+        # the order or customer as the at-risk orders' own labels read (exact after
+        # normalising): no search; else the reader's plx.find names it
+        number = re.sub(r"^(?:s\.?o\.?|sales\s+order|customer\s+order|order)\s*(?:no\.?|"
+                        r"number|#)?\s*", "", target, flags=re.IGNORECASE).strip().casefold()
+        direct = [g for g in risky if number and (
+            _display_of(view, g["object_id"], labels).strip().casefold() == number
+            or normal_name(target) in {
+                normal_name(form) for c in customers_of(g["object_id"])
+                for form in _name_forms(_display_of(view, c, labels))})]
+        if direct:
+            risky = direct
+            target = None
+    if target:
+        found = view._call("plx.find", {"query": target, "limit": 8}) or {}
+        hits = [c["object"] for c in found.get("candidates") or ()
+                if isinstance(c.get("object"), Mapping)]
+        orders = {h["object_id"] for h in hits if h.get("object_type") == "SalesOrder"}
+        orders |= {t for o in list(orders) for d in ("forward", "reverse")
+                   for t in _linked(view, o, ORDER_TWIN_LINK, d)}
+        wanted = normal_name(target)
+        named = {h["object_id"] for h in hits if h.get("object_type") == "Customer"
+                 and wanted and wanted in {normal_name(plain(h.get("display"))),
+                                           normal_name(_display_of(view, h["object_id"],
+                                                                   labels))}}
+        risky = [g for g in risky if g["object_id"] in orders
+                 or named.intersection(customers_of(g["object_id"]))]
+        if not risky:
+            return None
+    risky.sort(key=lambda g: (-int((g.get("event") or {}).get("days") or 0),
+                              g["object_id"]))
+    as_of = inbox.get("days_as_of") or (inbox.get("run_at") if isinstance(
+        inbox.get("run_at"), str) else None)
+    when = f" as of {as_of[:10]}" if as_of else ""
+    facts, subjects, named_lines = [], [], []
+    for gap in risky[:MAX_FACTS]:
+        oid = gap["object_id"]
+        label = "Customer order " + (_display_of(view, oid, labels) or "").strip()
+        who = sorted({n for c in customers_of(oid) if (n := _display_of(view, c, labels))})
+        pos = sorted(feeds.get(oid) or ())
+        po_words = ", ".join(f"PO {_display_of(view, p, labels) or p}" for p in pos)
+        days = (gap.get("event") or {}).get("days")
+        head = (f"{label}" + (f" ({' / '.join(who)})" if who else "")
+                + (f" is {days} days at risk" if days is not None else " is at risk")
+                + (f" from late {po_words}" if po_words else ""))
+        why = str((gap.get("follow_up") or {}).get("why") or "")
+        text = f"{head}. {gap.get('summary') or ''}. {why}".replace("..", ".")
+        handles = [h for h in dict.fromkeys(gap.get("citations") or ())
+                   if isinstance(h, str)][:MAX_CHAIN_SOURCES]
+        facts.append(m.Fact(text=text[:1000], check="computed_from_cited_records",
+                            sources=[backend._source(view, h) for h in handles]))
+        subjects.append(m.ObjectRef(object_id=oid, type="SalesOrder", label=label[:200],
+                                    open_url=object_url("SalesOrder", oid)))
+        named_lines.append(head)
+    status = (inbox.get("detectors") or {}).get("orders_at_risk")
+    not_found = []
+    if status == "truncated":
+        not_found.append(m.NotFound(
+            what="The last check of late purchase orders against customer orders did not "
+                 "walk every purchase order (it is bounded), so more orders may be at risk",
+            where_it_would_live="Purchasing: the late purchase orders list"))
+    if not risky:
+        if inbox.get("status") != "read" or status in (None, "not_run", "blocked", "failed",
+                                                       "not_configured"):
+            direct = ("The check of late purchase orders against customer orders has not "
+                      "run for your records, so I can't say which orders are at risk.")
+            outcome = "not_found"
+        else:
+            direct = (f"No customer order you can see is at risk from a late purchase "
+                      f"order{when}" + (" in the orders the check covered" if status ==
+                                        "truncated" else "") + ".")
+            outcome = "answered"
+    else:
+        n = len(risky)
+        direct = (f"{n} customer order{'s' if n != 1 else ''} you can see "
+                  f"{'are' if n != 1 else 'is'} at risk from late purchase orders{when}: "
+                  + "; ".join(named_lines[:3]) + (f"; and {n - 3} more" if n > 3 else "")
+                  + ". Days at risk are a lower bound (no assembly lead time is recorded); "
+                  "each chain's records are cited below.")
+        outcome = "partial" if not_found else "answered"
+    return m.AnswerPayload(
+        answer_id=secrets.token_hex(12), question=request.question, outcome=outcome,
+        direct_answer=direct[:4000], facts=facts, not_found=not_found,
+        hidden=m.Hidden(count=0, by_owner=[], message=None), conflicts=[],
+        freshness=backend.freshness(inbox), subjects=subjects, did_you_mean=[],
+        conversation_id=conversation, latency_ms=ms())
 
 
 # How the app words a did-you-mean pick (app/src/app/(app)/ask/page.tsx ``onPick``): the
@@ -2865,15 +3196,20 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     """``operating.customer_profit.profitability`` as the contract's answer: the totals and
     the worst orders as facts, the cost breakdown, the drivers, the trail, the gaps as not
     found and the withheld orders as a count."""
-    from operating.customer_profit import (MARGIN_BASIS, MARGIN_NOTE, SAGE_MARGIN_NOTE,
-                                           money_words,
-                                           not_read_words, _plain)
+    from operating.customer_profit import (MARGIN_BASIS, MARGIN_NOTE, NO_MARGIN_YET,
+                                           SAGE_MARGIN_NOTE, money_words, open_words,
+                                           not_read_words, read_words, _plain)
 
     blocking_words = _blocking_words
 
     def excluded_words(totals: Mapping[str, Any]) -> str:
         n = len(totals.get("excluded") or ())
-        return (f" {n} order{'s' if n != 1 else ''} not yet invoiced, excluded." if n
+        open_ = profit.get("open_orders") or {}
+        value = (" (" + " and ".join(money_words(v, c) for c, v in open_["value"].items())
+                 + " before tax" + ("" if open_.get("valued") == n else
+                                    f", over the {open_.get('valued')} that state a value")
+                 + ")") if n and open_.get("value") else ""
+        return (f" {n} order{'s' if n != 1 else ''} not yet invoiced, excluded{value}." if n
                 else "")
 
     cust = profit["customer"]
@@ -2904,7 +3240,7 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     if not totals.get("complete"):
         headline = (f"I can't give a customer total for {cust['name']} in {period}: it has "
                     f"{'' if exact else 'at least '}{in_period} orders in the period and "
-                    f"only the {read} most recent were read "
+                    f"only {read_words(profit.get('coverage') or {}, read)} were read "
                     f"({not_read_words(in_period, read, exact)}); {basis}.")
     elif totals.get("blocking"):
         # No verdict and no customer total while an invoiced order of the
@@ -2930,9 +3266,17 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
                             sources=_decided_sources(backend, view, [
                                 h for o in decided for h in order_handles(o)])))
     elif in_period and totals.get("excluded") and not counted:
-        headline = (f"I can't state a margin for {cust['name']} in {period}: none of its "
+        # nothing invoiced: said plainly, with what is open and why there is no margin yet
+        open_ = profit.get("open_orders")
+        said = open_words(open_)
+        headline = (f"{cust['name']} has no margin yet in {period}: none of its "
                     f"{in_period} order{'s' if in_period != 1 else ''} you can see is "
-                    "invoiced yet." + excluded_words(totals))
+                    "invoiced" + (f" ({said})" if said else "") + ". " + NO_MARGIN_YET)
+        if open_ and open_.get("value"):
+            facts.append(m.Fact(
+                text=f"Open orders not yet invoiced: {said}. " + "; ".join(open_["steps"]),
+                check="computed_from_cited_records",
+                sources=_decided_sources(backend, view, open_["handles"])))
     elif mixed:
         # every invoiced order has a checked margin, but in different currencies: nothing
         # is converted, so no single total and no verdict; each order in its own currency
@@ -2968,7 +3312,7 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         lost = order.margin < 0
         worst_word = ("Worst of the checked orders" if totals.get("blocking") else
                       "Worst" if totals.get("complete") else
-                      f"Worst of the {read} most recent orders read")
+                      f"Worst of {read_words(profit.get('coverage') or {}, read)} read")
         parts.append(f"{worst_word if worst and worst['object_id'] == order.object_id else 'Order'}"
                      f" {order.number}: revenue {money_words(order.revenue, order.currency)}, "
                      f"item cost {money_words(order.cost, order.currency)}, "
@@ -3067,7 +3411,8 @@ def profitability_model(backend: "WorkspaceBackend", view: Any,
     """``customer_profit.profitability`` as the contract's ``Profitability``: totals, the
     ranking, margin per product, the focus order's breakdown and drivers, the next step;
     every source decided for this reader."""
-    from operating.customer_profit import MARGIN_BASIS, MARGIN_NOTE, not_read_words, _plain
+    from operating.customer_profit import (MARGIN_BASIS, MARGIN_NOTE, not_read_words,
+                                          read_words, _plain)
 
     cust, totals = profit["customer"], profit["totals"]
     cur = totals.get("currency")
@@ -3114,7 +3459,7 @@ def profitability_model(backend: "WorkspaceBackend", view: Any,
                  + (f"; {len(totals['excluded'])} not yet invoiced, excluded"
                     if totals.get("excluded") else "")
                  if totals.get("complete") else
-                 f"partial: worst of the {read} most recent orders; "
+                 f"partial: worst of {read_words(profit.get('coverage') or {}, read)}; "
                  + not_read_words(in_period, read, exact)),
         margin_basis=MARGIN_BASIS, margin_note=MARGIN_NOTE,
         verdict=(None if totals.get("margin") is None else
@@ -3473,6 +3818,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
                                                 r["object_id"]))
                 for r in found.get("roots") or () if isinstance(r.get("object_id"), str)]
     did_you_mean, promoted = business_choices(found.get("ambiguous") or ())
+    did_you_mean = told_apart(view, did_you_mean)
     subjects += [p for p in promoted if p.object_id not in {s.object_id for s in subjects}]
     conflicts: list[m.Conflict] = []
     for root in subjects[:3]:
@@ -3605,6 +3951,30 @@ def business_choices(ambiguous: Iterable[Any]) -> tuple[list[m.ObjectRef],
                 and not internal_type(c.get("object_type"))]
         (promoted if len(refs) == 1 else choices).extend(refs)
     return choices, promoted
+
+
+def told_apart(view: Any, choices: list[m.ObjectRef]) -> list[m.ObjectRef]:
+    """Choices that read alike ("PO100040" twice) each say their system and their own
+    values (``preread.choice_label``: "PO100040 in Business Central (New Directions
+    Aromatics, ...)") as this reader reads them; a label that cannot be read stays."""
+    from . import preread
+
+    titles = [c.label for c in choices]
+    if len(set(titles)) == len(titles):
+        return choices
+    out = []
+    with view._request():
+        for choice in choices:
+            if titles.count(choice.label) < 2:
+                out.append(choice)
+                continue
+            try:
+                label = preread.choice_label(lambda name, args: view._call(name, dict(args)),
+                                             choice.label, choice.object_id)
+            except Exception:  # noqa: BLE001 - the plain title rather than none
+                label = choice.label
+            out.append(choice.model_copy(update={"label": label[:200]}))
+    return out
 
 
 def internal_type(object_type: Any) -> bool:

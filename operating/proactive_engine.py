@@ -1464,19 +1464,23 @@ def _line_event(own: Any, chain: Any, required: date | None) -> dict[str, Any]:
             **({"required": required.isoformat()} if required is not None else {})}
 
 
-def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
-                    ) -> dict[str, Any]:
+def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
+                    first: Iterable[str] = ()) -> dict[str, Any]:
     """``orders_at_risk``: one gap per customer order a late PO puts at risk, and per late
     PO one ``po_impact`` gap (the orders at risk it feeds, never money) and, when every one
     of those orders has a stated margin in one currency, one ``po_impact_margin`` gap with
     the margin at stake whose every figure is its own finance-marked citation group (only a
-    reader holding finance, who may open every figure, sees it)."""
+    reader holding finance, who may open every figure, sees it). ``first``: the purchase
+    orders the late rules found, walked first within ``bound``. Each gap's event names the
+    chain's ends its groups cite (``pos``: the late PO an order's worst chain starts from;
+    ``orders``: the orders a PO's impact reaches), so a reader's list joins a late PO to
+    the customer orders it holds up only among gaps that reader may see."""
     if call is None:
         return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import impact_chain as ic
 
     found = ic.scan(st, call, bound=bound, margin_values=ic.store_margin_values(st),
-                    landed_values=ic.investigate_landed_values(call))
+                    landed_values=ic.investigate_landed_values(call), first=frozenset(first))
     risky = found["assessment"].at_risk
     requires = _lateness_audiences(st) if risky else []
     late = found["late"]
@@ -1556,7 +1560,7 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
             priority=("high" if order.days >= 7 else "medium") if firm else
                      ("medium" if order.days >= 7 else "low"),
             about=("SalesOrder", "required_date"), groups=groups,
-            event={"days": order.days, "orders_affected": 1,
+            event={"days": order.days, "orders_affected": 1, "pos": [order.worst],
                    **_line_event(own, chain, order.required)})
         if gap is None:
             skipped["order_at_risk_uncited"] += 1
@@ -1602,7 +1606,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                      summary=f"affects {n} {noun}, worst {worst} days at risk",
                      missing=missing, why=why, priority=priority,
                      about=("PurchaseOrder", "lateness"), groups=groups,
-                     event={"days": worst, "orders_affected": n})
+                     event={"days": worst, "orders_affected": n,
+                            "orders": [o.key for o in orders]})
         if plain is None:
             skipped["po_impact_uncited"] += 1
             continue
@@ -1651,6 +1656,17 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int
                          "text": ic.headline(len(risky),
                                              found["late_pos_with_orders_at_risk"])}
     return result
+
+
+LATE_FOUND_KINDS = frozenset({"late_po", "late_order", "unconfirmed_po", "eta_slipped"})
+
+
+def _late_found(results: Mapping[str, Mapping[str, Any]]) -> set[str]:
+    """The purchase orders this run's earlier rules found late, unconfirmed or slipping
+    (their gaps' subjects): the impact walk asks their verdicts first."""
+    return {str(gap.get("object_id")) for result in results.values()
+            for gap in result.get("gaps") or ()
+            if gap.get("kind") in LATE_FOUND_KINDS and gap.get("object_id")}
 
 
 def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int) -> dict[str, Any]:
@@ -2016,7 +2032,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
             "orders_at_risk": lambda: (
-                _orders_at_risk(st, as_of, call, card_bound)
+                _orders_at_risk(st, as_of, call, card_bound, first=_late_found(results))
                 if call is None or _reader_judges_lateness(st, reader_may_read) else
                 # the run principal cannot read a source a lateness verdict rests on (a
                 # PO's BC twin): its verdicts would be undetermined, never late, for every
@@ -2521,8 +2537,12 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                 "json_each(:kinds))) AND " + _OBJECT_VISIBLE.format(o="g.object_id")
                 + " ORDER BY json_extract(g.follow_up, '$.days_late') IS NULL, "
                 "json_extract(g.follow_up, '$.days_late') DESC, "
+                # a list of near-expiry lots alone: soonest expiry first, so a page cut
+                # short still holds every lot expiring before its last one
+                "CASE WHEN :soonest THEN json_extract(g.follow_up, '$.event.days') END, "
                 "g.priority, g.last_seen DESC, g.gap_id LIMIT :page OFFSET :offset",
                 {**params, "reader": reader, "states": global_states, "page": page,
+                 "soonest": kinds is not None and list(kinds) == ["lot_near_expiry"],
                  "offset": offset,
                  "kinds": None if kinds is None else json.dumps(list(kinds))}).fetchall()
             if not rows:

@@ -372,6 +372,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import itertools
 import json
 import os
 from pathlib import Path
@@ -1885,7 +1886,8 @@ class SharePointCaptureStore:
 
     # ---------------------------------------------------------------- reads (per reader)
 
-    def _row_visible(self, row: Mapping[str, Any], actor: Any, audience: Any) -> bool:
+    def _row_visible(self, row: Mapping[str, Any], actor: Any, audience: Any,
+                     latest: Mapping[str, Any] | None = None) -> bool:
         """The reader may see this version (its path keys and item permissions) and the
         item as it was last captured: a revoked permission or a move into a folder the
         reader may not see hides the item's history too, and an item gone from the scope
@@ -1896,7 +1898,8 @@ class SharePointCaptureStore:
         if not audience.visible_all(actor, json.loads(row["resources"]),
                                     json.loads(row["source_acl"])):
             return False
-        latest = self._item_latest(row)
+        if latest is None or latest["version_id"] < row["version_id"]:
+            latest = self._item_latest(row)
         if latest["removed_reason"] == ABSENT:
             return False
         return latest["version_id"] == row["version_id"] or audience.visible_all(
@@ -1923,10 +1926,21 @@ class SharePointCaptureStore:
         if not drives:
             return
         marks = ",".join("?" * len(drives))
-        for row in self.db.execute(f"SELECT * FROM items WHERE drive_id IN ({marks}) AND "
-                                   f"{where} ORDER BY drive_id, item_id, version_id",
-                                   (*drives, *params)):
-            if self._row_visible(row, actor, audience):
+        rows = self.db.execute(f"SELECT * FROM items WHERE drive_id IN ({marks}) AND "
+                               f"{where} ORDER BY drive_id, item_id, version_id",
+                               (*drives, *params))
+        first = rows.fetchone()
+        if first is None:
+            return
+        # Every item's latest version (``_item_latest``) in one read, made while the
+        # listing's statement is open: the same read transaction, so the same snapshot.
+        latest = {(r["drive_id"], r["item_id"]): r for r in self.db.execute(
+            f"SELECT drive_id, item_id, MAX(version_id) AS version_id, resources, "
+            f"source_acl, removed_reason FROM items WHERE drive_id IN ({marks}) "
+            f"GROUP BY drive_id, item_id", tuple(drives))}
+        for row in itertools.chain((first,), rows):
+            if self._row_visible(row, actor, audience,
+                                 latest.get((row["drive_id"], row["item_id"]))):
                 yield row
 
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,

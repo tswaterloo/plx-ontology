@@ -61,8 +61,10 @@ started (the console's ``plx.review``) is read from the next call on, without a 
 from __future__ import annotations
 
 from contextlib import closing
+import dataclasses
 from pathlib import Path
 import functools
+import re
 import sqlite3
 import threading
 from typing import Any, Callable
@@ -70,7 +72,7 @@ from typing import Any, Callable
 from ontology import reviews
 from ontology.identity_scoring import twin_step, your_reference_step
 from ontology.document_fields import store_document_links
-from ontology.mentions import store_mention_links
+from ontology.mentions import Document, store_mention_links
 from ontology.sender_corroboration import sender_corroboration_step
 from ontology.text_index import store_text_index
 
@@ -184,6 +186,80 @@ def _current(db: sqlite3.Connection) -> sqlite3.Connection:
     return db
 
 
+# A lone UTF-16 surrogate (a half emoji cut from a captured text, or a byte the source
+# could not decode) cannot be encoded as UTF-8, so one such character in one document
+# failed a whole generation's ``mentions`` step. The document steps read each document
+# with every lone surrogate as U+FFFD; a document without one is the same object.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _clean_text(value: Any) -> Any:
+    if isinstance(value, str) and _LONE_SURROGATE.search(value):
+        return _LONE_SURROGATE.sub("\ufffd", value)
+    return value
+
+
+def clean_document(document: Any) -> Any:
+    """``document`` with every lone surrogate of its texts and copy key as U+FFFD (the
+    document itself when it holds none)."""
+    if not isinstance(document, Document):
+        return document
+    fields = tuple(f if _clean_text(f.text) is f.text
+                   else dataclasses.replace(f, text=_clean_text(f.text))
+                   for f in document.fields)
+    key = (None if document.copy_key is None
+           else tuple(_clean_text(part) for part in document.copy_key))
+    if (all(a is b for a, b in zip(fields, document.fields))
+            and (key is None or all(a is b for a, b in zip(key, document.copy_key)))):
+        return document
+    return dataclasses.replace(document, fields=fields, copy_key=key)
+
+
+class _CleanSource:
+    """A capture source whose ``document_groups()`` and ``documents()`` give cleaned
+    documents (``clean_document``); everything else is the source's own."""
+
+    def __init__(self, source: Any) -> None:
+        self._source = source
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._source, name)
+        if name == "document_groups" and callable(attr):
+            def groups(*args: Any, **kwargs: Any) -> Any:
+                for key, load in attr(*args, **kwargs):
+                    yield key, functools.partial(_load_clean, load)
+            return groups
+        if name == "documents" and callable(attr):
+            def documents(*args: Any, **kwargs: Any) -> Any:
+                return (clean_document(d) for d in attr(*args, **kwargs))
+            return documents
+        return attr
+
+
+def _load_clean(load: Callable[[], Any]) -> Any:
+    documents, remembered = load()
+    return [clean_document(d) for d in documents], remembered
+
+
+class _CleanProjector:
+    """``projector`` as the document steps see it: its sources' documents cleaned."""
+
+    def __init__(self, projector: Any) -> None:
+        self._projector = projector
+        self.sources = {name: _CleanSource(source) for name, source
+                        in (getattr(projector, "sources", None) or {}).items()}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._projector, name)
+
+
+def _documents_cleaned(step: Step) -> Step:
+    @functools.wraps(step)
+    def run(builder: Any, projector: Any) -> dict[str, Any]:
+        return step(builder, _CleanProjector(projector))
+    return run
+
+
 def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | None = None
                  ) -> dict[str, Step]:
     """The ``post_project`` steps of a build over the Workbench state directory
@@ -211,10 +287,10 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
 
     return {name: _named(name, step) for name, step in {
         "confirmations": confirmations,
-        "document_fields": document_fields, "mentions": mentions,
+        "document_fields": document_fields, "mentions": _documents_cleaned(mentions),
         "reviews": reviews.link_step(review_store, tenant),
         "sender_corroboration": sender_corroboration_step,
-        "text_index": store_text_index, "twins": twin_step,
+        "text_index": _documents_cleaned(store_text_index), "twins": twin_step,
         "your_reference": your_reference_step}.items()}
 
 

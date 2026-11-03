@@ -1570,7 +1570,7 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
          margin_values: Callable[[Sequence[str]], Mapping[str, Sequence[Mapping[str, Any]]]]
          | None = None,
          landed_values: Callable[[Sequence[str], "Graph"], Mapping[str, Sequence[Mapping[str, Any]]]]
-         | None = None) -> dict[str, Any]:
+         | None = None, first: Container[str] = ()) -> dict[str, Any]:
     """Every late PO's impact over the projection store (``st``: a
     ``proactive_engine._Store``): links set-based, the lateness verdict asked of
     ``plx.process`` (``call``) only for POs whose recorded links reach a consuming assembly
@@ -1585,7 +1585,10 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
     is computed); per late PO, ``po_impacts`` lists the orders at risk it feeds and, where
     known, their margin at stake (``order_margin``). ``landed_values(item_ids, graph)``:
     item id -> the landed-cost engine's per-unit totals of those sold items
-    (``investigate_landed_values``; None: only the recorded unit cost is used)."""
+    (``investigate_landed_values``; None: only the recorded unit cost is used).
+    ``first``: purchase orders (any record of a PO's twins) whose verdict is asked before
+    the others (the late and unconfirmed ones another rule found), so the ``bound`` is
+    spent on them first; only the order of the asking, never a verdict."""
     graph = Graph((e for e in _store_edges(st)
                    if visible is None or (e.frm in visible and e.to in visible)),
                   LINK_TYPES + (LINE_SELLS,) + LEAD_ROUTE_TYPES)
@@ -1631,6 +1634,10 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             unconsumed += 1
             for brk in breaks:
                 stopped.setdefault(brk.reason, set()).add(root)
+    if first:
+        # the POs found late or unconfirmed first (stable: the rest keep their order)
+        roots.sort(key=lambda root: not any(
+            r in first for r in graph.cluster(PO_TWINS, root)))
     late: dict[str, Late] = {}
     for po in roots[:bound]:
         try:

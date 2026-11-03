@@ -501,6 +501,7 @@ def run(question: str, server: MCPServer, planner: Planner,
         # The final reply (``answer_gate.final_reply``, every answer path's): the text code
         # renders from the passed claims, and the unknowns, each without what no passed
         # claim backs.
+        prose = bare_labels(prose, claims or [])
         reply = answer_gate.final_reply(
             answer_gate.rendered_text(claims or [], prose), claims or [],
             unsupported=unsupported or [], unknowns=unknowns or [], question=question)
@@ -686,6 +687,34 @@ ABSTAIN_REASONS = {
     "out_of_scope": "no read-only tool can answer what the question asks",
     "needs_person": "a person must decide",
 }
+
+# A label word the planner writes before a claim ("PO {c1}") that the claim's own value
+# already begins with ("PO100095", "PO#5447", "LOT-7"): the label is the value's own
+# prefix, so the rendered text would say it twice ("PO PO100095").
+_LABEL_BEFORE = re.compile(r"(?<![\w#-])([A-Za-z]{1,8})[ \t]*[#:]?[ \t]+(?=\{([A-Za-z][A-Za-z0-9_]{0,31})\})")
+
+
+def bare_labels(prose: Sequence[str] | None, claims: Sequence[Mapping[str, Any]]
+                ) -> list[str] | None:
+    """``prose`` with each label word dropped that names the record type a claim's
+    rendered value already starts with (its value's own prefix, followed by a digit, '#',
+    '-' or a space): ``PO {c1}`` over ``PO100095`` renders ``PO100095``, never
+    ``PO PO100095``. A word the value does not begin with ("PO {c1}" over "100095") stays.
+    Only words are dropped, so the prose states nothing it did not."""
+    if not prose:
+        return prose if prose is None else list(prose)
+    phrases = {c.get("id"): str(c.get("phrase") if c.get("phrase") is not None
+                                else c.get("value", ""))
+               for c in claims if isinstance(c, Mapping)}
+
+    def drop(match: re.Match[str]) -> str:
+        phrase = phrases.get(match.group(2))
+        word = match.group(1)
+        if phrase is None or not re.match(rf"(?i){re.escape(word)}[ \t]*[#:\d-]", phrase):
+            return match.group(0)
+        return ""
+    return [_LABEL_BEFORE.sub(drop, t) if isinstance(t, str) else t for t in prose]
+
 
 PLANNER_RULES = (
     "You plan read-only PLX Workbench tool calls to answer one employee's question. "

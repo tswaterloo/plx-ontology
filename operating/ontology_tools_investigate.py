@@ -939,6 +939,9 @@ class _Run:
     withheld: dict[str, Any] | None = None
     truncated: str | None = None
     stopped: bool = False
+    # the plan steps a truncation came from (a spent budget, a failed or capped read); None
+    # when the run was cut outside its steps, so no part of it is known whole
+    cut_steps: set[str] | None = None
     candidates: list[dict[str, Any]] = field(default_factory=list)
     record_cites: dict[str, dict[str, Any]] = field(default_factory=dict)  # counted, read
     # binding id -> the Portal API relation it reads: an edge citation of a row of that
@@ -1212,8 +1215,17 @@ class InvestigateTools:
             return self._checked(self._no_plan(arguments, actor, run))
         if roots:
             run.collections["root"] = roots
+            # a truncation before the steps (the root lookup) is no step's: no engine may
+            # then tell a whole part of the run from a cut one (``cut_steps``)
+            run.cut_steps = None if run.truncated is not None else set()
             for step in plan.doc["steps"]:
+                # each step's own truncation, kept apart so an engine can tell which part
+                # of the run was cut (``cut_steps``); the run's own flag is unchanged
+                prior, run.truncated = run.truncated, None
                 self._step(run, step)
+                if run.truncated is not None and run.cut_steps is not None:
+                    run.cut_steps.add(step["id"])
+                run.truncated = prior or run.truncated
         if run.timed_out:
             # The caller's clock, not the plan: the steps not run are in the trace as
             # budget_exhausted; the answer is partial and says the time ran out.
@@ -2643,6 +2655,10 @@ class InvestigateTools:
                 extra["roots"] = tuple(roots)
             if "objects" in takes:   # by name only: the reader's object references
                 extra["objects"] = {k: dict(v) for k, v in run.objects.items()}
+            if "cut_steps" in takes:   # by name only: which steps were cut (None: unknown)
+                extra["cut_steps"] = (None if run.cut_steps is None or (
+                    run.truncated is not None and not run.cut_steps) else frozenset(
+                        run.cut_steps))
             out = engine(
                 item["engine_args"], produced, list(run.edges.values()),
                 items={e["name"]: e for e in run.plan.doc["evidence"]}, name=item["name"],

@@ -112,7 +112,10 @@ FORMS: dict[str, dict[str, list[str]]] = {
         "accept": ["no vendor email", "no email from the vendor", "nothing from the vendor",
                    "no reply", "no confirmation", "no vendor confirmation",
                    "no record of a confirmation", "not confirmed", "never confirmed",
-                   "has not confirmed", "no mail from the vendor"],
+                   "has not confirmed", "no mail from the vendor",
+                   "nothing ... shows the vendor confirming",
+                   "nothing ... shows the supplier confirming",
+                   "no record ... of the vendor confirming"],
         # stems fold "confirmation" into "confirmed": a form that a sentence denying the
         # confirmation also holds ("not a vendor confirmation") is no contradiction
         "contradicts": ["vendor confirmed a date", "confirmed the date", "confirmed delivery",
@@ -219,6 +222,31 @@ def _fact(kind: str, fact_id: str, records: Iterable[str], allowed: Sequence[str
           **extra: Any) -> dict[str, Any]:
     return {"id": fact_id, "kind": kind, "records": sorted(set(records)),
             "allowed": list(allowed), **{k: v for k, v in extra.items() if v not in (None, [])}}
+
+
+def copy_key(message: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """The one message a captured copy is of. Each mailbox holding a message is captured as
+    its own record (its own Graph id): the copies share the message's internet message id.
+    Without one, its subject, sender and sent time together (all three present); None: no
+    copy of it can be told apart from another message, so it stands alone. An id never
+    matches the fallback: a message with an id and one without are two."""
+    internet_id = str(message.get("internet_message_id") or "").strip()
+    if internet_id:
+        return ("id", internet_id)
+    subject = str(message.get("subject") or "").strip()
+    sender = str(message.get("from") or "").strip().casefold()
+    sent = str(message.get("sent_at") or "").strip()
+    return ("sent", subject, sender, sent) if subject and sender and sent else None
+
+
+def copies(message: Mapping[str, Any], messages: Iterable[Mapping[str, Any]]) -> list[str]:
+    """The Graph ids of the other captured copies of ``message`` among ``messages``
+    (``copy_key``): an answer citing any of them cites the message."""
+    own = copy_key(message)
+    if own is None:
+        return []
+    return sorted({str(m["message_id"]) for m in messages
+                   if m["message_id"] != message["message_id"] and copy_key(m) == own})
 
 
 def po_forms(number: str) -> list[str]:
@@ -394,7 +422,8 @@ def po_vendor_last_mail(world: World) -> list[Candidate]:
         vendor = domains.get(fm or "")
         if not vendor:
             continue
-        mine = [m for m in _mail_naming(world, number)
+        naming = _mail_naming(world, number)
+        mine = [m for m in naming
                 if str(m.get("from") or "").rsplit("@", 1)[-1].casefold() in vendor
                 and m.get("received_at") and not AUTOMATIC.search(str(m.get("subject") or ""))]
         if not mine:
@@ -406,8 +435,8 @@ def po_vendor_last_mail(world: World) -> list[Candidate]:
             continue
         out.append(Candidate(number, "PurchaseOrder", {"po": number}, [
             _fact("message", "last_vendor_message", [latest["handle"]], ("graph-mail",),
-                  message_id=latest["message_id"], quote=str(latest.get("subject"))[:300],
-                  mail=True, **FORMS["last_vendor_message"])],
+                  message_id=latest["message_id"], copies=copies(latest, naming),
+                  quote=str(latest.get("subject"))[:300], mail=True, **FORMS["last_vendor_message"])],
             ["mail capture: messages whose subject or body_preview names the order number "
              "(a PO token by its digits, any other number whole), from a domain of the FileMaker PO's emailrep/emailcsr, latest received_at"],
             "the vendor's latest captured message naming the order (within 365 days)"))

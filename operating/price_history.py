@@ -18,7 +18,11 @@ never reaches this engine. ``engine_args``:
   row field of that record, re-read for the reader through ``resolver``: a header the
   reader cannot re-read gives that line no date);
 * ``status`` with ``status_in`` (only these, e.g. posted invoices) or ``status_not_in``
-  (never these, e.g. cancelled or draft orders), compared case-folded.
+  (never these, e.g. cancelled or draft orders), compared case-folded;
+* ``steps`` (optional): the plan steps that read this series alone (its lines, headers
+  and their reads). A run the budget cut only in another series' own steps leaves this
+  series whole (``cut_steps``); a cut in a step no series owns (the item, its twins) or in
+  one of its own cuts it, as does any cut when the run cannot say where it was.
 
 Each series in the order the plan lists them (its precedence: a price paid before a price
 ordered) is the item's dated prices; its trend is the last dated price against the one
@@ -45,7 +49,8 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 _LINK_TYPE = re.compile(r"^[A-Z][A-Za-z0-9]*\.[a-z][a-z0-9_]*$")
 _FIELD = re.compile(r"^row\.[A-Za-z_][A-Za-z0-9_]*$")
 SERIES_KEYS = frozenset({"id", "label", "price", "header_link", "date", "header_handle",
-                         "header_date_field", "status", "status_in", "status_not_in"})
+                         "header_date_field", "status", "status_in", "status_not_in",
+                         "steps"})
 MAX_SERIES = 4
 MAX_LISTED = 30          # dated prices listed in a history entry's steps
 MAX_STEP_CHARS = 300
@@ -67,6 +72,7 @@ def plan_check(args: Any, doc: Mapping[str, Any], index: int, schema: Any) -> li
     items = {e["name"]: e for e in doc["evidence"][:index]}
     declared = getattr(schema, "link_types", None) or {}
     seen: set[str] = set()
+    owned: set[str] = set()
     for spec in series:
         if not isinstance(spec, Mapping):
             out.append("each series must be an object")
@@ -102,6 +108,16 @@ def plan_check(args: Any, doc: Mapping[str, Any], index: int, schema: Any) -> li
             if not (isinstance(spec[key], list) and spec[key]
                     and all(isinstance(s, str) and s.strip() for s in spec[key])):
                 out.append(f"{label}: {key} must list statuses")
+        if "steps" in spec:
+            ids = {step.get("id") for step in doc.get("steps") or () if isinstance(step, Mapping)}
+            own = spec["steps"]
+            if not (isinstance(own, list) and own and all(isinstance(x, str) for x in own)
+                    and set(own) <= ids):
+                out.append(f"{label}: steps must list the plan's own step ids")
+            elif set(own) & owned:
+                out.append(f"{label}: a step belongs to one series only")
+            else:
+                owned |= set(own)
     return out
 
 
@@ -349,8 +365,18 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
              edges: Sequence[Mapping[str, Any]], *, items: Mapping[str, Mapping[str, Any]],
              name: str, as_of: str, resolver: Resolver | None, actor: Any, complete: bool,
              covers: Callable[[str], bool],
-             markings_lacked: Callable[[str], list[str]] | None = None) -> dict[str, Any]:
-    """The item's price series and trends (module doc)."""
+             markings_lacked: Callable[[str], list[str]] | None = None,
+             cut_steps: frozenset[str] | None = None) -> dict[str, Any]:
+    """The item's price series and trends (module doc). ``cut_steps``: the plan steps
+    the run's truncation came from (None: not known, so a cut run cuts every series)."""
+    owned = {step: spec["id"] for spec in args["series"] for step in spec.get("steps") or ()}
+
+    def whole(spec: Mapping[str, Any]) -> bool:
+        if complete:
+            return True
+        if cut_steps is None or not cut_steps or "steps" not in spec:
+            return False
+        return all(owned.get(step) not in (None, spec["id"]) for step in cut_steps)
     headers: dict[tuple[str, str], set[str]] = {}
     for edge in edges:
         if isinstance(edge, Mapping) and isinstance(edge.get("from"), str) \
@@ -364,7 +390,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     for spec in args["series"]:
         points, left = _points(spec, evidence, headers, resolver, actor)
         lacked = markings_lacked(spec["price"]) if markings_lacked is not None else []
-        found, more, direction = _series(spec, name, points, left, complete, lacked)
+        found, more, direction = _series(spec, name, points, left, whole(spec), lacked)
         entries += found
         gaps += more
         if direction is not None and chosen is None:

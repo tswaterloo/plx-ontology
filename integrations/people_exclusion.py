@@ -148,7 +148,7 @@ class PeopleExclusion:
         values: list[Any] = []
         raw = environ.get(ENV_IDS)
         if raw is not None:
-            values.extend(v for v in re.split(r"[\s,;]+", raw) if v)
+            values.extend(v for v in re.split(r"[\s,;\"']+", raw) if v)
         sources = [config]
         named = environ.get(ENV_FILE)
         if named:

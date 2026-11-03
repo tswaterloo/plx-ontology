@@ -63,6 +63,14 @@ class GuardConfigTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
                 self.assertIsInstance(raised.exception, NotVisible)
 
+    def test_a_quoted_list_reads_the_same_ids(self):
+        # A shell that keeps the env file's quotes must not turn the guard off.
+        for raw in (f"'{EXCLUDED}'", f'"{EXCLUDED}"', f"'{EXCLUDED}, {tm.BOX_A}'"):
+            with self.subTest(raw):
+                guard = PeopleExclusion.from_env({people_exclusion.ENV_IDS: raw})
+                self.assertIsNone(guard.unavailable)
+                self.assertTrue(guard.is_excluded(EXCLUDED))
+
     def test_the_committed_config_names_nobody(self):
         config = json.loads(people_exclusion.CONFIG.read_text())
         self.assertEqual(config["schema"], people_exclusion.SCHEMA)

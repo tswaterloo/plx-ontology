@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 import re
+import time
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
@@ -60,6 +61,10 @@ MARGIN_FAMILY, LANDED_FAMILY, CHAIN_FAMILY = "F10", "F7", "F12"
 SAGE_MARGIN_FAMILY, SAGE_ORDER_BINDING = "F31", "portal.sage_oe_order_header"
 MAX_ORDERS = 60           # orders of one customer read per answer; past it no total
 MAX_PAGES = 8             # answer pages read per plan run
+# Seconds one answer spends reading orders (their dates, then their margins): past it no
+# further order is read, and the orders read are ranked as a partial answer that says so
+# (never a total or verdict over a subset). The breakdown, item names and why still read.
+BUDGET_SECONDS = 40.0
 MATERIAL_POS = 2          # purchase orders of an item whose landed cost is read
 CENT = Decimal("0.01")
 UNIT = Decimal("0.0001")
@@ -143,6 +148,18 @@ def unit_words(value: Decimal | None, currency: str | None, unit: str | None) ->
     return f"{text} {currency or '(currency not stated)'}" + per
 
 
+def read_words(coverage: Mapping[str, Any], read: int) -> str:
+    """The orders a partial read covers, as it read them: the order asked about first
+    when it was read (``coverage["focus_read"]``: its number), then the most recent."""
+    focus = coverage.get("focus_read")
+    if isinstance(focus, str) and focus and read >= 1:
+        rest = read - 1
+        return (f"the order you asked about ({focus})"
+                + (f" and the {rest} most recent other order{'' if rest == 1 else 's'}"
+                   if rest else ""))
+    return f"the {read} most recent order{'' if read == 1 else 's'}"
+
+
 def not_read_words(in_period: int, read: int, exact: bool) -> str:
     """What a partial read leaves out: how many orders were not read, and, when the order
     list itself was cut, that more may exist (never "0 more")."""
@@ -184,14 +201,18 @@ def _day(value: Any) -> date | None:
 # ---------------------------------------------------------------------- the question
 
 PROFIT_WORDS = re.compile(
-    r"\b(profit\w*|unprofitab\w*|los(?:e|es|ing|t)\s+money|mak(?:e|es|ing)\s+money|"
+    r"\b(profit\w*|unprofitab\w*|"
+    # "losing money", "making us money", "earning us any money", "costing us money"
+    r"(?:los(?:e|es|ing|t)|mak(?:e|es|ing)|earn(?:s|ed|ing)?|cost(?:s|ing)?)\s+"
+    r"(?:us\s+|me\s+)?(?:any\s+|some\s+|real\s+)?money|"
     r"money\s+on|margins?\s+(?:on|for|of|with|by)|why\s+did\s+\w+\s+lose|loss(?:es)?\s+on)\b",
     re.IGNORECASE)
 _FILLER = re.compile(
     r"\b(is|are|was|were|be|the|a|an|our|we|us|customer|client|account|profit\w*|"
     r"unprofitab\w*|why|not|isn'?t|aren'?t|and|or|how|what|which|who|do|does|did|on|for|of|"
     r"with|by|from|to|in|over|during|this|that|these|those|me|show|tell|explain|it|its|them|"
-    r"they|lose|loses|losing|lost|make|makes|making|money|margins?|loss(?:es)?|orders?|"
+    r"they|lose|loses|losing|lost|make|makes|making|earn|earns|earning|costing|money|"
+    r"margins?|loss(?:es)?|orders?|"
     r"last|past|previous|since|year|years|months?|ytd|so|far|any|really|still|"
     r"been|has|have|had|at|all|overall|net|gross|cost|costs|revenue|selling|sell)\b",
     re.IGNORECASE)
@@ -203,8 +224,20 @@ _FILLER = re.compile(
 _SYSTEM_WORDS = re.compile(r"\b(?:in|from|per)\s+(?:bc|business\s+central)(?=\s*(?:[?!.,;:)]|$))|"
                            r"\b(?:bc|business\s+central)(?=\s+(?:orders?|sales|invoices?)\b)",
                            re.IGNORECASE)
-# Chat contractions of question words ("hows our margin", "what's our profit").
-_CHAT_WORDS = re.compile(r"\b(?:how|what)'?s\b|\b(?:doing|going|looking)\b", re.IGNORECASE)
+# Chat contractions of question words ("hows our margin", "what's our profit", "who's"),
+# chat tails and asides ("... or nah", "lol", "tbh") and shorthand that names nobody
+# ("this yr", "rn").
+_CHAT_WORDS = re.compile(r"\b(?:how|what|who)'?s\b|\b(?:doing|going|looking)\b|"
+                         r"\bor\s+(?:nah|nope|no|not|what)\b|"
+                         r"\b(?:nah|nope|yeah|yep|lol|lmao|tbh|ngl|pls|plz|please|rn|fr|yr|yrs|"
+                         r"tho|btw|ok|okay|bro|dude|honestly|actually|basically)\b",
+                         re.IGNORECASE)
+# A question across customers ("our most profitable customer", "top 5 customers by margin",
+# "which customers lose us money"): it names no one customer, so no name is looked up.
+_ACROSS_CUSTOMERS = re.compile(
+    r"\b(?:most|least|top|best|worst|biggest|largest|highest|lowest|rank\w*)\s+(?:\d+\s+)?"
+    r"(?:un)?(?:profit\w*|customers?|clients?|accounts?|margins?|money)\b|"
+    r"\b(?:customers|clients|accounts)\b", re.IGNORECASE)
 LEGAL_SUFFIXES = ("incorporated", "inc", "limited", "ltd", "llc", "corporation", "corp",
                   "co", "company", "ltee", "lte")
 
@@ -228,7 +261,9 @@ def profit_question(question: str) -> bool:
 
 def customer_words(question: str) -> str:
     """The question without its profitability, period and filler words: the customer's
-    name or number as written (possibly empty)."""
+    name or number as written (possibly empty: a question across customers names none)."""
+    if _ACROSS_CUSTOMERS.search(question or ""):
+        return ""
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b|\b(19|20)\d{2}\b|\b\d+\s+months?\b", " ",
                   question or "")
     text = ORDER_TOKEN.sub(" ", text)
@@ -239,6 +274,33 @@ def customer_words(question: str) -> str:
     text = _FILLER.sub(" ", text)
     text = re.sub(r"[?!.,;:'\"()]+", " ", text)
     return " ".join(text.split())[:200]
+
+
+_NAME_AFTER = re.compile(r"\b(?:on|for|with|from)\s+", re.IGNORECASE)
+_NAME_TAIL = re.compile(
+    r"(?:\s*\(\s*(?:bc|business\s+central)?\s*(?:orders?|sales|invoices?)?\s*\)|"
+    r"\s+(?:in|from|per)\s+(?:bc|business\s+central)|"
+    r"\s+(?:bc|business\s+central)|\s+(?:sales\s+)?(?:orders?|sales|invoices?|account)|"
+    r"\s+(?:this|last|past|since|in|over|during)\b.*|[\s?!.,;:]+)+$", re.IGNORECASE)
+MAX_NAME_PHRASES = 2
+
+
+def customer_phrases(question: str) -> list[str]:
+    """The customer's name as the question writes it, whole, after its "on", "for", "with"
+    or "from" ("hows our margin on House of Wax orders in BC?" -> ``House of Wax``): its
+    inner words kept, even those ``customer_words`` drops as filler ("of", "the",
+    "sales"). At most ``MAX_NAME_PHRASES``, the earliest first; each is used only when it
+    is a customer's exact name (never a fuzzy pick)."""
+    text = ORDER_TOKEN.sub(" ", question or "")
+    out: list[str] = []
+    for found in _NAME_AFTER.finditer(text):
+        phrase = _NAME_TAIL.sub("", text[found.end():]).strip(" \t$'\"")
+        phrase = re.sub(r"^\$\s*", "", phrase).strip()
+        if phrase and normal_name(phrase) and phrase not in out:
+            out.append(phrase[:200])
+        if len(out) >= MAX_NAME_PHRASES:
+            break
+    return out
 
 
 def name_and_number(question: str) -> tuple[str, str] | None:
@@ -475,6 +537,12 @@ class Order:
     withheld: bool = False
     stale: str | None = None
     run: Mapping[str, Any] | None = None
+    # an order with no posted invoice: its status and amount before tax as the order
+    # card states them for this reader (None: not stated or not shown to this reader)
+    status: str | None = None
+    open_value: Decimal | None = None
+    open_currency: str | None = None
+    open_handles: list[str] = field(default_factory=list)
 
     @property
     def decided(self) -> bool:
@@ -632,33 +700,44 @@ def _line_input(line: Line, entry: Mapping[str, Any] | None, returns: set) -> No
 # ---------------------------------------------------------------------- customer orders
 
 def customer_orders(call: Call, customer: str, period: Period,
-                    skip: Callable[[str], bool] | None = None
-                    ) -> tuple[list[Order], bool, bool, int, int]:
+                    skip: Callable[[str], bool] | None = None,
+                    late: Callable[[], bool] | None = None
+                    ) -> tuple[list[Order], bool, bool | None, int, int]:
     """(the customer's orders dated in the period, whether orders were withheld from this
-    reader (never how many or which), whether every page was read, orders of the customer
-    outside the period, orders ``skip`` left out by their number: test and staging
-    orders the caller does not count, never read for their dates)."""
+    reader (never how many or which), whether every page was read (None: the time budget,
+    ``late``, ran out before every order's dates were read: the count is a lower bound),
+    orders of the customer outside the period, orders ``skip`` left out by their number:
+    test and staging orders the caller does not count, never read for their dates)."""
     objects, _edges, withheld, complete = _around(call, customer, [(ORDER_LINK, "reverse")],
                                                   MAX_ORDERS * 4)
     out, outside, skipped = [], 0, 0
     for ref in objects:
+        if late is not None and late():
+            return out, withheld, None, outside, skipped
         oid = ref["object_id"]
         number = _display(ref) or oid
         if skip is not None and skip(number):
             skipped += 1
             continue
         handle = ((ref.get("display") or {}).get("origin") or {}).get("citation")
-        dates = _order_dates(call, oid)
+        card: dict[str, Any] = {}
+        dates = _order_dates(call, oid, card)
         if not dates or not period.start <= min(dates) <= period.end:
             outside += 1
             continue
         out.append(Order(oid, number, sorted(dates), handle if isinstance(handle, str)
-                         else None))
+                         else None, **card))
     return out, withheld, complete, outside, skipped
 
 
-def _order_dates(call: Call, order: str) -> list[date]:
-    """Posting dates of the order's posted invoices; with none, its order date."""
+OPEN_PROPERTIES = ("order_date", "bc_status", "subtotal")
+
+
+def _order_dates(call: Call, order: str, card_out: dict[str, Any] | None = None
+                 ) -> list[date]:
+    """Posting dates of the order's posted invoices; with none, its order date, and (into
+    ``card_out``) the order's status and its amount before tax as the reader is shown them
+    (``Order.status``, ``open_value``: the open order value of an order not invoiced)."""
     invoices, _e, _w, _c = _around(call, order, [(INVOICE_LINK, "reverse")], 50)
     dates = []
     for ref in invoices:
@@ -671,8 +750,18 @@ def _order_dates(call: Call, order: str) -> list[date]:
             dates.append(day)
     if dates:
         return dates
-    card = _safe(call, "plx.object", {"object_id": order, "properties": ["order_date"]})
-    day = _day((_values(card or {}).get("order_date") or {}).get("value"))
+    card = _safe(call, "plx.object", {"object_id": order, "properties": list(
+        OPEN_PROPERTIES if card_out is not None else ("order_date",))})
+    values = _values(card or {})
+    day = _day((values.get("order_date") or {}).get("value"))
+    if card_out is not None:
+        status, amount = values.get("bc_status"), values.get("subtotal")
+        card_out["status"] = _text((status or {}).get("value"))
+        value = _dec((amount or {}).get("value"))
+        currency = _text((amount or {}).get("currency"))
+        if value is not None and currency:      # a value only with its own currency
+            card_out.update(open_value=value, open_currency=currency,
+                            open_handles=[h for h in (_handle(amount),) if h])
     return [day] if day else []
 
 
@@ -889,11 +978,17 @@ def _sum(values: Sequence[Decimal]) -> Decimal:
 
 def profitability(call: Call, customer: str, *, today: date, question: str = "",
                   period: Period | None = None, focus: str | None = None,
-                  skip_order: Callable[[str], bool] | None = None) -> dict[str, Any]:
+                  skip_order: Callable[[str], bool] | None = None,
+                  budget_seconds: float | None = BUDGET_SECONDS,
+                  clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """The customer's profitability over the period, its orders ranked worst first, and why
     the focus order (``focus``: its number or object id; else the worst) lost money
     (module doc). Raises ``ProfitError``
-    when the customer is not readable for this reader."""
+    when the customer is not readable for this reader. ``budget_seconds`` (None: none):
+    the time its order reads may take (``BUDGET_SECONDS``); orders not read within it are
+    counted as not read (``ORDERS_NOT_ALL_READ``), never guessed."""
+    deadline = None if budget_seconds is None else clock() + budget_seconds
+    late = (lambda: False) if deadline is None else (lambda: clock() >= deadline)
     period = period or period_of(question, today)
     card = _safe(call, "plx.object", {"object_id": customer})
     if card is None:
@@ -911,7 +1006,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                    "invoice, by its order date)"},
         "gaps": [], "withheld": 0}
     orders, trimmed, whole, outside, skipped = customer_orders(call, customer, period,
-                                                               skip_order)
+                                                               skip_order, late)
     out["orders_outside_period"] = outside
     out["test_orders_skipped"] = skipped
     # Coverage: a customer total and a verdict only over every order of the period. Past
@@ -920,17 +1015,39 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     in_period = len(orders)
     if len(orders) > MAX_ORDERS:
         orders = sorted(orders, key=lambda o: o.dates[0], reverse=True)[:MAX_ORDERS]
+    # Within the time budget the order asked about is read first, then the most recent.
+    key = re.sub(r"[^a-z0-9]", "", (focus or "").casefold())
+    order_read = sorted(orders, key=lambda o: (
+        not (focus and (o.object_id == focus
+                        or re.sub(r"[^a-z0-9]", "", o.number.casefold()) == key)),
+        -o.dates[0].toordinal()))
+    timed_out = whole is None   # the order list's dates were cut by the budget
+    whole = bool(whole)
+    read: list[Order] = []
+    for order in order_read:
+        if late():
+            timed_out = True
+            break
+        read.append(read_order(call, order))
+    taken = {id(o) for o in read}
+    orders = [o for o in orders if id(o) in taken]
     covered = whole and len(orders) == in_period
     out["coverage"] = {"in_period": in_period, "count_exact": whole, "read": len(orders),
                        "complete": covered}
+    if timed_out:
+        out["coverage"]["timed_out"] = True
+    if focus and read and (read[0].object_id == focus
+                           or re.sub(r"[^a-z0-9]", "", read[0].number.casefold()) == key):
+        out["coverage"]["focus_read"] = read[0].number   # read first: said as read
     if not covered:
         out["gaps"].append({"code": "ORDERS_NOT_ALL_READ", "subject": "customer orders",
                             "detail": (f"{'' if whole else 'at least '}{in_period} orders are "
-                                       f"dated in the period; the {len(orders)} most recent "
-                                       f"are read ({not_read_words(in_period, len(orders), whole)}"
-                                       "), so no customer total or verdict is stated")})
-    for order in orders:
-        read_order(call, order)
+                                       f"dated in the period; "
+                                       + read_words(out["coverage"], len(orders))
+                                       + (" were read before the answer's time ran out ("
+                                          if timed_out else " were read (")
+                                       + not_read_words(in_period, len(orders), whole)
+                                       + "), so no customer total or verdict is stated")})
     # An order the reader sees whose margin rests on records it may not read (a marking or
     # an audience it lacks on the invoices, ledger entries or memos): the order is shown,
     # those records are counted by order and never named, and no figure rests on them.
@@ -999,6 +1116,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                             "detail": f"{len(excluded)} order(s) not yet invoiced, excluded "
                             "(" + ", ".join(o.number for o in excluded[:8])
                             + (", ..." if len(excluded) > 8 else "") + ")"})
+    out["open_orders"] = open_orders(excluded) if covered else None
     without = [o for o in visible if not o.decided]
     out["totals"] = totals
     ranked = sorted(decided, key=lambda o: (o.margin, o.number)) + \
@@ -1139,6 +1257,65 @@ def not_invoiced(order: Order) -> bool:
     return (not order.decided and not order.withheld and "LINE_NOT_INVOICED" in codes
             and codes <= {"LINE_NOT_INVOICED", "ORDER_LINES_INCOMPLETE"}
             and not any(line.invoice_handles or line.invoiced for line in order.lines))
+
+
+NO_MARGIN_YET = ("There is no margin to state until an order is invoiced: margin here is the "
+                 "posted invoice revenue minus the item cost Business Central books when the "
+                 "goods ship, and a draft or open order has neither yet.")
+
+
+def open_orders(excluded: Sequence[Order]) -> dict[str, Any] | None:
+    """The orders not yet invoiced, as their cards state them: how many, by status (BC's
+    Draft, Open, Released), and their value before tax per currency, summed only over the
+    orders that state one in that currency (``valued``: how many did; never converted, never
+    a value the reader was not shown). None with no such order."""
+    if not excluded:
+        return None
+    statuses: dict[str, int] = {}
+    for order in excluded:
+        key = order.status or "unknown"
+        statuses[key] = statuses.get(key, 0) + 1
+    by_currency: dict[str, Decimal] = {}
+    steps, handles, valued = [], [], 0
+    for order in excluded:
+        if order.open_value is None or not order.open_currency:
+            continue
+        valued += 1
+        by_currency[order.open_currency] = by_currency.get(order.open_currency, Decimal(0)) \
+            + order.open_value
+        handles += order.open_handles
+        steps.append(f"{order.number}: {_plain(order.open_value)} {order.open_currency}")
+    for currency, total in sorted(by_currency.items()):
+        steps.append(f"open order value before tax = {_plain(total)} {currency}")
+    return {"count": len(excluded), "statuses": statuses, "valued": valued,
+            "value": {c: v for c, v in sorted(by_currency.items())},
+            "steps": steps[:45], "handles": handles}
+
+
+def open_words(open_: Mapping[str, Any] | None) -> str:
+    """"all 10 are drafts in Business Central; open order value 45,050.00 CAD before tax"."""
+    if not open_:
+        return ""
+    count, statuses = open_["count"], open_["statuses"]
+    known = {k: v for k, v in statuses.items() if k != "unknown"}
+    if len(known) == 1 and sum(known.values()) == count:
+        (status, n), = known.items()
+        said = ("it is" if n == 1 else "both are" if n == 2 else f"all {n} are") + " " + (
+            "drafts" if status.casefold() == "draft" else status.casefold()) \
+            + " in Business Central"
+    elif known:
+        said = ", ".join(f"{n} {k.casefold()}" for k, n in sorted(
+            known.items(), key=lambda kv: -kv[1])) + " in Business Central"
+    else:
+        said = ""
+    values = open_.get("value") or {}
+    if values:
+        money = " and ".join(money_words(v, c) for c, v in values.items())
+        part = (f"open order value {money} before tax"
+                + ("" if open_["valued"] == count
+                   else f" (over the {open_['valued']} of {count} orders that state one)"))
+        said = f"{said}; {part}" if said else part
+    return said
 
 
 def block_reason(order: Order) -> str:
@@ -1496,7 +1673,7 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
                   "value": None, "handle": cust.get("handle"), "check": "cited"})
     if not totals.get("complete"):
         coverage = out.get("coverage") or {}
-        steps.append({"label": f"Worst of the {totals['read']} most recent order(s) in "
+        steps.append({"label": f"Worst of {read_words(coverage, totals['read'])} in "
                       f"{out['period']['words']}; " + not_read_words(
                           totals["orders"], totals["read"], coverage.get("count_exact", True)),
                       "value": "no customer total stated", "handle": None,
@@ -1560,7 +1737,7 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
     return steps
 
 
-__all__ = ["Period", "ProfitError", "customer_words", "drivers", "money_words",
+__all__ = ["Period", "ProfitError", "customer_phrases", "customer_words", "drivers", "money_words",
            "not_read_words", "normal_name", "previous_sales", "products",
            "next_action", "order_customer", "order_margin_question", "order_words",
            "period_covering", "period_of", "profit_question", "profitability",

@@ -33,6 +33,7 @@ from ontology import schema as schema_loader
 from ontology.project import MailCaptures, build_store
 from operating import fast_answer as fa
 from operating import mail_topup
+from operating import ontology_tools as ot
 from operating.case_mail_scope import MailScope
 from operating.case_runtime import CaseRuntime, LiveReaders
 from operating.case_tools_host import CaptureCaseHostTools, CaseCaptures
@@ -199,6 +200,34 @@ class NewerMailTests(unittest.TestCase):
         for doc in self.search(server, query="PO100234")["documents"]:
             self.assertTrue(tools._item_allowed(READER_A, doc["citation"]))
 
+    def test_a_whole_top_up_judges_mail_by_the_live_capture_not_the_older_build(self):
+        """The projection's mail is a build old, so it reads stale; a search that also read
+        every message the live capture took since is as fresh as that capture: the
+        projection's stale-mail gap goes when the capture is within its bound, and stays
+        when the capture itself is stale (or unjudged), or the scan was cut."""
+        server = self.server(READER_A)
+        tools = server.ontology.tools
+        stale = ot._gap("stale", "stale_source", "graph_mail", "captured 3 days ago")
+        other = ot._gap("stale", "stale_source", "bc", "captured 3 days ago")
+        with self.runtime.mail_reader(self.state) as store:
+            live = mail_topup.live_refresh_at(store.db)
+        self.assertIsNotNone(live)
+        at = ot._parse_time(live)
+        tools.freshness_bounds = {"graph_mail": 3600.0}
+        for after, kept in ((60, False), (7200, True)):
+            with self.subTest(after=after):
+                tools.freshness_clock = lambda: at + dt.timedelta(seconds=after)
+                base = {"documents": [], "gaps": [stale, other],
+                        "searched": {"sources": ["graph_mail"]},
+                        "completeness": {"returned": 0, "total": 0, "complete": True}}
+                with server.ontology.request(), server.ontology.per_call():
+                    tools.policy = server.ontology.policy_now(READER_A)
+                    out = mail_topup.top_up(tools, {"query": "nothing-matches-this"},
+                                            READER_A, base,
+                                            lambda: self.runtime.mail_reader(self.state))
+                subjects = [g["subject"] for g in out["gaps"] if g["reason"] == "stale_source"]
+                self.assertEqual(subjects, ["graph_mail", "bc"] if kept else ["bc"])
+
     def test_a_scan_the_time_bound_stops_is_said_never_silent(self):
         ticks = iter(range(0, 1000))
         with mock.patch.object(mail_topup, "BUDGET_SECONDS", 0.5), \
@@ -246,6 +275,37 @@ class NewerMailTests(unittest.TestCase):
                     db, pin=99, mailboxes=["other"], addresses=frozenset({SUPPLIER}),
                     domains=frozenset(), terms=None, since=None, until=None)
                 self.assertEqual(none, [])
+
+    def test_newer_mail_to_an_outside_party_counts_only_when_one_of_us_sent_it(self):
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE messages (version_id INTEGER PRIMARY KEY, "
+                   "l1_handle TEXT, mailbox_id TEXT, message_id TEXT, record TEXT, "
+                   "superseded_at TEXT, removed_reason TEXT)")
+        ours = "example-plx.com"
+        rows = {"ours": {"from": f"buyer@{ours}", "to": [SUPPLIER]},
+                "theirs": {"from": SUPPLIER, "to": [f"buyer@{ours}"]},
+                # a third party's mailing listing the supplier among its recipients
+                "mass": {"from": "news@elsewhere.example", "to": [SUPPLIER, f"b@{ours}"]},
+                "to-colleague": {"from": "news@elsewhere.example", "to": [f"buyer@{ours}"]}}
+        for n, (key, record) in enumerate(rows.items()):
+            record.update(cc=[], subject=key, received_at=f"2026-10-02T0{n}:00:00Z")
+            db.execute("INSERT INTO messages VALUES (?,?,?,?,?,NULL,NULL)",
+                       (100 + n, f"graph-mail://mbx/{key}@ck", "mbx", key,
+                        json.dumps(record)))
+
+        def keys(tenant, participant=SUPPLIER):
+            found, _ = mail_topup.scan(
+                db, pin=99, mailboxes=["mbx"], addresses=frozenset({participant}),
+                domains=frozenset(), terms=None, since=None, until=None, tenant=tenant)
+            return {f["handle"].split("/")[3].split("@")[0]: f["role"][0] for f in found}
+
+        self.assertEqual(keys(frozenset({ours})), {"ours": "to_them", "theirs": "from_them"})
+        # our domains unknown: whether one of us sent it is unknown, so it is not added
+        self.assertEqual(keys(None), {"theirs": "from_them"})
+        # a colleague participant: mail to them from outside still counts
+        self.assertEqual(keys(frozenset({ours}), f"buyer@{ours}"),
+                         {"ours": "from_them", "theirs": "to_them",
+                          "to-colleague": "to_them"})
 
     def test_a_scan_of_a_large_delta_waits_rather_than_cutting(self):
         # The live delta past a generation's pin can be a whole history backfill (803,000

@@ -531,7 +531,13 @@
       "price": "receipt_cost",
       "header_link": "ReceiptLine.line_of",
       "header_handle": "receipt_number",
-      "header_date_field": "row.postingDate"
+      "header_date_field": "row.postingDate",
+      "steps": [
+       "receipt_lines",
+       "receipts",
+       "receipt_line_reads",
+       "receipt_reads"
+      ]
      },
      {
       "id": "invoices",
@@ -543,6 +549,12 @@
       "status_in": [
        "Open",
        "Paid"
+      ],
+      "steps": [
+       "invoice_lines",
+       "invoices",
+       "invoice_line_reads",
+       "invoice_reads"
       ]
      },
      {
@@ -557,6 +569,12 @@
        "Cancelled",
        "Canceled",
        "Draft"
+      ],
+      "steps": [
+       "order_lines",
+       "orders",
+       "order_line_reads",
+       "order_reads"
       ]
      }
     ]

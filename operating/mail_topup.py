@@ -28,7 +28,8 @@ What is read, and for whom (the same decisions as projected mail, never a second
 Matching: a participant search reads the addresses and domains the projected search
 resolved for this reader (``searched.participants``: values the reader may see) and
 matches the captured sender, To and CC exactly as the projection does (an address
-whole, a domain or its subdomains); a query matches when every word of it is a word
+whole, a domain or its subdomains; a message an outside participant only received only
+when one of our domains (the reader's ``tenant_domains``) sent it); a query matches when every word of it is a word
 (or a letter or digit run of one) of the message's subject or preview (narrower than the projection's identifier and body
 search: it under-claims, never over-claims). Only a message none of whose versions the
 generation pinned is added (``version_id`` above the generation's
@@ -55,6 +56,7 @@ import sqlite3
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from ontology.mentions import sent_from_own_domain
 from operating import ontology_tools as ot
 
 SOURCE = "graph_mail"
@@ -107,22 +109,27 @@ def _within(domain: str, parent: str) -> bool:
     return domain == parent or domain.endswith("." + parent)
 
 
-def _role(record: Mapping[str, Any], addresses: frozenset[str], domains: frozenset[str]
-          ) -> tuple[str, str] | None:
+def _role(record: Mapping[str, Any], addresses: frozenset[str], domains: frozenset[str],
+          tenant: frozenset[str] | None = None) -> tuple[str, str] | None:
     """(direction, matched_by) of a captured message for the participant needles, as the
     projected participant search decides it (``ontology_tools_evidence``): an address
-    whole, else a domain or one of its subdomains; ``from_them`` when the sender matches."""
+    whole, else a domain or one of its subdomains; ``from_them`` when the sender matches.
+    A message an outside participant (not at one of our domains, ``tenant``) only
+    received matches only when its one sender is at one of our domains (our domains
+    unknown: never): a third party's mailing listing them is no mail with them."""
     out: tuple[str, str] | None = None
+    internal = False
     for field, direction in (("from", "from_them"), ("to", "to_them"), ("cc", "to_them")):
         values = record.get(field)
         for value in (values if isinstance(values, list) else [values]):
             match = None
             for found in _ADDRESS.finditer(str(value or "").lower()):
-                if found[0] in addresses:
-                    match = "address"
-                    break
-                if any(_within(found[1], d) for d in domains):
-                    match = match or "domain"
+                hit = ("address" if found[0] in addresses else
+                       "domain" if any(_within(found[1], d) for d in domains) else None)
+                if hit is None:
+                    continue
+                internal |= tenant is not None and any(_within(found[1], t) for t in tenant)
+                match = "address" if "address" in (match, hit) else hit
             if match is None:
                 continue
             if out is None:
@@ -130,6 +137,11 @@ def _role(record: Mapping[str, Any], addresses: frozenset[str], domains: frozens
             else:
                 out = ("from_them" if "from_them" in (out[0], direction) else out[0],
                        "address" if "address" in (out[1], match) else out[1])
+    if out is not None and out[0] == "to_them" and not internal:
+        senders = [found[1] for found in
+                   _ADDRESS.finditer(str(record.get("from") or "").lower())]
+        if not (tenant and len(senders) == 1 and sent_from_own_domain(senders[0], tenant)):
+            return None
     return out
 
 
@@ -155,6 +167,7 @@ def query_terms(query: Any) -> list[str] | None:
 def scan(db: sqlite3.Connection, *, pin: int, mailboxes: Sequence[str],
          addresses: frozenset[str], domains: frozenset[str], terms: Sequence[str] | None,
          since: dt.datetime | None, until: dt.datetime | None,
+         tenant: frozenset[str] | None = None,
          clock: Callable[[], float] = time.monotonic, budget: float = BUDGET_SECONDS,
          chunk: int = CHUNK) -> tuple[list[dict[str, Any]], bool]:
     """The current captured messages of ``mailboxes`` past ``pin`` that match, newest
@@ -201,7 +214,7 @@ def scan(db: sqlite3.Connection, *, pin: int, mailboxes: Sequence[str],
                 continue
             role = None
             if needles:
-                role = _role(record, addresses, domains)
+                role = _role(record, addresses, domains, tenant)
                 if role is None:
                     continue
             if terms and not set(terms) <= (_words(record.get("subject"))
@@ -247,6 +260,33 @@ def held_mail_markings(tools: Any, held: Iterable[str]) -> bool:
     return needed <= set(held)
 
 
+def live_refresh_at(db: Any) -> str | None:
+    """The live mail capture's own freshness (as ``ontology.project.MailCaptures.describe``
+    states it for a build): the stalest last run of a folder it still reads (a folder
+    with a terminal reason is never read again and leaves freshness to the rest); None
+    when no folder has run."""
+    from integrations.capture_mail import terminal_reason
+    runs = [run for reason, run in db.execute("SELECT reason, last_run_at FROM folders")
+            if run and not terminal_reason(reason)]
+    return min(runs) if runs else None
+
+
+def live_stale(tools: Any, captured_at: str) -> bool:
+    """Whether the live capture, last run at ``captured_at``, is stale by the host's one
+    rule (``ontology_tools.aged``: its bound, a failed last capture in the ledger)."""
+    try:
+        entry = tools._aged({"source": "graph_mail", "captured_at": captured_at,
+                             "completeness": "partial", "stale": False})
+    except Exception:  # noqa: BLE001 - an unjudged capture is never called fresh
+        return True
+    return bool(entry.get("stale"))
+
+
+def _projected_mail_stale(gap: Any) -> bool:
+    return isinstance(gap, Mapping) and gap.get("reason") == "stale_source" \
+        and gap.get("subject") == "graph_mail"
+
+
 def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[str, Any],
            opened: Callable[[], Any], *, clock: Callable[[], float] = time.monotonic,
            budget: float = BUDGET_SECONDS, chunk: int = CHUNK) -> dict[str, Any]:
@@ -285,13 +325,24 @@ def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[st
         return result
     addresses = frozenset(p for p in participants or () if "@" in p)
     domains = frozenset(p for p in participants or () if "@" not in p)
+    tenant = None
+    if participants is not None:
+        reader = getattr(tools, "reader", None)
+        try:
+            tenant = reader.tenant_domains() if reader is not None else None
+        except (OSError, sqlite3.Error, ValueError, AttributeError):
+            tenant = None   # unknown: an outside participant's received-only mail is not added
     try:
         with opened() as store:
             found, cut = scan(store.db, pin=pin, mailboxes=mailboxes, addresses=addresses,
                               domains=domains, terms=terms, since=since, until=until,
-                              clock=clock, budget=budget, chunk=chunk)
+                              tenant=tenant, clock=clock, budget=budget, chunk=chunk)
+            live = None if cut else live_refresh_at(store.db)
     except (sqlite3.Error, OSError, ValueError):
         return result
+    if live is not None and not live_stale(tools, live):
+        result = dict(result, gaps=[g for g in result.get("gaps") or ()
+                                    if not _projected_mail_stale(g)])
     listed = {doc.get("citation") for doc in result.get("documents") or ()}
     room = min(MAX_ADDED, int(arguments.get("limit") or MAX_ADDED),
                50 - len(result.get("documents") or ()))

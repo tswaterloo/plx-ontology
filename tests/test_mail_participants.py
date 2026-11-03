@@ -161,6 +161,80 @@ class ParticipantTests(unittest.TestCase):
                                                                 "v-po"])
         self.assertEqual({m for _, _, m in self.listed(out)}, {"domain"})
 
+    def test_mail_to_an_outside_party_counts_only_when_one_of_us_sent_it(self):
+        def extend(store):
+            # a third party's mailing that lists the vendor among its recipients
+            message(store, "mass", sender="news@elsewhere.test",
+                    to=[f"rep@{VENDOR}", "x@elsewhere.test"], at="2099-03-01T09:00:00Z")
+            message(store, "mass-cc", sender="news@elsewhere.test", to=[f"buyer@{OURS}"],
+                    cc=[f"ops@{VENDOR}"], at="2099-03-02T09:00:00Z")
+            # our reply to the vendor, the newest message with them
+            message(store, "reply", sender=f"Buyer <buyer@{OURS}>", to=[f"rep@{VENDOR}"],
+                    at="2099-03-03T09:00:00Z")
+        both = tools(extend=extend)
+        for participant in (f"rep@{VENDOR}", f"@{VENDOR}", S1):
+            with self.subTest(participant=participant):
+                out = self.call(tools_=both, participant=participant)
+                keys = [k for k, _, _ in self.listed(out)]
+                self.assertEqual(keys[0], "reply")
+                self.assertEqual(self.listed(out)[0][1], "to_them")
+                self.assertNotIn("mass", keys)
+                self.assertNotIn("mass-cc", keys)
+                self.assertIn("v-new", keys)   # ours, the vendor in CC
+        # a colleague participant: mail to them from outside still counts
+        colleague = [k for k, _, _ in self.listed(self.call(tools_=both,
+                                                            participant=f"buyer@{OURS}"))]
+        self.assertIn("mass-cc", colleague)
+        self.assertIn("v-old", colleague)
+
+    def test_our_help_desk_counts_as_us_and_a_free_mail_domain_never_does(self):
+        """Our help desk's host under our name (``plx-example.zendesk.com`` for
+        ``plx-example.test``) answering the vendor is our mail with them; a free-mail
+        sender's mailing to the vendor is not, even when one of our mailboxes has an
+        address at that provider (it is not one of our own domains)."""
+        def extend(store):
+            message(store, "desk", sender="support@plx-example.zendesk.com",
+                    to=[f"rep@{VENDOR}"], at="2099-03-04T09:00:00Z")
+            message(store, "free", sender="someone@gmail.com",
+                    to=[f"rep@{VENDOR}", "x@gmail.com"], at="2099-03-05T09:00:00Z")
+            message(store, "lookalike", sender="support@plx.zendesk.com",
+                    to=[f"rep@{VENDOR}"], at="2099-03-06T09:00:00Z")
+        for tenant in (frozenset({OURS}), frozenset({OURS, "gmail.com"})):
+            with self.subTest(tenant=sorted(tenant)):
+                out = self.call(tools_=tools(Reader(tenant=tenant), extend=extend),
+                                participant=f"@{VENDOR}")
+                keys = [k for k, _, _ in self.listed(out)]
+                self.assertEqual(self.listed(out)[0], ("desk", "to_them", "domain"))
+                self.assertNotIn("free", keys)
+                self.assertNotIn("lookalike", keys)
+
+    def test_our_own_domains_never_include_a_free_mail_provider(self):
+        from types import SimpleNamespace
+        from operating.ontology_tools_evidence import RuntimeCitations
+        scope = lambda *d: SimpleNamespace(mail_scope=SimpleNamespace(internal_domains=d))
+        self.assertEqual(RuntimeCitations(scope(OURS, "gmail.com", "Hotmail.co.uk"))
+                         .tenant_domains(), frozenset({OURS}))
+        self.assertIsNone(RuntimeCitations(scope("gmail.com")).tenant_domains())
+
+    def test_unknown_own_domains_leave_received_only_mail_out_and_say_so(self):
+        out = self.call(tools_=tools(Reader(tenant=None)), participant=f"rep@{VENDOR}")
+        self.assertEqual(self.listed(out), [("v-old", "from_them", "address"),
+                                            ("v-po", "from_them", "address")])
+        self.assertIn("recipient_matches_unchecked", [g["reason"] for g in out["gaps"]])
+
+    def test_a_sender_the_reader_may_not_see_never_makes_mail_ours(self):
+        def extend(store):
+            oid = message(store, "hidden", sender="placeholder", to=[f"rep@{VENDOR}"],
+                          at="2099-03-03T09:00:00Z")
+            store.conn.execute("DELETE FROM object_values WHERE object_id = ? AND "
+                               "property = 'sender'", (oid,))
+            pii(store, oid, "sender", f"buyer@{OURS}")
+        hidden = tools(extend=extend)
+        self.assertEqual(self.listed(self.call(tools_=hidden, participant=f"rep@{VENDOR}"))
+                         [0][0], "hidden")
+        self.assertNotIn("hidden", [k for k, _, _ in self.listed(
+            self.call(NOPII, tools_=hidden, participant=f"rep@{VENDOR}"))])
+
     def test_a_mailbox_the_reader_may_not_read_stays_hidden(self):
         ops = self.call(participant=f"rep@{VENDOR}")
         self.assertNotIn("v-private", [k for k, _, _ in self.listed(ops)])
@@ -250,6 +324,18 @@ class ParticipantTests(unittest.TestCase):
                     break
             self.assertEqual(len(seen), count)
             self.assertEqual(len(set(seen)), count)
+
+class OwnDomainSenderTest(unittest.TestCase):
+    def test_only_a_known_service_host_carries_our_name(self):
+        from ontology.mentions import sent_from_own_domain
+        own = ["petrasoap.com"]
+        self.assertTrue(sent_from_own_domain("petrasoap.com", own))
+        self.assertTrue(sent_from_own_domain("mail.petrasoap.com", own))
+        self.assertTrue(sent_from_own_domain("petrasoap.zendesk.com", own))
+        for lookalike in ("petrasoap.example.com", "petrasoap.evil.net", "gmail.com",
+                          "petrasoap.com.evil.com"):
+            self.assertFalse(sent_from_own_domain(lookalike, own), lookalike)
+        self.assertFalse(sent_from_own_domain("petrasoap.zendesk.com", []))
 
 
 if __name__ == "__main__":

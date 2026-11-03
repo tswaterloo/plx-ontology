@@ -150,6 +150,74 @@ class TestRecords(unittest.TestCase):
                 self.assertTrue(all(p.supplier == "DSM" for p in late))
                 self.assertEqual(shown["late_total"], n)
 
+    def test_an_order_that_moves_up_past_a_left_out_test_record_keeps_its_name(self):
+        # Home labels the subjects it reads; a test record left out lets the next late
+        # order onto the list, which must be named and carry its supplier, never
+        # "Purchase order" with no supplier.
+        from contextlib import nullcontext
+        n = be.LATE_LIST_LIMIT + 2
+        gaps = [{"object_id": f"PurchaseOrder:bc.purchase_orders:{i}",
+                 "object_type": "PurchaseOrder", "days_late": 200 - i,
+                 "summary": "An open purchase order has no supplier confirmation",
+                 "citations": []} for i in range(n)]
+
+        class Workspace:
+            def gap_inbox(self, limit=None):
+                return {"status": "read", "gaps": gaps}
+
+            def _request(self):
+                return nullcontext()
+
+            def _call(self, tool, args):
+                i = int(args["object_id"].rsplit(":", 1)[1])
+                vendor = "Lorpon Labels (DO NOT USE)" if i == 1 else "DSM"
+                return {"object": {"display": f"PO{100000 + i}"},
+                        "values": [{"property": "vendor_name", "value": vendor}]}
+
+        shown, labels, suppliers = be.without_tests(*be.WorkspaceBackend._attention(Workspace()))
+        late, _ = be.attention_items(shown, labels, suppliers=suppliers)
+        self.assertEqual(len(late), be.LATE_LIST_LIMIT)
+        self.assertEqual([p.label for p in late],
+                         [f"PO{100000 + i}" for i in range(n) if i != 1][:be.LATE_LIST_LIMIT])
+        self.assertTrue(all(p.supplier == "DSM" for p in late))
+
+    def test_the_briefing_leaves_out_a_test_late_order_past_its_top_as_home_does(self):
+        # A placeholder late order ranked past the top was counted in the briefing (23 late)
+        # and listed in its "+N more", while Home left it out (22 late).
+        from contextlib import nullcontext
+        from operating import briefing as bf
+        n, test_at = 20, 18
+        items = [{"id": f"g{i}", "rank": i + 1, "event_type": "po_late",
+                  "object_type": "PurchaseOrder",
+                  "object_id": f"PurchaseOrder:bc.purchase_orders:{i}",
+                  "facts": {"days": 100}, "summary": "late"} for i in range(n)]
+        found = {"status": "read", "items": items, "count": n, "late_total": n,
+                 "groups": [{"event_type": "po_late", "label": "Late purchase order",
+                             "count": n, "in_top": bf.TOP_ITEMS, "new_since_visit": 0,
+                             "acknowledged": 0}]}
+
+        class Workspace:
+            def _request(self):
+                return nullcontext()
+
+            def _call(self, tool, args):
+                i = int(args.get("object_id", args.get("from", "x:0")).rsplit(":", 1)[1])
+                vendor = "Lorpon Labels (DO NOT USE)" if i == test_at else "DSM"
+                return {"object": {"display": f"PO{100000 + i}"},
+                        "values": [{"property": "vendor_name", "value": vendor}]}
+
+        shown, labels = be.briefing_without_tests(Workspace(), found, frozenset())
+        said = be.briefing_model(shown, [], digest="", tests_hidden=shown["tests_hidden"])
+        self.assertEqual(said.late_total, n - 1)
+        self.assertEqual(said.count, n - 1)
+        self.assertEqual([(g.count, g.in_top) for g in said.groups],
+                         [(n - 1, bf.TOP_ITEMS)])
+        self.assertIn(f"{n - 1} POs", said.today)
+        self.assertEqual(said.test_records_hidden, "1 test record hidden")
+        self.assertNotIn(f"PurchaseOrder:bc.purchase_orders:{test_at}",
+                         [i["object_id"] for i in shown["items"]])
+        self.assertEqual(len({i["object_id"] for i in shown["items"]}), n - 1)
+
     def test_the_rule_names_only_what_says_it_is_a_test(self):
         for text in ("Lorpon Labels (DO NOT USE)", "Crown Grooming (Do Not Use)", "TEST",
                      "Laura TEST", "UAT-SO100004", "uat-AO-26001A"):
@@ -344,3 +412,28 @@ class BriefingEventTypes(unittest.TestCase):
         from typing import get_args
         from operating import briefing
         self.assertEqual(set(get_args(m.EventType)), set(briefing.EVENT_TYPES))
+
+
+class AlikeChoices(unittest.TestCase):
+    def test_choices_that_read_alike_say_their_system_and_their_own_values(self):
+        # "whats going on w/ po PO100040" offered "PO100040" and "PO100040": no way to pick
+        from contextlib import nullcontext
+        bc = 'PurchaseOrder:bc.purchase_orders:{"id":"b1"}'
+        portal = 'PurchaseOrder:portal.app_purchase_order:{"id":"c1"}'
+        vendors = {bc: "New Directions Aromatics", portal: "FlavorSum Canada ULC"}
+
+        class Workspace:
+            def _request(self):
+                return nullcontext()
+
+            def _call(self, tool, args):
+                return {"values": [{"property": "vendor_name",
+                                    "value": vendors[args["object_id"]]}]}
+
+        refs = [m.ObjectRef(object_id=o, type="PurchaseOrder", label="PO100040",
+                            open_url="/x") for o in (bc, portal)]
+        refs.append(m.ObjectRef(object_id="Supplier:bc.vendors:v", type="Supplier",
+                                label="DSM", open_url="/y"))
+        said = [c.label for c in be.told_apart(Workspace(), refs)]
+        self.assertEqual(said, ["PO100040 in Business Central (New Directions Aromatics)",
+                                "PO100040 in the Portal (FlavorSum Canada ULC)", "DSM"])

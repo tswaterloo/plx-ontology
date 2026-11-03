@@ -17,6 +17,31 @@ from operator_api import models as m
 from tests.test_customer_profit import TODAY, World, bc_records
 
 
+def draft_records() -> list:
+    """The fixture world plus customer C-52 (Eastwind Test) with two BC Draft orders and
+    nothing invoiced."""
+    records = bc_records()
+    customer = next(r for r in records if r["entity_set"] == "customers"
+                    and r["fields"].get("number") == "C-51")
+    order = next(r for r in records if r["entity_set"] == "salesOrders"
+                 and r["fields"].get("number") == "SO-104")
+    line = next(r for r in records if r["entity_set"] == "salesOrderLines"
+                and r.get("document_id") == order["id"])
+
+    def copy(record: dict, suffix: str, **fields) -> dict:
+        rid = record["id"][:-4] + suffix
+        return {**record, "id": rid, "fields": {**record["fields"], "id": rid, **fields}}
+    records.append(copy(customer, "be01", number="C-52", displayName="Eastwind Test"))
+    for n, (number, amount) in enumerate((("SO-301", 1000.0), ("SO-302", 250.5))):
+        head = copy(order, f"be1{n}", number=number, customerNumber="C-52", status="Draft",
+                    currencyCode="CAD", totalAmountExcludingTax=amount, orderDate="2026-10-0"
+                    + str(n + 2))
+        records.append(head)
+        row = copy(line, f"be2{n}", documentId=head["id"])
+        records.append({**row, "document_id": head["id"]})
+    return records
+
+
 class View:
     """The reader's workspace as the backend uses it: tool calls, the per-item decision
     (``withheld``: a record set, e.g. ``/itemLedgerEntries/``, whose records the reader may
@@ -175,6 +200,27 @@ class ProfitAskTests(unittest.TestCase):
         self.assertIsNone(answer["profitability"]["margin"])
         self.assertIsNone(answer["profitability"]["verdict"])
 
+    def test_a_customer_with_only_draft_orders_is_told_plainly_with_its_open_value(self):
+        """Live repro (gen 7, 2026-11-03): "is dandylion making us money or nah" went past the
+        profit route ("making us money" and the "or nah" tail were not read) to an 83 s agent
+        answer, and a customer whose orders are all BC drafts read only "none is invoiced
+        yet". Now the route takes it, says the orders are drafts, gives their open value
+        before tax (each order's own cited amount, summed per currency) and why there is
+        no margin yet."""
+        _names, answer = self.ask(View(self, records=draft_records()),
+                                  "is eastwind test making us money or nah")
+        direct = answer["direct_answer"]
+        self.assertTrue(direct.startswith(
+            "Eastwind Test has no margin yet in the last 12 months: none of its 2 orders you "
+            "can see is invoiced (both are drafts in Business Central; open order value "
+            "1,250.50 CAD before tax). There is no margin to state until an order is "
+            "invoiced"), direct)
+        fact = next(f for f in answer["facts"] if f["text"].startswith("Open orders"))
+        self.assertIn("SO-301: 1000.00 CAD; SO-302: 250.50 CAD; open order value before tax "
+                      "= 1250.50 CAD", fact["text"])
+        self.assertEqual(len(fact["sources"]), 2)     # each order's own amount, cited
+        self.assertIsNone(answer["profitability"]["margin"])
+
     def test_checked_orders_in_different_currencies_give_no_single_total(self):
         """Every invoiced order checked, but in two currencies: no verdict, no single
         total, each order ranked within its own currency."""
@@ -224,7 +270,7 @@ class ProfitAskTests(unittest.TestCase):
         text = answer["direct_answer"]
         self.assertTrue(text.startswith("I can't give a customer total for Northwind Test "
                                         "Foods in the last 12 months: it has 4 orders in the "
-                                        "period and only the 2 most recent were read (2 more "
+                                        "period and only the 2 most recent orders were read (2 more "
                                         "in the period not read)"), text)
         self.assertNotIn("profitable", text)
         self.assertIn("Worst of the 2 most recent orders read SO-101", text)
@@ -237,6 +283,20 @@ class ProfitAskTests(unittest.TestCase):
     def test_a_name_written_differently_is_picked_after_normalising(self):
         _names, answer = self.ask(View(self), "Is the northwind test foods inc. profitable?")
         self.assertEqual(answer["profitability"]["customer"]["label"], "Northwind Test Foods")
+
+    def test_a_name_holding_filler_words_is_picked_as_written_whole(self):
+        """A customer whose name holds words the question's filler drops ("of"): the name
+        as written after "on" is its exact name, so it is picked, not offered as a choice."""
+        records = bc_records()
+        for record in records:
+            if record["entity_set"] == "customers" and record["fields"]["number"] == "C-50":
+                record["fields"]["displayName"] = "House of Northwind Foods"
+        for question in ("hows our margin on House of Northwind Foods orders in BC?",
+                         "whats our margin on House of Northwind Foods (BC orders)?"):
+            with self.subTest(question=question):
+                _names, answer = self.ask(View(self, records=records), question)
+                self.assertEqual(answer["profitability"]["customer"]["label"],
+                                 "House of Northwind Foods")
 
     def test_each_order_sentence_carries_that_orders_own_currency(self):
         _names, answer = self.ask(View(self), "Is Southwind Test profitable?")
@@ -263,7 +323,7 @@ class ProfitAskTests(unittest.TestCase):
             _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
         text = answer["direct_answer"]
         self.assertIn("it has at least 4 orders in the period and only the 4 most recent "
-                      "were read (the order list itself was cut, so more may exist)", text)
+                      "orders were read (the order list itself was cut, so more may exist)", text)
         self.assertNotIn("0 more", text)
         self.assertIsNone(answer["profitability"]["margin"])
 

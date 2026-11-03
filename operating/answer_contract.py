@@ -31,7 +31,7 @@ MAX_VALUES = 100
 MAX_CITATIONS = 8
 
 
-CALCULATION_OPS = ("sum", "count", "equal", "expression")
+CALCULATION_OPS = ("sum", "count", "count_distinct", "equal", "expression")
 
 
 MAX_CALCULATION_INPUTS = 100  # the oracle's chain cap (evals/oracle/families.py MAX_CHAIN)
@@ -135,6 +135,7 @@ def calculation_problem(calc: Any, citations: Any = None) -> str | None:
                 not isinstance(entry.get("l1_handle"), str) or any(
                     not isinstance(entry.get(k, ""), str)
                     for k in ("unit", "currency", "quantity_role", "quote")) or \
-                (calc["op"] != "count" and not isinstance(entry.get("field_path"), str)):
+                (calc["op"] not in ("count", "count_distinct")
+                 and not isinstance(entry.get("field_path"), str)):
             return "input"
     return None

@@ -858,6 +858,7 @@ class CaptureCaseHostTools(CaseHostTools):
         self._policy_doubts = 0   # policies decided with an undecidable mailbox check
         if self.sharepoint_capture_dir is not None:
             self.label_reserve = LABEL_RESERVE_BYTES
+            warm_sharepoint(self.sharepoint_capture_dir)
         self._sharepoint_store: Any = None
         self._in_call = False
         # Per call: what the SharePoint gate decided for each version handle it admitted
@@ -2426,6 +2427,9 @@ TEXT_NOT_READ = "text_not_read"
 _UNSEARCHED = ("cap", "not_read", "bound", TEXT_NOT_READ)
 _INDEX_ROWS_SQL = ("SELECT l1_handle, record, content_status, content_sha256, text_status, "
                    "text_sha256 FROM items WHERE superseded_at IS NULL")
+# The same versions' states alone (their records are read once: ``_version_facts``).
+_INDEX_STATE_SQL = ("SELECT version_id, l1_handle, content_status, content_sha256, "
+                    "text_status, text_sha256 FROM items WHERE superseded_at IS NULL")
 _INDEXES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}   # per index file
 _INDEXES_LOCK = threading.Lock()
 
@@ -2450,6 +2454,15 @@ def _file_key(row: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(
         [mime, name, row.get("content_status"), row.get("content_sha256"),
          row.get("text_status"), row.get("text_sha256")]).encode("utf-8")).hexdigest()
+
+
+def _state_key(facts: tuple[Any, ...], row: Mapping[str, Any]) -> str:
+    """``_file_key`` of a version from its kept record facts and its current state."""
+    name, _path, _modified, _tokens, mime = facts
+    return hashlib.sha256(json.dumps(
+        [mime, name if isinstance(name, str) else "", row["content_status"],
+         row["content_sha256"], row["text_status"], row["text_sha256"]]).encode("utf-8")
+    ).hexdigest()
 
 
 def _file_entry(blobs: Path, handle: str, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2625,18 +2638,142 @@ def _names_terms(tokens: frozenset[str], terms: Sequence[str]) -> bool:
     return True
 
 
+# Reader-independent reads of a SharePoint capture's every current file (``file_names``,
+# ``file_index``), kept per database file while its state (``_file_stamp``: the file and
+# its write-ahead log; any commit changes it) is unchanged: each reads and parses every
+# captured record (seconds, minutes under load), once per process and capture state
+# instead of once per reader session. Nothing reader-specific is kept here; one state per
+# file and kind.
+_SNAPSHOTS: dict[tuple[str, str], tuple[Any, Any]] = {}
+_SNAPSHOTS_LOCK = threading.Lock()
+# One read at a time per file and kind: sessions asking together wait for it, not each
+# making its own (several concurrent readers' sessions each parsed every record).
+_SNAPSHOT_READS: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
+    """``read()`` of ``store``, kept while the store's database file state is unchanged
+    (read before and after: a commit while it was read keeps nothing). A store with no
+    database file path is read every time."""
+    from .ontology_host import _file_stamp
+    path = getattr(store, "path", None)
+    if not isinstance(path, (str, Path)):
+        return read()
+    key = (str(path), kind)
+    with _SNAPSHOTS_LOCK:
+        reading = _SNAPSHOT_READS.setdefault(key, threading.Lock())
+    with reading:
+        before = _file_stamp(path)
+        with _SNAPSHOTS_LOCK:
+            held = _SNAPSHOTS.get(key)
+        if held is not None and held[0] == before:
+            return held[1]
+        value = read()
+        if _file_stamp(path) == before:
+            with _SNAPSHOTS_LOCK:
+                _SNAPSHOTS[key] = (before, value)
+        return value
+
+
+# Background reads keeping a SharePoint capture's reader-independent snapshots
+# (``file_names``, ``file_index``) current: one thread per capture directory and
+# process, started with the host's tools, reading them at start and again after every
+# capture commit, so no question pays for the first read or a capture's new files.
+WARM_EVERY_SECONDS = 30.0
+_WARMING: dict[str, threading.Thread] = {}
+_WARMING_LOCK = threading.Lock()
+
+
+def warm_sharepoint(capture_dir: str | Path, *, every: float | None = WARM_EVERY_SECONDS,
+                    stop: threading.Event | None = None) -> threading.Thread | None:
+    """Start (once per directory and process) the daemon thread reading the SharePoint
+    capture under ``capture_dir``'s file names and identifier index now, then every
+    ``every`` seconds (None: once); a read of an unchanged store is a file-state check.
+    Reader-independent and visibility-free: nothing it keeps is shown to anyone; a
+    reader's lookup still takes only the files the store lists for that reader. Any
+    failure ends the thread quietly (the question then reads them itself, as before).
+    The thread, or None when the store does not exist or one already runs."""
+    from integrations.capture_sharepoint import SharePointCaptureStore, store_exists
+    key = str(Path(capture_dir).expanduser())
+    if not store_exists(Path(key)):
+        return None
+
+    def run() -> None:
+        try:
+            store = SharePointCaptureStore.open_read_only(Path(key))
+            try:
+                while True:
+                    file_names(store)
+                    file_index(store)
+                    if every is None or (stop.wait(every) if stop is not None
+                                         else time.sleep(every)):
+                        return
+            finally:
+                close = getattr(store, "close", None)
+                if callable(close):
+                    close()
+        except Exception:  # noqa: BLE001 - a warm-up never fails a host
+            return
+        finally:
+            with _WARMING_LOCK:
+                if _WARMING.get(key) is threading.current_thread():
+                    _WARMING.pop(key, None)
+    with _WARMING_LOCK:
+        if key in _WARMING:
+            return None
+        thread = _WARMING[key] = threading.Thread(target=run, name="sharepoint-warm",
+                                                  daemon=True)
+    thread.start()
+    return thread
+
+
 def file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
     """Every current captured file version of ``store`` (by version handle) with its
     name, folder path, last modified time and their words (:func:`_name_tokens`), for
     every reader: no visibility is decided here (the reader's lookup takes the files the
-    store lists for it, and each listed file is gated)."""
+    store lists for it, and each listed file is gated). Kept per store state
+    (``_kept_snapshot``); the caller never changes it."""
+    return _kept_snapshot(store, "names", lambda: _file_names(store))
+
+
+# What each captured file version's record says, by store file and version id: a
+# version's ``record`` and ``path`` are written once (a capture's updates change only its
+# statuses, digests, permissions and dates), so a version read once is never parsed
+# again: a new snapshot after a capture commit parses only the versions added since.
+_VERSIONS: dict[str, dict[int, tuple[Any, ...]]] = {}
+_VERSIONS_LOCK = threading.Lock()
+
+
+def _version_facts(store: Any, version_ids: Sequence[int]) -> dict[int, tuple[Any, ...]]:
+    """version id -> (name, path, last modified, name-and-path words, MIME type) of each
+    version, read from its record once per process and store file."""
+    with _VERSIONS_LOCK:
+        known = _VERSIONS.setdefault(str(getattr(store, "path", "")), {})
+        missing = [v for v in version_ids if v not in known]
+    found: dict[int, tuple[Any, ...]] = {}
+    from integrations.captured_text import file_type
+    for at in range(0, len(missing), 5000):
+        for row in store.db.execute(
+                "SELECT version_id, path, record FROM items WHERE version_id IN "
+                "(SELECT value FROM json_each(?))", (json.dumps(missing[at:at + 5000]),)):
+            record = json.loads(row["record"])
+            record = record if isinstance(record, dict) else {}
+            name, modified = record.get("name"), record.get("last_modified")
+            found[row["version_id"]] = (name, row["path"], modified,
+                                        _name_tokens(name, row["path"]), file_type(record)[0])
+    with _VERSIONS_LOCK:
+        known.update(found)
+        return {v: known[v] for v in version_ids if v in known}
+
+
+def _file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
+    rows = store.db.execute("SELECT version_id, l1_handle FROM items "
+                            "WHERE superseded_at IS NULL").fetchall()
+    facts = _version_facts(store, [row["version_id"] for row in rows])
     out: dict[str, tuple[Any, Any, Any, frozenset[str]]] = {}
-    for row in store.db.execute(
-            "SELECT l1_handle, path, json_extract(record, '$.name') AS name, "
-            "json_extract(record, '$.last_modified') AS modified FROM items "
-            "WHERE superseded_at IS NULL"):
-        out[row["l1_handle"]] = (row["name"], row["path"], row["modified"],
-                                 _name_tokens(row["name"], row["path"]))
+    for row in rows:
+        name, path, modified, tokens, _mime = facts[row["version_id"]]
+        out[row["l1_handle"]] = (name, path, modified, tokens)
     return out
 
 
@@ -2646,12 +2783,16 @@ def file_index(store: Any) -> dict[str, dict[str, Any]]:
     decided here, and a reader's lookup takes only the files the store lists for it.
     Entries come from this process's copy, else the file kept beside the store, else
     the file's stored text (then the index is kept again, holding the current files
-    only)."""
+    only). Kept per store state (``_kept_snapshot``); the caller never changes it."""
+    return _kept_snapshot(store, "index", lambda: _file_index(store))
+
+
+def _file_index(store: Any) -> dict[str, dict[str, Any]]:
     code = _index_code()
     path = identifier_index_path(store.root)
-    rows = {row["l1_handle"]: _index_row(row)
-            for row in store.db.execute(_INDEX_ROWS_SQL).fetchall()}
-    keys = {handle: _file_key(row) for handle, row in rows.items()}
+    current = store.db.execute(_INDEX_STATE_SQL).fetchall()
+    facts = _version_facts(store, [row["version_id"] for row in current])
+    keys = {row["l1_handle"]: _state_key(facts[row["version_id"]], row) for row in current}
     with _INDEXES_LOCK:
         held = _INDEXES.get(str(path))
     entries = held[1] if held is not None and code is not None and held[0] == code else None
@@ -2661,15 +2802,23 @@ def file_index(store: Any) -> dict[str, dict[str, Any]]:
     missing = {key: handle for handle, key in keys.items() if key not in entries}
     if missing:
         entries = dict(entries)
-        for key, handle in missing.items():
-            entries[key] = _file_entry(store.blobs, handle, rows[handle])
+        rows = {row["l1_handle"]: _index_row(row) for row in store.db.execute(
+            _INDEX_ROWS_SQL + " AND l1_handle IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(missing.values())),)).fetchall()}
+        for handle in missing.values():
+            row = rows.get(handle)
+            if row is None:
+                keys.pop(handle)   # no longer current: superseded since its state was read
+                continue
+            key = keys[handle] = _file_key(row)   # its state as read now, if it changed
+            entries[key] = _file_entry(store.blobs, handle, row)
         entries = {key: entries[key] for key in set(keys.values())}
         if code is not None:
             _save_index(path, code, entries)
     if code is not None:
         with _INDEXES_LOCK:
             _INDEXES[str(path)] = (code, entries)
-    return {handle: entries[key] for handle, key in keys.items()}
+    return {handle: entries[key] for handle, key in keys.items() if key in entries}
 
 
 class PageNotRead(CitationUnresolvable):

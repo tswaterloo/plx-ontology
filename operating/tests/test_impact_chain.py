@@ -746,6 +746,41 @@ class ScanAndProactiveTests(unittest.TestCase):
                      and "app_sales_order" not in aud)
         self.assertEqual([g for g in no_so["gaps"] if g["kind"] == "order_at_risk"], [])
 
+    def test_the_late_pos_are_walked_first_and_each_gap_names_its_chain_ends(self):
+        """Live repro (gen 7): the impact walk asked verdicts of POs in id order up to its
+        bound, so the late ones past it were never walked and the late list could not say
+        which customer order a late PO holds up. Within the bound the POs the late rules
+        found go first; the order's gap names the late PO its chain starts from and the
+        PO's impact gap the orders it reaches."""
+        s = tp.Store()
+        # sorts first by id, reaches an assembly order, and is not late
+        chain_fixture(s, key="a0", planned="2099-03-01", promise=None, required="2099-04-01")
+        late = chain_fixture(s, key="z9", required="2099-01-20")
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+        try:
+            call = self.caller(s, STAFF)
+            by_id = ic.scan(st, call, bound=1)
+            first = ic.scan(st, call, bound=1, first={late["po"]})
+        finally:
+            st.close()
+        self.assertEqual((by_id["orders_at_risk"], by_id["pos_not_checked"]), (0, 1))
+        self.assertEqual((first["orders_at_risk"], first["pos_not_checked"]), (1, 1))
+        self.assertEqual(pe._late_found({"late": {"gaps": [
+            {"kind": "late_order", "object_id": late["po"]},
+            {"kind": "conflicting_quantity", "object_id": "PurchaseOrder:x"}]}}), {late["po"]})
+        inbox = pe.inbox_path(path)
+        pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF))
+        got = pe.read_inbox(inbox, path, reader=pe.reader_key(STAFF),
+                            may_read=lambda aud: tp.POLICY.may_read(STAFF, aud),
+                            held=tp.POLICY.held_markings(STAFF),
+                            decide=lambda handles: {h: None for h in handles})
+        order = next(g for g in got["gaps"] if g["kind"] == "order_at_risk")
+        impact = next(g for g in got["gaps"] if g["kind"] == "po_impact")
+        self.assertEqual(order["event"]["pos"], [late["po"]])
+        self.assertEqual((impact["object_id"], impact["event"]["orders"]),
+                         (late["po"], [order["object_id"]]))
+
     def per_line_fixture(self, s, *, received_b=False):
         """One PO not late by its requested-by date (2099-03-01) and with no document-level
         promise, two lines each feeding its own customer order (required 2099-02-20); one
@@ -796,7 +831,8 @@ class ScanAndProactiveTests(unittest.TestCase):
                 if g["kind"] == "order_at_risk"]
         (gap,) = read(lambda aud: tp.POLICY.may_read(STAFF, aud) or aud == "mail:box-b")
         self.assertEqual(gap["object_id"], a["portal_orders"][0])
-        self.assertEqual(gap["event"], {"days": 5, "orders_affected": 1, "line": a["line"],
+        self.assertEqual(gap["event"], {"days": 5, "orders_affected": 1, "pos": [a["po"]],
+                                        "line": a["line"],
                                         "matched_by": "description",
                                         "line_promised": "2099-02-25",
                                         "required": "2099-02-20",

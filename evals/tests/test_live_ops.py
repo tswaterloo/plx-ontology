@@ -24,7 +24,7 @@ H_PO = fx.handle("public.app_purchase_order", {"id": "po-1"}, 7)
 H_AR = fx.handle("public.app_customer", {"id": "cu-1"}, 7)
 ROWS = {H_PO: ("public.app_purchase_order", {"id": "po-1"},
                {"id": "po-1", "po_number": "PO#9001", "status": "SUBMITTED",
-                "expected_date": "2026-09-01"}),
+                "expected_date": "2026-09-01", "bc_number": "106001"}),
         H_AR: ("public.app_customer", {"id": "cu-1"},
                {"id": "cu-1", "company_name": "Fixture Soap Co", "balance": "4821.75"})}
 
@@ -202,6 +202,44 @@ class VerdictTests(unittest.TestCase):
         lots = dict(count, value="5", label=lk.LABELS["lot_count"])
         self.assertEqual(grade(answer("Lots expiring before January 1: 5", PO_VALUES[1:]),
                                key(lots))["outcome"], "correct")
+
+    def test_a_late_list_states_its_count_beside_days_late_and_cited_order_numbers(self):
+        # "131 days late" is a duration and 106001 an order number the answer cites on its
+        # number column: neither is a second figure for the count of late orders
+        count = {"id": "late_count", "kind": "number", "value": "14", "tolerance": "0",
+                 "label": lk.LABELS["late_count"], "records": [H_PO], "allowed": ["api"]}
+        text = ("14 purchase orders you can see are late as of 2026-11-02. Longest late: "
+                "106001 (131 days). The first one is listed below.\n"
+                "- 106001: 131 days late.")
+        listed = [cited("listed_purchase_order_1", "106001", H_PO, "row.bc_number")]
+        got = grade(answer(text, listed), key(count))
+        self.assertEqual(got["outcome"], "correct", got)
+        # the same number not cited as the order's: a figure beside the count, no answer
+        got = grade(answer(text, PO_VALUES[1:]), key(count))
+        self.assertEqual(got["outcome"], "incomplete", got)
+        # a fact counted in days still reads its days
+        days = dict(count, id="days_late", value="131", label=["days late"])
+        self.assertEqual(lo._labelled_numbers("PO 106001 is 131 days late", days),
+                         [(Decimal("131"), False)])
+
+    def test_a_form_in_parts_and_a_leading_no_state_an_absence(self):
+        none = {"id": "no_accepted_quote", "kind": "absent", "value": "accepted",
+                "allowed": [], "records": [],
+                "accept": ["none ... is accepted"], "contradicts": ["was accepted"]}
+        for text in ("No: none of the quotes you can see is accepted.",
+                     "None of the Portal quotes is accepted."):
+            self.assertEqual(grade(answer(text), key(none))["outcome"], "correct", text)
+        for text in ("None of the quotes is not accepted.",
+                     "None of the quotes. It is accepted.",
+                     "Whether none is accepted cannot be decided.",
+                     "None of the quotes was rejected and Q-5 is accepted."):
+            self.assertNotEqual(grade(answer(text), key(none))["outcome"], "correct", text)
+        self.assertTrue(lo.asserted("No: there is no confirmation from the vendor.",
+                                    "no confirmation"))
+        self.assertFalse(lo.asserted("Not no confirmation.", "no confirmation"))
+        self.assertFalse(lo.asserted(
+            "Nothing is overdue and the mail shows the vendor confirming the new date.",
+            "nothing ... shows the vendor confirming"))
 
     def test_a_margin_figure_is_bound_to_its_label_across_the_clause(self):
         margin = {"id": "margin_pct", "kind": "number", "value": "71.57", "unit": "%",
@@ -414,7 +452,8 @@ class KeyTests(unittest.TestCase):
         """A customer is its name case-folded: "CITY OF X" (its BC email at an invoice
         service) and "City of X" (at its own domain) are one customer, keyed under each
         spelling; an auto-reply whose subject carries a tag prefix ("[Petra] Accounting RE:
-        Concur Auto Reply ...") is never the last message with it."""
+        Concur Auto Reply ...") is never the last message with it; nor is a third party's
+        mailing that only lists the customer among its recipients."""
         import sqlite3
         customers = [{"fields": {"displayName": "CITY OF X", "email": "inv@invoices.example"}},
                      {"fields": {"displayName": "City of X", "email": "ap@cityx.example"}},
@@ -423,7 +462,12 @@ class KeyTests(unittest.TestCase):
                   "2026-08-26T13:39:10Z"),
                  ("m2", "bot@invoices.example", ["acct@petra.example"],
                   "[Petra] Accounting RE: Concur Auto Reply Statement X", "2026-10-06T16:20:34Z"),
-                 ("m3", "us@petra.example", ["a@other.example"], "Order", "2026-10-01T00:00:00Z")]
+                 ("m3", "us@petra.example", ["a@other.example"], "Order", "2026-10-01T00:00:00Z"),
+                 # a third party's mailing that lists the customer among many: not a mail
+                 # we had with the customer, however new
+                 ("m4", "events@gmail.com", ["ap@cityx.example", "us@petra.example"] + [
+                     f"p{n}@mail{n}.example" for n in range(14)], "Monthly workshop",
+                  "2026-10-20T00:00:00Z")]
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "capture.db"
             conn = sqlite3.connect(db)
@@ -432,7 +476,8 @@ class KeyTests(unittest.TestCase):
             for mid, sender, to, subject, at in mails:
                 conn.execute("INSERT INTO messages VALUES (?, ?, ?, NULL, NULL)", (
                     f"graph-mail://mb/{mid}@ck", mid, json.dumps(
-                        {"from": sender, "to": to, "subject": subject, "received_at": at})))
+                        {"from": sender, "to": to, "subject": subject, "received_at": at,
+                         "mailbox_upn": "box@petra.example"})))
             conn.commit()
             conn.close()
             found = script.customer_mail(db, customers)
@@ -994,7 +1039,7 @@ class KeyTests(unittest.TestCase):
         text = script.late_text(payload, [card(h1, "PO4154"), card(h2, "PO4155"),
                                           card(h1, "PO4154")])
         values = json.loads(text.split("```json\n")[1].rstrip("`\n"))["values"]
-        self.assertEqual(values, [{"name": "late_purchase_order_1", "value": "PO4154",
+        self.assertEqual(values, [{"name": "listed_purchase_order_1", "value": "PO4154",
                                    "citations": [{"l1_handle": h1,
                                                   "field_path": "row.po_number"}]}])
 
@@ -1307,6 +1352,96 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(named(message(3, "Is PO2-FM-87 approved?", "2026-10-29T15:00:00Z")),
                          {"PO2-FM87": ["teams-chat://c/3@t-3"]})
 
+    def test_any_captured_copy_of_the_keyed_message_is_that_message_and_no_other_is(self):
+        """One email sits in each mailbox it reached, each copy its own captured record
+        (its own Graph id) with one internet message id: an answer citing any copy cites
+        the keyed message. Another message stays another message, however alike: the same
+        subject and sender under another internet id, a message without an id beside one
+        with it, or (no id at all) the same subject and sender sent at another time."""
+        import sqlite3
+        customers = [{"fields": {"displayName": "Acme", "email": "ap@acme.example"}}]
+        sent = "2026-10-20T10:00:00Z"
+        rows = [  # (mailbox, Graph id, internet id, subject, sent, received)
+            ("mbA", "k1", "<a1@acme>", "Re: order", sent, "2026-10-20T10:00:05Z"),
+            ("mbB", "k1b", "<a1@acme>", "Re: order", sent, "2026-10-20T10:00:09Z"),
+            ("mbC", "k1c", " <a1@acme> ", "Re: order", sent, "2026-10-20T10:00:07Z"),
+            ("mbA", "k2", "<a2@acme>", "Re: order", sent, "2026-10-19T10:00:00Z"),
+            ("mbB", "k3", "", "Re: order", sent, "2026-10-18T10:00:00Z")]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "capture.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE messages (l1_handle TEXT, message_id TEXT, record TEXT, "
+                         "superseded_at TEXT, removed_reason TEXT)")
+            for box, mid, imid, subject, at, received in rows:
+                conn.execute("INSERT INTO messages VALUES (?, ?, ?, NULL, NULL)", (
+                    f"graph-mail://{box}/{mid}@ck", mid, json.dumps(
+                        {"from": "Ap@Acme.example", "to": ["us@petra.example"],
+                         "subject": subject, "sent_at": at, "received_at": received,
+                         "internet_message_id": imid})))
+            conn.commit()
+            conn.close()
+            found = script.customer_mail(db, customers)
+        from evals import live_ops_more as more
+        [candidate] = more.customer_last_mail(world(customer_mail=found))
+        fact = candidate.facts[0]
+        self.assertEqual((fact["message_id"], fact["copies"]), ("k1b", ["k1", "k1c"]))
+        self.assertEqual(lo.key_problems(key(fact)), [])
+        cites = lambda handle: [{"system": "graph-mail", "identity": lo._identity(handle)}]
+        for copy in ("graph-mail://mbA/k1@ck2", "graph-mail://mbC/k1c@ck"):
+            self.assertTrue(lo.evidenced(fact, cites(copy)), copy)
+        for other in ("graph-mail://mbA/k2@ck", "graph-mail://mbB/k3@ck"):
+            self.assertFalse(lo.evidenced(fact, cites(other)), other)
+        # without an internet id: subject, sender and sent time together, all present
+        bare = lambda mid, **kw: {"message_id": mid, "subject": "Re: order",
+                                  "from": "ap@acme.example", "sent_at": sent, **kw}
+        alike = [bare("n2", **{"from": "AP@acme.example"}), bare("n3", sent_at="2026-10-21"),
+                 bare("n4", subject="Re: order 2"), bare("n5", internet_message_id="<x@y>")]
+        self.assertEqual(lk.copies(bare("n1"), alike), ["n2"])
+        self.assertEqual(lk.copies(bare("n1", sent_at=""), [bare("n6", sent_at="")]), [])
+        for bad in ("k1", [""], [None], {"k1": 1}):
+            self.assertIn("fact0_copies", lo.key_problems(key(dict(fact, copies=bad))), bad)
+        self.assertIn("fact0_copies", lo.key_problems(key(dict(DUE, copies=["k1"]))))
+
+    def test_mail_with_a_customer_is_theirs_or_ours_and_a_free_mail_sender_is_never_us(self):
+        """"Ours" is our own domains (every captured mailbox's, as the app reads them),
+        less free-mail providers': a mailbox with a gmail.com alias never makes a gmail
+        sender's mass mailing to a customer address our mail with them, while our help
+        desk's host under our name answering the customer is ours and, the newest, is
+        the key. Two copies of it delivered at one instant are one message, not a tie."""
+        import sqlite3
+        customers = [{"fields": {"displayName": "Uni", "email": "office@uni.example"}}]
+        mails = [  # (mailbox, id, sender, to, subject, received)
+            ("mbA", "u1", "prof@uni.example", ["us@petra.example"], "Quote",
+             "2026-10-01T10:00:00Z"),
+            ("mbA", "g1", "someone@gmail.com", ["a@uni.example", "us@petra.example"],
+             "Simulation", "2026-10-05T10:00:00Z"),
+            ("mbA", "d1", "info@petra.zendesk.com", ["prof@uni.example"],
+             "[Desk] Re: Quote", "2026-10-03T10:00:00Z"),
+            ("mbB", "d1b", "info@petra.zendesk.com", ["prof@uni.example"],
+             "[Desk] Re: Quote", "2026-10-03T10:00:00Z")]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "capture.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE messages (l1_handle TEXT, message_id TEXT, record TEXT, "
+                         "superseded_at TEXT, removed_reason TEXT)")
+            conn.execute("CREATE TABLE mailboxes (upn TEXT, identities TEXT)")
+            conn.execute("INSERT INTO mailboxes VALUES ('us@petra.example', ?)",
+                         (json.dumps(["us@petra.example", "petra.shop@gmail.com"]),))
+            for box, mid, sender, to, subject, at in mails:
+                conn.execute("INSERT INTO messages VALUES (?, ?, ?, NULL, NULL)", (
+                    f"graph-mail://{box}/{mid}@ck", mid, json.dumps(
+                        {"from": sender, "to": to, "subject": subject, "received_at": at,
+                         "sent_at": at, "internet_message_id": f"<{mid[:2]}@x>",
+                         "mailbox_upn": "us@petra.example"})))
+            conn.commit()
+            conn.close()
+            found = script.customer_mail(db, customers)
+        self.assertEqual(sorted(m["message_id"] for m in found), ["d1", "d1b", "u1"])
+        from evals import live_ops_more as more
+        [candidate] = more.customer_last_mail(world(customer_mail=found))
+        fact = candidate.facts[0]
+        self.assertEqual((fact["message_id"], fact["copies"]), ("d1", ["d1b"]))
+
     def test_a_mail_names_a_po_by_its_own_number_never_its_digits_alone(self):
         """As for Teams: the vendor's PO-287 mail is not the last mail about Portal PO2-FM87
         (same digits, another order); one naming PO2-FM-87 whole is, and PO 7001 names
@@ -1330,6 +1465,13 @@ class KeyTests(unittest.TestCase):
                          {"PO#7001": "m2"})
         self.assertEqual(last(mail(3, "Is PO2-FM-87 approved?", "2026-10-29T15:00:00Z")),
                          {"PO2-FM87": "m3"})
+        copy = lambda n, imid, at: {**mail(n, "Is PO2-FM-87 approved?", at),
+                                    "internet_message_id": imid}
+        [keyed] = lk.po_vendor_last_mail(dataclasses.replace(w, _cache={}, mail=[
+            copy(4, "<q@v>", "2026-10-29T15:00:00Z"), copy(5, "<q@v>", "2026-10-29T15:00:03Z"),
+            copy(6, "<other@v>", "2026-10-28T15:00:00Z")]))
+        self.assertEqual((keyed.facts[0]["message_id"], keyed.facts[0]["copies"]),
+                         ("m5", ["m4"]))
         absent = lambda *messages: [c.identifier for c in lk.po_no_vendor_mail(
             dataclasses.replace(w, mail=list(messages), _cache={},
                                 named_in_text=lambda _token: False))]

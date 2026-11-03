@@ -58,6 +58,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .ontology_tools import (_ITEM_ACL_SCHEMES, TOOL_NAMES, OntologyTools, ReadPolicy,
@@ -449,6 +450,10 @@ def _file_stamp(path: Any) -> tuple | None:
     return tuple(out)
 
 
+# The longest one answer's reads keep the policy decided at its start (``policy_pinned``).
+POLICY_PIN_SECONDS = 120.0
+
+
 class CaseHostTools:
     """``OntologyTools`` for one runtime with the live fallback, plus the temporary
     directory holding the empty store and the resolver's throw-away stores. ``tools`` is
@@ -506,6 +511,8 @@ class CaseHostTools:
         self._reader: StoreReader | None = None
         self._store_identity: tuple[int, int] | None = None  # the file the reader opened
         self._depth = 0  # requests in progress (``request``)
+        # One answer's policy (``policy_pinned``): (actor, policy, until), else None.
+        self._pin: tuple[Any, ReadPolicy, float] | None = None
         self._answers: Any = None  # plx.aggregate / plx.compare, built on first use
         # The versioned mail capture plx.read reads first (else the live reader): the
         # runtime's (``CaseRuntime.mail_capture_dir``), the one the claim gate and a case's
@@ -686,6 +693,36 @@ class CaseHostTools:
                    getattr(self.runtime, "mail_scope", None), load_exclusion())
         return values, objects
 
+    @contextmanager
+    def policy_pinned(self, actor: Any) -> Iterator[None]:
+        """One answer's reads (code's own, ``fast_answer.Reads``: the fast path, the
+        profit route) under one policy, as the console pins one per request
+        (``object_workspace.HostAccess``): ``policy_now(actor)`` decided once here is every
+        call's of this context for that same actor (``policy_for``), at most
+        ``POLICY_PIN_SECONDS``. As the console's, a transient answer in it (a BC company
+        listing refused: ``policy_settled`` False) holds for this one answer too, never
+        past it: it only ever grants less. A grant revoked during the answer applies from
+        the next answer. Nested: the outer pin holds. Another actor's call never reads
+        it."""
+        if self._pin is not None:
+            yield
+            return
+        policy = self.policy_now(actor)
+        self._pin = (actor, policy, time.monotonic() + POLICY_PIN_SECONDS)
+        try:
+            yield
+        finally:
+            self._pin = None
+
+    def policy_for(self, actor: Any) -> ReadPolicy:
+        """The policy for ``actor`` this call reads under: the answer's pinned one
+        (``policy_pinned``) while it holds for this actor, else ``policy_now``."""
+        pin = self._pin
+        if pin is not None and pin[0] == actor:
+            if time.monotonic() < pin[2]:
+                return pin[1]
+        return self.policy_now(actor)
+
     def policy_settled(self, actor: Any) -> bool:
         """Whether the policy just decided for ``actor`` holds no transient answer: a BC
         company listing that was refused or unreadable is read again on the next call
@@ -766,7 +803,7 @@ class CaseHostTools:
                           "host rebuilds it on its next capture cycle)")
         if name in self._registered:
             return self._registered[name](arguments, self.actor)
-        tools.policy = self.policy_now(actor)
+        tools.policy = self.policy_for(actor)
         if name in ANSWER_TOOLS:
             if self._answers is None or self._answers.base is not tools:
                 self._answers = AggregateTools(tools)

@@ -35,17 +35,44 @@ from typing import Any, Mapping, Sequence
 # the last RESERVE_SECONDS are kept for submitting to the answer gate (a submission, at
 # most one repair, the final message: 25-45 s measured), and the tool calls it may make
 # besides the answer gate's.
-SESSION_SECONDS = 150
+SESSION_SECONDS = 60     # the Ask's whole wall budget (ANSWER_SECONDS); was 150
 # Measured (12 of 240 sessions at 105 s / 120 s): the gate had passed the answer and the
 # session was cut while the agent wrote its final message. Research now ends 60 s before
 # the session, every call 50 s before it: composing the claims (p90 28 s), the gate's
 # decisions (p90 9 s) and a short final message fit.
-RESERVE_SECONDS = 60
+RESERVE_SECONDS = round(SESSION_SECONDS * 60 / 150)   # 60 s of a 150 s session
 # Every tool call ends this many seconds before the session's end (``call_limits``: the
 # host cuts each call's limit to it), so the agent always has time to submit to the
 # answer gate and write its reply before the app's hard cap.
-SUBMIT_SECONDS = 50
+SUBMIT_SECONDS = round(SESSION_SECONDS * 50 / 150)    # 50 s of a 150 s session
 MAX_STEPS = 30
+# One Ask's whole wall budget, the routes tried before the agent included: the agent's
+# session gets what is left of it (``answer_budget``), at least MIN_SESSION_SECONDS.
+# Its research and call deadlines keep the proportions measured at a 150 s session
+# (research 90 s, calls 100 s: ``deadlines``); a short session's small context composes
+# and passes the gate faster (measured 18-27 s per whole agent answer).
+ANSWER_SECONDS = SESSION_SECONDS
+MIN_SESSION_SECONDS = 40
+_RESEARCH_SHARE, _CALLS_SHARE = 90 / 150, 100 / 150
+
+
+def answer_budget(elapsed: float, session: float | None) -> float | None:
+    """The agent session's budget when ``elapsed`` seconds of the Ask are spent: what is
+    left of ``ANSWER_SECONDS`` (never under ``MIN_SESSION_SECONDS``), at most
+    ``session`` (None: unbudgeted, unchanged)."""
+    if session is None:
+        return None
+    return min(float(session), max(float(MIN_SESSION_SECONDS),
+                                   float(ANSWER_SECONDS) - max(0.0, float(elapsed))))
+
+
+def deadlines(budget: float) -> tuple[float, float]:
+    """(research ends, every tool call ends), in seconds from the session's start, for a
+    session of ``budget`` seconds: research ends at 60 % of it, every call at 2/3, the
+    rest is for submitting to the answer gate and the final reply."""
+    budget = float(budget)
+    return budget * _RESEARCH_SHARE, budget * _CALLS_SHARE
+
 # Reads still served after the budget is spent, once the agent has submitted to the
 # answer gate: re-reading a passage to repair a refused quote.
 REPAIR_READS = 3
@@ -171,7 +198,8 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "sources [\"graph_mail\"] searches mail alone; for the last email with, from or to "
         "a party, plx.documents participant (an address, @domain, or the customer's or "
         "supplier's object_id from plx.find; add query or object_id for one order) lists "
-        "their mail newest first with its direction: cite the newest match's handle, never "
+        "the mail they sent and the mail we sent them newest first with its direction: for "
+        "the last email with them cite the newest of either direction, never "
         "an older message a word search found), and for each record that matters "
         "plx.object (its links counted per link type), plx.around along those links "
         "(receipts, invoices, and the mail, Teams messages and Mission Control tasks that "

@@ -726,3 +726,22 @@ class AgentLoopTests(EmployeeDoorTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BareLabelTests(unittest.TestCase):
+    def test_a_label_the_claim_value_already_carries_is_said_once(self):
+        """The planner's "PO {c1}" over a claim whose value is "PO100095" rendered
+        "PO PO100095": the label word the value begins with is dropped; a value without
+        it ("100095"), or a word that only starts a longer one ("Polo2"), keeps the word."""
+        claims = [{"id": "a", "phrase": "PO100095"}, {"id": "b", "phrase": "PO#5447"},
+                  {"id": "c", "phrase": "100095"}, {"id": "d", "phrase": "Polo2"},
+                  {"id": "e", "phrase": "LOT-7 A"}, {"id": "f", "phrase": "PO 4500"}]
+        for text, shown in (("PO {a} is late.", "{a} is late."),
+                            ("The PO# {b} was due.", "The {b} was due."),
+                            ("PO {c} is late.", "PO {c} is late."),
+                            ("PO {d}", "PO {d}"), ("Lot {e} expires.", "{e} expires."),
+                            ("po {f} and SO {a}", "{f} and SO {a}"),
+                            ("PO {zz}", "PO {zz}")):
+            with self.subTest(text=text):
+                self.assertEqual(agent_loop.bare_labels([text], claims), [shown])
+        self.assertIsNone(agent_loop.bare_labels(None, claims))

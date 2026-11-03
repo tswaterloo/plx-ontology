@@ -57,7 +57,7 @@ sources (live-captures, a scratch harness: ``live_ops.verdict`` on each card's k
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -76,6 +76,7 @@ from .customer_profit import normal_name
 
 ANSWER_FORMAT = "plx-eval-answer/v1"
 FIND_LIMIT = 10
+WIDE_FIND_LIMIT = 50     # a name not among a full first find's candidates is looked for once more
 
 # --------------------------------------------------------------------------- understand
 
@@ -155,6 +156,8 @@ INTENTS: tuple[Intent, ...] = (
     Intent("batch_hold_count", _w(r"\bbatch(?:es)?\b.*\b(?:on (?:(?:qc|quality control) )?hold|held)\b|"
                                   r"\b(?:on (?:(?:qc|quality control) )?hold|held)\b.*"
                                   r"\bbatch(?:es)?\b"), "none"),
+    Intent("lots_expiring", _w(r"\blots?\b.*\b(?:expir\w*|near expiry|go(?:ing)? bad)\b|"
+                               r"\b(?:expiring|near expiry)\b.*\blots?\b"), "none"),
     Intent("late_po_count", _w(r"\b(?:pos?|purchase orders?)\b.*\b(?:late|overdue|past due|"
                                r"behind)\b|\b(?:late|overdue|past due|behind)\b.*"
                                r"\b(?:pos?|purchase orders?)\b"), "none"),
@@ -190,6 +193,43 @@ class Ask:
     since_said: Optional[str] = None   # changes: that frame in words (yesterday, today)
     types: tuple[str, ...] = ()  # changes: the object types the question names
     asks_eta: bool = False       # po_status: the question asks about the vendor's date
+    rank: Optional[tuple[str, str]] = None   # a list ranked by (amount|days_late|date, desc|asc)
+    top: Optional[int] = None    # how many of the ranked list the question asks for
+    within: Optional[int] = None  # lots_expiring: days from today the window ends
+
+
+# Ranking words of a list question: what it is ranked by, and which end first. One grammar
+# for every list family; a family that cannot rank by it hands the question to the agent.
+_RANKS = ((re.compile(r"\b(?:biggest|largest|most expensive|highest|priciest|by (?:amount|value|"
+                      r"total|dollars?|money|cost|size|spend)\b|by\$)"), ("amount", "desc")),
+          (re.compile(r"\b(?:smallest|cheapest|lowest)\b"), ("amount", "asc")),
+          (re.compile(r"\b(?:oldest|most (?:late|overdue|behind)|longest|latest by days|"
+                      r"by days(?: late)?|most days)\b"), ("days_late", "desc")),
+          (re.compile(r"\b(?:soonest|earliest|first to expire|by (?:date|expiry))\b"),
+           ("date", "asc")),
+          (re.compile(r"\b(?:furthest|last to expire)\b"), ("date", "desc")))
+_RANKED = re.compile(r"\b(?:rank\w*|sort\w*|order(?:ed)? by|top \d+|biggest|largest|"
+                     r"highest|smallest|cheapest|lowest|oldest|longest|soonest|earliest|"
+                     r"furthest)\b|by\$")
+_TOP = re.compile(r"\btop (\d{1,2})\b")
+_PLURAL_LIST = re.compile(r"\b(?:pos|purchase orders|lots|orders|batches)\b")
+# The list families that rank, and by what.
+RANKS_BY = {"late_po_count": ("amount", "days_late"), "lots_expiring": ("date",)}
+MAX_RANKED = 5        # records a ranked answer names, each read and cited
+MAX_LOTS_LISTED = 20  # near-expiry lots one answer names, each read and cited
+
+
+def _rank(question: str, folded: str) -> tuple[Optional[tuple[str, str]], Optional[int]]:
+    """(what the question ranks its list by, how many it asks for) or (None, None); a
+    question with ranking words this grammar does not read is ("unknown", "")."""
+    text = folded + (" by$" if re.search(r"\bby\s*\$", question) else "")
+    found = [rank for pattern, rank in _RANKS if pattern.search(text)]
+    if not found:
+        return (("unknown", ""), None) if _RANKED.search(text) else (None, None)
+    if len(set(found)) != 1:
+        return ("unknown", ""), None
+    top = _TOP.search(folded)
+    return found[0], int(top.group(1)) if top else (None if _PLURAL_LIST.search(folded) else 1)
 
 
 def fold(question: str) -> str:
@@ -277,6 +317,15 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
     if len(matched) != 1:
         return None
     intent = matched[0]
+    rank, top = _rank(question, folded)
+    if rank is not None and rank[0] not in RANKS_BY.get(intent.name, ()):
+        return None     # a ranking this family cannot do: never an unranked list
+    if intent.name == "lots_expiring":
+        within = _within(folded, now)
+        if tokens or within is None or _NEGATION.search(folded):
+            return None
+        return Ask(intent.name, "", system, rank=rank or ("date", "asc"), top=top,
+                   within=within)
     negated = re.sub(r"\bnot (?:yet )?shipped\b", " ", folded) if intent.name == "open_sos" \
         else folded       # "not shipped" is what an open order is, not a negation
     if _NEGATION.search(negated) and intent.name not in ("batch_status",):
@@ -287,8 +336,9 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
         name = _customer_name(question)
         return Ask(intent.name, name, system) if name else None
     if intent.name.endswith("_count"):
-        return Ask(intent.name, "", system) if not tokens and _COUNTING.search(question) \
-            else None
+        if tokens or not (_COUNTING.search(question) or rank is not None):
+            return None
+        return Ask(intent.name, "", system, rank=rank, top=top)
     if intent.entity == "none":
         since = _since(folded, now)
         if tokens or not since:
@@ -305,6 +355,34 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
 
 
 INTENTS_BY_NAME = {i.name: i for i in INTENTS}
+EXPIRY_HORIZON = 30   # days ahead the near-expiry rule lists lots (proactive_events)
+
+
+def _within(folded: str, now: Optional[datetime]) -> Optional[int]:
+    """The days from today an expiring-lots question's window ends: today 0, this or the
+    next week 7, the next N days N, this month its last day, no window the rule's whole
+    horizon; None past that horizon or for a window it does not read."""
+    if re.search(r"\b(?:last|past|ago|since|before|after|between|expired)\b", folded):
+        return None
+    days = re.search(r"\b(?:next|within|in) (\d{1,3}) days?\b", folded)
+    if days:
+        n = int(days.group(1))
+    elif re.search(r"\btoday\b", folded):
+        n = 0
+    elif re.search(r"\b(?:this|next) week\b|\bweek\b", folded):
+        n = 7
+    elif re.search(r"\bthis month\b", folded):
+        from zoneinfo import ZoneInfo
+        today = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo(BUSINESS_TZ)).date()
+        end = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        n = (end - today).days
+    elif re.search(r"\b(?:month|year|quarter|tomorrow|weekend)\b", folded):
+        return None
+    else:
+        n = EXPIRY_HORIZON
+    return n if 0 <= n <= EXPIRY_HORIZON else None
+
+
 BUSINESS_TZ = "America/New_York"   # the business day "yesterday" and "today" count in
 
 
@@ -337,9 +415,10 @@ def _customer_name(question: str) -> str:
     text = re.sub(r"\b(?:in|from)\s+(?:bc|business central|the portal|portal|sage)\b|"
                   r"\(\s*(?:bc|business central|portal|sage)(?:\s+orders?)?\s*\)", " ",
                   question, flags=re.I)
-    # a possessive before the asked thing is the name's ("X's balance")
-    text = re.sub(r"(\w)['\u2019]s(?=\s+(?:balance|open|orders?|ar|a/r|sage|account)\b)", r"\1",
-                  text, flags=re.I)
+    # a possessive before the asked thing is the name's ("X's balance", "Acme Co.'s
+    # balance", "Acme (USA)'s balance")
+    text = re.sub(r"([\w.)])['\u2019]s(?=\s+(?:balance|open|orders?|ar|a/r|sage|account)\b)",
+                  r"\1", text, flags=re.I)
     text = re.sub(r"[?!]+", " ", text).strip()
     after = re.search(r"\b(?:for|with|w/)\s+(\S.*)$", text, flags=re.I)
     words = (after.group(1) if after else text).split()
@@ -400,7 +479,11 @@ class Reads:
         self._gated: Any = None
         self._read: Any = None
         self.last_find: Mapping[str, Any] = {}
+        self.last_limit = FIND_LIMIT       # the limit ``last_find`` was asked with
         self.reply: dict[str, Any] = {}   # the final reply's gate report (counts, tokens)
+        # Monotonic second past which no further read starts (``answer`` sets it from
+        # ``BUDGET_SECONDS``): a recipe past it declines (``time_budget``), never guesses.
+        self.deadline: Optional[float] = None
 
     @classmethod
     def of_server(cls, server: Any) -> "Reads":
@@ -413,7 +496,11 @@ class Reads:
     def request(self) -> Iterator["Reads"]:
         with self.host.request():
             self._gated = self.runtime.employee_gate(self.actor)
-            yield self
+            # One answer, one policy: decided once for its reads, as the console pins one
+            # per request (``CaseHostTools.policy_pinned``), not again for every read.
+            pinned = getattr(self.host, "policy_pinned", None)
+            with pinned(self._gated) if callable(pinned) else nullcontext():
+                yield self
 
     def _cache_key(self, name: str, arguments: Mapping[str, Any]) -> Optional[tuple]:
         """The key a result is kept under: the call, this reader (its employee-gated
@@ -445,6 +532,8 @@ class Reads:
         from .claim_checks import returned_evidence
         if self._gated is None:
             raise Unanswerable("outside_request")
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise Unanswerable("time_budget")
         arguments = dict(arguments)
         started = time.monotonic()
         key = self._cache_key(name, arguments) if cached else None
@@ -460,7 +549,8 @@ class Reads:
             elif name == "plx.read":
                 from .case_tools_host import PagedRead
                 tools = self.host.tools
-                tools.policy = self.host.policy_now(self._gated)
+                tools.policy = getattr(self.host, "policy_for", self.host.policy_now)(
+                    self._gated)
                 if self._read is None or self._read[0] is not tools:
                     self._read = (tools, PagedRead(self.host.evidence, self.runtime))
                 result = self._read[1].call(arguments, self._gated)
@@ -519,11 +609,13 @@ class Reads:
 
     # ---- reads the recipes share ---------------------------------------------------
 
-    def find(self, query: str, object_type: Optional[str] = None) -> dict[str, Any]:
-        arguments: dict[str, Any] = {"query": query[:200], "limit": FIND_LIMIT}
+    def find(self, query: str, object_type: Optional[str] = None,
+             limit: int = FIND_LIMIT) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"query": query[:200], "limit": limit}
         if object_type:
             arguments["object_type"] = object_type
         self.last_find = self.call("plx.find", arguments)
+        self.last_limit = limit
         return self.last_find
 
     def row(self, handle: str, need: Sequence[str] = ()) -> dict[str, Any]:
@@ -659,9 +751,16 @@ def by_name(reads: Reads, name: str, binding: str, object_type: str = "Customer"
     want = normal_name(name)
     if not want:
         raise Unanswerable("no_name")
-    exact = [c for c in _candidates(found, (object_type,))
-             if _binding(c).startswith(binding)
-             and normal_name(str(plain((c.get("object") or {}).get("display")) or "")) == want]
+
+    def named(found: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        return [c for c in _candidates(found, (object_type,)) if _binding(c).startswith(binding)
+                and normal_name(str(plain((c.get("object") or {}).get("display")) or ""))
+                == want]
+    exact = named(found)
+    if not exact and len(_candidates(found, (object_type,))) >= FIND_LIMIT:
+        # a full first find (one name held in many systems, or near names ranked first):
+        # the asked system's card may be past it, so it is looked for once more, wider
+        exact = named(reads.find(name, object_type, WIDE_FIND_LIMIT))
     if not exact:
         raise Unanswerable(f"{object_type.lower()}_not_resolved")
     if len(exact) > 1:
@@ -815,8 +914,11 @@ def batch_status(reads: Reads, ask: Ask, draft: Draft) -> None:
     code = ask.mention.strip().upper()
     if not code:
         raise Unanswerable("no_batch_code")
-    by = _batches_named(reads, [{"property": "batch_code", "op": "in", "value": [code]}]
-                        ).get(code, {})
+    # The code is looked up in the identifier index (``query``), the filter kept as the
+    # exact-code guard: one indexed read, never a scan of every batch (a filter-only find
+    # pages through all of them, minutes under load).
+    by = _batches_named(reads, [{"property": "batch_code", "op": "in", "value": [code]}],
+                        query=code).get(code, {})
     fm = [_batch_row(reads, o, ("row.namebatch_c", "row.status", "row.statusqc"))
           for o in by.get(BATCH_RECORD, ())]
     copies = [_batch_row(reads, o, ("row.batch_name", "row.status", "row.status_qc"))
@@ -928,10 +1030,16 @@ PO_STATUS_PROPERTIES = {"status": "the Portal", "fm_status": "FileMaker",
                         "bc_status": "Business Central"}
 
 
-def _po_root(reads: Reads, ask: Ask, found: Mapping[str, Any], prefer: Sequence[str]
-             ) -> dict[str, Any]:
+def _po_root(reads: Reads, ask: Ask, found: Mapping[str, Any], prefer: Sequence[str],
+             ask_which: bool = False) -> dict[str, Any]:
     """The purchase order the question's number names, of the first system of ``prefer``
-    holding exactly one such record (a number held by several is a did-you-mean)."""
+    holding exactly one such record (a number held by several is a did-you-mean). The
+    number held in several systems names one order only when an established identity
+    link joins those records (``why_trail.same_records``); else they are different orders
+    sharing the number (a Portal number reused by Business Central). A recipe passing
+    ``ask_which`` then asks which one; the others read the first system of ``prefer``,
+    and their answer names that system."""
+    picks: list[dict[str, Any]] = []
     for binding in prefer:
         try:
             picked = by_identifier(reads, ask.mention, ("PurchaseOrder",), binding,
@@ -940,8 +1048,45 @@ def _po_root(reads: Reads, ask: Ask, found: Mapping[str, Any], prefer: Sequence[
             continue
         if isinstance(picked, Choices):
             raise _Choice(picked)
-        return picked
-    raise Unanswerable("po_not_resolved")
+        picks.append(picked)
+    if not picks:
+        raise Unanswerable("po_not_resolved")
+    groups = _same_groups(reads, picks)
+    if len(groups) > 1 and ask_which:
+        raise _Choice(Choices(ask.mention, [
+            {"object_id": g[0]["object"]["object_id"],
+             "object_type": g[0]["object"]["object_type"],
+             "display": g[0]["object"].get("display")} for g in groups]))
+    return picks[0]
+
+
+def _same_groups(reads: Reads, picks: Sequence[Mapping[str, Any]]
+                 ) -> list[list[Mapping[str, Any]]]:
+    """``picks`` grouped into one group per order: the Portal's and FileMaker's records of
+    a number stay one (the Portal's app records carry FileMaker's orders, the first of
+    ``prefer`` answering, as before); a Business Central record joins a Portal one only by
+    an established identity link (either way round); a link that cannot be read joins
+    nothing."""
+    from .why_trail import same_records
+
+    def same(a: str, b: str) -> bool:
+        if _binding({"object": {"object_id": a}}).startswith("bc.") == \
+                _binding({"object": {"object_id": b}}).startswith("bc."):
+            return True
+        try:
+            return same_records(reads.call, [a, b]) or same_records(reads.call, [b, a])
+        except Exception:  # noqa: BLE001 - unread: not known to be one order
+            return False
+    groups: list[list[Mapping[str, Any]]] = []
+    for pick in picks:
+        oid = pick["object"]["object_id"]
+        for group in groups:
+            if same(group[0]["object"]["object_id"], oid):
+                group.append(pick)
+                break
+        else:
+            groups.append([pick])
+    return groups
 
 
 def _receipt_verdict(reads: Reads, root: str, required: bool = True
@@ -1427,7 +1572,8 @@ def _same_named(reads: Reads, name: str, binding: str, object_type: str = "Custo
     if len(cards) > most:
         raise Unanswerable("too_many_same_named")
     if len(cards) > 1 and len(_candidates(getattr(reads, "last_find", {}),
-                                          (object_type,))) >= FIND_LIMIT:
+                                          (object_type,))) >= getattr(reads, "last_limit",
+                                                                      FIND_LIMIT):
         raise Unanswerable("same_named_cut")
     return [dict(card) for card in cards]
 
@@ -1692,12 +1838,24 @@ def _series_clear(result: Mapping[str, Any], series: str) -> bool:
                    for c in result.get("conflicts") or ())
 
 
-def _price_cell(result: Mapping[str, Any], line: Any) -> Mapping[str, Any]:
-    """The answer entry that states ``line``'s price (on this page), checked and cited."""
-    for entry in result.get("answer") or ():
+def _price_cell(result: Mapping[str, Any], line: Any,
+                computed: Optional[str] = None) -> Mapping[str, Any]:
+    """The answer entry that states ``line``'s price, checked and cited: the line's own
+    property entry on this page, else the plan's computed price entry named ``computed``
+    when it rests on that line alone (an item bought many times has its line entries on
+    later pages; the computed last and previous prices are answer-level, on the first
+    page, and carry the line's own citation, unit and currency)."""
+    def cited(entry: Mapping[str, Any]) -> bool:
         cite = entry.get("citation") or {}
+        return entry.get("check") == "passed" and isinstance(cite.get("l1_handle"), str) \
+            and isinstance(cite.get("field_path"), str)
+    for entry in result.get("answer") or ():
         if entry.get("object_id") == line and entry.get("kind") == "property" \
-                and entry.get("check") == "passed" and isinstance(cite.get("l1_handle"), str):
+                and cited(entry):
+            return entry
+    for entry in result.get("answer") or ():
+        if computed and entry.get("name") == computed and entry.get("kind") == "computed" \
+                and list(entry.get("basis") or ()) == [line] and cited(entry):
             return entry
     raise Unanswerable("price_not_on_page")
 
@@ -1731,13 +1889,45 @@ def price_trend(reads: Reads, ask: Ask, draft: Draft) -> None:
     basis = direction.get("basis") or ()
     if len(basis) != 2:
         raise Unanswerable("direction_basis")
-    last = _price_value(draft, "last_price", _price_cell(result, basis[0]))
-    before = _price_value(draft, "previous_price", _price_cell(result, basis[1]))
+    base = f"{PRICE_ITEM}_{chosen}"
+    last = _price_value(draft, "last_price",
+                        _price_cell(result, basis[0], f"{base}_last_price"))
+    before = _price_value(draft, "previous_price",
+                          _price_cell(result, basis[1], f"{base}_previous_price"))
     going, than = _MOVES[direction["value"]]
     draft.sentences.append(
         f"The purchase price of {code} is {going}: the last price on "
         f"{PRICE_SERIES[chosen]} was {last}, {than} {before} the time before.")
     draft.roots.append({"object_id": root, "object_type": "Product", "mention": ask.mention})
+
+
+INVOICE_VENDOR = ("row.vendorName", "row.vendorNumber")   # a BC purchase invoice's vendor
+
+
+def _invoice_vendor(reads: Reads, draft: Draft, line: str) -> Optional[str]:
+    """The vendor the line's own posted invoice was billed by, as that invoice records it
+    (its ``vendorName``, and ``vendorNumber`` beside it), cited to the invoice: who was paid
+    that price, even when the vendor card is renamed, missing or not linked. None when the
+    line has not exactly one invoice this reader reads whole, or it records no vendor name
+    (the vendor card's link is then read)."""
+    around = reads.call("plx.around", {"from": line, "limit": 2, "path": [
+        {"link_type": "PurchaseInvoiceLine.line_of", "direction": "forward"}]})
+    invoices = [o for o in around.get("objects") or ()
+                if o.get("object_type") == "PurchaseInvoice"]
+    if len(invoices) != 1 or _withheld(around) or _cut(around):
+        return None
+    try:
+        row = reads.row(_handle_of({"object": invoices[0]}), need=INVOICE_VENDOR)
+    except Unanswerable:
+        return None
+    vendor, number = (row.get(path) for path in INVOICE_VENDOR)
+    if not isinstance(vendor, str) or not vendor.strip():
+        return None
+    said = draft.value("vendor", vendor.strip(), str(row["citation"]), INVOICE_VENDOR[0])
+    if isinstance(number, str) and number.strip() and number.strip() != vendor.strip():
+        said += " (vendor " + draft.value("vendor_number", number.strip(),
+                                          str(row["citation"]), INVOICE_VENDOR[1]) + ")"
+    return said
 
 
 def last_price(reads: Reads, ask: Ask, draft: Draft) -> None:
@@ -1762,14 +1952,17 @@ def last_price(reads: Reads, ask: Ask, draft: Draft) -> None:
     if not basis:
         raise Unanswerable("no_last_paid_price")
     line = basis[0]
-    paid = _price_value(draft, "last_price", _price_cell(result, line))
-    around = reads.call("plx.around", {"from": line, "limit": 5, "path": [
-        {"link_type": "PurchaseInvoiceLine.line_of", "direction": "forward"},
-        {"link_type": "PurchaseInvoice.billed_by", "direction": "forward"}]})
-    vendors = [o for o in around.get("objects") or () if o.get("object_type") == "Supplier"]
-    if len(vendors) != 1 or _withheld(around):
-        raise Unanswerable("vendor_not_one")
-    (name, _handle), = _numbered(vendors, draft, "vendor")
+    paid = _price_value(draft, "last_price", _price_cell(
+        result, line, f"{PRICE_ITEM}_{series}_last_price"))
+    name = _invoice_vendor(reads, draft, line)
+    if name is None:
+        around = reads.call("plx.around", {"from": line, "limit": 5, "path": [
+            {"link_type": "PurchaseInvoiceLine.line_of", "direction": "forward"},
+            {"link_type": "PurchaseInvoice.billed_by", "direction": "forward"}]})
+        vendors = [o for o in around.get("objects") or () if o.get("object_type") == "Supplier"]
+        if len(vendors) != 1 or _withheld(around):
+            raise Unanswerable("vendor_not_one")
+        (name, _handle), = _numbered(vendors, draft, "vendor")
     draft.sentences.append(
         f"{code} was last bought from {name}, at {paid} (the latest posted Business "
         "Central purchase invoice).")
@@ -2011,7 +2204,9 @@ def _instant(value: Any) -> Optional[datetime]:
 
 def _latest_message(found: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     """The newest mail of ``found`` that a person sent (an automatic notice is skipped);
-    two newest at one instant, or none, is ``Unanswerable``."""
+    two newest at one instant, or none, is ``Unanswerable``. Copies of one message in
+    two mailboxes (the same subject, direction and instant) are that one message: the
+    first copy by citation stands for it."""
     mail = [(_instant(d.get("date")), d) for d in found if d.get("kind") == "email"
             and not _AUTOMATIC.match(str(plain(d.get("title")) or ""))]
     mail = [(at, d) for at, d in mail if at is not None]
@@ -2021,9 +2216,9 @@ def _latest_message(found: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
     # instant two ways (``Z`` or an offset).
     newest = max(at for at, _d in mail)
     last = [d for at, d in mail if at == newest]
-    if len({d.get("citation") for d in last}) != 1:
+    if len({(plain(d.get("title")), d.get("direction")) for d in last}) != 1:
         raise Unanswerable("messages_tie")
-    return last[0]
+    return min(last, key=lambda d: str(d.get("citation")))
 
 
 def customer_last_mail(reads: Reads, ask: Ask, draft: Draft) -> None:
@@ -2208,14 +2403,18 @@ BATCH_SYSTEMS = {BATCH_RECORD: "FileMaker", BATCH_COPY: "the Portal"}
 BATCH_STAGING = "gold_native_staging"
 
 
-def _batches_named(reads: Reads, filters: list[dict[str, Any]]
+def _batches_named(reads: Reads, filters: list[dict[str, Any]], query: Optional[str] = None
                    ) -> dict[str, dict[str, list[Mapping[str, Any]]]]:
-    """Every Batch this reader can read that ``filters`` match, ``plx.find`` page by page,
+    """Every Batch this reader can read that ``filters`` match, ``plx.find`` page by page
+    (``query``: the batch code the filters pin, looked up in the identifier index first,
+    which holds every batch code value the store holds; else a scan of every batch),
     as batch code -> lineage -> its records (a record with no batch code yet under ``""``).
     A filtered value withheld, a record of another lineage, more than ``MAX_LISTED``
     records or more than ``MAX_COUNTED`` of the system of record is ``Unanswerable``: a
     count never includes, or silently leaves out, a record."""
     arguments: dict[str, Any] = {"object_type": "Batch", "limit": 50, "filters": filters}
+    if query is not None:
+        arguments["query"] = query
     seen: dict[str, Mapping[str, Any]] = {}
     while True:
         result = reads.call("plx.find", arguments)
@@ -2227,8 +2426,14 @@ def _batches_named(reads: Reads, filters: list[dict[str, Any]]
         if len(seen) > MAX_LISTED or sum(o.get("lineage") == BATCH_RECORD
                                           for o in seen.values()) > MAX_COUNTED:
             raise Unanswerable("too_many_to_count")   # stop reading: it can't be said
-        cursor = (result.get("completeness") or {}).get("next_cursor") or result.get("cursor")
+        completeness = result.get("completeness") or {}
+        cursor = completeness.get("next_cursor") or result.get("cursor")
         if not cursor:
+            # The last page must end the listing: a page trimmed to fit, or a scan cut
+            # with no cursor to go on, leaves records unread (never a short count).
+            if completeness.get("truncated") or "scan_cap" in reasons \
+                    or "result_trimmed" in reasons:
+                raise Unanswerable("listing_cut")
             break
         arguments = {**arguments, "cursor": cursor}
     out: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
@@ -2252,89 +2457,240 @@ def _record_cite(obj: Mapping[str, Any]) -> str | None:
     return None
 
 
+# The FileMaker relation of the schema's Batch binding ``portal.fm_batch`` (lineage
+# ``fm_bronze``): the records a hold count counts.
+BATCH_RECORD_RELATION = "public.batch"
+# The filters that pin FileMaker's held batches in one aggregate: on QC hold and not
+# cancelled, with a batch code, and no Portal display number (``batch_number`` is bound
+# only on the Portal's copy, app_batch_record: its absence leaves FileMaker's records).
+HELD_BATCH_FILTERS = (
+    {"property": "quality_status", "op": "eq", "value": BATCH_ON_HOLD},
+    {"property": "status", "op": "ne", "value": "Cancelled"},
+    {"property": "batch_code", "op": "present"},
+    {"property": "batch_number", "op": "absent"})
+
+
 def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """How many batches are on QC hold, each physical batch once. FileMaker and the Portal
-    both hold every batch (the Portal's record is FileMaker's ETL copy, one per batch
-    code), so a batch is its code, and its hold is FileMaker's, the system of record: on
-    QC hold and not cancelled there. The Portal's copy is read beside it: a batch it shows
-    on hold that FileMaker does not (released, cancelled) or the other way round is a
-    disagreement, said and counted by FileMaker; one only the Portal's copy holds (no
-    FileMaker batch of that code), and a record with no batch code yet, are said, never
-    counted. Each counted batch cites its
-    FileMaker record. A count longer than the gate can check (``MAX_COUNTED``), a value
-    withheld from the reader or a list it cannot finish is the agent's."""
-    held = _batches_named(reads, [
-        {"property": "quality_status", "op": "eq", "value": BATCH_ON_HOLD},
-        {"property": "status", "op": "ne", "value": "Cancelled"}])
-    staging = [o for by in held.values() for o in by.pop(BATCH_STAGING, [])]
-    held = {code: by for code, by in held.items() if by}
-    unnamed = [o for objs in held.pop("", {}).values() for o in objs]
-    if sum(BATCH_RECORD in by for by in held.values()) > MAX_COUNTED:
-        raise Unanswerable("too_many_to_count")
-    # The other system's records of every code only one system shows on hold: present
-    # there and not on hold is a disagreement; absent is a batch of one system.
-    lonely = sorted(code for code, by in held.items() if len(by) == 1)
-    twins: dict[str, dict[str, list[Mapping[str, Any]]]] = {}
-    for at in range(0, len(lonely), 50):
-        named = _batches_named(reads, [{"property": "batch_code", "op": "in",
-                                        "value": lonely[at:at + 50]}])
-        for code, by in named.items():
-            if not code:
-                continue
-            for lineage, objs in by.items():
-                if lineage == BATCH_STAGING:
-                    continue
-                twins.setdefault(code, {}).setdefault(lineage, []).extend(objs)
-    counted, disagree, copy_only = [], [], []
-    for code, by in sorted(held.items()):
-        other = twins.get(code, {})
-        if BATCH_RECORD in by:
-            counted.append(by[BATCH_RECORD][0])
-            if BATCH_COPY not in by and other.get(BATCH_COPY):
-                disagree.append(by[BATCH_RECORD][0])
-        elif other.get(BATCH_RECORD):
-            disagree.append(other[BATCH_RECORD][0])
-        else:
-            copy_only.append(by[BATCH_COPY][0])
-    if max(len(disagree), len(copy_only), len(unnamed), len(staging)) > MAX_COUNTED:
-        raise Unanswerable("too_many_to_count")
-    if not counted:
+    """How many batches are on QC hold, each physical batch once: one ``plx.aggregate``
+    ``count_distinct`` of the batch code over FileMaker's batch records (the system of
+    record for batch QC status) on QC hold and not cancelled. Its value is the distinct
+    batch codes and its ``inputs`` the records holding them; both are said, each an
+    exact count the gate binds to that complete aggregate (its citations a sample past
+    the cap), as "N distinct batches (M records)" when one code is on several records.
+    Records with no batch code are not counted, and the Portal's copies are not compared
+    here (``batch_status`` compares them for one batch). An aggregate cut short, a value
+    withheld, any group but one, a cited record not FileMaker's or none held is the
+    agent's."""
+    result = reads.call("plx.aggregate", {
+        "object_type": "Batch", "filters": [dict(f) for f in HELD_BATCH_FILTERS],
+        "measure": {"op": "count_distinct", "property": "batch_code"}})
+    reasons = {g.get("reason") if isinstance(g, Mapping) else None
+               for g in result.get("gaps") or ()}
+    if result.get("partial") is not False or reasons - {"citations_capped"} \
+            or {"refused", "withheld"} & set(result) \
+            or (result.get("completeness") or {}).get("complete") is not True:
+        raise Unanswerable("count_cut")
+    groups = result.get("groups") or ()
+    if len(groups) != 1 or not isinstance(groups[0], Mapping):
+        raise Unanswerable("count_not_one")
+    group = groups[0]
+    batches, records = group.get("value"), group.get("inputs")
+    cites = [c.get("l1_handle") for c in group.get("inputs_citations") or ()
+             if isinstance(c, Mapping)]
+    if not isinstance(batches, str) or not batches.isdigit() or type(records) is not int:
+        raise Unanswerable("count_cut")
+    if int(batches) == 0 or not cites:
         raise Unanswerable("nothing_counted")   # none found is no proof none exist
-    numbers = _numbered(counted, draft, "batch")
-    draft.values.append({"name": "on_hold_count", "value": str(len(numbers)),
-                         "calculation": {"op": "count", "inputs": [
-                             {"l1_handle": h} for _n, h in numbers]}})
-    many = len(numbers) != 1
+    if not int(batches) <= records or len(set(cites)) != len(cites) or any(
+            not isinstance(h, str) or not h.startswith(f"api://{BATCH_RECORD_RELATION}/")
+            for h in cites):
+        raise Unanswerable("batch_record_unexpected")
+    # Every cited record was checked above; a claim cites at most the gate's per-claim
+    # citations of them, each one the complete aggregate lists (exact all the same).
+    from .answer_gate import MAX_CITATIONS_PER_CLAIM
+    inputs = [{"l1_handle": h} for h in cites[:MAX_CITATIONS_PER_CLAIM]]
+    draft.values.append({"name": "on_hold_count", "value": batches,
+                         "calculation": {"op": "count_distinct", "inputs": inputs}})
+    n, many = int(batches), int(batches) != 1
+    said = f"{n} batch{'es' if many else ''}"
+    if records != n:
+        draft.values.append({"name": "on_hold_records", "value": str(records),
+                             "calculation": {"op": "count", "inputs": inputs}})
+        said = f"{n} distinct batch{'es' if many else ''} ({records} records)"
     draft.sentences.append(
-        f"{len(numbers)} batch{'es' if many else ''} you can see {'are' if many else 'is'} "
-        "on QC hold in FileMaker, the system of record for batch QC status, each batch "
-        "counted once by its batch code: " + ", ".join(n for n, _h in numbers) + ".")
-    for name, objs, says in (
-            ("disagree_count", disagree, "the Portal's batch record and FileMaker disagree "
-             "on whether {it} on hold; counted as FileMaker records {them}"),
-            ("portal_only_count", copy_only, "the Portal's batch record shows on hold with "
-             "no FileMaker batch of that code; not counted"),
-            ("unnamed_count", unnamed, "a record on hold has no batch code yet; not "
-             "counted"),
-            ("staging_count", staging, "a record on hold is a Portal staging test or "
-             "Portal-native record, no FileMaker batch; not counted")):
-        if not objs:
-            continue
-        cites = sorted({h for h in map(_record_cite, objs) if h})
-        if len(cites) != len(objs):
-            raise Unanswerable("number_uncited")
-        draft.values.append({"name": name, "value": str(len(objs)),
-                             "calculation": {"op": "count", "inputs": [
-                                 {"l1_handle": h} for h in cites]}})
-        one = len(objs) == 1
-        draft.sentences.append(
-            f"For {len(objs)} batch{'' if one else 'es'} "
-            + says.format(it="it is" if one else "they are", them="it" if one else "them")
-            + ".")
-    draft.sentences.append("Sources: FileMaker batches and the Portal's batch records.")
+        f"{said} you can see {'are' if many else 'is'} on QC hold in FileMaker, the system "
+        "of record for batch QC status, each batch counted once by its batch code"
+        + (": a batch code on more than one FileMaker record counts once."
+           if records != n else "."))
+    draft.sentences.append(
+        "Records with no batch code yet are not counted, and the Portal's copies of these "
+        "batches were not compared in this count.")
+    draft.sentences.append("Source: FileMaker batches.")
 
 
 LATE_PO_QUERY = "late purchase orders"   # a home phrase: Home's late list (plx.find)
+
+
+def _home_list(reads: Reads, query: str) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """(Home's list for a home phrase, its completeness): a stale, unread or unrecognized
+    inbox is the agent's."""
+    result = reads.call("plx.find", {"query": query, "limit": 50})
+    home = result.get("home")
+    if not isinstance(home, Mapping) or home.get("inbox") != "read" or home.get("stale") \
+            or home.get("unrecognized"):
+        raise Unanswerable("home_unavailable")
+    return home, result.get("completeness") or {}
+
+
+def _card_value(reads: Reads, draft: Draft, name: str, object_id: str, prop: str,
+                card: Mapping[str, Any]) -> tuple[str, str]:
+    """The one value ``prop`` holds on ``card``, cited as the claim ``name``: (value as
+    stated, its handle); none or two different ones are the agent's."""
+    values = [v for v in _object_values(card, prop) if v[0] not in (None, "")]
+    if not values or len({str(v[0]).strip() for v in values}) != 1:
+        raise Unanswerable(f"{prop}_not_one")
+    value, handle, field_path = values[0]
+    return draft.value(name, str(value).strip(), handle, field_path), handle
+
+
+def _late_ranked(reads: Reads, ask: Ask, draft: Draft) -> None:
+    """Home's late purchase orders ranked by their total (the briefing's ranking amount:
+    the record's own cited total, never a suspect one) or by days late (Home's own
+    order), the first ``ask.top`` (at most ``MAX_RANKED``) named, each order's number and
+    total read and cited from its card. Only a whole late list ranks (one longer than the
+    page is the agent's); orders with no usable total are said, never ranked as zero;
+    totals in two currencies are never compared."""
+    home, _completeness = _home_list(reads, LATE_PO_QUERY)
+    from .mcp_server import LATE_PO_KINDS
+    late = home.get("late_orders")
+    if not isinstance(late, Mapping) or late.get("complete") is not True \
+            or type(late.get("count")) is not int:
+        raise Unanswerable("late_list_incomplete")
+    gaps: dict[str, Mapping[str, Any]] = {}
+    for gap in home.get("gaps") or ():
+        if isinstance(gap, Mapping) and gap.get("kind") in LATE_PO_KINDS \
+                and type(gap.get("days_late")) is int and isinstance(gap.get("object_id"), str):
+            gaps.setdefault(gap["object_id"], gap)
+    if not gaps or len(gaps) != late["count"]:
+        raise Unanswerable("late_list_cut")
+    by, direction = ask.rank or ("days_late", "desc")
+    unpriced = 0
+    if by == "amount":
+        priced = {o: g for o, g in gaps.items() if isinstance(g.get("amount"), Mapping)}
+        unpriced = len(gaps) - len(priced)
+        if not priced or len({g["amount"].get("currency") for g in priced.values()}) != 1:
+            raise Unanswerable("amounts_not_comparable")
+        order = sorted(priced, key=lambda o: (_decimal(priced[o]["amount"]["value"]), o),
+                       reverse=direction == "desc")
+    else:
+        order = sorted(gaps, key=lambda o: (gaps[o]["days_late"], o),
+                       reverse=direction == "desc")
+    top = min(ask.top or MAX_RANKED, MAX_RANKED, len(order))
+    named = []
+    for at, object_id in enumerate(order[:top], 1):
+        props = ["po_number"] + (["total_cost", "currency"] if by == "amount" else [])
+        card = reads.call("plx.object", {"object_id": object_id, "properties": props})
+        number, _h = _card_value(reads, draft, f"ranked_{at}_po", object_id, "po_number", card)
+        if by != "amount":
+            named.append(number)
+            continue
+        total, _h = _card_value(reads, draft, f"ranked_{at}_total", object_id, "total_cost",
+                                card)
+        currency, _h = _card_value(reads, draft, f"ranked_{at}_currency", object_id,
+                                   "currency", card)
+        shown = gaps[object_id]["amount"]
+        if _decimal(total) != _decimal(shown["value"]) or currency.upper() != shown["currency"]:
+            raise Unanswerable("total_changed")   # the card moved since Home was built
+        named.append(f"{number} ({currency} {total})")
+        draft.roots.append({"object_id": object_id, "object_type": "PurchaseOrder",
+                            "mention": number})
+    what = {"amount": "by total", "days_late": "by days late"}[by]
+    end = {("amount", "desc"): "largest first", ("amount", "asc"): "smallest first",
+           ("days_late", "desc"): "longest late first",
+           ("days_late", "asc"): "most recently late first"}[(by, direction)]
+    built = home.get("run_at")
+    lead = (f"The {'largest' if direction == 'desc' else 'smallest'} late purchase order "
+            f"by total is " if by == "amount" and top == 1 else
+            f"The {'longest' if direction == 'desc' else 'most recently'} late purchase "
+            "order is " if top == 1 else
+            f"Late purchase orders you can see {what}, {end}: ")
+    draft.sentences.append(lead + ", ".join(named) + " (Home's late list"
+                           + (f", built {built}" if isinstance(built, str) else "") + ").")
+    if unpriced:
+        draft.gaps.append({"state": "unknown", "reason": "amount_missing",
+                           "subject": "late purchase orders with no usable total"})
+        draft.sentences.append("Some late purchase orders carry no total Home can rank by "
+                               "(none, or one its lines do not support), so they are not "
+                               "in this ranking.")
+        draft.answerability = "partial"
+
+
+LOT_QUERY = "lots near expiry"   # a home phrase: the briefing's near-expiry lots
+
+
+def lots_expiring(reads: Reads, ask: Ask, draft: Draft) -> None:
+    """The lots expiring from today to ``ask.within`` days on: the near-expiry list the
+    briefing reads (Home's ``lot_near_expiry`` gaps, soonest first), each lot's number and
+    expiry date read and cited from its card. Complete only when Home's list is, or its
+    page, cut short, already reaches past the window; a lot whose card no longer says
+    the date Home listed, or more lots than one answer names, is the agent's."""
+    from zoneinfo import ZoneInfo
+    home, completeness = _home_list(reads, LOT_QUERY)
+    if any(isinstance(r, Mapping) and r.get("rule") == "lot_attention"
+           and r.get("not_evaluated") != 0 for r in home.get("rules") or ()) \
+            or "lot_attention" in (home.get("not_run") or ()):
+        raise Unanswerable("rule_not_evaluated")
+    try:
+        as_of = date.fromisoformat(str(home.get("as_of"))[:10])
+    except ValueError:
+        raise Unanswerable("home_unavailable") from None
+    today = reads_now(reads).astimezone(ZoneInfo(BUSINESS_TZ)).date()
+    end = today + timedelta(days=ask.within or 0)
+    days = []
+    for gap in home.get("gaps") or ():
+        if isinstance(gap, Mapping) and gap.get("kind") == "lot_near_expiry":
+            if type(gap.get("days_to_expiry")) is not int:
+                raise Unanswerable("expiry_unread")
+            days.append((as_of + timedelta(days=gap["days_to_expiry"]), gap))
+    if [d for d, _g in days] != sorted(d for d, _g in days):
+        raise Unanswerable("list_not_soonest_first")
+    if completeness.get("complete") is not True and not (days and days[-1][0] > end):
+        raise Unanswerable("list_cut")
+    inside = [(d, g) for d, g in days if today <= d <= end]
+    if not inside:
+        raise Unanswerable("nothing_listed")   # none on the list is no proof none expire
+    if len(inside) > MAX_LOTS_LISTED:
+        raise Unanswerable("too_many_lots")
+    if ask.rank == ("date", "desc"):
+        inside.reverse()
+    if ask.top:
+        inside = inside[:ask.top]
+    named = []
+    for at, (day, gap) in enumerate(inside, 1):
+        card = reads.call("plx.object", {"object_id": gap["object_id"],
+                                         "properties": ["lot_number", "expiry_date"]})
+        values = {str(v[0])[:10] for v in _object_values(card, "expiry_date") if v[0]}
+        if values != {day.isoformat()}:
+            raise Unanswerable("expiry_changed")
+        number, _h = _card_value(reads, draft, f"lot_{at}", gap["object_id"], "lot_number",
+                                 card)
+        stated = next(draft.value(f"lot_{at}_expiry", str(v[0])[:10], v[1], v[2])
+                      for v in _object_values(card, "expiry_date") if v[0])
+        named.append(f"{number} on {stated}")
+        draft.roots.append({"object_id": gap["object_id"], "object_type": "Lot",
+                            "mention": number})
+    window = ("today" if ask.within == 0 else f"in the next {ask.within} days")
+    built = home.get("run_at")
+    draft.sentences.append(
+        (f"The lot expiring first {window} is " if ask.top == 1 else
+         f"Lots expiring {window}, {'latest' if ask.rank == ('date', 'desc') else 'soonest'} "
+         "first: ") + "; ".join(named) + " (the briefing's near-expiry list"
+        + (f", built {built}" if isinstance(built, str) else "") + ").")
+
+
+def reads_now(reads: Reads) -> datetime:
+    clock = getattr(reads, "now", None)
+    return clock() if callable(clock) else datetime.now(timezone.utc)
 
 
 def late_po_count(reads: Reads, ask: Ask, draft: Draft) -> None:
@@ -2344,6 +2700,8 @@ def late_po_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     late order on the page cited by its gap's first citation. Only an exact count is
     said: a late list Home itself says is incomplete (stale, not run, a rule unjudged) is
     the agent's; one longer than the page is still Home's exact count."""
+    if ask.rank is not None:
+        return _late_ranked(reads, ask, draft)
     from .mcp_server import LATE_PO_KINDS
     result = reads.call("plx.find", {"query": LATE_PO_QUERY, "limit": 50})
     home = result.get("home")
@@ -2382,7 +2740,7 @@ _RECIPES: dict[str, Callable[[Reads, Ask, Draft], None]] = {
     "changes": changes, "order_shipped": order_shipped, "po_people": po_people,
     "customer_last_mail": customer_last_mail, "vendor_last_mail": vendor_last_mail,
     "teams_po": teams_po, "lot_file": lot_file, "batch_hold_count": batch_hold_count,
-    "late_po_count": late_po_count,
+    "late_po_count": late_po_count, "lots_expiring": lots_expiring,
 }
 
 
@@ -2396,6 +2754,12 @@ INTENT_PLANS = {"po_status": "late_po", "last_price": PRICE_PLAN, "price_trend":
 # the mention is a first read, and the party's own mail (``plx.documents`` participant) a
 # follow-up read on each party the mention may be (``follow_reads``).
 MAIL_INTENTS = {"vendor_last_mail": "Supplier", "customer_last_mail": "Customer"}
+# A plan question that asks what someone wrote or confirmed: its mail is read first too.
+_ASKS_MAIL = re.compile(r"\b(e ?mails?|mail|wrote|write|said|say|confirm\w*|repl(?:y|ied)|"
+                        r"vendor|supplier)\b")
+# The documents an intent's question is about, searched first (``lot_file``: the files
+# naming the lot, as the fast answer searches them).
+DOCUMENT_INTENTS = {"lot_file": ("sharepoint",)}
 # The parties a follow-up read is made for (a mention found as several same-named cards),
 # and the party's orders listed for an open-orders question (``follow_reads``).
 MAX_FOLLOWED = 4
@@ -2426,9 +2790,14 @@ def first_reads(question: str) -> list[tuple[str, dict[str, Any]]]:
     if ask.intent in INTENT_PLANS:
         out.append(("plx.investigate", {"family": INTENT_PLANS[ask.intent],
                                         "root": {"identifier": ask.mention}}))
-    if ask.intent in MAIL_INTENTS:
+    if ask.intent in MAIL_INTENTS or (ask.intent in INTENT_PLANS
+                                      and _ASKS_MAIL.search(fold(question))):
         out.append(("plx.documents", {"query": ask.mention, "sources": ["graph_mail"],
                                       "limit": 10}))
+    if ask.intent in DOCUMENT_INTENTS:
+        out.append(("plx.documents", {"query": ask.mention,
+                                      "sources": list(DOCUMENT_INTENTS[ask.intent]),
+                                      "limit": 20}))
     return out
 
 
@@ -2586,6 +2955,11 @@ class FastRun:
     seconds: float
 
 
+# Seconds one fast answer's reads may take: a recipe still reading past it declines
+# (``time_budget``) and the agent answers; a fast answer is a few seconds of reads.
+BUDGET_SECONDS = 30.0
+
+
 def answer(question: str, reads: Reads, why: Optional[list[str]] = None
            ) -> Optional[FastRun]:
     """The fast answer to ``question`` for ``reads``'s reader, or None (module doc).
@@ -2598,7 +2972,11 @@ def answer(question: str, reads: Reads, why: Optional[list[str]] = None
     if asks_more(question, ask):
         why.append("asks_more")
         return None
-    ran = _answer(question, ask, reads, why)
+    reads.deadline = time.monotonic() + BUDGET_SECONDS
+    try:
+        ran = _answer(question, ask, reads, why)
+    finally:
+        reads.deadline = None   # the budget is this answer's, never a later read's
     logging.getLogger("operating.fast_answer").info(json.dumps(
         {"intent": ask.intent, "answered": ran is not None, "declined": why[-1:] or None,
          "calls": len(reads.events)}))

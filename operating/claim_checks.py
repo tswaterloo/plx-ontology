@@ -52,6 +52,12 @@ distinct, those of one collection or those one count group a tool's identity loo
 apart lists (a group with a value, taken now, complete or not: their deduplicated union),
 and its item's text (and the close outcome) states it only as ``at least N`` / ``no fewer
 than N`` / ``N or more`` (``claim_count_lower_bound``).
+A ``count_distinct`` claim states how many distinct values a ``plx.aggregate``
+``count_distinct`` counted: exact only when it binds to that tool's complete entry (whole,
+as known now, every record listed or the first ``MAX_COUNT_CITATIONS`` under the citation
+cap alone, never more values than records) with the claimed value, every cited record one
+the entry lists; never a lower bound, and a plain count's entry never binds it. The same
+complete group is also a plain count of its ``inputs``, the records holding a value.
 A ``sum`` of money carries the ``currency`` (ISO 4217) of its cited values, and one cited
 number may state one: a value is money when a tool returned it as money
 (``returned["currencies"]``, its currency or None) or the ontology schema types its column
@@ -468,9 +474,12 @@ _CLAIM_KEYS = frozenset({"value", "citation", "field", "calculation", "role", "u
 # (``_quote_mismatch``). It adds a check and never replaces one.
 MAX_QUOTE_CHARS = 500
 # A value computed over cited rows in the claim itself (``op`` over ``of``): the number of
-# distinct records cited, the Decimal sum of one field of each, or an ``expression`` over
+# distinct records cited, the number of distinct values a complete ``plx.aggregate``
+# ``count_distinct`` counted over records that include them (``count_distinct``: exact or
+# refused, never a bound), the Decimal sum of one field of each, or an ``expression`` over
 # figures each input reads (``_check_expression``).
-OPS = ("count", "sum", "expression")
+COUNT_OPS = ("count", "count_distinct")
+OPS = (*COUNT_OPS, "sum", "expression")
 MAX_OP_INPUTS = 100
 MAX_VALUE_CHARS = 200
 _OP_INPUT_KEYS = frozenset({"citation", "field", "unit"})
@@ -653,7 +662,7 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
         if role is not None:
             if not isinstance(role, str) or not _ROLE_SHAPE.match(role) or (
                     "citation" in claim and role not in ROLES) or (
-                    claim.get("op") == "count" and role in ROLES):
+                    claim.get("op") in COUNT_OPS and role in ROLES):
                 raise ValidationError(f"invalid_value_claim_role:{index}")
             claim["role"] = role
         unit = item.get("unit")
@@ -691,6 +700,7 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
             inputs, Sequence) or not 1 <= len(inputs) <= MAX_OP_INPUTS:
         raise ValidationError(f"invalid_value_claim_op:{index}")
     keys = {"sum": _OP_INPUT_KEYS, "count": frozenset({"citation"}),
+            "count_distinct": frozenset({"citation"}),
             "expression": _EXPRESSION_INPUT_KEYS}[op]
     out, seen = [], set()
     for given in inputs:
@@ -966,11 +976,18 @@ class _Evidence:
         returned = returned or {}
         # Complete count entries as (value, the records they list); the records of each
         # entry a tool's identity lookup told apart (``distinct``); money cells' currencies.
+        # A count of distinct values (``op: count_distinct``) is kept apart: it binds only a
+        # claim of that op, and its records (several may hold one value) tell none apart.
         entries = [entry for entry in returned.get("counts") or () if isinstance(entry, Mapping)]
+        records = [entry for entry in entries if entry.get("op", "count") == "count"]
         self.counts = [(to_decimal(entry.get("value")), frozenset(entry.get("records") or ()))
-                       for entry in entries if entry.get("complete") is True]
-        self.distinct = [frozenset(entry.get("records") or ()) for entry in entries
+                       for entry in records if entry.get("complete") is True]
+        self.distinct = [frozenset(entry.get("records") or ()) for entry in records
                          if entry.get("complete") is True or entry.get("distinct") is True]
+        self.value_counts = [(to_decimal(entry.get("value")),
+                              frozenset(entry.get("records") or ()))
+                             for entry in entries if entry.get("op") == "count_distinct"
+                             and entry.get("complete") is True]
         self.currencies: Mapping[tuple[str, str], str | None] = \
             returned.get("currencies") or {}
         # (handle, field) of a money cell -> (handle, field) of the cell its currency was
@@ -1530,7 +1547,7 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
                    evidence: _Evidence) -> dict[str, Any]:
     out = {key: claim[key] for key in _RESULT_KEYS if key in claim}
     role = claim.get("role")
-    if claim.get("op") == "count":
+    if claim.get("op") in COUNT_OPS:
         return _check_count(claim, out, handles, evidence)
     if claim.get("op") == "expression":
         return _check_expression(claim, out, handles, evidence)
@@ -1717,7 +1734,8 @@ def _collection(record: tuple[str, ...]) -> tuple[str, ...]:
 
 def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequence[str],
                  evidence: _Evidence) -> dict[str, Any]:
-    """A count claim (``op: count``): every input is one of the item's citations, readable
+    """A count claim (``op: count``, or ``count_distinct``: exact only, below): every input
+    is one of the item's citations, readable
     now and current, and no record is counted twice. Exact (``bound: exact``) when one
     complete count entry a tool returned has the claimed value and lists every record
     cited; else a lower bound (``bound: at_least``) whose value is the most records cited
@@ -1743,8 +1761,19 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
                          f"({records[record][:200]} and {handle[:200]}); it counts records")
         records[record] = handle
     value, cited = to_decimal(claim["value"]), set(records.values())
-    bound = "exact" if any(total == value and cited <= listed
-                           for total, listed in evidence.counts) else "at_least"
+    if claim.get("op") == "count_distinct":
+        # Distinct values are no records: only the tool's complete count states how many,
+        # so the claim is exact or refused, never a lower bound.
+        if not any(total == value and cited <= listed
+                   for total, listed in evidence.value_counts):
+            return _fail(out, "claim_value_mismatch", (
+                f"no complete count_distinct a tool returned is {claim['value']} over these "
+                "records: a count of distinct values is stated only as a complete "
+                "plx.aggregate count_distinct of now counts it"))
+        bound = "exact"
+    else:
+        bound = "exact" if any(total == value and cited <= listed
+                               for total, listed in evidence.counts) else "at_least"
     if bound == "at_least":
         sources: dict[tuple[str, ...], int] = {}
         for record in records:
@@ -2091,8 +2120,9 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
         _note_listing(arguments, result, into)
         return into
     measure = arguments.get("measure") if isinstance(arguments, Mapping) else None
-    if tool != "plx.aggregate" or not isinstance(measure, Mapping) \
-            or measure.get("op") != "count":
+    op = measure.get("op") if isinstance(measure, Mapping) else None
+    if tool != "plx.aggregate" or op not in COUNT_OPS \
+            or (op == "count_distinct" and not measure.get("property")):
         return into
     # A count whose only gap is the citation cap (more members than one answer cites) is
     # still the tool's exact count: it lists a sample of its records, all distinct.
@@ -2117,12 +2147,36 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
             records = list(listed)
         value = to_decimal(group.get("value"))
         unique = len(records) == len(set(records))
+        if op == "count_distinct":
+            _note_distinct(group, value, records, now and unique, whole, capped, into)
+            continue
         distinct = now and unique and (value == len(records) or (
             capped and value is not None and len(records) == MAX_COUNT_CITATIONS
             and value > len(records)))
         into["counts"].append({"value": group.get("value"), "records": records,
                                "distinct": distinct, "complete": whole and distinct})
     return into
+
+
+def _note_distinct(group: Mapping[str, Any], value: Decimal | None, records: list[Any],
+                   unique: bool, whole: bool, capped: bool, into: dict[str, Any]) -> None:
+    """A ``count_distinct`` group as two count entries: its value, the distinct values
+    among its records (``op: count_distinct``), and its ``inputs``, the records holding a
+    value (a plain count: the tool states a distinct count only when no member lacks a
+    value, is withheld, conflicts or has a twin, so every member is one input). Each is
+    complete under the count rule: the answer whole, as known now, the records listed
+    once each, every one of them (``inputs`` of them) or, past the citation cap, the
+    first ``MAX_COUNT_CITATIONS`` of more; never more values than records."""
+    inputs = group.get("inputs")
+    if value is None or type(inputs) is not int or not 0 < value <= inputs:
+        return
+    listed = unique and (inputs == len(records) or (
+        capped and len(records) == MAX_COUNT_CITATIONS and inputs > len(records)))
+    into["counts"].append({"op": "count_distinct", "value": group.get("value"),
+                           "records": records, "distinct": False,
+                           "complete": whole and listed})
+    into["counts"].append({"value": str(inputs), "records": records, "distinct": listed,
+                           "complete": whole and listed})
 
 
 MAX_LISTINGS = 32   # complete set listings one session keeps for count claims (newest)

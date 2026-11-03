@@ -842,8 +842,8 @@ class LateListCountTest(unittest.TestCase):
                     self.assertIn("All of them are listed below", answer.direct_answer)
                     self.assertIsNone(answer.list_total)
                 else:
-                    # "12 of 34 shown": the rest are a "show all" away (GET /api/late)
-                    self.assertIn(f"{shown} of {total} shown", answer.direct_answer)
+                    # "The first 12 are listed below": the rest are a "show all" away (GET /api/late)
+                    self.assertIn(f"The first {shown} are listed below", answer.direct_answer)
                     self.assertEqual(answer.list_total, total)
 
     def test_no_late_order_is_said_only_when_the_late_rule_ran_over_the_data_served(self):
@@ -898,8 +898,139 @@ class LateListCountTest(unittest.TestCase):
         answer = be.late_answer(fake, None, m.AskRequest(question="late pos?"), inbox, home,
                                 "c1", lambda: 0)
         self.assertTrue(answer.direct_answer.startswith("150 purchase orders"))
-        self.assertIn("12 of 150 shown", answer.direct_answer)
+        self.assertIn("The first 12 are listed below", answer.direct_answer)
         self.assertEqual(answer.list_total, 150)
+
+
+class OrdersAtRiskTests(unittest.TestCase):
+    """Vince's "customer order -> which materials are late": the late list names the
+    customer orders a late PO holds up, and "which customer orders are at risk from late
+    POs" / "what's late for SO 470" answer from the reader's chain findings
+    (``order_at_risk`` and ``po_impact`` gaps), each record of the chain cited. A chain end
+    whose own gap the reader may not see is never named."""
+
+    PO, PO2 = "PurchaseOrder:bc.purchase_orders:p1", "PurchaseOrder:bc.purchase_orders:p2"
+    SO = "SalesOrder:portal.fm_order_entry:o1"
+    CUSTOMER = "Customer:portal.customer:c1"
+
+    def inbox(self, *, order_visible=True, with_ends=True):
+        late = [{"object_id": po, "object_type": "PurchaseOrder", "kind": "late_order",
+                 "days_late": days, "summary": "An open purchase order is past its need date",
+                 "citations": [f"bc://x/purchaseOrders/{po[-2:]}@1"]}
+                for po, days in ((self.PO, 30), (self.PO2, 9))]
+        impact = {"object_id": self.PO, "object_type": "PurchaseOrder", "kind": "po_impact",
+                  "summary": "affects 1 sales order, worst 59 days at risk",
+                  "citations": ["bc://x/purchaseOrders/p1@1", "api://public.assembly_order/9@1"],
+                  "event": {"days": 59, "orders_affected": 1,
+                            **({"orders": [self.SO]} if with_ends else {})}}
+        order = {"object_id": self.SO, "object_type": "SalesOrder", "kind": "order_at_risk",
+                 "summary": "59 days at risk from 1 late purchase order",
+                 "citations": ["bc://x/purchaseOrders/p1@1", "api://public.assembly_order/9@1",
+                               "api://public.order_entry/470@1"],
+                 "follow_up": {"why": "material 2026-11-02 against the required date "
+                                      "2026-09-04."},
+                 "event": {"days": 59, "orders_affected": 1,
+                           **({"pos": [self.PO]} if with_ends else {})}}
+        gaps = late + [impact] + ([order] if order_visible else [])
+        return {"status": "read", "run_at": "2026-11-03T00:04:48Z", "gaps": gaps,
+                "detectors": {"orders_at_risk": "complete"}}
+
+    def view(self, found=()):
+        import contextlib
+        from types import SimpleNamespace
+        names = {self.PO: "PO100099", self.PO2: "PO100120", self.SO: "470",
+                 self.CUSTOMER: "Three Ships"}
+
+        class View:
+            access = SimpleNamespace(decide=lambda hs: {h: None for h in hs})
+
+            def _request(self):
+                return contextlib.nullcontext()
+
+            def _can_open(self, handle):
+                return True
+
+            def _call(_self, tool, arguments):
+                if tool == "plx.object":
+                    return {"object": {"display": names.get(arguments["object_id"], "")}}
+                if tool == "plx.find":
+                    return {"candidates": [{"object": dict(c)} for c in found]}
+                link = arguments["path"][0]["link_type"]
+                ends = [self.CUSTOMER] if (link == be.CUSTOMER_ORDERS
+                                           and arguments["from"] == self.SO) else []
+                return {"objects": [{"object_id": o} for o in ends]}
+        return View()
+
+    def backend(self):
+        from types import SimpleNamespace
+        return SimpleNamespace(freshness=lambda _base: m.Freshness(),
+                               _source=be.WorkspaceBackend._source)
+
+    def test_the_late_list_names_the_customer_order_a_late_po_holds_up(self):
+        inbox = self.inbox()
+        home, _ = be.attention_items(inbox, {self.PO: "PO100099", self.PO2: "PO100120"})
+        answer = be.late_answer(self.backend(), self.view(), m.AskRequest(question="late pos?"),
+                                inbox, home, "c1", lambda: 0)
+        texts = {f.text.split(":")[0]: f for f in answer.facts}
+        self.assertIn("Holds up customer order 470 (59 days at risk).", texts["PO100099"].text)
+        self.assertIn("api://public.assembly_order/9@1",
+                      {s.handle for s in texts["PO100099"].sources})   # the chain, cited
+        self.assertNotIn("Holds up", texts["PO100120"].text)
+        # the order's own gap not shown to this reader: the order is never named
+        hidden = self.inbox(order_visible=False)
+        answer = be.late_answer(self.backend(), self.view(), m.AskRequest(question="late pos?"),
+                                hidden, home, "c1", lambda: 0)
+        self.assertNotIn("470", " ".join(f.text for f in answer.facts))
+        # an older finding with no chain ends: its count, never a guessed order
+        older = self.inbox(with_ends=False)
+        answer = be.late_answer(self.backend(), self.view(), m.AskRequest(question="late pos?"),
+                                older, home, "c1", lambda: 0)
+        po_fact = next(f for f in answer.facts if f.text.startswith("PO100099"))
+        self.assertIn("past its need date. Holds up 1 customer order (worst 59 days at "
+                      "risk).", po_fact.text)
+        self.assertNotIn("470", po_fact.text)
+
+    def test_which_orders_are_at_risk_and_whats_late_for_one_order_or_customer(self):
+        for question in ("which customer orders are at risk from late POs?",
+                         "any sales orders held up by late materials"):
+            self.assertEqual(be.ask_shortcut(m.AskRequest(question=question)), "at_risk")
+        self.assertEqual(be.ask_shortcut(m.AskRequest(question="which POs are late?")),
+                         "late_list")
+        self.assertEqual(be.late_for_target("what's late for SO 470?"), "SO 470")
+        self.assertEqual(be.late_for_target("which materials are late for customer Three "
+                                            "Ships"), "Three Ships")
+        self.assertIsNone(be.late_for_target("is Three Ships profitable"))
+        ask = lambda q, view: be.at_risk_answer(self.backend(), view, m.AskRequest(
+            question=q), self.inbox(), "c1", lambda: 0)
+        answer = ask("which customer orders are at risk from late POs?", self.view())
+        self.assertTrue(answer.direct_answer.startswith(
+            "1 customer order you can see is at risk from late purchase orders as of "
+            "2026-11-03: Customer order 470 (Three Ships) is 59 days at risk from late PO "
+            "PO100099."),
+                        answer.direct_answer)
+        self.assertEqual([s.handle for s in answer.facts[0].sources][-1],
+                         "api://public.order_entry/470@1")
+        # by the order's or customer's own label (no search), else by the reader's plx.find
+        by_label = ask("what's late for SO 470", self.view())
+        by_name = ask("what's late for customer three ships?", self.view())
+        by_order = ask("what's late for S-ORD470", self.view(found=[
+            {"object_id": self.SO, "object_type": "SalesOrder", "display": "S-ORD470"}]))
+        by_customer = ask("what's late for Three Ships Inc", self.view(found=[
+            {"object_id": self.CUSTOMER, "object_type": "Customer",
+             "display": "Three Ships Inc"}]))
+        for got in (by_label, by_name, by_order, by_customer):
+            self.assertEqual([s.object_id for s in got.subjects], [self.SO])
+        # a customer with no order at risk: the agent walks its materials, never "none"
+        self.assertIsNone(ask("what's late for Other Co", self.view(found=[
+            {"object_id": "Customer:portal.customer:c9", "object_type": "Customer",
+             "display": "Other Co"}])))
+        none = be.at_risk_answer(self.backend(), self.view(), m.AskRequest(
+            question="which customer orders are at risk from late POs?"),
+            {**self.inbox(order_visible=False), "detectors": {"orders_at_risk": "truncated"}},
+            "c1", lambda: 0)
+        self.assertEqual(none.direct_answer, "No customer order you can see is at risk from a "
+                         "late purchase order as of 2026-11-03 in the orders the check covered.")
+        self.assertEqual(len(none.not_found), 1)
 
 
 class SuggestionRankingTests(unittest.TestCase):
