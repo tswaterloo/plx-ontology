@@ -1,0 +1,16 @@
+{
+ "schema": "plx-meetings-capture-scope/v1",
+ "note": "Meetings capture (integrations/capture_meetings.py): the calendar, the Planner tasks and the Teams meeting transcripts of every member mailbox of the tenant directory, listed through the guarded, paged GET /users, except every excluded person (PLX_EXCLUDED_PEOPLE_OIDS / PLX_EXCLUDED_PEOPLE_FILE; unset or empty, the run refuses before any request) and the mail capture's HR / payroll deny list (directory_scope). Calendar window: a year back to 90 days ahead. An event, task or transcript naming an excluded person is withheld whole (counted, never stored). Read with the admin application (PLX_MEETINGS_GRAPH_CREDENTIALS, default AZURE), GET only. No person, address or object id is named here.",
+ "all_mailboxes": true,
+ "directory_scope": "mail_all_mailboxes_scope.json",
+ "parts": ["calendar", "planner", "transcripts"],
+ "window_days_back": 365,
+ "window_days_ahead": 90,
+ "page_size": 100,
+ "max_pages_per_mailbox": 200,
+ "max_event_reads_per_run": 20000,
+ "max_plans_per_run": 500,
+ "max_task_reads_per_run": 5000,
+ "max_transcript_reads_per_run": 200,
+ "transcript_days_back": 90
+}

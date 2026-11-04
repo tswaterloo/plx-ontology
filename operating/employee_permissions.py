@@ -146,7 +146,13 @@ FULL_READ_LABEL = "Viewing with full-read access"
 # item ACL (the host audience alone decides them), so no scope names them.
 _FULL_READ_SCHEME_SCOPE = {"graph-mail": "mail", "sharepoint": "sharepoint",
                            "sharepoint-list": "sharepoint", "teams-channel": "teams",
-                           "teams-chat": "teams"}
+                           "teams-chat": "teams", "calendar-event": "mail",
+                           "planner-task": "mail", "meeting-transcript": "mail"}
+# The derived ACL kind a meetings item carries (``integrations.capture_meetings``): what the
+# mail full-read scope accepts for it beside the mailbox owner's.
+_FULL_READ_ACL_KINDS = {"calendar-event": ("mailbox_owner",),
+                        "planner-task": ("plan_people",),
+                        "meeting-transcript": ("meeting_participants",)}
 PORTAL_ACCESS_SNAPSHOT_SCHEMA = "plx-portal-access-snapshot/v1"
 DIRECTORY_SOURCE = "graph:directory"
 GROUP_MEMBERSHIP_DERIVED = "group_membership_derived"
@@ -680,7 +686,8 @@ class FullReadAccess:
         folded = {i.strip().lower() for i in identities if i.strip()}
         if scope == "mail":
             if (source_acl.get("status") != "derived"
-                    or source_acl.get("kind") != "mailbox_owner"
+                    or source_acl.get("kind") not in _FULL_READ_ACL_KINDS.get(
+                        scheme, ("mailbox_owner",))
                     or not any(_GUID.fullmatch(i) for i in folded)):
                 return False
             if self.grant.mail_scope == "shared_only" and not folded & self.shared_mailboxes:

@@ -229,8 +229,12 @@ _TENANT = re.compile(r"^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA
                      r"[0-9a-fA-F]{12}|[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62})+)$")
 _TOKEN_PATH = re.compile(r"^/([^/]+)/oauth2/v2\.0/token$")
 MAX_RESPONSE_BYTES = 8_000_000
-# Operations answered with a schema document instead of JSON (``SourceApi.get_document``).
-DOCUMENT_OPERATIONS = frozenset({"bc.metadata"})
+# Operations answered with a document instead of JSON (``SourceApi.get_document``) and the
+# one media type each is requested as: BC's schema document and a Teams meeting
+# transcript's WebVTT text.
+DOCUMENT_ACCEPT: Mapping[str, str] = {"bc.metadata": "application/xml",
+                                      "graph.online_meeting_transcript_content": "text/vtt"}
+DOCUMENT_OPERATIONS = frozenset(DOCUMENT_ACCEPT)
 # Only a single file-attachment GET may exceed MAX_RESPONSE_BYTES: Graph returns
 # the file as base64 contentBytes inside JSON (20 MB file -> < 28 MB response).
 MAX_ATTACHMENT_RESPONSE_BYTES = 28_000_000
@@ -1534,6 +1538,26 @@ def action_credentials(environ: Mapping[str, str] | None = None) -> "ClientCrede
     return ClientCredentials._read_env(action_credential_prefix(env), env)
 
 
+# The meetings capture's read credentials (Calendars, Planner
+# and meeting transcripts with the admin application, whose Calendars.Read, Tasks.* and
+# OnlineMeetings* grants the mail application lacks). The one read path that may hold a
+# send-only prefix's token: it is issued here, never by ``from_env``, and goes only to a
+# ``SourceApi`` over a ``GuardedTransport`` (GET and the token POST; ``send_action`` is
+# never reached from it). ``PLX_MEETINGS_GRAPH_CREDENTIALS``: ``AZURE`` (default) or
+# ``MICROSOFT_GRAPH``; anything else raises ``ValueError`` (nothing is read).
+MEETINGS_CREDENTIALS_ENV = "PLX_MEETINGS_GRAPH_CREDENTIALS"
+MEETINGS_CREDENTIAL_PREFIXES = frozenset({"AZURE", "MICROSOFT_GRAPH"})
+
+
+def meetings_read_credentials(environ: Mapping[str, str] | None = None
+                              ) -> "ClientCredentials":
+    env = os.environ if environ is None else environ
+    prefix = (env.get(MEETINGS_CREDENTIALS_ENV) or "").strip() or "AZURE"
+    if prefix not in MEETINGS_CREDENTIAL_PREFIXES:
+        raise ValueError(f"{MEETINGS_CREDENTIALS_ENV} names no known read app")
+    return ClientCredentials._read_env(prefix, env)
+
+
 # ------------------------------------------------------------------ credentials
 
 @dataclass(frozen=True, repr=False)
@@ -1751,13 +1775,15 @@ class SourceApi:
             raise SourceUnavailable(f"{self.source} GET returned non-JSON") from None
 
     def get_document(self, url: str, *, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
-        """The bytes of one schema document (``DOCUMENT_OPERATIONS``: BC ``$metadata``,
-        CSDL XML), never a record: any other operation is refused before any I/O."""
+        """The bytes of one document (``DOCUMENT_OPERATIONS``: BC ``$metadata``, CSDL XML;
+        a meeting transcript's WebVTT text), never a record: any other operation is refused
+        before any I/O."""
         check_request("GET", url, environ=self._transport._environ)
         parts = urlsplit(url)
-        if grammar.match((parts.hostname or "").lower(), parts.path) not in DOCUMENT_OPERATIONS:
+        op = grammar.match((parts.hostname or "").lower(), parts.path)
+        if op not in DOCUMENT_OPERATIONS:
             raise ReadOnlyGuardError("only a declared schema document is read as a document")
-        sent = {"Accept": "application/xml",
+        sent = {"Accept": DOCUMENT_ACCEPT[op],
                 "Authorization": "Bearer " + self._tokens.bearer()}
         status, _headers, raw = self._send_get(url, sent, max_bytes)
         if status == 404:
@@ -2492,4 +2518,5 @@ __all__ = ["ALLOWED_HOSTS", "BACKOFF_CAP_SECONDS", "BC_SCOPE", "BoundedBackoff",
            "jsonable", "parse_handle", "sharepoint_host_from_env", "tenant_download_hosts",
            "text_bytes", "urllib_sender", "ACTION_FLAG", "check_action_request",
            "ACTION_CREDENTIALS_ENV", "action_credential_prefix", "action_credentials",
+           "MEETINGS_CREDENTIALS_ENV", "meetings_read_credentials",
            "send_action"]

@@ -136,7 +136,7 @@
       "description": "An L1 citation handle (operating/case_runtime.SUPPORTED_SCHEMES).",
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat)://[^\\s\\x00-\\x1f\\x7f-\\x9f\\xad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000e0001\\U000e0020-\\U000e007f]{1,4080}$"
+      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat|calendar-event|planner-task|meeting-transcript)://[^\\s\\x00-\\x1f\\x7f-\\x9f\\xad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000e0001\\U000e0020-\\U000e007f]{1,4080}$"
     },
     "field_path": {
       "description": "Field inside the cited record; grammar of operating/claim_checks.py _FIELD.",
@@ -1419,7 +1419,7 @@
       "additionalProperties": false,
       "properties": {
         "source": {
-          "description": "L1 source family of a binding; each maps to one citation scheme: portal_api=api://, bc=bc://, graph_mail=graph-mail://, sharepoint=sharepoint:// (list items: sharepoint-list://, integrations/capture_sharepoint_lists.py), original=original://, workbench=Workbench case store, mission_control=mc:// (Mission Control reads, integrations/mc_sources.py), brain=brain:// (derived engineering/agent knowledge captured namespace-trimmed from the brain's agent/items, integrations/knowledge_source.py; untrusted T3 leads, never business facts), teams=teams-channel:// and teams-chat:// (Teams channel and chat messages captured with their conversation's membership, integrations/capture_teams.py).",
+          "description": "L1 source family of a binding; each maps to one citation scheme: portal_api=api://, bc=bc://, graph_mail=graph-mail://, sharepoint=sharepoint:// (list items: sharepoint-list://, integrations/capture_sharepoint_lists.py), original=original://, workbench=Workbench case store, mission_control=mc:// (Mission Control reads, integrations/mc_sources.py), brain=brain:// (derived engineering/agent knowledge captured namespace-trimmed from the brain's agent/items, integrations/knowledge_source.py; untrusted T3 leads, never business facts), teams=teams-channel:// and teams-chat:// (Teams channel and chat messages captured with their conversation's membership, integrations/capture_teams.py), meetings=calendar-event://, planner-task:// and meeting-transcript:// (calendar events, Planner tasks and Teams meeting transcripts, integrations/capture_meetings.py).",
           "type": "string",
           "enum": [
             "portal_api",
@@ -1430,7 +1430,8 @@
             "workbench",
             "mission_control",
             "brain",
-            "teams"
+            "teams",
+            "meetings"
           ]
         },
         "captured_at": {

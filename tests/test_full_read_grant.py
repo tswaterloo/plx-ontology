@@ -124,6 +124,22 @@ class FullReadGrantTest(unittest.TestCase):
         self.assertIsNone(other.full_read_code())
         self.assertNotEqual(vince.fingerprint, other.fingerprint)
 
+    def test_grant_opens_meetings_items_by_their_derived_acl_and_never_an_excluded_one(self):
+        vince = self.resolver().resolve(ep.EmployeePrincipal(TID, VINCE))
+        other = self.resolver().resolve(ep.EmployeePrincipal(TID, OTHER))
+        for scheme, kind in (("calendar-event", "mailbox_owner"),
+                             ("planner-task", "plan_people"),
+                             ("meeting-transcript", "meeting_participants")):
+            with self.subTest(scheme):
+                acl = {"status": "derived", "kind": kind, "identities": [BOX]}
+                self.assertTrue(vince.full_read_allows(scheme, acl))
+                self.assertFalse(other.full_read_allows(scheme, acl))
+                self.assertFalse(vince.full_read_allows(scheme, dict(acl, identities=[
+                    BOX, EXCLUDED])))
+        # each scheme only with its own ACL kind
+        self.assertFalse(vince.full_read_allows("planner-task", {
+            "status": "derived", "kind": "meeting_participants", "identities": [BOX]}))
+
     def test_excluded_person_stays_hidden_and_an_unloaded_exclusion_grants_nothing(self):
         resolver = self.resolver()
         excluded_box = {"source_acl": mail_acl(EXCLUDED, "gone@example.com")}

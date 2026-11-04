@@ -1,0 +1,15 @@
+{
+ "schema": "plx-meetings-capture-scope/v1",
+ "note": "Live check graph.meetings_capture (live check ``graph.meetings_capture``): every directory mailbox less the excluded people and the mail capture's HR / payroll deny list, bounded small (two calendar pages per mailbox, 200 event content reads, 20 plans, 20 transcript reads) so the check ends inside its timeout; a capped part reports its cap and resumes on the next run. No person, address or object id is named here.",
+ "all_mailboxes": true,
+ "parts": ["calendar", "planner", "transcripts"],
+ "window_days_back": 30,
+ "window_days_ahead": 14,
+ "page_size": 50,
+ "max_pages_per_mailbox": 2,
+ "max_event_reads_per_run": 200,
+ "max_plans_per_run": 20,
+ "max_task_reads_per_run": 200,
+ "max_transcript_reads_per_run": 20,
+ "transcript_days_back": 30
+}

@@ -255,12 +255,28 @@ TEAMS_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
          "mentioned_in_teams_channel_message", "Teams channel message (subject or body)"),
         ("TeamsChatMessage", "gen.teams.chat_messages", "mentioned_in_teams_chat_message",
          "Teams chat message (subject or body)")))
+# Meetings (integrations/capture_meetings.py, ontology/project_meetings.py MeetingsCaptures
+# .documents): an event's subject and body preview, a Planner task's title and description
+# and a meeting transcript's spoken text. Who wrote an invitation or a task, or said a line,
+# is not a verified sender, so every mention is an external assertion, a lead.
+MEETINGS_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
+    {"from": source, "from_binding": binding, "reverse_name": reverse, "cardinality": "N:M",
+     "tier_ceiling": "lead", "evidence": ("wb.mentions", "ctx.mentions"),
+     "description": _MC_MENTION_DESCRIPTION.replace("{what}", what)}
+    for source, binding, reverse, what in (
+        ("CalendarEvent", "meetings.calendar_events", "mentioned_in_calendar_event",
+         "calendar event (subject or body preview)"),
+        ("PlannerTask", "meetings.planner_tasks", "mentioned_in_planner_task",
+         "Planner task (title or description)"),
+        ("MeetingTranscript", "meetings.meeting_transcripts", "mentioned_in_meeting_transcript",
+         "Teams meeting transcript (spoken text, cited by the transcript version)")))
 MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (MENTION_LINK_RULE,
                                                      SHAREPOINT_MENTION_LINK_RULE,
                                                      ATTACHMENT_MENTION_LINK_RULE,
                                                      CONTAINER_MEMBER_MENTION_LINK_RULE,
                                                      *MC_MENTION_LINK_RULES,
-                                                     *TEAMS_MENTION_LINK_RULES)
+                                                     *TEAMS_MENTION_LINK_RULES,
+                                                     *MEETINGS_MENTION_LINK_RULES)
 
 
 def _snake_case(name: str) -> str:

@@ -1,0 +1,1511 @@
+{
+ "$schema": "../_format.schema.json",
+ "format": "plx-ontology-domain/v1",
+ "domain": "meetings",
+ "origin": "curated",
+ "description": "Calendar events, meetings, Planner tasks and Teams meeting transcripts captured by integrations/capture_meetings.py and projected by ontology/project_meetings.py MeetingsCaptures (source family meetings). Each record is gated per audience unit (meetings:calendar:<mailbox>, meetings:plan:<plan>, meetings:organizer:<organizer>) and per handle by its captured source ACL (the mailbox owner, the plan's group and people, the meeting's participants) and the people exclusion, re-checked by the case runtime. Their text (event subject and preview, task title and description, transcript speech) is a mention document: an identifier of a PO, vendor or customer named in it is a lead link (ontology/schema.py MEETINGS_MENTION_LINK_RULES). People are Entra object ids and work addresses; a Person is formed per reader by the people graph (no Person object is projected). Source text is untrusted.",
+ "object_types": [
+  {
+   "id": "CalendarEvent",
+   "description": "One event on one captured mailbox's calendar (Graph event, the rolling window a year back to 90 days ahead), cited calendar-event://<mailbox>/<event>@<generation>-<capture-id> in the calendar's unit meetings:calendar:<mailbox>; the reader needs that unit and the mailbox owner's ACL (decided per handle). An event naming an excluded person is never captured. Source text is untrusted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "meetings.calendar_events",
+     "source": "meetings",
+     "relation": "calendarEvents",
+     "key": [
+      "mailbox",
+      "id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "mailbox",
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "subject"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_meetings"
+    }
+   ],
+   "properties": [
+    {
+     "name": "mailbox",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "mailbox",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object id of the mailbox whose calendar holds this copy of the event."
+    },
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Graph event id (this mailbox's copy)."
+    },
+    {
+     "name": "ical_uid",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "ical_uid",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The meeting's iCalUId: the same on every attendee's copy, distinct per occurrence (CalendarEvent.of_meeting)."
+    },
+    {
+     "name": "subject",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "subject",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The subject, read only after the organizer and every attendee cleared the people guard; empty for a private or confidential event."
+    },
+    {
+     "name": "body_preview",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "body_preview",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Graph's plain-text body preview (at most 2,000 characters); never the full body."
+    },
+    {
+     "name": "location",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "location",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "content",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "content",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "enum_values": [
+      "read",
+      "withheld_sensitivity"
+     ],
+     "description": "Whether the content was read, or withheld because the event is private or confidential."
+    },
+    {
+     "name": "organizer",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "organizer",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The organizer: Name and work address of each, as the invitation lists them (directory facts every employee sees). An excluded person never appears: the capture withholds an event naming one whole, and the case runtime withholds the record from every reader when one named is excluded later."
+    },
+    {
+     "name": "attendees",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "attendees",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The attendees with their type and response: Name and work address of each, as the invitation lists them (directory facts every employee sees). An excluded person never appears: the capture withholds an event naming one whole, and the case runtime withholds the record from every reader when one named is excluded later."
+    },
+    {
+     "name": "start",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "start",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Start (UTC)."
+    },
+    {
+     "name": "end",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "end",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "End (UTC)."
+    },
+    {
+     "name": "is_all_day",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "is_all_day",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "is_cancelled",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "is_cancelled",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "is_organizer",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "is_organizer",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Whether this mailbox organizes the meeting."
+    },
+    {
+     "name": "is_online_meeting",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "is_online_meeting",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "online_meeting",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "online_meeting",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Teams join URL, conference id and provider."
+    },
+    {
+     "name": "series_master_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "series_master_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "type",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "type",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "enum_values": [
+      "singleInstance",
+      "occurrence",
+      "exception",
+      "seriesMaster"
+     ]
+    },
+    {
+     "name": "sensitivity",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "sensitivity",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "enum_values": [
+      "normal",
+      "personal",
+      "private",
+      "confidential"
+     ]
+    },
+    {
+     "name": "show_as",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "show_as",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "categories",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "categories",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "last_modified",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.calendar_events",
+       "path": "last_modified",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Meeting",
+   "description": "A meeting as its organizer's calendar holds it (the organizer's copy of the event, keyed by its iCalUId): every attendee's CalendarEvent links to it. A meeting whose organizer's calendar is not captured has no Meeting object. Gated as its organizer's event.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "meetings.meetings",
+     "source": "meetings",
+     "relation": "meetings",
+     "key": [
+      "ical_uid"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "ical_uid"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "subject"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_meetings"
+    }
+   ],
+   "properties": [
+    {
+     "name": "mailbox",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "mailbox",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object id of the organizer's mailbox, whose copy of the event this meeting is read from."
+    },
+    {
+     "name": "ical_uid",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "ical_uid",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The meeting's iCalUId: the same on every attendee's copy, distinct per occurrence (CalendarEvent.of_meeting)."
+    },
+    {
+     "name": "subject",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "subject",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The subject, read only after the organizer and every attendee cleared the people guard; empty for a private or confidential event."
+    },
+    {
+     "name": "organizer",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "organizer",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The organizer: Name and work address of each, as the invitation lists them (directory facts every employee sees). An excluded person never appears: the capture withholds an event naming one whole, and the case runtime withholds the record from every reader when one named is excluded later."
+    },
+    {
+     "name": "attendees",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "attendees",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The attendees with their type and response: Name and work address of each, as the invitation lists them (directory facts every employee sees). An excluded person never appears: the capture withholds an event naming one whole, and the case runtime withholds the record from every reader when one named is excluded later."
+    },
+    {
+     "name": "start",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "start",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Start (UTC)."
+    },
+    {
+     "name": "end",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "end",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "End (UTC)."
+    },
+    {
+     "name": "is_cancelled",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "is_cancelled",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "is_online_meeting",
+     "value_type": "boolean",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "is_online_meeting",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "online_meeting",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "online_meeting",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Teams join URL, conference id and provider."
+    },
+    {
+     "name": "series_master_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "series_master_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "type",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "meetings.meetings",
+       "path": "type",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "enum_values": [
+      "singleInstance",
+      "occurrence",
+      "exception",
+      "seriesMaster"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PlannerTask",
+   "description": "One Planner task of a plan a captured mailbox has tasks in (Graph plannerTask with its details), cited planner-task://<plan>/<task>@<generation>-<capture-id> in the plan's unit meetings:plan:<plan>; the reader needs the plan's grant and the task's ACL (the plan's group or the task's people). A task naming an excluded person is never captured. Source text is untrusted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "meetings.planner_tasks",
+     "source": "meetings",
+     "relation": "plannerTasks",
+     "key": [
+      "plan_id",
+      "id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "plan_id",
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "title"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_meetings"
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Planner task id."
+    },
+    {
+     "name": "plan_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "plan_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "plan_title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "plan_title",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "group_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "group_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Microsoft 365 group the plan belongs to (its audience)."
+    },
+    {
+     "name": "bucket_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "bucket_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "bucket_name",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "bucket_name",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "title",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "title",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "percent_complete",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "percent_complete",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "0, 50 or 100 (Planner's not started, in progress, completed)."
+    },
+    {
+     "name": "priority",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "priority",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Planner priority 0 (urgent) to 10 (low)."
+    },
+    {
+     "name": "start_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "start_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "due_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "due_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "completed_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "completed_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "created_by",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "created_by",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object id of the creator."
+    },
+    {
+     "name": "completed_by",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "completed_by",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object id of who completed it."
+    },
+    {
+     "name": "assignees",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "assignees",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object ids of the assignees. An excluded person never appears: the capture withholds a task assigned to, created or completed by one whole."
+    },
+    {
+     "name": "description",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "description",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The task's description (its details), read only for a task whose people cleared the people guard."
+    },
+    {
+     "name": "checklist",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "checklist",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Checklist items: title and whether checked."
+    },
+    {
+     "name": "references",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.planner_tasks",
+       "path": "references",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Reference titles and types (never their URLs)."
+    }
+   ]
+  },
+  {
+   "id": "MeetingTranscript",
+   "description": "One Teams meeting transcript (Graph callTranscript, WebVTT), the document carrier of what was said: its cues (time, speaker, text) are cited by the version's handle meeting-transcript://<organizer>/<meeting>/<transcript>@<generation>-<capture-id> and read by the text index and the mention links; the text is cited, not projected. Gated in the organizer's unit by the meeting's participants. Read only for a meeting whose event cleared the people guard, organized by a tenant user who is not excluded, and kept only when every speaker is the organizer or an attendee. Source text is untrusted.",
+   "availability": {
+    "state": "served"
+   },
+   "bindings": [
+    {
+     "id": "meetings.meeting_transcripts",
+     "source": "meetings",
+     "relation": "meetingTranscripts",
+     "key": [
+      "organizer",
+      "meeting_id",
+      "id"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "identity_keys": [
+    {
+     "name": "source_key",
+     "properties": [
+      "organizer",
+      "meeting_id",
+      "id"
+     ],
+     "tier": "verified",
+     "unique": true,
+     "scope": "within_binding",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ],
+   "display": [
+    "subject"
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.capture_meetings"
+    }
+   ],
+   "properties": [
+    {
+     "name": "id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The Graph transcript id."
+    },
+    {
+     "name": "meeting_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "meeting_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The online meeting id."
+    },
+    {
+     "name": "organizer",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "organizer",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Entra object id of the meeting organizer."
+    },
+    {
+     "name": "join_url",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "join_url",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "ical_uid",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "ical_uid",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The calendar meeting's iCalUId (MeetingTranscript.of_meeting)."
+    },
+    {
+     "name": "subject",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "subject",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "The meeting's subject, from the cleared calendar event."
+    },
+    {
+     "name": "meeting_start",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "meeting_start",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "meeting_end",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "meeting_end",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "created_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "created_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "end_at",
+     "value_type": "timestamp",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "end_at",
+       "parser": "iso_timestamp"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "speakers",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "speakers",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "Display names of the speakers; each is the organizer or an attendee of the cleared event (a transcript naming anyone else is withheld whole)."
+    },
+    {
+     "name": "cue_count",
+     "value_type": "integer",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "cue_count",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    },
+    {
+     "name": "content_sha256",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "meetings.meeting_transcripts",
+       "path": "content_sha256",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ],
+     "description": "sha256 of the WebVTT bytes read."
+    }
+   ]
+  }
+ ],
+ "link_types": [
+  {
+   "id": "CalendarEvent.of_meeting",
+   "from": "CalendarEvent",
+   "to": "Meeting",
+   "name": "of_meeting",
+   "reverse_name": "calendar_events",
+   "cardinality": "N:1",
+   "description": "The meeting a calendar copy is of (the shared iCalUId).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "meetings.meetings",
+     "pairs": [
+      {
+       "from": "ical_uid",
+       "to": "ical_uid",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MeetingTranscript.of_meeting",
+   "from": "MeetingTranscript",
+   "to": "Meeting",
+   "name": "of_meeting",
+   "reverse_name": "transcripts",
+   "cardinality": "N:1",
+   "description": "The meeting a transcript was recorded in (the cleared event's iCalUId).",
+   "bindings": [
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "meetings.meeting_transcripts",
+     "to_binding": "meetings.meetings",
+     "pairs": [
+      {
+       "from": "ical_uid",
+       "to": "ical_uid",
+       "compare": "text_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_meetings"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "event_types": [],
+ "evidence_catalog": {
+  "wb.capture_meetings": {
+   "kind": "workbench_code",
+   "path": "integrations/capture_meetings.py",
+   "note": "MeetingsCapture: calendar events (identity fields listed, content read only once the people guard cleared the organizer and attendees), Planner tasks and meeting transcripts, GET only, into the versioned capture store."
+  },
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar and resolved through the identifier index; stored as lead links (store_mention_links)."
+  },
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  }
+ }
+}

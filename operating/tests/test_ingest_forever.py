@@ -635,7 +635,7 @@ class ConcurrentIngestTest(unittest.TestCase):
             "mode": forever.MODE, "grace_seconds": 1, "max_parallel": 1}), table)
         self.assertEqual({n: o["capture"]["error_code"] for n, o in report["sources"].items()},
                          {"one": "ran_alone", "two": "ran_alone"})
-        for bad in (0, 8, "2", True):
+        for bad in (0, forever.MAX_PARALLEL + 1, "2", True):
             code, _, err = self.main("run", "--state-dir", str(self.state), "--config", str(
                 self.config(sections, ingest={"mode": forever.MODE, "max_parallel": bad})),
                 table=table)
@@ -1340,6 +1340,30 @@ class LiveCycleRepairTest(unittest.TestCase):
                          ([True], 2))
         judged = forever._judge(forever._base(forever.SOURCES["teams"]), teams)
         self.assertEqual((judged["status"], judged["reasons"]), ("complete", []))
+
+    def test_meetings_reads_with_the_admin_application_and_counts_withheld_as_excluded(
+            self) -> None:
+        spec = forever.SOURCES["meetings"]
+        env = {"AZURE_TENANT_ID": "t", "AZURE_CLIENT_ID": "c", "AZURE_CLIENT_SECRET": "s",
+               "PLX_MEETINGS_GRAPH_CREDENTIALS": "AZURE", "BC_CLIENT_SECRET": "b",
+               "MC_MCP_API_KEY": "m", "PATH": "p"}
+        child = forever.child_env(env, spec, self.state)
+        self.assertEqual(set(child) - {"PLX_WORKBENCH_STATE_DIR"},
+                         {"AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET",
+                          "PLX_MEETINGS_GRAPH_CREDENTIALS", "PATH"})
+        summary = forever.summarize_meetings({"runs": [{
+            "counts": {"mailboxes_excluded": 1, "events_withheld": 4, "tasks_withheld": 2},
+            "mailboxes": [{"status": "complete", "reasons": [], "resumed_from": "cursor"}],
+            "plans": [{"status": "incomplete", "reasons": ["cap:task_reads"]}],
+            "transcripts": {"status": "blocked",
+                            "reasons": ["blocked:missing_permission:OnlineMeetings.Read.All"]}
+        }], "blocked_upstream": [{"part": "meetings.online_meetings", "http_status": 403,
+                                  "error_code": "missing_permission",
+                                  "source": "microsoft-graph",
+                                  "cause": "host_misconfiguration"}]})
+        self.assertEqual(([u["complete"] for u in summary["units"]], summary["excluded"]),
+                         ([True, False, False], 7))
+        self.assertEqual(summary["blocked"][0]["part"], "meetings.online_meetings")
 
     def test_committed_all_sources_config_covers_every_source(self) -> None:
         from integrations.bc_read import CAPTURE_ENTITY_SETS

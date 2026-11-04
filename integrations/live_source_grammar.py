@@ -34,6 +34,8 @@ Parameter types (validated on the *decoded* value):
   (``19:<id>@thread.tacv2|thread.v2|thread.skype|unq.gbl.spaces``, ``<id>`` a
   ``mail_id``-grammar Graph id); ``teams_message_id`` — a chat message id
   (``mail_id`` grammar). A team is addressed by its group id (``guid``).
+* ``meeting_id`` (an online meeting or transcript id) and ``planner_id`` (a Planner
+  plan or task id): opaque Graph ids in the ``mail_id`` grammar.
 
 Beyond the template match the guard decodes every path segment once and
 refuses any ``/``, ``\\``, ``%`` or ``..`` component after decoding.
@@ -261,6 +263,10 @@ TYPES: dict[str, ParamType] = {t.name: t for t in (
     ParamType("teams_thread", _teams_thread_ok, _SEG, lambda v: v),
     ParamType("search_text", search_text_ok, r"[^/()']+", lambda v: quote(v, safe="")),
     ParamType("teams_message_id", _rx(_MAIL_ID), _SEG, lambda v: v),
+    # An online meeting or transcript id and a Planner plan, bucket or task id: opaque
+    # Graph ids in the shared Graph id grammar (an id outside it is never addressed).
+    ParamType("meeting_id", _rx(_MAIL_ID), _SEG, lambda v: v),
+    ParamType("planner_id", _rx(_MAIL_ID), _SEG, lambda v: v),
     ParamType("freightcom_id", _rx(_ids.system_pattern("freightcom_id")), _SEG, lambda v: v),
     ParamType("amazon_shipment_id", _rx(_ids.system_pattern("amazon_shipment_id")), _SEG,
               lambda v: v),
@@ -386,6 +392,28 @@ TEMPLATES: dict[str, tuple[str, str]] = {
     "graph.chat": (GRAPH, "/v1.0/chats/{chat:teams_thread}"),
     "graph.teams_activity_report": (GRAPH, "/v1.0/reports/"
                                     "getTeamsTeamActivityDetail(period='D30')"),
+    # Meetings capture (integrations.capture_meetings), GET only: a captured mailbox's
+    # calendar view over a rolling window (identity fields only: its delta answers every
+    # event with its body whatever $select names, live 2026-11-04, so no delta form
+    # parses), one event's content once its organizer and attendees cleared the people
+    # guard; the organizer's
+    # online meeting found by its join URL, its transcripts and one transcript's text
+    # (WebVTT, ``SourceApi.get_document``); a captured mailbox's Planner tasks (how its
+    # plans are found: the groups listing and group members answer 403 to this app, live
+    # 2026-11-04), one plan, its buckets and tasks and one task's details.
+    "graph.user_calendar_view": (GRAPH, "/v1.0/users/{user:user_id}/calendarView"),
+    "graph.user_event": (GRAPH, "/v1.0/users/{user:user_id}/events/{event:mail_id}"),
+    "graph.user_online_meetings": (GRAPH, "/v1.0/users/{user:user_id}/onlineMeetings"),
+    "graph.online_meeting_transcripts": (GRAPH, "/v1.0/users/{user:user_id}/onlineMeetings/"
+                                         "{meeting:meeting_id}/transcripts"),
+    "graph.online_meeting_transcript_content": (GRAPH, "/v1.0/users/{user:user_id}/"
+                                                "onlineMeetings/{meeting:meeting_id}/"
+                                                "transcripts/{transcript:meeting_id}/content"),
+    "graph.user_planner_tasks": (GRAPH, "/v1.0/users/{user:user_id}/planner/tasks"),
+    "graph.planner_plan": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}"),
+    "graph.planner_plan_buckets": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/buckets"),
+    "graph.planner_plan_tasks": (GRAPH, "/v1.0/planner/plans/{plan:planner_id}/tasks"),
+    "graph.planner_task_details": (GRAPH, "/v1.0/planner/tasks/{task:planner_id}/details"),
     "bc.companies": (BC, _BC + "/companies"),
     # The API v2.0 schema document (CSDL XML; ``SourceApi.get_document``, no query).
     "bc.metadata": (BC, _BC + "/$metadata"),

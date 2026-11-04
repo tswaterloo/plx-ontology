@@ -216,6 +216,7 @@ _LOWER_WORD = re.compile(r"[a-z_]+")
 _UPSTREAM = {"portal": "portal-workbench-api", "bc": "business-central",
              "mail": "microsoft-graph", "sharepoint": "microsoft-graph",
              "teams": "microsoft-graph", "sharepoint_lists": "microsoft-graph",
+             "meetings": "microsoft-graph",
              "mc": "mission-control-mcp"}
 # The projection source (an ontology binding's ``source``) each host source captures.
 PROJECTED_SOURCE = {"portal": "portal_api", "bc": "bc", "mail": "graph_mail",
@@ -265,7 +266,7 @@ MAX_FRESHNESS_HOURS = 720.0   # 30 days: a longer bound would call any capture f
 # Every source family a projection serves from a host's captures (operating.mcp_server
 # BOUND_SOURCES): each gets a bound, configured or not.
 CAPTURED_FAMILIES = ("portal_api", "bc", "graph_mail", "sharepoint", "teams",
-                     "mission_control")
+                     "mission_control", "meetings")
 # The coverage census's own time bound when the SharePoint source sets no
 # ``census_budget_seconds``: never the capture's ``budget_seconds``, which bounds one cycle's
 # reads, not the listing of what the library holds.
@@ -635,14 +636,15 @@ def state_capture_paths(state_dir: str | Path) -> dict[str, Path]:
     """source family -> the file of each BC, mail, SharePoint, Teams, Mission Control and
     brain knowledge capture store a host state directory may hold, held or not (the Portal
     mirror is the caller's)."""
-    from integrations import (capture_mail, capture_sharepoint, capture_teams,
-                              knowledge_source, mc_sources)
+    from integrations import (capture_mail, capture_meetings, capture_sharepoint,
+                              capture_teams, knowledge_source, mc_sources)
 
     state_dir = Path(state_dir).expanduser()
     return {"bc": state_dir / BC_DIR / BC_FILE,
             "graph_mail": state_dir / capture_mail.STORE_DIR / capture_mail.DB_FILE,
             "sharepoint": state_dir / capture_sharepoint.STORE_DIR / capture_sharepoint.DB_FILE,
             "teams": state_dir / capture_teams.STORE_DIR / capture_teams.DB_FILE,
+            "meetings": state_dir / capture_meetings.STORE_DIR / capture_meetings.DB_FILE,
             "mission_control": mc_sources.store_path(state_dir),
             "brain": knowledge_source.store_path(state_dir)}
 

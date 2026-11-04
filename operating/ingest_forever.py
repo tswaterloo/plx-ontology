@@ -15,8 +15,8 @@ cursor, the BC modified-since watermark, the Portal mirror's ``since`` plan), th
 stores and the same capture classes the host's own readers use.
 
 The config's ingest-mode source sections are this module's table (:data:`SOURCES`:
-``portal``, ``bc``, ``mail``, ``sharepoint``, ``sharepoint_lists``, ``teams``, ``mc``),
-each key checked against its CLI's fields (:func:`section_options`; a path must name a
+``portal``, ``bc``, ``mail``, ``sharepoint``, ``sharepoint_lists``, ``teams``, ``meetings``,
+``mc``), each key checked against its CLI's fields (:func:`section_options`; a path must name a
 file); ``live_audience`` defaults to the host's ``capture_audience``, the Portal's
 ``audience`` to its ``mirror_audience``, ``tenant`` and ``principal`` to the host's.
 
@@ -94,7 +94,7 @@ DEFAULT_GRACE_SECONDS, MAX_GRACE_SECONDS = 180, 1800
 DEFAULT_TIMEOUT_SECONDS = 600   # a source whose CLI takes no budget
 MAX_BUDGET_SECONDS = 7200
 SHAREPOINT_VERIFY_SAMPLE = 500   # handles the SharePoint CLI's self-check resolves
-MAX_PARALLEL = 7   # capture children at once (``ingest.max_parallel``; default: one each)
+MAX_PARALLEL = 8   # capture children at once (``ingest.max_parallel``; default: one each)
 # Continuous mode (``Continuous``): a source that finished runs again this long after
 # (``min_interval_seconds`` of its section); a failed or blocked one waits twice as long
 # per failure in a row, at most ``MAX_RETRY_SECONDS``.
@@ -117,6 +117,12 @@ GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",
 BC_ENV = ("BC_TENANT_ID", "BC_CLIENT_ID", "BC_CLIENT_SECRET", "BC_ENVIRONMENT")
 PORTAL_ENV = ("PLX_WORKBENCH_API_URL", "PLX_WORKBENCH_API_KEY")
 MC_ENV = ("MC_MCP_API_KEY",)
+# The meetings capture reads with the admin application (``integrations.capture_meetings``
+# ``CREDENTIALS_ENV``, default ``AZURE``): its secret is required, the prefix setting and
+# the mail application's names are passed when set (``PLX_MEETINGS_GRAPH_CREDENTIALS=
+# MICROSOFT_GRAPH`` reads with the mail application instead).
+MEETINGS_ENV = ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
+MEETINGS_OPTIONAL_ENV = ("PLX_MEETINGS_GRAPH_CREDENTIALS", *GRAPH_ENV)
 DEFAULT_PRINCIPAL = "svc:workbench-host"   # operating/host.py DEFAULT_PRINCIPAL
 MAX_ITEMS = 20
 MAX_COUNTS = 40
@@ -281,6 +287,8 @@ class SourceSpec:
     # capture writing a store the next build reads never overlaps that build
     # (:class:`Continuous`).
     writes: Callable[[Path], tuple[Path, ...]] | None = None
+    # Credential-shaped names passed to the child when set, never required.
+    optional_env: tuple[str, ...] = ()
 
 
 def _python() -> str:
@@ -442,6 +450,25 @@ def summarize_teams(report: Mapping[str, Any]) -> dict[str, Any]:
     return _units(units, report, excluded=len(rows) - len(kept))
 
 
+def summarize_meetings(report: Mapping[str, Any]) -> dict[str, Any]:
+    """Calendars and plans of the last run, plus the transcript part; what the people
+    guard withheld (events, tasks, mailboxes) is counted as excluded, never a gap."""
+    run = _last_run(report)
+    units = [{"complete": row.get("status") == "complete",
+              "resumed": row.get("resumed_from") is not None,
+              "reason": (_codes(row.get("reasons")) or [row.get("status")])[0]}
+             for row in [*_rows(run.get("mailboxes")), *_rows(run.get("plans"))]]
+    transcripts = run.get("transcripts")
+    if isinstance(transcripts, Mapping) and transcripts:
+        units.append({"complete": transcripts.get("status") == "complete", "resumed": False,
+                      "reason": (_codes(transcripts.get("reasons"))
+                                 or [transcripts.get("status")])[0]})
+    counts = run.get("counts") if isinstance(run.get("counts"), Mapping) else {}
+    excluded = sum(count(counts.get(k)) or 0 for k in ("mailboxes_excluded", "events_withheld",
+                                                        "tasks_withheld"))
+    return _units(units, report, excluded=excluded)
+
+
 def summarize_sharepoint(report: Mapping[str, Any]) -> dict[str, Any]:
     """Roots of the last run: incremental (change feed) or a cut walk continued."""
     units = [{"complete": root.get("complete") is True,
@@ -559,6 +586,10 @@ SOURCES: dict[str, SourceSpec] = {spec.name: spec for spec in (
     SourceSpec("teams", "microsoft-graph", _graph_argv("teams-capture"), summarize_teams,
                dict(_GRAPH_FIELDS), frozenset({"live_audience"}), GRAPH_ENV,
                projected="teams", writes=_state_store("teams")),
+    SourceSpec("meetings", "microsoft-graph", _graph_argv("meetings-capture"),
+               summarize_meetings, {**_GRAPH_FIELDS, "principal": "str"},
+               frozenset({"live_audience"}), MEETINGS_ENV, projected="meetings",
+               writes=_state_store("meetings"), optional_env=MEETINGS_OPTIONAL_ENV),
     SourceSpec("mc", "mission-control-mcp", _mc_argv, summarize_mc,
                {"scope": "str", "queries": "strs", "max_task_reads": "int",
                 "operator_email_default": "str", "timeout_seconds": "seconds",
@@ -606,7 +637,8 @@ def _option(kind: str, value: Any, base: Path) -> Any:
 
 def child_env(environ: Mapping[str, str], spec: SourceSpec, state: Path) -> dict[str, str]:
     env = {name: value for name, value in environ.items()
-           if not CREDENTIAL_NAME.search(name) or name in spec.env}
+           if not CREDENTIAL_NAME.search(name) or name in spec.env
+           or name in spec.optional_env}
     env[STATE_ENV] = str(state)
     return env
 
@@ -1285,4 +1317,4 @@ __all__ = ["CAUSES", "MODE", "SOURCES", "STATUSES", "Continuous", "IngestError",
            "exclusion_refusal", "ingest_settings", "ledger_outcome", "leaks", "max_parallel",
            "read_sources", "run_source", "section_options",
            "summarize_bc", "summarize_lists", "summarize_mail", "summarize_mc",
-           "summarize_portal", "summarize_sharepoint", "summarize_teams"]
+           "summarize_meetings", "summarize_portal", "summarize_sharepoint", "summarize_teams"]

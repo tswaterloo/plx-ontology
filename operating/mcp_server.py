@@ -3741,7 +3741,7 @@ def check_host_arguments(parser: argparse.ArgumentParser,
 # Source families a capture bound may name (the contract's ``$defs/freshness`` sources a
 # host captures).
 BOUND_SOURCES = frozenset({"portal_api", "bc", "graph_mail", "sharepoint", "teams",
-                           "mission_control"})
+                           "mission_control", "meetings"})
 
 
 def freshness_bounds(given: Iterable[str]) -> dict[str, float]:

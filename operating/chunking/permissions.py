@@ -35,10 +35,10 @@ from ontology.store_ddl import MARKINGS
 # Audience families a ReadPolicy may grant (CONTRACT: api:/bc:/mail:/sharepoint:/teams:/
 # mc:/original:/repo:; plus the projection's sharepoint-list:, workbench:, brain:).
 FAMILIES = frozenset({"api", "bc", "mail", "sharepoint", "sharepoint-list", "teams", "mc",
-                      "original", "repo", "workbench", "brain"})
+                      "original", "repo", "workbench", "brain", "meetings"})
 # Families whose items are a person's mail, chats or files: the exclusion gates them.
 PERSON_FAMILIES = frozenset({"mail", "teams", "sharepoint", "sharepoint-list", "original",
-                             "repo"})
+                             "repo", "meetings"})
 
 
 def family(key: str) -> str:
@@ -141,6 +141,13 @@ class Exclusion:
                 members = self.chat_members.get(unit[len("chat:"):])
                 return members is not None and all(self.identity_clear(m) for m in members)
             return unit.startswith("channel:")
+        if head == "meetings":
+            # a calendar's or an organizer's unit is that person's; a plan is its group's
+            # (a task naming an excluded person is never captured)
+            kind, _, owner = unit.partition(":")
+            if kind in ("calendar", "organizer"):
+                return is_object_id(owner) and self._oid_clear(owner)
+            return kind == "plan"
         return True
 
 
@@ -180,6 +187,9 @@ def unit_row(key: str, exclusion: Exclusion) -> dict[str, Any]:
         return personal([owner] if owner else [])
     if head == "sharepoint-list":
         return personal() if "-my.sharepoint.com" in unit.lower() else shared("SharePoint list")
+    if head == "meetings":
+        kind, _, owner = unit.partition(":")   # a calendar's or organizer's: that person's
+        return personal([owner] if kind in ("calendar", "organizer") else [])
     if head == "api":
         source, _, relation = unit.partition(".")
         system = {"public": "Customer Portal", "sage": "Sage"}.get(source, source or "Portal")

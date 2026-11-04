@@ -458,7 +458,8 @@ _NOT_DERIVATION = {
     "integrations.capture_store": ("integrations.capture_mail", "integrations.capture_sharepoint",
                                    "integrations.capture_teams",
                                    "integrations.capture_sharepoint_lists",
-                                   "integrations.mc_sources", "integrations.knowledge_source"),
+                                   "integrations.mc_sources", "integrations.knowledge_source",
+                                   "integrations.capture_meetings"),
     # TeamsCaptures/SharePointListCaptures.__init__: the kinds of their own records
     "ontology.project_graph": ("integrations.capture_teams",
                                "integrations.capture_sharepoint_lists"),
@@ -466,7 +467,7 @@ _NOT_DERIVATION = {
     "ontology.project": ("integrations.source_mirror", "integrations.mirror_capture",
                          "integrations.capture_mail", "integrations.capture_sharepoint_lists",
                          "ontology.project_bc", "ontology.project_knowledge",
-                         "ontology.project_mc",
+                         "ontology.project_mc", "ontology.project_meetings",
                          # the table of proven-equivalent derivation code (its own value)
                          "ontology.code_equivalence"),
     # _pinned: a cited handle parsed for a reader's request (pinned_document_row)
@@ -1776,6 +1777,13 @@ def _teams_captures(path: str | Path, **options: Any) -> Any:
     return TeamsCaptures(path, **options)
 
 
+def _meetings_captures(path: str | Path, **options: Any) -> Any:
+    """The meetings capture store source (``ontology/project_meetings.py``, imported on
+    use for the same reason)."""
+    from ontology.project_meetings import MeetingsCaptures
+    return MeetingsCaptures(path, **options)
+
+
 def _knowledge_captures(path: str | Path, **options: Any) -> Any:
     """The brain knowledge capture store source (``ontology/project_knowledge.py``,
     imported on use for the same reason)."""
@@ -1792,7 +1800,7 @@ MEMBER_RELATION = "containerMembers"
 CAPTURE_SOURCES: dict[str, Callable[..., Any]] = {
     "portal_api": MirrorCaptures, "graph_mail": MailCaptures,
     "sharepoint": SharePointCaptures, "bc": _bc_captures, "mission_control": _mc_captures,
-    "brain": _knowledge_captures, "teams": _teams_captures}
+    "brain": _knowledge_captures, "teams": _teams_captures, "meetings": _meetings_captures}
 # The relations a family's capture reads, where it reads fewer than its bindings name (a
 # family not listed reads every relation of its bindings). The others are never captured
 # (``source_not_captured``; ``scripts/source_registry.py`` stops them at ``captured``):

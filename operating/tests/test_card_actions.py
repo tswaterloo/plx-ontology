@@ -252,7 +252,11 @@ class SendApp(unittest.TestCase):
         pattern = __import__("re").compile(
             r"AZURE_(?:CLIENT|TENANT)|[\"']AZURE[\"']|action_credentials|_read_env"
             r"|_default_bearer|PLX_ACTIONS_GRAPH_CREDENTIALS|ACTION_CREDENTIALS_ENV")
-        allowed = {"integrations/live_source_guard.py", "integrations/graph_send.py"}
+        # The meetings capture reads with the admin application by its own issuer
+        # (live_source_guard.meetings_read_credentials, GET-only transport); ingest mode
+        # hands its secret to the meetings child alone. No other path names it.
+        allowed = {"integrations/live_source_guard.py", "integrations/graph_send.py",
+                   "integrations/capture_meetings.py", "operating/ingest_forever.py"}
         found = set()
         for path in root.rglob("*.py"):
             rel = path.relative_to(root).as_posix()

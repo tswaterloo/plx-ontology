@@ -475,7 +475,7 @@ class RealProjectionTests(OutputFirewallTestCase):
                              defs[name]["pattern"])
         self.assertEqual(defs["handle"]["pattern"],
                          "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|"
-                         "sharepoint-list|teams-chat)://"
+                         "sharepoint-list|teams-chat|calendar-event|planner-task|meeting-transcript)://"
                          + guard.VISIBLE_CHAR + "{1,4080}$")
         # A real Mission Control capture handle (ontology/project_mc.py) passes the output
         # contract; a scheme no capture family cites does not.

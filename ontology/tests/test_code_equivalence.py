@@ -34,9 +34,16 @@ DERIVATION_DEFINITIONS = {
                             "document_code",
                             "derivation_modules", "environment_digest",
                             "finish_generation", "projected_counts",
-                            "Projector", "_Report", "object_unit"},
+                            "Projector", "_Report", "object_unit",
+                            # the meetings capture source (another source's reader)
+                            "CAPTURE_SOURCES", "_meetings_captures"},
     # the mention step's per-document failures (a step, not a derivation)
-    "ontology/mentions.py": {"_memo_code", "_store_links", "read_ahead"},
+    "ontology/mentions.py": {"_memo_code", "_store_links", "read_ahead",
+                             "DOCUMENT_KINDS"},   # the meetings document kinds
+    # the capture-kind registry names the meetings kinds
+    "integrations/capture_store.py": {"ADAPTER_MODULES", "_load_adapters"},
+    # the meetings types' mention link rules
+    "ontology/schema.py": {"MEETINGS_MENTION_LINK_RULES", "MENTION_LINK_RULES"},
     "ontology/document_failures.py": None,   # new: imported by the mention step only
     # scheduling, spills, merge (an incremental build's into its seed, with its object
     # parts), kept member views; _derive and _parse as they were

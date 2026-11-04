@@ -88,6 +88,18 @@ READER_CHANGES: Mapping[tuple[str, str], tuple[str | None, str | None]] = {
     ("ontology.project_parallel", "_kept_views"): (
         "6578da922409f9f5fcb3e232757ae085a4b2393a82a66e7bd9ceb911d4a28932",
         "ccbbef74660c1be66f8c17d02d4de33d8907935f17cf0b5b1e53e2c2f7ef0a71"),
+    # The meetings capture (integrations.capture_meetings): its GET templates and id types
+    # join the closed grammar and its document kinds the mention documents; no mail or
+    # SharePoint read builds, matches or yields anything else.
+    ("integrations.live_source_grammar", "TEMPLATES"): (
+        "2ffe6b781e45edc501595d9e2b7be9888d3a46be7fc5ec02a94022a4938c8930",
+        "d7a7ade08ec77f470dca7fa2be22b30fe04897927ccefcc67b7b00b522bc65a7"),
+    ("integrations.live_source_grammar", "TYPES"): (
+        "59c809c40e8fc1627f06b786796268a8563d344c69ff85131f6a9a302b5d7439",
+        "44e82ec9704db963966f2e65af50d4f394e12eca9a1d4e0582a7fa64ac7aded1"),
+    ("ontology.mentions", "DOCUMENT_KINDS"): (
+        "bfdbd2ac8d056231f5d7d38d2937dcff8d965791ffc47e050cf0877866718171",
+        "d5654fffe9c1b439fa7cba402907d127d0998c674bd1d93fea8cb8a5620f8a3f"),
     # The document group key's code keeps the earlier commit's value where it is proven
     # equivalent (VALUE_EQUIVALENTS); otherwise the same digest as before.
     ("ontology.project", "document_code"): (
@@ -139,16 +151,28 @@ DERIVATION_CHANGES: Mapping[str, tuple[str | None, str]] = {
     # derivation_code narrowed (build-speed5) and kept to this table; the generation's
     # finish and counts (finish_generation, projected_counts) are not derivation; the
     # projector writing only the chosen objects' rows of an object-local binding and
-    # keeping each object's report entries apart (Projector, _Report, object_unit): it projects records, never derives one
+    # keeping each object's report entries apart (Projector, _Report, object_unit): it projects records, never derives one; the meetings capture as a
+    # capture source of its own (CAPTURE_SOURCES, _NOT_DERIVATION: another source's reader)
     "ontology/project.py": (
         "2409495cb9bd2b9bac667ca4724a471698c748db7b0305de24e9692b8710efaf",
-        "dff534fda4a32b266d9c38c863a7080fca427d51b571e22044a464b0f257a30c"),
+        "ef8735e7b58435143fa15a7c8e125fb84be6d087afd6906599cd07f1f2606f22"),
     # the mention step's failures per document (DocumentFailures), the store's windows in
     # its memo key and a read-ahead load that fails left to the step: the mention step,
-    # which derives no documentFields or containerMembers record
+    # which derives no documentFields or containerMembers record; the meetings document
+    # kinds (DOCUMENT_KINDS: calendar events, Planner tasks, transcripts)
     "ontology/mentions.py": (
         "a5f523b02e9e4636202774376240554310955d99fe35b8fb14c1f64f7495ebd4",
-        "dc8152f65f6647f5a31d50851dc540efbc930d6fef1601c5affe9db3e2a60b4e"),
+        "57cd64be51766fd4ea27d2fd7e85b6d78ae0c1d27e1d83dabd68ba9e849893fb"),
+    # the capture-kind registry names the meetings kinds (ADAPTER_MODULES, _load_adapters):
+    # a registry, never a derivation
+    "integrations/capture_store.py": (
+        "b99f340bdbee65c3b13776178d5d64469945bcf67ac9ebbdbc72302e9e15dc55",
+        "14c49ba55543bd70d41aa21cdbe27a60f01883ddca7eea2b26acaa212c333c25"),
+    # the meetings mention link rules (MEETINGS_MENTION_LINK_RULES): link types from the new
+    # meetings types, no documentFields or containerMembers record derived otherwise
+    "ontology/schema.py": (
+        "da11353ec3d3795d74387b8b9d13715c6900a8062e2d3265d683ec165b4e3c0e",
+        "ccc9bf7bbf5314ee8dc0475d1e4f088e6c461d90d5ecba1868f3e35073c00343"),
     "ontology/document_failures.py": (None,
         "5ff79dde6579d1aec38dd2fa99edbb32236e1b9eefeba53ee8f87f39aa0da651"),
     # scheduling, spills (records read back as read), merge order, kept member views, an
@@ -214,21 +238,24 @@ def equivalent_derivation_code(files: Iterable[tuple[str, str]]) -> str | None:
 # host); ``ontology/tests/test_code_equivalence.py`` names the definitions they differ
 # in, none of which changes what is kept:
 # * ``mention_memo`` (``mentions._memo_code``): the step's per-document failures, its
-#   read-ahead load left to the step, ``held_stretches`` (unchanged) now in the key;
+#   read-ahead load left to the step, ``held_stretches`` (unchanged) now in the key; the
+#   meetings document kinds and the meetings types' own mention link types (new source
+#   types, none a target: a kept mail or file entry resolves to the same links);
 # * ``text_index_memo`` (``text_index._memo_code``): per-document failures, chunks taken
 #   from a base generation indexed under the same code; the facts kept are as before;
 # * ``document_code`` (``project.document_code``: ``document_groups`` keys): the files
 #   above and ``DERIVATION_CHANGES``' ``project.py`` (its object-by-object writes
-#   included: they decide rows, never a document group).
+#   included: they decide rows, never a document group; the meetings capture source and
+#   its readers kept out of the derivation code).
 VALUE_EQUIVALENTS: Mapping[str, Mapping[str, str]] = {
     "mention_memo": {
-        "eb8b6983906298818813a2b8176d6af7f6171a9236d649d3b06df064e0433d68":
+        "acd7b63c6429d6a7cbf79d33a3c51095eebb1ed981659f962ed979c8f51c516c":
             "d704849ed7b6a53bfa3ca3f4a03b14c1403a64a34d2e8bca9b5438ac3f287e04"},
     "text_index_memo": {
         "007b84688e82bd1a4d107d25aa6699cc439c0d075e87828e713d1e1faca24f20":
             "da8970329aaf3a1bdfec1504df6b5839cc7a831d2621f9cbaa6250ceb4254d94"},
     "document_code": {
-        "30713fa81933405b207e5b0dfe0b64896f453397777940584bf3d1770d865a43":
+        "ac3518f51d2daf3330d6a1628b232172bd5a9c54712d06ddfe33800ac51e81a0":
             "85c6895875d0ea6260a3f9934c50bb0dd489e491e9e962c79338fa13cc168891"},
 }
 

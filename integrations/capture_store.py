@@ -170,7 +170,9 @@ _KINDS: dict[str, SourceKind] = {}
 # and chat messages in a store of this module and registers ``teams_channel`` and
 # ``teams_chat``; ``integrations.mc_sources`` registers ``mission_control`` (Mission
 # Control reads, kept in this store); ``integrations.capture_sharepoint_lists`` keeps
-# SharePoint list items here as ``sharepoint_list``. Static imports only (no dynamic
+# SharePoint list items here as ``sharepoint_list``; ``integrations.capture_meetings``
+# keeps calendar events, Planner tasks and meeting transcripts here as ``calendar_event``,
+# ``planner_task`` and ``meeting_transcript``. Static imports only (no dynamic
 # module access: scripts/check_http_egress.py).
 ADAPTER_MODULES: dict[str, str] = {"graph_mail": "integrations.capture_mail",
                                    "sharepoint": "integrations.capture_sharepoint",
@@ -178,7 +180,10 @@ ADAPTER_MODULES: dict[str, str] = {"graph_mail": "integrations.capture_mail",
                                    "teams_chat": "integrations.capture_teams",
                                    "mission_control": "integrations.mc_sources",
                                    "sharepoint_list": "integrations.capture_sharepoint_lists",
-                                   "brain": "integrations.knowledge_source"}
+                                   "brain": "integrations.knowledge_source",
+                                   "calendar_event": "integrations.capture_meetings",
+                                   "planner_task": "integrations.capture_meetings",
+                                   "meeting_transcript": "integrations.capture_meetings"}
 _ADAPTERS_LOADED = False
 
 
@@ -193,6 +198,7 @@ def _load_adapters() -> None:
     from integrations import capture_sharepoint_lists  # noqa: F401 - registers sharepoint_list
     from integrations import mc_sources  # noqa: F401 - registers mission_control
     from integrations import knowledge_source  # noqa: F401 - registers brain
+    from integrations import capture_meetings  # noqa: F401 - registers the meetings kinds
 
 
 def register_source_kind(kind: SourceKind) -> SourceKind:

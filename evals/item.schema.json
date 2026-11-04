@@ -651,7 +651,7 @@
       "description": "An L1 citation handle (operating/citation_schemes.CITATION_SCHEMES).",
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat)://[^\\s]{1,4080}$"
+      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat|calendar-event|planner-task|meeting-transcript)://[^\\s]{1,4080}$"
     },
     "field_path": {
       "description": "Field inside the cited record; grammar of operating/claim_checks.py _FIELD.",

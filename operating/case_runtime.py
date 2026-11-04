@@ -150,9 +150,12 @@ TEAMS_CHAT_SCHEME = "teams-chat://"
 TEAMS_SCHEMES = (TEAMS_CHANNEL_SCHEME, TEAMS_CHAT_SCHEME)
 SHAREPOINT_LIST_SCHEME = "sharepoint-list://"
 MC_SCHEME = "mc://"
+# Calendar events, Planner tasks and meeting transcripts (``integrations.capture_meetings``),
+# resolved from the host's meetings capture store.
+MEETINGS_SCHEMES = ("calendar-event://", "planner-task://", "meeting-transcript://")
 LIVE_SCHEMES = (MAIL_SCHEME, SHAREPOINT_SCHEME, BC_SCHEME)
 SUPPORTED_SCHEMES = (("api://", ORIGINAL_SCHEME) + LIVE_SCHEMES + TEAMS_SCHEMES
-                     + (SHAREPOINT_LIST_SCHEME, MC_SCHEME))
+                     + (SHAREPOINT_LIST_SCHEME, MC_SCHEME) + MEETINGS_SCHEMES)
 # Mail body text hashed for a citation: the first N characters of the plain-text
 # body (Graph renders it with outlook.body-content-type="text").
 MAIL_BODY_CHARS = 20_000
@@ -797,13 +800,14 @@ class CaseRuntime:
         if self.live is None or not path.is_file():
             raise LiveSourceNotConfigured(source)
         audience: Any = self.live.audience
-        refusal = (self.exclusion_refusal() if source in ("teams-channel", "teams-chat")
-                   else None)
+        meetings = source in ("calendar-event", "planner-task", "meeting-transcript")
+        refusal = (self.exclusion_refusal()
+                   if source in ("teams-channel", "teams-chat") or meetings else None)
         if refusal:
             # No usable people guard: no captured Teams message is served, whoever asks,
             # and the refusal names why (decided before the record is looked up).
             raise CitationUnresolvable(refusal)
-        if source in ("teams-channel", "teams-chat", "sharepoint-list"):
+        if source in ("teams-channel", "teams-chat", "sharepoint-list") or meetings:
             entitlement = self.employee_gate.entitlement(actor)
             if entitlement is not None:
                 audience = _EmployeeItemAcl(audience, entitlement, source,
@@ -834,6 +838,19 @@ class CaseRuntime:
                              .get("identities"))
             if people_excluded(self.people_exclusion, named):
                 # The guard was usable (``exclusion_refusal`` above): it decided.
+                raise gate_refusal("capture_citation_unresolvable", REFUSED)
+        if meetings:
+            from .ontology_tools_evidence import people_excluded
+            # An event, task or transcript naming a person excluded since it was captured
+            # is withheld from every reader (its organizer, attendees, task people and
+            # participants; addresses decided by the bound guard when the host has one).
+            row = result["row"] or {}
+            named = [row.get(k) for k in ("organizer", "attendees", "assignees",
+                                          "created_by", "completed_by")]
+            named.append(((result.get("meta") or {}).get("source_acl") or {})
+                         .get("identities"))
+            guard = self.address_exclusion() or self.people_exclusion
+            if people_excluded(guard, named):
                 raise gate_refusal("capture_citation_unresolvable", REFUSED)
         stale_at = getattr(audience, "stale_opened_at", None)
         if opening and stale_at is not None:
@@ -925,6 +942,10 @@ class CaseRuntime:
         if handle.startswith(MC_SCHEME):
             from integrations.mc_sources import MC_KIND, store_path  # registers the kind
             return "mc", MC_KIND.name, store_path(self.state_dir)
+        if handle.startswith(MEETINGS_SCHEMES):
+            from integrations import capture_meetings as meetings
+            kind = next(k for k in meetings.KINDS if handle.startswith(k.scheme + "://"))
+            return kind.scheme, kind.name, self.state_dir / meetings.STORE_DIR / meetings.DB_FILE
         from .host import BC_DIR, BC_FILE
         return "bc", "bc", self.state_dir / BC_DIR / BC_FILE
 
@@ -1888,7 +1909,8 @@ EMPLOYEE_ACL_DENIED = "employee_acl_denied"
 # of its team's group, a Teams chat its read membership. Any other scheme: a read list only.
 _ITEM_ACL_STATUSES = {"sharepoint": ("read",), "graph-mail": ("derived",),
                       "teams-channel": ("read", "derived"), "teams-chat": ("read",),
-                      "sharepoint-list": ("read",)}
+                      "sharepoint-list": ("read",), "calendar-event": ("derived",),
+                      "planner-task": ("derived",), "meeting-transcript": ("derived",)}
 
 
 def _stale_hours(recorded_at: Any) -> int | None:
@@ -1991,7 +2013,8 @@ def _captured_handle(handle: str) -> bool:
     """A handle resolved from a host capture store, never live: every ``teams-channel://``,
     ``teams-chat://``, ``sharepoint-list://`` and ``mc://`` handle (one that is no capture
     handle is unresolvable there) and a BC capture handle."""
-    return handle.startswith(TEAMS_SCHEMES + (SHAREPOINT_LIST_SCHEME, MC_SCHEME)) or (
+    return handle.startswith(TEAMS_SCHEMES + (SHAREPOINT_LIST_SCHEME, MC_SCHEME)
+                             + MEETINGS_SCHEMES) or (
         handle.startswith(BC_SCHEME) and is_capture_handle(handle))
 
 
@@ -2060,6 +2083,6 @@ def _pinned_mail_citation(record: Mapping[str, Any]) -> str:
 
 __all__ = ["CASE_RUNTIME_DIR", "CaseRuntime", "CaseRuntimeUnavailable", "LIMITATIONS",
            "LIVE_READER_SOURCES", "LIVE_SCHEMES", "LiveReaders", "LiveSourceNotConfigured",
-           "MAIL_BODY_CHARS", "MC_SCHEME", "SHAREPOINT_LIST_SCHEME", "SUPPORTED_SCHEMES",
+           "MAIL_BODY_CHARS", "MC_SCHEME", "MEETINGS_SCHEMES", "SHAREPOINT_LIST_SCHEME", "SUPPORTED_SCHEMES",
            "TEAMS_CHANNEL_SCHEME", "TEAMS_CHAT_SCHEME", "build_live_readers",
            "live_source_names"]

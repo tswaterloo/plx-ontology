@@ -1997,17 +1997,23 @@ class SharePointSites:
 # ------------------------------------------------------------------ factory + probe
 
 def build_graph(environ: Mapping[str, str] | None = None, *, sender=None,
-                clock=None, retry: BoundedBackoff | None = None
+                clock=None, retry: BoundedBackoff | None = None,
+                credentials: ClientCredentials | None = None
                 ) -> tuple[SourceApi, GuardedTransport]:
     """The Graph ``SourceApi`` over one ``GuardedTransport``. ``retry`` opts
     into the bounded GET retry (429/502/503/504 and transport failures,
-    ``Retry-After`` honoured up to its cap); the mail capture uses it."""
+    ``Retry-After`` honoured up to its cap); the mail capture uses it.
+    ``credentials``: the application that signs the requests; default the mail
+    application (``ClientCredentials.from_env("MICROSOFT_GRAPH")``). The meetings
+    capture passes ``live_source_guard.meetings_read_credentials`` (the one read path
+    that may hold the admin application's token, GET only through this transport)."""
     env = os.environ if environ is None else environ
     # The download host is pinned to the configured site's host (the first part
     # of a composite SHAREPOINT_SITE_ID); without it content reads are refused.
     kwargs = {"environ": env, "sharepoint_host": sharepoint_host_from_env(env)}
     transport = GuardedTransport(sender, **kwargs) if sender else GuardedTransport(**kwargs)
-    credentials = ClientCredentials.from_env("MICROSOFT_GRAPH", env)
+    if credentials is None:
+        credentials = ClientCredentials.from_env("MICROSOFT_GRAPH", env)
     tokens = TokenProvider(credentials, GRAPH_SCOPE, transport,
                            **({"clock": clock} if clock else {}))
     api = SourceApi("graph", tokens, transport, retry=retry)
@@ -2369,6 +2375,12 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
                                      "only")
     from .capture_sharepoint_lists import add_cli_arguments as add_list_arguments
     add_list_arguments(lists)
+    meetings = commands.add_parser("meetings-capture",
+                                   help="versioned calendar, Planner and Teams meeting "
+                                        "transcript capture into Workbench state; counts, "
+                                        "completeness and blocked parts only")
+    from .capture_meetings import add_cli_arguments as add_meetings_arguments
+    add_meetings_arguments(meetings)
     breadth = commands.add_parser("capture-breadth",
                                   help="one capture cycle over every allowlisted mailbox "
                                        "(inbox and sent items) and the SharePoint scope, run "
@@ -2396,6 +2408,9 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
         elif args.command == "sharepoint-list-capture":
             from .capture_sharepoint_lists import run_cli as run_list_cli
             result = run_list_cli(args, environ=environ, sender=sender)
+        elif args.command == "meetings-capture":
+            from .capture_meetings import run_cli as run_meetings_cli
+            result = run_meetings_cli(args, environ=environ, sender=sender)
         elif args.command == "mail-all-mailboxes":
             from .mail_directory_scope import run_cli as run_every_cli
             result = run_every_cli(args, environ=environ, sender=sender)

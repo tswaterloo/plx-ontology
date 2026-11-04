@@ -193,7 +193,7 @@
       ]
     },
     "source": {
-      "description": "L1 source family of a binding; each maps to one citation scheme: portal_api=api://, bc=bc://, graph_mail=graph-mail://, sharepoint=sharepoint:// (list items: sharepoint-list://, integrations/capture_sharepoint_lists.py), original=original://, workbench=Workbench case store, mission_control=mc:// (Mission Control reads, integrations/mc_sources.py), brain=brain:// (derived engineering/agent knowledge captured namespace-trimmed from the brain's agent/items, integrations/knowledge_source.py; untrusted T3 leads, never business facts), teams=teams-channel:// and teams-chat:// (Teams channel and chat messages captured with their conversation's membership, integrations/capture_teams.py).",
+      "description": "L1 source family of a binding; each maps to one citation scheme: portal_api=api://, bc=bc://, graph_mail=graph-mail://, sharepoint=sharepoint:// (list items: sharepoint-list://, integrations/capture_sharepoint_lists.py), original=original://, workbench=Workbench case store, mission_control=mc:// (Mission Control reads, integrations/mc_sources.py), brain=brain:// (derived engineering/agent knowledge captured namespace-trimmed from the brain's agent/items, integrations/knowledge_source.py; untrusted T3 leads, never business facts), teams=teams-channel:// and teams-chat:// (Teams channel and chat messages captured with their conversation's membership, integrations/capture_teams.py), meetings=calendar-event://, planner-task:// and meeting-transcript:// (calendar events, Planner tasks and Teams meeting transcripts, integrations/capture_meetings.py).",
       "type": "string",
       "enum": [
         "portal_api",
@@ -204,7 +204,7 @@
         "workbench",
         "mission_control",
         "brain",
-        "teams"
+        "teams", "meetings"
       ]
     },
     "path": {

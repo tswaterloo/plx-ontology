@@ -62,6 +62,22 @@ def exclusion(*, excluded=(EXCLUDED,), directory=None, drives=None, chats=None,
 
 # --------------------------------------------------------------------------- real store
 
+class MeetingsUnitTests(unittest.TestCase):
+    def test_meetings_units_are_keyed_and_an_excluded_owner_is_withheld(self):
+        from operating.chunking.permissions import unit_row
+        excl = exclusion()
+        for unit, clear in ((f"meetings:calendar:{STAFF}", True),
+                            (f"meetings:organizer:{STAFF}", True),
+                            (f"meetings:calendar:{EXCLUDED}", False),
+                            (f"meetings:organizer:{EXCLUDED}", False),
+                            ("meetings:plan:PlanOne", True), ("meetings:other:x", False)):
+            with self.subTest(unit):
+                self.assertTrue(valid_key(unit))
+                self.assertEqual(excl.unit_clear(unit), clear)
+        self.assertEqual(unit_row(f"meetings:calendar:{STAFF}", excl)["people"], [STAFF])
+        self.assertFalse(exclusion(excluded=()).unit_clear(f"meetings:calendar:{STAFF}"))
+
+
 class MailStoreTests(unittest.TestCase):
     """A real projection built from a mail capture (``ontology/tests/test_text_index``)."""
 

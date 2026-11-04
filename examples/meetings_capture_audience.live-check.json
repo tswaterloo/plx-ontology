@@ -1,0 +1,14 @@
+{
+ "schema": "plx-live-source-audience/v1",
+ "tenant": "plx",
+ "note": "EXAMPLE ONLY, not a PLX-confirmed grant: the meetings capture principal (integrations/capture_meetings.py CAPTURE_PRINCIPAL) and the host capture principal read every captured calendar and transcript (mail:*: a calendar is part of its mailbox) and every Planner plan (teams:planner:*, which also needs a task's captured people or group: a teams: resource always does). What is read is bounded by the capture scope and the people-exclusion guard, never by this grant. Default deny.",
+ "default_classification": "confidential",
+ "audiences": {
+  "mail:*": ["svc:meetings-capture", "svc:workbench-host"],
+  "teams:planner:*": ["svc:meetings-capture", "svc:workbench-host"]
+ },
+ "classifications": {
+  "mail:*": "restricted",
+  "teams:planner:*": "restricted"
+ }
+}

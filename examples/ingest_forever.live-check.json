@@ -4,13 +4,21 @@
  "tenant": "plx",
  "capture_audience": "host.all-sources.capture-audience.live-check.json",
  "mirror_audience": "host_mirror_audience.live-check.json",
- "ingest": {"mode": "capture_clis", "grace_seconds": 120},
+ "ingest": {
+  "mode": "capture_clis",
+  "grace_seconds": 120
+ },
  "portal": {
-  "relations": ["public.app_sales_order", "public.assembly_order"],
+  "relations": [
+   "public.app_sales_order",
+   "public.assembly_order"
+  ],
   "budget_seconds": 240
  },
  "bc": {
-  "entity_sets": ["purchaseReceipts"],
+  "entity_sets": [
+   "purchaseReceipts"
+  ],
   "budget_seconds": 480
  },
  "mail": {
@@ -31,9 +39,16 @@
   "live_audience": "teams_capture_audience.live-check.json",
   "budget_seconds": 240
  },
+ "meetings": {
+  "scope": "meetings_capture_scope.live-check.json",
+  "live_audience": "meetings_capture_audience.live-check.json",
+  "budget_seconds": 600
+ },
  "mc": {
   "scope": "live",
-  "queries": ["PLX Agent Workbench"],
+  "queries": [
+   "PLX Agent Workbench"
+  ],
   "max_task_reads": 25,
   "operator_email_default": "cos@petrasoap.com",
   "timeout_seconds": 240

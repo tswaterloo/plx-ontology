@@ -226,17 +226,20 @@ NEVER_AUTHORITY = frozenset({"gold_native_staging"})
 _SCHEME_SOURCE = {"api": "portal_api", "bc": "bc", "graph-mail": "graph_mail",
                   "sharepoint": "sharepoint", "original": "original", "mc": "mission_control",
                   "brain": "brain", "teams-channel": "teams", "teams-chat": "teams",
-                  "sharepoint-list": "sharepoint"}
+                  "sharepoint-list": "sharepoint", "calendar-event": "meetings",
+                  "planner-task": "meetings", "meeting-transcript": "meetings"}
 # Audience key prefixes (store_ddl docstring) and the L1 source family they name.
 _AUDIENCE_SOURCE = {"api": "portal_api", "bc": "bc", "mail": "graph_mail",
                     "sharepoint-list": "sharepoint", "sharepoint": "sharepoint",
                     "original": "original",
                     "workbench": "workbench", "mc": "mission_control",
-                    "brain": "brain", "teams": "teams"}
+                    "brain": "brain", "teams": "teams", "meetings": "meetings"}
 # Records with their own item ACL, re-checked per reader through the L1 handle.
 _ITEM_ACL_SCHEMES = frozenset({"graph-mail", "sharepoint", "original", "teams-channel",
-                               "teams-chat", "sharepoint-list"})
-_ITEM_ACL_AUDIENCES = frozenset({"mail", "sharepoint", "sharepoint-list", "original", "teams"})
+                               "teams-chat", "sharepoint-list", "calendar-event",
+                               "planner-task", "meeting-transcript"})
+_ITEM_ACL_AUDIENCES = frozenset({"mail", "sharepoint", "sharepoint-list", "original", "teams",
+                                 "meetings"})
 DEFAULT_LIMIT = 10
 MAX_GAPS = 20  # plx.find gaps; freshness gaps come first and are never cut
 MAX_IDENTITY = 50  # plx.object identity links; a cut says so (identity_truncated)

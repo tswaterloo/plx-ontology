@@ -29,7 +29,7 @@ import sys
 # conversation's members each run (a run is about 400 s), so its member lists are never
 # older than about 40 minutes; the rest follow their upstream's pace.
 CADENCE = {"mail": 60, "sharepoint": 60, "teams": 1800, "bc": 1800, "portal": 7200,
-           "mc": 3600, "sharepoint_lists": 3600}
+           "mc": 3600, "sharepoint_lists": 3600, "meetings": 1800}
 
 
 def continuous(document: dict, base: Path) -> dict:
@@ -50,7 +50,7 @@ def continuous(document: dict, base: Path) -> dict:
         section.setdefault("min_interval_seconds", seconds)
     ingest = dict(out.get("ingest") or {})
     configured = sum(1 for name in CADENCE if isinstance(out.get(name), dict))
-    ingest.update({"mode": "capture_clis", "max_parallel": max(1, min(7, configured)),
+    ingest.update({"mode": "capture_clis", "max_parallel": max(1, min(8, configured)),
                    "build_inputs": "snapshot"})
     ingest.setdefault("grace_seconds", 900)
     out["ingest"] = ingest

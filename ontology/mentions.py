@@ -112,7 +112,8 @@ BINDING_KIND = "mention"
 TIER = "lead"
 SENDER_CLASSES = ("internal", "external", "unknown")
 DOCUMENT_KINDS = ("email", "attachment", "sharepoint_file", "container_member", "original",
-                  "mc_task", "mc_approval", "knowledge_entry", "teams_message")
+                  "mc_task", "mc_approval", "knowledge_entry", "teams_message",
+                  "calendar_event", "planner_task", "meeting_transcript")
 # Why a producer withheld a document's text (``Document.text_withheld``): one known form,
 # ``pdf_pages_skipped_by_cap:<first>-<last>``.
 WITHHELD_PAGES_SKIPPED = "pdf_pages_skipped_by_cap"
