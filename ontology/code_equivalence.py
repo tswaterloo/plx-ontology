@@ -151,11 +151,12 @@ DERIVATION_CHANGES: Mapping[str, tuple[str | None, str]] = {
         "dc8152f65f6647f5a31d50851dc540efbc930d6fef1601c5affe9db3e2a60b4e"),
     "ontology/document_failures.py": (None,
         "5ff79dde6579d1aec38dd2fa99edbb32236e1b9eefeba53ee8f87f39aa0da651"),
-    # scheduling, spills (records read back as read), merge order, kept member views:
-    # rows equal a serial cold build's (ROWS_CODE_DIGESTS); _derive and _parse unchanged
+    # scheduling, spills (records read back as read), merge order, kept member views, an
+    # incremental build's changed units merged into its seed with their object parts:
+    # rows equal a serial build's (ROWS_CODE_DIGESTS); _derive and _parse unchanged
     "ontology/project_parallel.py": (
         "962c7549bb4a924881e196f491e5d970eb0c89e2ea2d0c17559d865a64c303ff",
-        "23aa93a8861ce23d67a7d26b1aab997c904faf961834d7555132a29a073de7b6"),
+        "1f5b18bcb4a0cc5cf23bddda3a28d8601af88f81f571ab789763942c4f50ebee"),
     # the builder's checkpoint to resume (d5be43dd12): writes, never derives
     "ontology/store.py": (
         "e71e2bac47757c0cdf3472e85c0bb2ec03abfcfba96145b48661cb4beaff63af",

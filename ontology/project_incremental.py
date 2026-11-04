@@ -1262,9 +1262,10 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
     the space estimate of a mode (:func:`space_need`, now that the changed units are known;
     ``estimates``: every mode's) before anything is written; it may raise (a caller's disk
     guard), and the build then tries the other mode (module docstring, "Mode"). Every other
-    argument is ``build_store``'s. ``workers``: the processes a cold build projects with
-    (``ontology.project_parallel``; None: ``PLX_BUILD_WORKERS`` or the CPUs, and serial
-    under ``MIN_CAPTURE_BYTES`` of captures; 1: serial). Raises
+    argument is ``build_store``'s. ``workers``: the processes a build projects with
+    (``ontology.project_parallel``: a cold build's units, an incremental build's changed
+    ones; None: ``PLX_BUILD_WORKERS`` or the CPUs, and serial under ``MIN_CAPTURE_BYTES``
+    of captures; 1: serial). Raises
     ``ProjectionError("generation_build_in_progress")`` while another build holds the
     state directory; on any failure the committed generation
     is left as it was."""
@@ -1510,23 +1511,61 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             seconds["project.seed"] = round(time.monotonic() - laid, 3)
             builder.digest_workers = _digest_workers(workers)
             open_generation(builder)
+            parallel = None
+            # The projector of what is projected in this process (every unit of a serial
+            # build; an incremental build's units no worker projected).
+            serial: Projector | None = projector
             if incremental:
+                # The changed units projected by worker processes (``_parallel_units``),
+                # chosen before the seed is cut: their merge needs the seed's foreign
+                # keys off from here on (the commit checks every key).
+                chosen = _parallel_units(the_plan, dirty, objects, workers, marks)
+                if chosen:
+                    _foreign_keys(builder.connection, on=False)
                 laid = time.monotonic()
                 _delta_objects(builder.connection, sidecar, delta)
                 _identifier_rows(builder.connection, the_plan, dirty, "before", delta)
                 _seed_delete(builder.connection, the_plan, schema, dirty | set(gone or ()),
                              delta)
                 seconds["project.seed_delete"] = round(time.monotonic() - laid, 3)
-            parallel = None
-            if not incremental:
+                if chosen:
+                    parallel = _project_parallel(
+                        builder, schema, pinned, marks,
+                        replace(the_plan, units={u: the_plan.units[u] for u in chosen},
+                                rows={u: the_plan.rows[u] for u in chosen}),
+                        sharded, units, workers, directory, seconds,
+                        normalizer=normalizer, as_known_at=as_known_at,
+                        batch_size=batch_size, checkpoint=checkpoint, objects=objects,
+                        object_parts=sidecar.part if sidecar is not None else None)
+                    _foreign_keys(builder.connection, on=True)
+                    rest = set(dirty) - (parallel["result"].done
+                                         if parallel is not None and "result" in parallel
+                                         else set())
+                    if not rest:
+                        serial = None
+                    elif rest != set(dirty):
+                        serial = Projector(
+                            schema, pinned, normalizer=normalizer, as_known_at=as_known_at,
+                            batch_size=batch_size, scratch_dir=directory,
+                            scope=set().union(*(the_plan.units[u] for u in rest)),
+                            emit=rest, shards={b: s["shards"] for b, s in sharded.items()},
+                            objects=objects)
+                        serial.object_parts = projector.object_parts
+                        serial.checkpoint, serial.on_stage = checkpoint, stage
+            else:
                 parallel = _project_parallel(builder, schema, pinned, marks, the_plan,
                                              sharded, units, workers, directory, seconds,
                                              normalizer=normalizer, as_known_at=as_known_at,
                                              batch_size=batch_size, checkpoint=checkpoint)
-            if parallel is None or "unavailable" in parallel:
-                projector.project_into(builder)
-            else:
+                if parallel is not None and "result" in parallel:
+                    serial = None
+            if parallel is not None and "result" in parallel:
                 work_peak[0] = parallel["result"].work_peak
+            if serial is not None:
+                laid = time.monotonic()
+                serial.project_into(builder)
+                if parallel is not None:
+                    seconds["project.serial"] = round(time.monotonic() - laid, 3)
             if incremental:
                 laid = time.monotonic()
                 _identifier_rows(builder.connection, the_plan, dirty, "after", delta)
@@ -1548,16 +1587,24 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             projector.build_context = BuildContext(state, against, token, builder.connection)
             if against is not None and not incremental:
                 projector.build_context.base_store = base.store
-            projected = (parallel["result"].parts if parallel and "result" in parallel
-                         else {u: p.as_dict() for u, p in projector.report.parts.items()})
+            # The parts of the units each projector emitted (the one in this process also
+            # reports on the units of what it staged: a worker's own part is theirs).
+            projected = {**(parallel["result"].parts if parallel and "result" in parallel
+                            else {}),
+                         **({u: p.as_dict() for u, p in serial.report.parts.items()
+                             if serial.emit is None or u in serial.emit}
+                            if serial is not None else {})}
             laid = time.monotonic()
+            # (an incremental build's workers hand on their objects' parts; a cold one's
+            # keep none)
             projected = _object_parts(sidecar, routed, delta, projected, directory,
-                                      parallel=bool(parallel and "result" in parallel))
+                                      parallel=bool(parallel and "result" in parallel
+                                                    and not incremental))
             seconds["project.objects"] = round(time.monotonic() - laid, 3)
             # An entry reported outside every unit (a hook naming none) is in no part, so
             # no mode could report it alike: every mode leaves it out and counts it, and
             # the build stays incremental (nothing in a unit's rows depends on it).
-            unattributed = projector.report.unattributed + (
+            unattributed = (serial.report.unattributed if serial is not None else 0) + (
                 parallel["result"].unattributed if parallel and "result" in parallel else 0)
             parts = {unit: projected.get(unit, _EMPTY)
                      if unit in dirty else units["fragments"].get(unit, _EMPTY)
@@ -1591,7 +1638,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                           "watermarks": marks, "shards": sharded,
                           # How each object-local binding was built (``_object_plan``).
                           "objects": routed,
-                          "parallel": _parallel_record(parallel, units),
+                          "parallel": _parallel_record(parallel, units, incremental),
                           "bytes": {"work_peak": work_peak[0],
                                     "mode": "incremental" if incremental else "cold",
                                     "cold_work_peak": _cold_work(units.get("bytes") or {})
@@ -1905,12 +1952,17 @@ def _project_parallel(builder: StoreBuilder, schema: Any, pinned: Mapping[str, A
                       sharded: Mapping[str, Any], units: Mapping[str, Any] | None,
                       workers: int | None, directory: Path, seconds: dict[str, float], *,
                       normalizer: Any, as_known_at: Any, batch_size: int,
-                      checkpoint: Callable[[], None] | None) -> dict[str, Any] | None:
-    """A cold build's projection by worker processes (``ontology.project_parallel``):
-    ``{"result": ...}`` when it projected every unit into ``builder``; ``{"unavailable":
-    reason}`` when it could not (``builder`` then holds no row and the caller projects
+                      checkpoint: Callable[[], None] | None,
+                      objects: Mapping[str, frozenset[str] | None] | None = None,
+                      object_parts: Callable[[str, str, Any], None] | None = None
+                      ) -> dict[str, Any] | None:
+    """A build's projection by worker processes (``ontology.project_parallel``) of the
+    units of ``the_plan``: ``{"result": ...}`` when it projected them into ``builder``
+    (an incremental build's: those of ``result.done``); ``{"unavailable": reason}`` when
+    it could not (``builder`` then holds no row of them and the caller projects them
     serially); None when the build is serial by choice (one worker, or small captures
-    with no count asked for)."""
+    with no count asked for). A seeded ``builder`` (an incremental build) has its foreign
+    keys off (``_foreign_keys``) and every unit of ``the_plan`` deleted from its seed."""
     from ontology import project_parallel as par
 
     count = _parallel_count(workers, marks)
@@ -1924,13 +1976,66 @@ def _project_parallel(builder: StoreBuilder, schema: Any, pinned: Mapping[str, A
                              as_known_at=as_known_at, batch_size=batch_size,
                              shards={b: s["shards"] for b, s in sharded.items()},
                              scratch_dir=directory, count=count, hints=hints,
-                             checkpoint=checkpoint)
+                             checkpoint=checkpoint, objects=objects,
+                             object_parts=object_parts)
     except par.ParallelUnavailable as why:
-        builder.restart()
+        if builder.seed_mode is None:
+            builder.restart()
         return {"unavailable": str(why)}
     seconds["project.parallel"] = round(time.monotonic() - started, 3)
     seconds["project.parallel_merge"] = result.merge_seconds
     return {"result": result}
+
+
+def _parallel_units(the_plan: Plan, dirty: Iterable[str],
+                    objects: Mapping[str, frozenset[str] | None],
+                    workers: int | None, marks: Mapping[str, Any]) -> set[str]:
+    """The changed units an incremental build projects by worker processes, into parts
+    merged into its seed (``ontology.project_parallel``): every one but a ``same_record``
+    link unit whose ends' rows are not all projected again (it compares the values stored
+    for both ends, ``Projector._conflicts``, and a worker's part holds only its task's
+    rows; the build's own process projects it after the merge, from the seed). Empty
+    (every unit projected in the build's process) when the build is serial
+    (``_parallel_count``) or its units make fewer than two tasks."""
+    from ontology import project_parallel as par
+
+    dirty = set(dirty)
+    count = _parallel_count(workers, marks)
+    if count < 2 or not the_plan.acyclic:
+        return set()
+    held: dict[str, set[str]] = {}   # binding -> its units holding rows
+    for unit, row in the_plan.rows.items():
+        if row[0] in ("binding", "shard"):
+            held.setdefault(row[1], set()).add(unit)
+    chosen = set()
+    for unit in sorted(dirty):
+        row = the_plan.rows[unit]
+        if row[0] == "links" and row[4] == "same_record" and not all(
+                objects.get(end) is None and held.get(end, set()) | {binding_unit(end)}
+                <= dirty for end in (row[2], row[3])):
+            continue
+        # A shard is cut with its binding's own unit (``project_parallel.tasks``; a changed
+        # shard changes its binding's print, so that unit is changed too)
+        if row[0] == "shard" and binding_unit(row[1]) not in dirty:
+            continue
+        chosen.add(unit)
+    cut = par.tasks(replace(the_plan, units={u: the_plan.units[u] for u in chosen},
+                            rows={u: the_plan.rows[u] for u in chosen}), par.pieces(count))
+    return chosen if len(cut) > 1 else set()
+
+
+def _foreign_keys(conn: sqlite3.Connection, *, on: bool) -> None:
+    """Commit a seeded generation's open transaction and open the next with its foreign
+    keys enforced (``on``: deferred to its commit, as ``_seed_delete`` defers them) or
+    not (the parallel merge of an incremental build: ``StoreBuilder.check`` checks every
+    key before the generation is committed). The build's file is its own until then: a
+    build that fails before its first checkpoint removes it."""
+    if conn.in_transaction:
+        conn.execute("COMMIT")
+    conn.execute(f"PRAGMA foreign_keys = {'ON' if on else 'OFF'}")
+    conn.execute("BEGIN IMMEDIATE")
+    if on:
+        conn.execute("PRAGMA defer_foreign_keys = ON")
 
 
 def _parallel_count(workers: int | None, marks: Mapping[str, Any]) -> int:
@@ -1973,14 +2078,23 @@ def _digest_workers(workers: int | None) -> int:
         return 1
 
 
-def _parallel_record(parallel: dict[str, Any] | None, units: Mapping[str, Any] | None
-                     ) -> dict[str, Any]:
-    if parallel is None:   # serial by choice, or an incremental build: hints kept
-        return {"seconds": ((units or {}).get("parallel") or {}).get("seconds") or {}}
+def _parallel_record(parallel: dict[str, Any] | None, units: Mapping[str, Any] | None,
+                     incremental: bool = False) -> dict[str, Any]:
+    """``units.json`` ``parallel``: how the projection ran and each task's seconds (the
+    next build's order). An incremental build keeps the last build's seconds and adds
+    those of tasks it is the first to measure."""
+    held = ((units or {}).get("parallel") or {}).get("seconds") or {}
+    if parallel is None:   # serial by choice: hints kept
+        return {"seconds": held}
     if "unavailable" in parallel:
-        return {"unavailable": parallel["unavailable"]}
+        return {"unavailable": parallel["unavailable"], **({"seconds": held}
+                                                          if incremental else {})}
     result = parallel["result"]
-    return {"workers": result.workers, "seconds": dict(sorted(result.seconds.items()))}
+    seconds = {**result.seconds, **held} if incremental else result.seconds
+    out: dict[str, Any] = {"workers": result.workers, "seconds": dict(sorted(seconds.items()))}
+    if result.unavailable is not None:
+        out["unavailable"] = result.unavailable
+    return out
 
 
 class BuildContext:

@@ -1,4 +1,4 @@
-"""Parallel cold projection: the build's units projected by worker processes.
+"""Parallel projection: a build's units projected by worker processes.
 
 A cold build (``ontology.project_incremental.build_generation``) projected every unit on
 one thread: measured on the live host (2026-10-31, 2026-11-01) about 9 h of a 13 h build,
@@ -12,6 +12,19 @@ process merges every part into the generation it builds, the rows through
 ``StoreBuilder.add`` (the content digest is of the rows, not of how they were laid down)
 and the report from the units' parts (``merge_reports``), so the generation and its report
 equal a serial cold build's: one content digest.
+
+Incremental builds. An incremental build's changed units are projected the same way, into
+parts merged into its seed (a copy of the last generation with those units' rows deleted):
+measured on the live host (2026-11-04) an incremental build over a night's mail spent
+4.5 h projecting its changed units on one thread. The plan holds only those units; the
+seed keeps its indexes; an object-local binding rewritten object by object writes only
+its chosen objects (``Projector`` ``objects``) and each written object's report part goes
+back to the build (a file per task, in the order the projector hands them on). A changed
+``same_record`` link unit whose ends are not all projected again reads their stored values
+from the seed, so the build projects it in its own process after the merge
+(``project_incremental._parallel_units``); so are the units of a task whose worker read
+other bytes than the build pinned (``Result.done``). Their rows equal a serial
+incremental build's (``ontology/tests/test_project_parallel.py``).
 
 Tasks. A ``same_record`` link unit compares the stored values of its two ends while it
 projects (``Projector._conflicts`` reads them from the store being written), so it is one
@@ -248,6 +261,10 @@ class Result:
     merge_seconds: float = 0.0
     part_bytes: int = 0
     unattributed: int = 0   # report entries outside every unit (left out, counted)
+    # The units whose rows are merged and, for a seeded projection, why some task's were
+    # not (a worker that could not read the build's bytes; None: every task's were).
+    done: set[str] = field(default_factory=set)
+    unavailable: str | None = None
 
 
 # --------------------------------------------------------------------------- worker
@@ -472,23 +489,41 @@ def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...],
     part = Path(_STATE["dir"]) / f"part-{index:05d}.sqlite"
     builder = StoreBuilder(part, foreign_keys=False)
     sources, spills = _with_spills(_STATE["opened"], spill)
+    parts_path: Path | None = None
+    parts_file: Any = None
     try:
         projector = Projector(_STATE["schema"], sources,
                               normalizer=_STATE["normalizer"],
                               as_known_at=_STATE["as_known_at"],
                               batch_size=_STATE["batch_size"], scratch_dir=_STATE["dir"],
-                              scope=scope, emit=units, shards=_STATE["shards"])
+                              scope=scope, emit=units, shards=_STATE["shards"],
+                              objects=_STATE.get("objects"))
         peak = [0]
 
         def stage(_name: str, work: int, _store: int) -> None:
             peak[0] = max(peak[0], work)
         projector.on_stage = stage
+        if _STATE.get("objects"):
+            # Each written object's report part, in the order the projector hands them
+            # on, for the build's objects file (``project_incremental._Objects``).
+            parts_path = Path(_STATE["dir"]) / f"objects-{index:05d}.jsonl"
+            parts_file = os.fdopen(os.open(str(parts_path),
+                                           os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600),
+                                   "w", encoding="utf-8")
+
+            def object_part(binding: str, object_id: str, part: Any) -> None:
+                parts_file.write(canonical([binding, object_id, part]) + "\n")
+            projector.object_parts = object_part
         projector.project_into(builder)
         path = builder.keep_as_part()
     except BaseException:
         builder.abort()
+        if parts_path is not None:
+            parts_path.unlink(missing_ok=True)
         raise
     finally:
+        if parts_file is not None:
+            parts_file.close()
         for spilled in spills:
             spilled.path.unlink(missing_ok=True)
     peak[0] += max((spilled.bytes for spilled in spills), default=0)
@@ -497,6 +532,7 @@ def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...],
             "parts": {unit: report.parts[unit].as_dict() for unit in units
                       if unit in report.parts},
             "kept": [view.take() for view in _STATE.get("kept_views", [])],
+            "objects": None if parts_path is None else str(parts_path),
             "work_peak": peak[0], "seconds": round(time.monotonic() - started, 3)}
 
 
@@ -620,16 +656,36 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
             marks: Mapping[str, Any], the_plan: Any, normalizer: Any, as_known_at: Any,
             batch_size: int, shards: Mapping[str, int], scratch_dir: Path, count: int,
             hints: Mapping[str, float] | None = None,
-            checkpoint: Callable[[], None] | None = None) -> Result:
-    """Project every unit of ``the_plan`` into ``builder``'s (unseeded, empty) open
-    generation with ``count`` worker processes (module docstring). Raises
-    :class:`ParallelUnavailable` when the build must be projected serially: before any
-    row is written when a source cannot be opened again, else after (the caller then
-    restarts the builder)."""
+            checkpoint: Callable[[], None] | None = None,
+            objects: Mapping[str, frozenset[str] | None] | None = None,
+            object_parts: Callable[[str, str, Any], None] | None = None) -> Result:
+    """Project every unit of ``the_plan`` into ``builder``'s open generation with at most
+    ``count`` worker processes (module docstring).
+
+    An unseeded generation (a cold build) is empty: raises :class:`ParallelUnavailable`
+    when the build must be projected serially, before any row is written when a source
+    cannot be opened again, else after (the caller then restarts the builder).
+
+    A seeded generation (an incremental build: ``the_plan`` holds only the units it
+    projects again, their rows deleted from the seed) keeps its indexes, and the caller
+    has turned its foreign keys off (each part is merged in a transaction of its own; the
+    commit's ``StoreBuilder.check`` checks every key). ``objects``: the object-local
+    bindings written object by object (``Projector`` ``objects``), each written object's
+    report part handed to ``object_parts``. The tasks of a worker that cannot read the
+    build's bytes are not merged (``Result.done`` holds the units merged,
+    ``Result.unavailable`` why): the caller projects them; a source that cannot be opened
+    again raises :class:`ParallelUnavailable` before anything is merged. It returns with
+    a transaction open."""
     if not the_plan.acyclic:
         raise ParallelUnavailable("cyclic_lineage")
+    seeded = builder.seed_mode is not None
+    order = tasks(the_plan, pieces(count))
+    scopes = [tuple(sorted(set().union(*(the_plan.units[u] for u in task))))
+              for task in order]
+    count = max(1, min(count, len(order)))
     relations: dict[str, set[str]] = {}
-    for _, b in the_plan.bindings.values():
+    for bid in sorted(set().union(*scopes)):
+        b = the_plan.bindings[bid][1]
         if b["source"] in sources:
             relations.setdefault(b["source"], set()).add(b["relation"])
     specs = {name: _source_spec(name, sources[name], sorted(wanted),
@@ -640,16 +696,15 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
         payload = pickle.dumps({
             "schema": schema, "normalizer": normalizer, "as_known_at": as_known_at,
             "batch_size": batch_size, "shards": dict(shards), "sources": specs,
-            "kept": kept})
+            "kept": kept, "objects": dict(objects or {})})
     except Exception as exc:  # noqa: BLE001 - a schema or normalizer a worker cannot get
         raise ParallelUnavailable(f"build_not_picklable:{type(exc).__name__}") from None
+    if seeded and builder.connection.execute("PRAGMA foreign_keys").fetchone()[0]:
+        raise ParallelUnavailable("seed_foreign_keys_on")
     work = scratch_dir / f".plx-parallel-{secrets.token_hex(6)}"
     work.mkdir(mode=0o700)
     # A worker's directory is its build's: part and working files (captured rows, 0600).
     payload = pickle.dumps({**pickle.loads(payload), "dir": str(work)})
-    order = tasks(the_plan, pieces(count))
-    scopes = [tuple(sorted(set().union(*(the_plan.units[u] for u in task))))
-              for task in order]
     spills = [_spilled(the_plan, scope) for scope in scopes]
     hints = hints or {}
     # Longest first: a task the last build measured by its seconds, an unmeasured one
@@ -660,21 +715,24 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
     builder.packed_bindings = frozenset(
         bid for bid, (_, b) in the_plan.bindings.items() if b.get("value_storage") == "packed")
     peaks: list[int] = []
-    # The generation's secondary indexes are built once the rows are in (one sorted pass
-    # each, where the merge would update them row by row); the unique ones stay.
-    indexes = [sql for (sql,) in builder.connection.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL "
-        "AND sql NOT LIKE 'CREATE UNIQUE%' ORDER BY name")]
-    for name, in builder.connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL "
-            "AND sql NOT LIKE 'CREATE UNIQUE%' ORDER BY name").fetchall():
-        builder.connection.execute(f'DROP INDEX "{name}"')
+    # An empty generation's secondary indexes are built once the rows are in (one sorted
+    # pass each, where the merge would update them row by row); the unique ones stay. A
+    # seeded one keeps them: it holds most of its rows already.
+    indexes: list[str] = []
+    if not seeded:
+        indexes = [sql for (sql,) in builder.connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL "
+            "AND sql NOT LIKE 'CREATE UNIQUE%' ORDER BY name")]
+        for name, in builder.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL "
+                "AND sql NOT LIKE 'CREATE UNIQUE%' ORDER BY name").fetchall():
+            builder.connection.execute(f'DROP INDEX "{name}"')
     # Each part is merged in a transaction of its own (it is attached to the generation's
     # connection, which SQLite allows only outside one); the build's own is opened again
     # once every part is in. A part's links may name objects of a part merged later, so
     # foreign keys are not enforced meanwhile (the commit checks them all,
-    # ``StoreBuilder.check``). A build that cannot finish is laid down again from empty
-    # (``StoreBuilder.restart``, which enforces them again).
+    # ``StoreBuilder.check``). A cold build that cannot finish is laid down again from
+    # empty (``StoreBuilder.restart``, which enforces them again).
     builder.connection.execute("COMMIT")
     builder.connection.execute("PRAGMA foreign_keys = OFF")
     pool = futures.ProcessPoolExecutor(max_workers=count,
@@ -691,7 +749,12 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
             for future in done:
                 out = future.result()
                 if "unavailable" in out:
-                    raise ParallelUnavailable(out["unavailable"])
+                    if not seeded:
+                        raise ParallelUnavailable(out["unavailable"])
+                    # the units of every other task are merged; the caller projects
+                    # this task's (``Result.done``)
+                    result.unavailable = result.unavailable or out["unavailable"]
+                    continue
                 # an entry outside every unit is left out of the report and counted
                 # (``project_incremental``: every mode alike), never a serial rerun
                 result.unattributed += int(out["unattributed"] or 0)
@@ -702,20 +765,25 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
                 size = path.stat().st_size
                 merge_part(builder, path, batch_size, links=None)
                 path.unlink()
+                if out.get("objects"):
+                    _hand_object_parts(Path(out["objects"]), object_parts)
                 result.part_bytes += size
                 result.merge_seconds += time.monotonic() - started
                 result.parts.update(out["parts"])
+                result.done.update(order[out["index"]])
                 result.seconds[order[out["index"]][0]] = out["seconds"]
                 # Disk a task holds beside the generation: its working files, then its
                 # part until merged.
                 peaks.append(out["work_peak"] + size)
         started = time.monotonic()
-        threads = builder.connection.execute("PRAGMA threads").fetchone()[0]
-        builder.connection.execute(f"PRAGMA threads = {min(count, 8)}")
-        for sql in indexes:
-            builder.connection.execute(sql)
-        builder.connection.execute(f"PRAGMA threads = {int(threads)}")
-        builder.connection.execute("PRAGMA foreign_keys = ON")
+        if indexes:
+            threads = builder.connection.execute("PRAGMA threads").fetchone()[0]
+            builder.connection.execute(f"PRAGMA threads = {min(count, 8)}")
+            for sql in indexes:
+                builder.connection.execute(sql)
+            builder.connection.execute(f"PRAGMA threads = {int(threads)}")
+        if not seeded:   # a seeded generation's keys are its caller's (above)
+            builder.connection.execute("PRAGMA foreign_keys = ON")
         builder.connection.execute("BEGIN IMMEDIATE")
         result.merge_seconds += time.monotonic() - started
     except BaseException:
@@ -730,6 +798,20 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
     result.work_peak = sum(sorted(peaks, reverse=True)[:count])
     result.merge_seconds = round(result.merge_seconds, 3)
     return result
+
+
+def _hand_object_parts(path: Path, object_parts: Callable[[str, str, Any], None] | None
+                       ) -> None:
+    """Hand each object report part a worker wrote (``_run``) to ``object_parts``, in
+    its order, and remove the file."""
+    try:
+        if object_parts is not None:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    binding, object_id, part = json.loads(line)
+                    object_parts(binding, object_id, part)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- parsing

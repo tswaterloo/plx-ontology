@@ -38,11 +38,12 @@ DERIVATION_DEFINITIONS = {
     # the mention step's per-document failures (a step, not a derivation)
     "ontology/mentions.py": {"_memo_code", "_store_links", "read_ahead"},
     "ontology/document_failures.py": None,   # new: imported by the mention step only
-    # scheduling, spills, merge, kept member views; _derive and _parse as they were
+    # scheduling, spills, merge (an incremental build's into its seed, with its object
+    # parts), kept member views; _derive and _parse as they were
     "ontology/project_parallel.py": {"DERIVED", "Result", "SPILL_BATCH", "_KEPT", "_Spill",
-                                     "_Spilled", "_kept_views", "_merge_rows", "_run",
-                                     "_spilled", "_with_spills", "merge_part", "pieces",
-                                     "project", "tasks"},
+                                     "_Spilled", "_hand_object_parts", "_kept_views",
+                                     "_merge_rows", "_run", "_spilled", "_with_spills",
+                                     "merge_part", "pieces", "project", "tasks"},
     # the builder's resume checkpoint
     "ontology/store.py": {"CHECKPOINT_META", "StoreBuilder", "VOLATILE_META"},
     # out of memory re-raised (READER_CHANGES)

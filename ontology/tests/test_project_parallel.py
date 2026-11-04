@@ -12,6 +12,8 @@ that did not finish, or a record that does not pickle, leaves no spill).
 
 from __future__ import annotations
 
+from contextlib import closing
+import dataclasses
 from datetime import datetime, timezone
 import json
 import os
@@ -26,7 +28,8 @@ from ontology import project_parallel as par
 from ontology import store
 from ontology.generator.fixture import SyntheticCaptures, sources
 from ontology.project import ProjectionError
-from ontology.tests.test_project_incremental import tables
+from ontology.project import Reopenable, build_store
+from ontology.tests.test_project_incremental import _Mailbox, incremental_path, tables
 
 def schema_of(path):
     conn = sqlite3.connect(str(path))
@@ -248,6 +251,160 @@ class ParallelBuildTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "build_workers_invalid")
         with mock.patch.dict(os.environ, {par.WORKERS_ENV: "1"}):
             self.assertEqual(par.workers(), 1)
+
+
+class Edited(SyntheticCaptures):
+    """Synthetic captures whose ``relation`` holds ``value`` at ``path`` in every record
+    (a field compared across a same_record link, not one it is matched by), opened again
+    by a worker from its arguments, which its watermark names."""
+
+    def __init__(self, schema, source, rows, changed, relation, path, value):
+        super().__init__(schema, source, rows, changed)
+        self.edit = (relation, path, value)
+
+    def _stream(self, relation):
+        for rec in super()._stream(relation):
+            if relation == self.edit[0] and self.edit[1] in rec.row:
+                rec = dataclasses.replace(rec, row={**rec.row, self.edit[1]: self.edit[2]},
+                                          digest="d" * 64)
+            yield rec
+
+    def watermark(self):
+        return [*super().watermark(), list(self.edit)]
+
+
+class ReopenedMailbox(Reopenable):
+    """The synthetic mail capture with mail arriving (``_Mailbox``), opened again by a
+    worker from its arguments, which its watermark names."""
+
+    source = "graph_mail"
+
+    def __init__(self, schema, rows, new=0):
+        self.new = new
+        self.box = _Mailbox(SyntheticCaptures(schema, "graph_mail", rows), new=new)
+
+    def records(self, relations):
+        return self.box.records(relations)
+
+    def describe(self):
+        return self.box.describe()
+
+    def watermark(self):
+        return [*self.box.inner.watermark(), self.new]
+
+
+class IncrementalParallelTests(unittest.TestCase):
+    """An incremental build's changed units projected by worker processes and merged into
+    its seed: rows, report and content digest equal the serial incremental build's and a
+    cold build's of the same captures."""
+
+    ROWS = 8
+
+    @classmethod
+    def setUpClass(cls):
+        from ontology.schema import load_schema
+        cls.schema = load_schema()
+
+    @staticmethod
+    def units(generation):
+        return json.loads((generation.store.parent / "units.json").read_text())
+
+    def test_changed_units_projected_by_workers_equal_the_serial_and_cold_builds(self):
+        # A Portal header (its lines, its BC posting), a packed sharded Sage book, mail,
+        # and every Sage customer's name: its same_record link to the unchanged Portal
+        # customer now holds a property conflict, read from the values the seed stores
+        # for that end, so it is projected after the merge in the build's own process.
+        changed = ["public.app_purchase_order", "sage.ap_pjd", "messages"]
+
+        def captures():
+            built = sources(self.schema, self.ROWS, changed)
+            built["portal_api"] = Edited(self.schema, "portal_api", self.ROWS, changed,
+                                         "sage.ar_customer", "namecust", "Other name")
+            return built
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(inc, "SHARD_RECORDS", 1):
+            root = Path(tmp)
+            built = {}
+            for name, workers in (("serial", 1), ("parallel", 3)):
+                inc.build_generation(root / name, self.schema, sources(self.schema, self.ROWS),
+                                     clock=CLOCK, workers=1)
+                built[name] = inc.build_generation(
+                    root / name, self.schema, captures(), clock=CLOCK, workers=workers,
+                    space=incremental_path)
+            cold = build_store(root / "cold.sqlite", self.schema, captures(), clock=CLOCK)
+            with closing(sqlite3.connect(cold["store"])) as conn:
+                conflicts = conn.execute(
+                    "SELECT COUNT(*) FROM links WHERE link_type = 'Customer.same_record_as' "
+                    "AND why_not LIKE '%property_conflict%'").fetchone()[0]
+            self.assertGreater(conflicts, 0)
+            serial, parallel = built["serial"], built["parallel"]
+            self.assertEqual((serial.mode, parallel.mode), ("incremental", "incremental"))
+            self.assertEqual(parallel.units_rebuilt, serial.units_rebuilt)
+            record = self.units(parallel)["parallel"]
+            self.assertEqual(record["workers"], 3)
+            self.assertNotIn("unavailable", record)
+            # Some units by the workers, the same_record one in the build's own process.
+            self.assertIn("project.parallel", parallel.seconds)
+            self.assertIn("project.serial", parallel.seconds)
+            self.assertNotIn("project.parallel", serial.seconds)
+            self.assertEqual(tables(parallel.store), tables(serial.store))
+            self.assertEqual(parallel.report, {**serial.report, "store": str(parallel.store)})
+            self.assertEqual(parallel.content_digest, serial.content_digest)
+            self.assertEqual(parallel.content_digest, cold["content_digest"])
+            self.assertEqual(tables(parallel.store), tables(cold["store"]))
+            self.assertEqual(sorted(p.name for p in parallel.store.parent.iterdir()),
+                             ["store.sqlite", "units.json"])
+
+    def test_mail_rewritten_object_by_object_by_workers_equals_cold(self):
+        """One, ten and sixty new messages: the workers write only the changed objects
+        of the mail bindings and hand on their report parts, so each build (and the next,
+        which reads them) equals a cold build."""
+        def mail(new):
+            inner = sources(self.schema, 64, only=["graph_mail", "sharepoint"])
+            return {**inner, "graph_mail": ReopenedMailbox(self.schema, 64, new)}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(inc, "OBJECT_RECORDS", 4):
+            root = Path(tmp)
+            first = inc.build_generation(root / "state", self.schema, mail(0), clock=CLOCK,
+                                         workers=1)
+            self.assertEqual(self.units(first)["objects"]["graph_mail.messages"]["mode"],
+                             "whole")
+            for new, changed in ((1, 1), (10, 9), (60, 50)):
+                with self.subTest(new=new):
+                    built = inc.build_generation(root / "state", self.schema, mail(new),
+                                                 clock=CLOCK, workers=3,
+                                                 space=incremental_path)
+                    cold = build_store(root / f"cold{new}.sqlite", self.schema, mail(new),
+                                       clock=CLOCK)
+                    units = self.units(built)
+                    self.assertEqual(built.mode, "incremental")
+                    self.assertEqual(units["parallel"]["workers"], 3)
+                    self.assertNotIn("unavailable", units["parallel"])
+                    self.assertEqual(units["objects"]["graph_mail.messages"]["mode"],
+                                     "delta")
+                    self.assertEqual(units["objects"]["graph_mail.messages"]["changed"],
+                                     changed)
+                    self.assertEqual(tables(built.store), tables(cold["store"]))
+                    self.assertEqual(built.content_digest, cold["content_digest"])
+                    self.assertEqual(built.report["gaps"], cold["gaps"])
+                    self.assertEqual(built.report["counts"], cold["counts"])
+
+    def test_a_worker_reading_other_bytes_leaves_its_units_to_the_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inc.build_generation(root / "state", self.schema, sources(self.schema, self.ROWS),
+                                 clock=CLOCK, workers=1)
+            changed = sources(self.schema, self.ROWS, ["purchaseOrders", "sage.ap_pjd"])
+            changed["bc"] = Drifting(self.schema, "bc", self.ROWS, ["purchaseOrders"])
+            built = inc.build_generation(root / "state", self.schema, changed, clock=CLOCK,
+                                         workers=3, space=incremental_path)
+            cold = build_store(root / "cold.sqlite", self.schema, changed, clock=CLOCK)
+            record = self.units(built)["parallel"]
+            self.assertEqual(built.mode, "incremental")
+            self.assertEqual(record["unavailable"], "source_changed:bc")
+            self.assertIn("project.serial", built.seconds)
+            self.assertEqual(tables(built.store), tables(cold["store"]))
+            self.assertEqual(built.content_digest, cold["content_digest"])
 
 
 if __name__ == "__main__":

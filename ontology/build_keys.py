@@ -75,6 +75,9 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         "f587572f8410564da3da08bc04f12b0f2a1b829b48075ca26b2a31266d1d94d4",
         # object-local bindings rewritten object by object (rows and report equal a cold build's)
         "81aa94c9cdac274f8a9a6ee9eddc8684736b8efa2b75c5559fb79a9580d7f422",
+        # an incremental build's changed units projected by worker processes into parts
+        # merged into its seed
+        "4a57d4fed7080b57658ccf0859c282a1553795442ab3aa2b064120c37fc49d01",
     }),
 }
 
