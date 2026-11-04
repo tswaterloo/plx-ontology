@@ -1,6 +1,669 @@
 {
   "components": {
     "schemas": {
+      "ActionCitation": {
+        "additionalProperties": false,
+        "properties": {
+          "fact": {
+            "title": "Fact",
+            "type": "string"
+          },
+          "handle": {
+            "title": "Handle",
+            "type": "string"
+          },
+          "present": {
+            "default": true,
+            "description": "The final text still states this value.",
+            "title": "Present",
+            "type": "boolean"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact",
+          "value",
+          "handle"
+        ],
+        "title": "ActionCitation",
+        "type": "object"
+      },
+      "ActionConfirm": {
+        "additionalProperties": false,
+        "properties": {
+          "card_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Card Id",
+            "type": "string"
+          },
+          "confirm": {
+            "description": "True only from the person's own Send/Confirm click.",
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "confirm_unknown_domains": {
+            "default": false,
+            "title": "Confirm Unknown Domains",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "description": "One per dialog: a second click returns the first result and never sends twice.",
+            "maxLength": 80,
+            "minLength": 16,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person's edits; absent: the drafted payload."
+          },
+          "payload_hash": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The preview's hash (outbound): what the person saw is what goes.",
+            "title": "Payload Hash"
+          }
+        },
+        "required": [
+          "card_id",
+          "kind",
+          "confirm",
+          "idempotency_key"
+        ],
+        "title": "ActionConfirm",
+        "type": "object"
+      },
+      "ActionLogRow": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "description": "Who confirmed it (their name).",
+            "title": "Actor",
+            "type": "string"
+          },
+          "actor_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Their own mailbox, the sender.",
+            "title": "Actor Email"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "card_label": {
+            "title": "Card Label",
+            "type": "string"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cc",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ActionCitation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "payload_hash": {
+            "title": "Payload Hash",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "description": "The same confirm again: the first result, nothing done twice.",
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "sent",
+              "failed",
+              "dry_run",
+              "follow_up",
+              "done",
+              "snoozed",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "to": {
+            "items": {
+              "type": "string"
+            },
+            "title": "To",
+            "type": "array"
+          }
+        },
+        "required": [
+          "card_id",
+          "kind",
+          "status",
+          "text",
+          "at",
+          "seq",
+          "card_label",
+          "actor",
+          "payload_hash"
+        ],
+        "title": "ActionLogRow",
+        "type": "object"
+      },
+      "ActionPayload": {
+        "additionalProperties": false,
+        "description": "An action's fields. Outbound: to, cc, subject (a new email only), body, and the\ncited message a reply or forward answers (``in_reply_to``, not editable) or the Teams\nchat. Local: a follow-up's due date and note, a snooze's end, a dismissal's reason.",
+        "properties": {
+          "body": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "cc": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cc"
+          },
+          "chat_id": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Id"
+          },
+          "due": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due"
+          },
+          "in_reply_to": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Reply To"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "title": "ActionPayload",
+        "type": "object"
+      },
+      "ActionPreview": {
+        "additionalProperties": false,
+        "description": "The exact final payload and every check of it; nothing is done by a preview.",
+        "properties": {
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ActionCitation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "missing": {
+            "description": "What a live send lacks; with any, confirming records a dry run and sends nothing.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "outbound": {
+            "title": "Outbound",
+            "type": "boolean"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ActionPayload"
+          },
+          "payload_hash": {
+            "title": "Payload Hash",
+            "type": "string"
+          },
+          "problems": {
+            "description": "Why it cannot be done.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Problems",
+            "type": "array"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Your own mailbox, the only sender.",
+            "title": "Sender"
+          },
+          "teams_chats": {
+            "items": {
+              "$ref": "#/components/schemas/TeamsChat"
+            },
+            "title": "Teams Chats",
+            "type": "array"
+          },
+          "uncited": {
+            "description": "Dates or quantities no citation backs: blocking.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncited",
+            "type": "array"
+          },
+          "unknown_domains": {
+            "description": "Recipient domains outside the known ones: need one more confirm.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Domains",
+            "type": "array"
+          }
+        },
+        "required": [
+          "card_id",
+          "kind",
+          "label",
+          "outbound",
+          "payload",
+          "payload_hash"
+        ],
+        "title": "ActionPreview",
+        "type": "object"
+      },
+      "ActionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "card_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Card Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The person's edits; absent: the drafted payload."
+          }
+        },
+        "required": [
+          "card_id",
+          "kind"
+        ],
+        "title": "ActionRequest",
+        "type": "object"
+      },
+      "ActionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "card_id": {
+            "title": "Card Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "replayed": {
+            "default": false,
+            "description": "The same confirm again: the first result, nothing done twice.",
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "sent",
+              "failed",
+              "dry_run",
+              "follow_up",
+              "done",
+              "snoozed",
+              "dismissed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "card_id",
+          "kind",
+          "status",
+          "text",
+          "at",
+          "seq"
+        ],
+        "title": "ActionResult",
+        "type": "object"
+      },
+      "ActionStates": {
+        "additionalProperties": false,
+        "properties": {
+          "cards": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ActionResult"
+            },
+            "description": "Each card's latest action by you.",
+            "title": "Cards",
+            "type": "object"
+          }
+        },
+        "title": "ActionStates",
+        "type": "object"
+      },
+      "ActionsLog": {
+        "additionalProperties": false,
+        "description": "Your confirmed actions, newest first, from the append-only actions journal.",
+        "properties": {
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ActionLogRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "title": "ActionsLog",
+        "type": "object"
+      },
       "AnswerPayload": {
         "additionalProperties": false,
         "properties": {
@@ -1040,6 +1703,41 @@
           "label"
         ],
         "title": "Candidate",
+        "type": "object"
+      },
+      "CardActionOffer": {
+        "additionalProperties": false,
+        "description": "An action a card offers (``operating.card_actions``). Outbound ones send only after\na preview and an explicit confirm by the signed-in person.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "send_email",
+              "reply_in_thread",
+              "forward",
+              "teams_message",
+              "create_follow_up",
+              "mark_done",
+              "snooze",
+              "dismiss"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "outbound": {
+            "title": "Outbound",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "outbound"
+        ],
+        "title": "CardActionOffer",
         "type": "object"
       },
       "Conflict": {
@@ -2131,6 +2829,32 @@
           "system"
         ],
         "title": "FreshnessSource",
+        "type": "object"
+      },
+      "GraphRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "method": {
+            "const": "POST",
+            "title": "Method",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "url",
+          "body"
+        ],
+        "title": "GraphRequest",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -3649,6 +4373,13 @@
           "action": {
             "$ref": "#/components/schemas/NextAction"
           },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/CardActionOffer"
+            },
+            "title": "Actions",
+            "type": "array"
+          },
           "confidence": {
             "$ref": "#/components/schemas/SuggestionConfidence"
           },
@@ -5062,6 +5793,25 @@
         "title": "Suggestions",
         "type": "object"
       },
+      "TeamsChat": {
+        "additionalProperties": false,
+        "properties": {
+          "chat_id": {
+            "title": "Chat Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "chat_id"
+        ],
+        "title": "TeamsChat",
+        "type": "object"
+      },
       "TimelineEvent": {
         "additionalProperties": false,
         "properties": {
@@ -5525,6 +6275,248 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/actions/confirm": {
+      "post": {
+        "description": "Do the action you previewed, as yourself, once per idempotency key; recorded in\nthe append-only actions journal. A message goes from your own mailbox only when\nsending is enabled and permitted; otherwise it is recorded as a dry run that names\nwhat is missing.",
+        "operationId": "action_confirm_api_actions_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Action Confirm",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/actions/log": {
+      "get": {
+        "description": "Your confirmed actions, newest first, from the actions journal.",
+        "operationId": "actions_log_api_actions_log_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionsLog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Actions Log",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/actions/preview": {
+      "post": {
+        "description": "One action on one of your suggestion cards, as it would be done: the exact final\npayload (to, cc, subject, body, the message it replies to), the Graph request, the\ncited facts it still states, what blocks it and what a live send lacks. Nothing is\ndone.",
+        "operationId": "action_preview_api_actions_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Action Preview",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
+    "/api/actions/state": {
+      "get": {
+        "description": "Each of your cards' latest action by you (sent, dry run, failed, done, ...).",
+        "operationId": "action_states_api_actions_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionStates"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Action States",
+        "tags": [
+          "actions"
+        ]
+      }
+    },
     "/api/ask": {
       "post": {
         "description": "Ask a question; the answer streams as server-sent events.",
@@ -6429,7 +7421,7 @@
     },
     "/api/suggestions": {
       "get": {
-        "description": "What needs your attention and what to do: late or unconfirmed purchase orders\nand the customer orders they hold up, \"ETA confirmed?\", customer orders at risk and\nmargin alerts, ranked by impact; each with how we know, confidence, what is missing\nand a draft message for you to send yourself (never sent by the Workbench).",
+        "description": "What needs your attention and what to do: late or unconfirmed purchase orders\nand the customer orders they hold up, \"ETA confirmed?\", customer orders at risk and\nmargin alerts, ranked by impact; each with how we know, confidence, what is missing,\na draft message and the actions it offers (``/api/actions/*``: nothing is sent\nwithout your confirm).",
         "operationId": "suggestions_api_suggestions_get",
         "responses": {
           "200": {

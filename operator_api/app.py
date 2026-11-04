@@ -304,9 +304,46 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def suggestions(who: Reader = Depends(reader)) -> m.Suggestions:
         """What needs your attention and what to do: late or unconfirmed purchase orders
         and the customer orders they hold up, "ETA confirmed?", customer orders at risk and
-        margin alerts, ranked by impact; each with how we know, confidence, what is missing
-        and a draft message for you to send yourself (never sent by the Workbench)."""
+        margin alerts, ranked by impact; each with how we know, confidence, what is missing,
+        a draft message and the actions it offers (``/api/actions/*``: nothing is sent
+        without your confirm)."""
         return backend.suggestions(who)
+
+    @app.post("/api/actions/preview", response_model=m.ActionPreview, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def action_preview(body: m.ActionRequest, who: Reader = Depends(reader)
+                       ) -> m.ActionPreview:
+        """One action on one of your suggestion cards, as it would be done: the exact final
+        payload (to, cc, subject, body, the message it replies to), the Graph request, the
+        cited facts it still states, what blocks it and what a live send lacks. Nothing is
+        done."""
+        return backend.action_preview(who, body)
+
+    @app.post("/api/actions/confirm", response_model=m.ActionResult, tags=["actions"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         404: {"model": m.ErrorResponse}, 409: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}, 503: {"model": m.ErrorResponse}})
+    def action_confirm(body: m.ActionConfirm, who: Reader = Depends(reader)
+                       ) -> m.ActionResult:
+        """Do the action you previewed, as yourself, once per idempotency key; recorded in
+        the append-only actions journal. A message goes from your own mailbox only when
+        sending is enabled and permitted; otherwise it is recorded as a dry run that names
+        what is missing."""
+        return backend.action_confirm(who, body)
+
+    @app.get("/api/actions/state", response_model=m.ActionStates, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def action_states(who: Reader = Depends(reader)) -> m.ActionStates:
+        """Each of your cards' latest action by you (sent, dry run, failed, done, ...)."""
+        return backend.action_states(who)
+
+    @app.get("/api/actions/log", response_model=m.ActionsLog, tags=["actions"],
+             responses={401: {"model": m.ErrorResponse}})
+    def actions_log(limit: int = Query(200, ge=1, le=1000),
+                    who: Reader = Depends(reader)) -> m.ActionsLog:
+        """Your confirmed actions, newest first, from the actions journal."""
+        return backend.actions_log(who, limit)
 
     @app.post("/api/briefing/seen", response_model=m.BriefingSeen, tags=["home"],
               responses={401: {"model": m.ErrorResponse}})

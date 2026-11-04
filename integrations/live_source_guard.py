@@ -70,6 +70,12 @@ us read-only. Read-only is enforced only here, before any I/O:
   body shorter than its ``Content-Length`` with ``DownloadIncomplete``
   ("download incomplete"); ``http.client`` would otherwise hand back a cut
   body without raising.
+* Approved actions (``send_action``): the one write path, off by default. With
+  ``PLX_ACTIONS_LIVE=1`` only, a person's confirmed card action may POST one of four
+  Graph shapes (``/users/{sender}/sendMail``, ``.../messages/{id}/reply``,
+  ``.../messages/{id}/forward``, ``/chats/{id}/messages``, each with its closed body
+  keys); ``_refuse_non_read_send`` re-checks the shape and the flag inside the sender.
+  Who may send what to whom is decided before, in ``operating.card_actions``.
 * Secrets (client secret, access tokens, download URLs) are held in
   ``Secret`` and never appear in exceptions, reprs, records or citations.
 
@@ -1163,6 +1169,10 @@ def _refuse_non_read_send(method: str, url: str, body: bytes | None) -> None:
         if (host in MC_HOSTS and parts.path == MCP_PATH and isinstance(rpc, dict)
                 and rpc.get("jsonrpc") == "2.0" and isinstance(rpc.get("method"), str)):
             return
+    if method == "POST" and host == GRAPH_HOST and not parts.query \
+            and action_send_enabled(os.environ) and _action_shape(parts.path, body):
+        # An approved card action (``send_action``): re-checked here by shape and flag.
+        return
     raise ReadOnlyGuardError("sender: only GET, the OAuth token POST or the MC JSON-RPC "
                              "POST may be sent")
 
@@ -1415,6 +1425,76 @@ class GuardedTransport:
             raise _http_failure(SourceUnavailable(f"download returned HTTP {status}"),
                                 status, raw)
         return raw
+
+
+# ------------------------------------------------------------------ approved actions
+
+# The one write a person may make from the Workbench: a message they confirmed on a
+# suggestion card (``operating.card_actions``), sent as themselves. Off unless the
+# environment sets ``PLX_ACTIONS_LIVE=1``; then only these four Graph shapes, each with
+# its closed set of body keys, and nothing else (no PATCH, no delete, no other path).
+ACTION_FLAG = "PLX_ACTIONS_LIVE"
+_ACTION_USER = r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" \
+               r"|[A-Za-z0-9._%+'-]+%40[A-Za-z0-9.-]+)"
+ACTION_PATHS = (
+    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/sendMail"),
+     frozenset({"message", "saveToSentItems"})),
+    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/[A-Za-z0-9_=-]{{1,400}}/reply"),
+     frozenset({"message", "comment"})),
+    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/[A-Za-z0-9_=-]{{1,400}}/forward"),
+     frozenset({"comment", "toRecipients"})),
+    (re.compile(r"/v1\.0/chats/19%3A[A-Za-z0-9_.-]{1,200}%40(?:thread\.v2|unq\.gbl\.spaces)"
+                r"/messages"), frozenset({"body"})),
+)
+MAX_ACTION_BODY_BYTES = 64_000
+
+
+def action_send_enabled(environ: Mapping[str, str]) -> bool:
+    return environ.get(ACTION_FLAG) == "1"
+
+
+def _action_shape(path: str, body: bytes | None) -> bool:
+    if not isinstance(body, bytes) or not 0 < len(body) <= MAX_ACTION_BODY_BYTES:
+        return False
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    for pattern, keys in ACTION_PATHS:
+        if pattern.fullmatch(path):
+            return isinstance(payload, dict) and bool(payload) and set(payload) <= keys
+    return False
+
+
+def check_action_request(method: str, url: str, body: bytes | None, *,
+                         environ: Mapping[str, str] | None = None) -> None:
+    """Validate one approved action request before I/O; raise ``ReadOnlyGuardError``."""
+    env = os.environ if environ is None else environ
+    if not action_send_enabled(env):
+        raise ReadOnlyGuardError(f"actions are off ({ACTION_FLAG}=1 not set)")
+    if method != "POST" or not isinstance(url, str) or len(url) > 2048:
+        raise ReadOnlyGuardError("action: POST only")
+    parts = urlsplit(url)
+    if (parts.scheme != "https" or parts.netloc != GRAPH_HOST or parts.query
+            or parts.fragment):
+        raise ReadOnlyGuardError("action: plain https Graph url required")
+    for teams in _teams_urls(env):
+        if teams.strip() in url:
+            raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
+    if not _action_shape(parts.path, body):
+        raise ReadOnlyGuardError("action: not one of the approved send shapes")
+
+
+def send_action(url: str, bearer: Secret, body: bytes, *,
+                environ: Mapping[str, str] | None = None, sender: "Sender | None" = None,
+                timeout: float = 30.0) -> tuple[int, Mapping[str, str], bytes]:
+    """Send one approved action (checked first, never retried, redirects refused); the
+    bearer never leaves the request headers. Returns (status, headers, body)."""
+    check_action_request("POST", url, body, environ=environ)
+    headers = {"Authorization": f"Bearer {bearer.reveal()}",
+               "Content-Type": "application/json", "Accept": "application/json"}
+    send = sender or urllib_sender
+    return send("POST", url, headers, body, timeout, 200_000)
 
 
 # ------------------------------------------------------------------ credentials
@@ -2364,4 +2444,5 @@ __all__ = ["ALLOWED_HOSTS", "BACKOFF_CAP_SECONDS", "BC_SCOPE", "BoundedBackoff",
            "Secret", "SourceApi", "SourceNotFound",
            "SourceUnavailable", "TokenProvider", "canonical_sha256", "check_request",
            "jsonable", "parse_handle", "sharepoint_host_from_env", "tenant_download_hosts",
-           "text_bytes", "urllib_sender"]
+           "text_bytes", "urllib_sender", "ACTION_FLAG", "check_action_request",
+           "send_action"]

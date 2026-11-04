@@ -60,6 +60,7 @@ from . import errors
 from . import models as m
 from . import presentation
 from . import proposals
+from .actions import ActionsMixin
 from .auth import Reader
 from .test_records import hidden_words
 
@@ -471,7 +472,7 @@ class _Watched:
 
 # ---- the backend ---------------------------------------------------------------------
 
-class WorkspaceBackend:
+class WorkspaceBackend(ActionsMixin):
     """``objects_for``: the read worker's workspace factory (the owner thread's runtime).
     Asks run on the Ask pool (``add_ask_worker``: each worker its own runtime and thread,
     one shared bounded queue), so one Ask never holds up another reader's page."""
@@ -2526,8 +2527,9 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
 SUGGESTION_TEST_PASSES = 3        # rounds of leaving out test records a card would show
 SUGGESTION_TRAIL_SECONDS = 45.0   # every suggestion card's PO trail together
 SUGGESTION_DRAFTS_READ = 2000     # late-order gaps read for their supplier drafts
-SUGGESTIONS_NOTE = ("Suggestions only: each draft is for you to copy, edit and send "
-                    "yourself. Nothing is sent or written by the Workbench.")
+SUGGESTIONS_NOTE = ("Nothing is sent until you review a draft and confirm it yourself; "
+                    "it then goes from your own mailbox, or is recorded as a dry run while "
+                    "sending is not enabled.")
 
 
 def suggestion_source(raw: Any) -> Optional[m.Source]:
@@ -2545,6 +2547,7 @@ def suggestion_source(raw: Any) -> Optional[m.Source]:
 
 def suggestion_model(card: Mapping[str, Any]) -> m.ProactiveSuggestion:
     """One ``operating.proactive_suggestions`` card as the API states it."""
+    from operating import card_actions
     subject = card["subject"]
     impact = card.get("impact") or {}
     amount = impact.get("amount") or None
@@ -2595,7 +2598,8 @@ def suggestion_model(card: Mapping[str, Any]) -> m.ProactiveSuggestion:
             review=draft.get("review")) if draft else None,
         confidence=m.SuggestionConfidence(**card["confidence"]),
         missing=[str(x)[:300] for x in card.get("missing") or ()],
-        acknowledged=bool(card.get("acknowledged")), new=bool(card.get("new")))
+        acknowledged=bool(card.get("acknowledged")), new=bool(card.get("new")),
+        actions=[m.CardActionOffer(**o) for o in card_actions.offers(card)])
 
 
 def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, digest: str,

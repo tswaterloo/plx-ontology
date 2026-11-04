@@ -6,6 +6,12 @@
 import { ApiError, apiErrorFrom } from "./errors";
 import { SseParser } from "./sse";
 import type { LateList,
+  ActionConfirm,
+  ActionPreview,
+  ActionRequest,
+  ActionResult,
+  ActionStates,
+  ActionsLog,
   AskEvent,
   AskRequest,
   AuthConfig,
@@ -110,9 +116,29 @@ export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promi
   return getJson<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
 }
 
-/** What needs you and what to do: ranked suggestions, each with how we know and a draft you send yourself. */
+/** What needs you and what to do: ranked suggestions, each with how we know, a draft and the actions it offers. */
 export function getSuggestions(signal?: AbortSignal): Promise<Suggestions> {
   return getJson<Suggestions>("/api/suggestions", signal);
+}
+
+/** One card action as it would be done: the exact payload and request, its checks; nothing is done. */
+export async function previewAction(req: ActionRequest, signal?: AbortSignal): Promise<ActionPreview> {
+  return (await (await call("/api/actions/preview", { method: "POST", json: req, signal })).json()) as ActionPreview;
+}
+
+/** Do the previewed action as yourself, once per idempotency key (a repeat returns the first result). */
+export async function confirmAction(req: ActionConfirm): Promise<ActionResult> {
+  return (await (await call("/api/actions/confirm", { method: "POST", json: req })).json()) as ActionResult;
+}
+
+/** Each of your cards' latest action by you. */
+export function getActionStates(signal?: AbortSignal): Promise<ActionStates> {
+  return getJson<ActionStates>("/api/actions/state", signal);
+}
+
+/** Your confirmed actions, newest first. */
+export function getActionsLog(signal?: AbortSignal): Promise<ActionsLog> {
+  return getJson<ActionsLog>("/api/actions/log", signal);
 }
 
 export function suggest(q: string, signal?: AbortSignal): Promise<SuggestResponse> {

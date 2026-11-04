@@ -14,7 +14,7 @@ Rules the shapes carry:
 
 from __future__ import annotations
 
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -1170,6 +1170,127 @@ class SuggestionConfidence(_Model):
     why: str
 
 
+ActionKind = Literal["send_email", "reply_in_thread", "forward", "teams_message",
+                     "create_follow_up", "mark_done", "snooze", "dismiss"]
+ActionStatus = Literal["pending", "sent", "failed", "dry_run", "follow_up", "done",
+                       "snoozed", "dismissed"]
+
+
+class CardActionOffer(_Model):
+    """An action a card offers (``operating.card_actions``). Outbound ones send only after
+    a preview and an explicit confirm by the signed-in person."""
+    kind: ActionKind
+    label: str
+    outbound: bool
+
+
+class ActionPayload(_Model):
+    """An action's fields. Outbound: to, cc, subject (a new email only), body, and the
+    cited message a reply or forward answers (``in_reply_to``, not editable) or the Teams
+    chat. Local: a follow-up's due date and note, a snooze's end, a dismissal's reason."""
+    to: Optional[list[str]] = Field(None, max_length=20)
+    cc: Optional[list[str]] = Field(None, max_length=20)
+    subject: Optional[str] = Field(None, max_length=1000)
+    body: Optional[str] = Field(None, max_length=20000)
+    in_reply_to: Optional[str] = Field(None, max_length=4096)
+    chat_id: Optional[str] = Field(None, max_length=300)
+    due: Optional[str] = Field(None, max_length=10)
+    until: Optional[str] = Field(None, max_length=10)
+    reason: Optional[str] = Field(None, max_length=2000)
+    note: Optional[str] = Field(None, max_length=2000)
+
+
+class ActionRequest(_Model):
+    card_id: str = Field(min_length=1, max_length=200)
+    kind: ActionKind
+    payload: Optional[ActionPayload] = Field(None, description="The person's edits; "
+                                             "absent: the drafted payload.")
+
+
+class ActionConfirm(ActionRequest):
+    confirm: bool = Field(description="True only from the person's own Send/Confirm click.")
+    idempotency_key: str = Field(min_length=16, max_length=80, pattern=r"^[A-Za-z0-9_-]+$",
+                                 description="One per dialog: a second click returns the "
+                                             "first result and never sends twice.")
+    payload_hash: Optional[str] = Field(None, max_length=64, description="The preview's "
+                                        "hash (outbound): what the person saw is what goes.")
+    confirm_unknown_domains: bool = False
+
+
+class ActionCitation(_Model):
+    fact: str
+    value: str
+    handle: str
+    present: bool = Field(True, description="The final text still states this value.")
+
+
+class GraphRequest(_Model):
+    method: Literal["POST"]
+    url: str
+    body: dict[str, Any]
+
+
+class TeamsChat(_Model):
+    name: str
+    chat_id: str
+
+
+class ActionPreview(_Model):
+    """The exact final payload and every check of it; nothing is done by a preview."""
+    card_id: str
+    kind: ActionKind
+    label: str
+    outbound: bool
+    sender: Optional[str] = Field(None, description="Your own mailbox, the only sender.")
+    payload: ActionPayload
+    payload_hash: str
+    citations: list[ActionCitation] = Field(default_factory=list)
+    uncited: list[str] = Field(default_factory=list, description="Dates or quantities no "
+                               "citation backs: blocking.")
+    unknown_domains: list[str] = Field(default_factory=list, description="Recipient domains "
+                                       "outside the known ones: need one more confirm.")
+    problems: list[str] = Field(default_factory=list, description="Why it cannot be done.")
+    missing: list[str] = Field(default_factory=list, description="What a live send lacks; "
+                               "with any, confirming records a dry run and sends nothing.")
+    request: Optional[GraphRequest] = None
+    teams_chats: list[TeamsChat] = Field(default_factory=list)
+
+
+class ActionResult(_Model):
+    card_id: str
+    kind: ActionKind
+    status: ActionStatus
+    text: str
+    at: str
+    seq: int
+    missing: list[str] = Field(default_factory=list)
+    replayed: bool = Field(False, description="The same confirm again: the first result, "
+                                              "nothing done twice.")
+    request: Optional[GraphRequest] = None
+
+
+class ActionStates(_Model):
+    cards: dict[str, ActionResult] = Field(default_factory=dict, description="Each card's "
+                                           "latest action by you.")
+
+
+class ActionLogRow(ActionResult):
+    card_label: str
+    actor: str = Field(description="Who confirmed it (their name).")
+    actor_email: Optional[str] = Field(None, description="Their own mailbox, the sender.")
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] = Field(default_factory=list)
+    subject: Optional[str] = None
+    payload_hash: str
+    citations: list[ActionCitation] = Field(default_factory=list)
+    http_status: Optional[int] = None
+
+
+class ActionsLog(_Model):
+    """Your confirmed actions, newest first, from the append-only actions journal."""
+    rows: list[ActionLogRow] = Field(default_factory=list)
+
+
 class ProactiveSuggestion(_Model):
     """One record that needs attention: what we noticed, how we know, what to do and a
     draft message (never sent)."""
@@ -1188,6 +1309,8 @@ class ProactiveSuggestion(_Model):
     missing: list[str] = Field(default_factory=list)
     acknowledged: bool = False
     new: bool = False
+    actions: list[CardActionOffer] = Field(default_factory=list,
+                                           json_schema_extra=_optional)
 
 
 class Suggestions(_Model):

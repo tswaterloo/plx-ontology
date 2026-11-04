@@ -29,6 +29,7 @@ const BY_CODE: Record<string, string> = {
   origin_refused: "This page isn't trusted by the Workbench. Open the Workbench from its usual link.",
   not_served: "That part of the Workbench isn't switched on here yet.",
   busy: "The Workbench is answering several questions right now. Try again in a minute.",
+  action_refused: "That action can't be done as it stands. Review it again to see what needs changing.",
   ask_not_served: "Asking questions isn't switched on on this server yet. Home and record pages still work.",
   // app-side codes
   forbidden: "You don't have access to this. Ask the owner or your team lead if you need it.",

@@ -3,12 +3,14 @@
 import { Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { getSuggestions } from "@/lib/api";
+import { actionChip, isPutAway } from "@/lib/actions";
+import { getActionStates, getSuggestions } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, plural, safeHref } from "@/lib/format";
 import type { Status } from "@/lib/status";
-import type { ProactiveSuggestion, SuggestionDraft, SuggestionEta, Suggestions } from "@/lib/types";
+import type { ActionResult, ProactiveSuggestion, SuggestionDraft, SuggestionEta, Suggestions } from "@/lib/types";
+import { CardActions } from "./card-actions";
 import { SourceChip } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 import { LoadProblem } from "./ui/notice";
@@ -78,7 +80,7 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
     <div className="rounded-lg border border-border bg-surface-2 p-3" data-testid="suggestion-draft">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-label font-medium">
-          {title} <span className="font-normal text-muted">· not sent, review before you send it yourself</span>
+          {title} <span className="font-normal text-muted">· not sent; nothing goes until you review and confirm it</span>
         </p>
         <button type="button" onClick={copy} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-label hover:border-control cursor-pointer" data-testid="copy-draft">
           {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
@@ -108,9 +110,10 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
   );
 }
 
-export function SuggestionRow({ s, position }: { s: ProactiveSuggestion; position: number }) {
+export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSuggestion; position: number; state?: ActionResult | null; onDone?: (r: ActionResult) => void }) {
   const [open, setOpen] = useState(position === 1);
   const eta = etaBadge(s.eta);
+  const chip = actionChip(state, !!s.draft);
   const href = safeHref(s.subject.open_url) ?? objectHref(s.subject.type, s.subject.object_id);
   const amount = s.impact.amount && !s.impact.amount_suspect ? formatMoney(s.impact.amount.amount, s.impact.amount.currency) : null;
   return (
@@ -126,11 +129,13 @@ export function SuggestionRow({ s, position }: { s: ProactiveSuggestion; positio
             {s.impact.amount_suspect && <StatusBadge status="suspect" label="Total suspect" title={s.impact.amount_suspect} />}
             {eta && <StatusBadge status={eta.status} label={eta.label} dot data-testid="suggestion-eta" />}
             <StatusBadge status={CONFIDENCE[s.confidence.level] ?? "neutral"} label={`${s.confidence.level} confidence`} title={s.confidence.why} />
+            {chip && <StatusBadge shown={chip} title={chip.title} data-testid="action-state" />}
           </div>
           <p className="text-row">
             <span className="text-muted">Next: </span>
             {s.action.text}
           </p>
+          {onDone && <CardActions card={s} onDone={onDone} />}
           {(s.impact.orders ?? []).length > 0 && (
             <p className="text-meta text-muted">
               Holds up{" "}
@@ -200,6 +205,8 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
   const [data, setData] = useState<Suggestions | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [all, setAll] = useState(false);
+  const [states, setStates] = useState<Record<string, ActionResult>>({});
+  const [putAway, setPutAway] = useState(false);
   const load = useCallback(() => {
     const c = new AbortController();
     setError(null);
@@ -208,11 +215,16 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
       .catch((e) => {
         if (!c.signal.aborted) setError(plainError(e));
       });
+    // a card's chip is only a hint: without states every card still reads "Drafted"
+    getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
+  const done = useCallback((r: ActionResult) => setStates((prev) => ({ ...prev, [r.card_id]: r })), []);
   if (data && data.status !== "read") return null;
-  const items = data?.items ?? [];
+  const every = data?.items ?? [];
+  const away = every.filter((s) => isPutAway(states[s.id]));
+  const items = putAway ? every : every.filter((s) => !isPutAway(states[s.id]));
   const shown = all ? items : items.slice(0, limit);
   const extra = collapsedLine(data?.collapsed);
   return (
@@ -226,18 +238,23 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
           <LoadProblem message={error} onRetry={load} />
         ) : !data ? (
           <SkeletonRows rows={3} label="Working out what to do next" />
-        ) : items.length === 0 ? (
+        ) : every.length === 0 ? (
           <p className="text-row text-muted">Nothing needs a follow-up from you right now.</p>
         ) : (
           <>
             <ol className="divide-y divide-border">
               {shown.map((s, n) => (
-                <SuggestionRow key={s.id} s={s} position={n + 1} />
+                <SuggestionRow key={s.id} s={s} position={n + 1} state={states[s.id]} onDone={done} />
               ))}
             </ol>
             {items.length > shown.length && (
               <button type="button" onClick={() => setAll(true)} className="mt-1 text-row font-medium text-accent hover:underline cursor-pointer">
                 Show {items.length - shown.length} more
+              </button>
+            )}
+            {away.length > 0 && (
+              <button type="button" onClick={() => setPutAway(!putAway)} className="mt-1 block text-meta text-muted hover:text-fg hover:underline cursor-pointer" data-testid="put-away-toggle">
+                {putAway ? "Hide" : "Show"} {plural(away.length, "card")} you put away (done, snoozed or dismissed)
               </button>
             )}
             {data.more > 0 && <p className="mt-1 text-meta text-muted">{plural(data.more, "more record")} need attention; see the briefing.</p>}

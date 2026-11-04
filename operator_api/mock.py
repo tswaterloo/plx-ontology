@@ -19,6 +19,7 @@ from urllib.parse import quote
 from operating.answer_gate import _sentences
 
 from . import ask_progress, models as m, presentation, proposals
+from .actions import ActionsMixin
 from .auth import Reader
 
 LABEL = "FIXTURE: synthetic demo data (isolated-fixture), not real PLX records"
@@ -407,7 +408,7 @@ def _pick(question: str) -> tuple[str, Any]:
     return "other", _unknown_answer
 
 
-class MockBackend:
+class MockBackend(ActionsMixin):
     data_label = LABEL
 
     def __init__(self, *, step_delay: float = 0.0) -> None:

@@ -362,5 +362,59 @@ class MockMatchesOpenapi(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class CardActionsRoutes(unittest.TestCase):
+    """The action routes over the mock's real composer: the card is the reader's own, a
+    confirm is a dry run while sending is off, a double click is one row, and the journal
+    shows each person only their own actions."""
+
+    def test_preview_confirm_state_and_log_are_the_readers_own(self):
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        backend = MockBackend()
+        backend.actions_environ = {"PLX_EXCLUDED_PEOPLE_OIDS":
+                                   "22222222-2222-4222-8222-222222222222"}
+
+        def client_for(email: str, oid: str) -> TestClient:
+            session = fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                      subject_email=email, subject_oid=oid)
+            client = TestClient(create_app(backend, DevAuth(lambda: session, mode="mock"),
+                                           secure_cookie=False), base_url="http://testserver")
+            self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+            return client
+
+        vince = client_for("vince@plx.example", "11111111-1111-4111-8111-111111111111")
+        card = next(c for c in vince.get("/api/suggestions").json()["items"]
+                    if c["kind"] == "vendor_chase" and c["draft"]["to"]["address"])
+        self.assertEqual(card["actions"][0], {"kind": "send_email", "label": "Send email",
+                                              "outbound": True})
+        ask = {"card_id": card["id"], "kind": "send_email"}
+        preview = vince.post("/api/actions/preview", json=ask)
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(conforms(preview.json(), component("ActionPreview")), [])
+        found = preview.json()
+        self.assertEqual((found["payload"]["to"], found["sender"], found["problems"]),
+                         ([card["draft"]["to"]["address"]], "vince@plx.example", []))
+        self.assertIn("PLX_ACTIONS_LIVE=1 not set", found["missing"][0])
+        key = "dialog-0123456789abcdef"
+        stale = vince.post("/api/actions/confirm", json={**ask, "confirm": True,
+                                                         "idempotency_key": key})
+        self.assertEqual(stale.status_code, 409)          # no previewed hash, nothing done
+        go = {**ask, "confirm": True, "idempotency_key": key,
+              "payload_hash": found["payload_hash"]}
+        first, second = (vince.post("/api/actions/confirm", json=go) for _ in range(2))
+        self.assertEqual(conforms(first.json(), component("ActionResult")), [])
+        self.assertEqual((first.json()["status"], second.json()["replayed"]),
+                         ("dry_run", True))
+        self.assertEqual(vince.get("/api/actions/state").json()["cards"][card["id"]]["status"],
+                         "dry_run")
+        log = vince.get("/api/actions/log").json()["rows"]
+        self.assertEqual([(r["status"], r["actor_email"]) for r in log],
+                         [("dry_run", "vince@plx.example")])
+        ana = client_for("ana@plx.example", "33333333-3333-4333-8333-333333333333")
+        self.assertEqual(ana.get("/api/actions/log").json()["rows"], [])
+        self.assertEqual(ana.get("/api/actions/state").json()["cards"], {})
+        missing = vince.post("/api/actions/preview", json={**ask, "card_id": "not-mine"})
+        self.assertEqual(missing.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

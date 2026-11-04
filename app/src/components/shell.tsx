@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bell, FlaskConical, Home, LogOut, Menu as MenuIcon, MessageSquare, Search, Timer, X } from "lucide-react";
+import { Bell, FlaskConical, Home, ListChecks, LogOut, Menu as MenuIcon, MessageSquare, Search, Timer, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -132,6 +132,7 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
       {item("/late", "Late orders", Timer, late)}
       {item("/briefing", "Briefing", Bell)}
       {item("/ask", "Ask", MessageSquare)}
+      {item("/actions", "Actions", ListChecks)}
       <div className="mt-6 px-3 pb-1 text-eyebrow uppercase text-muted">Saved</div>
       {saved.length === 0 ? (
         <p className="px-3 text-meta text-muted">Save an answer or a page to find it here.</p>
