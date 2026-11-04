@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { suggest as fetchSuggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { plural, safeHref, typeLabel } from "@/lib/format";
+import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 
 export interface Pin {
@@ -98,7 +98,9 @@ export function arrange(list: Suggestion[], query: string): Arranged[] {
 
 /** "2 customers share this name" (the type's plural, lower case). */
 export function sharedName(n: number, type: string): string {
-  return `${n} ${plural(n, typeLabel(type).toLowerCase()).replace(/^\d+\s+/, "")} share this name`;
+  // orders are known by their number, everything else by its name
+  const by = /order$/i.test(typeLabel(type)) ? "number" : "name";
+  return `${n} ${plural(n, typeLabel(type).toLowerCase()).replace(/^\d+\s+/, "")} share this ${by}`;
 }
 
 /** The word being typed at the caret (letters, digits, - / # .), or "". */
@@ -195,10 +197,22 @@ export function AskBox({
 
   // Auto-grow the textarea up to a cap.
   useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    const fit = () => {
+      const el = ref.current;
+      if (!el) return;
+      el.style.height = "auto";
+      // empty: tall enough for the placeholder, which wraps on a phone (it never counts in scrollHeight)
+      let h = el.scrollHeight;
+      if (!el.value && el.placeholder) {
+        el.value = el.placeholder;
+        h = el.scrollHeight;
+        el.value = "";
+      }
+      el.style.height = `${Math.min(h, 220)}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit); // a rotated phone wraps the text anew
+    return () => window.removeEventListener("resize", fit);
   }, [value]);
 
   useEffect(
@@ -282,13 +296,14 @@ export function AskBox({
 
   /** Ask about it: its name replaces what was typed for it, and it is pinned. */
   function pick(s: Suggestion) {
-    const span = spanFor(frag, s.label);
-    const next = value.slice(0, span.start) + s.label + " " + value.slice(span.end).replace(/^\s+/, "");
+    const label = recordLabel(s.type, s.label); // "PO PO100040" is said "PO 100040"
+    const span = spanFor(frag, label);
+    const next = value.slice(0, span.start) + label + " " + value.slice(span.end).replace(/^\s+/, "");
     setValue(next);
-    setPins((p) => (p.some((x) => x.object_id === s.object_id) ? p : [...p, { object_id: s.object_id, type: s.type, label: s.label }]));
+    setPins((p) => (p.some((x) => x.object_id === s.object_id) ? p : [...p, { object_id: s.object_id, type: s.type, label }]));
     close();
     setItems([]);
-    const caret = span.start + s.label.length + 1;
+    const caret = span.start + label.length + 1;
     requestAnimationFrame(() => {
       ref.current?.focus();
       ref.current?.setSelectionRange(caret, caret);
@@ -466,7 +481,7 @@ export function AskBox({
                 <Icon className="size-4" aria-hidden />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium text-fg">{s.label}</span>
+                <span className="block truncate font-medium text-fg">{recordLabel(s.type, s.label)}</span>
                 <span className="block truncate text-meta text-muted">{sub}</span>
               </span>
               {(s.systems ?? []).length > 0 && (
@@ -482,7 +497,7 @@ export function AskBox({
               <button
                 type="button"
                 tabIndex={-1}
-                aria-label={`Ask about ${s.label}`}
+                aria-label={`Ask about ${recordLabel(s.type, s.label)}`}
                 title="Ask about this"
                 onMouseDown={(e) => {
                   e.preventDefault();

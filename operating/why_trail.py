@@ -595,6 +595,103 @@ def same_records(call: Callable[[str, dict], Any], object_ids: Sequence[str],
     return rest <= twins
 
 
+# Words of a party's name that tell no party apart (place, legal form, trade): never the
+# word a question names a supplier or customer by.
+_PARTY_FILLER = frozenset({
+    "the", "new", "and", "of", "canada", "canadian", "usa", "us", "america", "american",
+    "north", "international", "intl", "global", "group", "company", "co", "inc", "ltd",
+    "limited", "llc", "corp", "corporation", "ulc", "gmbh", "sa", "srl", "bv", "plc", "pty",
+    "ag", "lp", "holdings", "enterprises", "industries", "products", "packaging",
+    "chemicals", "chemical", "supply", "supplies", "solutions", "services", "trading",
+    "labels", "ingredients", "do", "not", "use"})
+
+
+# Words a question about an order asks with, never a party's name (each would cost a
+# lookup); a word missing here costs one ``plx.find``, never a wrong answer.
+_QUESTION_WORDS = frozenset({
+    "what", "whats", "where", "wheres", "when", "which", "with", "from", "about", "going",
+    "status", "late", "overdue", "behind", "they", "them", "their", "there", "ever",
+    "confirm", "confirmed", "date", "dates", "received", "receive", "arrive", "arrived",
+    "update", "order", "orders", "purchase", "have", "this", "that", "still", "tell",
+    "show", "give", "does", "did", "will", "would", "should", "could", "supposed", "land",
+    "come", "came", "vendor", "supplier", "customer", "please", "were", "been", "much",
+    "many", "whole", "story", "next", "eta"})
+MAX_PARTY_LOOKUPS = 3
+
+
+def party_word(name: Any) -> Optional[str]:
+    """The word a party's name is asked by: its first word of three letters or more that
+    is no place, legal form or trade word ("Croda Canada Ltd": croda), folded; None when
+    the name has none."""
+    if not isinstance(name, str):
+        return None
+    for word in re.findall(r"[^\W\d_]+", name.casefold()):
+        if len(word) >= 3 and word not in _PARTY_FILLER:
+            return word
+    return None
+
+
+def names_party(question: str, name: Any) -> bool:
+    """Whether ``question`` names the party ``name`` (its ``party_word`` as a whole word)."""
+    word = party_word(name)
+    return word is not None and re.search(
+        rf"(?<![^\W\d_]){re.escape(word)}(?![^\W\d_])", (question or "").casefold()) is not None
+
+
+def record_party(call: Callable[[str, dict], Any], object_id: str) -> Optional[str]:
+    """The supplier or customer of an order as this reader reads it: its own vendor or
+    customer name, else the party its own system's ``ordered_from``/``ordered_by`` link
+    reaches; None when neither is readable."""
+    card = call("plx.object", {"object_id": object_id,
+                               "properties": ["vendor_name", "customer_name"]}) or {}
+    for value in card.get("values") or ():
+        raw = value.get("value") if isinstance(value, Mapping) else None
+        raw = raw.get("untrusted_text") if isinstance(raw, Mapping) else raw
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:120]
+    kind = object_id.split(":", 1)[0]
+    for link in (f"{kind}.ordered_from", f"{kind}.ordered_by"):
+        got = call("plx.around", {"from": object_id, "limit": 1,
+                                  "path": [{"link_type": link, "direction": "forward"}]}) or {}
+        for obj in got.get("objects") or ():
+            party = obj.get("display") if isinstance(obj, Mapping) else None
+            party = party.get("untrusted_text") if isinstance(party, Mapping) else party
+            if isinstance(party, str) and party.strip():
+                return party.strip()[:120]
+    return None
+
+
+def by_named_party(call: Callable[[str, dict], Any], question: str,
+                   groups: Sequence[Sequence[str]], *, mismatch: bool = True
+                   ) -> tuple[list[int], Optional[str]]:
+    """Records sharing one number (``groups``: each one record's object ids) told apart by
+    the supplier or customer the question names: (the indexes of the groups whose party it
+    names, the party it names that none of them has, else None). A question naming no
+    party keeps every group and states no mismatch; a party is named only by its own word
+    (``names_party``), never guessed from a near spelling. ``mismatch`` false: no lookup
+    of a party none of them has (a fast answer's reads stay its own)."""
+    parties = [record_party(call, group[0]) if group else None for group in groups]
+    hits = [i for i, party in enumerate(parties) if names_party(question, party)]
+    if hits or not mismatch:
+        return hits or list(range(len(groups))), None
+    # a party none of them has: a word of the question that is a supplier's or customer's
+    # own word (looked up as the reader, longest words first, a few at most)
+    words = sorted({w for w in re.findall(r"[^\W\d_]{4,}", (question or "").casefold())
+                    if w not in _PARTY_FILLER and w not in _QUESTION_WORDS},
+                   key=lambda w: (-len(w), w))[:MAX_PARTY_LOOKUPS]
+    for word in words:
+        for object_type in ("Supplier", "Customer"):
+            found = call("plx.find", {"query": word, "object_type": object_type,
+                                      "limit": 5}) or {}
+            for candidate in found.get("candidates") or ():
+                obj = candidate.get("object") if isinstance(candidate, Mapping) else None
+                shown = (obj or {}).get("display")
+                shown = shown.get("untrusted_text") if isinstance(shown, Mapping) else shown
+                if isinstance(shown, str) and party_word(shown) == word:
+                    return list(range(len(groups))), shown.strip()[:120]
+    return list(range(len(groups))), None
+
+
 def build(plan: WhyPlan, root: Mapping[str, Any], *, call: Callable[[str, dict], Any],
           decide: Callable[[Sequence[str]], Mapping[str, Any]],
           claims: Sequence[Mapping[str, Any]], schema: Any = None,

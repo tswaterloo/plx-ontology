@@ -292,6 +292,67 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
         result = tools(dated).call("plx.find", dict(PRESENT, limit=50, cursor=cursor), READER)
         self.assertEqual(result.get("error", {}).get("code"), "invalid_cursor", result)
 
+    def test_the_pages_of_one_run_scan_each_segment_once(self):
+        # Small pages resume inside a segment: outside a run each page scans it again;
+        # inside one (``run_memo``) every readable order is scanned once, the listing is
+        # the same, and another reader in that run gets its own scan (never the first
+        # reader's matches, nor theirs).
+        store = self.store(30, hidden=("bulk-0003c", "bulk-0020c"))
+        t = tools(store)
+        cap = mock.patch.object(ot, "FILTER_SCAN_CAP", 20)   # ten matches a segment
+        cap.start()
+        self.addCleanup(cap.stop)
+        scanned = [0]
+        original = t._filter_objects
+
+        def counting(scope, object_ids, filters):
+            scanned[0] += len(object_ids)
+            return original(scope, object_ids, filters)
+
+        t._filter_objects = counting
+        plain = self.listed(self.pages(t, PRESENT, limit=4))
+        outside, scanned[0] = scanned[0], 0
+        self.assertGreater(outside, 60)
+        with ot.run_memo():
+            kept = self.listed(self.pages(t, PRESENT, limit=4))
+            once, scanned[0] = scanned[0], 0
+            full = self.listed(self.pages(t, PRESENT, actor=FULL, limit=4))
+            again = self.listed(self.pages(t, PRESENT, limit=4))
+        self.assertEqual(kept, plain)
+        self.assertEqual(once, 60)
+        self.assertEqual(again, plain)
+        self.assertEqual(len(full), 32)
+        self.assertNotIn(_oid("bulk-0003c"), again)
+        self.assertEqual(scanned[0], 62)    # FULL's own scan; READER's again is kept
+
+    def test_filters_no_source_records_together_are_refused_never_a_zero(self):
+        # A BC receipt has a number, never a received date (that is the Portal's,
+        # FileMaker's and Sage's): both together match nothing by construction, so the
+        # tools refuse, naming each property's sources, instead of a complete 0.
+        t = tools(Store(), schema=ot.default_schema())
+        both = [{"property": "bc_number", "op": "present"},
+                {"property": "received_date", "op": "gte", "value": "2026-08-06"}]
+        calls = (("plx.find", {"object_type": "Receipt", "filters": both, "limit": 5}),
+                 ("plx.aggregate", {"object_type": "Receipt", "filters": both,
+                                    "measure": {"op": "count"}}))
+        for tool, arguments in calls:
+            with self.subTest(tool=tool):
+                result = (t if tool == "plx.find" else oa.AggregateTools(t)).call(
+                    tool, arguments, FULL)
+                self.assertContract(tool, result)
+                self.assertEqual(result["error"]["code"], "filters_never_co_sourced", result)
+                self.assertIn("bc.purchase_receipts", result["error"]["message"])
+        # One source records both, or one filter asks for an absent value: answered.
+        for filters in ([{"property": "receipt_number", "op": "present"}, both[1]],
+                        [{"property": "bc_number", "op": "present"},
+                         {"property": "received_date", "op": "absent"}]):
+            with self.subTest(filters=filters):
+                result = oa.AggregateTools(t).call("plx.aggregate", {
+                    "object_type": "Receipt", "filters": filters,
+                    "measure": {"op": "count"}}, FULL)
+                self.assertNotEqual((result.get("error") or {}).get("code"),
+                                    "filters_never_co_sourced", result)
+
 
 if __name__ == "__main__":
     unittest.main()

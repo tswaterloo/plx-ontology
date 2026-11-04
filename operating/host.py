@@ -1310,18 +1310,27 @@ class Host:
         store = projection_path(self.state_dir)
 
         def scheduled(as_of: Any, budget: Any) -> Mapping[str, Any]:
+            from . import proactive_pool
+
             runtime = live.offline_runtime(self.state_dir, self.config.mirror_audience,
                                            self.config.tenant,
                                            live=engine_readers(self.config,
                                                                self._live_readers()),
                                            environ=self.environ)
+            # the tool-call rules on every core the host can spare (offline workers reading
+            # as the same capture principal): the whole store, not a bounded sample
+            pool = proactive_pool.from_host_config(self.config, self.state_dir, store,
+                                                   self.environ)
             try:
                 return proactive_engine.refresh(
                     runtime, self._actor(), AudienceMap.from_file(self.config.mirror_audience),
                     store, as_of, captures=self.state_dir,
                     scan_coverage="portal" in self.config.sources, budget=budget,
-                    clock=self.clock, vendor_bound=0)   # the vendor pass reads mail apart
+                    clock=self.clock, vendor_bound=0,   # the vendor pass reads mail apart
+                    pool=pool)
             finally:
+                if pool is not None:
+                    pool.close()
                 runtime.close()
 
         return proactive_engine.after_build(store, clock=self.clock, scheduled=scheduled,
@@ -1475,8 +1484,9 @@ class Host:
         never enough) and the bytes a build needs: ``need`` (a ``space_need`` estimate; by
         default the least the next build writes: an incremental one's seed, a cold one's
         measured size, nothing known for a store of a new format) plus
-        ``BUILD_DISK_MARGIN_BYTES``."""
-        from ontology.project_incremental import space_need
+        ``BUILD_DISK_MARGIN_BYTES``. A build kept to resume (``kept_bytes``) counts as free:
+        the build resumes it or removes it before it writes."""
+        from ontology.project_incremental import kept_bytes, space_need
 
         try:
             served = projection_path(self.state_dir).stat().st_size
@@ -1491,6 +1501,12 @@ class Host:
             free: int | None = int(self.disk_free(self.state_dir))
         except OSError:
             free = None
+        try:
+            kept = kept_bytes(self.state_dir / PROJECTION_DIR)
+        except OSError:
+            kept = 0
+        if free is not None:
+            free += kept
         copies = 0
         if self.snapshot_builds:   # the build's copies of the stores (snapshot_inputs)
             try:

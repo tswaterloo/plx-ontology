@@ -85,17 +85,26 @@ function related(obj: ObjectPage, type: RegExp): ObjectRef[] {
 }
 
 /** The receipt step's "1 of 18 KG", if the trail states one. */
-export function receivedOf(trail: PoTrail | undefined): { got: string; of: string; uom: string; pct: number | null } | null {
+/** A quantity as shown: at most 2 decimals ("1.6904" -> "1.69"), thousands grouped. */
+const qty = (n: number) => n.toLocaleString("en-CA", { maximumFractionDigits: 2 });
+
+/**
+ * The PO's one partial receipt ("1.69 of 2 kg", 85%). Several partial receipts are several
+ * lines (or deliveries) whose sum is not known to be the order's: said as a count of lines
+ * short ({ got: "Partly", of: "", lines }), never as one line's figures.
+ */
+export function receivedOf(trail: PoTrail | undefined): { got: string; of: string; uom: string; pct: number | null; lines?: number } | null {
+  const found: { a: number; b: number; uom: string }[] = [];
   for (const s of trail?.steps ?? []) {
     if (s.kind !== "receipt") continue;
     const m = /(\d[\d,.]*)\s+of\s+(\d[\d,.]*)\s*([A-Za-z]+)?/.exec(s.title);
-    if (m) {
-      const a = Number(m[1].replace(/,/g, ""));
-      const b = Number(m[2].replace(/,/g, ""));
-      return { got: m[1], of: m[2], uom: (m[3] ?? "").toLowerCase(), pct: b > 0 ? Math.round((a / b) * 100) : null };
-    }
+    if (m) found.push({ a: Number(m[1].replace(/,/g, "")), b: Number(m[2].replace(/,/g, "")), uom: (m[3] ?? "").toLowerCase() });
   }
-  return null;
+  if (found.length === 0) return null;
+  if (found.length > 1) return { got: "Partly", of: "", uom: "", pct: null, lines: found.length };
+  const { a, b, uom } = found[0];
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+  return { got: qty(a), of: qty(b), uom, pct: b > 0 ? Math.round((a / b) * 100) : null };
 }
 
 /** The needed-by date: the due-date step's, else the verdict's. */
@@ -150,7 +159,7 @@ function poHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
       typeof trail.days_late === "number" ? `${trail.days_late} ${trail.days_late === 1 ? "day" : "days"} late.` : "Late.",
       confirmed ? `${who} has confirmed a date` : trail.eta?.state === "lead_only" ? `${who} mentioned a date but hasn't confirmed it` : `${who} hasn't confirmed a date`,
     ];
-    lead = `${parts[0]} ${parts[1]}${got ? `, and ${got.got} of ${got.of}${got.uom ? ` ${got.uom}` : ""} ${Number(got.got) === 1 ? "has" : "have"} arrived` : ""}.`;
+    lead = `${parts[0]} ${parts[1]}${got ? (got.lines ? ", and part of it has arrived" : `, and ${got.got} of ${got.of}${got.uom ? ` ${got.uom}` : ""} ${got.got === "1" ? "has" : "have"} arrived`) : ""}.`;
   } else if (trail?.state === "on_time") {
     lead = `On time.${needed ? ` Due ${formatDate(needed)}.` : ""}`;
   } else if (trail?.state === "not_due") {
@@ -170,7 +179,7 @@ function poHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
       caption: trail?.state === "late" && typeof trail.days_late === "number" ? `${trail.days_late} days ago` : undefined,
       status: trail?.state === "late" ? "late" : undefined,
     });
-  if (got) stats.push({ label: "Received", value: `${got.got} of ${got.of}${got.uom ? ` ${got.uom}` : ""}`, caption: got.pct !== null ? `${got.pct}%` : undefined, status: got.pct !== null && got.pct < 100 && trail?.state === "late" ? "risk" : undefined });
+  if (got) stats.push({ label: "Received", value: got.lines ? got.got : `${got.got} of ${got.of}${got.uom ? ` ${got.uom}` : ""}`, caption: got.lines ? `${got.lines} receipts short of their lines` : got.pct !== null ? `${got.pct}%` : undefined, status: got.pct !== null && got.pct < 100 && trail?.state === "late" ? "risk" : undefined });
   if (ordered) stats.push({ label: "Ordered", value: ordered, caption: f.get("order_date")?.source ? "Open in Business Central" : undefined, source: f.get("order_date")?.source });
   const code = get(f, "vendor_number", "supplier_number", "vendor_no");
   const keyFacts = [
@@ -444,6 +453,25 @@ export function groupLinked(items: LinkedItem[]): Thread[] {
 export interface MonthGroup {
   month: string;
   rows: { event: TimelineEvent; count: number }[];
+}
+
+/** What an event's verb ("Required: sales order SO-1") says happened to its record. */
+const EVENT_VERB: Record<string, string> = { required: "due", posted: "posted", created: "created", issued: "issued", received: "received", shipped: "shipped", invoiced: "invoiced", modified: "changed", updated: "changed", confirmed: "confirmed" };
+
+/**
+ * An activity row's title: "Sales order SO-1 due" for one event, "2 sales orders due" for
+ * repeats of one verb in a month; a title not in "Verb: record" form is said as it is
+ * ("Posted ×3" only when the verb is unknown).
+ */
+export function activityTitle(title: string, count: number): string {
+  const m = /^([A-Za-z ]+):\s*(.+)$/.exec(title.trim());
+  const verb = m ? EVENT_VERB[m[1].trim().toLowerCase()] : undefined;
+  if (!m || !verb) return count > 1 ? `${m?.[1] ?? readable(title)} ×${count}` : readable(title);
+  const record = readable(m[2]);
+  if (count === 1) return `${record[0].toUpperCase()}${record.slice(1)} ${verb}`;
+  // the record's kind: its words before the first one holding a digit ("sales order SO-1" -> "sales order")
+  const kind = record.split(/\s+/).filter((w, i, all) => !all.slice(0, i + 1).some((x) => /\d/.test(x))).join(" ").toLowerCase();
+  return kind ? `${count} ${kind.replace(/(?:s|x|ch|sh)$/, "$&e").replace(/y$/, "ie")}s ${verb}` : `${count} records ${verb}`;
 }
 
 /** Activity by month, newest first, repeats of one title in a month collapsed ("Required ×40"). */

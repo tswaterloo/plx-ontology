@@ -1266,6 +1266,7 @@ class WorkspaceBackend:
         def job(view: Any) -> Optional[m.AnswerPayload]:
             with view._request():
                 period = None
+                also: list[str] = []      # same-named cards read with the customer's
                 if by_order:
                     pair = customer_profit.order_customer(view._call, focus)
                     if pair is None:
@@ -1304,8 +1305,13 @@ class WorkspaceBackend:
                     if len(exact) > 1:
                         # Same-named cards (one company keeps several cards of a name):
                         # the one with orders is the customer a margin is about when every
-                        # other card has none this reader may know of; else a choice.
+                        # other card has none this reader may know of; several with orders
+                        # are one customer by its exact name, read together (each card
+                        # named by its number and cited), never one picked.
                         exact = with_orders(view, exact)
+                        if 1 < len(exact) <= MAX_CARDS_TOGETHER:
+                            also = [c["object_id"] for c in exact[1:]]
+                            exact = exact[:1]
                     if len(exact) != 1:
                         # Picked only on an exact name or customer number; a fuzzy match (one
                         # or several) is offered as a choice, never picked.
@@ -1328,7 +1334,8 @@ class WorkspaceBackend:
                     profit = customer_profit.profitability(
                         call, candidates[0]["object_id"], today=today,
                         question=question, period=period, focus=focus,
-                        skip_order=lambda number: is_test((number,), named_tests))
+                        skip_order=lambda number: is_test((number,), named_tests),
+                        also=also)
                 except customer_profit.ProfitError:
                     return None
                 return profit_answer(self, view, request, profit, conversation, ms)
@@ -1401,7 +1408,8 @@ class WorkspaceBackend:
             def read(view: Any) -> tuple[dict, list, Optional[m.EvidenceTrail], str]:
                 with view._request():
                     call = lambda name, args: view._call(name, dict(args))  # noqa: E731
-                    resolved, several = preread.resolve(call, found, request.object_id)
+                    resolved, several = preread.resolve(call, found, request.object_id,
+                                                        question=request.question)
                     if several:
                         # a number the record asked about (a pick, a page) does not settle
                         # is asked back again, never dropped
@@ -1867,11 +1875,23 @@ class WorkspaceBackend:
                     strong = {r[1] for r in rows if any(r[5:9])}
                     if len(strong) >= SUGGEST_ROWS:
                         break   # enough whole-phrase matches: shorter phrases rank below
+                # an order's supplier or customer by name, its code beside it: the party
+                # entities that carry the orders' party codes, within the same scope
+                codes = sorted({code for r in rows for code in party_codes(r[4])})[:40]
+                parties: dict[str, str] = {}
+                if codes:
+                    for name, alias in conn.execute(
+                            "SELECT e.name, e.alias FROM search.entities e WHERE "
+                            + scope.clause("e") + " AND e.type IN ('supplier', 'customer') "
+                            "AND e.alias && %(codes)s::text[] ORDER BY e.name",
+                            scope.params(codes=codes)).fetchall():
+                        for code in set(alias or ()) & set(codes):
+                            parties.setdefault(code, str(name))
         except (TimeoutError, LookupError):
             raise
         except Exception:  # noqa: BLE001 - Postgres down: the projection answers
             return None
-        return suggestions(rows, limit, members=members,
+        return suggestions(rows, limit, members=members, parties=parties,
                            same_record=lambda ids: self.reads.run(
                                reader, lambda view: same_records(view, ids),
                                timeout=SAME_RECORD_SECONDS, priority=-1))
@@ -2079,7 +2099,22 @@ class WorkspaceBackend:
                 trails[item["id"]] = briefing_trail(self, view, item,
                                                     labels.get(item["object_id"]),
                                                     seconds=left)
-        top = [briefing_item(item, labels, trails.get(item["id"]))
+        # each shown purchase order's supplier, read as this reader reads it (as Home's
+        # late list names it), so a row says whom it is about
+        suppliers: dict[str, str] = {}
+        with view._request():
+            for item in items:
+                oid = item["object_id"]
+                if item.get("object_type") == "PurchaseOrder" and oid not in suppliers:
+                    try:
+                        card = view._call("plx.object", {"object_id": oid})
+                        name = supplier_of(view, oid, card)
+                    except Exception:  # noqa: BLE001 - no supplier shown rather than a wrong one
+                        name = None
+                    if name:
+                        suppliers[oid] = name
+        top = [briefing_item(item, labels, trails.get(item["id"]),
+                             counterpart=suppliers.get(item["object_id"]))
                for item in (found.get("items") or [])[:bf.TOP_ITEMS]]
         return found, top, labels, int(found.get("tests_hidden") or 0)
 
@@ -2104,6 +2139,83 @@ class WorkspaceBackend:
         return m.BriefingItems(event_type=event_type, total=len(members), offset=offset,
                                items=[briefing_item(i, labels, None) for i in page],
                                more=offset + len(page) < len(members))
+
+    def suggestions(self, reader: Reader) -> m.Suggestions:
+        """What needs this reader's attention and what to do about it
+        (``operating.proactive_suggestions``): its briefing's findings merged per record,
+        ranked by the briefing's impact order, each with "ETA confirmed?", the chain of
+        reasoning with its sources, a suggested next step and a draft message worded from
+        cited values only (never sent), confidence and what is missing. Purchase order
+        trails are read as the reader within ``SUGGESTION_TRAIL_SECONDS``; a card whose
+        trail did not fit says so (low confidence), never guesses."""
+        def job(view: Any) -> m.Suggestions:
+            with view._request():
+                key = reader_key(view, ("suggestions", tuple(sorted(self.test_named()))))
+            return self.page_cache.kept(view, key, lambda: self._suggestions(view),
+                                        page_handles,
+                                        copy=lambda model: model.model_copy(deep=True))
+        return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+
+    def _suggestions(self, view: Any) -> m.Suggestions:
+        from operating import briefing as bf
+        from operating import proactive_suggestions as ps
+
+        found = briefing_aged(view.briefing(), self.today() if self.today else None)
+        if found.get("status") != "read":
+            status = "not_configured" if found.get("status") in (
+                "not_configured", "not_scheduled") else "unavailable"
+            return m.Suggestions(status=status, total=0, note=SUGGESTIONS_NOTE)
+        found, labels = briefing_without_tests(view, found, self.test_named())
+        items = list(found.get("items") or ())
+        named = self.test_named()
+        for _ in range(SUGGESTION_TEST_PASSES):
+            # every record a card would show is judged for test and placeholder records,
+            # not only the briefing's top items; a card left out lets the next one in
+            groups = ps.wanted(items)
+            heads = [g[0] for g in groups]
+            orders = [{"object_id": o} for g in groups for i in g
+                      for o in ((i.get("links") or {}).get("orders") or [i["object_id"]])
+                      if isinstance(o, str) and o not in labels]
+            labels = {**labels, **briefing_labels(view, [h for h in heads
+                                                         if h["object_id"] not in labels]
+                                                  + orders)}
+            tests = {i["object_id"] for i in items if briefing_test(i, labels, named)}
+            if not tests:
+                break
+            items = [i for i in items if i["object_id"] not in tests]
+        groups = ps.wanted(items)
+        heads = [g[0] for g in groups]
+        labels = {**labels, **briefing_labels(view, [h for h in heads
+                                                     if h["object_id"] not in labels])}
+        pos = [h["object_id"] for h in heads if h.get("object_type") == "PurchaseOrder"]
+        drafts: dict[str, Any] = {}
+        if pos:
+            late = view.gap_inbox(kinds=["late_order"], limit=SUGGESTION_DRAFTS_READ)
+            for gap in late.get("gaps") or ():
+                draft = (gap.get("follow_up") or {}).get("draft")
+                if gap.get("object_id") in pos and isinstance(draft, Mapping):
+                    drafts[gap["object_id"]] = draft
+        trails: dict[str, Any] = {}
+        with view._request():
+            deadline = time.monotonic() + SUGGESTION_TRAIL_SECONDS
+            for head in heads:
+                if head.get("object_type") != "PurchaseOrder":
+                    continue
+                left = deadline - time.monotonic()
+                if left <= 1.0:
+                    break
+                trail = briefing_trail(self, view, head, labels.get(head["object_id"]),
+                                       seconds=min(left, BRIEFING_TRAIL_SECONDS))
+                if trail is not None:
+                    trails[head["object_id"]] = trail.model_dump(mode="json")
+        built = ps.build(items, labels=labels, trails=trails, late_drafts=drafts)
+        return m.Suggestions(
+            status="read", total=built["total"], more=built["more"],
+            by_kind=built["by_kind"], collapsed=built["collapsed"],
+            items=[suggestion_model(card) for card in built["suggestions"]],
+            rank_basis=str(found.get("rank_basis") or bf.RANK_BASIS), note=SUGGESTIONS_NOTE,
+            as_of=self.freshness().as_of or found.get("as_of"),
+            complete=bool(found.get("complete")))
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
@@ -2165,8 +2277,8 @@ class WorkspaceBackend:
         if not any(own & set(members.get(s.object_id, [s.object_id])) for s in same):
             return []
         return [m.ObjectRef(object_id=s.object_id, type=s.type,
-                            label=(f"{s.label} ({s.sublabel})" if s.sublabel
-                                   and s.sublabel != s.type else s.label)[:200],
+                            label=(f"{s.label} ({tell})" if (tell := sublabel_tell(s))
+                                   else s.label)[:200],
                             open_url=s.open_url)
                 for s in same if not own & set(members.get(s.object_id, [s.object_id]))]
 
@@ -2371,7 +2483,8 @@ def briefing_labels(view: Any, items: Sequence[Mapping[str, Any]]) -> dict[str, 
 
 
 def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
-                  trail: Optional[m.EvidenceTrail]) -> m.BriefingItem:
+                  trail: Optional[m.EvidenceTrail], *,
+                  counterpart: Optional[str] = None) -> m.BriefingItem:
     """One briefing item (``operating.briefing``) as the API states it. A suspect total
     carries its reason; the app shows the reason, never the figure as fact."""
     oid, kind = item["object_id"], str(item.get("object_type") or "Object")
@@ -2385,6 +2498,7 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
         label=item["label"], evidence=item.get("evidence") or "fixture-only",
         object_id=oid, object_type=kind,
         subject_label=labels.get(oid) or f"{kind} record",
+        counterpart=counterpart,
         summary=str(item.get("summary") or "")[:300],
         why=str(item["why"])[:600] if item.get("why") else None,
         next_action=next_action,
@@ -2407,6 +2521,81 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
                           open_url=open_url(h))
                  for h in (item.get("citations") or ())[:3] if isinstance(h, str)],
         trail=trail)
+
+
+SUGGESTION_TEST_PASSES = 3        # rounds of leaving out test records a card would show
+SUGGESTION_TRAIL_SECONDS = 45.0   # every suggestion card's PO trail together
+SUGGESTION_DRAFTS_READ = 2000     # late-order gaps read for their supplier drafts
+SUGGESTIONS_NOTE = ("Suggestions only: each draft is for you to copy, edit and send "
+                    "yourself. Nothing is sent or written by the Workbench.")
+
+
+def suggestion_source(raw: Any) -> Optional[m.Source]:
+    """A card's source: as the reader's trail decided it, or (an inbox citation the reader
+    sees the finding by) labelled from its handle."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("handle"), str):
+        return None
+    handle = raw["handle"]
+    system = raw.get("system") if raw.get("system") in m.System.__args__ \
+        else system_of(handle)
+    return m.Source(system=system, handle=handle,
+                    label=str(raw.get("label") or record_words(handle))[:200],
+                    open_url=raw.get("open_url") if raw.get("label") else open_url(handle))
+
+
+def suggestion_model(card: Mapping[str, Any]) -> m.ProactiveSuggestion:
+    """One ``operating.proactive_suggestions`` card as the API states it."""
+    subject = card["subject"]
+    impact = card.get("impact") or {}
+    amount = impact.get("amount") or None
+    eta = card.get("eta")
+    draft = card.get("draft")
+    facts = []
+    if draft:
+        for fact in draft.get("facts") or ():
+            source = suggestion_source({"handle": fact.get("citation")})
+            if source is not None:
+                facts.append(m.DraftFact(fact=str(fact["fact"]), value=str(fact["value"])[:200],
+                                         source=source))
+    return m.ProactiveSuggestion(
+        id=card["id"], kind=card["kind"], event_types=list(card.get("event_types") or ()),
+        rank=int(card.get("rank") or 0), headline=str(card["headline"])[:300],
+        subject=m.ObjectRef(object_id=subject["object_id"], type=subject["object_type"]
+                            or "Object", label=str(subject["label"])[:200],
+                            open_url=object_url(subject["object_type"] or "Object",
+                                                subject["object_id"])),
+        impact=m.SuggestionImpact(
+            amount=m.Money(amount=amount["value"], currency=str(amount["currency"]))
+            if amount and amount.get("currency") else None,
+            amount_basis=amount.get("basis") if amount else None,
+            amount_suspect=str(amount["suspect"])[:200] if amount and amount.get("suspect")
+            else None, days_late=impact.get("days_late"),
+            days_at_risk=impact.get("days_at_risk"),
+            orders_at_risk=int(impact.get("orders_at_risk") or 0),
+            orders=[m.ObjectRef(object_id=o["object_id"], type=o["object_id"].split(":")[0],
+                                label=str(o.get("label") or "Customer order")[:200],
+                                open_url=object_url(o["object_id"].split(":")[0],
+                                                    o["object_id"]))
+                    for o in impact.get("orders") or ()]),
+        eta=m.SuggestionEta(answer=eta["answer"], when=eta.get("when"),
+                            in_mail=bool(eta.get("in_mail")),
+                            source=suggestion_source(eta.get("source")),
+                            text=str(eta.get("text") or "")[:300]) if eta else None,
+        reasoning=[m.SuggestionReason(text=str(r["text"])[:600],
+                                      source=suggestion_source(r.get("source")))
+                   for r in card.get("reasoning") or () if r.get("text")],
+        action=m.NextAction(text=str(card["action"]["text"])[:400] or "Open the record.",
+                            rule=str(card["action"].get("rule") or "suggestion")),
+        draft=m.SuggestionDraft(
+            channel=draft["channel"], audience=draft["audience"],
+            to=m.DraftTo(name=draft["to"].get("name"), address=draft["to"].get("address"),
+                         basis=str(draft["to"].get("basis") or ""),
+                         source=suggestion_source(draft["to"].get("source"))),
+            subject=draft["subject"], body=draft["body"], facts=facts,
+            review=draft.get("review")) if draft else None,
+        confidence=m.SuggestionConfidence(**card["confidence"]),
+        missing=[str(x)[:300] for x in card.get("missing") or ()],
+        acknowledged=bool(card.get("acknowledged")), new=bool(card.get("new")))
 
 
 def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, digest: str,
@@ -3068,13 +3257,18 @@ def _decided_sources(backend: "WorkspaceBackend", view: Any, handles: Iterable[A
     return [backend._source(view, h) for h in handles if decided.get(h) is None]
 
 
+# Same-named Business Central cards with orders a margin answer reads together at most
+# (more: each is offered as a choice).
+MAX_CARDS_TOGETHER = 4
+
+
 def find_customers(view: Any, query: str, wanted: set[str]
                    ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
     """(the customers whose name and number as this reader reads them include every
     ``wanted`` form, the customers ``plx.find`` offers for ``query``). Margins are Business
     Central figures: a name matching one customer in BC and its Portal or Sage twins is that
-    BC customer; two BC customers (two companies, two accounts) are offered, never merged
-    or picked."""
+    BC customer; two BC customers of that exact name are one customer the margin answer
+    reads together (``profit_job``); a fuzzy match is offered, never picked."""
     if not query:
         return [], []
     found = view._call("plx.find", {"query": query, "object_type": "Customer", "limit": 8})
@@ -4415,6 +4609,20 @@ def same_records(view: Any, object_ids: Sequence[str]) -> set[frozenset[str]]:
     return pairs
 
 
+# The identifier labels an order's entity carries for its party's code ("Supplier V08380":
+# the vendor's number on the order, ``operating.chunking.headers``): the party's code,
+# never the order's own (two orders of one supplier are never one record by it).
+PARTY_LABELS = ("Supplier", "Customer")
+ORDER_TYPES = frozenset({"purchase_order", "sales_order", "customer_po"})
+
+
+def party_codes(alias: Iterable[Any]) -> set[str]:
+    """The party codes among an order entity's aliases (``PARTY_LABELS``)."""
+    names = {str(a) for a in alias or () if isinstance(a, str)}
+    return {name.split(" ", 1)[1] for name in names if " " in name
+            and name.split(" ", 1)[0] in PARTY_LABELS and name.split(" ", 1)[1] in names}
+
+
 def record_codes(alias: Iterable[Any]) -> set[str]:
     """The identifiers among an entity's aliases: an alias that is also given labelled
     ("DIVE11" beside "Customer DIVE11"), as the entity index writes every identifier."""
@@ -4433,7 +4641,8 @@ def system_word(object_id: str) -> str:
 
 def suggestions(rows: Sequence[tuple], limit: int, *,
                 same_record: Callable[[Sequence[str]], set[frozenset[str]]],
-                members: Optional[dict[str, list[str]]] = None
+                members: Optional[dict[str, list[str]]] = None,
+                parties: Optional[Mapping[str, str]] = None
                 ) -> list[m.Suggestion]:
     """The ranked, collapsed suggestions of ``rows`` ((words of the phrase matched,
     object_id, entity type, name, aliases, exact, code, prefix, word, similarity), every
@@ -4445,7 +4654,11 @@ def suggestions(rows: Sequence[tuple], limit: int, *,
     name are one suggestion when they share a record code or the projection records them
     as the same record (``same_record``); others of that name stay apart, each told by
     its code and system. The suggestion opens the Portal's own copy first
-    (``OPEN_FIRST``). ``members``, when given, gets each suggestion's copies by its id."""
+    (``OPEN_FIRST``). ``members``, when given, gets each suggestion's copies by its id.
+    An order's party code (``party_codes``) is no code of its own: it never joins copies,
+    and the order says its party by name (``parties``: code -> name, as the reader may
+    read the party), the code beside it ("New Directions Aromatics (V08380)")."""
+    from operating.chunking.headers import undoubled
     best: dict[str, tuple] = {}
     for words, oid, kind, name, alias, exact, code, prefix, word, sim in rows:
         match = 0 if exact or code else 1 if prefix else 2 if word else 3
@@ -4470,18 +4683,22 @@ def suggestions(rows: Sequence[tuple], limit: int, *,
         group = groups[(item[2], normalize(item[3]))]
         if item not in group:
             continue   # already shown as a copy of an earlier one
+        order = item[2] in ORDER_TYPES
+
+        def own(alias: Any) -> set[str]:
+            return record_codes(alias) - (party_codes(alias) if order else set())
         cluster = [item]
-        codes = record_codes(item[4])
+        codes = own(item[4])
         changed = True
         while changed:   # every row reachable by a shared code or a same-record link
             changed = False
             for other in group:
                 if other in cluster:
                     continue
-                if codes & record_codes(other[4]) or any(
+                if codes & own(other[4]) or any(
                         frozenset((other[1], c[1])) in pairs for c in cluster):
                     cluster.append(other)
-                    codes |= record_codes(other[4])
+                    codes |= own(other[4])
                     changed = True
         for member in cluster:
             group.remove(member)
@@ -4493,10 +4710,15 @@ def suggestions(rows: Sequence[tuple], limit: int, *,
         object_type = lead[1].split(":", 1)[0] or "Object"
         systems = list(dict.fromkeys(system_word(c[1]) for c in cluster))
         detail = [words_of(lead[2]).capitalize()]
+        party = sorted({code for c in cluster for code in party_codes(c[4])}) if order else []
+        if party:
+            detail.append(", ".join(f"{parties[code]} ({code})" if (parties or {}).get(code)
+                                    else code for code in party[:2]))
         if codes:
             detail.append(", ".join(sorted(codes)[:2]))
         detail.append(" and ".join(systems))
-        out.append(m.Suggestion(object_id=lead[1], type=object_type, label=lead[3][:200],
+        out.append(m.Suggestion(object_id=lead[1], type=object_type,
+                                label=undoubled(lead[3])[:200],
                                 sublabel=" · ".join(detail)[:200], match=item[5],
                                 score=round(max(item[6], 1.0 if item[5] == "exact" else 0.0),
                                             3),
@@ -4544,6 +4766,16 @@ def projection_suggest(view: Any, q: str, limit: int) -> list[m.Suggestion]:
     ranked = sorted(out.values(), key=lambda s: ({"exact": 0, "prefix": 1, "fuzzy": 2}[s.match],
                                                 -s.score, s.label))
     return ranked[:limit]
+
+
+def sublabel_tell(s: m.Suggestion) -> Optional[str]:
+    """What tells a record of a shared name apart (its code and system, "C01000 · BC"),
+    without the type word the page already says ("Customer · C01000 · BC"); None when the
+    sublabel says nothing else."""
+    parts = [p.strip() for p in (s.sublabel or "").split("·") if p.strip()]
+    kind = re.sub(r"(?<!^)(?=[A-Z])", " ", s.type).lower()
+    parts = [p for p in parts if p.lower() not in {kind, s.type.lower()}]
+    return " · ".join(parts) or None
 
 
 def resolve_object(view: Any, object_type: str, object_id: str) -> str:
@@ -4725,6 +4957,14 @@ def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
     from .test_records import is_test
 
     oid, kind = page.object_id, page.type
+    also: list[str] = []
+    if kind == "Customer" and oid.split(":")[1:2] and not oid.split(":")[1].startswith("bc."):
+        # a Portal or Sage customer's margin is its Business Central customer's, found as
+        # Ask finds it (``bc_customer_of``); none found: no margin on this page
+        found = bc_customer_of(view, page)
+        if found is None:
+            return None
+        oid, also = found
     if kind not in ("Customer", "SalesOrder") or not oid.split(":")[1:2] \
             or not oid.split(":")[1].startswith("bc."):
         return None
@@ -4740,11 +4980,43 @@ def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
     named_tests = backend.test_named()
     try:
         profit = cp.profitability(view._call, customer, today=today, period=period,
-                                  focus=focus,
+                                  focus=focus, also=also,
                                   skip_order=lambda number: is_test((number,), named_tests))
     except cp.ProfitError:
         return None
     return profitability_model(backend, view, profit)
+
+
+def bc_customer_of(view: Any, page: m.ObjectPage) -> Optional[tuple[str, list[str]]]:
+    """The Business Central customer whose margin a Portal or Sage customer's page shows,
+    as Ask's margin answer finds it (``find_customers``: margins are Business Central
+    figures): its verified twin in Business Central, else the BC customer of exactly this
+    name (several of that exact name with orders: read together, ``also``, as Ask reads
+    them). A near name is never taken; none found: None. The profitability it gives
+    names and cites the BC customer, so the page says whose figures they are."""
+    from operating.customer_profit import normal_name
+
+    kind = page.object_id.split(":", 1)[0]
+    for direction in ("forward", "reverse"):
+        got = view._call("plx.around", {
+            "from": page.object_id, "tier_floor": "verified", "limit": 10, "path": [
+                {"link_type": f"{kind}.same_record_as", "direction": direction}]}) or {}
+        for obj in got.get("objects") or ():
+            other = obj.get("object_id") if isinstance(obj, Mapping) else None
+            if isinstance(other, str) and other.split(":")[1:2] \
+                    and other.split(":")[1].startswith("bc."):
+                return other, []
+    name = normal_name(page.label)
+    if not name:
+        return None
+    exact, _ = find_customers(view, name, {name})
+    exact = [c for c in exact if str(c["object_id"]).split(":")[1:2]
+             and str(c["object_id"]).split(":")[1].startswith("bc.")]
+    if len(exact) > 1:
+        exact = with_orders(view, exact)
+    if not exact or len(exact) > MAX_CARDS_TOGETHER:
+        return None
+    return str(exact[0]["object_id"]), [str(c["object_id"]) for c in exact[1:]]
 
 
 def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
@@ -5382,6 +5654,7 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
             not_found.append(missing_item(follow.get("missing"), follow.get("who_can_answer"),
                                           follow.get("why")))
     conflicts = backend._conflicts(view, page.get("conflicts") or (), label)
+    conflicts += received_before_ordered(backend, view, values, page, label)
     summary = next((a["text"] for a in verdicts if a is not lead), None) or kind
     return m.ObjectPage(object_id=oid, type=kind, label=label[:200], summary=str(summary)[:600],
                         status=status, facts=facts, timeline=timeline[:50], linked=linked,
@@ -5389,6 +5662,51 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                         not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
                         hidden=None,
                         freshness=backend.freshness(page))
+
+
+# A receipt event of an order (its goods received or posted).
+RECEIPT_EVENTS = frozenset({"Receipt.posted", "Receipt.received", "Receipt.fm_received",
+                            "Receipt.sage_received"})
+
+
+def received_before_ordered(backend: WorkspaceBackend, view: Any,
+                            values: Sequence[Mapping[str, Any]], page: Mapping[str, Any],
+                            label: str) -> list[m.Conflict]:
+    """A data conflict when the record's own order date is after a receipt its timeline
+    shows: goods cannot arrive before the order is placed, so one of the two dates is not
+    what it says (an order date that is the day the order was entered in a new system, a
+    receipt of another order of that number). Both values cited, neither trusted: never a
+    link removed or a date chosen here. Only a receipt this reader opens is compared."""
+    order = next((v for v in values if v.get("property") == "order_date"
+                  and isinstance(citation_handle(v.get("citation")), str)
+                  and re.match(r"\d{4}-\d{2}-\d{2}", str(plain(v.get("value")) or ""))), None)
+    if order is None:
+        return []
+    ordered = str(plain(order.get("value")))[:10]
+    early = []
+    for event in (page.get("timeline") or {}).get("events") or ():
+        when = event.get("at") or event.get("occurred_at") or event.get("time") \
+            if isinstance(event, Mapping) else None
+        handle = citation_handle(event.get("citation")) if isinstance(event, Mapping) else None
+        if event.get("event_type") in RECEIPT_EVENTS and isinstance(when, str) \
+                and isinstance(handle, str) and when[:10] < ordered:
+            early.append((when[:10], handle))
+    if not early:
+        return []
+    when, handle = min(early)
+    if view.access.decide([handle]).get(handle) is not None:
+        return []   # a receipt this reader may not open is never compared
+    why = (f"{len(early)} receipt(s) of this order are dated before its order date"
+           if len(early) > 1 else "a receipt of this order is dated before its order date")
+    return [m.Conflict(field="order date vs receipt date", subject=label, values=[
+        m.ConflictValue(value=ordered, trusted=False, source=backend._source(
+            view, citation_handle(order.get("citation")), fields={"order_date": ordered}),
+            why=f"The order date on the record; {why}, so it may be the day the order was "
+                "entered in this system rather than placed."),
+        m.ConflictValue(value=when, trusted=False, source=backend._source(view, handle),
+                        why="The earliest receipt against this order; goods cannot arrive "
+                            "before the order is placed, so check the receipt belongs to "
+                            "this order.")])]
 
 
 def record_fields(row: Mapping[str, Any], limit: int = 60) -> dict[str, str]:

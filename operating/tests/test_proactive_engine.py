@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from http.client import HTTPConnection
 import io
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -188,6 +189,11 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
                               audience="api:b")
     w.link("ReceiptLine.same_record_as", ids["conflict_a"], ids["conflict_b"])
     w.link("ReceiptLine.receives_line", ids["conflict_a"], disputed)
+    # one source keeps only the whole boxes of the other's 32.5: one quantity, not raised
+    halves = (w.obj("ReceiptLine", {"received_quantity": ("32.5", "box", "received")}),
+              w.obj("ReceiptLine", {"received_quantity": ("32", "box", "received")},
+                    audience="api:b"))
+    w.link("ReceiptLine.same_record_as", *halves)
     # receipt_without_qc
     ids["no_qc"] = w.obj("Receipt", {"received_date": "2026-10-10"}, markings=receipt_markings)
     inspected = w.obj("Receipt", {"received_date": "2026-10-10"})
@@ -211,6 +217,22 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
     ids["expired"] = w.obj("ForwarderQuote", {"valid_until": "2026-01-31"})
     w.obj("ForwarderQuote", {"valid_until": "2999-01-01"})
     return w, ids
+
+
+# The people exclusion of the fixture tenant: one person of ours cleared, one excluded.
+OURS_OID = "00000000-0000-4000-8000-0000000000a1"
+EXCLUDED_OID = "00000000-0000-4000-8000-0000000000e1"
+
+
+def people(*, unavailable: bool = False):
+    from integrations.people_exclusion import PeopleExclusion
+    from operating.chunking.permissions import Exclusion
+
+    guard = (PeopleExclusion(unavailable="excluded_people_oids_absent") if unavailable
+             else PeopleExclusion([EXCLUDED_OID]))
+    return Exclusion(guard, directory={"ops@synth-tenant.example": OURS_OID,
+                                       "boss@synth-tenant.example": EXCLUDED_OID},
+                     internal_domains=["synth-tenant.example"])
 
 
 def everyone(_key: str) -> bool:
@@ -237,7 +259,8 @@ class Engine(unittest.TestCase):
         moment = at or datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
         return pe.run(self.store, self.inbox, AS_OF, coverage=coverage,
                       qc_link_types=options.pop("qc_link_types", (QC_LINK,)),
-                      clock=lambda: moment, **options)
+                      clock=lambda: moment, people=options.pop("people", people()),
+                      **options)
 
     def read(self, *, reader="plx:ops", may_read=everyone, held=ALL_MARKINGS, decide=admit,
              **options) -> dict:
@@ -281,6 +304,8 @@ class DetectorTest(Engine):
                           "unit_differs": 1})
         self.assertEqual(summary["not_evaluated"]["receipt_without_qc"],
                          {"qc_link_unsettled": 1})
+        self.assertEqual(summary["not_evaluated"]["conflicting_quantity"],
+                         {"whole_part_only": 1})
         self.assertEqual(summary["not_evaluated"]["order_without_customer_po"],
                          {"not_projected": 1})
         for gap in self.read()["gaps"]:
@@ -638,7 +663,8 @@ class InboxTest(Engine):
                                             "order_without_customer_po": "not_configured",
                                             "orders_at_risk": "not_configured",
                                             "receipt_without_qc": "blocked",
-                                            "vendor_no_reply": "not_configured",
+                                            # no tenant mail directory beside the store
+                                            "vendor_no_reply": "blocked",
                                             "vendor_terms_unapplied": "not_configured",
                                             "negative_margin": "not_configured"})
         # every rule run, each complete: only then is the read complete
@@ -667,8 +693,8 @@ class InboxTest(Engine):
             now[0] = 61.0
             return {"object": {"object_id": arguments.get("object_id")}, "leads": [],
                     "conflicts": []}
-        def swallowing(_st, _as_of, call, _bound, first=()):  # as impact_chain: a failed call is
-            for _ in range(2):                         # "undetermined", the scan complete
+        def swallowing(_st, _as_of, call, _bound, first=(), many=None):  # a failed call is
+            for _ in range(2):    # "undetermined" (as impact_chain), the scan complete
                 with contextlib.suppress(Exception):
                     call("plx.process", {"object_id": "x"})
             return pe._result([])
@@ -797,7 +823,8 @@ class ServedGenerationTest(Engine):
             self.run_engine(world, ids["coverage"], at=first + timedelta(hours=1))
         shown = self.read()
         self.assertEqual(self.late_ids(shown), set())
-        self.assertEqual(shown["refreshing"], ["late_or_unconfirmed_po"])
+        # the vendor-mail rule judges the orders the late rule finds open: it waits too
+        self.assertEqual(shown["refreshing"], ["late_or_unconfirmed_po", "vendor_no_reply"])
         self.assertIn("expired_quote", {g["kind"] for g in shown["gaps"]})
         # stored, not lost: the next run over this data lists it again
         self.run_engine(world, ids["coverage"], at=first + timedelta(hours=2))
@@ -1664,6 +1691,47 @@ class HomeTest(Engine):
         seeded()[0].build(self.store)
         self.assertEqual(self.home(OPS, FakeAccess({"api:a"}))["status"], "not_scheduled")
         self.assertEqual(home_view._found(None), {"status": "not_configured"})
+
+
+def _pool_init(_spec) -> None:   # a worker without a session (spawned: by name)
+    from operating import proactive_pool as pp
+    pp._CALL = lambda _tool, _args: None
+
+
+def _die_on_two(_call, item):
+    if item == 2:
+        os._exit(1)    # the worker process dies under this item
+    return item * 10
+
+
+class PoolSizeTest(unittest.TestCase):
+
+    def test_the_pool_size_is_the_hosts_and_an_unreadable_override_runs_serially(self):
+        from operating import proactive_pool as pp
+        self.assertEqual(pp.workers({pp.WORKERS_ENV: "3"}), 3)
+        self.assertEqual(pp.workers({pp.WORKERS_ENV: "SYNTH"}), 0)   # never a guess
+        self.assertEqual(pp.workers({pp.WORKERS_ENV: "-2"}), 0)
+        self.assertTrue(1 <= pp.workers({}) <= pp.MAX_WORKERS)
+        # never more than a quarter of the free memory (nor POOL_BYTES) at WORKER_BYTES each
+        with mock.patch.object(pp, "_available_bytes", return_value=10 * pp.WORKER_BYTES), \
+                mock.patch.object(pp.os, "cpu_count", return_value=64):
+            self.assertEqual(pp.workers({}), 2)
+        with mock.patch.object(pp, "_available_bytes", return_value=10 ** 13), \
+                mock.patch.object(pp.os, "cpu_count", return_value=64):
+            self.assertEqual(pp.workers({}) * pp.WORKER_BYTES <= pp.POOL_BYTES, True)
+        self.assertIsNone(pp.from_host_config(None, Path("."), Path("."),
+                                              {pp.WORKERS_ENV: "1"}))
+
+    def test_a_dying_worker_fails_only_its_own_item(self):
+        from operating import proactive_pool as pp
+        pool = pp.ToolPool(None, 2)
+        with mock.patch.object(pp, "_init", _pool_init):
+            try:
+                self.assertEqual(pool.map(_die_on_two, [1, 2, 3, 4, 5]),
+                                 [10, pp.Failed(pp.WORKER_FAILED), 30, 40, 50])
+                self.assertEqual(pool.map(_die_on_two, [7]), [70])   # the pool goes on
+            finally:
+                pool.close()
 
 
 class LiveCheckTest(unittest.TestCase):

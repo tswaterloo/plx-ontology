@@ -965,6 +965,35 @@ class FieldPageGapTests(unittest.TestCase):
 
 
 class HostPolicyTests(unittest.TestCase):
+    def test_store_bc_units_reads_exactly_the_handles_a_bc_prefix_match_would(self):
+        # The index ranges stand for ``LIKE 'bc://%'`` (any letter case): the same units
+        # and environments, never a handle of another scheme or an object of another unit.
+        import sqlite3
+        import threading
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE objects (object_id TEXT PRIMARY KEY, audience_key TEXT)")
+        conn.execute("CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT, "
+                     "UNIQUE (l1_handle, object_id))")
+        rows = {"a": ("bc:c1/purchaseOrders", ["bc://production/c1/purchaseOrders/1",
+                                               "bc://sandbox/c1/purchaseOrders/1"]),
+                "b": ("BC:c1/vendors", ["BC://Prod/c1/vendors/9"]),
+                "c": ("bc:c2/items", ["bcx://production/c2/items/1", "bc:/0/c2/items",
+                                      "bc:/production/c2/items/1"]),
+                "d": ("bc:c3/customers", ["portal://x/1", "Bc://zz/c3/customers/2"]),
+                "e": ("portal:customers", ["bc://production/c1/customers/1"])}
+        for object_id, (key, handles) in rows.items():
+            conn.execute("INSERT INTO objects VALUES (?, ?)", (object_id, key))
+            conn.executemany("INSERT INTO object_versions VALUES (?, ?)",
+                             [(object_id, h) for h in handles])
+        like = {key: handle[len("bc://"):].split("/", 1)[0] for key, handle in conn.execute(
+            "SELECT o.audience_key, MIN(v.l1_handle) FROM objects o JOIN object_versions v "
+            "ON v.object_id = o.object_id WHERE o.audience_key LIKE 'bc:%' "
+            "AND v.l1_handle LIKE 'bc://%' GROUP BY o.audience_key")}
+        units = store_bc_units(SimpleNamespace(conn=conn, lock=threading.Lock()))
+        self.assertEqual(units, like)
+        self.assertEqual(units, {"bc:c1/purchaseOrders": "production", "BC:c1/vendors": "Prod",
+                                 "bc:c3/customers": "zz"})
+
     def test_store_held_bc_units_are_granted_by_the_live_audience_alone(self):
         w = BcWorld(self)
         units = store_bc_units(w.reader)

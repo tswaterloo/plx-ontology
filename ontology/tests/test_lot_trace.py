@@ -37,6 +37,7 @@ from ontology.core import Actor
 from ontology.project import SharePointCaptures, build_store
 from ontology.tests.test_schema_coverage import Source
 from operating import ontology_tools as ot
+from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_traverse as tt
 
 RM, PK, GOLD = ("public.receipt_raw_material", "public.receipt_packaging",
@@ -193,6 +194,88 @@ class SupplierLotOfAReceiptLine(unittest.TestCase):
         other = tools.call("plx.find", {"object_type": "ReceiptLine", "filters": [
             {"property": "supplier_lot_number", "op": "eq", "value": "gl-8"}]}, ops)
         self.assertEqual(other["status"], "not_found")
+
+
+class LotQcStatus(unittest.TestCase):
+    """FileMaker's QC status of a raw lot (``status_c``, the system of record) is
+    ``Lot.qc_status``, marked ``quality_controlled``: "how many released lots expire before
+    X" is one exact count for a reader holding the marking and none for one who does not."""
+
+    QA, OPS = Actor("plx", frozenset({"ops", "qa"})), Actor("plx", frozenset({"ops"}))
+    RELEASED = [{"property": "qc_status", "op": "eq", "value": "Released"},
+                {"property": "expiry_date", "op": "gte", "value": "2026-11-02"},
+                {"property": "expiry_date", "op": "lt", "value": "2027-01-01"}]
+
+    def tools(self, conn):
+        return ot.OntologyTools(
+            ot.StoreReader(conn), ot.ReadPolicy(
+                tenant="plx", audiences={"api:*": {"ops"}},
+                markings={"quality_controlled": frozenset({"qa"})}),
+            schema=ot.SchemaView.from_compiled(schema.load_schema()), grammar=identifiers,
+            item_gate=lambda actor, handle: True)
+
+    def store(self, rows):
+        temp, conn = build(rows)
+        self.addCleanup(temp.cleanup)
+        self.addCleanup(conn.close)
+        return conn
+
+    def count(self, tools, actor):
+        return oa.AggregateTools(tools).call("plx.aggregate", {
+            "object_type": "Lot", "filters": self.RELEASED,
+            "measure": {"op": "count_distinct", "property": "lot_number"}}, actor)
+
+    def test_released_lots_expiring_are_counted_once_and_only_with_the_marking(self):
+        def lot(index, number, status, expiry):
+            return {**raw(index, number), "status_c": status, "expirydate": expiry}
+        conn = self.store({
+            RM: [lot(1, "L1", "Released", "2026-11-20"), lot(2, "L1", " Released ", "2026-11-20"),
+                 lot(3, "L2", "Rejected", "2026-11-25"), lot(4, "L3", "Released", "2027-01-01"),
+                 lot(5, "L4", "Quarantine", "2026-12-01"), lot(6, "L5", "Released", "2026-12-31"),
+                 lot(7, "L6", None, "2026-11-30")],
+            PK: [{"id": 21, "idreceipt": 6, "idpogenitem": 8, "sumqty": "5",
+                  "lotnoqc": "PK-9", "expirydate": "2026-11-20", "status_c": ""}]})
+        statuses = dict(conn.execute(
+            "SELECT object_id, value FROM object_values WHERE property = 'qc_status'"))
+        self.assertEqual(statuses, {
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":1}': "Released",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":2}': "Released",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":3}': "Rejected",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":4}': "Released",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":5}': "Quarantine",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":6}': "Released",
+            'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":7}': None})
+        tools = self.tools(conn)
+        out = self.count(tools, self.QA)
+        [group] = out["groups"]
+        self.assertEqual(group["value"], "2", out)        # L1 once, L5; not L3 (the bound)
+        self.assertTrue(out["completeness"]["complete"])
+        # Without quality_controlled the status decides nothing and is never shown.
+        hidden = self.count(tools, self.OPS)
+        self.assertTrue(hidden["partial"])
+        self.assertFalse(hidden["completeness"]["complete"])
+        self.assertIn("marking_withheld", {g["reason"] for g in hidden["gaps"]})
+        shown = tools.call("plx.object", {
+            "object_id": 'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":3}'}, self.OPS)
+        self.assertNotIn("qc_status", {v["property"] for v in shown["values"]})
+        self.assertNotIn("Rejected", json.dumps(shown))
+        qa = tools.call("plx.object", {
+            "object_id": 'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":3}'}, self.QA)
+        self.assertEqual({v["property"]: v["value"] for v in qa["values"]}[
+            "qc_status"]["untrusted_text"], "Rejected")
+
+    def test_every_raw_row_projects_its_status_once_at_any_cardinality(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                temp, conn = build({RM: [{**raw(i, f"SUP-{i:03d}"), "status_c": "Released"}
+                                         for i in range(1, n + 1)]})
+                rows = list(conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE property = 'qc_status'"))
+                conn.close()
+                temp.cleanup()
+                self.assertEqual(len(rows), n)
+                self.assertEqual(len({oid for oid, _ in rows}), n)
+                self.assertEqual({value for _, value in rows}, {"Released"})
 
 
 class PropertyReferenceFailsClosed(unittest.TestCase):

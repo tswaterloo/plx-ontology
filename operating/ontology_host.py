@@ -212,15 +212,24 @@ def live_lookups(runtime: Any, *, bc: bool = True,
     return lookups
 
 
+# The versions whose handle starts ``bc://`` in any letter case (what ``LIKE 'bc://%'``
+# matches), as index ranges: ``[p, p[:-1] + '0')`` holds exactly the strings starting with
+# ``p`` (``0`` follows ``/``). A ``LIKE`` read every version's handle in the index
+# (11.6 million on generation 7, ~40 s at every host start); the ranges read the BC ones.
+_BC_HANDLE_RANGES = " OR ".join(
+    f"(v.l1_handle >= '{p}' AND v.l1_handle < '{p[:-1]}0')"
+    for p in ("bc://", "bC://", "Bc://", "BC://"))
+
+
 def store_bc_units(reader: StoreReader) -> dict[str, str]:
     """BC capture units a store holds (``bc:<company>/<entitySet>``) -> the BC
     environment their capture handles name (``bc://<environment>/...``)."""
     units: dict[str, str] = {}
     with reader.lock:
         rows = reader.conn.execute(
-            "SELECT o.audience_key, MIN(v.l1_handle) FROM objects o JOIN object_versions v "
-            "ON v.object_id = o.object_id WHERE o.audience_key LIKE 'bc:%' "
-            "AND v.l1_handle LIKE 'bc://%' GROUP BY o.audience_key").fetchall()
+            "SELECT o.audience_key, MIN(v.l1_handle) FROM object_versions v JOIN objects o "
+            "ON o.object_id = v.object_id WHERE o.audience_key LIKE 'bc:%' "
+            f"AND ({_BC_HANDLE_RANGES}) GROUP BY o.audience_key").fetchall()
     for key, handle in rows:
         units[key] = handle[len("bc://"):].split("/", 1)[0]
     return units
@@ -605,6 +614,9 @@ class CaseHostTools:
             else:   # before opening: a swap in between is seen by the next request
                 self._store_identity = _file_identity(store)
             reader = self._reader = StoreReader.open(store)
+            # a call's time limit interrupts a store statement still running at it
+            from .call_limits import interruptible
+            interruptible(reader.conn)
             # A host whose Portal its own ingest captures and that holds no Portal client
             # serves the mirror as that capture, judged by the capture's bound, never
             # refreshed by this reader (``MirrorLookup(captured_bound=)``).

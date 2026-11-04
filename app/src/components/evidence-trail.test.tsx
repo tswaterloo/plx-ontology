@@ -74,6 +74,33 @@ describe("EvidenceTrailCard", () => {
     expect(within(card).getByTestId("trail-hidden")).toHaveTextContent("2 more steps in places you can't open.");
   });
 
+  it("says an undetermined verdict in plain words, keeps the late list's own check beside it, and never repeats it as a gap", () => {
+    const live = "Lateness is not stated: the due dates are not proven complete or readable: the portal_api capture is stale; lead carrier: the portal_api capture is stale; a PurchaseOrder.same_record_as link below the tier floor (lead) is no.";
+    const undetermined: PoTrail = {
+      ...po,
+      state: "undetermined",
+      days_late: null,
+      verdict: live,
+      eta: null,
+      steps: [
+        po.steps![0],
+        { kind: "verdict", at: "2099-02-03", title: "On your late list as of 2099-02-03: 112 days late. An open purchase order needed by 2099-01-15 has no supplier confirmation.", detail: "The late list's own check when it last ran; the verdict below is read now.", source: src("bc://p/po/1", "BC production", "BC"), check: "computed_from_cited_records" },
+        { kind: "verdict", at: null, title: live, detail: null, source: null, check: "not_established" },
+      ],
+      not_found: [{ what: "Whether this purchase order is late", where_it_would_live: "the due dates are not proven complete or readable: the portal_api capture is stale; lead carrier: the portal_api capture is stale; a PurchaseOrder.same_record_as link below the tier floor (lead) is not counted" }],
+      next_action: null,
+    };
+    render(<EvidenceTrailCard trail={{ ...trail, trails: [undetermined] }} />);
+    const card = screen.getByTestId("evidence-trail");
+    const verdict = within(card).getByTestId("trail-verdict");
+    expect(verdict).toHaveTextContent("Can't say yet whether it's late: not every due date could be confirmed: the Portal data we read may be out of date; a possible match to another copy of this order isn't confirmed.");
+    // the late list's check is shown beside the live verdict (the server adds it when they differ), never dropped
+    expect(within(verdict).getByTestId("trail-verdict-beside")).toHaveTextContent("On your late list as of 3 Feb 2099: 112 days late.");
+    expect(card).not.toHaveTextContent(/portal_api|tier floor|lead carrier|same_record_as/);
+    // the gap that only restates the verdict is not said twice
+    expect(card).not.toHaveTextContent("Whether this purchase order is late");
+  });
+
   it("never links an unsafe source URL", () => {
     const { container } = render(<EvidenceTrailCard trail={trail} />);
     expect(container.querySelector("a[href^='javascript']")).toBeNull();

@@ -252,6 +252,7 @@ class FixtureBackend(unittest.TestCase):
         for path, params in (("/api/suggest", {"q": case_fixtures.PO_NUMBER}),
                              ("/api/suggest", {"q": "Synthetic Botle"}),
                              ("/api/home", None), ("/api/briefing", None),
+                             ("/api/suggestions", None),
                              (f"/api/object/PurchaseOrder/{case_fixtures.PO_NUMBER}", None),
                              ("/api/object/PurchaseOrder/" + po["object_id"], None),
                              *((f"/api/object-section/{name}/PurchaseOrder/{ref}", None)
@@ -338,6 +339,16 @@ class FixtureBackend(unittest.TestCase):
         # the late count is Home's
         home = self.ops.client.get("/api/home").json()
         self.assertEqual(ops["late_total"], home["needs_attention"]["late_total"])
+        # a late purchase order names its supplier as Home's late list names it; nothing
+        # else is given one
+        listed = {p["object_id"]: p.get("supplier") for p in home["needs_attention"]["late_pos"]}
+        for item in ops["items"]:
+            if item["object_type"] != "PurchaseOrder":
+                self.assertIsNone(item.get("counterpart"))
+            elif item["object_id"] in listed and listed[item["object_id"]]:
+                self.assertEqual(item["counterpart"], listed[item["object_id"]])
+        self.assertTrue(any(i.get("counterpart") for i in ops["items"]
+                            if i["object_id"] in listed), ops["items"])
         self.assertTrue(all(c["words"] for c in ops["checks"]))
         # seen: the next read says when, and nothing first seen before it is new
         seen = self.ops.client.post("/api/briefing/seen", headers={
@@ -345,6 +356,26 @@ class FixtureBackend(unittest.TestCase):
         self.assertTrue(seen["ok"])
         again = self.ops.client.get("/api/briefing").json()
         self.assertEqual((again["last_visit"], again["new_since_visit"]), (seen["at"], 0))
+
+    def test_suggestions_draft_from_what_the_reader_sees_and_never_send(self):
+        ops = self.ops.client.get("/api/suggestions").json()
+        m.Suggestions.model_validate(ops)
+        self.assertEqual((ops["status"], ops["sent"]), ("read", False))
+        self.assertGreater(ops["total"], 0)
+        briefing = self.ops.client.get("/api/briefing").json()
+        # every briefing finding is on a card or counted by type: none dropped
+        self.assertLessEqual(ops["total"] + sum(ops["collapsed"].values()), briefing["count"])
+        for card in ops["items"]:
+            self.assertTrue(card["action"]["suggestion_only"])
+            self.assertEqual((card["draft"]["sent"], card["draft"]["status"]),
+                             (False, "draft_not_sent"))
+            self.assertIn(card["confidence"]["level"], ("high", "medium", "low"))
+            for fact in card["draft"]["facts"]:   # each stated fact opens for this reader
+                self.assertNotEqual(self.ops.client.get(
+                    "/api/source", params={"handle": fact["source"]["handle"]}).status_code,
+                    404, fact)
+        out = self.outsider.client.get("/api/suggestions").json()
+        self.assertEqual((out["total"], out["items"], out["collapsed"]), (0, [], {}))
 
     def test_show_all_pages_every_late_order_and_never_another_readers(self):
         home = self.ops.client.get("/api/home").json()
@@ -1096,6 +1127,33 @@ class SuggestionRankingTests(unittest.TestCase):
         # only rows the reader was shown are asked about
         self.assertTrue(all(ids <= {row[1] for row in rows} for ids in asked))
 
+    def test_an_order_says_its_supplier_by_name_and_never_joins_by_its_code(self):
+        # search showed "PO PO100040 · Purchase order · V08380 · BC": the label doubled at
+        # its source and the vendor's code where its name belongs
+        r = self.row
+        rows = [r(1, 'PurchaseOrder:bc.purchase_orders:{"id":"p1"}', "purchase_order",
+                  "PO PO9001", ["PO9001", "V0001", "Supplier V0001"], exact=True),
+                r(1, 'PurchaseOrder:bc.purchase_orders:{"id":"p2"}', "purchase_order",
+                  "PO PO9001", ["PO9001", "V0001", "Supplier V0001"], exact=True),
+                r(1, 'Supplier:bc.vendors:{"id":"v1"}', "supplier", "Synthetic Oils Ltd",
+                  ["V0001", "Supplier V0001"], prefix=True)]
+        out = be.suggestions(rows, 10, same_record=lambda ids: set(),
+                             parties={"V0001": "Synthetic Oils Ltd"})
+        orders = [s for s in out if s.type == "PurchaseOrder"]
+        # two orders of one supplier sharing a number are two records, not copies
+        self.assertEqual(len(orders), 2)
+        self.assertEqual({(s.label, s.sublabel) for s in orders}, {(
+            "PO9001", "Purchase order · Synthetic Oils Ltd (V0001) · BC")})
+        # the supplier itself keeps its own code; a name the reader may not read: the code
+        supplier = next(s for s in out if s.type == "Supplier")
+        self.assertEqual(supplier.sublabel, "Supplier · V0001 · BC")
+        out = be.suggestions(rows[:1], 10, same_record=lambda ids: set(), parties={})
+        self.assertEqual(out[0].sublabel, "Purchase order · V0001 · BC")
+        from operating.chunking.headers import id_label
+        self.assertEqual((id_label("petra_po", "PO9001"), id_label("so_number", "OR77"),
+                          id_label("customer_po", "10011")),
+                         ("PO9001", "SO OR77", "Customer PO 10011"))
+
     def test_phrases_are_the_trailing_words_longest_first(self):
         self.assertEqual([p for _, p in be.suggest_phrases("What did we tell Three Ships")],
                          ["we tell three ships", "tell three ships", "three ships", "ships"])
@@ -1202,12 +1260,12 @@ class LateRowAndSameNameTests(unittest.TestCase):
 
     def test_the_other_customer_of_the_name_is_named_never_a_copy(self):
         everyone = [self.PORTAL, self.BC_COPY, self.OTHER, "loc"]
-        other = [(self.OTHER, "Diversified (Customer · C01100 · BC)")]
+        other = [(self.OTHER, "Diversified (C01100 · BC)")]   # the type word once, on the page
         self.assertEqual(self.same_name(self.PORTAL, everyone), other)
         # opened at the BC copy (one record by its code): the Portal row is not "another"
         self.assertEqual(self.same_name(self.BC_COPY, everyone), other)
         self.assertEqual(self.same_name(self.OTHER, everyone),
-                         [(self.PORTAL, "Diversified (Customer · DIVE11 · BC and Portal)")])
+                         [(self.PORTAL, "Diversified (DIVE11 · BC and Portal)")])
         # a twin recorded on the page is never listed as another customer
         self.assertEqual(self.same_name(self.PORTAL, [self.PORTAL, self.OTHER],
                                         also_in=[self.OTHER]), [])
@@ -1412,3 +1470,77 @@ class SearchDefaultTests(unittest.TestCase):
         from operating.search import plug
         with mock.patch.dict(os.environ, off, clear=False):
             self.assertFalse(plug.enabled())
+
+
+class RecordTruthTests(unittest.TestCase):
+    """A CEO walk of gen 7: a PO whose receipts (Apr 2025) precede its order date (Mar 2026)
+    showed both without a word, and a Portal customer's page showed no margin while Ask
+    stated the Business Central customer's. Stubbed reads; evidence label: isolated-fixture."""
+
+    PO = "bc://production/c/purchaseOrders/p1@g"
+    RECEIPT = "bc://production/c/purchaseReceipts/r1@g"
+
+    def backend(self):
+        return SimpleNamespace(_source=lambda view, handle, **kw: m.Source(
+            system="BC", handle=handle, label="BC", fields=kw.get("fields")))
+
+    def view(self, refused=()):
+        return SimpleNamespace(access=SimpleNamespace(decide=lambda handles: {
+            h: ("withheld" if h in refused else None) for h in handles}))
+
+    def page(self, *receipts):
+        return {"timeline": {"events": [
+            {"event_type": "Receipt.posted", "at": day, "citation": {"l1_handle": h}}
+            for day, h in receipts] + [
+            {"event_type": "PurchaseOrder.issued", "at": "2020-01-01",
+             "citation": {"l1_handle": self.PO}}]}}
+
+    def test_a_receipt_before_the_order_date_is_a_cited_conflict_never_a_choice(self):
+        values = [{"property": "order_date", "value": "2099-03-28",
+                   "citation": {"l1_handle": self.PO, "field_path": "row.orderDate"}}]
+        page = self.page(("2098-04-22", self.RECEIPT), ("2098-04-14", self.RECEIPT),
+                         ("2099-05-01", self.RECEIPT))
+        (found,) = be.received_before_ordered(self.backend(), self.view(), values, page, "PO9")
+        self.assertEqual(found.field, "order date vs receipt date")
+        self.assertEqual([(v.value, v.source.handle, v.trusted) for v in found.values],
+                         [("2099-03-28", self.PO, False), ("2098-04-14", self.RECEIPT, False)])
+        self.assertIn("2 receipt(s)", found.values[0].why)
+        # receipts after the order, no order date, or a receipt the reader may not open:
+        # nothing said
+        self.assertEqual(be.received_before_ordered(
+            self.backend(), self.view(), values, self.page(("2099-05-01", self.RECEIPT)),
+            "PO9"), [])
+        self.assertEqual(be.received_before_ordered(self.backend(), self.view(), [], page,
+                                                    "PO9"), [])
+        self.assertEqual(be.received_before_ordered(
+            self.backend(), self.view(refused={self.RECEIPT}), values, page, "PO9"), [])
+
+    def test_a_portal_customers_margin_is_its_bc_customers_as_ask_finds_it(self):
+        portal = 'Customer:portal.app_customer:{"id":"c1"}'
+        bc1, bc2 = 'Customer:bc.customers:{"id":"b1"}', 'Customer:bc.customers:{"id":"b2"}'
+        twins: dict = {}
+        named: list = []
+
+        def call(name, args):
+            if name == "plx.around" and "same_record_as" in args["path"][0]["link_type"]:
+                return {"objects": [{"object_id": o} for o in twins.get(
+                    (args["from"], args["path"][0]["direction"]), ())]}
+            if name == "plx.around":   # every card has orders
+                return {"objects": [{"object_id": "SalesOrder:bc.sales_orders:{}"}]}
+            if name == "plx.find":
+                return {"candidates": [{"object": {"object_id": o, "object_type": "Customer",
+                                                   "display": "Synthetic Pet INC"}}
+                                       for o in named]}
+            raise AssertionError(name)
+        view = SimpleNamespace(_call=call)
+        page = SimpleNamespace(object_id=portal, type="Customer", label="Synthetic Pet INC")
+        with mock.patch.object(be, "customer_names",
+                               lambda view, c: {"synthetic pet"}):
+            self.assertIsNone(be.bc_customer_of(view, page))   # no BC customer: no margin
+            named[:] = [bc1, bc2]   # two BC cards of the exact name: read together
+            self.assertEqual(be.bc_customer_of(view, page), (bc1, [bc2]))
+            twins[(portal, "reverse")] = [bc2]   # a verified twin wins over the name
+            self.assertEqual(be.bc_customer_of(view, page), (bc2, []))
+        with mock.patch.object(be, "customer_names", lambda view, c: {"synthetic pets"}):
+            twins.clear()
+            self.assertIsNone(be.bc_customer_of(view, page))   # a near name: never taken

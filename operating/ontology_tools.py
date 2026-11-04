@@ -126,6 +126,7 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 from contextvars import ContextVar
+import dataclasses
 from dataclasses import dataclass, field
 import datetime as dt
 import functools
@@ -256,6 +257,11 @@ FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
 SCAN_CURSOR_PREFIX = "s1."  # a filter listing's resumable scan cursor
 CURSOR_MAX_CHARS = 512  # the contract's cursor bound (ontology_tool_contracts.json)
 SCAN_ROW_BUDGET = 50000  # rows read per search, item-ACL denials included
+# Word-index rows past which a display-text pass reads its candidate rows from the
+# layout index first (``StoreReader._layout_candidates``), and how many of them one
+# query then reads.
+TEXT_LAYOUT_NARROW_ROWS = 5000
+TEXT_LAYOUT_CHUNK = 2000
 SET_TTL_SECONDS = 1800.0
 MAX_SETS = 256
 MAX_SET_OBJECTS = 5000
@@ -836,6 +842,44 @@ class StoreReader:
             "ORDER BY i.object_id, i.identifier_kind, i.normalized",
             scope.params(ids=json.dumps(list(object_ids)))))
 
+    def _text_layouts(self, properties: Sequence[str] | None) -> list[int]:
+        """The value layouts a text pass can match: those holding one of ``properties``
+        (None: those holding a text value). A cell outside them never passes the pass's
+        own property or type test, so this is a necessary condition, never a new one."""
+        if properties is None:
+            where, params = "k.value_type = 'text'", {}
+        else:
+            where, params = ("vf.property IN (SELECT value FROM json_each(:props))",
+                             {"props": json.dumps(sorted(set(properties)))})
+        return [row[0] for row in self.conn.execute(
+            "SELECT DISTINCT lf.layout FROM value_layout_fields lf "
+            "JOIN value_fields vf ON vf.field = lf.field JOIN value_kinds k ON k.kind = lf.kind "
+            "WHERE " + where + " ORDER BY lf.layout", params)]
+
+    def _layout_candidates(self, words: str, layouts: Sequence[int], after: int
+                           ) -> list[int] | None:
+        """The value rows past ``after`` the word index matches whose cell has one of
+        ``layouts``, in row order, read from the layout index (one sequential range per
+        layout) instead of one random cell read per word match; None when the word index
+        matches too few rows for that to pay (``TEXT_LAYOUT_NARROW_ROWS``) or the store
+        cannot read it that way. ``+c.rowid`` keeps the plan walking each layout's range
+        and testing the word matches as a set (cold "470": 1.5 s; probing each layout per
+        match: 2.5 s)."""
+        try:
+            hits = self.conn.execute(
+                "SELECT count(*) FROM value_text WHERE value_text MATCH :words "
+                "AND rowid > :after", {"words": words, "after": after}).fetchone()[0]
+            if hits < TEXT_LAYOUT_NARROW_ROWS:
+                return None
+            return sorted(row[0] for row in self.conn.execute(
+                "SELECT c.rowid FROM value_cells c INDEXED BY value_cells_by_layout "
+                "WHERE c.layout IN (SELECT value FROM json_each(:layouts)) "
+                "AND c.rowid > :after AND +c.rowid IN (SELECT rowid FROM value_text "
+                "WHERE value_text MATCH :words AND rowid > :after)",
+                {"layouts": json.dumps(list(layouts)), "after": after, "words": words}))
+        except sqlite3.OperationalError:
+            return None   # no such index or plan: the word index drives the pass
+
     def text_matches(self, scope: _Scope, words: str,
                      typed_properties: Sequence[str] | None, after: int, batch: int, *,
                      beside: bool = False, object_type: str | None = None
@@ -844,21 +888,49 @@ class StoreReader:
         ``value_text``) among the given ``Type.property`` pairs (``beside``: every other
         text value), or among every text value when None; keyset-paged by the value row
         number. Every permission and time predicate is in the WHERE clause, so a denied
-        row never takes a slot of ``batch``."""
+        row never takes a slot of ``batch``.
+
+        A word match's cell is first tested against the layouts the pass can match
+        (``_text_layouts``: the declared properties, else text values) before its value,
+        object and permission rows are read; among declared properties, a word matching
+        many rows is intersected with the layout index first (``_layout_candidates``),
+        so a common number costs one index range per property, not one random read per
+        row that holds it. Both only skip rows the pass's own predicates reject: the
+        rows returned, their order and the page are those of the plain index scan."""
         typed = "(o.object_type || '.' || v.property) IN (SELECT value FROM json_each(:typed)) "
         where = ("AND v.value_type = 'text' " if typed_properties is None else
                  "AND v.value_type = 'text' AND NOT " + typed if beside else "AND " + typed)
         if object_type is not None:
             where += "AND o.object_type = :type "
-        return list(self.conn.execute(
-            "SELECT v.*, o.object_type, o.binding_id AS object_binding, o.audience_key "
-            "FROM value_text f JOIN object_values_numbered v ON v.row_no = f.rowid "
-            "JOIN objects o ON o.object_id = v.object_id "
-            "WHERE value_text MATCH :words AND f.rowid > :after AND " + self._VISIBLE_OBJECT
-            + "AND " + self._at("v") + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
-            + where + "ORDER BY f.rowid LIMIT :batch",
-            scope.params(words=words, after=after, batch=batch, type=object_type,
-                         typed=json.dumps(list(typed_properties or ())))))
+        named = typed_properties is not None and not beside
+        layouts = self._text_layouts(
+            sorted({pair.split(".", 1)[-1] for pair in typed_properties or ()})
+            if named else None)
+        params = scope.params(words=words, after=after, batch=batch, type=object_type,
+                              typed=json.dumps(list(typed_properties or ())),
+                              layouts=json.dumps(layouts))
+        tail = ("JOIN object_values_numbered v ON v.row_no = f.rowid "
+                "JOIN objects o ON o.object_id = v.object_id WHERE {match} f.rowid > :after AND "
+                + self._VISIBLE_OBJECT + "AND " + self._at("v")
+                + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
+                + where + "ORDER BY f.rowid LIMIT :batch")
+        select = "SELECT v.*, o.object_type, o.binding_id AS object_binding, o.audience_key "
+        candidates = self._layout_candidates(words, layouts, after) if named else None
+        if candidates is None:
+            return list(self.conn.execute(
+                select + "FROM value_text f JOIN value_cells cell ON cell.rowid = f.rowid "
+                "AND cell.layout IN (SELECT value FROM json_each(:layouts)) "
+                + tail.format(match="value_text MATCH :words AND"), params))
+        out: list[sqlite3.Row] = []
+        for start in range(0, len(candidates), TEXT_LAYOUT_CHUNK):
+            out.extend(self.conn.execute(
+                select + "FROM (SELECT value AS rowid FROM json_each(:rows)) f "
+                + tail.format(match=""),
+                dict(params, rows=json.dumps(candidates[start:start + TEXT_LAYOUT_CHUNK]),
+                     batch=batch - len(out))))
+            if len(out) >= batch:
+                break
+        return out
 
     def chunk_matches(self, scope: _Scope, words: str, object_type: str | None, after: int,
                       batch: int) -> list[sqlite3.Row]:
@@ -2487,6 +2559,38 @@ class OntologyTools:
                         if isinstance(wanted, list) else stored(kind, wanted)})
         return out
 
+    def _require_co_sourced(self, object_type: str, filters: Sequence[Mapping[str, Any]]
+                            ) -> None:
+        """Refuse filters no record can pass together. Each record of a type is one
+        binding's row and holds only the properties that binding sources; every op but
+        ``absent`` needs a value, so filters on properties no one binding sources both
+        (a BC receipt's number and a Portal receipt's received date) match nothing, and
+        their answer would read as a true zero. Refused with the bindings each comes
+        from (``filters_never_co_sourced``), never answered as none."""
+        if self.schema is None:
+            return
+        props = {p["name"]: p for p in self.schema.object_types[object_type]
+                 .get("properties", ()) if isinstance(p, Mapping)}
+        held: dict[str, set[str]] = {}
+        for f in filters:
+            sources = (props.get(f["property"]) or {}).get("sources")
+            if f.get("op") == "absent" or not sources:
+                continue
+            held[f["property"]] = {s.get("binding") for s in sources
+                                   if isinstance(s, Mapping)}
+        common: set[str] | None = None
+        for name, bindings in held.items():
+            common = set(bindings) if common is None else common & bindings
+            if not common:
+                said = "; ".join(f"{n} from {', '.join(sorted(b))}" for n, b in held.items())
+                raise ToolError(
+                    "filters_never_co_sourced",
+                    f"no {object_type} record can pass these filters together: no source "
+                    f"records all of {', '.join(held)} ({said})"[:600],
+                    "filter on properties one source records together; a date another "
+                    "system records is its event (plx.schema event_types, then plx.timeline "
+                    "of the records)")
+
     def _filters_carried(self, object_type: str, filters: Sequence[Mapping[str, Any]],
                          sources: Sequence[str]) -> bool:
         """Whether every property a filter-only find tested was read in full (see
@@ -2822,6 +2926,7 @@ class OntologyTools:
                 raise ToolError("unknown_property",
                                 f"{object_type} declares no property {', '.join(unknown)}",
                                 _valid_properties(object_type, declared))
+            self._require_co_sourced(object_type, filters)
             filters = self._filters_as_stored(object_type, filters)
         notes: list[dict] = []
         keys: list[_Key] = []
@@ -3628,7 +3733,29 @@ class OntologyTools:
         readable objects toward its cap; every match is returned (none dropped).
         Third: the filtered properties a verdict was undecided on (``_filter_objects``).
         Fourth: where a scan cut at its cap or row budget stopped (the last object id
-        it decided on; the next scan starts after it), None when it reached the end."""
+        it decided on; the next scan starts after it), None when it reached the end.
+
+        Inside a plan run (``run_memo``: one reader, one policy, one generation) a segment
+        is scanned once: the pages of one listing resume in the same segment (a cursor's
+        offset), and each would otherwise scan it again from its start."""
+        kept = run_memo_for(("filter_segment", id(self), id(self.store.conn), scope.actor,
+                             scope.audience_keys, scope.held, scope.marking_sets,
+                             scope.sources, scope.at))
+        key = (object_type, json.dumps(filters, sort_keys=True, default=str), start)
+        if kept is not None and key in kept:
+            # copies: a caller marks its matches (tier, why_not), never the kept ones
+            out, truncated, undecided, position = kept[key]
+            return ([dataclasses.replace(m) for m in out], truncated, set(undecided),
+                    position)
+        found = self._scan_filters(scope, object_type, filters, start)
+        if kept is not None:
+            kept[key] = (tuple(dataclasses.replace(m) for m in found[0]), found[1],
+                         frozenset(found[2]), found[3])
+        return found
+
+    def _scan_filters(self, scope: _Scope, object_type: str, filters: list[dict],
+                      start: str) -> tuple[list[_Match], bool, set[str], str | None]:
+        """``_match_filters``'s scan of one segment, never kept."""
         matched: list[str] = []
         undecided: set[str] = set()
         versions: dict[str, sqlite3.Row] = {}

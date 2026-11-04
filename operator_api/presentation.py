@@ -433,6 +433,13 @@ def _listed(items: list[str]) -> str:
         if items else ""
 
 
+def _either(items: list[str]) -> str:
+    """"a", "a or b", "a, b or c"."""
+    items = [i.strip() for i in items if i.strip()]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1] \
+        if items else ""
+
+
 # What a record held but short of its step has not done yet, by its kind: an order is
 # issued, a receipt or an invoice is posted, a shipment ships.
 HELD_WORDS = ((re.compile(r"\border\b", re.I), "not issued yet"),
@@ -463,14 +470,17 @@ def status_words(text: str) -> str:
         head = head.strip().lower()
         items = [i for i in rest.split(", ") if i.strip()]
         if head == "missing" and items:
-            said.append(f"Not on record yet: {_listed(items)}.")
+            said.append(f"No {_either(items)} on record yet.")
         elif head.startswith("held, its status not reached yet") and items:
             by: dict[str, list[str]] = {}
             for item in items:
                 by.setdefault(held_words(item), []).append(item)
             said += [f"On record but {words}: {_listed(group)}." for words, group in by.items()]
         elif head == "not established" and items:
-            said.append(f"Not confirmed either way: {_listed(items)}.")
+            # "vendor shipped" is an event: whether it happened is what is not known
+            said.append(f"Not known yet whether the {_either(items)}."
+                        if all(re.search(r"\w+ed$", i.strip()) for i in items)
+                        else f"Not known yet: {_listed(items)}.")
         elif re.fullmatch(r"\d+ more steps? not visible to you", part.strip()):
             n = int(part.split()[0])
             said.append(f"{n} more step{'s are' if n != 1 else ' is'} in places you can't "

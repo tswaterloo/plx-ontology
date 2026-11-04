@@ -40,7 +40,11 @@ Bounds: read-only SQL on the kept capture reader, newest versions first in chunk
 ``CHUNK`` ids until ``BUDGET_SECONDS`` or the pin is reached; at most ``MAX_ADDED`` (and
 the call's ``limit``) messages are added, newest received first. A scan stopped by the
 time bound or more matches than are added is a ``newer_mail_cut`` gap and the answer is
-incomplete: newer mail is never silently left out. Projected documents are never
+incomplete: newer mail is never silently left out. A scan the time bound stops is also
+``searched.capture_scan_cut`` (a message not read may be newer than every one listed).
+``holds_recipients`` tells a generation that projects no mail recipients (one built
+before they were mapped), whose participant search lists only what the participant sent
+among the mail it pinned. Projected documents are never
 displaced (the page's cursor still continues the projected list).
 
 Evidence label: isolated-fixture (``operating/tests/test_mail_topup.py``); the live path
@@ -53,6 +57,7 @@ import datetime as dt
 import json
 import re
 import sqlite3
+import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -178,18 +183,42 @@ def scan(db: sqlite3.Connection, *, pin: int, mailboxes: Sequence[str],
     top = db.execute("SELECT MAX(version_id) FROM messages").fetchone()[0]
     if top is None or top <= pin:
         return [], False
+    try:
+        path = next(row[2] for row in db.execute("PRAGMA database_list") if row[1] == "main")
+    except (sqlite3.Error, StopIteration):
+        path = None
+    key = None if not path else (
+        path, _written(path), top, pin, tuple(mailboxes), tuple(sorted(addresses)),
+        tuple(sorted(domains)), tuple(terms or ()), since, until,
+        None if tenant is None else tuple(sorted(tenant)))
+    kept = _SCANNED.get(key) if key is not None else None
+    if kept is not None and kept[0] > clock():
+        return list(kept[1]), False
     needles = sorted(addresses | domains)
     marks = ",".join("?" * len(mailboxes))
     # ``+mailbox_id``: never the mailbox index, which would read every version of the
     # granted mailboxes for each chunk; each statement reads its version-id range alone.
     where = [f"+mailbox_id IN ({marks})", "superseded_at IS NULL", "removed_reason IS NULL"]
     params: list[Any] = list(mailboxes)
-    if needles:   # addresses are stored lower-case (graph_read._addresses)
-        where.append("(" + " OR ".join("instr(record, ?) > 0" for _ in needles) + ")")
-        params += needles
-    for term in terms or ():
-        where.append("instr(lower(record), ?) > 0")
+    # Each ``instr`` reads every record of the range once (a delta of 800k versions:
+    # about a second each; SQLite runs it outside the interpreter lock, so concurrent
+    # answers' scans run in parallel), and SQLite tests them in the order written: a
+    # term of digits (an order number: rare, and case-free, so no ``lower``) first, so
+    # the needles and the word terms read only the records holding it. A needle holding
+    # another needle ("pat@acme.com" beside "acme.com") matches nothing more: one pass
+    # each for the rest.
+    digits = [term for term in terms or () if term.isdigit()]
+    for term in digits:
+        where.append("instr(record, ?) > 0")
         params.append(term)
+    passes = [n for n in needles if not any(o != n and o in n for o in needles)]
+    if passes:   # addresses are stored lower-case (graph_read._addresses)
+        where.append("(" + " OR ".join("instr(record, ?) > 0" for _ in passes) + ")")
+        params += passes
+    for term in terms or ():
+        if term not in digits:
+            where.append("instr(lower(record), ?) > 0")
+            params.append(term)
     # A message any of whose versions the generation pinned is the projection's.
     where.append("NOT EXISTS (SELECT 1 FROM messages p WHERE p.mailbox_id = m.mailbox_id "
                  "AND p.message_id = m.message_id AND p.version_id <= ?)")
@@ -224,7 +253,43 @@ def scan(db: sqlite3.Connection, *, pin: int, mailboxes: Sequence[str],
                           "moment": moment, "version_id": version_id, "role": role})
         high = low
     found.sort(key=lambda f: (-f["moment"].timestamp(), -f["version_id"]))
+    if key is not None and not cut:
+        _keep_scan(key, found, clock() + SCAN_KEPT_SECONDS)
     return found, cut
+
+
+# A whole scan's matches, kept for the same plan on the same capture state (its file and
+# newest version id; any write to it is a new state): one answer's searches of several
+# same-named records resolving to the same addresses read the delta once. Raw capture
+# rows: every one still passes the per-item gate in :func:`top_up` for the reader
+# asking; the plan holds the mailboxes the
+# reader's policy grants, so another reader's plan is another key. A cut scan is not kept.
+SCAN_KEPT_SECONDS = 120.0
+MAX_SCANS_KEPT = 32
+_SCANNED: dict[Any, tuple[float, list[dict[str, Any]]]] = {}
+_SCANNED_LOCK = threading.Lock()
+
+
+def _written(path: str) -> tuple[Any, ...] | None:
+    """The capture file's and its WAL's (mtime, size): any commit to it (a removal or a
+    supersession marks rows without a new version) changes it."""
+    import os
+    out: list[Any] = []
+    for name in (path, path + "-wal"):
+        try:
+            stat = os.stat(name)
+        except OSError:
+            out.append(None)
+            continue
+        out.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(out)
+
+
+def _keep_scan(key: Any, found: list[dict[str, Any]], until: float) -> None:
+    with _SCANNED_LOCK:
+        _SCANNED[key] = (until, list(found))
+        while len(_SCANNED) > MAX_SCANS_KEPT:
+            _SCANNED.pop(next(iter(_SCANNED)))
 
 
 def _document(found: Mapping[str, Any]) -> dict[str, Any]:
@@ -260,6 +325,18 @@ def held_mail_markings(tools: Any, held: Iterable[str]) -> bool:
     return needed <= set(held)
 
 
+def holds_recipients(conn: sqlite3.Connection) -> bool:
+    """Whether a generation projects mail recipients (a ``to_addresses`` or
+    ``cc_addresses`` value field). One built before they were mapped lists, for a
+    participant, only what the participant sent among the mail it pinned (this top-up
+    still reads the recipients of newer mail). Unreadable: False."""
+    try:
+        return conn.execute("SELECT 1 FROM value_fields WHERE property IN "
+                            "('to_addresses', 'cc_addresses') LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
 def live_refresh_at(db: Any) -> str | None:
     """The live mail capture's own freshness (as ``ontology.project.MailCaptures.describe``
     states it for a build): the stalest last run of a folder it still reads (a folder
@@ -287,27 +364,24 @@ def _projected_mail_stale(gap: Any) -> bool:
         and gap.get("subject") == "graph_mail"
 
 
-def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[str, Any],
-           opened: Callable[[], Any], *, clock: Callable[[], float] = time.monotonic,
-           budget: float = BUDGET_SECONDS, chunk: int = CHUNK) -> dict[str, Any]:
-    """``result`` (a ``plx.documents`` answer for ``actor`` under ``tools.policy``) with
-    the capture's newer matching messages this reader may see added (module docstring).
-    ``opened()`` is a context of the mail capture store (read-only). Any input this does
-    not top up, or any failure, returns ``result`` unchanged."""
-    if arguments.get("cursor") or arguments.get("object_id") is not None \
-            or arguments.get("as_known_at") or "error" in result \
-            or SOURCE not in (arguments.get("sources") or (SOURCE,)):
-        return result
-    participants = None
-    if arguments.get("participant") is not None:
-        participants = (result.get("searched") or {}).get("participants") or []
-        if not participants:
-            return result   # nothing the reader may see to match on
+def _topped_up(arguments: Mapping[str, Any]) -> bool:
+    """Whether a ``plx.documents`` call's arguments are ones a top-up may add to (any
+    result permitting): a first page of a mail search, neither rooted nor as known at."""
+    return not (arguments.get("cursor") or arguments.get("object_id") is not None
+                or arguments.get("as_known_at")
+                or SOURCE not in (arguments.get("sources") or (SOURCE,)))
+
+
+def _plan(tools: Any, arguments: Mapping[str, Any], actor: Any, policy: Any,
+          participants: Sequence[str] | None) -> dict[str, Any] | None:
+    """The :func:`scan` arguments of a top-up for ``actor`` under ``policy`` (the
+    mailboxes it grants, the generation's pin, the query's terms or the participants'
+    addresses and domains, the dates), or None when nothing is topped up."""
     terms = query_terms(arguments.get("query"))
     if participants is None and terms is None:
-        return result
+        return None
     if arguments.get("query") is not None and terms is None:
-        return result
+        return None
     since = ot._parse_time(arguments["since"]) if arguments.get("since") else None
     until = (ot._parse_time(arguments["until"], end_of_day=True)
              if arguments.get("until") else None)
@@ -316,13 +390,13 @@ def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[st
             row = tools.store.conn.execute(
                 "SELECT value FROM store_meta WHERE key = 'source_freshness'").fetchone()
         pin = pinned_capture_id(row[0] if row else None)
-        keys, held, _sets, _sources = ot.reader_grants(tools, tools.policy, actor,
+        keys, held, _sets, _sources = ot.reader_grants(tools, policy, actor,
                                                        tools.store.audience_keys())
     except (sqlite3.Error, AttributeError, TypeError, ValueError):
-        return result
+        return None
     mailboxes = sorted(k.partition(":")[2] for k in keys if k.startswith("mail:"))
     if pin is None or not mailboxes or not held_mail_markings(tools, held):
-        return result
+        return None
     addresses = frozenset(p for p in participants or () if "@" in p)
     domains = frozenset(p for p in participants or () if "@" not in p)
     tenant = None
@@ -332,14 +406,95 @@ def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[st
             tenant = reader.tenant_domains() if reader is not None else None
         except (OSError, sqlite3.Error, ValueError, AttributeError):
             tenant = None   # unknown: an outside participant's received-only mail is not added
-    try:
-        with opened() as store:
-            found, cut = scan(store.db, pin=pin, mailboxes=mailboxes, addresses=addresses,
-                              domains=domains, terms=terms, since=since, until=until,
-                              tenant=tenant, clock=clock, budget=budget, chunk=chunk)
-            live = None if cut else live_refresh_at(store.db)
-    except (sqlite3.Error, OSError, ValueError):
+    return {"pin": pin, "mailboxes": mailboxes, "addresses": addresses, "domains": domains,
+            "terms": terms, "since": since, "until": until, "tenant": tenant}
+
+
+def _scanned(plan: Mapping[str, Any], opened: Callable[[], Any], clock: Callable[[], float],
+             budget: float, chunk: int) -> tuple[list[dict[str, Any]], bool, str | None]:
+    """(found, cut, the live capture's freshness when the scan was whole) of ``plan``
+    read in the store ``opened()`` gives."""
+    with opened() as store:
+        found, cut = scan(store.db, **plan, clock=clock, budget=budget, chunk=chunk)
+        return found, cut, None if cut else live_refresh_at(store.db)
+
+
+class EarlyScan:
+    """A query search's top-up scan started before the projected search it tops up, so
+    the capture read (I/O-bound SQL, which releases the interpreter) overlaps the
+    projection's and the SharePoint capture's reads instead of following them. It reads
+    the capture through its own connection (``opened``), never the kept reader the
+    per-item mail gate uses meanwhile. Only the scan runs early: its messages still pass
+    :func:`top_up`'s per-item gate, room and gaps, and :func:`top_up` uses it only when
+    its plan is the one it decides itself under the call's policy (else it scans again).
+    A participant search is never started early (its needles are the projected
+    search's). Any failure: :func:`top_up` scans itself, as without it."""
+
+    def __init__(self, plan: Mapping[str, Any], opened: Callable[[], Any], *,
+                 clock: Callable[[], float] = time.monotonic,
+                 budget: float = BUDGET_SECONDS, chunk: int = CHUNK) -> None:
+        self.plan = dict(plan)
+        self._out: tuple[list[dict[str, Any]], bool, str | None] | None = None
+        self._thread = threading.Thread(target=self._run, args=(opened, clock, budget, chunk),
+                                        name="mail-topup-scan", daemon=True)
+        self._thread.start()
+
+    @classmethod
+    def start(cls, tools: Any, arguments: Any, actor: Any, policy: Any,
+              opened: Callable[[], Any], **bounds: Any) -> "EarlyScan | None":
+        """The early scan of a query search for ``actor`` under ``policy`` (the policy the
+        call is pinned to), or None when the call is not one :func:`top_up` scans for
+        a query."""
+        if not isinstance(arguments, Mapping) or not _topped_up(arguments) \
+                or arguments.get("participant") is not None:
+            return None
+        plan = _plan(tools, arguments, actor, policy, None)
+        return None if plan is None else cls(plan, opened, **bounds)
+
+    def _run(self, opened: Callable[[], Any], clock: Callable[[], float], budget: float,
+             chunk: int) -> None:
+        try:
+            self._out = _scanned(self.plan, opened, clock, budget, chunk)
+        except Exception:  # noqa: BLE001 - top_up scans itself after an early failure
+            self._out = None
+
+    def result(self, plan: Mapping[str, Any]
+               ) -> tuple[list[dict[str, Any]], bool, str | None] | None:
+        """The scan's (found, cut, live freshness) once it ends, when made for ``plan``;
+        else None."""
+        if dict(plan) != self.plan:
+            return None
+        self._thread.join()
+        return self._out
+
+
+def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[str, Any],
+           opened: Callable[[], Any], *, clock: Callable[[], float] = time.monotonic,
+           budget: float = BUDGET_SECONDS, chunk: int = CHUNK,
+           early: EarlyScan | None = None) -> dict[str, Any]:
+    """``result`` (a ``plx.documents`` answer for ``actor`` under ``tools.policy``) with
+    the capture's newer matching messages this reader may see added (module docstring).
+    ``opened()`` is a context of the mail capture store (read-only). ``early``: this
+    call's scan started before the projected search (:class:`EarlyScan`), used when made
+    for the same plan. Any input this does not top up, or any failure, returns
+    ``result`` unchanged."""
+    if not _topped_up(arguments) or "error" in result:
         return result
+    participants = None
+    if arguments.get("participant") is not None:
+        participants = (result.get("searched") or {}).get("participants") or []
+        if not participants:
+            return result   # nothing the reader may see to match on
+    plan = _plan(tools, arguments, actor, tools.policy, participants)
+    if plan is None:
+        return result
+    out = early.result(plan) if early is not None else None
+    if out is None:
+        try:
+            out = _scanned(plan, opened, clock, budget, chunk)
+        except (sqlite3.Error, OSError, ValueError):
+            return result
+    found, cut, live = out
     if live is not None and not live_stale(tools, live):
         result = dict(result, gaps=[g for g in result.get("gaps") or ()
                                     if not _projected_mail_stale(g)])
@@ -379,6 +534,9 @@ def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[st
             "narrow the question by dates or ask again"))
     searched = dict(result.get("searched") or {})
     searched["scopes"] = [*searched.get("scopes", []), SCOPE][:16]
+    if cut:
+        # stopped by the time bound: a message not read may be newer than every one listed
+        searched["capture_scan_cut"] = True
     completeness = dict(result.get("completeness") or {})
     completeness["returned"] = len(documents)
     if completeness.get("total") is not None:
@@ -389,5 +547,6 @@ def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[st
                 completeness=completeness)
 
 
-__all__ = ["BUDGET_SECONDS", "FLAG", "MAX_ADDED", "pinned_capture_id", "query_terms", "scan",
+__all__ = ["BUDGET_SECONDS", "EarlyScan", "FLAG", "MAX_ADDED", "holds_recipients",
+           "pinned_capture_id", "query_terms", "scan",
            "top_up"]

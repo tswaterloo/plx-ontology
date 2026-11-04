@@ -630,6 +630,15 @@ class QuestionTests(unittest.TestCase):
                        "which customer makes us the most money"):
             self.assertEqual(cp.customer_words(across), "", across)
         self.assertEqual(cp.customer_words("is Best Buy profitable?"), "Best Buy")
+        # a second question joined on names no customer ("driving" was read into the name
+        # and found no one); a name's own "and" stays
+        self.assertEqual(cp.customer_words("how profitable is Dandylion Pet INC for us and "
+                                           "whats driving the cost"), "Dandylion Pet INC")
+        self.assertEqual(cp.customer_phrases("how profitable is Dandylion Pet INC for us and "
+                                             "whats driving the cost"), [])
+        self.assertEqual(cp.customer_phrases("whats our margin on House of Wax, and why is "
+                                             "it low"), ["House of Wax"])
+        self.assertEqual(cp.customer_words("is Johnson and Sons profitable"), "Johnson Sons")
         p = cp.period_of("profitable over the last 6 months", TODAY)
         self.assertEqual((p.start, p.end), (date(2026, 4, 30), TODAY))
         self.assertEqual(cp.period_of("is it profitable", TODAY).start, date(2025, 10, 30))

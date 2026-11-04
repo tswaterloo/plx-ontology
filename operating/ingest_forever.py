@@ -72,6 +72,7 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -126,6 +127,82 @@ _ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,80}")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                    r"[0-9a-fA-F]{12}")
+
+
+# Build priority: while the host builds a projection generation, its capture children run
+# at the lowest CPU priority (nice ``CAPTURE_NICE``) and the idle I/O class, so the build's
+# worker processes (the host's own priority) are not starved (gen 8: SharePoint and mail
+# captures at 420% and 90% CPU beside 16 build workers at the same nice, load 46-51 on 16
+# CPUs). A child started during a build starts lowered; one running when a build starts is
+# lowered then (its process group). Lowering is one way (an unprivileged process cannot
+# raise a priority again): a lowered child keeps it until it exits, and the next run of its
+# source starts at the host's. Linux only; elsewhere, or when refused, nothing changes.
+CAPTURE_NICE = 19
+_IOPRIO_SET = {"x86_64": 251, "aarch64": 30}   # ioprio_set(2) by machine
+_IOPRIO_WHO_PGRP, _IOPRIO_CLASS_IDLE, _IOPRIO_CLASS_SHIFT = 2, 3, 13
+
+
+class BuildPriority:
+    """The capture children of this process and whether a build is running."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._live: set[int] = set()
+        self._builds = 0
+
+    def started(self, pid: int) -> None:
+        """A capture child (a process group leader) started: lowered while a build runs."""
+        with self._lock:
+            self._live.add(pid)
+            if self._builds > 0:
+                lower(pid)
+
+    def ended(self, pid: int) -> None:
+        """A capture child is about to be reaped: never lowered after this returns (its
+        PID may be another process's once reaped). Lowering holds the same lock."""
+        with self._lock:
+            self._live.discard(pid)
+
+    def building(self) -> bool:
+        with self._lock:
+            return self._builds > 0
+
+    def __enter__(self) -> "BuildPriority":
+        """A build starts: every running capture child is lowered."""
+        with self._lock:
+            self._builds += 1
+            for pid in sorted(self._live):   # under the lock: none reaped meanwhile
+                lower(pid)
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        with self._lock:
+            self._builds -= 1
+
+
+def lower(pgid: int) -> bool:
+    """Lower the process group ``pgid`` to nice ``CAPTURE_NICE`` and the idle I/O class
+    (Linux; only ever lowered). False when nothing was changed (another system, a group
+    gone or refused)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        os.setpriority(os.PRIO_PGRP, pgid, CAPTURE_NICE)
+    except OSError:
+        return False
+    number = _IOPRIO_SET.get(os.uname().machine)
+    if number is not None:
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.syscall(number, _IOPRIO_WHO_PGRP, pgid,
+                         _IOPRIO_CLASS_IDLE << _IOPRIO_CLASS_SHIFT)
+        except (OSError, AttributeError):
+            pass   # the CPU priority alone
+    return True
+
+
+PRIORITY = BuildPriority()   # the host process's capture children
 
 
 class IngestError(Exception):
@@ -644,6 +721,7 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
     except Exception as exc:  # noqa: BLE001 - this source's failure, never the cycle's
         return {**result, "status": "failed", "error_code": code(type(exc).__name__)
                 or "start_failed"}
+    PRIORITY.started(child.pid)   # its own session: the group is the child's
     try:
         if children is not None:
             children.add(child.pid, spec.name)
@@ -661,6 +739,7 @@ def run_source(spec: SourceSpec, options: Mapping[str, Any], state: Path,
                     return {**result, "status": "failed", "error_code": "child_timeout",
                             "seconds": round(time.monotonic() - started, 1)}
     finally:
+        PRIORITY.ended(child.pid)
         child_process.stop(child)
         for pipe in (child.stdout, child.stderr):
             pipe.close()
@@ -1078,7 +1157,8 @@ class Continuous:
 
         def refresh_on_thread(*args: Any) -> None:
             try:
-                self.refresh(*args)
+                with PRIORITY:   # the build's workers before the captures
+                    self.refresh(*args)
             except BaseException as exc:  # noqa: BLE001 - re-raised on the scheduler
                 failed.append(exc)
 
@@ -1151,7 +1231,8 @@ class Continuous:
                                                  args=(batch, reason, exclusion), daemon=True)
                         build.start()
                     else:
-                        self.refresh(batch, reason, exclusion)
+                        with PRIORITY:   # the build's workers before the captures
+                            self.refresh(batch, reason, exclusion)
                     refreshes += 1
                     if self.max_refreshes and refreshes >= self.max_refreshes:
                         reason = reason or "max_refreshes"

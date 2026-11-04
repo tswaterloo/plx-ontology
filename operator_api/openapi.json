@@ -748,6 +748,18 @@
             "description": "Why the source's total looks wrong (suspect source data); never ranked by.",
             "title": "Amount Suspect"
           },
+          "counterpart": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A purchase order's supplier as this reader reads it (one supplier only); null when not readable or not a PO.",
+            "title": "Counterpart"
+          },
           "days": {
             "anyOf": [
               {
@@ -1556,6 +1568,29 @@
         "title": "DevLoginResponse",
         "type": "object"
       },
+      "DraftFact": {
+        "additionalProperties": false,
+        "properties": {
+          "fact": {
+            "title": "Fact",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fact",
+          "value",
+          "source"
+        ],
+        "title": "DraftFact",
+        "type": "object"
+      },
       "DraftFigure": {
         "additionalProperties": false,
         "description": "One figure a proposal states (a PO number, a date, a line's quantity, a contact) and\nthe record or message it was read from; every one passed this reader's gate.",
@@ -1585,6 +1620,54 @@
           "value"
         ],
         "title": "DraftFigure",
+        "type": "object"
+      },
+      "DraftTo": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only an address the trail cleared for this reader (a vendor-side sender of a message it may open); else null.",
+            "title": "Address"
+          },
+          "basis": {
+            "description": "Where the recipient comes from, or what is missing.",
+            "title": "Basis",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "basis"
+        ],
+        "title": "DraftTo",
         "type": "object"
       },
       "EntraConfig": {
@@ -3554,6 +3637,109 @@
         "title": "PoTrail",
         "type": "object"
       },
+      "ProactiveSuggestion": {
+        "additionalProperties": false,
+        "description": "One record that needs attention: what we noticed, how we know, what to do and a\ndraft message (never sent).",
+        "properties": {
+          "acknowledged": {
+            "default": false,
+            "title": "Acknowledged",
+            "type": "boolean"
+          },
+          "action": {
+            "$ref": "#/components/schemas/NextAction"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/SuggestionConfidence"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestionDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SuggestionEta"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Event Types",
+            "type": "array"
+          },
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/SuggestionImpact"
+          },
+          "kind": {
+            "enum": [
+              "vendor_chase",
+              "customer_update",
+              "margin_review"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "new": {
+            "default": false,
+            "title": "New",
+            "type": "boolean"
+          },
+          "rank": {
+            "minimum": 0.0,
+            "title": "Rank",
+            "type": "integer"
+          },
+          "reasoning": {
+            "items": {
+              "$ref": "#/components/schemas/SuggestionReason"
+            },
+            "title": "Reasoning",
+            "type": "array"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ObjectRef"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "rank",
+          "headline",
+          "subject",
+          "impact",
+          "action",
+          "confidence"
+        ],
+        "title": "ProactiveSuggestion",
+        "type": "object"
+      },
       "ProductMargin": {
         "additionalProperties": false,
         "description": "One item's margin over the customer's checked order lines of the period.",
@@ -4533,6 +4719,347 @@
           "open_url"
         ],
         "title": "Suggestion",
+        "type": "object"
+      },
+      "SuggestionConfidence": {
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "why": {
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "why"
+        ],
+        "title": "SuggestionConfidence",
+        "type": "object"
+      },
+      "SuggestionDraft": {
+        "additionalProperties": false,
+        "description": "A message a person may copy, edit and send themselves: worded only from cited values\nthis reader may open, never from a message's text. Never sent by the Workbench.",
+        "properties": {
+          "audience": {
+            "enum": [
+              "vendor",
+              "customer",
+              "internal"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "internal_note"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "facts": {
+            "description": "Each stated fact and its source.",
+            "items": {
+              "$ref": "#/components/schemas/DraftFact"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "review": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review"
+          },
+          "sent": {
+            "const": false,
+            "default": false,
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "status": {
+            "const": "draft_not_sent",
+            "default": "draft_not_sent",
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "to": {
+            "$ref": "#/components/schemas/DraftTo"
+          }
+        },
+        "required": [
+          "channel",
+          "audience",
+          "to",
+          "subject",
+          "body"
+        ],
+        "title": "SuggestionDraft",
+        "type": "object"
+      },
+      "SuggestionEta": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "description": "ETA confirmed by the vendor? Unknown states are 'unknown', never yes.",
+            "enum": [
+              "yes",
+              "no",
+              "possibly",
+              "conflicting",
+              "hidden",
+              "unknown"
+            ],
+            "title": "Answer",
+            "type": "string"
+          },
+          "in_mail": {
+            "default": false,
+            "description": "The confirmation is an email.",
+            "title": "In Mail",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The vendor's confirmed date (yes only, and only beside a source you can open).",
+            "title": "When"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "title": "SuggestionEta",
+        "type": "object"
+      },
+      "SuggestionImpact": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "amount_basis": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Basis"
+          },
+          "amount_suspect": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the total looks wrong in the source: never ranked by.",
+            "title": "Amount Suspect"
+          },
+          "days_at_risk": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The worst customer order's days at risk (a lower bound).",
+            "title": "Days At Risk"
+          },
+          "days_late": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Late"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/ObjectRef"
+            },
+            "title": "Orders",
+            "type": "array"
+          },
+          "orders_at_risk": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Orders At Risk",
+            "type": "integer"
+          }
+        },
+        "title": "SuggestionImpact",
+        "type": "object"
+      },
+      "SuggestionReason": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SuggestionReason",
+        "type": "object"
+      },
+      "Suggestions": {
+        "additionalProperties": false,
+        "description": "What needs your attention and what to do about it, ranked by impact (customer\norders held up, money within its currency, days late); every other open finding is\ncounted by type. Suggestions only: nothing is sent or written.",
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Kind",
+            "type": "object"
+          },
+          "collapsed": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Open findings of other types (no drafted action), counted per type.",
+            "title": "Collapsed",
+            "type": "object"
+          },
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProactiveSuggestion"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "more": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "More",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "rank_basis": {
+            "default": "",
+            "title": "Rank Basis",
+            "type": "string"
+          },
+          "sent": {
+            "const": false,
+            "default": false,
+            "title": "Sent",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "read",
+              "not_configured",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "description": "Records with a suggestion (all, not only shown).",
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "total",
+          "note"
+        ],
+        "title": "Suggestions",
         "type": "object"
       },
       "TimelineEvent": {
@@ -5897,6 +6424,38 @@
         "summary": "Suggest",
         "tags": [
           "search"
+        ]
+      }
+    },
+    "/api/suggestions": {
+      "get": {
+        "description": "What needs your attention and what to do: late or unconfirmed purchase orders\nand the customer orders they hold up, \"ETA confirmed?\", customer orders at risk and\nmargin alerts, ranked by impact; each with how we know, confidence, what is missing\nand a draft message for you to send yourself (never sent by the Workbench).",
+        "operationId": "suggestions_api_suggestions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Suggestions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Suggestions",
+        "tags": [
+          "home"
         ]
       }
     }

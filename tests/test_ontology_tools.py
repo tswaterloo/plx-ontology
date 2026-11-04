@@ -1154,6 +1154,55 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                          [f"MailMessage:mail.po_inbox:v{at}" for at in range(3)])
         self.assertNotIn("scan_cap", [g["reason"] for g in whole["gaps"]])
 
+    def test_text_passes_narrowed_by_layout_return_what_the_word_scan_returns(self):
+        # Cold "SO 470" took 20-25 s: each display pass read every value row holding a
+        # common number before testing its property. Narrowed (layout test, layout-index
+        # candidates read in chunks), each pass returns the same rows, order and cap.
+        def run(narrow_rows, chunk, cap, gated):
+            s = build()
+            self._mails(s, 6, prefix="n", subject="more acme sprockets")
+            self._mails(s, 3, prefix="v", subject="Acme Sprockets")
+            self._mails(s, 2, prefix="s", subject="ACME SPROCKETS", markings='["finance"]')
+            denied = self._mails(s, 2, prefix="d", subject="acme sprockets denied")
+            s.obj("MailMessage:mail.po_inbox:x1", "mail:po-inbox@example.test",
+                  "graph-mail://mbx-1/x1@ck", "mail")
+            s.val("MailMessage:mail.po_inbox:x1", "notes", "text", "acme sprockets noted",
+                  "graph-mail://mbx-1/x1@ck", "row.notes", "mail")
+            saved = (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP)
+            ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP = (
+                narrow_rows, chunk, cap)
+            narrowed = []
+            plain = ot.StoreReader._layout_candidates
+
+            def spy(reader, *args):
+                found = plain(reader, *args)
+                narrowed.append(found is not None)
+                return found
+            ot.StoreReader._layout_candidates = spy
+            try:
+                found = tools(s, item_gate=gate_denying(*denied) if gated else None).call(
+                    "plx.find", {"query": "acme sprockets", "limit": 20}, SALES)
+            finally:
+                ot.StoreReader._layout_candidates = plain
+                ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP = saved
+            self.assertContract("plx.find", found)
+            return without_set(found), any(narrowed)
+
+        for cap in (2, 4, 50):
+            for gated in (False, True):
+                scanned, used = run(10 ** 9, 2000, cap, gated)
+                self.assertFalse(used)
+                for chunk in (1, 3, 2000):
+                    narrowed, used = run(0, chunk, cap, gated)
+                    self.assertTrue(used)
+                    self.assertEqual(narrowed, scanned, (cap, gated, chunk))
+        whole, _used = run(0, 1, 50, True)
+        ids = [c["object"]["object_id"] for c in whole["candidates"]]
+        self.assertEqual(ids[:3], [f"MailMessage:mail.po_inbox:v{at}" for at in range(3)])
+        self.assertNotIn("MailMessage:mail.po_inbox:s0", ids)   # marked: never read
+        self.assertNotIn("MailMessage:mail.po_inbox:d0", ids)   # item ACL: never read
+        self.assertIn("MailMessage:mail.po_inbox:x1", ids)   # other text: the last pass
+
     def test_filter_listing_uses_the_same_tier_rule_and_drops_no_object(self):
         by_id = {}
         for op in ("absent", "present"):   # between them, every PurchaseOrder

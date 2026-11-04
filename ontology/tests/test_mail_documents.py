@@ -86,6 +86,33 @@ def _die(*_args):
     os._exit(3)
 
 
+def captured_mail_with_documents(case: unittest.TestCase) -> Path:
+    """A mail capture (``<root>/capture``) of classified documents (a packing list, a
+    freight quote, a proforma invoice), one of them also inside a zip (a container's
+    member), over several messages; removed when ``case`` ends."""
+    from ontology.tests.test_document_fields import CONFIRMATION, QUOTE, SLIP, pdf
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as packed:
+        packed.writestr("slip.pdf", pdf(SLIP))
+    graph = FakeGraph()
+    for n, pages in enumerate((SLIP, QUOTE, CONFIRMATION, SLIP)):
+        graph.put(BOX_A, f"MSG-D{n}", f"CK-D{n}", subject=f"Documents {n}",
+                  body=f"Attached for PO10023{n}.",
+                  attachments=[file_attachment(f"ATT-D{n}", pdf(pages), f"doc{n}.pdf"),
+                               file_attachment(f"ZIP-D{n}", archive.getvalue(),
+                                               f"docs{n}.zip")])
+    root = Path(tempfile.mkdtemp())
+    case.addCleanup(shutil.rmtree, root, True)
+    capture = MailCaptureStore(root / "capture", clock=Clock())
+    case.addCleanup(capture.close)
+    api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
+        sleep=lambda s: None, jitter=lambda: 0.0))
+    run = MailCapture(capture, GraphMailReader(api, capture_audience()), CAPTURE,
+                      sleep=lambda s: None).run(SCOPE)
+    case.assertTrue(run["complete"], run)
+    return root
+
+
 class MailDocumentsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -371,28 +398,7 @@ class MailDocumentsTests(unittest.TestCase):
                 pools.append(pool)
                 yield pool
 
-        # Classified documents (a packing list, a freight quote, a proforma invoice), one
-        # of them also inside a zip (a container's member), over several messages.
-        from ontology.tests.test_document_fields import CONFIRMATION, QUOTE, SLIP, pdf
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w") as packed:
-            packed.writestr("slip.pdf", pdf(SLIP))
-        graph = FakeGraph()
-        for n, pages in enumerate((SLIP, QUOTE, CONFIRMATION, SLIP)):
-            graph.put(BOX_A, f"MSG-D{n}", f"CK-D{n}", subject=f"Documents {n}",
-                      body=f"Attached for PO10023{n}.",
-                      attachments=[file_attachment(f"ATT-D{n}", pdf(pages), f"doc{n}.pdf"),
-                                   file_attachment(f"ZIP-D{n}", archive.getvalue(),
-                                                   f"docs{n}.zip")])
-        root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, root, True)
-        capture = MailCaptureStore(root / "capture", clock=Clock())
-        self.addCleanup(capture.close)
-        api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
-            sleep=lambda s: None, jitter=lambda: 0.0))
-        run = MailCapture(capture, GraphMailReader(api, capture_audience()), CAPTURE,
-                          sleep=lambda s: None).run(SCOPE)
-        self.assertTrue(run["complete"], run)
+        root = captured_mail_with_documents(self)
 
         def build(state, workers):
             with MailCaptures(root / "capture", internal_domains=SCOPE.internal_domains) \
@@ -412,6 +418,8 @@ class MailDocumentsTests(unittest.TestCase):
             for name, query in (
                     ("fields.sqlite", "SELECT key, code, value, used FROM fields"),
                     ("readings.sqlite", "SELECT key, code, value, used FROM readings"),
+                    ("member-readings.sqlite",
+                     "SELECT key, code, value, used FROM members"),
                     ("mentions.sqlite", "SELECT 'm', key, code, value, used FROM mentions "
                                         "UNION ALL SELECT 't', key, code, value, used FROM texts "
                                         "UNION ALL SELECT 'g', key, '', value, used FROM groups")):
@@ -423,6 +431,7 @@ class MailDocumentsTests(unittest.TestCase):
             serial = build(Path(tmp) / "serial", 1)
             expected = kept(Path(tmp) / "serial")
             self.assertTrue(expected["fields.sqlite"])
+            self.assertTrue(expected["member-readings.sqlite"])   # the zips' members
             self.assertTrue(expected["mentions.sqlite"])
             with closing(sqlite3.connect(serial.store)) as db:   # typed documents, members too
                 self.assertEqual(dict(db.execute(

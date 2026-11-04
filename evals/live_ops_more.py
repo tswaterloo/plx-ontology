@@ -345,14 +345,34 @@ def quotes_without_order(world: lk.World) -> list[lk.Candidate]:
 
 # --------------------------------------------------------------------------- Sage
 
+def _same_name(name: str) -> str:
+    """A customer name as one Sage name is told from another: case-folded, punctuation as
+    space, a leading "the" and trailing legal suffixes dropped."""
+    words = re.sub(r"[^\w]+", " ", name.casefold()).split()
+    if len(words) > 1 and words[0] == "the":
+        words = words[1:]
+    while len(words) > 1 and words[-1] in ("inc", "ltd", "llc", "corp", "co", "limited",
+                                           "incorporated", "corporation", "company"):
+        words = words[:-1]
+    return " ".join(words)
+
+
 def sage_balance(world: lk.World) -> list[lk.Candidate]:
+    """The balance due of a Sage customer asked by its name; a name several Sage cards
+    hold (a chain's accounts under one name) names no one balance and is not keyed."""
+    rows = list(world.rows(SAGE_CUSTOMER))
+    cards = defaultdict(int)
+    for item in rows:
+        cards[_same_name(str(item["row"].get("namecust") or ""))] += 1
     out = []
-    for item in world.rows(SAGE_CUSTOMER):
+    for item in rows:
         row = item["row"]
         name = str(row.get("namecust") or "").strip()
         due = decimal_of(row.get("amtbaldueh"))
         if not name or due is None or due <= 0 or decimal_of(row.get("amtbalduet")) != due:
             continue   # Sage's home and customer-currency balances disagree: no one balance
+        if cards[_same_name(name)] > 1:
+            continue   # one name, several Sage cards: the question names no one of them
         out.append(lk.Candidate(name, "Customer", {"customer": name}, [
             lk._fact("number", "sage_balance", [item["citation"]], ("api",), value=_plain(due),
                      label=lk.LABELS["open_ar"], tolerance="1", tolerance_pct=lk.MONEY_PCT,

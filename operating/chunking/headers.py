@@ -40,7 +40,18 @@ TECHNICAL = frozenset({"internet_message_id", "content_sha256", "bc_system_id", 
 
 
 def id_label(kind: str, value: str) -> str:
-    return f"{_LABELS.get(kind, kind.replace('_', ' '))} {value}"
+    """An identifier with its kind's label ("SO 1000090040"); a value that already starts
+    with the label's word ("PO100040") is its own label, never doubled ("PO PO100040")."""
+    return undoubled(f"{_LABELS.get(kind, kind.replace('_', ' '))} {value}")
+
+
+def undoubled(label: str) -> str:
+    """``label`` without a kind word its identifier repeats: "PO PO100040" is "PO100040",
+    "Lot LOT-7" is "LOT-7"; "SO OR1000100040" and "Customer PO 10011" stay."""
+    found = re.fullmatch(r"([A-Za-z]+) (([A-Za-z]+)[-\s]?\d\S*)", label or "")
+    if found and found.group(3).casefold() == found.group(1).casefold():
+        return found.group(2)
+    return label
 
 
 def sender_role(sender: str | None, sender_class: str | None) -> str:
@@ -102,4 +113,5 @@ def one_line(text: str, limit: int = 120) -> str:
 
 
 __all__ = ["SYSTEMS", "TECHNICAL", "build", "id_label", "label_allowed", "one_line",
+           "undoubled",
            "sender_role"]

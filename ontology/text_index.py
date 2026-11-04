@@ -38,6 +38,7 @@ import zlib
 from contextlib import closing
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from ontology.document_failures import DocumentFailures
 from ontology.mention_memo import document_key
 from ontology.mentions import Document, cited_page, read_ahead, source_document_groups
 from ontology.store import StoreError, markings_text
@@ -171,7 +172,42 @@ def document_chunks(document: Document) -> tuple[dict[str, Any], dict[tuple[str,
 def _memo_code() -> str:
     """What a kept entry of the index's facts was derived under: this module's source."""
     from pathlib import Path
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+    from ontology.code_equivalence import earlier_value
+    # a code proven to index the same facts as an earlier commit's keeps its value
+    return earlier_value("text_index_memo",
+                         hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+
+
+def _base_index(context: Any, memo: Any, code: str
+                ) -> tuple[sqlite3.Connection | None, dict[tuple[str, str, str], Any]]:
+    """The base generation's store (read-only) and its fields ``(citation, field_path,
+    object_id) -> (field_id, facts)`` when a cold build may take its chunks: a base whose
+    index was built under ``code`` (its build report's ``text_index`` ``code``); else
+    ``(None, {})``. A base that cannot be read is none."""
+    store = getattr(context, "base_store", None) if context is not None else None
+    if store is None or memo is None:
+        return None, {}
+    try:
+        base = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+        try:
+            row = base.execute("SELECT value FROM store_meta WHERE key = 'build_report'"
+                               ).fetchone()
+            built = ((json.loads(row[0]) if row else {}).get("post_project") or {}).get(
+                "text_index") or {}
+            if built.get("code") != code:
+                base.close()
+                return None, {}
+            return base, {(row[1], row[2], row[3]): (row[0], tuple(row[4:]))
+                          for row in base.execute(
+                              "SELECT field_id, citation, field_path, object_id, "
+                              "version_handle, document_kind, sender_class, markings, "
+                              "text_digest FROM text_fields")}
+        except BaseException:
+            base.close()
+            raise
+    except (sqlite3.Error, ValueError, AttributeError):
+        return None, {}
 
 
 def _holds_texts(memo: Any, group: str, code: str) -> bool:
@@ -201,6 +237,14 @@ def store_text_index(builder: Any, projector: Any, *,
                     "SELECT field_id, citation, field_path, object_id, version_handle, "
                     "document_kind, sender_class, markings, text_digest FROM text_fields")}
     seen: set[tuple[str, str, str]] = set()
+    # A cold build over a generation indexed under this code takes the chunks of a field
+    # whose facts (its text's digest among them) are the base's from the base's store,
+    # without reading its document's text again.
+    base, inherited = _base_index(context, memo, code) if not previous else (None, {})
+
+    def copyable(write: tuple) -> bool:
+        held = inherited.get(write[0])
+        return held is not None and held[1] == write[2]
 
     def plan(facts_of: list[dict[str, Any]]) -> tuple[dict[str, int], list[tuple], set]:
         """What indexing a group's documents does: its counts, the fields it writes
@@ -249,7 +293,11 @@ def store_text_index(builder: Any, projector: Any, *,
     # documents, text and chunks this process then unpickles).
     ahead = read_ahead(groups, "text", (lambda group: _holds_texts(memo, group, code))
                        if memo is not None else None, remote=False)
-    for group, load, read in ahead:
+    failures = DocumentFailures("text_index")
+
+    def read_group(group: str | None, load: Any, read: Any) -> tuple[Any, ...]:
+        """What indexing a group does (``plan``), with its documents and what workers
+        derived from them when its text is read."""
         kept = memo.group(group) if memo is not None and group is not None else None
         facts_of = [memo.text(key, code) for key in kept] if kept is not None else None
         loaded: list[Document] | None = None
@@ -257,7 +305,8 @@ def store_text_index(builder: Any, projector: Any, *,
         if facts_of is None or any(facts is None for facts in facts_of):
             facts_of = None
         more, writes, keys = plan(facts_of) if facts_of is not None else ({}, [None], set())
-        if writes:   # a field written again (or nothing kept): the group's text is read
+        if any(w is None or not copyable(w) for w in writes):
+            # a field written again (or nothing kept): the group's text is read
             loaded, remembered, derived = read if read is not None else (*load(), None)
             derived = [None if d is None else d.get() for d in derived] \
                 if derived is not None else [None] * len(loaded)
@@ -272,15 +321,36 @@ def store_text_index(builder: Any, projector: Any, *,
                         memo.keep_text(key, code, facts)
                     if group is not None and remembered:
                         memo.keep_group(group, found)
+        return more, writes, keys, loaded, derived, len(facts_of or ())
+
+    for group, load, read in ahead:
+        # A group whose documents cannot be read or indexed is its own gap: its fields are
+        # not written (those the index held are removed below, as fields no document
+        # states), and the step goes on.
+        ok, planned = failures.run(group, lambda: read_group(group, load, read))
+        if not ok:
+            continue
+        more, writes, keys, loaded, derived, documents = planned
+        failures.seen += max(0, documents - 1)   # the group's documents, not one
         for name, amount in more.items():
             counts[name] += amount
         seen |= keys
         for (citation, field_path, object_id), index, facts in writes:
-            pieces = derived[index][1].get((citation, field_path)) \
-                if derived[index] is not None else None
-            if pieces is None:
-                pieces = _pieces(_field_text(loaded[index], citation, field_path))
             held = previous.get((citation, field_path, object_id))
+            pieces = None
+            if copyable(((citation, field_path, object_id), index, facts)):
+                pieces = [(start, chunk_text(body), body) for start, body in base.execute(
+                    "SELECT start, body FROM text_chunks WHERE field_id = ? ORDER BY chunk_id",
+                    (inherited[(citation, field_path, object_id)][0],))]
+            elif derived is not None and derived[index] is not None:
+                pieces = derived[index][1].get((citation, field_path))
+            if pieces is None:
+                ok, pieces = failures.run(citation, lambda: _pieces(
+                    _field_text(loaded[index], citation, field_path)), part=True)
+                if not ok:   # never the text the field held before
+                    if held is not None:
+                        _delete_field(conn, held[0])
+                    continue
             if held is not None:
                 _delete_field(conn, held[0])
             field_id = conn.execute(
@@ -294,6 +364,8 @@ def store_text_index(builder: Any, projector: Any, *,
                     (field_id, start, stored)).lastrowid
                 conn.execute("INSERT INTO chunk_text (rowid, body) VALUES (?, ?)",
                              (chunk_id, piece))
+    if base is not None:
+        base.close()
     for key, (field_id, _facts) in previous.items():
         if key not in seen:
             _delete_field(conn, field_id)
@@ -301,7 +373,8 @@ def store_text_index(builder: Any, projector: Any, *,
         "SELECT (SELECT COUNT(*) FROM text_fields), COUNT(*), COALESCE(SUM(length(body)), 0) "
         "FROM text_chunks").fetchone()
     return {"format": FORMAT, **counts, "fields": fields, "chunks": pieces,
-            "chunk_bytes": stored, "vector": dict(VECTOR)}
+            "chunk_bytes": stored, "vector": dict(VECTOR), "code": _memo_code(),
+            **failures.report()}
 
 
 __all__ = ["CHUNK_CHARS", "CHUNK_OVERLAP", "FIELD_CAP", "FORMAT", "VECTOR", "chunk_text",

@@ -746,6 +746,55 @@ class ScanAndProactiveTests(unittest.TestCase):
                      and "app_sales_order" not in aud)
         self.assertEqual([g for g in no_so["gaps"] if g["kind"] == "order_at_risk"], [])
 
+    def test_with_a_pool_every_po_is_asked_and_an_unread_one_is_never_judged(self):
+        """The engine's process pool asks every PO reaching an assembly (no per-run bound);
+        a PO the time left did not reach is counted not checked (``time_budget``) in the
+        rule's coverage, never undetermined, on time or a clean result."""
+        from operating import proactive_pool as pp
+
+        class Pool:   # in-process: the first ``reach`` items are read, the rest are not
+            def __init__(self, call, reach=None):
+                self.call, self.reach, self.items = call, reach, 0
+
+            def map(self, task, items, left=None):
+                self.items += len(items)
+                return [task(self.call, item) if self.reach is None or n < self.reach
+                        else pp.NOT_READ for n, item in enumerate(items)]
+
+        s = tp.Store()
+        chain_fixture(s, orders=1, required="2099-01-20")
+        chain_fixture(s, orders=1, required="2099-01-28", key="b2")
+        path = store_file(s, self.dir.name)
+        inbox = pe.inbox_path(path)
+        pool = Pool(self.caller(s, STAFF))
+        whole = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
+                       card_bound=1, pool=pool)
+        self.assertEqual(pool.items, 2)   # the bound of 1 no longer cuts
+        self.assertEqual(whole["detectors"]["orders_at_risk"], "complete")
+        self.assertEqual(whole["top_finding"]["orders_at_risk"], 2)
+        self.assertEqual(whole["coverage"]["orders_at_risk"], {
+            "unit": "purchase_orders_reaching_an_assembly", "total": 2, "evaluated": 2,
+            "not_evaluated": {}})
+        cut = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
+                     pool=Pool(self.caller(s, STAFF), reach=1))
+        self.assertEqual(cut["detectors"]["orders_at_risk"], "truncated")
+        self.assertEqual(cut["detector_reasons"]["orders_at_risk"], [pe.TIME_BUDGET])
+        self.assertEqual(cut["coverage"]["orders_at_risk"]["not_evaluated"],
+                         {pe.TIME_BUDGET: 1})
+        self.assertEqual(cut["top_finding"]["orders_at_risk"], 1)
+        self.assertNotIn("lateness_undetermined", cut["not_evaluated"].get("orders_at_risk", {}))
+
+        class Dying(Pool):   # the second PO's worker dies: that PO alone is not checked
+            def map(self, task, items, left=None):
+                return [task(self.call, item) if n == 0 else pp.Failed(pp.WORKER_FAILED)
+                        for n, item in enumerate(items)]
+        died = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
+                      pool=Dying(self.caller(s, STAFF)))
+        self.assertEqual(died["detectors"]["orders_at_risk"], "truncated")
+        self.assertEqual(died["detector_reasons"]["orders_at_risk"], ["worker_failed"])
+        self.assertEqual(died["coverage"]["orders_at_risk"]["not_evaluated"],
+                         {"worker_failed": 1})
+
     def test_the_late_pos_are_walked_first_and_each_gap_names_its_chain_ends(self):
         """Live repro (gen 7): the impact walk asked verdicts of POs in id order up to its
         bound, so the late ones past it were never walked and the late list could not say
@@ -832,7 +881,7 @@ class ScanAndProactiveTests(unittest.TestCase):
         (gap,) = read(lambda aud: tp.POLICY.may_read(STAFF, aud) or aud == "mail:box-b")
         self.assertEqual(gap["object_id"], a["portal_orders"][0])
         self.assertEqual(gap["event"], {"days": 5, "orders_affected": 1, "pos": [a["po"]],
-                                        "line": a["line"],
+                                        "material": "2099-02-25", "line": a["line"],
                                         "matched_by": "description",
                                         "line_promised": "2099-02-25",
                                         "required": "2099-02-20",

@@ -7,7 +7,7 @@ import { EvidenceTrailCard } from "@/components/evidence-trail";
 import { getBriefing, getBriefingItems } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
-import { briefingKind } from "@/lib/status";
+import { briefingKind, STATUS_CLASS } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
 import { StatusBadge } from "./ui/status-badge";
 
@@ -50,6 +50,7 @@ export function itemFacts(item: BriefingItem): string[] {
 export function shortSummary(summary: string): string {
   const m = /^An open purchase order needed by (\d{4}-\d{2}-\d{2}) has no supplier confirmation\.?$/i.exec(summary.trim());
   if (m) return `Needed by ${formatDate(m[1], { short: true })}; no confirmed date.`;
+  if (/^An open purchase order has no due date recorded\.?$/i.test(summary.trim())) return "No due date on record.";
   const u = /^An open purchase order needed by (\d{4}-\d{2}-\d{2})(.*)$/i.exec(summary.trim());
   if (u) return `Needed by ${formatDate(u[1], { short: true })}${readable(u[2]).replace(/^,?\s*/, "; ")}`;
   return readable(summary);
@@ -80,7 +81,7 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
   const [open, setOpen] = useState(false);
   const href = safeHref(item.open_url) ?? objectHref(item.object_type, item.object_id);
   const kind = briefingKind(item.event_type, { amountSuspect: !!(item.amount && item.amount_suspect), fallbackLabel: item.label });
-  const supplier = latePo?.supplier ?? null;
+  const supplier = latePo?.supplier ?? item.counterpart ?? null;
   const subject = [recordLabel(item.object_type, item.subject_label), supplier].filter(Boolean).join(" · ");
   const days = typeof item.days === "number" ? item.days : latePo?.days_late;
   const amount = item.amount && !item.amount_suspect ? money(item.amount) : null;
@@ -106,7 +107,7 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
             </span>
           </div>
           <div className={cn("mt-0.5 flex flex-wrap items-baseline gap-x-3 text-meta text-muted", dense && "mt-0")}>
-            <span className="min-w-0 flex-1 truncate">{shortSummary(item.summary)}</span>
+            <span className="min-w-0 basis-full sm:basis-0 sm:flex-1 sm:truncate">{shortSummary(item.summary)}</span>
             {item.trail && (
               <button
                 type="button"
@@ -120,8 +121,8 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
           </div>
           {item.amount && item.amount_suspect && <p className="mt-0.5 text-meta text-suspect">{itemFacts(item)[0]}</p>}
           {open && item.trail && (
-            <div className="mt-3">
-              <EvidenceTrailCard trail={item.trail} showNext={false} />
+            <div className="mt-3 rounded-xl border border-border bg-surface p-4">
+              <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
             </div>
           )}
         </div>
@@ -176,7 +177,8 @@ function Group({ group, view, loadItems }: { group: BriefingGroup; view: Briefin
   return (
     <li className="py-2.5" data-testid="briefing-group">
       <div className="flex flex-wrap items-center gap-2 text-row">
-        <StatusBadge shown={kind} />
+        {/* the kind's colour only: its badge would say the label twice ("Late PO Late purchase order") */}
+        <span className={cn("size-2 shrink-0 rounded-full", STATUS_CLASS[kind.status].dot)} aria-hidden />
         <span className="font-medium">{group.label}</span>
         <span className="tabular-nums text-muted">{group.count}</span>
         {group.new_since_visit > 0 && <StatusBadge status="new" label={`${group.new_since_visit} new`} />}

@@ -4,7 +4,10 @@ What must hold: a cold generation projected by worker processes, and digested by
 equals the serial one (every row of every table, the build report and the content digest); a build whose
 sources a worker cannot open again, or whose worker reads other bytes than the build
 pinned, is projected serially and still equals it; a worker count that is not a positive
-integer is refused.
+integer is refused. Tasks: a sharded binding's shards run as several tasks (each unit in
+exactly one), the bindings over one derived relation of a source are one task, whose
+worker reads the relation once (a spilled pass yields what the source yields; a pass
+that did not finish, or a record that does not pickle, leaves no spill).
 """
 
 from __future__ import annotations
@@ -111,7 +114,7 @@ class ParallelBuildTests(unittest.TestCase):
         # Every task was measured (the next build starts the longest first), and the
         # tasks cover every unit once.
         the_plan = inc.plan(self.schema)
-        cut = par.tasks(the_plan)
+        cut = par.tasks(the_plan, par.pieces(3))
         self.assertEqual(sorted(u for task in cut for u in task), sorted(the_plan.units))
         self.assertEqual(set(record["seconds"]), {task[0] for task in cut})
         self.assertSameAsSerial(generation)
@@ -130,6 +133,98 @@ class ParallelBuildTests(unittest.TestCase):
         for unit, row in same:
             self.assertIn(f"b:{row[2]}", where[unit])
             self.assertIn(f"b:{row[3]}", where[unit])
+
+    def test_shards_run_as_tasks_and_a_derived_relation_is_one_task(self):
+        the_plan = inc.plan(self.schema)
+        derived = {}
+        for bid, (_, b) in the_plan.bindings.items():
+            if b["relation"] in par.DERIVED:
+                derived.setdefault((b["source"], b["relation"]), set()).add(f"b:{bid}")
+        self.assertTrue(any(len(units) > 1 for units in derived.values()))
+        plain = next(bid for bid in sorted(the_plan.isolated)
+                     if the_plan.bindings[bid][1]["relation"] not in par.DERIVED)
+        mail = next(bid for bid in sorted(the_plan.isolated)
+                    if the_plan.bindings[bid][1]["relation"] in par.DERIVED)
+        sharded = inc.with_shards(the_plan, {plain: 16, mail: 4})
+        for pieces in (1, 2, 6, 32):
+            with self.subTest(pieces=pieces):
+                cut = par.tasks(sharded, pieces)
+                every = [u for task in cut for u in task]
+                self.assertEqual(sorted(every), sorted(sharded.units))
+                where = {u: task for task in cut for u in task}
+                # The plain binding: min(pieces, 16) tasks of its own units, the first
+                # with its gaps unit; each of consecutive shards.
+                own = sorted({where[f"b:{plain}#{k}"] for k in range(16)})
+                self.assertEqual(len(own), min(pieces, 16))
+                for task in own:
+                    self.assertTrue(all(u == f"b:{plain}" or u.startswith(f"b:{plain}#")
+                                        for u in task), task)
+                self.assertIn(f"b:{plain}", where[f"b:{plain}#0"])
+                # Every binding over one derived relation of a source: one task, the
+                # shards of a sharded one with it.
+                for units in derived.values():
+                    self.assertEqual(len({where[u] for u in units}), 1, units)
+                self.assertTrue(all(where[f"b:{mail}#{k}"] == where[f"b:{mail}"]
+                                    for k in range(4)))
+                # Each task's derived relations with several readers are read once.
+                scope = set().union(*(sharded.units[u] for u in where[f"b:{mail}"]))
+                b = the_plan.bindings[mail][1]
+                self.assertIn((b["source"], b["relation"]), par._spilled(sharded, scope))
+
+    def test_a_sharded_parallel_build_equals_the_serial_one(self):
+        # Every isolated binding of a few records cut into shards (shard_count), and
+        # its shards projected as several tasks: the generation the serial one's.
+        with mock.patch.object(inc, "SHARD_RECORDS", 1):
+            serial = inc.build_generation(self.root / "serial-sharded", self.schema,
+                                          sources(self.schema, self.ROWS), clock=CLOCK,
+                                          workers=1)
+            generation, record = self.build("sharded", sources(self.schema, self.ROWS))
+        units = json.loads((generation.store.parent / "units.json").read_text())
+        self.assertTrue(units["shards"])
+        self.assertNotIn("unavailable", record)
+        self.assertTrue(any("#" in task for task in record["seconds"]), record["seconds"])
+        self.assertEqual(generation.content_digest, self.serial.content_digest)
+        self.assertEqual(generation.content_digest, serial.content_digest)
+        self.assertEqual(generation.report, {**serial.report,
+                                             "store": str(generation.store)})
+        self.assertEqual(tables(generation.store), self.serial_tables)
+
+    def test_a_derived_relation_is_read_once_and_replayed_as_read(self):
+        class Source:
+            reads = 0
+
+            def __init__(self, records):
+                self.records = records
+
+            def __iter__(self):
+                Source.reads += 1
+                yield from self.records
+
+        records = [{"n": n, "row": {"k": [n, str(n)]}} for n in range(600)]
+        with tempfile.TemporaryDirectory() as tmp:
+            spill = par._Spill(Source(records), Path(tmp) / "spill.bin")
+            for _ in range(3):
+                self.assertEqual(list(spill), records)
+            self.assertEqual(Source.reads, 1)
+            self.assertEqual(os.stat(spill.path).st_mode & 0o777, 0o600)
+            # A pass that stops early leaves no spill: the next reads the source.
+            Source.reads = 0
+            spill = par._Spill(Source(records), Path(tmp) / "partial.bin")
+            it = iter(spill)
+            self.assertEqual(next(it), records[0])
+            it.close()
+            self.assertFalse(spill.path.exists())
+            self.assertEqual(list(spill), records)
+            self.assertEqual(list(spill), records)
+            self.assertEqual(Source.reads, 2)
+            # A record that does not pickle: every pass reads the source.
+            Source.reads = 0
+            odd = [*records[:3], {"n": lambda: None}]
+            spill = par._Spill(Source(odd), Path(tmp) / "odd.bin")
+            self.assertEqual(list(spill), odd)
+            self.assertEqual(list(spill), odd)
+            self.assertEqual(Source.reads, 2)
+            self.assertFalse(spill.path.exists())
 
     def test_a_source_a_worker_cannot_open_again_makes_the_build_serial(self):
         built = sources(self.schema, self.ROWS)

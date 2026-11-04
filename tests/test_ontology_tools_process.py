@@ -1920,7 +1920,7 @@ class BcRelationWholePerCompanyTests(Mixin, unittest.TestCase):
 
         for name in ("no_claims", "no_relation_entry", "another_company_unsettled",
                      "only_a_per_po_claim", "relation_partial", "relation_stale",
-                     "finished_after_the_answer", "family_stale"):
+                     "finished_after_the_answer"):
             with self.subTest(name):
                 late, due = self.late(*variant(name))
                 self.assertIsNone(late["late"])
@@ -1931,6 +1931,37 @@ class BcRelationWholePerCompanyTests(Mixin, unittest.TestCase):
         claims["purchaseOrders"].append(company_b(True))
         late, _ = self.late(*portal_po_with_bc_twin(claims=claims, relations=relations))
         self.assertIs(late["late"], True)
+
+    def test_a_stale_family_is_judged_as_captured_and_says_so(self):
+        # The late list judges the captured records; the PO page said "lateness unknown"
+        # for the same order (PO page vs Today, gen 7). A due date unproven only because a
+        # capture is past its freshness bound is read as captured: the verdict stands with
+        # the stale source named, while the stage's own overdue proof stays unproven.
+        claims, relations = self.whole()
+        late, due = self.late(*portal_po_with_bc_twin(claims=claims, relations=relations,
+                                                      family_stale=True))
+        self.assertEqual((late["late"], late["days_late"], late["stale_sources"]),
+                         (True, 17, ["bc"]))
+        self.assertNotIn("gap", late)
+        (stale,) = [g for g in late["gaps"] if g["reason"] == "capture_stale"]
+        self.assertIn("the bc capture is stale", stale["detail"])
+        self.assertIsNone(due["overdue"])
+        self.assertEqual(due["gap"]["reason"], "due_date_unproven")
+        # stale and also unproven otherwise (no claims): never decided
+        late, _ = self.late(*portal_po_with_bc_twin(claims=None, relations=relations,
+                                                    family_stale=True))
+        self.assertIsNone(late["late"])
+        self.assertNotIn("stale_sources", late)
+        # a reader the stale part is withheld from: still undecided, nothing named
+        store, po = portal_po_with_bc_twin(claims=claims, relations=relations,
+                                           family_stale=True)
+        policy = ot.ReadPolicy("plx", {"api:*": frozenset({"ops"}),
+                                       "bc:company_a/*": frozenset({"ops"})},
+                               {m: frozenset({"ops"}) for m in
+                                ("finance", "pii", "l5", "quality_controlled")})
+        late, _ = self.late(store, po, policy, Actor("plx", frozenset({"ops"})))
+        self.assertIsNone(late["late"])
+        self.assertNotIn("2099-01-15", json.dumps(late.get("gap")))
 
     def test_a_one_company_reader_never_reads_a_whole_relation(self):
         # The twin of a Portal record could be in any company: only a grant of the whole

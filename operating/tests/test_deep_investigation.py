@@ -520,6 +520,40 @@ class HostCallLimits(unittest.TestCase):
             call_limits.LIMITS["plx.read"])
 
 
+class StatementLimit(unittest.TestCase):
+    """One long SQLite statement (C code: the limit's signal handler waits for it) on an
+    interruptible connection ends at the call's limit, never runs on past it."""
+
+    LONG = ("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n "
+            "WHERE i < 3000000000) SELECT count(*) FROM n")
+
+    def setUp(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
+        call_limits.interruptible(self.conn)
+
+    def test_a_statement_past_the_limit_is_interrupted_and_the_call_times_out(self):
+        import sqlite3
+        started = time.monotonic()
+        with self.assertRaises(call_limits.ToolTimedOut):
+            with call_limits.bounded(2.0):
+                self.conn.execute(self.LONG).fetchone()
+        self.assertLess(time.monotonic() - started, 6.0)
+        # the deadline alone (a fast answer's budget): the statement raises, in time
+        started = time.monotonic()
+        with self.assertRaises(sqlite3.OperationalError):
+            with call_limits.sql_deadline(time.monotonic() + 0.5):
+                self.conn.execute(self.LONG).fetchone()
+        self.assertLess(time.monotonic() - started, 4.0)
+        # no deadline: statements run as before, and an outer deadline is never widened
+        self.assertEqual(self.conn.execute("SELECT 41 + 1").fetchone()[0], 42)
+        with call_limits.sql_deadline(time.monotonic() - 1):
+            with call_limits.sql_deadline(time.monotonic() + 60):
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.conn.execute(self.LONG).fetchone()
+
+
 class StoppedResearch(Temp):
     def test_a_cut_short_session_says_so_first_and_the_host_gets_the_limits(self):
         """A session whose call stopped at its limit: the gate counts it, the reply

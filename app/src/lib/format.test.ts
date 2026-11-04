@@ -139,3 +139,25 @@ describe("recordLabel", () => {
     expect(recordLabel("SalesOrder", "SO SO-11")).toBe("SO-11");
   });
 });
+
+describe("readable: the reasoning engine's words, said plainly", () => {
+  it("never shows capture names, link names, tier floors or lead carriers", () => {
+    const raw =
+      "Lateness is not stated: the due dates are not proven complete or readable: the portal_api capture is stale; lead carrier: the portal_api capture is stale; a PurchaseOrder.same_record_as link below the tier floor (lead) is no.";
+    const said = readable(raw);
+    expect(said).toBe(
+      "Can't say yet whether it's late: not every due date could be confirmed: the Portal data we read may be out of date; a possible match to another copy of this order isn't confirmed.",
+    );
+    for (const word of ["portal_api", "tier floor", "lead carrier", "same_record_as", "PurchaseOrder."]) expect(said).not.toContain(word);
+  });
+
+  it("says a stale read in the answer's own sentence by its system", () => {
+    expect(readable("Not settled: the portal api read here may be out of date; the projection read here may be out of date.")).toBe(
+      "Still to confirm: the Portal data we read may be out of date; our copy of the records may be out of date.",
+    );
+  });
+
+  it("leaves ordinary text alone", () => {
+    expect(readable("Needed by the supplier; ask Purchasing.")).toBe("Needed by the supplier; ask Purchasing.");
+  });
+});

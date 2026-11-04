@@ -12,7 +12,8 @@ serves. The steps, each writing into the generation being built
 * ``document_fields``: the references of document-field objects as ``lead`` links
   (``SupplierConfirmation.confirms`` ..., ``ontology.document_fields.store_document_links``);
 * ``mentions``: identifier mentions of captured documents as ``lead`` links
-  (``ontology.mentions.store_mention_links``);
+  (``ontology.mentions.store_mention_links``, its corroboration by the build's workers:
+  ``ontology.finish_parallel``);
 * ``reviews``: a person's accept / reject link decisions as ``reviewed`` /
   ``contradicted`` links (``ontology.reviews.link_step``);
 * ``sender_corroboration``: a document-field link (``SupplierConfirmation.confirms``) whose
@@ -72,7 +73,8 @@ from typing import Any, Callable
 from ontology import reviews
 from ontology.identity_scoring import twin_step, your_reference_step
 from ontology.document_fields import store_document_links
-from ontology.mentions import Document, store_mention_links
+from ontology.finish_parallel import store_mention_links
+from ontology.mentions import Document
 from ontology.sender_corroboration import sender_corroboration_step
 from ontology.text_index import store_text_index
 

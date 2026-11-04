@@ -302,8 +302,9 @@ class PendingOcrTests(CompactCase):
             folder = run["mailboxes"][0]["folders"][0]
             self.assertEqual((folder["complete"], folder["reason"]),
                              (False, "attachments_deferred"))
-            # Deferred when its message was captured and again by the round's repair.
-            self.assertEqual(folder["counts"]["attachments_deferred"], 2)
+            # Deferred when its message was captured; the round's repair does not retry it
+            # while the backlog is still at its bound (it would only defer it again).
+            self.assertEqual(folder["counts"]["attachments_deferred"], 1)
             self.assertEqual(forms(self.store, d1)[""], True)
             self.assertEqual(self.store.pending_ocr_bytes(), len(scan1))
             statuses = dict(self.store.db.execute(

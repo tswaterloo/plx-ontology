@@ -254,6 +254,44 @@ export function plainDates(text: string): string {
   });
 }
 
+/** A capture or system name of the engine ("portal_api", "bc") as the system a reader knows. */
+const CAPTURE_NAME: Record<string, string> = {
+  portal: "Portal", portal_api: "Portal", "portal api": "Portal", bc: "Business Central", business_central: "Business Central",
+  mail: "email", graph_mail: "email", email: "email", teams: "Teams", sharepoint: "SharePoint", mc: "Mission Control",
+  sage: "Sage", filemaker: "FileMaker", fm: "FileMaker", projection: "Workbench", mirror: "Workbench",
+};
+const captureName = (raw: string) => CAPTURE_NAME[raw.toLowerCase()] ?? raw.replace(/_/g, " ");
+
+/**
+ * The reasoning engine's own vocabulary (capture staleness, lead carriers, tier floors,
+ * link names such as `PurchaseOrder.same_record_as`, "not proven complete") said as a
+ * business reader would; the meaning is kept, only the plumbing words go. Each clause once.
+ */
+export function plainReasons(text: string): string {
+  if (!/Not settled: |capture is stale|tier floor|lead carrier|[A-Z][a-zA-Z]+\.[a-z_]+ link|not proven complete|read here may be out of date|Lateness is not stated|projector could not read/.test(text)) return text;
+  const out = text
+    .replace(/^Lateness is not stated:\s*/i, "Can't say yet whether it's late: ")
+    .replace(/\bNot settled: /g, "Still to confirm: ")
+    .replace(/\blead carrier:\s*/gi, "")
+    .replace(/\bthe ([a-z_ ]+?) capture is stale\b/gi, (_m, sys: string) => `the ${captureName(sys)} data we read may be out of date`)
+    .replace(/\bthe ([a-z_ ]+?) read here may be out of date\b/gi, (_m, sys: string) =>
+      /^(projection|mirror)$/i.test(sys) ? "our copy of the records may be out of date" : `the ${captureName(sys)} data we read may be out of date`)
+    .replace(/\ban? [A-Z][a-zA-Z]+\.same_record_as link below the tier floor(?: \(lead\))?(?: is (?:not counted|no)\b)?/g, "a possible match to another copy of this order isn't confirmed")
+    .replace(/\ban? [A-Z][a-zA-Z]+\.([a-z_]+) link below the tier floor(?: \(lead\))?(?: is (?:not counted|no)\b)?/g, (_m, l: string) => `an unconfirmed ${l.replace(/_/g, " ")} link`)
+    .replace(/\b[A-Z][a-zA-Z]+\.([a-z_]+) link\b/g, (_m, l: string) => `${l.replace(/_/g, " ")} link`)
+    .replace(/\s*below the tier floor(?: \(lead\))?/gi, " (unconfirmed)")
+    .replace(/\bthe due dates are not proven complete or readable\b/gi, "not every due date could be confirmed")
+    .replace(/\bthe projector could not read\b/gi, "we couldn't read")
+    .replace(/\bnot proven complete\b/gi, "may be incomplete");
+  // "x; x" -> "x": the same reason reached twice
+  // a clause's own words: after its last "x: " lead-in, without the closing stop
+  const key = (c: string) => c.slice(c.lastIndexOf(": ") + 1).replace(/[.\s]+$/, "").trim().toLowerCase();
+  const clauses = out.split(/;\s+/);
+  const kept = clauses.filter((c, i) => clauses.findIndex((o) => key(o) === key(c)) === i);
+  const joined = kept.join("; ");
+  return /[.]$/.test(out) && !/[.]$/.test(joined) ? `${joined}.` : joined;
+}
+
 /** "PurchaseOrderLine:bc.purchase_order_lines:{...}" (an object key) -> "Purchase order line". */
 const OBJECT_KEY = /\b([A-Z][A-Za-z]+):[a-z][\w]*\.[\w.]+:\{[^}]*\}/g;
 
@@ -264,7 +302,7 @@ const OBJECT_KEY = /\b([A-Z][A-Za-z]+):[a-z][\w]*\.[\w.]+:\{[^}]*\}/g;
 export function readable(text: string | null | undefined): string {
   if (!text) return "";
   return plainDates(
-    withoutFloatNoise(text)
+    plainReasons(withoutFloatNoise(text))
       .replace(/_x([0-9A-Fa-f]{4})_/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)))
       .replace(OBJECT_KEY, (_m, type: string) => typeLabel(type))
       .replace(/\b[A-Z]{2,}(?:_[A-Z]{2,})+:\s+(?=\w)/g, "")
@@ -346,7 +384,8 @@ export function recordKind(handle: string | null | undefined, label?: string | n
 
 /** "PurchaseOrder" + "106093" -> "PO 106093"; a label that already says what it is stays. */
 export function recordLabel(type: string | null | undefined, label: string): string {
-  const l = label.trim().replace(/^(PO|SO)(?=\d)/, "$1 "); // "PO100095" reads as "PO 100095", like the rest
+  // "PO PO100095" (a type word before a number that already carries it) is said once
+  const l = label.trim().replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^(PO|SO)(?=\d)/, "$1 "); // "PO100095" reads as "PO 100095", like the rest
   if (/^\d[\w-]*$/.test(l)) {
     if (/^PurchaseOrder$|^purchase_order$/.test(type ?? "")) return `PO ${l}`;
     if (/^SalesOrder$|^sales_order$/.test(type ?? "")) return `SO ${l}`;

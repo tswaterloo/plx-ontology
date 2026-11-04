@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleAlert, EyeOff, Info } from "lucide-react";
+import { ArrowUpRight, CircleAlert, EyeOff, Info } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
@@ -46,7 +46,8 @@ export const LATE_RULE = "Late means still open after the needed-by date, or rec
 function stepWords(text: string | null | undefined): string {
   return readable(text)
     .replace(/^a line's expected receipt date: the due date only when no header records a requested-by date\.?$/i, "Needed-by date on the order line")
-    .replace(/requested-by date/gi, "needed-by date");
+    .replace(/requested-by date/gi, "needed-by date")
+    .replace(/the verdict below is read now/i, "the conclusion above is read now");
 }
 
 /** Lateness in words, kept for callers that print a short state. */
@@ -65,10 +66,11 @@ function StepSource({ source, children, label }: { source: Source | null | undef
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="-mx-2 block w-[calc(100%+1rem)] rounded-lg px-2 py-1 text-left hover:bg-surface-2 cursor-pointer"
+        className="group -mx-2 flex w-[calc(100%+1rem)] items-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-surface-2 cursor-pointer"
         aria-label={label}
       >
-        {children}
+        <span className="min-w-0 flex-1">{children}</span>
+        <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-muted group-hover:text-accent" aria-hidden />
       </button>
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
     </>
@@ -193,12 +195,13 @@ export function shapeSteps(steps: TrailStep[]): { step: TrailStep; group?: Trail
 }
 
 /** The verdict first, its rule (when it has one) behind "Rule ⓘ". */
-function Verdict({ text, rule, check }: { text: string; rule?: string | null; check?: string }) {
+function Verdict({ text, rule, check, status = "neutral", beside = [] }: { text: string; rule?: string | null; check?: string; status?: Status; beside?: TrailStep[] }) {
   const [open, setOpen] = useState(false);
   const words = rule ? (/^rule: an open purchase order|^late means/i.test(rule) ? LATE_RULE : stepWords(rule.replace(/^Rule:\s*/, ""))) : null;
   return (
-    <div data-testid="trail-verdict">
-      <p className="flex flex-wrap items-baseline gap-x-2 text-row font-medium">
+    <div data-testid="trail-verdict" className={cn("rounded-lg border-l-[3px] px-3 py-2", STATUS_CLASS[status].soft, STATUS_CLASS[status].line)}>
+      <p className="text-eyebrow uppercase text-muted">Conclusion</p>
+      <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-row font-medium">
         <span>{stepWords(text)}</span>
         {words && (
           <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="inline-flex items-center gap-0.5 text-meta font-normal text-muted hover:text-fg cursor-pointer">
@@ -208,6 +211,14 @@ function Verdict({ text, rule, check }: { text: string; rule?: string | null; ch
       </p>
       {check && UNCONFIRMED_WORDS[check] && <p className="mt-0.5 text-meta text-muted">? {UNCONFIRMED_WORDS[check]}</p>}
       {open && words && <p className="mt-1 text-meta text-muted">{words}</p>}
+      {beside.map((b, i) => (
+        <div key={i} className="mt-2 border-t border-border pt-2" data-testid="trail-verdict-beside">
+          <StepSource source={b.source} label={`${stepWords(b.title)} Open the evidence`}>
+            <span className="block text-row text-fg">{stepWords(b.title)}</span>
+            {b.detail && <span className="block text-meta text-muted">{stepWords(b.detail)}</span>}
+          </StepSource>
+        </div>
+      ))}
     </div>
   );
 }
@@ -300,10 +311,17 @@ function Hidden({ text }: { text: string | null }) {
   );
 }
 
-export function PoTrailView({ trail, showSubject = true, showNext = true }: { trail: PoTrail; showSubject?: boolean; showNext?: boolean }) {
+/** A gap line's words as compared with the verdict's: its reason after any "x:" lead-in. */
+const reasonKey = (t: string) => readable(t).replace(/^[^:]*:\s*/, "").replace(/[.\s]+$/, "").toLowerCase();
+
+export function PoTrailView({ trail, showSubject = true, showNext = true, showEta = true }: { trail: PoTrail; showSubject?: boolean; showNext?: boolean; showEta?: boolean }) {
   const href = safeHref(trail.subject.open_url) ?? objectHref(trail.subject.type, trail.subject.object_id);
-  const verdictStep = (trail.steps ?? []).find((s) => s.kind === "verdict");
+  // the live verdict's own step; any other verdict step (the late list's check when it
+  // last ran, which the server adds when it differs) is shown beside it, never dropped
+  const verdicts = (trail.steps ?? []).filter((s) => s.kind === "verdict");
+  const verdictStep = verdicts.find((s) => s.title === trail.verdict) ?? (trail.verdict ? undefined : verdicts[verdicts.length - 1]);
   const verdict = trail.verdict ?? verdictStep?.title;
+  const beside = verdicts.filter((s) => s !== verdictStep && s.title !== verdict);
   const late = lateness(trail.state, trail.days_late);
   return (
     <div className="space-y-3" data-testid="po-trail">
@@ -315,11 +333,11 @@ export function PoTrailView({ trail, showSubject = true, showNext = true }: { tr
           {late && trail.state !== "not_applicable" && <StatusBadge shown={late} />}
         </div>
       )}
-      {verdict && <Verdict text={verdict} rule={verdictStep?.detail ?? (trail.state ? LATE_RULE : null)} check={verdictStep?.check} />}
-      {trail.eta && <EtaBadge eta={trail.eta} />}
+      {verdict && <Verdict text={verdict} rule={verdictStep?.detail ?? (trail.state ? LATE_RULE : null)} check={verdictStep?.check} status={late?.status} beside={beside} />}
+      {showEta && trail.eta && <EtaBadge eta={trail.eta} />}
       <Steps steps={trail.steps ?? []} label={`How we know: ${trail.subject.label}`} />
       <Hidden text={hiddenText(trail.hidden_steps ?? 0, !!trail.may_hide_more)} />
-      {(trail.not_found ?? []).map((n, i) => (
+      {(trail.not_found ?? []).filter((n) => !verdict || !reasonKey(verdict).includes(reasonKey(n.where_it_would_live)) || !reasonKey(n.where_it_would_live)).map((n, i) => (
         <p key={i} className="flex gap-1.5 text-meta text-muted">
           <span className="text-risk" aria-hidden>
             ?
@@ -395,11 +413,14 @@ export function EvidenceTrailCard({
   bare = false,
   inPage = false,
   showNext = true,
+  showEta = true,
 }: {
   trail: EvidenceTrail | null | undefined;
   bare?: boolean;
   inPage?: boolean;
   showNext?: boolean;
+  /** false where the page shows the ETA check in its own card */
+  showEta?: boolean;
 }) {
   if (!trail) return null;
   const trails = trail.trails ?? [];
@@ -433,7 +454,7 @@ export function EvidenceTrailCard({
         </ul>
       )}
       {trails.map((t, i) => (
-        <PoTrailView key={i} trail={t} showSubject={!(inPage && trails.length === 1)} showNext={showNext} />
+        <PoTrailView key={i} trail={t} showSubject={!(inPage && trails.length === 1)} showNext={showNext} showEta={showEta} />
       ))}
       {whyVerdict && <Verdict text={whyVerdict.title} rule={whyVerdict.detail} check={whyVerdict.check} />}
       {steps.length > 0 && <Steps steps={steps} label={trail.title} />}

@@ -442,16 +442,46 @@ def _fingerprint_cells(rec: Any) -> tuple[Any, ...]:
 
 
 # The modules a derived relation (``documentFields``, ``containerMembers``: read from the
-# captured bytes of attachments and files) is computed by; with every repository module
-# they import (at any depth, lazily too), the schema files and the PDF reader's version
-# they decide what it holds (:func:`derived_fingerprint`).
+# captured bytes of attachments and files) is computed by: ``_DERIVATION_ROOTS`` and every
+# repository module they import, at any depth, a function's own import included
+# (:func:`derivation_modules`), except the imports below, each into code that reads no
+# captured file and makes no derived record: the capture-kind registry's adapters (their
+# kinds name the Teams and list records' handles), another source's reader or a store
+# opener (its records are fingerprinted as records, never derived here), the citation
+# parser a reader's request is gated with, and the build's own orchestration and text
+# index (keyed by their own code). An import added anywhere else is followed: a module
+# missing here could leave derived records stale, an extra one only costs a re-derive.
 _DERIVATION_ROOTS = ("ontology.document_fields", "ontology.project_graph",
                      "integrations.captured_text")
-
-
-# ``import a.b, c`` and ``from a.b import (c, d)`` at any indentation (a function's own).
-_IMPORT = re.compile(r"^[ \t]*(?:import[ \t]+([\w., \t]+)|from[ \t]+(\.*[\w.]*)[ \t]+import"
-                     r"[ \t]+(\([^)]*\)|[^\n#]+))", re.MULTILINE)
+_NOT_DERIVATION = {
+    # capture_store._load_adapters: the registry of capture kinds
+    "integrations.capture_store": ("integrations.capture_mail", "integrations.capture_sharepoint",
+                                   "integrations.capture_teams",
+                                   "integrations.capture_sharepoint_lists",
+                                   "integrations.mc_sources", "integrations.knowledge_source"),
+    # TeamsCaptures/SharePointListCaptures.__init__: the kinds of their own records
+    "ontology.project_graph": ("integrations.capture_teams",
+                               "integrations.capture_sharepoint_lists"),
+    # other sources (BC, MC, knowledge, mirror), describe() and the stores' paths
+    "ontology.project": ("integrations.source_mirror", "integrations.mirror_capture",
+                         "integrations.capture_mail", "integrations.capture_sharepoint_lists",
+                         "ontology.project_bc", "ontology.project_knowledge",
+                         "ontology.project_mc",
+                         # the table of proven-equivalent derivation code (its own value)
+                         "ontology.code_equivalence"),
+    # _pinned: a cited handle parsed for a reader's request (pinned_document_row)
+    "ontology.document_fields": ("integrations.capture_sharepoint",
+                                 "integrations.graph_evidence",
+                                 "integrations.live_source_guard"),
+    # the build's worker set-up (a pinned source replays its records) and text chunks
+    "ontology.project_parallel": ("ontology.project_incremental", "ontology.text_index"),
+    # the table of proven-equivalent memo code (its own value)
+    "ontology.mentions": ("ontology.code_equivalence",),
+}
+# The schema files derivation reads (``document_fields.PROFILES_PATH``,
+# ``identifiers.SCHEMA_PATH``); the rest of the schema binds what is derived and is the
+# build's own context (``project_incremental``: the schema digest).
+_DERIVATION_DATA = ("ontology/schema/document_fields.json", "ontology/schema/identifiers.json")
 
 
 # The installed libraries the extractors read files with (PDF, Office through markitdown and
@@ -460,14 +490,15 @@ _EXTRACTOR_LIBRARIES = ("pypdf", "markitdown", "magika", "mammoth", "openpyxl", 
                         "pdfminer.six", "pandas", "xlrd", "olefile")
 
 
-@lru_cache(maxsize=1)
-def derivation_code() -> str:
-    """Digest of the code and data a derived relation is computed by: the repository
-    modules ``_DERIVATION_ROOTS`` import at any depth (every ``import`` statement of their
-    source, a function's own included), the schema JSON files, the Python and ``pypdf``
-    versions."""
-    import sys
-    root = Path(__file__).resolve().parents[1]
+def derivation_modules(root: str | Path | None = None) -> dict[str, Path]:
+    """module -> source file of every module a derived relation is computed by
+    (``_DERIVATION_ROOTS`` and their imports, ``_NOT_DERIVATION`` aside), under ``root``
+    (the repository by default). Imports are read from each module's syntax tree: every
+    ``import`` and ``from ... import`` statement, at any depth (a function's own
+    included), and a module's parent packages."""
+    import ast
+
+    root = Path(__file__).resolve().parents[1] if root is None else Path(root)
     packages = {p.name for p in root.iterdir() if (p / "__init__.py").is_file()}
 
     def source_of(module: str) -> Path | None:
@@ -487,20 +518,55 @@ def derivation_code() -> str:
         if path is None:   # a name imported from a module, not a module
             continue
         seen[module] = path
+        parts = module.split(".")
+        pending.extend(".".join(parts[:i]) for i in range(1, len(parts)))
         package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-        for plain, origin, names in _IMPORT.findall(path.read_text(encoding="utf-8")):
-            if plain:
-                pending.extend(n.split(" as ")[0].strip() for n in plain.split(","))
+        skip = _NOT_DERIVATION.get(module, ())
+        for node in ast.walk(ast.parse(path.read_bytes(), str(path))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    parent = package.split(".")[:len(package.split(".")) - node.level + 1]
+                    base = ".".join(parent + ([base] if base else []))
+                names = [base] + [f"{base}.{alias.name}" for alias in node.names]
+            else:
                 continue
-            dots = len(origin) - len(origin.lstrip("."))
-            base = origin[dots:]
-            if dots:
-                parent = package.split(".")[:len(package.split(".")) - dots + 1]
-                base = ".".join(parent + ([base] if base else []))
-            pending.append(base)
-            pending.extend(f"{base}.{n.split(' as ')[0].strip()}"
-                           for n in names.strip("()").replace("\n", " ").split(",")
-                           if n.strip())
+            pending.extend(name for name in names
+                           if not any(name == s or name.startswith(s + ".") for s in skip))
+    return seen
+
+
+@lru_cache(maxsize=1)
+def derivation_code() -> str:
+    """Digest of the code and data a derived relation is computed by: the source of
+    :func:`derivation_modules`, the schema files they read (``_DERIVATION_DATA``), the
+    Python version and the extractor libraries' versions."""
+    return _derivation_digest(Path(__file__).resolve().parents[1])
+
+
+def _derivation_digest(root: Path) -> str:
+    files = derivation_files(root)
+    # Code proven to derive what an earlier commit's code derived keeps that commit's value
+    # (``ontology.code_equivalence``), so its derived fingerprints and kept fields hold.
+    from ontology.code_equivalence import equivalent_derivation_code
+    return equivalent_derivation_code(files) or environment_digest(files)
+
+
+def derivation_files(root: Path) -> list[tuple[str, str]]:
+    """(path under ``root``, sha256 of its bytes) of every file :func:`derivation_code`
+    covers, in the order it digests them."""
+    seen = derivation_modules(root)
+    files = sorted(seen.values()) + [root / name for name in _DERIVATION_DATA]
+    return [(str(path.relative_to(root)), hashlib.sha256(path.read_bytes()).hexdigest())
+            for path in files]
+
+
+def environment_digest(files: Iterable[tuple[str, str]]) -> str:
+    """The derivation digest of ``files`` (path, sha256) with this Python's version and
+    the extractor libraries' versions."""
+    import sys
     digest = hashlib.sha256(f"{sys.version_info[:3]}\n".encode())
     from importlib.metadata import version
     for library in _EXTRACTOR_LIBRARIES:   # an upgrade re-reads what it reads
@@ -508,10 +574,9 @@ def derivation_code() -> str:
             digest.update(f"{library} {version(library)}\n".encode())
         except Exception:  # noqa: BLE001 - not installed: files are read without it
             digest.update(f"{library} none\n".encode())
-    files = sorted(seen.values()) + sorted((root / "ontology" / "schema").rglob("*.json"))
-    for path in files:
-        digest.update(f"{path.relative_to(root)}\n".encode())
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    for path, sha in files:
+        digest.update(f"{path}\n".encode())
+        digest.update(bytes.fromhex(sha))
     return digest.hexdigest()
 
 
@@ -546,7 +611,9 @@ def document_code() -> str:
         digest.update(module.encode() + b"\n")
         digest.update(hashlib.sha256(path.read_bytes()).digest() if path.is_file()
                       else b"missing")
-    return digest.hexdigest()
+    # a code proven to read the same documents as an earlier commit's keeps its value
+    from ontology.code_equivalence import earlier_value
+    return earlier_value("document_code", digest.hexdigest())
 
 
 def readings_remembered(blobs: Path, rows: Iterable[Mapping[str, Any]]) -> bool:
@@ -1785,6 +1852,18 @@ def shard_unit(binding_id: str, shard: int) -> str:
     return f"b:{binding_id}#{shard}"
 
 
+# A binding whose rows are each a function of one object's own records but which link
+# bindings read (``ontology.project_incremental`` ``object_local``: mail messages and
+# attachments, container members, SharePoint files) is rebuilt object by object: a
+# partial build writes only the rows of the objects whose records changed (``Projector``
+# ``objects``) and keeps each object's report entries apart (``object_unit``), so the
+# binding's report is the merge of its objects' and of what it reports as a whole.
+def object_unit(binding_id: str, object_id: str) -> str:
+    """Where the report entries of one object of an object-local binding are kept apart
+    (never a build unit with a key: the binding's unit holds them, merged)."""
+    return f"b:{binding_id}@{object_id}"
+
+
 def binding_key(b: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
     """The binding key values of a captured row, or None when one is absent, blank or not
     a scalar (the record names no object: ``binding_key_absent``)."""
@@ -2093,6 +2172,8 @@ class _Report:
     unit: str | None = None
     parts: dict[str, "_Report"] = field(default_factory=dict)
     unattributed: int = 0
+    # The object parts (``object_unit``) made since the projector last handed them on.
+    objects: list[str] = field(default_factory=list)
 
     def gap(self, code: str, where: str, handle: str | None = None, count: int = 1) -> None:
         self._gap(code, where, handle, count)
@@ -2121,6 +2202,8 @@ class _Report:
         part = self.parts.get(self.unit)
         if part is None:
             part = self.parts[self.unit] = _Report()
+            if "@" in self.unit:
+                self.objects.append(self.unit)
         return part
 
     def as_dict(self) -> dict[str, Any]:
@@ -2406,7 +2489,8 @@ class Projector:
                  scratch_dir: str | Path | None = None,
                  scope: Iterable[str] | None = None,
                  emit: Iterable[str] | None = None,
-                 shards: Mapping[str, int] | None = None) -> None:
+                 shards: Mapping[str, int] | None = None,
+                 objects: Mapping[str, Any] | None = None) -> None:
         self.schema = schema
         self.types: dict[str, Mapping[str, Any]] = dict(_get(schema, "object_types") or {})
         self.links: dict[str, Mapping[str, Any]] = dict(_get(schema, "link_types") or {})
@@ -2454,6 +2538,23 @@ class Projector:
         # gaps are its shard's unit, and a partial build reads only the records of the
         # shards in ``emit``. Only for bindings ``ontology.project_incremental.isolated``.
         self.shards: dict[str, int] = {b: int(n) for b, n in (shards or {}).items() if n > 1}
+        # Object-local bindings rebuilt object by object (``object_unit``): binding -> the
+        # object ids whose rows this build writes (None: every object of the binding),
+        # whenever its own unit is emitted. Each object's report entries are its own part,
+        # handed to ``object_parts(binding, object_id, part)`` (several calls for one
+        # object are merged by the caller) and never left in ``report.parts``. Only for
+        # bindings ``ontology.project_incremental.object_local``.
+        self.objects: dict[str, frozenset[str] | None] = {
+            b: (None if chosen is None else frozenset(chosen))
+            for b, chosen in (objects or {}).items()}
+        self.object_parts: Callable[[str, str, dict[str, Any]], None] | None = None
+        # The object-local bindings an emitted link unit reads: staged whole (its links
+        # are a cold build's), though only their chosen objects are written.
+        self._stage_whole = frozenset(
+            bid for bid in self.objects for lid, link in self.links.items()
+            for index, lb in enumerate(link.get("bindings", []))
+            if bid in link_ends(lb, self.bindings)
+            and self._emits(link_unit(lid, index, lb, self.bindings)))
         self._path_marks: dict[tuple[str, str], frozenset[str]] = {}
         self._company_unknown: dict[tuple[str, int], bool] = {}
         self._sigs: dict[tuple[str, str, str, str | None, str | None], int] = {}
@@ -2468,10 +2569,40 @@ class Projector:
         self._finalizer: Any = None
 
     def _emits(self, unit: str) -> bool:
+        if unit.startswith("b:") and "@" in unit:   # an object of an object-local binding
+            bid, _, oid = unit[2:].partition("@")
+            return self._writes(bid, oid)
         return self.emit is None or unit in self.emit
+
+    def _writes(self, binding_id: str, object_id: str) -> bool:
+        """Whether this build writes the rows of one object of an object-local binding:
+        its binding's unit is emitted and the object is chosen."""
+        if binding_id not in self.objects or not (
+                self.emit is None or binding_unit(binding_id) in self.emit):
+            return False
+        chosen = self.objects[binding_id]
+        return chosen is None or object_id in chosen
+
+    def _flush_object_parts(self) -> None:
+        """Hand the report parts of the written objects of object-local bindings to
+        ``object_parts`` and drop every object part (one not written is not this
+        build's)."""
+        fresh = self.report.objects
+        if not fresh:
+            return
+        self.report.objects = []
+        for unit in fresh:
+            part = self.report.parts.pop(unit, None)
+            if part is None:
+                continue
+            bid, _, oid = unit[2:].partition("@")
+            if self.object_parts is not None and self._writes(bid, oid):
+                self.object_parts(bid, oid, part.as_dict())
 
     def _unit_of(self, binding_id: str, object_id: str) -> str:
         """The build unit of one object's rows: its shard's in a sharded binding."""
+        if binding_id in self.objects:
+            return object_unit(binding_id, object_id)
         shards = self.shards.get(binding_id)
         return (shard_unit(binding_id, shard_of(object_id, shards)) if shards
                 else binding_unit(binding_id))
@@ -2740,6 +2871,8 @@ class Projector:
         rid = b["id"]
         held = 0  # staged rows whose rec is still the raw pickle (before prime)
         sharded = self.shards.get(rid)
+        per_object = rid in self.objects
+        stage_all = rid in self._stage_whole
 
         def flush() -> None:
             nonlocal held
@@ -2782,6 +2915,12 @@ class Projector:
                 unit = self.report.unit = shard_unit(rid, shard_of(object_id, sharded))
                 if not self._emits(unit):
                     continue
+            elif per_object:
+                # A record of an object this build does not write is staged only for the
+                # links an emitted link unit makes from it (``_stage_whole``).
+                self.report.unit = object_unit(rid, object_id)
+                if not stage_all and not self._writes(rid, object_id):
+                    continue
             if "from_capture" in b["lineage"] and not (
                     rec.capture_lineage and _BC_LINEAGE.fullmatch(rec.capture_lineage)):
                 # The capture's company is its lineage; without one the version has no
@@ -2814,7 +2953,7 @@ class Projector:
         objects: list[dict[str, Any]] = []
         removals: list[dict[str, Any]] = []
         accepted: list[tuple[int]] = []
-        write = bool(sharded) or self._emits(binding_unit(b["id"]))
+        write = bool(sharded) or per_object or self._emits(binding_unit(b["id"]))
         cursor = self._db.execute(
             "SELECT object_id, seq, record_key, handle, start, end_, audience, missing, "
             "removals FROM stage WHERE binding = ? ORDER BY object_id, start, handle, seq",
@@ -2823,6 +2962,8 @@ class Projector:
             versions = list(group)
             if sharded:   # only the records of the shards it writes were staged
                 self.report.unit = shard_unit(rid, shard_of(object_id, sharded))
+            elif per_object:
+                self.report.unit = object_unit(rid, object_id)
             if len({row[2] for row in versions}) > 1:
                 # Several source records answer to one binding key: never guess which.
                 self.report.gap("binding_key_not_unique", b["id"], versions[0][3])
@@ -2836,6 +2977,12 @@ class Projector:
                 self.report.gap("capture_versions_overlap", b["id"], versions[0][3])
                 continue
             accepted += [(row[1],) for row in versions]
+            if len(accepted) >= self.batch:
+                self._tick()
+                self._db.executemany("INSERT INTO accepted (seq) VALUES (?)", accepted)
+                accepted.clear()
+            if per_object and not self._writes(rid, object_id):
+                continue   # staged for links only: no row of it is written
             first, last = versions[0], versions[-1]
             missing = last[7] if last[5] is None else None
             if missing is not None:
@@ -2859,10 +3006,6 @@ class Projector:
                     builder.add("object_removals", removals)
                 objects.clear()
                 removals.clear()
-            if len(accepted) >= self.batch:
-                self._tick()
-                self._db.executemany("INSERT INTO accepted (seq) VALUES (?)", accepted)
-                accepted.clear()
         if write:
             builder.add("objects", objects)
             builder.add("object_removals", removals)
@@ -3601,7 +3744,8 @@ class Projector:
         identifiers: list[dict[str, Any]] = []
         for bid in self._bound():
             sharded = bid in self.shards   # only its written shards' versions were staged
-            if not sharded and not self._emits(binding_unit(bid)):
+            per_object = bid in self.objects
+            if not sharded and not per_object and not self._emits(binding_unit(bid)):
                 continue
             self.report.unit = binding_unit(bid)
             tid, binding = self.bindings[bid]
@@ -3615,6 +3759,10 @@ class Projector:
             for version in self._versions(bid):
                 if sharded:
                     self.report.unit = self._unit_of(bid, version.object_id)
+                elif per_object:   # staged whole for links: only its chosen objects
+                    if not self._writes(bid, version.object_id):
+                        continue
+                    self.report.unit = object_unit(bid, version.object_id)
                 for prop, source in sourced:
                     self._value(version, t, tid, prop, source, unique_keys)
                 self._placeholders(version, t, tid)
@@ -3952,7 +4100,12 @@ class Projector:
                 if bid not in bound or not self._emits(binding_unit(bid)):
                     continue
                 self.report.unit = binding_unit(bid)
+                per_object = bid in self.objects
                 for version in self._versions(bid):
+                    if per_object:
+                        if not self._writes(bid, version.object_id):
+                            continue
+                        self.report.unit = object_unit(bid, version.object_id)
                     made = (self._capture_event(builder, eid, ev, version, marks)
                             if ev["time_basis"] == "capture_observed"
                             else self._date_event(eid, ev, version, marks))
@@ -4118,6 +4271,7 @@ class Projector:
 
     def _tick(self) -> None:
         """Between batches: the caller's ``checkpoint`` may raise to stop the build."""
+        self._flush_object_parts()
         if self.checkpoint is not None:
             self.checkpoint()
 
@@ -4143,6 +4297,7 @@ class Projector:
             for stage, phase in zip(STAGES, phases, strict=True):
                 self.report.unit = None
                 phase()
+                self._flush_object_parts()
                 if self.on_stage is not None:
                     self.on_stage(stage, _db_bytes(self._db, self._work_path),
                                   _db_bytes(builder.connection, builder.temp)
@@ -4333,16 +4488,9 @@ def open_generation(builder: StoreBuilder) -> None:
         builder.connection.execute(f"PRAGMA cache_size = -{_SCRATCH_CACHE_KIB}")
 
 
-def finish_generation(builder: StoreBuilder, projector: "Projector",
-                      projected: Mapping[str, Any], *,
-                      post_project: Mapping[str, Callable[[StoreBuilder, "Projector"],
-                                                          Mapping[str, Any]]] | None = None,
-                      clock: Callable[[], datetime] | None = None) -> dict[str, Any]:
-    """Run the ``post_project`` steps on the open generation, write its ``store_meta``
-    (build report from ``projected``: counts and gaps; the row counts are the
-    generation's own; the handles of its ``RECORDED_GAPS`` go to
-    ``store_meta.source_condition_unmet``) and commit it. Returns the report with
-    ``content_digest``."""
+def projected_counts(builder: StoreBuilder, projected: Mapping[str, Any]) -> dict[str, Any]:
+    """The build report's counts of a projected generation before its ``post_project``
+    steps: ``projected``'s, with the generation's own row counts."""
     conn = builder.connection
     counts = dict(projected.get("counts", {}))
     counts.update({name: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -4350,8 +4498,36 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
                                        ("links", "links"), ("identifiers", "identifiers"),
                                        ("events", "events"))})
     counts["values"] = value_rows(conn)
-    steps = {name: dict(step(builder, projector))
-             for name, step in sorted((post_project or {}).items())}
+    return counts
+
+
+def finish_generation(builder: StoreBuilder, projector: "Projector",
+                      projected: Mapping[str, Any], *,
+                      post_project: Mapping[str, Callable[[StoreBuilder, "Projector"],
+                                                          Mapping[str, Any]]] | None = None,
+                      clock: Callable[[], datetime] | None = None,
+                      counts: Mapping[str, Any] | None = None,
+                      steps_done: Mapping[str, Mapping[str, Any]] | None = None,
+                      after_step: Callable[[str, Mapping[str, Any]], None] | None = None
+                      ) -> dict[str, Any]:
+    """Run the ``post_project`` steps on the open generation, write its ``store_meta``
+    (build report from ``projected``: counts and gaps; the row counts are the
+    generation's own; the handles of its ``RECORDED_GAPS`` go to
+    ``store_meta.source_condition_unmet``) and commit it. Returns the report with
+    ``content_digest``. A build resumed after some steps (``ontology.project_incremental``)
+    passes the counts it projected (:func:`projected_counts`) and the reports of the steps
+    done (``steps_done``, not run again); ``after_step`` is called with each step's name
+    and report once it ran."""
+    conn = builder.connection
+    counts = dict(counts) if counts is not None else projected_counts(builder, projected)
+    steps = {name: dict(report) for name, report in (steps_done or {}).items()}
+    for name, step in sorted((post_project or {}).items()):
+        if name in steps:
+            continue
+        steps[name] = dict(step(builder, projector))
+        if after_step is not None:
+            after_step(name, steps[name])
+    steps = dict(sorted(steps.items()))
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     gaps, unmet = [], {}
     for gap in projected.get("gaps", []):
@@ -4399,4 +4575,4 @@ __all__ = ["CAPTURED_RELATIONS", "CAPTURE_SOURCES", "CaptureSource", "CapturedRe
            "Reopenable", "RowSample", "STAGES", "SharePointCaptures", "WORK_LAYOUT",
            "capture_source", "ProjectionError", "Projector", "binding_unit", "build_store",
            "event_id_of", "finish_generation", "link_ends", "link_unit", "merge_reports",
-           "open_generation", "sweep_stale_build_files"]
+           "open_generation", "projected_counts", "sweep_stale_build_files"]

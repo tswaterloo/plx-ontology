@@ -178,8 +178,8 @@ NEXT_ACTIONS = {
     "eta_slipped": ("Check whether the new date still meets the orders this purchase order "
                     "supplies, and agree a recovery with the supplier if not.",
                     "date_moved_check_orders"),
-    "vendor_no_reply": ("Follow up with the vendor (a draft is in the investigation; nothing "
-                        "is sent until you send it).", "no_reply_follow_up"),
+    "vendor_no_reply": ("Follow up with the vendor on the cited request (nothing is sent "
+                        "until you send it).", "no_reply_follow_up"),
     "vendor_terms_unapplied": ("Review the vendor's offered term and, if it is right, enter "
                                "it in the Portal (nothing is written here).",
                                "terms_review_and_enter"),
@@ -601,6 +601,12 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
     if item.days is not None:
         facts["days"] = item.days
     found = _first_found(item.event_type, kinds) is not None
+    # the records a finding joins (a late PO and the customer orders it holds up): the
+    # gap's own event, so they are among what this reader may see whenever the gap is
+    event = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
+    links = {k: list(event[k]) if isinstance(event[k], (list, tuple)) else event[k]
+             for k in ("pos", "orders", "required", "material", "line_promised")
+             if isinstance(event.get(k), (str, list, tuple))}
     return {"rank": n, "id": gap.get("id"), "event_type": item.event_type,
             "label": spec["label"], "kind": gap.get("kind"),
             # its type found by a recorded run over this data, else fixture
@@ -610,6 +616,7 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
             "next_action": {"text": text, "rule": rule, "suggestion_only": True},
             "facts": facts, "departments": item.departments,
             "citations": list(gap.get("citations") or ()),
+            **({"links": links} if links else {}),
             "acknowledged": item.acknowledged,
             "first_seen": gap.get("first_seen"), "last_seen": gap.get("last_seen"),
             "new_since_visit": item.new_since_visit,
@@ -705,7 +712,8 @@ def today_line(briefing: Mapping[str, Any]) -> str:
             out.append(words.strip())
         shown = out[:TODAY_PARTS]
         if len(out) > TODAY_PARTS:
-            shown.append(f"{len(out) - TODAY_PARTS} more kinds")
+            more = len(out) - TODAY_PARTS
+            shown.append(f"{more} more kind{'' if more == 1 else 's'}")
         return shown
 
     hidden = int(briefing.get("hidden") or 0)

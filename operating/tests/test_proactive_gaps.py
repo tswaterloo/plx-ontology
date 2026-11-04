@@ -614,3 +614,26 @@ class LiveCheckTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WholePartTest(unittest.TestCase):
+    """A count one source keeps whole is one quantity; every other disagreement stays."""
+
+    @staticmethod
+    def raised(unit, *values):
+        conflict = {"kind": "value_disagreement", "subject": "AssemblyOrder.ordered", "values": [
+            {"value_type": "quantity", "value": v, "unit": unit, "quantity_role": "ordered",
+             "citation": {"l1_handle": f"api://t/{n}@v"}} for n, v in enumerate(values)]}
+        skipped = Counter()
+        return len(pg._conflicting_quantities([conflict], skipped)), dict(skipped)
+
+    def test_only_a_whole_count_beside_its_fraction_is_suppressed(self):
+        self.assertEqual(self.raised("box", "32", "32.5"), (0, {"whole_part_only": 1}))
+        self.assertEqual(self.raised("box", "-19", "-19.75"), (0, {"whole_part_only": 1}))
+        for case in (("kg", "32", "32.5", "32.9"),   # two fractional sources disagree
+                     ("kg", "32", "32.9"),            # a measured unit is not counted whole
+                     ("kg", "0", "0.75"),             # nothing against part received
+                     ("box", "0", "0.75"),            # zero is not a whole part kept
+                     ("box", "32", "32.5", "32.9"),   # three values
+                     ("box", "31", "32.5")):          # not its whole part
+            self.assertEqual(self.raised(*case), (1, {}), case)

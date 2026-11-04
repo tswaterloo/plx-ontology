@@ -1288,6 +1288,10 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     # The question's own identifiers are given by the asker (``asker_given``): a reply
     # repeating them states nothing a citation must back.
     prose = " ".join(text.split())
+    # A passed text value is matched as written, before the asker's identifiers and the
+    # returned names are blanked inside it (a file name holding the lot number asked).
+    for value in sorted({value for value in covered if value}, key=len, reverse=True):
+        prose = prose.replace(value, " " * len(value))
     if given:   # a handle keeps its characters: only prose outside one is blanked
         prose = given_blanked(claim_checks.HANDLE.sub(
             lambda match: " " * len(match.group(0)), prose), given)

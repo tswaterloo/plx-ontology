@@ -299,6 +299,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         return backend.briefing_items(who, event_type, offset=offset, limit=limit,
                                       since_visit=view == "since_visit")
 
+    @app.get("/api/suggestions", response_model=m.Suggestions, tags=["home"],
+             responses={401: {"model": m.ErrorResponse}})
+    def suggestions(who: Reader = Depends(reader)) -> m.Suggestions:
+        """What needs your attention and what to do: late or unconfirmed purchase orders
+        and the customer orders they hold up, "ETA confirmed?", customer orders at risk and
+        margin alerts, ranked by impact; each with how we know, confidence, what is missing
+        and a draft message for you to send yourself (never sent by the Workbench)."""
+        return backend.suggestions(who)
+
     @app.post("/api/briefing/seen", response_model=m.BriefingSeen, tags=["home"],
               responses={401: {"model": m.ErrorResponse}})
     def briefing_seen(who: Reader = Depends(reader)) -> m.BriefingSeen:

@@ -92,3 +92,36 @@ def for_display(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, (list, tuple)):
         return [for_display(item, _depth + 1) for item in value]
     return value
+
+
+_ANSWER_BLOCK = re.compile(r"(```(?:json)?\s*)(\{.*?\})(\s*```)", re.S)
+
+
+def display_reply(text: str) -> str:
+    """A final reply as shown: its prose and each answer block's text and gaps through
+    ``display_text``, but every answer value exactly as the claim check passed it. The
+    values are claims on their cited cells (``116.25000000000001`` on a cell holding that):
+    rounding one would make it a claim of another value; the reader sees it rounded where
+    the app shows it (``for_display``)."""
+    if not isinstance(text, str):
+        return text
+
+    def block(match: re.Match[str]) -> str:
+        import json
+        try:
+            value = json.loads(match.group(2))
+        except ValueError:
+            return display_text(match.group(0))
+        if not isinstance(value, dict):
+            return display_text(match.group(0))
+        shown = {key: item if key == "values" else for_display(item)
+                 for key, item in value.items()}
+        return match.group(1) + json.dumps(shown, ensure_ascii=False) + match.group(3)
+
+    out, at = [], 0
+    for match in _ANSWER_BLOCK.finditer(text):
+        out.append(display_text(text[at:match.start()]))
+        out.append(block(match))
+        at = match.end()
+    out.append(display_text(text[at:]))
+    return "".join(out)

@@ -654,6 +654,55 @@ class MockBackend:
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         return m.BriefingSeen(ok=True, at=_iso(0))
 
+    def suggestions(self, reader: Reader) -> m.Suggestions:
+        """Demo suggestions built by the real composer (``operating.proactive_suggestions``)
+        over the demo briefing, one demo PO trail (no confirmation, a cleared vendor
+        contact) and one late-order supplier draft."""
+        from operating import briefing as bf
+        from operating import proactive_suggestions as ps
+        from .backend import SUGGESTIONS_NOTE, suggestion_model
+
+        found, labels = self._briefing(False)
+        po, h = "PurchaseOrder:demo:90388", "bc://demo/purchaseOrders/90388"
+        mail = "graph-mail://purchasing/messages/demo-90388"
+        trail = {"kind": "purchase_order", "title": "PO 90388", "trails": [{
+            "subject": {"object_id": po}, "state": "late", "days_late": 5,
+            "verdict": "Late: needed by 2026-10-24, not received.",
+            "eta": {"state": "no_confirmation", "text": "No: there is no vendor "
+                    "confirmation on record for this PO.", "source": None},
+            "steps": [{"kind": "due_date", "at": "2026-10-24", "title": "Needed by 2026-10-24",
+                       "source": {"handle": h, "label": "BC purchase order 90388",
+                                  "system": "BC", "open_url": None}},
+                      {"kind": "follow_up", "at": "2026-10-20T14:02:00Z",
+                       "title": "Message about PO 90388", "sender": "orders@supplier.example",
+                       "source": {"handle": mail, "label": "Email", "system": "Email",
+                                  "open_url": None}}],
+            "next_action": {"text": "No vendor confirmation on record: ask the vendor "
+                            "(orders@supplier.example) to confirm the delivery date.",
+                            "rule": "no_confirmation", "contact": "orders@supplier.example",
+                            "contact_source": {"handle": mail, "label": "Email",
+                                               "system": "Email", "open_url": None}},
+            "hidden_steps": 0, "may_hide_more": False, "not_found": []}]}
+        line = "PurchaseOrderLine:demo:90388-1"
+        draft = {"facts": [
+            {"fact": "supplier", "value": "Demo Aromatics", "citation": h},
+            {"fact": "order_number", "value": "PO 90388", "citation": h},
+            {"fact": "line_item", "value": "Lavender oil 40/42", "line_id": line,
+             "citation": h + "/lines/1"},
+            {"fact": "expected_receipt", "value": "2026-10-24", "line_id": line,
+             "citation": h + "/lines/1"},
+            {"fact": "ordered_quantity", "value": "200", "unit": "kg", "line_id": line,
+             "citation": h + "/lines/1"},
+            {"fact": "received_quantity", "value": "0", "unit": "kg", "line_id": line,
+             "citation": h + "/lines/1"}]}
+        built = ps.build(found["items"], labels=labels, trails={po: trail},
+                         late_drafts={po: draft})
+        return m.Suggestions(status="read", total=built["total"], more=built["more"],
+                             by_kind=built["by_kind"], collapsed=built["collapsed"],
+                             items=[suggestion_model(c) for c in built["suggestions"]],
+                             rank_basis=bf.RANK_BASIS, note=SUGGESTIONS_NOTE,
+                             as_of=_iso(0.5), complete=False)
+
     def object_page(self, reader: Reader, object_type: str, object_id: str, *,
                     quick: bool = False) -> m.ObjectPage:
         obj = next((o for o in OBJECTS if o["object_id"] == object_id

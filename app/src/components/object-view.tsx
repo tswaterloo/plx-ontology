@@ -8,7 +8,7 @@ import { getObject, getObjectSection, mergeSection, PAGE_SECTIONS } from "@/lib/
 import { cn } from "@/lib/cn";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
-import { groupLinked, groupRelated, groupTimeline, productionSteps, recordHead, type RecordHead, type StatSpec, type Thread } from "@/lib/record";
+import { groupLinked, groupRelated, groupTimeline, productionSteps, recordHead, type RecordHead, type StatSpec, type Thread, activityTitle } from "@/lib/record";
 import { lateness, recordState, STATUS_CLASS } from "@/lib/status";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import type { Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
@@ -291,7 +291,7 @@ function Activity({ events }: { events: TimelineEvent[] }) {
 
 function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
   const [open, setOpen] = useState(false);
-  const title = count > 1 ? `${/^([^:]+):/.exec(e.title)?.[1] ?? readable(e.title)} ×${count}` : readable(e.title);
+  const title = activityTitle(e.title, count);
   const body = (
     <>
       <span className="w-14 shrink-0 text-meta tabular-nums text-muted">{e.at ? formatDate(e.at, { short: true }).replace(/ \d{4}$/, "") : ""}</span>
@@ -847,7 +847,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
             {obj.customer && <CustomerCard c={obj.customer} fallbackOrders={salesOrders} />}
             {(isCustomer || isSalesOrder) && (pending.has("margin") ? <SectionSkeleton name="margin" title="Margin" lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
             {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Late lines" lines={3} /> : <LinesTable lines={lines} />}
-            {isPo && pending.has("trail") ? <SectionSkeleton name="trail" title="How we know" lines={4} /> : <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} />}
+            {isPo && pending.has("trail") ? <SectionSkeleton name="trail" title="How we know" lines={4} /> : <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />}
             {pending.has("landed_cost") ? (
               isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={3} />
             ) : (

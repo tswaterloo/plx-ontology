@@ -446,7 +446,11 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
     # a due date unproven only past a lead is ranked like the rest: a lead is no twin of
     # this order (po_status.read reads the settled and firm twins only), so its date never
     # governs and the counted dates decide, as the home list and the late-PO answer do
-    if dated.gap is not None and dated.gap["reason"] not in _RANKED and not dated.lead_only:
+    # a due date unproven only because a capture is stale is read as of that capture, as
+    # the late list reads it, and the verdict names the stale sources (``stale_sources``)
+    stale = list(dated.stale) if dated.gap is not None else []
+    if dated.gap is not None and dated.gap["reason"] not in _RANKED and not dated.lead_only \
+            and not dated.stale:
         blocking = dated.gap
     elif need.lo is not None and dated.unattested is not None:
         blocking = dated.unattested
@@ -641,6 +645,15 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
         entry.pop("measured_against", None)
         entry.pop("measured_on", None)
         entry["gap"] = blocking
+    elif entry.get("state") in (LATE, ON_TIME, NOT_DUE):
+        # decided on records a stale capture holds: the verdict is as of that capture,
+        # said in the words the late list's freshness uses (``capture_stale``)
+        stale = list(dict.fromkeys([*stale, *received.stale]))
+        if stale:
+            entry["stale_sources"] = stale
+            gaps.insert(0, _gap("unknown", "capture_stale", subject, (
+                "read as captured: " + "; ".join(f"the {s} capture is stale" for s in stale)
+                + ", so a change since may not be shown")))
 
     # ---- beside our verdict: the order against the vendor's own promise (never our date)
     if partial or not (fully or received.counted_proven):

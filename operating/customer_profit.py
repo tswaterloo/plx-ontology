@@ -259,11 +259,27 @@ def profit_question(question: str) -> bool:
     return bool(PROFIT_WORDS.search(question or ""))
 
 
+# A second question joined to the first ("... for us and whats driving the cost", "...,
+# and why is it low"): what it asks names no customer, so its words are never looked up.
+_SECOND_ASK = re.compile(
+    r"(?:\s*,\s*|\s+)(?:and|but|also|plus)\s+(?:also\s+)?(?:what|what'?s|whats|why|how|"
+    r"how'?s|hows|where|which|who|is|are|does|do|did|can|could|should)\b.*$",
+    re.IGNORECASE | re.DOTALL)
+
+
+def first_ask(question: str) -> str:
+    """``question`` up to a second question joined to it (``_SECOND_ASK``)."""
+    return _SECOND_ASK.sub("", question or "")
+
+
 def customer_words(question: str) -> str:
     """The question without its profitability, period and filler words: the customer's
-    name or number as written (possibly empty: a question across customers names none)."""
+    name or number as written (possibly empty: a question across customers names none).
+    A second question joined to it ("and what's driving the cost") is not read for a
+    name."""
     if _ACROSS_CUSTOMERS.search(question or ""):
         return ""
+    question = first_ask(question)
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b|\b(19|20)\d{2}\b|\b\d+\s+months?\b", " ",
                   question or "")
     text = ORDER_TOKEN.sub(" ", text)
@@ -291,12 +307,13 @@ def customer_phrases(question: str) -> list[str]:
     inner words kept, even those ``customer_words`` drops as filler ("of", "the",
     "sales"). At most ``MAX_NAME_PHRASES``, the earliest first; each is used only when it
     is a customer's exact name (never a fuzzy pick)."""
-    text = ORDER_TOKEN.sub(" ", question or "")
+    text = ORDER_TOKEN.sub(" ", first_ask(question))
     out: list[str] = []
     for found in _NAME_AFTER.finditer(text):
         phrase = _NAME_TAIL.sub("", text[found.end():]).strip(" \t$'\"")
         phrase = re.sub(r"^\$\s*", "", phrase).strip()
-        if phrase and normal_name(phrase) and phrase not in out:
+        # a phrase of filler words alone ("for us") names nobody: never looked up
+        if phrase and normal_name(phrase) and customer_words(phrase) and phrase not in out:
             out.append(phrase[:200])
         if len(out) >= MAX_NAME_PHRASES:
             break
@@ -980,11 +997,14 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
                   period: Period | None = None, focus: str | None = None,
                   skip_order: Callable[[str], bool] | None = None,
                   budget_seconds: float | None = BUDGET_SECONDS,
-                  clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+                  clock: Callable[[], float] = time.monotonic,
+                  also: Sequence[str] = ()) -> dict[str, Any]:
     """The customer's profitability over the period, its orders ranked worst first, and why
     the focus order (``focus``: its number or object id; else the worst) lost money
-    (module doc). Raises ``ProfitError``
-    when the customer is not readable for this reader. ``budget_seconds`` (None: none):
+    (module doc). ``also``: other cards of the same customer (one name kept on several
+    Business Central cards), whose orders are read with ``customer``'s; each card is named
+    by its number and cited, the totals cover all of them. Raises ``ProfitError``
+    when the customer (or a card of ``also``) is not readable for this reader. ``budget_seconds`` (None: none):
     the time its order reads may take (``BUDGET_SECONDS``); orders not read within it are
     counted as not read (``ORDERS_NOT_ALL_READ``), never guessed."""
     deadline = None if budget_seconds is None else clock() + budget_seconds
@@ -997,9 +1017,23 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     name = _display(card.get("object")) or _text((values.get("name") or {}).get("value")) \
         or customer
     code = _text((values.get("erp_code") or {}).get("value"))
+    cards = [{"object_id": customer, "code": code,
+              "handle": _handle(values.get("name")) or _handle(values.get("erp_code"))}]
+    for other in dict.fromkeys(a for a in also if a != customer):
+        more = _safe(call, "plx.object", {"object_id": other})
+        if more is None:
+            raise ProfitError("customer_not_readable")
+        got = _values(more)
+        cards.append({"object_id": other,
+                      "code": _text((got.get("erp_code") or {}).get("value")),
+                      "handle": _handle(got.get("name")) or _handle(got.get("erp_code"))})
+    if len(cards) > 1:
+        codes = list(dict.fromkeys(c["code"] for c in cards if c["code"]))
+        name = (f"{name} (customer {' and '.join(codes)}, read together)" if codes
+                else f"{name} ({len(cards)} customer cards read together)")
     out: dict[str, Any] = {
         "customer": {"object_id": customer, "name": name, "code": code,
-                     "handle": _handle(values.get("name")) or _handle(values.get("erp_code"))},
+                     "handle": cards[0]["handle"], "cards": cards},
         "period": {"start": period.start.isoformat(), "end": period.end.isoformat(),
                    "words": period.words, "asked": period.asked, "basis": "an order counts in "
                    "the period by its first posted invoice's posting date (with no posted "
@@ -1007,6 +1041,16 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         "gaps": [], "withheld": 0}
     orders, trimmed, whole, outside, skipped = customer_orders(call, customer, period,
                                                                skip_order, late)
+    for other in cards[1:]:
+        more, held_back, all_read, out_of, skipped_too = customer_orders(
+            call, other["object_id"], period, skip_order, late)
+        known = {o.object_id for o in orders}
+        orders += [o for o in more if o.object_id not in known]
+        trimmed = trimmed or held_back
+        # None (the budget cut the dates) wins over False (pages not read), then True
+        whole = None if whole is None or all_read is None else bool(whole and all_read)
+        outside += out_of
+        skipped += skipped_too
     out["orders_outside_period"] = outside
     out["test_orders_skipped"] = skipped
     # Coverage: a customer total and a verdict only over every order of the period. Past
@@ -1668,9 +1712,16 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
     cust = out["customer"]
     totals = out["totals"]
     cur = totals.get("currency")
-    steps.append({"label": f"Customer {cust['name']}" + (f" ({cust['code']})"
-                                                          if cust.get("code") else ""),
-                  "value": None, "handle": cust.get("handle"), "check": "cited"})
+    cards = cust.get("cards") or ()
+    if len(cards) > 1:
+        # one customer kept on several cards: each card its own cited step
+        for card in cards:
+            steps.append({"label": f"Customer card {card['code'] or card['object_id']}",
+                          "value": None, "handle": card.get("handle"), "check": "cited"})
+    else:
+        steps.append({"label": f"Customer {cust['name']}" + (f" ({cust['code']})"
+                                                              if cust.get("code") else ""),
+                      "value": None, "handle": cust.get("handle"), "check": "cited"})
     if not totals.get("complete"):
         coverage = out.get("coverage") or {}
         steps.append({"label": f"Worst of {read_words(coverage, totals['read'])} in "

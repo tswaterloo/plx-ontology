@@ -23,6 +23,7 @@ import type { LateList,
   SectionName,
   SourceView,
   SuggestResponse,
+  Suggestions,
 } from "./types";
 
 type TokenProvider = () => Promise<string | null>;
@@ -107,6 +108,11 @@ export async function markBriefingSeen(): Promise<BriefingSeen> {
 export function getLateList(offset = 0, signal?: AbortSignal, limit = 25): Promise<LateList> {
   const n = Math.min(100, Math.max(1, Math.floor(limit)));
   return getJson<LateList>(`/api/late?offset=${Math.max(0, Math.floor(offset))}&limit=${n}`, signal);
+}
+
+/** What needs you and what to do: ranked suggestions, each with how we know and a draft you send yourself. */
+export function getSuggestions(signal?: AbortSignal): Promise<Suggestions> {
+  return getJson<Suggestions>("/api/suggestions", signal);
 }
 
 export function suggest(q: string, signal?: AbortSignal): Promise<SuggestResponse> {

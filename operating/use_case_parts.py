@@ -393,11 +393,27 @@ def is_container(content: bytes, name: str, hint: str | None = None) -> bool:
             or (kind == "cfb" and _is_msg(content)))
 
 
+_RESOURCE_WORDS = ("bad_alloc", "out of memory", "failed to allocate",
+                   "cannot allocate memory", "insufficient memory")
+
+
+def _resource(exc: BaseException) -> None:
+    """Re-raise the process running out of memory (``MemoryError``, or a native library's
+    allocation failure by its words) as ``MemoryError``: never a structural failure of the
+    container, which would be read as unread for good (a reading made then is not kept:
+    ``integrations.kept_members``)."""
+    if isinstance(exc, MemoryError):
+        raise exc
+    if isinstance(exc, Exception) and any(w in str(exc).lower() for w in _RESOURCE_WORDS):
+        raise MemoryError(type(exc).__name__) from exc
+
+
 def _is_package(data: bytes) -> bool:
     try:
         with ZipFile(BytesIO(data)) as archive:
             return any(i.filename == "[Content_Types].xml" for i in archive.infolist())
-    except _ZIP_ERRORS:
+    except _ZIP_ERRORS as exc:
+        _resource(exc)
         return False
 
 
@@ -609,7 +625,8 @@ def _html(source: str) -> str:
 def _zip(ledger: _Ledger, data: bytes, path: str, depth: int) -> None:
     try:
         archive = ZipFile(BytesIO(data))
-    except _ZIP_ERRORS:
+    except _ZIP_ERRORS as exc:
+        _resource(exc)
         ledger.unread(path, "zip", data, "container_unreadable")
         return
     with archive:
@@ -662,7 +679,8 @@ def _member(ledger: _Ledger, archive: ZipFile, info: Any, path: str) -> bytes | 
     try:
         with archive.open(info) as handle:
             body = handle.read(ledger.part_bytes + 1)
-    except _ZIP_ERRORS:  # bad CRC, broken header, unsupported compression
+    except _ZIP_ERRORS as exc:  # bad CRC, broken header, unsupported compression
+        _resource(exc)
         ledger.unread(path, "zip_member", None, "unreadable", size=info.file_size)
         return None
     if len(body) > ledger.part_bytes:  # the declared size understated the member
@@ -903,7 +921,8 @@ def _mail(ledger: _Ledger, data: bytes, path: str, depth: int) -> None:
     decides structure, so a reader can only fail to ``unread``."""
     try:
         message = BytesParser(policy=_MAIL_POLICY).parsebytes(data)
-    except Exception:  # noqa: BLE001 - any parser failure: the container is unread
+    except Exception as exc:  # noqa: BLE001 - any parser failure: the container is unread
+        _resource(exc)
         ledger.unread(path, "container", data, "container_unreadable")
         return
     nodes: list[tuple[str, str, Any]] = []
@@ -921,7 +940,8 @@ def _mail(ledger: _Ledger, data: bytes, path: str, depth: int) -> None:
         try:
             own = {id(body) for _, role, entity in nodes if role == "headers"
                    for body in mail_body(entity)}
-        except Exception:  # noqa: BLE001 - as a parser failure (e.g. recursion depth)
+        except Exception as exc:  # noqa: BLE001 - as a parser failure (e.g. recursion depth)
+            _resource(exc)
             ledger.unread(path, "container", data, "container_unreadable")
             return
     linesep = "\r\n" if b"\r\n" in data else "\n"
@@ -1000,7 +1020,8 @@ def _carried(ledger: _Ledger, path: str, entity: Any, depth: int, linesep: str) 
             BytesGenerator(buffer, mangle_from_=False, policy=entity.policy.clone(
                 linesep=linesep, refold_source="none")).flatten(entity)
             body = buffer.getvalue().split((linesep * 2).encode(), 1)[1]
-    except Exception:  # noqa: BLE001 - a message that cannot be written out has no bytes
+    except Exception as exc:  # noqa: BLE001 - a message that cannot be written out has no bytes
+        _resource(exc)
         ledger.unread(path, "mail_headers", None, "carried_message_not_read")
         return
     carries = entity.get_content_subtype() in ("rfc822", "global")
@@ -1034,7 +1055,8 @@ def _subject_name(body: bytes) -> str:
     try:
         subject = BytesHeaderParser(policy=policy.default).parsebytes(body).get("Subject")
         return re.sub(r"[\s/\\]+", " ", str(subject or "")).strip()[:MAX_NAME_CHARS]
-    except Exception:  # noqa: BLE001 - an unreadable header block names nothing
+    except Exception as exc:  # noqa: BLE001 - an unreadable header block names nothing
+        _resource(exc)
         return ""
 
 
@@ -1048,7 +1070,8 @@ def _mime_node(ledger: _Ledger, path: str, role: str, entity: Any, depth: int,
         for key in entity.keys():
             try:
                 lines.extend(f"{key}: {value}" for value in entity.get_all(key) or [])
-            except Exception:  # noqa: BLE001 - a malformed header value is kept raw
+            except Exception as exc:  # noqa: BLE001 - a malformed header value is kept raw
+                _resource(exc)
                 lines.append(f"{key}: (unparsed)")
         ledger.read(path, "mail_headers", None, "\n".join(lines), "rfc822-headers")
     elif role in ("preamble", "epilogue"):
@@ -1346,6 +1369,7 @@ def _parser_failure(exc: BaseException, reason: str) -> str:
     error); an interrupt, exit or any other ``BaseException`` is re-raised."""
     from integrations.document_understanding import native_panic
 
+    _resource(exc)
     if native_panic(exc):
         return "parser_panicked"
     if isinstance(exc, Exception):

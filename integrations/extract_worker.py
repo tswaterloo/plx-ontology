@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import struct
 import sys
+from pathlib import Path
 from typing import BinaryIO
 
 HEADER = struct.Struct(">IQ")   # JSON header bytes, content bytes
@@ -58,6 +59,18 @@ def main() -> None:
 
     # The answers go to a private copy of stdout; anything a parser prints goes to stderr
     # (discarded by the capture), never into the answer stream.
+    if sys.argv[1:2] == ["--nice"]:
+        # An OCR reading's process (``capture_mail.OCR_NICE``): it and the poppler and
+        # tesseract it runs take the cores the capture leaves idle.
+        nice = int(sys.argv[2])
+        os.nice(nice)
+        # With autogroup scheduling a process's nice ranks it only within its session
+        # (this process leads its own): the session's group is lowered too, so the
+        # group's weight is not one more full share beside the capture's. Pacing only.
+        try:
+            Path("/proc/self/autogroup").write_text(str(nice))
+        except OSError:
+            pass
     answers = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)
     serve(sys.stdin.buffer, answers)

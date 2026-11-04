@@ -87,6 +87,7 @@ class NewerMailTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self):
+        mail_topup._SCANNED.clear()   # each test reads its own capture state
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -228,6 +229,43 @@ class NewerMailTests(unittest.TestCase):
                 subjects = [g["subject"] for g in out["gaps"] if g["reason"] == "stale_source"]
                 self.assertEqual(subjects, ["graph_mail", "bc"] if kept else ["bc"])
 
+    def test_a_search_scans_early_and_an_early_scan_of_another_plan_is_never_used(self):
+        # A served search starts its top-up scan before the projected search (overlapping
+        # it) and lists what it would have listed scanning after it.
+        server = self.server(READER_A)
+        started = []
+        real = mail_topup.EarlyScan.start
+        with mock.patch.object(mail_topup.EarlyScan, "start", side_effect=lambda *a, **k:
+                               started.append(real(*a, **k)) or started[-1]):
+            answer = self.search(server, query="PO100234")
+        self.assertIsNotNone(started[0])
+        self.assertEqual(self.listed(answer)[:2], [("MSG-3", True), ("MSG-2", True)])
+        self.assertNotIn("MSG-B2", json.dumps(answer))
+        self.assertIsNone(real(server.ontology.tools, {"participant": SUPPLIER}, READER_A,
+                               None, lambda: None))   # a participant search: never early
+        # An early scan made for another plan (here every mailbox, B's included) is never
+        # read: the top-up scans under the call's own grants. A failed one: it scans too.
+        tools = server.ontology.tools
+        base = {"documents": [], "gaps": [], "searched": {"sources": ["graph_mail"]},
+                "completeness": {"returned": 0, "total": 0, "complete": True}}
+        opened = lambda: self.runtime.mail_reader(self.state)   # noqa: E731
+        with server.ontology.request(), server.ontology.per_call():
+            tools.policy = server.ontology.policy_now(READER_A)
+            plan = mail_topup._plan(tools, {"query": "PO100234"}, READER_A, tools.policy,
+                                    None)
+            wide = mail_topup.EarlyScan(dict(plan, mailboxes=sorted({*plan["mailboxes"],
+                                                                     BOX_B})), opened)
+            self.assertIn("MSG-B2", json.dumps(wide._out or wide.result(wide.plan),
+                                                 default=str))
+
+            def broken():
+                raise sqlite3.OperationalError("unreadable")
+            for early in (wide, mail_topup.EarlyScan(plan, broken)):
+                out = mail_topup.top_up(tools, {"query": "PO100234"}, READER_A, base,
+                                        opened, early=early)
+                self.assertIn(("MSG-2", True), self.listed(out))
+                self.assertNotIn("MSG-B2", json.dumps(out))
+
     def test_a_scan_the_time_bound_stops_is_said_never_silent(self):
         ticks = iter(range(0, 1000))
         with mock.patch.object(mail_topup, "BUDGET_SECONDS", 0.5), \
@@ -246,6 +284,14 @@ class NewerMailTests(unittest.TestCase):
                     clock=lambda: float(next(ticks)), budget=0.5, chunk=1)
         self.assertIn("newer_mail_cut", [g["reason"] for g in out["gaps"]])
         self.assertFalse(out["completeness"]["complete"])
+        self.assertTrue(out["searched"]["capture_scan_cut"])
+        # the cut is said within the tool's output contract (a refused output reads as a
+        # failed search to every caller)
+        from ontology.json_contract import validate
+        contracts = server.ontology.tools.contracts
+        searched = contracts["tools"]["plx.documents"]["output"]["oneOf"][0]["properties"][
+            "searched"]
+        self.assertEqual(validate(out["searched"], searched, root=contracts, limit=3), [])
 
     def test_a_participant_scan_stays_bounded_at_scale(self):
         # N=1/10/60 newer messages: none lost or duplicated in the scan, within the bound.
@@ -307,6 +353,16 @@ class NewerMailTests(unittest.TestCase):
                          {"ours": "from_them", "theirs": "to_them",
                           "to-colleague": "to_them"})
 
+    def test_a_generation_without_recipients_is_told_apart(self):
+        store = sqlite3.connect(":memory:")
+        store.execute("CREATE TABLE value_fields (field INTEGER PRIMARY KEY, property TEXT, "
+                      "field_path TEXT)")
+        store.execute("INSERT INTO value_fields VALUES (1, 'sender', 'row.from')")
+        self.assertFalse(mail_topup.holds_recipients(store))
+        store.execute("INSERT INTO value_fields VALUES (2, 'to_addresses', 'row.to')")
+        self.assertTrue(mail_topup.holds_recipients(store))
+        self.assertFalse(mail_topup.holds_recipients(sqlite3.connect(":memory:")))
+
     def test_a_scan_of_a_large_delta_waits_rather_than_cutting(self):
         # The live delta past a generation's pin can be a whole history backfill (803,000
         # versions on 2026-11-02, 2.7-4.7 s to scan): a scan taking seconds finishes under
@@ -350,9 +406,63 @@ class InputsTests(unittest.TestCase):
                                             lambda: None), result)
 
 
+class ScanTests(unittest.TestCase):
+    """The capture scan at its boundary: what it matches, and that one capture state's
+    whole scan of a plan is read once, never past a write or for another plan."""
+
+    def setUp(self):
+        mail_topup._SCANNED.clear()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / "capture.db"
+        self.db = sqlite3.connect(self.path, isolation_level=None)
+        self.addCleanup(self.db.close)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE messages (version_id INTEGER PRIMARY KEY, l1_handle "
+                        "TEXT, mailbox_id TEXT, message_id TEXT, record TEXT, "
+                        "superseded_at TEXT, removed_reason TEXT)")
+        for n, (box, sender, subject) in enumerate([
+                ("A", "pat@acme.com", "PO 4852 delivery"), ("A", "pat@acme.com", "Hello"),
+                ("A", "x@other.com", "PO 4852"), ("B", "pat@acme.com", "PO 4852 too")], 2):
+            self.add(n, box, sender, subject)
+        self.reads = 0
+        self.db.set_trace_callback(lambda sql: setattr(self, "reads", self.reads + (
+            "FROM messages m" in sql)))
+
+    def add(self, n, box, sender, subject):
+        record = {"from": sender, "to": [], "cc": [], "subject": subject,
+                  "body_preview": "", "received_at": f"2026-11-0{n}T10:00:00Z"}
+        self.db.execute("INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL, NULL)",
+                        (n, f"graph-mail://{box}/m{n}", box, f"m{n}", json.dumps(record)))
+
+    def scan(self, **plan):
+        args = dict(pin=1, mailboxes=["A"], addresses=frozenset(),
+                    domains=frozenset({"acme.com"}), terms=["4852"], since=None, until=None)
+        args.update(plan)
+        found, cut = mail_topup.scan(self.db, **args)
+        self.assertFalse(cut)
+        return sorted(f["handle"] for f in found)
+
+    def test_a_number_and_a_participant_match_together_and_a_scan_is_read_once(self):
+        # a digit term and the participant's domain both hold, in a granted mailbox only
+        self.assertEqual(self.scan(), ["graph-mail://A/m2"])
+        self.assertEqual(self.reads, 1)
+        self.assertEqual(self.scan(), ["graph-mail://A/m2"])   # the same state: kept
+        self.assertEqual(self.reads, 1)
+        # another reader's mailboxes, another term: their own scans
+        self.assertEqual(self.scan(mailboxes=["A", "B"]),
+                         ["graph-mail://A/m2", "graph-mail://B/m5"])
+        self.assertEqual(self.scan(terms=["hello"]), ["graph-mail://A/m3"])
+        self.assertEqual(self.reads, 3)
+        # a removal marks a row without a new version: the next scan reads again
+        self.db.execute("UPDATE messages SET removed_reason = 'deleted' WHERE version_id = 2")
+        self.assertEqual(self.scan(), [])
+        self.assertEqual(self.reads, 4)
+
+
 class FastPathTests(unittest.TestCase):
     class Reads:
-        def row(self, handle):
+        def row(self, handle, need=()):
             return {"citation": handle, "row.received_at": "2026-10-02T09:30:00Z",
                     "row.subject": "Re: shipped"}
 

@@ -20,8 +20,9 @@ from unittest import mock
 from operating import briefing as bf
 from operating import customer_profit as cp
 from operating import proactive_engine as pe
-from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, T0, World, admit,
-                                                   everyone, handle)
+from operating.tests.test_proactive_engine import (ALL_MARKINGS, AS_OF, EXCLUDED_OID, T0,
+                                                  World, admit, people, po,
+                                                  everyone, handle)
 
 MOMENT = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
 ALL = ALL_MARKINGS | {"purchasing_prices"}
@@ -58,9 +59,11 @@ class Case(unittest.TestCase):
         self.store = Path(tmp.name) / "store.sqlite"
         self.inbox = pe.inbox_path(self.store)
 
-    def run_engine(self, world: World, *, call=None, at: datetime = MOMENT) -> dict:
+    def run_engine(self, world: World, *, call=None, at: datetime = MOMENT,
+                   **options) -> dict:
         world.build(self.store)
-        return pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: at)
+        return pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: at,
+                      people=options.pop("people", people()), **options)
 
     def read(self, *, may_read=everyone, held=ALL, decide=admit) -> dict:
         return pe.read_inbox(self.inbox, self.store, reader="r", may_read=may_read,
@@ -77,6 +80,8 @@ class Case(unittest.TestCase):
         return bf.read(self.inbox, self.store, reader=reader, routing=routing, **grant)
 
 
+BOX_OURS = "mail:00000000-0000-4000-8000-0000000000a1"     # a cleared person's mailbox
+BOX_OTHER = "mail:00000000-0000-4000-8000-0000000000b2"
 EVERYTHING = bf.Routing(basis="fixture", everything=True)
 PROC = bf.Routing(frozenset({"PROC"}))
 QUALITY = bf.Routing(frozenset({"QUALITY"}))
@@ -256,7 +261,7 @@ class DetectorTest(Case):
         self.assertEqual(summary["not_evaluated"]["invoice_quantity_mismatch"],
                          {"unit_not_stated": 1})
 
-    def test_vendor_mail_events_through_the_callers_investigations(self):
+    def test_vendor_terms_events_through_the_callers_investigations(self):
         w = World()
         order = po_with(w)
         request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c1"},
@@ -271,16 +276,6 @@ class DetectorTest(Case):
 
         def call(tool, args):
             calls.append((tool, args["family"], args["root"]))
-            if args["family"] == "F28":
-                return {"answer": [
-                    {"name": "follow_up", "kind": "computed", "value": 1, "basis": []},
-                    {"name": "follow_up_other", "kind": "computed", "value": None,
-                     "steps": ["not decided: who is ours and who is outside needs the "
-                               "people exclusion"]},
-                    {"name": "follow_up_1", "kind": "computed", "value": 14,
-                     "basis": [request], "steps": ["days since ..."]},
-                    {"name": "follow_up_1_draft", "kind": "computed", "value": "x",
-                     "basis": [request]}]}
             return {"answer": [{"name": "replies_1", "kind": "computed",
                                 "value": {"untrusted_text": "SYNTH",
                                           "origin": {"citation": reply_handle}},
@@ -288,17 +283,122 @@ class DetectorTest(Case):
                                 "basis": [request, order]}]}
 
         summary = self.run_engine(w, call=call)
-        self.assertEqual(sorted(calls), [("plx.investigate", "F27", order),
-                                         ("plx.investigate", "F28", order)])
+        # the unanswered requests are read from the store: only F27 is investigated
+        self.assertEqual(calls, [("plx.investigate", "F27", order)])
+        self.assertEqual(summary["detectors"]["vendor_terms_unapplied"], "complete")
+        self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 1)
+        self.assertEqual(summary["coverage"]["vendor_terms_unapplied"]["evaluated"], 1)
+
+    def no_reply_world(self) -> tuple[World, dict]:
+        """Open and closed orders with their vendor conversations (``vendor_no_reply``)."""
+        w = World()
+        ids: dict = {}
+        ours, vendor = "ops@synth-tenant.example", "sales@synth-vendor.example"
+
+        def mail(conversation, sent, sender, *, box=BOX_OURS, subject="RE: PO", preview="", names=(), tier="lead"):
+            oid = w.obj("Email", {"conversation_id": conversation, "sent_at": sent,
+                                  "sender": sender, "subject": subject,
+                                  "body_preview": preview}, audience=box)
+            for order in names:
+                w.link("Email.mentions_purchase_order", oid, order, tier)
+            return oid
+        ids["waiting"] = po(w, "Pending", "2026-11-30")
+        mail("c1", "2026-09-20T10:00:00Z", vendor, box=BOX_OTHER,
+             preview="We received your order.")
+        ids["request"] = mail("c1", "2026-10-05T10:00:00Z", ours, names=[ids["waiting"]],
+                              preview="Hi, could you please confirm the delivery date?",
+                              tier="corroborated")
+        # the vendor's reply sits only in an excluded person's mailbox: never read
+        mail("c1", "2026-10-07T10:00:00Z", vendor, box=f"mail:{EXCLUDED_OID}")
+        # another conversation about it, answered
+        mail("c2", "2026-09-01T10:00:00Z", vendor, names=[ids["waiting"]])
+        mail("c2", "2026-09-02T10:00:00Z", ours, preview="Please send the ETA.")
+        mail("c2", "2026-09-03T10:00:00Z", vendor, preview="Next week.")
+        # an open order whose conversation an excluded person of ours wrote in: unjudged
+        ids["uncleared"] = po(w, "Pending", "2026-11-30")
+        mail("c3", "2026-09-20T10:00:00Z", vendor, names=[ids["uncleared"]])
+        mail("c3", "2026-10-01T10:00:00Z", "boss@synth-tenant.example",
+             preview="Please confirm the price?")
+        # a closed order: nothing to wait for
+        closed = po(w, "Complete", "2026-10-01", lines=(("10", "10"),))
+        mail("c4", "2026-09-20T10:00:00Z", vendor, names=[closed])
+        mail("c4", "2026-10-01T10:00:00Z", ours, preview="Please confirm the delivery?")
+        # our last word thanks them: no request is waiting
+        ids["thanked"] = po(w, "Pending", "2026-11-30")
+        mail("c5", "2026-09-20T10:00:00Z", vendor, names=[ids["thanked"]])
+        mail("c5", "2026-10-01T10:00:00Z", ours, preview="Many thanks, have a good day.")
+        # our closing word after the vendor answered: the reply keeps the asking subject
+        thanked_reply = po(w, "Pending", "2026-11-30")
+        mail("c6", "2026-09-10T10:00:00Z", ours, subject="Please confirm the delivery date?",
+             preview="Could you please confirm the delivery date?", names=[thanked_reply])
+        mail("c6", "2026-09-12T10:00:00Z", vendor, subject="RE: Please confirm the delivery "
+             "date?", preview="It ships on the 20th.")
+        mail("c6", "2026-10-01T10:00:00Z", ours, subject="RE: Please confirm the delivery "
+             "date?", preview="Thank you, noted.")
+        # an internal forward: who it went to is not projected, never a vendor request
+        forwarded = po(w, "Pending", "2026-11-30")
+        mail("c7", "2026-09-20T10:00:00Z", vendor, names=[forwarded])
+        mail("c7", "2026-10-01T10:00:00Z", ours, subject="FW: price",
+             preview="Could you please confirm the price?")
+        # an excluded person's copy without a sent time still leaves it unjudged
+        undated = po(w, "Pending", "2026-11-30")
+        mail("c8", "2026-09-20T10:00:00Z", vendor, names=[undated])
+        mail("c8", "2026-10-01T10:00:00Z", ours, preview="Please confirm the ETA?")
+        w.obj("Email", {"conversation_id": "c8", "sender": "boss@synth-tenant.example"},
+              audience=BOX_OURS)
+        # an open order no mail names
+        po(w, "Pending", "2026-11-30")
+        return w, ids
+
+    def test_vendor_no_reply_is_read_set_based_people_first(self):
+        w, ids = self.no_reply_world()
+        summary = self.run_engine(w)    # no tool caller: a store rule
         self.assertEqual(summary["detectors"]["vendor_no_reply"], "complete")
-        # an undecided run is counted, never read as "nobody is waiting"
-        self.assertEqual(summary["not_evaluated"]["vendor_no_reply"], {"not_decided": 1})
-        found = self.events()
-        self.assertEqual([g["event"]["days"] for g in found["vendor_no_reply"]], [14])
-        self.assertEqual(len(found["vendor_terms_unapplied"]), 1)
-        # no reply is a verdict on the whole conversation: every mailbox it sits in
+        found = self.events()["vendor_no_reply"]
+        self.assertEqual([(g["object_id"], g["event"]["days"]) for g in found],
+                         [(ids["waiting"], 14)])
+        self.assertEqual(found[0]["citations"], [handle(int(ids["request"].rsplit(":", 1)[1]))])
+        self.assertEqual(summary["coverage"]["vendor_no_reply"], {
+            "unit": "open_purchase_orders", "total": 7, "evaluated": 4,
+            "not_evaluated": {"no_cleared_mail_names_it": 1, "participants_not_cleared": 2}})
+        self.assertEqual(summary["not_evaluated"]["vendor_no_reply"],
+                         {"forward_not_judged": 1, "last_message_asks_nothing": 2})
+        # no reply is a verdict on the whole conversation: a reader who may not read every
+        # cleared mailbox of it never sees it; the excluded mailbox is never required
         self.assertNotIn("vendor_no_reply",
-                         self.events(may_read=lambda key: key != "mail:other"))
+                         self.events(may_read=lambda key: key != BOX_OTHER))
+        self.assertEqual(len(self.events(
+            may_read=lambda key: key != f"mail:{EXCLUDED_OID}")["vendor_no_reply"]), 1)
+        # without a usable people exclusion nothing of the mail is read (fail closed)
+        self.inbox.unlink()
+        blind = self.run_engine(w, people=people(unavailable=True))
+        self.assertEqual(blind["detectors"]["vendor_no_reply"], "blocked")
+        self.assertEqual(blind["detector_reasons"]["vendor_no_reply"],
+                         ["people_exclusion_unavailable"])
+        self.assertNotIn("vendor_no_reply", self.events())
+
+    def test_vendor_no_reply_cardinality_one_ten_sixty(self):
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                w = World()
+                orders = set()
+                for i in range(n):
+                    order = po(w, "Pending", "2026-11-30")
+                    orders.add(order)
+                    w.obj("Email", {"conversation_id": f"c{i}", "sent_at":
+                                    "2026-09-20T10:00:00Z", "sender": "a@synth-vendor.example"},
+                          audience=BOX_OTHER)
+                    asked = w.obj("Email", {"conversation_id": f"c{i}", "sent_at":
+                                            "2026-10-01T10:00:00Z",
+                                            "sender": "ops@synth-tenant.example",
+                                            "body_preview": "Please confirm the ETA?"},
+                                  audience=BOX_OTHER)
+                    w.link("Email.mentions_purchase_order", asked, order, "lead")
+                summary = self.run_engine(w)
+                found = [g["object_id"] for g in self.events()["vendor_no_reply"]]
+                self.assertEqual((len(found), set(found)), (n, orders))
+                self.assertEqual(summary["coverage"]["vendor_no_reply"]["evaluated"], n)
+                self.inbox.unlink()
 
     def test_negative_margin_from_the_checked_order_figures_only(self):
         w = World()
@@ -362,9 +462,13 @@ class DetectorTest(Case):
 
         def call(_tool, args):        # every investigation costs 20 seconds
             now[0] += 20
-            if args.get("family") == "F28":
-                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 9,
-                                    "basis": [requests[args["root"]]]}]}
+            if args.get("family") == "F27":
+                return {"answer": [{"name": "replies_1", "kind": "computed",
+                                    "value": {"untrusted_text": "SYNTH", "origin": {
+                                        "citation": handle(int(requests[args["root"]]
+                                                               .rsplit(":", 1)[1]))}},
+                                    "steps": ["proposed update (differs): SYNTH"],
+                                    "basis": [requests[args["root"]], args["root"]]}]}
             return {"answer": []}
 
         def read_order(the_call, order):
@@ -383,26 +487,25 @@ class DetectorTest(Case):
             summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
                              budget=pe.Budget(90, monotonic=lambda: now[0]))
         detectors = summary["detectors"]
-        # 30 s of 90 for the mail scan: two of three orders read, both findings kept
-        self.assertEqual(detectors["vendor_no_reply"], "truncated")
-        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_no_reply"])
-        self.assertEqual(len(self.events()["vendor_no_reply"]), 2)
+        # its share of what is left for the mail scan: two of three orders read, both
+        # findings kept
         self.assertEqual(detectors["vendor_terms_unapplied"], "truncated")
+        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_terms_unapplied"])
+        self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 2)
         # the margins still get their share and finish
         self.assertEqual(detectors["negative_margin"], "complete")
         self.assertEqual([g["object_id"] for g in self.events()["negative_margin"]], [loser])
 
     def test_vendor_mail_is_read_again_only_when_its_thread_changed(self):
-        """The vendor checks are incremental: an unchanged thread keeps its reading (no
-        investigation; the days waiting counted on), a new message in the conversation or
-        a request crossing seven days since the reading is investigated again."""
-        def world(extra: bool) -> tuple[World, str]:
+        """The vendor-terms check is incremental: an unchanged thread keeps its reading (no
+        investigation), a new message in the conversation is investigated again."""
+        def world(extra: bool) -> tuple[World, str, str]:
             w = World()
             order = po_with(w)
             request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z",
                                       "conversation_id": "c1"}, audience="mail:box")
             w.link("Email.mentions_purchase_order", request, order, "lead")
-            quiet = po_with(w)    # its newest message 2026-10-15: overdue from 10-22
+            quiet = po_with(w)
             asked = w.obj("Email", {"sent_at": "2026-10-15T10:00:00Z",
                                     "conversation_id": "c2"}, audience="mail:box")
             w.link("Email.mentions_purchase_order", asked, quiet, "lead")
@@ -416,9 +519,13 @@ class DetectorTest(Case):
 
         def call(tool, args):
             calls.append((args["family"], args["root"]))
-            if args["family"] == "F28" and args["root"] == self.order:
-                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 14,
-                                    "basis": [self.request]}]}
+            if args["root"] == self.order:
+                return {"answer": [{"name": "replies_1", "kind": "computed",
+                                    "value": {"untrusted_text": "SYNTH", "origin": {
+                                        "citation": handle(int(self.request
+                                                               .rsplit(":", 1)[1]))}},
+                                    "steps": ["proposed update (fills): SYNTH"],
+                                    "basis": [self.request, self.order]}]}
             return {"answer": []}
 
         def run(on: date, w: World) -> dict:
@@ -426,29 +533,25 @@ class DetectorTest(Case):
                 path.unlink()
             w.build(self.store)
             calls.clear()
-            return pe.run(self.store, self.inbox, on, call=call, clock=lambda: MOMENT)
+            return pe.run(self.store, self.inbox, on, call=call, clock=lambda: MOMENT,
+                          people=people())
 
         w, self.order, quiet = world(False)
         run(AS_OF, w)
-        self.assertEqual(sorted(calls), sorted([("F28", self.order), ("F27", self.order),
-                                                ("F28", quiet), ("F27", quiet)]))
+        self.assertEqual(sorted(calls), sorted([("F27", self.order), ("F27", quiet)]))
         summary = run(AS_OF + timedelta(days=2), w)          # nothing changed
         self.assertEqual(calls, [])
-        self.assertEqual(summary["detectors"]["vendor_no_reply"], "complete")
-        self.assertEqual(summary["reused"], {"vendor_no_reply": 2,
-                                             "vendor_terms_unapplied": 2})
-        self.assertEqual([g["event"]["days"] for g in self.events()["vendor_no_reply"]],
-                         [16])                                 # counted on, not frozen
-        run(AS_OF + timedelta(days=4), w)                      # 10-23: quiet's request is 8
-        self.assertEqual(calls, [("F28", quiet)])              # days old: read again
+        self.assertEqual(summary["detectors"]["vendor_terms_unapplied"], "complete")
+        self.assertEqual(summary["reused"], {"vendor_terms_unapplied": 2})
+        self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 1)
         w, self.order, quiet = world(True)                     # a reply arrives
         run(AS_OF + timedelta(days=4), w)
-        self.assertEqual(sorted(calls), sorted([("F28", self.order), ("F27", self.order)]))
+        self.assertEqual(calls, [("F27", self.order)])
 
     def test_the_build_reuses_vendor_readings_and_the_vendor_pass_reads_apart(self):
         """The build's run never investigates vendor mail (``vendor_bound=0``: readings
-        reused, the rest named as waiting for the vendor pass); the vendor pass runs those
-        checks alone, leaves every other rule's record as it was, and the two merge their
+        reused, the rest named as waiting for the vendor pass); the vendor pass runs that
+        check alone, leaves every other rule's record as it was, and the two merge their
         readings whichever folds last."""
         w = World()
         order = po_with(w)
@@ -461,18 +564,21 @@ class DetectorTest(Case):
 
         def call(tool, args):
             calls.append(args.get("family"))
-            if args.get("family") == "F28":
-                return {"answer": [{"name": "follow_up_1", "kind": "computed", "value": 14,
-                                    "basis": [request]}]}
+            if args.get("family") == "F27":
+                return {"answer": [{"name": "replies_1", "kind": "computed",
+                                    "value": {"untrusted_text": "SYNTH", "origin": {
+                                        "citation": handle(int(request.rsplit(":", 1)[1]))}},
+                                    "steps": ["proposed update (differs): SYNTH"],
+                                    "basis": [request, order]}]}
             return {"answer": []}
 
         build = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
-                       vendor_bound=0)
-        self.assertNotIn("F28", calls)
-        self.assertEqual(build["detector_reasons"]["vendor_no_reply"], ["read_apart"])
+                       vendor_bound=0, people=people())
+        self.assertNotIn("F27", calls)
+        self.assertEqual(build["detector_reasons"]["vendor_terms_unapplied"], ["read_apart"])
         checks = {c["check"]: c for c in self.brief(EVERYTHING)["checks"]}
-        self.assertEqual(checks["vendor_no_reply"]["words"], "vendor replies: partly checked "
-                         "this run (the rest wait for the vendor-mail pass)")
+        self.assertEqual(checks["vendor_terms_unapplied"]["words"], "vendor terms in replies: "
+                         "partly checked this run (the rest wait for the vendor-mail pass)")
         with closing(sqlite3.connect(self.inbox)) as conn:
             before = conn.execute("SELECT detector, run_at FROM detector_runs WHERE detector "
                                   "= 'lot_attention'").fetchall()
@@ -481,8 +587,8 @@ class DetectorTest(Case):
         calls.clear()
         later = MOMENT + timedelta(hours=1)
         apart = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: later,
-                       only=pe.INCREMENTAL)
-        self.assertEqual(sorted(calls), ["F27", "F28"])
+                       only=pe.INCREMENTAL, people=people())
+        self.assertEqual(sorted(calls), ["F27"])
         self.assertEqual(set(apart["detectors"]), set(pe.INCREMENTAL))
         with closing(sqlite3.connect(self.inbox)) as conn:
             self.assertEqual(conn.execute("SELECT detector, run_at FROM detector_runs WHERE "
@@ -495,15 +601,16 @@ class DetectorTest(Case):
         self.assertEqual((after["run_at"], after["as_of"], after["stale"]),
                          (as_read["run_at"], as_read["as_of"], as_read["stale"]))
         events = self.events()
-        self.assertEqual(len(events["vendor_no_reply"]), 1)
+        self.assertEqual(len(events["vendor_terms_unapplied"]), 1)
         self.assertEqual(len(events["lot_near_expiry"]), 1)     # untouched by the pass
         calls.clear()
         again = pe.run(self.store, self.inbox, AS_OF, call=call,
-                       clock=lambda: later + timedelta(hours=1), vendor_bound=0)
+                       clock=lambda: later + timedelta(hours=1), vendor_bound=0,
+                       people=people())
         self.assertEqual(calls, [])
-        self.assertEqual(again["reused"], {"vendor_no_reply": 1, "vendor_terms_unapplied": 1})
-        self.assertEqual(again["detectors"]["vendor_no_reply"], "complete")
-        self.assertEqual(len(self.events()["vendor_no_reply"]), 1)
+        self.assertEqual(again["reused"], {"vendor_terms_unapplied": 1})
+        self.assertEqual(again["detectors"]["vendor_terms_unapplied"], "complete")
+        self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 1)
         with self.assertRaises(ValueError):
             pe.run(self.store, self.inbox, AS_OF, call=call, only=("SYNTH-unknown",))
 
@@ -537,8 +644,8 @@ class DetectorTest(Case):
         self.assertIn("lot_near_expiry", summary["gaps_by_kind"])
         self.assertTrue(budgets and all(isinstance(b, int) and 0 < b <= 600_000
                                         for b in budgets), budgets)
-        self.assertEqual(detectors["vendor_no_reply"], "truncated")
-        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_no_reply"])
+        self.assertEqual(detectors["vendor_terms_unapplied"], "truncated")
+        self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_terms_unapplied"])
 
         # a set-based query still running when the time is up is interrupted
         def slow_sql(st, _as_of):
@@ -1136,6 +1243,9 @@ class BriefingTest(Case):
                         routing=EVERYTHING, hidden={}, last_visit=None)["today"]
         self.assertEqual(line.count(";"), 3)
         self.assertTrue(line.endswith("; 2 more kinds."))
+        one = bf.build({"status": "read", "gaps": many[:4], "complete": True, "run_at": run},
+                       routing=EVERYTHING, hidden={}, last_visit=None)["today"]
+        self.assertTrue(one.endswith("; 1 more kind."), one)   # never "1 more kinds"
 
     def test_routing_from_an_employee_entitlement(self):
         class Ent:

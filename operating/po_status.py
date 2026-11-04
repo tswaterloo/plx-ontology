@@ -1464,8 +1464,13 @@ class ContextSource:
         # never counted and hides nothing a counted read holds (``_Why`` tier ``lead``)
         lead_only = (not reach.proven and bool(reach.reasons)
                      and all(w.tier == op._LEAD for w in reach.reasons))
-        out.counted_proven = out.proven or (lead_only and not reach.truncated
+        # or only because a source's capture is stale: read as of that capture (the
+        # verdict says so), as the late list reads the same captured records
+        stale = (op.stale_sources(reach.reasons) or ()) \
+            if not reach.proven and not lead_only else ()
+        out.counted_proven = out.proven or ((lead_only or bool(stale)) and not reach.truncated
                                             and not out.hidden and not uncited)
+        out.stale = tuple(stale) if out.counted_proven and not out.proven else ()
         out.lead_only = not out.records and not out.hidden and bool(reach.leads)
         # the records only a lead link reaches (visible to this reader): never counted
         out.leads = sorted({target for _, target in reach.leads
@@ -1610,6 +1615,8 @@ class Records:
     unnamed: list[str] = field(default_factory=list)
     # records of the declared type only a lead link reaches (reported, never counted)
     leads: list[str] = field(default_factory=list)
+    # counted proven only as of these sources' stale captures (``counted_proven``)
+    stale: tuple[str, ...] = ()
 
 
 # ---- the system store (the proactive engine: every current record, set-based)

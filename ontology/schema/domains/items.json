@@ -724,6 +724,27 @@
        }
       ]
      }
+    },
+    {
+     "name": "qc_status",
+     "value_type": "text",
+     "description": "FileMaker's QC status of the raw-material receiving line holding this lot (Released, Quarantine, Rejected, Expired, Finished). FileMaker is the system of record for QC status; a lot on several receiving lines carries each line's status, never one picked. Packaging receiving lines state none (live: status_c blank on every row), so a packaging lot has no QC status, never Released. The Portal's silver.receipt_raw_items carries a derived copy of this status (RelSilverReceiptRawItems.status, unmarked there): an answer reads this property, FileMaker's own, and says the copy only beside it where the two disagree.",
+     "markings": [
+      "quality_controlled"
+     ],
+     "sources": [
+      {
+       "binding": "portal.fm_receipt_raw_material.lotnoqc",
+       "path": "status_c",
+       "parser": "trim"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "portal.fm_receipt_raw_material_status"
+      }
+     ]
     }
    ],
    "identity_keys": [
@@ -1235,6 +1256,13 @@
    "note": "silver.receipts -> app_receipt copies po_item_id, po_reference, supplier_name; it sets no purchase_order_id.",
    "symbol": "etlReceipts",
    "lines": "1002-1062"
+  },
+  "portal.fm_receipt_raw_material_status": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "services/workbench-api/manifest/allowlist.json",
+   "commit": "52c9116f77ab",
+   "note": "public.receipt_raw_material is an approved reporting-API relation served with every column (generated binding gen.public.receipt_raw_material binds status_c). Live mirror 2026-11-02 (counts only): status_c Finished 7411, Released 1666, Expired 158, Quarantine 83, Rejected 15; receipt_packaging.status_c blank on all 8258 rows."
   }
  }
 }

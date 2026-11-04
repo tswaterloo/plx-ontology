@@ -94,3 +94,7 @@ export type Tone = "neutral" | "good" | "warn" | "bad" | "info";
 export type Proposal = S["Proposal"];
 export type ProposedChange = S["ProposedChange"];
 export type DraftFigure = S["DraftFigure"];
+export type Suggestions = S["Suggestions"];
+export type ProactiveSuggestion = S["ProactiveSuggestion"];
+export type SuggestionDraft = S["SuggestionDraft"];
+export type SuggestionEta = S["SuggestionEta"];

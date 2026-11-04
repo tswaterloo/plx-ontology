@@ -160,7 +160,31 @@ def shown_numbers(numbers: list[Decimal]) -> list[str]:
     return [format(n.normalize(), "f") for n in numbers]
 
 
-def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
+# Units that count whole things: a source recording them in a whole-number field cannot
+# state the part of one (half a box), so it keeps the whole part of the other's count.
+COUNT_UNITS = frozenset({"box", "boxes", "ea", "each", "pc", "pcs", "piece", "pieces",
+                         "case", "cases", "carton", "cartons"})
+
+
+def whole_part_only(numbers: Sequence[Decimal], unit: str | None) -> bool:
+    """Whether two values are one count that one source keeps whole: exactly two distinct
+    values, in a unit that counts whole things (``COUNT_UNITS``), one a non-zero whole
+    number and the other a fraction it is the whole part of (toward zero): 32 and 32.5
+    boxes. Anything else stays a conflict: three values, a measured unit (32 and 32.9
+    kg), or zero against a part (0 and 0.75: nothing against part of one)."""
+    if (unit or "").strip().lower() not in COUNT_UNITS or len(set(numbers)) != 2:
+        return False
+    whole = [n for n in numbers if n == n.to_integral_value()]
+    if len(whole) != 1 or whole[0] == 0:
+        return False
+    (part,) = [n for n in numbers if n != whole[0]]
+    return part.to_integral_value(rounding="ROUND_DOWN") == whole[0]
+
+
+def _conflicting_quantities(conflicts: Any, skipped: Any = None
+                            ) -> list[dict[str, Any]]:
+    """``skipped``: a Counter told how many value sets were not raised and why
+    (``whole_part_only``), so none is left out silently."""
     from .answer_conflicts import rounding_only
 
     out = []
@@ -186,6 +210,10 @@ def _conflicting_quantities(conflicts: Any) -> list[dict[str, Any]]:
                 continue   # every disagreeing value must be cited
             if rounding_only([format(n, "f") for n in distinct]):
                 continue   # 1257 and 1257.1666...: one quantity, rounded differently
+            if whole_part_only(distinct, unit):
+                if skipped is not None:
+                    skipped["whole_part_only"] += 1
+                continue   # 32 and 32.5 boxes: one source holds whole boxes only
             shown = " and ".join(f"{n} {unit}" for n in shown_numbers(distinct))
             name = f"{role} quantity" if role else "quantity"
             out.append({

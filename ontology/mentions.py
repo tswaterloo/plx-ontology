@@ -95,12 +95,14 @@ from datetime import date
 from hashlib import sha256
 import json
 import re
+import sqlite3
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
 # The page layout of a captured file's text: its own module, which the file readers use.
 from integrations.captured_pages import PAGE_BREAK, is_paged_file, text_pages
 from ontology import identifiers as ids
+from ontology.document_failures import DocumentFailures
 from ontology.mention_memo import document_key, row_digest
 from ontology.store import held_stretches
 
@@ -975,17 +977,22 @@ HANDLE_INDEX = "plx_mentions_version_by_handle"
 
 def _memo_code(declared: Mapping[tuple[str, str], str]) -> str:
     """What a kept entry of ``ontology.mention_memo`` was derived under: the extractor and
-    the source of the modules that extract, resolve and write mention links, and the
-    declared link types."""
+    the source of the modules that extract, resolve and write mention links and of the
+    store's ``held_stretches`` (their windows), and the declared link types."""
     from pathlib import Path
 
     digest = sha256(f"{extractor_version()}\n".encode())
     for module in (__file__, ids.__file__, Path(__file__).with_name("mention_memo.py"),
                    Path(__file__).with_name("reviews.py")):
         digest.update(Path(module).read_bytes())
+    # The windows of the links it writes come from the store's ``held_stretches``.
+    import inspect
+    digest.update(inspect.getsource(held_stretches).encode("utf-8"))
     digest.update(json.dumps(sorted([list(k) + [v] for k, v in declared.items()]))
                   .encode("utf-8"))
-    return digest.hexdigest()
+    # a code proven to derive the same mentions as an earlier commit's keeps its value
+    from ontology.code_equivalence import earlier_value
+    return earlier_value("mention_memo", digest.hexdigest())
 
 
 DocumentGroup = tuple[str | None, Callable[[], tuple[list[Document], bool]]]
@@ -1054,7 +1061,13 @@ def _store_links(builder: Any, conn: Any, declared: Mapping[tuple[str, str], str
             counts["links"] += builder.add("links", rows)
             rows = []
 
+    failures = DocumentFailures("mentions")
+
     def one(key: str | None, found: Any, document: Document, ahead: Any = None) -> None:
+        # A document that cannot be derived is this document's gap, not the step's.
+        failures.run(document.citation, lambda: derive(key, found, document, ahead))
+
+    def derive(key: str | None, found: Any, document: Document, ahead: Any) -> None:
         if found is not None:
             entry, valid = found
             if valid and changed is not None and _still_resolves(
@@ -1084,19 +1097,28 @@ def _store_links(builder: Any, conn: Any, declared: Mapping[tuple[str, str], str
             for key, found in held:   # read as before: its documents are not read again
                 one(key, found, _facts_document(found[0]["document"]))
             continue
-        documents, remembered, derived = read if read is not None else (*load(), None)
-        keys = []
+        if read is not None:
+            documents, remembered, derived = read
+        else:
+            ok, loaded = failures.run(group, load)
+            if not ok:
+                continue
+            (documents, remembered), derived = loaded, None
+        keys: list[str | None] = []
         for index, document in enumerate(documents):
-            key = document_key(document) if memo is not None else None
-            keys.append(key)
-            one(key, memo.mentions(key, code) if memo is not None else None, document,
-                derived[index] if derived is not None else None)
+            def work(document: Document = document, index: int = index) -> None:
+                key = document_key(document) if memo is not None else None
+                keys.append(key)
+                derive(key, memo.mentions(key, code) if memo is not None else None,
+                       document, derived[index] if derived is not None else None)
+            if not failures.run(getattr(document, "citation", None), work)[0]:
+                remembered = False   # a group not kept whole is read again next time
         if memo is not None and group is not None and remembered:
             memo.keep_group(group, keys)
     if rows:
         counts["links"] += builder.add("links", rows)
     return {"format": FORMAT, "extractor": extractor, "tier": TIER, "counts": counts,
-            "link_tiers": {TIER: counts["links"]}}
+            "link_tiers": {TIER: counts["links"]}, **failures.report()}
 
 
 # A build with document workers (``ontology.project_parallel.DocumentPool``) reads this many
@@ -1179,7 +1201,13 @@ def read_ahead(groups: Iterable[DocumentGroup], task: str,
         slots.clear()
 
     def here(entry: list[Any]) -> None:   # read in this process, derived by workers
-        documents, remembered = entry[1]()
+        try:
+            documents, remembered = entry[1]()
+        except (sqlite3.Error, MemoryError):
+            raise
+        except Exception:  # noqa: BLE001 - the step reads it again, as its own failure
+            entry[2] = None
+            return
         ahead: list[Any] = [None] * len(documents)
         for at, document in enumerate(documents):
             if wanted is not None and not wanted(document):

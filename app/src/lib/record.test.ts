@@ -53,6 +53,17 @@ describe("record page head", () => {
     expect(h.keyFacts.filter((k) => k.value).map((k) => `${k.label}: ${k.value}`)).toEqual(["Status: Open", "Supplier: DSM (V06110)", "Currency: CAD"]);
   });
 
+  it("says a partial receipt to 2 decimals, and several partial receipts as part arrived, never one line's figures as the PO's", () => {
+    const withSteps = (steps: { kind: string; title: string }[]) =>
+      ({ ...base, type: "PurchaseOrder", label: "106001", summary: "", facts: [], trail: { kind: "purchase_order", title: "t", trails: [{ subject: { object_id: "p", type: "PurchaseOrder", label: "106001", open_url: "/x" }, state: "late", days_late: 3, steps: steps.map((x) => ({ ...x, check: "read_from_record" })), hidden_steps: 0, may_hide_more: false }] } }) as unknown as ObjectPage;
+    const one = recordHead(withSteps([{ kind: "receipt", title: "Partial receipt: 1.6904 of 2 KG" }]));
+    expect(one.stats.find((x) => x.label === "Received")).toMatchObject({ value: "1.69 of 2 kg", caption: "85%" });
+    const two = recordHead(withSteps([{ kind: "receipt", title: "Partial receipt: 1.6904 of 2 KG" }, { kind: "receipt", title: "Partial receipt: 0.4352 of 1 KG" }]));
+    expect(two.stats.find((x) => x.label === "Received")).toMatchObject({ value: "Partly", caption: "2 receipts short of their lines" });
+    expect(two.lead).toContain("part of it has arrived");
+    expect(two.lead).not.toMatch(/1\.69|0\.43/);
+  });
+
   it("a PO with no trail takes its lateness badge from its own status", () => {
     const po = { ...base, type: "PurchaseOrder", label: "90412", summary: "", facts: [], status: { state: "late", text: "Late by 12 days: due 17 Oct", sources: [] } } as unknown as ObjectPage;
     expect(recordHead(po).badges).toEqual([{ status: "late", label: "12 days late" }]);
@@ -96,6 +107,18 @@ describe("record page head", () => {
   });
 });
 
+describe("activity titles", () => {
+  it("says what happened to which record, and repeats as a count of that kind", async () => {
+    const { activityTitle } = await import("./record");
+    expect(activityTitle("Required: sales order SO-FM-23", 1)).toBe("Sales order SO-FM-23 due");
+    expect(activityTitle("Required: sales order SO-FM-23", 6)).toBe("6 sales orders due");
+    expect(activityTitle("Posted: receipt 107057", 3)).toBe("3 receipts posted");
+    // an unknown verb stays as written, never guessed
+    expect(activityTitle("Frobbed: thing 1", 2)).toBe("Frobbed ×2");
+    expect(activityTitle("Order placed", 1)).toBe("Order placed");
+  });
+});
+
 describe("record page lists", () => {
   it("groups messages by thread, activity by month with repeats collapsed, and related by type without type-named rows", () => {
     const mail = (label: string, at: string) => ({ kind: "email" as const, label, at, source: bc("x") });
@@ -127,8 +150,11 @@ describe("plain words for gaps and money in prose", () => {
   it("says the server's plumbing gaps as a reader would, and prose amounts with their currency", async () => {
     const { proseMoney } = await import("./format");
     expect(missingText({ what: "projection", where_it_would_live: "schema drift" })).toBe(
-      "Some records: their format changed since they were read; the Workbench team can re-read them.",
+      "Some records may be incomplete: saved in an older format; the Workbench team can refresh them.",
     );
+    // a stale read says which system's data may be out of date, never "the Portal. Stale source."
+    expect(missingText({ what: "the Portal", where_it_would_live: "stale source" })).toBe("Portal data may be out of date.");
+    expect(missingText({ what: "Business Central", where_it_would_live: "stale source" })).toBe("Business Central data may be out of date.");
     expect(missingText({ what: "A value the question asks for", where_it_would_live: "conflicting sources" })).toBe("Part of what you asked: the sources disagree on it.");
     expect(proseMoney("is in Draft and totals 9680 USD.")).toBe("is in Draft and totals $9,680.00 USD.");
     expect(proseMoney("a total of 14,611.33 CAD due")).toBe("a total of $14,611.33 CAD due");

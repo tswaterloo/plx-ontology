@@ -167,7 +167,7 @@ const GAP_WORDS: [RegExp, string][] = [
 ];
 const WHERE_WORDS: [RegExp, string][] = [
   [/^conflicting sources$/i, "the sources disagree on it"],
-  [/^schema drift$/i, "their format changed since they were read; the Workbench team can re-read them"],
+  [/^schema drift$/i, "saved in an older format; the Workbench team can refresh them"],
   [/^source stale$/i, "the source is older than the question needs"],
 ];
 
@@ -175,6 +175,10 @@ export function missingText(n: NotFoundItem, subject?: string | null): string {
   let what = readable(n.what).replace(/\s*[.]$/, "");
   for (const [re, w] of GAP_WORDS) if (re.test(what)) what = w;
   const whereRaw = readable(n.where_it_would_live).replace(/\s*[.]$/, "");
+  // a source read too long ago: "Portal data may be out of date", never "the Portal. Stale source."
+  if (/^(?:stale source|source stale)$/i.test(whereRaw) && !/^Some records$/.test(what))
+    return `${what.replace(/^the\s+/i, "").replace(/^./, (c) => c.toUpperCase())} data may be out of date.`;
+  if (/^schema drift$/i.test(whereRaw) && what === "Some records") return "Some records may be incomplete: saved in an older format; the Workbench team can refresh them.";
   for (const [re, w] of WHERE_WORDS) if (re.test(whereRaw)) return `${what}: ${w}.`;
   if (subject) {
     const esc = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

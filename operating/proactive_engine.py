@@ -55,7 +55,9 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   a grant on every source audience the ``po_delivery_window`` graph reads
   (``_lateness_audiences``): a reader whose own verdict would be withheld never sees it.
   The summary's ``top_finding`` says "N customer orders at risk from M late POs, worst
-  first" (counts only). Where ``plx.process`` judged the PO per line, the line feeding the
+  first" (counts only). With the run's process pool every PO reaching an assembly is
+  asked (no ``card_bound``); one the budget did not reach is counted ``time_budget`` in
+  the rule's coverage. Where ``plx.process`` judged the PO per line, the line feeding the
   order decides by its own promise (``impact_chain.Late.material``): the gap cites the
   confirmation's per-item date as its own group and its event names the line, how it was
   matched, its promised date and the order's required date. A gap whose date is a
@@ -65,9 +67,12 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   audiences are never shown). ``not_configured`` without a caller;
 * the proactive events (``operating.proactive_events``): ``eta_slipped``,
   ``lot_attention`` (``lot_near_expiry``, ``lot_on_hold``), ``accepted_quote_no_order``,
-  ``invoice_quantity_mismatch`` over the store, and ``vendor_no_reply`` (F28),
-  ``vendor_terms_unapplied`` (F27) and ``negative_margin`` (F10) through the caller's
-  ``plx.investigate``, bounded. A gap about a purchase order, sales order, quote or
+  ``invoice_quantity_mismatch`` and ``vendor_no_reply`` (F28's question, set-based over
+  the store's mail, people cleared first) over the store, and ``vendor_terms_unapplied``
+  (F27) and ``negative_margin`` (F10/F31) through the caller's ``plx.investigate``,
+  bounded, or over every candidate on the run's process pool (``run(pool=)``,
+  ``operating.proactive_pool``). Each rule states its ``coverage`` (records judged of
+  those it should judge, the rest by reason; the summary's ``coverage``). A gap about a purchase order, sales order, quote or
   purchase invoice carries the record's cited total and currency as its ranking amount
   (``_with_amounts``), shown only to a reader who may open both; ``operating.briefing``
   ranks and routes them per reader;
@@ -152,24 +157,27 @@ DETECTORS = ("late_or_unconfirmed_po",
              "invoice_quantity_mismatch",
              "po_receipt_quantity_mismatch", "receipt_without_qc", "expired_quote",
              "conflicting_quantity", "late_order", "order_without_customer_po",
-             # the rules that make tool calls, the last four proactive events among them:
+             # unanswered vendor requests over the whole store's mail (after the late rule:
+             # it judges the orders that rule finds open)
+             "vendor_no_reply",
+             # the rules that make tool calls, the last three proactive events among them:
              # the quick margins first (what they leave carries on), the customer orders a
              # late PO hits next, the attested-document cards last
-             "negative_margin", "orders_at_risk", "vendor_no_reply", "vendor_terms_unapplied",
+             "negative_margin", "orders_at_risk", "vendor_terms_unapplied",
              "card_rules")
 # Each tool-call rule gets a weighted share of the time left when it starts (what one
 # leaves unused carries on, ``Budget.share``): each investigation can take minutes on a
 # full store, so one never starves the others; the customer orders a late PO hits weigh
 # most (the briefing's first criterion).
-SHARED_TIME = {"negative_margin": 1, "orders_at_risk": 3, "vendor_no_reply": 1,
-               "vendor_terms_unapplied": 1, "card_rules": 1}
-# The vendor-mail checks are incremental: each keeps its readings per purchase order in the
+SHARED_TIME = {"negative_margin": 1, "orders_at_risk": 3, "vendor_terms_unapplied": 1,
+               "card_rules": 1}
+# The vendor-terms check is incremental: it keeps its readings per purchase order in the
 # inbox (``event_cache``) and investigates only the ones whose mail thread changed.
-INCREMENTAL = ("vendor_no_reply", "vendor_terms_unapplied")
+INCREMENTAL = ("vendor_terms_unapplied",)
 # Rules that make tool calls (the run principal's ``plx.process``/``plx.object``/
 # ``plx.investigate``): not configured without a caller, never part of the store scope.
-CALLING = frozenset({"card_rules", "orders_at_risk", "vendor_no_reply",
-                     "vendor_terms_unapplied", "negative_margin"})
+CALLING = frozenset({"card_rules", "orders_at_risk", "vendor_terms_unapplied",
+                     "negative_margin"})
 SET_BASED = frozenset(DETECTORS) - CALLING
 STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
@@ -418,6 +426,15 @@ def _result(gaps: Iterable[dict[str, Any] | None], *, status: str = "complete",
             "unattributed": skips.unattributed if skips is not None else counted}
 
 
+def _coverage(total: int, evaluated: int, not_evaluated: Mapping[str, int], *,
+              unit: str) -> dict[str, Any]:
+    """A detector's coverage: of ``total`` records of ``unit`` it should judge, how many it
+    judged and, by reason, how many it did not (never silently omitted)."""
+    missing = {k: int(v) for k, v in sorted(not_evaluated.items()) if v}
+    return {"unit": unit, "total": int(total), "evaluated": int(evaluated),
+            "not_evaluated": missing}
+
+
 @functools.lru_cache(maxsize=1)
 def _identity_link_types() -> tuple[str, ...]:
     from ontology.schema import load_schema
@@ -624,6 +641,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
                 gaps.append(gap)
     late_orders = {o for o, keys in counted.items() if "late" in keys}
     result = _result(gaps, not_evaluated=skipped)
+    # each record's order (the cross-system join) and that order's class (open when any
+    # read of it is open): the vendor-mail rule judges open orders only, one per order
+    result["po_orders"] = {m: (order, po_status.OPEN if order in open_orders
+                               else order_class.get(order, ([], po_status.UNKNOWN))[1])
+                           for m, order in root.items()}
     classes.update(cls for _rank, cls in order_class.values())
     result["counts"] = {"pos": len(order_class),
                         "classes": {cls: classes.get(cls, 0) for cls in po_status.CLASSES},
@@ -943,6 +965,7 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
     for row in rows:
         grouped[(root[row["object_id"]], row["object_type"], row["property"])].append(dict(row))
     gaps = []
+    skipped: Counter[str] = Counter()
     for (top, object_type, prop), members in sorted(grouped.items()):
         if len({m["l1_handle"] for m in members}) < 2:
             continue
@@ -952,14 +975,14 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
             {"value_type": "quantity", "value": m["value"], "unit": unit_token(m["unit"]),
              "quantity_role": m["quantity_role"], "citation": {"l1_handle": m["l1_handle"]}}
             for m in members]}
-        for item in pg._conflicting_quantities([conflict]):
+        for item in pg._conflicting_quantities([conflict], skipped):
             gaps.append(_gap(
                 item["kind"], "conflicting_quantity", top, object_type, item["key"],
                 summary=item["summary"], missing=item["missing"], why=item["why"],
                 priority=item["priority"], about=(object_type, prop),
                 groups=[_cites((by_handle[h] for h in group), *marks.get(top, []))
                         for group in item["requires"]]))
-    return _result(gaps)
+    return _result(gaps, not_evaluated=skipped)
 
 
 def _card_of(object_id: str, object_type: str, props: Mapping[str, Any]) -> dict[str, Any]:
@@ -1465,7 +1488,8 @@ def _line_event(own: Any, chain: Any, required: date | None) -> dict[str, Any]:
 
 
 def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
-                    first: Iterable[str] = ()) -> dict[str, Any]:
+                    first: Iterable[str] = (), many: Callable | None = None
+                    ) -> dict[str, Any]:
     """``orders_at_risk``: one gap per customer order a late PO puts at risk, and per late
     PO one ``po_impact`` gap (the orders at risk it feeds, never money) and, when every one
     of those orders has a stated margin in one currency, one ``po_impact_margin`` gap with
@@ -1474,13 +1498,17 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
     orders the late rules found, walked first within ``bound``. Each gap's event names the
     chain's ends its groups cite (``pos``: the late PO an order's worst chain starts from;
     ``orders``: the orders a PO's impact reaches), so a reader's list joins a late PO to
-    the customer orders it holds up only among gaps that reader may see."""
+    the customer orders it holds up only among gaps that reader may see. ``many``: the
+    run's process pool (``run(pool=)``): every PO reaching an assembly is asked, not
+    ``bound`` of them; one the time left did not reach is ``po_not_checked``."""
     if call is None:
         return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import impact_chain as ic
 
-    found = ic.scan(st, call, bound=bound, margin_values=ic.store_margin_values(st),
-                    landed_values=ic.investigate_landed_values(call), first=frozenset(first))
+    found = ic.scan(st, call, bound=None if many is not None else bound,
+                    margin_values=ic.store_margin_values(st),
+                    landed_values=ic.investigate_landed_values(call), first=frozenset(first),
+                    call_many=many)
     risky = found["assessment"].at_risk
     requires = _lateness_audiences(st) if risky else []
     late = found["late"]
@@ -1561,6 +1589,8 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
                      ("medium" if order.days >= 7 else "low"),
             about=("SalesOrder", "required_date"), groups=groups,
             event={"days": order.days, "orders_affected": 1, "pos": [order.worst],
+                   "material": order.material.isoformat(),
+                   **({"required": order.required.isoformat()} if order.required else {}),
                    **_line_event(own, chain, order.required)})
         if gap is None:
             skipped["order_at_risk_uncited"] += 1
@@ -1647,9 +1677,22 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
         skipped["lateness_undetermined"] = found["lateness_undetermined"]
     if found["pos_not_checked"]:
         skipped["po_not_checked"] = found["pos_not_checked"]
+    unread = found.get("pos_not_checked_unread", 0)
+    failed = found.get("pos_not_checked_failed", 0)
+    cut_by_bound = found["pos_not_checked"] - unread - failed
     result = _result(gaps, status="truncated" if found["truncated"] else "complete",
-                     reasons=["impact_bound"] if found["pos_not_checked"] else [],
+                     reasons=(["impact_bound"] if cut_by_bound else [])
+                     + ([TIME_BUDGET] if unread else [])
+                     + (["worker_failed"] if failed else []),
                      not_evaluated=skipped)
+    total = found.get("pos_reaching_assembly", found["pos_checked"] + found["pos_not_checked"])
+    result["coverage"] = _coverage(
+        total, total - found["pos_not_checked"] - found["lateness_undetermined"],
+        {"lateness_undetermined": found["lateness_undetermined"],
+         **({"impact_bound": cut_by_bound} if cut_by_bound else {}),
+         **({TIME_BUDGET: unread} if unread else {}),
+         **({"worker_failed": failed} if failed else {})},
+        unit="purchase_orders_reaching_an_assembly")
     result["finding"] = {"orders_at_risk": len(risky),
                          "orders_at_risk_by_tier": found["orders_at_risk_by_tier"],
                          "late_pos": found["late_pos_with_orders_at_risk"],
@@ -1730,13 +1773,36 @@ AMOUNT_OF = {"PurchaseOrder": ("total_cost", "currency"),
 
 def _event_steps(st: _Store, as_of: date, call: Callable | None,
                  cache: Mapping[str, Mapping[str, Any]] | None = None,
-                 vendor_bound: int | None = None
+                 vendor_bound: int | None = None, *,
+                 pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None,
+                 results: Callable[[], Mapping[str, Mapping[str, Any]]] = dict,
+                 people: Callable[[], Any] = lambda: None
                  ) -> dict[str, Callable[[], dict[str, Any]]]:
-    """The proactive event detectors (``operating.proactive_events``) as engine steps."""
+    """The proactive event detectors (``operating.proactive_events``) as engine steps.
+    ``results()``: this run's results so far (the vendor rule reads the late rule's order
+    join, else reads it itself); ``people()``: the people exclusion with the tenant's
+    mail directory (``operating.chunking.permissions.Exclusion``)."""
     from . import proactive_events as ev
 
     common = {"gap": _gap, "cites": _cites, "result": _result}
-    mail = {} if vendor_bound is None else {"bound": vendor_bound}
+    mail: dict[str, Any] = {} if vendor_bound is None else {"bound": vendor_bound}
+    if pmap is not None:
+        mail["pmap"] = pmap
+
+    def orders() -> Mapping[str, tuple[str, str]] | None:
+        """The late rule's order join; None when it ran this run and did not finish (the
+        orders open are then not known: the vendor rule is blocked, never guessed)."""
+        ran = results()
+        if LATE_RULE in ran:
+            return ran[LATE_RULE].get("po_orders")
+        return _late_or_unconfirmed_po(st, as_of)["po_orders"]
+
+    def no_reply() -> dict[str, Any]:
+        found = orders()
+        if found is None:
+            return _result([], status="blocked", reasons=["order_status_not_read"])
+        return ev.vendor_no_reply(st, as_of, people=people(), orders=found,
+                                  order_key=_ORDER, **common)
     return {
         "eta_slipped": lambda: ev.eta_slipped(
             st, as_of, settled=SETTLED, confirming=CONFIRMING,
@@ -1745,13 +1811,11 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
         "accepted_quote_no_order": lambda: ev.accepted_quote_no_order(st, as_of, **common),
         "invoice_quantity_mismatch": lambda: ev.invoice_quantity_mismatch(
             st, as_of, settled=SETTLED, **common),
-        "vendor_no_reply": lambda: ev.vendor_mail(
-            st, as_of, call, family="F28", cache=(cache or {}).get("vendor_no_reply"),
-            **mail, **common),
+        "vendor_no_reply": no_reply,
         "vendor_terms_unapplied": lambda: ev.vendor_mail(
             st, as_of, call, family="F27", cache=(cache or {}).get("vendor_terms_unapplied"),
             **mail, **common),
-        "negative_margin": lambda: ev.negative_margin(st, as_of, call, **common)}
+        "negative_margin": lambda: ev.negative_margin(st, as_of, call, pmap=pmap, **common)}
 
 
 def currency_word(raw: Any) -> str | None:
@@ -1915,6 +1979,21 @@ def _open_inbox(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _people(store_path: Path) -> Any:
+    """The people exclusion (environment) with the tenant's mail directory and domains
+    from the mail capture of the state directory ``store_path`` sits in (the projection
+    file, or a generation's store under it); unreadable: an unavailable guard."""
+    from .chunking.permissions import load_exclusion
+
+    parent = store_path.parent
+    state = parent.parent.parent.parent if parent.parent.name == "generations" \
+        else parent.parent
+    try:
+        return load_exclusion(state)
+    except Exception:  # noqa: BLE001 - no directory: the rule is blocked, never guessed
+        return None
+
+
 class TimeBudgetSpent(Exception):
     """A tool call refused because the run's time budget is spent."""
 
@@ -1977,6 +2056,18 @@ class Budget:
             return found
         return guarded
 
+    def pooled(self, pool: Any) -> Callable[[Callable, Sequence[Any]], list[Any]]:
+        """``pool.map`` within this budget: a map that leaves items unread (the time left
+        did not reach them) is noted ``refused``, so its detector is not complete."""
+        from . import proactive_pool
+
+        def run_map(task: Callable, items: Sequence[Any]) -> list[Any]:
+            out = pool.map(task, items, left=self.left)
+            if any(r is proactive_pool.NOT_READ for r in out):
+                self.refused += 1
+            return out
+        return run_map
+
     def left(self) -> float:
         """Seconds left for the current detector: to its share's end, else the deadline."""
         end = self.deadline if self.until is None else min(self.deadline, self.until)
@@ -1994,7 +2085,8 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         only: Sequence[str] | None = None, vendor_bound: int | None = None,
-        reader_may_read: Callable[[str], bool] | None = None) -> dict[str, Any]:
+        reader_may_read: Callable[[str], bool] | None = None,
+        pool: Any = None, people: Any = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -2009,13 +2101,28 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     readings only, the build's run when the vendor pass is scheduled apart).
     ``reader_may_read(audience_key)``: the grant of the principal ``call`` reads as; a
     rule whose verdict needs a source it may not read is ``blocked``
-    (``reader_lacks_lateness_access``), never judged blind (None: not checked)."""
+    (``reader_lacks_lateness_access``), never judged blind (None: not checked).
+    ``pool``: an ``operating.proactive_pool.ToolPool`` reading as the same principal as
+    ``call``: the tool-call rules ask every record of the store on its workers (no
+    per-run record bound; the budget still bounds them), else one call at a time.
+    ``people``: the people exclusion the vendor-mail rule clears senders and mailboxes
+    with (``operating.chunking.permissions.Exclusion``); None: read from the environment
+    and the mail capture of the state directory the store sits in (``_people``)."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
         raise TypeError("as_of_must_be_a_date")
     run_at = moment.isoformat()
     call = call if budget is None else budget.guard(call)
+    pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None
+    many: Callable[[str, Sequence[Any]], list[Any]] | None = None
+    if pool is not None and call is not None:
+        from . import proactive_pool
+
+        pmap = pool.map if budget is None else budget.pooled(pool)
+
+        def many(tool: str, arguments: Sequence[Any]) -> list[Any]:
+            return pmap(proactive_pool.tool_call, [(tool, a) for a in arguments])
     cache = _read_cache(Path(inbox))
     st = _Store(Path(store_path))
     if budget is not None:
@@ -2032,7 +2139,8 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             "conflicting_quantity": lambda: _conflicting_quantity(st, as_of),
             "late_order": lambda: _late_order(st, as_of),
             "orders_at_risk": lambda: (
-                _orders_at_risk(st, as_of, call, card_bound, first=_late_found(results))
+                _orders_at_risk(st, as_of, call, card_bound, first=_late_found(results),
+                                many=many)
                 if call is None or _reader_judges_lateness(st, reader_may_read) else
                 # the run principal cannot read a source a lateness verdict rests on (a
                 # PO's BC twin): its verdicts would be undetermined, never late, for every
@@ -2040,8 +2148,12 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 # "none at risk"
                 _result([], status="blocked", reasons=["reader_lacks_lateness_access"])),
             "card_rules": lambda: _card_rules(st, as_of, call, card_bound),
-            **_event_steps(st, as_of, call, cache, vendor_bound)}
+            **_event_steps(st, as_of, call, cache, vendor_bound, pmap=pmap,
+                           results=lambda: results,
+                           people=lambda: people if people is not None
+                           else _people(Path(store_path)))}
         results: dict[str, dict[str, Any]] = {}
+        seconds: dict[str, float] = {}
         unknown = set(only or ()) - set(DETECTORS)
         if unknown:
             raise ValueError("detector_unknown")
@@ -2054,6 +2166,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 later = [d for d in DETECTORS[DETECTORS.index(name):] if d in SHARED_TIME
                          and (only is None or d in only)]
                 budget.share(SHARED_TIME[name], sum(SHARED_TIME[d] for d in later))
+            started = time.monotonic()
             try:
                 results[name] = steps[name]()
             except TimeBudgetSpent:
@@ -2069,6 +2182,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             finally:
                 if budget is not None:
                     budget.unshare()
+                seconds[name] = round(time.monotonic() - started, 1)
             if budget is not None and budget.refused > refused \
                     and results[name]["status"] != "failed":
                 # a call it made was refused: what it found stands, never all it would find
@@ -2090,6 +2204,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         for gap in result["gaps"]:
             gaps.setdefault(gap["id"], gap)
     summary = _summary(results, gaps, scope)
+    summary["seconds"] = seconds   # each detector's run time (counts and enums only)
     with closing(_open_inbox(Path(inbox))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2122,6 +2237,10 @@ def _summary(results: Mapping[str, Mapping[str, Any]], gaps: Mapping[str, Mappin
             "reused": {name: results[name]["reused"] for name in INCREMENTAL
                        if "reused" in results.get(name, {})},
             "po_lateness": results.get("late_or_unconfirmed_po", {}).get("counts"),
+            # per detector: of the records it should judge, how many it judged and why
+            # the others were not (``_coverage``)
+            "coverage": {name: results[name]["coverage"] for name in DETECTORS
+                         if name in results and results[name].get("coverage")},
             "top_finding": results.get("orders_at_risk", {}).get("finding")}
 
 
@@ -2758,7 +2877,7 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
             *, captures: Path | None, scan_coverage: bool = True,
             budget: Budget | None = None,
             clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-            vendor_bound: int | None = None) -> dict[str, Any]:
+            vendor_bound: int | None = None, pool: Any = None) -> dict[str, Any]:
     """The full scheduled run over ``projection`` into its inbox, as ``investigator``: the
     customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
     statuses ``absent_in_this_source``) and a case session over the projection and the
@@ -2786,7 +2905,8 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
         return run(projection, inbox_path(projection), as_of,
                    coverage=coverage if scan_coverage else None, call=session,
                    budget=budget, clock=clock, vendor_bound=vendor_bound,
-                   reader_may_read=lambda key: policy.may_read(investigator, key))
+                   reader_may_read=lambda key: policy.may_read(investigator, key),
+                   pool=pool)
     finally:
         session.close()
 

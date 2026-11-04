@@ -370,6 +370,65 @@ describe("AnswerCard payload parts", () => {
   });
 });
 
+describe("AnswerCard: a question that needs a pick, and a stale read", () => {
+  it("shows one list of choices in readable words and says to pick one, never 'partly answered'", async () => {
+    const pick = vi.fn();
+    render(
+      <AnswerCard
+        onPick={pick}
+        turn={{
+          id: "t",
+          question: "po 100109 - did they confirm?",
+          phase: "done",
+          streamed: "",
+          understanding: {
+            intent: "status",
+            time_frame: null,
+            entities: [{ text: "100109", resolved: null, ambiguous: true, candidates: [
+              { object_id: "PurchaseOrder:a", type: "PurchaseOrder", label: "100109", score: 0.9 },
+              { object_id: "PurchaseOrder:b", type: "PurchaseOrder", label: "100109", score: 0.9 },
+            ] }],
+          },
+          answer: {
+            ...answer,
+            outcome: "partial",
+            facts: [],
+            direct_answer: "100109 names 2 different records that share the number. Which did you mean?",
+            did_you_mean: [
+              { object_id: "PurchaseOrder:a", type: "PurchaseOrder", label: "100109 in Business Central (Acme Ltd, order date 2099-07-14, po number PO100109)", open_url: "/object/PurchaseOrder/a" },
+              { object_id: "PurchaseOrder:b", type: "PurchaseOrder", label: "100109 in the Portal (Other Co, order date 2099-09-30, fm po number PO5174)", open_url: "/object/PurchaseOrder/b" },
+            ],
+          },
+        }}
+      />,
+    );
+    expect(screen.getAllByTestId("did-you-mean")).toHaveLength(1);
+    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Pick one to get the answer");
+    const choice = screen.getByRole("button", { name: /Acme Ltd/ });
+    expect(choice).toHaveTextContent("100109 in Business Central (Acme Ltd, order date 14 Jul 2099, PO100109)");
+    expect(screen.getByRole("button", { name: /Other Co/ })).toHaveTextContent("Portal PO5174");
+    expect(screen.getByTestId("did-you-mean")).not.toHaveTextContent(/2099-07-14|po number/);
+    await userEvent.click(choice);
+    expect(pick).toHaveBeenCalledWith(expect.objectContaining({ object_id: "PurchaseOrder:a" }));
+  });
+
+  it("says a stale source as data that may be out of date, never as 'isn't on record'", () => {
+    render(
+      <AnswerCard
+        turn={{
+          id: "t",
+          question: "q",
+          phase: "done",
+          streamed: "",
+          answer: { ...answer, outcome: "partial", not_found: [{ what: "the Portal", where_it_would_live: "stale source" }] },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Partly answered · Portal data may be out of date");
+    expect(screen.getByTestId("outcome-badge")).not.toHaveTextContent("isn't on record");
+  });
+});
+
 describe("Feedback", () => {
   it("posts a thumbs-down with reasons and note to /api/feedback", async () => {
     const f = vi.fn(async () => new Response(JSON.stringify({ ok: true, feedback_id: "f1", stored_in: ["feedback_log"] }), { status: 200 }));

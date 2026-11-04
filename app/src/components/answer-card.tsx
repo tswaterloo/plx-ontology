@@ -86,6 +86,14 @@ function SubjectsLine({ refs, timeFrame }: { refs: ObjectRef[]; timeFrame?: stri
   );
 }
 
+/** A choice's label as a reader reads it: "PO PO100109" once, ISO dates as dates, "po number" as "PO". */
+export function choiceLabel(c: Pick): string {
+  return readable(recordLabel(c.type, c.label))
+    .replace(/\bfm po number\b/gi, "Portal PO")
+    .replace(/\bpo number\b/gi, "PO")
+    .replace(/\bPO (?=PO\d)/g, "");
+}
+
 function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[]; onPick?: (p: Pick) => void }) {
   if (choices.length === 0) return null;
   const ids = choices.map((c) => c.object_id);
@@ -108,9 +116,9 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
             }}
             disabled={!onPick}
             data-last-pick={c.object_id === last ? "true" : undefined}
-            className="min-h-8 rounded-md border border-control bg-surface px-3 py-1 text-meta font-medium hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-60 cursor-pointer"
+            className="min-h-8 max-w-full rounded-md border border-control bg-surface px-3 py-1 text-left text-meta font-medium hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-60 cursor-pointer"
           >
-            {c.label}
+            {choiceLabel(c)}
             <span className="font-normal text-muted"> · {typeLabel(c.type)}</span>
             {c.object_id === last && <span className="font-normal text-accent"> · last picked</span>}
           </button>
@@ -331,12 +339,21 @@ function Confidence({ a }: { a: Answer }) {
         <Circle className="size-2.5 fill-current" aria-hidden /> Assistant unavailable · these facts come straight from the records.
       </p>
     );
+  if (a.outcome === "partial" && (a.did_you_mean ?? []).length > 0 && (a.facts ?? []).length === 0)
+    return (
+      <p className="flex items-center gap-1.5 text-meta text-muted" data-testid="outcome-badge">
+        <span aria-hidden>◐</span> Pick one to get the answer
+      </p>
+    );
   if (a.outcome === "partial") {
+    const stale = (a.not_found ?? []).find((n) => /^(?:stale source|source stale)$/i.test(n.where_it_would_live.trim()));
     const why = (a.conflicts ?? [])[0]
       ? `the systems disagree on ${conflictField(a.conflicts![0])}`
       : (a.not_found ?? []).some((n) => /conflicting sources/i.test(n.where_it_would_live))
         ? "the sources disagree"
-        : (a.not_found ?? [])[0]
+        : stale
+          ? missingText(stale).replace(/\.$/, "") // "Portal data may be out of date": the system keeps its capital
+          : (a.not_found ?? [])[0]
           ? `${missingText(a.not_found![0]).replace(/[.:].*$/, "").replace(/^./, (c) => c.toLowerCase())} isn't on record`
           : null;
     return (
@@ -384,7 +401,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
   const understood = (u?.entities ?? []).filter((e) => e.resolved && !e.ambiguous).map((e) => e.resolved!);
   const subjects = a ? (a.subjects ?? []) : [];
   const refs = subjects.length ? subjects : understood;
-  const ambiguous = (u?.entities ?? []).filter((e) => e.ambiguous && (e.candidates ?? []).filter((c) => !internalType(c.type)).length > 1);
+  const ambiguous = (a?.did_you_mean ?? []).length > 0 ? [] : (u?.entities ?? []).filter((e) => e.ambiguous && (e.candidates ?? []).filter((c) => !internalType(c.type)).length > 1);
   const primary = subjects[0] ?? null;
   // before the words stream, the gate-accepted first line stands in for the answer
   const shownText = a ? a.direct_answer : turn.streamed || turn.verdict || "";

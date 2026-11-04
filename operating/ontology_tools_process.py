@@ -817,6 +817,29 @@ class _Why:
 
 
 _LEAD, _EVIDENCE = "lead", "evidence"
+# The one carrier problem a stale capture gives (``_carrier_problem``): the capture is old,
+# not withheld or cut, so what it holds is read "as of" it.
+_STALE_TEXT = "the {source} capture is stale"
+_STALE_RE = re.compile(r"(?:lead carrier: )?the (\S+) capture is stale")
+
+
+def _is_stale(problem: tuple[str, str] | None) -> bool:
+    return bool(problem) and problem[0] == _INCOMPLETE \
+        and _STALE_RE.fullmatch(problem[1]) is not None
+
+
+def stale_sources(reasons: Sequence[_Why]) -> list[str] | None:
+    """The sources whose stale capture is the only reason ``reasons`` leave a reached set
+    unproven (every other reason a lead's), in order; None when anything else (a hidden,
+    cut or unread part) is a reason too or no capture is stale."""
+    out: list[str] = []
+    for why in reasons:
+        found = _STALE_RE.fullmatch(why.text) if why.cause == _INCOMPLETE else None
+        if found is not None and why.code in ("carrier_stale", "lead_carrier_unproven"):
+            out.append(found.group(1))
+        elif why.tier != _LEAD:
+            return None
+    return list(dict.fromkeys(out)) or None
 # Why a side is undecided, most specific first (module docstring): the side's gap names
 # the first one that applies.
 _WITHHELD, _INCOMPLETE, _NOT_READ, _UNPROVEN = (
@@ -938,6 +961,10 @@ class Dated:
     # carrier below the tier floor): a lead is never counted and hides nothing a counted
     # read would hold, so lateness ranks the counted dates past it (po_status.read's rule)
     lead_only: bool = False
+    # the gap is ``due_date_unproven`` only because these sources' captures are stale (and
+    # leads): what was captured is read as of the capture and the verdict says so, never
+    # withheld or cut (the late list judges the same captured dates)
+    stale: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1728,7 +1755,7 @@ class ProcessTools:
         attesting, attested_proven = self._attesting(ctx, graph, oid, floor, tid, columns)
         contradicted = [c["subject"] for c in conflicts
                         if c["subject"].rsplit(" vs ", 1)[-1] in attesting]
-        gap, lead_only = None, False
+        gap, lead_only, stale = None, False, ()
         if contradicted:
             gap = _gap("unknown", "due_date_conflict", contradicted[0], (
                 "a captured document contradicts this due date (" + "; ".join(contradicted)
@@ -1749,9 +1776,9 @@ class ProcessTools:
                 "the due dates are not proven complete or readable: "
                 + "; ".join(dict.fromkeys(w.text for w in reach.reasons + parts.reasons))))
             why = reach.reasons + parts.reasons
-            lead_only = (bool(why) and all(w.tier == _LEAD for w in why)
-                         and not (reach.truncated or parts.truncated or uncited
-                                  or None in dates))
+            exact = not (reach.truncated or parts.truncated or uncited or None in dates)
+            lead_only = bool(why) and all(w.tier == _LEAD for w in why) and exact
+            stale = (stale_sources(why) or ()) if exact and not lead_only else ()
         elif not dates:
             gap = _gap("absent_in_source", "no_due_date", subject,
                        "no declared due date is recorded for this stage")
@@ -1765,7 +1792,7 @@ class ProcessTools:
                 "differently, and no such document of this record is proven visible to this "
                 "reader: lateness is not stated"))
         if gap is not None:   # unattested still read: lateness ranks disagreeing dates
-            return Dated(values, None, gap, unattested, lead_only)
+            return Dated(values, None, gap, unattested, lead_only, tuple(stale))
         return Dated(values, next(iter(dates)), None, unattested)
 
     def _columns(self, tid: str, name: str) -> set[tuple[str, str]]:
@@ -2656,7 +2683,10 @@ class ProcessTools:
             problem = problem_of(index, lb)
             if problem:
                 out.proven = False
-                out.reasons.append(_Why(_EVIDENCE, "carrier_unproven", problem[1], problem[0]))
+                # a stale capture is old, not withheld: its own code, so a reader that
+                # judges "as of the capture" (lateness) can tell it from a hidden part
+                out.reasons.append(_Why(_EVIDENCE, "carrier_stale" if _is_stale(problem)
+                                        else "carrier_unproven", problem[1], problem[0]))
         weak = {i: lb for carriers in anchors.values() for i, lb in carriers
                 if _TIER_RANK.get(lb["tier_ceiling"], 99) > floor_rank}
         for index, lb in weak.items():
@@ -2669,8 +2699,11 @@ class ProcessTools:
                 # A key the projector could not read on some record of a lead carrier
                 # changes nothing any reader counts (a lead row is never counted): a lead
                 # reason. What the reader may not see stays an evidence reason.
-                tier = (_LEAD if problem[0] == _UNPROVEN
-                        and problem[1].startswith("the projector") else _EVIDENCE)
+                # A stale capture of a lead carrier is the same: its rows are old, and a
+                # lead row is never counted however new.
+                tier = (_LEAD if (problem[0] == _UNPROVEN
+                                  and problem[1].startswith("the projector"))
+                        or _is_stale(problem) else _EVIDENCE)
                 out.reasons.append(_Why(tier, "lead_carrier_unproven",
                                         f"lead carrier: {problem[1]}", problem[0]))
         column, other = ("from_object", "to_object") if forward else ("to_object", "from_object")
@@ -2838,6 +2871,7 @@ class ProcessTools:
         via = lb["via"]["binding"] if "via" in lb else None
         keys = frozenset(p["to" if far == "to_binding" else "from"] for p in lb.get("pairs", ()))
         companies = self._start_companies(ctx, link_id, lb, far, starts)
+        stale: str | None = None
         for bid in [lb.get(far)] + ([via] if via else []):
             found = self._binding(bid)
             if found is None:
@@ -2864,7 +2898,9 @@ class ProcessTools:
                             f"the projector reported {gap['code']} for {bid}")
             fresh = ctx.freshness.get(source)
             if fresh and fresh.get("stale"):
-                return _INCOMPLETE, f"the {source} capture is stale"
+                # said last: a stale capture is the problem only when nothing else is (a
+                # verdict read "as captured" must not pass over an unread or cut part)
+                stale = stale or source
             if (not fresh or fresh.get("completeness") != "complete") \
                     and not self._relation_complete(ctx, source, bid, binding["relation"]):
                 cause = self._claim_cause(ctx, source, binding["relation"],
@@ -2901,7 +2937,7 @@ class ProcessTools:
                     ctx.unserved.add(gap["where"])
                     continue
                 return _UNPROVEN, f"the projector could not read a key of {where}"
-        return None
+        return (_INCOMPLETE, _STALE_TEXT.format(source=stale)) if stale else None
 
     def _start_companies(self, ctx: _Ctx, link_id: str, lb: Mapping[str, Any], far: str,
                          starts: Sequence[str]) -> frozenset[str]:

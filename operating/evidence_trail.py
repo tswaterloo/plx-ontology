@@ -358,6 +358,17 @@ def verdict_sentence(entry: Mapping[str, Any]) -> tuple[str, str]:
     rule = ("Rule: an open purchase order is late once today is past its requested-by "
             "date; a received one is late when it was received after it. A supplier "
             "promise never replaces the requested-by date.")
+    text, rule = _verdict_words(entry, state, gd, on, days, against, due, rule)
+    stale = [s for s in entry.get("stale_sources") or () if isinstance(s, str)]
+    if stale and state in ("late", "on_time", "not_due"):
+        # decided on what a stale capture holds: said, as the late list's freshness says it
+        text = text.rstrip(".") + " (as captured: " + "; ".join(
+            f"the {s} capture is stale" for s in stale) + ")."
+    return text, rule
+
+
+def _verdict_words(entry: Mapping[str, Any], state: Any, gd: Any, on: Any, days: Any,
+                   against: Any, due: str, rule: str) -> tuple[str, str]:
     if state == "late" and against == "received":
         return (f"Late: received on {on}, {days} days after {due}.", rule)
     if state == "late":

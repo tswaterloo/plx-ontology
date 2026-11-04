@@ -831,6 +831,10 @@ def _with_mentions(document: Mapping[str, Any], mentions: list[dict[str, Any]],
     return dict(merged, snippet=document.get("snippet") or new[0]["span"])
 
 
+# ``_captured_documents``' search not read earlier in its call.
+_UNPREPARED = object()
+
+
 class CaptureCaseHostTools(CaseHostTools):
     """``CaseHostTools`` over the versioned mail and SharePoint captures the host holds
     (module docstring). Without a capture store a unit of its family is granted to
@@ -1906,7 +1910,19 @@ class CaptureCaseHostTools(CaseHostTools):
                 bound.search = searching
 
     def _capture_call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
+        if name != "plx.documents" or self.mail_capture_dir is None:
+            return self._captured_call(name, arguments, actor)
+        # One policy for the whole search (as the console pins one per request), so the
+        # mail top-up's scan can start under it before the projected search and overlap
+        # it (``mail_topup.EarlyScan``); the top-up still gates every message after.
+        with self.policy_pinned(actor):
+            early = self._early_mail(arguments, actor)
+            return self._captured_call(name, arguments, actor, early)
+
+    def _captured_call(self, name: str, arguments: Any, actor: Any,
+                       early: Any = None) -> dict[str, Any]:
         result = super().call(name, arguments, actor)
+        prepared: Any = _UNPREPARED
         if name in self.registered or not isinstance(result, dict) or "error" in result \
                 or name not in self.tools.contracts["tools"] or name == "plx.read":
             return result   # plx.read: its reader labels a captured file itself
@@ -1914,13 +1930,20 @@ class CaptureCaseHostTools(CaseHostTools):
             result = self._use_case_documents(name, arguments, actor, result)
         if name == "plx.documents" and isinstance(arguments, dict) \
                 and self.mail_capture_dir is not None:
-            result = self._newer_mail(arguments, actor, result)
+            if early is not None and self.sharepoint_capture_dir is not None \
+                    and "error" not in result:
+                # The reader's SharePoint lookup the capture search below reads is read
+                # while the early mail scan still runs, not after it.
+                prepared = self._captured_search(arguments, actor)
+            result = self._newer_mail(arguments, actor, result, early)
         if self.sharepoint_capture_dir is None:
             return self._bounded(name, result) \
                 if "use_case" in result or name in SEARCH_TOOLS else result
         if name == "plx.documents" and isinstance(arguments, dict):
             hits = len(result.get("documents") or [])
-            result = self._captured_documents(arguments, actor, result)
+            result = self._captured_documents(
+                arguments, actor, result,
+                *(() if prepared is _UNPREPARED else (prepared,)))   # read early
             token = _SEARCH_HITS.set(hits)
             try:
                 return self._label(name, result, actor)
@@ -1928,8 +1951,24 @@ class CaptureCaseHostTools(CaseHostTools):
                 _SEARCH_HITS.reset(token)
         return self._label(name, result, actor)
 
+    def _early_mail(self, arguments: Any, actor: Any) -> Any:
+        """This search's mail top-up scan started now under the call's pinned policy, on
+        its own read-only connection to the capture (``mail_topup.EarlyScan``), or None
+        (not a query search, no capture, any failure: the top-up then scans itself)."""
+        from operating.mail_topup import EarlyScan
+        from integrations.capture_mail import MailCaptureStore, store_exists
+        directory = Path(self.mail_capture_dir)
+        try:
+            if not store_exists(directory) or self.tools.store.format_problem() is not None:
+                return None
+            return EarlyScan.start(
+                self.tools, arguments, actor, self.policy_for(actor),
+                lambda: contextlib.closing(MailCaptureStore.open_read_only(directory)))
+        except Exception:  # noqa: BLE001 - never fails the search; the top-up scans itself
+            return None
+
     def _newer_mail(self, arguments: Mapping[str, Any], actor: Any,
-                    result: dict[str, Any]) -> dict[str, Any]:
+                    result: dict[str, Any], early: Any = None) -> dict[str, Any]:
         """``result`` with the mail captured since the served generation was built that
         this reader may see (``operating.mail_topup``: the call's read policy grants
         and this host's per-item mail gate, as for projected mail), each marked
@@ -1939,7 +1978,8 @@ class CaptureCaseHostTools(CaseHostTools):
         if not store_exists(Path(self.mail_capture_dir)):
             return result
         return top_up(self.tools, arguments, actor, result,
-                      lambda: _mail_store(self.runtime, Path(self.mail_capture_dir)))
+                      lambda: _mail_store(self.runtime, Path(self.mail_capture_dir)),
+                      early=early)
 
     def _use_case_documents(self, name: str, arguments: Mapping[str, Any], actor: Any,
                             result: dict[str, Any]) -> dict[str, Any]:
@@ -2111,7 +2151,8 @@ class CaptureCaseHostTools(CaseHostTools):
                 else {"untrusted_text": name[:400], "origin": {"citation": handle}}}
 
     def _captured_documents(self, arguments: Mapping[str, Any], actor: Any,
-                            result: dict[str, Any]) -> dict[str, Any]:
+                            result: dict[str, Any], prepared: Any = _UNPREPARED
+                            ) -> dict[str, Any]:
         """Captured SharePoint files whose text names an identifier of the query, for
         this reader, added to the first page of ``plx.documents`` (each mention cited by
         page, a lead and an external assertion with no object: nothing resolves it).
@@ -2136,22 +2177,12 @@ class CaptureCaseHostTools(CaseHostTools):
         every count is a lower bound ("N+")."""
         from integrations.capture_sharepoint import CaptureError
         from integrations.captured_text import TEXT_EXCEEDS_BOUND
-        query = arguments.get("query")
-        if not isinstance(query, str) or arguments.get("cursor") or arguments.get("since") \
-                or arguments.get("until") or arguments.get("object_id") is not None \
-                or "sharepoint" not in (arguments.get("sources") or ("sharepoint",)):
+        if prepared is _UNPREPARED:
+            # Else ``prepared`` is this call's search read earlier (None: none to make).
+            prepared = self._captured_search(arguments, actor)
+        if prepared is None:
             return result
-        wanted = {(m["identifier_kind"], m["normalized"]) for m in mn.extract(query)
-                  if m["normalized"]}
-        terms = _name_terms(query)
-        store, audience = self._sharepoint(), self._audience()
-        if not (wanted or terms) or store is None or audience is None:
-            return result
-        try:
-            gated = self.runtime.employee_gate(actor)
-        except Exception:  # noqa: BLE001 - a refused employee gate reads nothing
-            return result
-        lookup = self._identifier_lookup(store, gated, audience)
+        query, wanted, terms, store, audience, gated, lookup = prepared
         documents = list(result["documents"])
         listed = {doc["citation"]: at for at, doc in enumerate(documents)}
         whole_mentions = held_mentions()
@@ -2292,6 +2323,30 @@ class CaptureCaseHostTools(CaseHostTools):
               or unchecked) and not completeness.get("truncated"):
             completeness.update(complete=False, reason="partial_scope")
         return dict(out, gaps=gaps[:20], searched=searched, completeness=completeness)
+
+    def _captured_search(self, arguments: Mapping[str, Any], actor: Any) -> tuple | None:
+        """(query, identifiers, name terms, store, audience, gated reader, the reader's
+        identifier lookup) of a ``plx.documents`` call :meth:`_captured_documents`
+        searches the SharePoint capture for, or None when it does not. A documents call
+        whose mail top-up scans early reads it while that scan runs and hands it to
+        :meth:`_captured_documents` (one lookup per call, never one per step)."""
+        query = arguments.get("query")
+        if not isinstance(query, str) or arguments.get("cursor") or arguments.get("since") \
+                or arguments.get("until") or arguments.get("object_id") is not None \
+                or "sharepoint" not in (arguments.get("sources") or ("sharepoint",)):
+            return None
+        wanted = {(m["identifier_kind"], m["normalized"]) for m in mn.extract(query)
+                  if m["normalized"]}
+        terms = _name_terms(query)
+        store, audience = self._sharepoint(), self._audience()
+        if not (wanted or terms) or store is None or audience is None:
+            return None
+        try:
+            gated = self.runtime.employee_gate(actor)
+        except Exception:  # noqa: BLE001 - a refused employee gate reads nothing
+            return None
+        return (query, wanted, terms, store, audience, gated,
+                self._identifier_lookup(store, gated, audience))
 
     def _identifier_lookup(self, store: Any, gated: Any, audience: Any
                            ) -> "_IdentifierLookup":

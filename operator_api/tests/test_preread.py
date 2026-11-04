@@ -60,6 +60,55 @@ class Resolve(unittest.TestCase):
         got, several = pr.resolve(call, found(MAP), same=same)
         self.assertEqual(got["roots"][0]["object_id"], MAP)
 
+    def test_a_party_named_in_the_question_picks_its_record_or_is_said_to_match_none(self):
+        # "synthetic po 9" was asked back as a choice whatever supplier it named
+        never = lambda ids: False   # noqa: E731
+
+        def with_find(suppliers):
+            def tools(name, args):
+                if name == "plx.find":
+                    return {"candidates": [{"object": {"display": n}} for n in suppliers
+                                           if args["query"] in n.casefold()]}
+                if name == "plx.around":   # the Portal record's supplier, by its link
+                    return {"objects": [{"display": "Quillon Labs Inc"}]
+                            if args["from"] == PORTAL else []}
+                if name == "plx.object" and args.get("properties") == ["vendor_name",
+                                                                        "customer_name"]:
+                    return {"values": [{"property": "vendor_name", "value": {
+                        "untrusted_text": VALUES[args["object_id"]]["vendor_name"]}}]
+                        if "vendor_name" in VALUES.get(args["object_id"], {}) else []}
+                return call(name, args)
+            return tools
+
+        tools = with_find(["Synthetic Vendor A", "Zephyrine Oils Ltd"])
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="Synthetic po 9 - did they ever confirm?")
+        self.assertEqual(several, [])
+        (root,) = got["roots"]
+        self.assertEqual((root["object_id"], root["named_party"], root["others"]),
+                         (BC, "Synthetic Vendor A", [PORTAL]))
+        self.assertIn("different records", pr.brief(None, [{**root, "found_by": "identifier"}]))
+        # the Portal record's supplier by its link (no vendor name of its own)
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="quillon PO9 status")
+        self.assertEqual((several, got["roots"][0]["object_id"]), ([], PORTAL))
+        # a supplier none of them has is said, beside the choice; never a pick
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="zephyrine po 9 status")
+        self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]],
+                                    "party": "Zephyrine Oils Ltd"}])
+        answer = pr.choices_answer(
+            tools, m.AskRequest(question="zephyrine po 9 status"), several, conversation="c",
+            freshness=m.Freshness(), object_url=lambda kind, oid: f"/object/{kind}",
+            latency_ms=1, answer_id="a")
+        self.assertEqual(answer.direct_answer, "PO9 names 2 different records that share the "
+                         "number, and none of them is from Zephyrine Oils Ltd. Which did you "
+                         "mean?")
+        # no party word in the question: unchanged, a choice with no mismatch said
+        got, several = pr.resolve(tools, found(BC, PORTAL), same=never,
+                                  question="whats going on with po 9")
+        self.assertEqual(several, [{"mention": "PO9", "groups": [[BC], [PORTAL]]}])
+
     def test_the_choice_names_each_record_by_its_system_and_own_values(self):
         answer = pr.choices_answer(
             call, m.AskRequest(question="why don't the invoice and PO match on PO9?"),

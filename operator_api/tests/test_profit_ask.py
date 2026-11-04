@@ -186,6 +186,42 @@ class ProfitAskTests(unittest.TestCase):
                          ["SO-101", "SO-102"])
         self.assertNotEqual(answer["outcome"], "answered")
 
+    def test_same_named_cards_with_orders_are_one_customer_read_together(self):
+        """Business Central keeps one customer on two cards of its exact name, each with
+        orders (the answer asked which was meant): the margin answer reads both cards'
+        orders together, names each card by its number and cites it; it asks nothing."""
+        records = bc_records()
+        customer = next(r for r in records if r["entity_set"] == "customers"
+                        and r["fields"].get("number") == "C-50")
+        order = next(r for r in records if r["entity_set"] == "salesOrders"
+                     and r["fields"].get("number") == "SO-104")
+        line = next(r for r in records if r["entity_set"] == "salesOrderLines"
+                    and r.get("document_id") == order["id"])
+
+        def copy(record: dict, suffix: str, **fields) -> dict:
+            rid = record["id"][:-4] + suffix
+            return {**record, "id": rid, "fields": {**record["fields"], "id": rid, **fields}}
+        second = copy(customer, "cd01", number="C-53")
+        records.append(second)
+        head = copy(order, "cd10", number="SO-401", customerNumber="C-53",
+                    customerId=second["id"], status="Draft", orderDate="2026-10-02")
+        records.append(head)
+        records.append({**copy(line, "cd20", documentId=head["id"]), "document_id": head["id"]})
+        _names, answer = self.ask(View(self, records=records),
+                                  "Is Northwind Test Foods profitable and why not?")
+        self.assertFalse(answer["did_you_mean"])
+        text = answer["direct_answer"]
+        self.assertTrue(text.startswith(
+            "Northwind Test Foods (customer C-50 and C-53, read together) is not profitable "
+            "in the last 12 months: revenue 190.00 CAD"), text)
+        self.assertIn("2 orders not yet invoiced, excluded", text)
+        profit = answer["profitability"]
+        self.assertIn("SO-401", [o["order"]["label"] for o in profit["orders"]])
+        cards = [s for s in answer["trail"]["steps"] if s["title"].startswith("Customer card")]
+        self.assertEqual([s["title"] for s in cards],
+                         ["Customer card C-50", "Customer card C-53"])
+        self.assertTrue(all(s["source"] for s in cards), cards)
+
     def test_a_customer_with_no_order_in_the_period_says_so(self):
         records = bc_records()
         template = next(r for r in records if r["entity_set"] == "customers"

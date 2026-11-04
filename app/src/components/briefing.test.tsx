@@ -214,3 +214,11 @@ describe("BriefingCard", () => {
     ]);
   });
 });
+
+describe("shortSummary", () => {
+  it("says each summary short and in one style, with its stop", async () => {
+    const { shortSummary } = await import("./briefing");
+    expect(shortSummary("An open purchase order needed by 2026-07-14 has no supplier confirmation")).toBe("Needed by 14 Jul; no confirmed date.");
+    expect(shortSummary("An open purchase order has no due date recorded")).toBe("No due date on record.");
+  });
+});

@@ -712,6 +712,20 @@ class FinalReplyGateTests(unittest.TestCase):
                                  parsed["text"])
                 self.assertEqual(report["unbacked"], [] if kept else ["1000088999"])
 
+    def test_a_passed_text_value_holding_the_asked_identifier_backs_its_own_figures(self):
+        # Live-ops gen 8 (lot 043162): the one file named for the lot, its name passed by
+        # the gate, lost its sentence: the asked lot number was blanked inside the quoted
+        # name first, so the name no longer matched and its "324", "95", "1" read as
+        # unbacked figures. A figure beside the name is still one.
+        name = "324 043162 Ethyl Alcohol 95 USP (1 of 1) Methanol Content Assay - PO (1).pdf"
+        question = "do we have the file for lot 043162 on sharepoint"
+        for text, unbacked in ((f'SharePoint has one file named for that lot, "{name}".', []),
+                               (f'The file "{name}" holds 7 pages.', ["7"]),
+                               ("Lot 043162 has 324 drums.", ["324"])):
+            with self.subTest(text=text):
+                self.assertEqual(answer_gate.unbacked(text, [name], question=question),
+                                 unbacked)
+
     def test_a_plans_price_direction_is_said_in_words_and_its_percent_backed_by_its_prices(self):
         # Live-ops dev (price trend): a plan returned a direction, the answer never said
         # it. The plan's direction entry carries its sentence (``say_direction``); the

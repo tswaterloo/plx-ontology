@@ -1,3 +1,4 @@
+import { Children } from "react";
 import Link from "next/link";
 import * as React from "react";
 import { cn } from "@/lib/cn";
@@ -58,7 +59,17 @@ export function Stat({
   );
 }
 
-/** Tiles in a row: 2 across below 1024 px, 4 across from 1024. */
+const LG_COLS: Record<number, string> = { 1: "lg:grid-cols-1", 2: "lg:grid-cols-2", 3: "lg:grid-cols-3", 4: "lg:grid-cols-4" };
+
+/**
+ * Tiles in a row: 2 across below 1024 px (an odd last tile spans the row), and from 1024
+ * as many across as there are tiles (up to 4), so no row ends in an empty slot.
+ */
 export function StatRow({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("grid grid-cols-2 gap-3 lg:grid-cols-4", className)}>{children}</div>;
+  const n = Math.min(4, Math.max(1, Children.toArray(children).filter(Boolean).length));
+  return (
+    <div className={cn("grid grid-cols-2 gap-3 [&>*:last-child:nth-child(odd)]:col-span-2 lg:[&>*:last-child:nth-child(odd)]:col-span-1", LG_COLS[n], className)}>
+      {children}
+    </div>
+  );
 }

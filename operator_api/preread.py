@@ -49,11 +49,16 @@ def _kind_type(kind: Any) -> Optional[str]:
 
 def resolve(call: Callable[[str, dict], Any], found: Mapping[str, Any],
             object_id: Optional[str] = None,
-            same: Optional[Callable[[Sequence[str]], bool]] = None
+            same: Optional[Callable[[Sequence[str]], bool]] = None, question: str = ""
             ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """(``found`` with each identifier that names one record moved to its roots, the
-    identifiers that name several different records: {mention, groups: [[object id ...]]}).
-    ``same(ids)``: whether the records are one (default ``why_trail.same_records``)."""
+    identifiers that name several different records: {mention, groups: [[object id ...]],
+    and ``party`` when the question names a supplier or customer none of them has}).
+    ``same(ids)``: whether the records are one (default ``why_trail.same_records``).
+    Different records sharing the number are told apart by the supplier or customer the
+    question names (``why_trail.by_named_party``): the one record of that party is the
+    root (``named_party``), never a guess between several."""
+    from operating.why_trail import by_named_party, record_party
     if same is None:
         from operating.why_trail import same_records
         same = lambda ids: same_records(call, ids)   # noqa: E731
@@ -78,6 +83,19 @@ def resolve(call: Callable[[str, dict], Any], found: Mapping[str, Any],
             else:
                 groups.append([candidate])
         picked = next((g for g in groups if object_id in {c["object_id"] for c in g}), None)
+        party = None
+        if picked is None and len(groups) > 1 and question:
+            try:
+                hits, party = by_named_party(call, question,
+                                             [[c["object_id"] for c in g] for g in groups])
+            except Exception:  # noqa: BLE001 - unread: every record stays a choice
+                hits, party = list(range(len(groups))), None
+            if len(hits) == 1:
+                picked = groups[hits[0]]
+                party = record_party(call, picked[0]["object_id"])
+                item = {**item, "named_party": party,
+                        "others": [g[0]["object_id"] for g in groups if g is not picked]}
+                party = None
         if picked is not None or len(groups) == 1:
             group = picked or groups[0]
             first = next((c for c in group if c["object_id"] == object_id), group[0])
@@ -85,10 +103,13 @@ def resolve(call: Callable[[str, dict], Any], found: Mapping[str, Any],
                           "object_id": first["object_id"],
                           "object_type": first.get("object_type"),
                           "found_by": "identifier",
-                          "same_as": [c["object_id"] for c in group if c is not first]})
+                          "same_as": [c["object_id"] for c in group if c is not first],
+                          **({"named_party": item["named_party"], "others": item["others"]}
+                             if item.get("others") else {})})
         elif len(groups) > 1:
             several.append({"mention": item.get("mention"),
-                            "groups": [[c["object_id"] for c in g] for g in groups[:MAX_GROUPS]]})
+                            "groups": [[c["object_id"] for c in g] for g in groups[:MAX_GROUPS]],
+                            **({"party": party} if party else {})})
         else:
             left.append(dict(item))
     return {**dict(found), "roots": roots, "ambiguous": left}, several
@@ -142,7 +163,8 @@ def choices_answer(call: Callable[[str, dict], Any], request: m.AskRequest,
                                 label=choice_label(call, str(item["mention"]), oid),
                                 open_url=object_url(kind, oid)))
     direct = (f"{item['mention']} names {len(refs)} different records that share the "
-              "number. Which did you mean?")
+              "number" + (f", and none of them is from {item['party']}" if item.get("party")
+                          else "") + ". Which did you mean?")
     return m.AnswerPayload(
         answer_id=answer_id, question=request.question, outcome="partial",
         direct_answer=direct, hidden=m.Hidden(count=0, by_owner=[], message=None),
@@ -184,6 +206,12 @@ def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
         lines.append(f"\"{root['mention']}\" names the record with object id "
                      f"{root['object_id']}" + (" (the same record as " + ", ".join(same)
                                                 + ")" if same else "") + ".")
+        if root.get("others"):
+            # picked by the party the question names: the others are different orders
+            lines.append(f"It is the one of {root.get('named_party') or 'the party named'}, "
+                         "the supplier or customer the question names; "
+                         + ", ".join(root["others"]) + " share the number but are different "
+                         "records (say so in one line, never read them as this one).")
     if trail is not None and trail.kind == "materials":
         lines.append(materials_brief(trail))
     elif trail is not None and trail.kind == "purchase_order":

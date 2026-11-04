@@ -341,7 +341,8 @@ class _CallWork:
         """The call's entry (``call_meter``); the handlers are off once it returns. Its
         plan is read while the call's gate function still exists."""
         seconds = time.perf_counter() - self.tick
-        self.conn.set_progress_handler(None, 0)
+        from .call_limits import interruptible
+        interruptible(self.conn)   # the store's own handler again (call limits)
         self.conn.set_trace_callback(None)
         root = arguments["from"]
         entry: dict[str, Any] = {

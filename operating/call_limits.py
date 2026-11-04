@@ -14,6 +14,9 @@ would hold the host and the answer gate behind it until the session is killed (m
   ``except Exception`` cannot swallow it) and answered ``tool_timed_out`` with the limit
   and what to do instead; the host's own state unwinds through its ``with`` blocks and
   the next call is served;
+* a store statement still running at the limit is interrupted (``interruptible``: the
+  store connection's progress handler), so the timer's interrupt is not held up behind
+  one long SQLite statement;
 * the answer gate (``plx.case_get``) is never limited.
 
 Limits (``LIMITS``) are set from the measured per-tool times of 3,700 sessions' calls
@@ -29,6 +32,7 @@ Switched on per host process by ``LIMITS_ENV`` (the agent's budgeted session set
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import os
 import signal
@@ -119,6 +123,45 @@ def clamp_arguments(name: Any, arguments: Mapping[str, Any], limit: float | None
     return out
 
 
+# One SQLite statement is C code: the limit's signal handler runs only once it returns,
+# and one full-text or substring statement on the full store ran for minutes (measured:
+# a prose plx.documents query 330 s against a 40 s limit). The store connection checks
+# the thread's SQL deadline every ``PROGRESS_STEPS`` VM steps (``interruptible``) and
+# interrupts the statement past it (``sqlite3.OperationalError: interrupted``).
+PROGRESS_STEPS = 20_000
+# The SQL deadline trails the call's timer by this much, so the timer's ``ToolTimedOut``
+# is pending when an interrupted statement returns: a tool that swallows the interrupt
+# never returns a result read in part.
+SQL_GRACE = 0.05
+_SQL_DEADLINE: ContextVar[float | None] = ContextVar("plx_sql_deadline", default=None)
+
+
+def _past_deadline() -> int:
+    deadline = _SQL_DEADLINE.get()
+    return int(deadline is not None and time.monotonic() >= deadline)
+
+
+def interruptible(conn: Any) -> None:
+    """Have ``conn`` (a ``sqlite3.Connection``) interrupt a statement running past the
+    SQL deadline of the thread running it (``sql_deadline``); none set: never."""
+    conn.set_progress_handler(_past_deadline, PROGRESS_STEPS)
+
+
+@contextmanager
+def sql_deadline(at: float | None) -> Iterator[None]:
+    """Statements on an ``interruptible`` connection in this thread end by the monotonic
+    second ``at`` (an earlier deadline already set stays); None: no new deadline. A
+    statement interrupted at it raises ``sqlite3.OperationalError``: the caller must
+    treat anything returned after ``at`` as unread."""
+    current = _SQL_DEADLINE.get()
+    token = _SQL_DEADLINE.set(at if current is None or (at is not None and at < current)
+                              else current)
+    try:
+        yield
+    finally:
+        _SQL_DEADLINE.reset(token)
+
+
 @contextmanager
 def bounded(limit: float | None) -> Iterator[None]:
     """Run the block under ``limit`` seconds: ``ToolTimedOut`` at the limit (at once when
@@ -134,16 +177,30 @@ def bounded(limit: float | None) -> Iterator[None]:
         yield
         return
     armed = [True]
+    fired = [False]
 
     def fire(_signum: int, _frame: Any) -> None:
         if armed[0]:
             armed[0] = False
+            fired[0] = True
             raise ToolTimedOut()
 
     previous = signal.signal(signal.SIGALRM, fire)
     signal.setitimer(signal.ITIMER_REAL, float(limit))
     try:
-        yield
+        try:
+            with sql_deadline(time.monotonic() + float(limit) + SQL_GRACE):
+                yield
+        except ToolTimedOut:
+            raise
+        except Exception:
+            # The timer fired inside a store statement's progress callback, where its
+            # ToolTimedOut became the statement's ``interrupted`` error: still a timeout
+            if fired[0]:
+                raise ToolTimedOut() from None
+            raise
+        if fired[0]:
+            raise ToolTimedOut()   # a tool that swallowed the interrupt read in part
     finally:
         armed[0] = False
         signal.setitimer(signal.ITIMER_REAL, 0)

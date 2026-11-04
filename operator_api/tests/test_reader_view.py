@@ -374,8 +374,14 @@ class Words(unittest.TestCase):
         self.assertEqual(presentation.status_words(
             "Missing: supplier confirmation, receipt; held, its status not reached yet: "
             "purchase order; 1 more step not visible to you"),
-            "Not on record yet: supplier confirmation and receipt. On record but not issued "
+            "No supplier confirmation or receipt on record yet. On record but not issued "
             "yet: purchase order. 1 more step is in places you can't open.")
+        # an event not established is said as a question still open, never "either way"
+        self.assertEqual(presentation.status_words(
+            "Missing: supplier confirmation; not established: vendor shipped"),
+            "No supplier confirmation on record yet. Not known yet whether the vendor shipped.")
+        self.assertEqual(presentation.status_words("Not established: shipment"),
+                         "Not known yet: shipment.")
         self.assertEqual(presentation.status_words("Late by 3 days"), "Late by 3 days")
         # a held record is said by its kind: a receipt is posted, never "issued"
         self.assertEqual(presentation.status_words(

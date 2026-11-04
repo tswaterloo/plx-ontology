@@ -58,6 +58,7 @@ from urllib.parse import quote
 
 from evals import live_ops
 from evals import live_ops_keys as keys
+from evals import live_ops_ceo as ceo
 from evals import live_ops_more as more
 from evals import partition
 from evals import runner
@@ -72,7 +73,7 @@ CARDS_FORMAT = "plx-live-ops-cards/v1"
 # ``rule_pending``: the rule its key follows awaits the owner; its runs are reported
 # ``rule_pending`` and kept out of every rate (``evals.live_ops``).
 CARD_FIELDS = frozenset({"id", "family", "instances", "facts", "question", "rule_pending",
-                         "messy"})
+                         "messy", "suite"})
 MAX_MESSY = 2
 REPORT_FORMAT = "plx-live-ops-report/v1"
 HELD_OUT_SUBDIR = "live-ops"
@@ -86,7 +87,7 @@ LINE_PARENT = {"salesOrderLines": "salesOrders", "salesInvoiceLines": "salesInvo
 NARROW = {keys.MO: ("id", "mo_code", "status", "custom_fields"),
           keys.FM_AO: ("id", "nameamo_c", "status"),
           keys.FM_AO_ITEM: ("id", "idassem", "idpack"),
-          keys.FM_PACK_SUPPLIER: ("id", "idpack"), **more.NARROW}
+          keys.FM_PACK_SUPPLIER: ("id", "idpack"), **more.NARROW, **ceo.NARROW}
 TEAMS_CAPTURE = Path("teams-capture") / "capture.db"
 MC_CAPTURE = Path("mc-capture") / "capture.sqlite"
 SHAREPOINT_CAPTURE = Path("sharepoint-capture") / "capture.db"
@@ -118,6 +119,8 @@ def load_cards(path: Path = CARDS) -> tuple[list[dict[str, Any]], str]:
             raise ValueError(f"card_family_unknown:{card.get('id')}")
         if set(card) - CARD_FIELDS:
             raise ValueError(f"card_field_unknown:{card.get('id')}")
+        if card.get("suite", CORE_SUITE) not in SUITES:
+            raise ValueError(f"card_suite_unknown:{card.get('id')}")
         if not isinstance(card.get("messy", []), list) or len(card.get("messy") or []) > MAX_MESSY:
             raise ValueError(f"card_messy:{card.get('id')}")
         if not isinstance(card.get("instances"), int) or card["instances"] < 1:
@@ -610,9 +613,19 @@ def build(cards: Sequence[Mapping[str, Any]], cards_sha: str, world: keys.World,
                 key["freshness_gap"] = stale
             if card.get("rule_pending"):
                 key["rule_pending"] = str(card["rule_pending"])[:300]
+            if card.get("suite"):
+                key["suite"] = card["suite"]
             items.append(item)
             out_keys.append(key)
     return items, out_keys, notes
+
+
+CORE_SUITE = "core"
+SUITES = (CORE_SUITE, "ceo")
+
+
+def _suite(key: Mapping[str, Any]) -> str:
+    return str(key.get("suite") or CORE_SUITE)
 
 
 def _shadow(item: Mapping[str, Any], key: Mapping[str, Any]) -> dict[str, Any]:
@@ -635,15 +648,28 @@ def split(items: list[dict], out_keys: list[dict], visible: Sequence[Mapping[str
     its final id (``dev-F29-0001``, ``ho-F29-0001``), in place."""
     shadows = [_shadow(i, k) for i, k in zip(items, out_keys)]
     # ``related`` compares key digests (``partition.key_digests``), never raw keys
-    touching = partition.related(shadows, {d for v in visible for d in partition.key_digests(v)})
-    groups = sorted(partition.groups(shadows), key=lambda g: hashlib.sha256(
-        "\x1f".join(items[i]["id"] for i in g).encode()).hexdigest())
-    held = dev = 0
-    for group in groups:
-        to_held = held <= dev and not (set(group) & touching)
-        for index in group:
-            items[index]["split"] = "held_out" if to_held else "dev"
-        held, dev = (held + len(group), dev) if to_held else (held, dev + len(group))
+    seen_dev = {d for v in visible for d in partition.key_digests(v)}
+    seen_held: set[str] = set()
+    # Each suite is dealt on its own, the core first, so a suite added later never moves a
+    # core item between splits; a later suite's group sharing a record with an earlier
+    # held-out item is held out too (a dev item never shows a held-out record).
+    for suite in sorted({_suite(k) for k in out_keys}, key=lambda s: (s != CORE_SUITE, s)):
+        mine = [i for i, k in enumerate(out_keys) if _suite(k) == suite]
+        sub = [shadows[i] for i in mine]
+        touching = partition.related(sub, seen_dev)
+        must_hold = partition.related(sub, seen_held)
+        groups = sorted(partition.groups(sub), key=lambda g: hashlib.sha256(
+            "\x1f".join(items[mine[i]]["id"] for i in g).encode()).hexdigest())
+        held = dev = 0
+        for group in groups:
+            to_held = bool(set(group) & must_hold) or (
+                held <= dev and not (set(group) & touching))
+            for index in group:
+                items[mine[index]]["split"] = "held_out" if to_held else "dev"
+            held, dev = (held + len(group), dev) if to_held else (held, dev + len(group))
+        for index in mine:
+            (seen_held if items[index]["split"] == "held_out" else seen_dev).update(
+                partition.key_digests(shadows[index]))
     counters = {"dev": 0, "held_out": 0}
     for item, key in zip(items, out_keys):
         counters[item["split"]] += 1
@@ -807,8 +833,28 @@ def routing(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return out
 
 
+# A wrong answer costs this many right ones (``scoreboard``): a guess must be right more
+# than nine times in ten to score above an honest abstention, the 1% false bar's spirit.
+WRONG_WEIGHT = 9
+FALSE_BAR = 0.01
+
+
+def scoreboard(s: Mapping[str, Any]) -> dict[str, Any]:
+    """The summary ``s`` scored so a wrong answer costs more than an abstention: correct
+    +1, false -``WRONG_WEIGHT``, anything else 0, over the graded runs; and whether the
+    false rate is within ``FALSE_BAR``."""
+    graded = s["graded"]
+    score = (round((s["correct"] - WRONG_WEIGHT * s["false"]) / graded, 4)
+             if graded else None)
+    return {"score": score, "wrong_weight": WRONG_WEIGHT, "false_bar": FALSE_BAR,
+            "false_bar_met": None if s["false_rate"] is None else s["false_rate"] <= FALSE_BAR}
+
+
 def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[Any] = (),
-           evidence_label: str, code_sha: str | None = None) -> dict[str, Any]:
+           evidence_label: str, code_sha: str | None = None,
+           skipped: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """``skipped``: the key run's cards short of a keyable record (``{"card", "wanted",
+    "made"}``, ``skipped.json`` beside the dev keys): counted beside the headline."""
     # An item with no key today is counted beside the rate in every summary (``no_key``,
     # outside ``graded``): a withdrawn key shrinks the denominator, never silently.
     scored = [r for r in rows if r["outcome"] != "not_run"]
@@ -816,17 +862,29 @@ def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[An
     totals = live_ops.summary(scored)
     by_split = {name: live_ops.summary([r for r in scored if r["split"] == name])
                 for name in ("dev", "held_out")}
+    short = None if skipped is None else sum(
+        max(0, int(n["wanted"]) - int(n["made"])) for n in skipped)
 
     def line(s: Mapping[str, Any]) -> str:
         rate = "n/a" if s["correct_rate"] is None else f"{100 * s['correct_rate']:.1f}%"
         return (f"{s['correct']}/{s['graded']} correct ({rate}), {s['false']} false; "
                 f"{s['no_key']} with no key, not in the denominator")
+    families = sorted({str(r.get("family") or "") for r in scored})
+    cards = sorted({str(r.get("card") or "") for r in scored})
     return {"format": REPORT_FORMAT, "reader": reader, "evidence_label": evidence_label,
             "code_sha": code_sha, "items": len(rows),
             "headline": {"all": line(totals), **{n: line(s) for n, s in by_split.items()}},
             "no_key": sum(r["outcome"] == "no_key" for r in rows),
             "not_run": sum(r["outcome"] == "not_run" for r in rows),
+            "skipped": short,
+            "skipped_cards": [dict(n) for n in skipped or () if n["made"] < n["wanted"]],
+            "scoreboard": {"all": scoreboard(totals),
+                           **{n: scoreboard(s) for n, s in by_split.items()}},
             "totals": totals, "by_split": by_split,
+            "per_family": {f: live_ops.summary([r for r in scored if r.get("family") == f])
+                          for f in families},
+            "per_card": {c: live_ops.summary([r for r in scored if r.get("card") == c])
+                        for c in cards},
             "routing": routing(ran),
             "cards": [{k: r.get(k) for k in ("card", "item_id", "split", "family", "outcome",
                                              "justified", "codes", "answer_ms", "routed")}
@@ -1154,6 +1212,8 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
         sub.add_argument("--work-dir", type=Path, required=True)
         sub.add_argument("--reader", choices=sorted(live_ops.READERS), default="vince")
         sub.add_argument("--items", default="")
+        sub.add_argument("--suite", choices=("all", *SUITES), default="all",
+                         help="only the cards of one suite (the core set, or the CEO set)")
         sub.add_argument("--split", choices=("dev", "held_out", "both"), default="both")
         sub.add_argument("--forms", choices=("recorded", "current"), default="recorded",
                          help="grade with each key's own words or today's (FORMS)")
@@ -1207,6 +1267,8 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
         held = held_out_dir(args.dev_dir) if args.split in ("held_out", "both") else None
         if held is not None:
             pairs += load_split(held)
+        if args.suite != "all":
+            pairs = [p for p in pairs if _suite(p[1]) == args.suite]
         picked = {p.strip() for p in args.items.split(",") if p.strip()}
         if picked:
             unknown = picked - {item["id"] for item, _ in pairs}
@@ -1264,7 +1326,8 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
             rows += grade([p for p in pairs if p[0]["split"] == "held_out"], out_held,
                           args.reader, args.forms)
         sha = (environ.get("PLX_EVAL_CODE_SHA") or None)
-        doc = report(rows, reader=args.reader, evidence_label=evidence_label, code_sha=sha)
+        doc = report(rows, reader=args.reader, evidence_label=evidence_label, code_sha=sha,
+                     skipped=_skipped(args.dev_dir, args.suite))
     except (runner.RunnerError, live_ops.KeyProblem, scoring.ScoreError, ValueError,
             OSError) as exc:
         print(json.dumps({"error": type(exc).__name__, "code": str(exc)[:200]}),
@@ -1297,6 +1360,9 @@ def _keys(args: argparse.Namespace, environ: Mapping[str, str], world: keys.Worl
                 [k for i, k in pairs if i["split"] == "dev"])
     write_split(held, [i for i, _ in pairs if i["split"] == "held_out"],
                 [k for i, k in pairs if i["split"] == "held_out"])
+    suites = {card["id"]: card.get("suite", CORE_SUITE) for card in cards}
+    # counts only (no record): what each card wanted and how many records it could key
+    _write_json(args.dev_dir / SKIPPED, [{**n, "suite": suites[n["card"]]} for n in notes])
     print(json.dumps({"cards": len(cards), "items": len(items),
                       "dev": sum(i["split"] == "dev" for i in items),
                       "held_out": sum(i["split"] == "held_out" for i in items),
@@ -1304,6 +1370,19 @@ def _keys(args: argparse.Namespace, environ: Mapping[str, str], world: keys.Worl
                       "short_cards": [n for n in notes if n["made"] < n["wanted"]],
                       "generations": generations}, indent=1, sort_keys=True))
     return 0
+
+
+SKIPPED = "skipped.json"
+
+
+def _skipped(dev_dir: Path, suite: str = "all") -> list[dict[str, Any]] | None:
+    """The key run's per-card counts (``SKIPPED``, written by ``keys``): None when the key
+    run predates it (nothing is claimed about skipped cards then)."""
+    path = dev_dir / SKIPPED
+    if not path.is_file():
+        return None
+    rows = json.loads(path.read_text("utf-8"))
+    return [r for r in rows if suite == "all" or r.get("suite", CORE_SUITE) == suite]
 
 
 def real_state_env() -> str:

@@ -934,6 +934,17 @@ CREATE TABLE IF NOT EXISTS walk_positions (
 _CONTENT_COLUMNS = ("content_status", "content_sha256", "text_status", "text_sha256")
 
 
+def _parsed_acl(text: str, held: dict[str, Any] | None) -> Any:
+    """``json.loads(text)``, kept in ``held`` (when given) by its text: the decision
+    reads it only, so one parse serves every item recording the same permissions."""
+    if held is None:
+        return json.loads(text)
+    found = held.get(text)
+    if found is None:
+        found = held[text] = json.loads(text)
+    return found
+
+
 class SharePointCaptureStore:
     """The capture store under ``<state_dir>/sharepoint-capture`` (module docstring).
 
@@ -1887,23 +1898,25 @@ class SharePointCaptureStore:
     # ---------------------------------------------------------------- reads (per reader)
 
     def _row_visible(self, row: Mapping[str, Any], actor: Any, audience: Any,
-                     latest: Mapping[str, Any] | None = None) -> bool:
+                     latest: Mapping[str, Any] | None = None,
+                     acls: dict[str, Any] | None = None) -> bool:
         """The reader may see this version (its path keys and item permissions) and the
         item as it was last captured: a revoked permission or a move into a folder the
         reader may not see hides the item's history too, and an item gone from the scope
         to where the capture could not see it (``absent_after_resync``) is hidden from
-        every reader."""
+        every reader. ``acls``: the item permissions already parsed in this listing, by
+        their recorded text (a library's files share a few: each is parsed once)."""
         if not isinstance(actor, Actor) or not isinstance(audience, LiveSourceAudience):
             return False
         if not audience.visible_all(actor, json.loads(row["resources"]),
-                                    json.loads(row["source_acl"])):
+                                    _parsed_acl(row["source_acl"], acls)):
             return False
         if latest is None or latest["version_id"] < row["version_id"]:
             latest = self._item_latest(row)
         if latest["removed_reason"] == ABSENT:
             return False
         return latest["version_id"] == row["version_id"] or audience.visible_all(
-            actor, json.loads(latest["resources"]), json.loads(latest["source_acl"]))
+            actor, json.loads(latest["resources"]), _parsed_acl(latest["source_acl"], acls))
 
     def _item_latest(self, row: Mapping[str, Any]) -> sqlite3.Row:
         """The latest captured version of ``row``'s item (by version id)."""
@@ -1938,9 +1951,10 @@ class SharePointCaptureStore:
             f"SELECT drive_id, item_id, MAX(version_id) AS version_id, resources, "
             f"source_acl, removed_reason FROM items WHERE drive_id IN ({marks}) "
             f"GROUP BY drive_id, item_id", tuple(drives))}
+        acls: dict[str, Any] = {}
         for row in itertools.chain((first,), rows):
             if self._row_visible(row, actor, audience,
-                                 latest.get((row["drive_id"], row["item_id"]))):
+                                 latest.get((row["drive_id"], row["item_id"])), acls):
                 yield row
 
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,

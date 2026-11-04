@@ -51,7 +51,11 @@ FORMAT = store_ddl.FORMAT
 _POST_PROJECT = "post_project"   # ontology.project.POST_PROJECT: such values are always cells
 TIER_ORDER = ("verified", "reviewed", "corroborated", "stored_by_text_join", "lead",
               "contradicted")
-VOLATILE_META = frozenset({"built_at", "content_digest", "content_digest_parts"})
+VOLATILE_META = frozenset({"built_at", "content_digest", "content_digest_parts",
+                           "build_checkpoint"})
+# ``store_meta`` key of a build file kept to resume (``StoreBuilder.keep_to_resume``): what
+# the build has done in it; never in a committed generation.
+CHECKPOINT_META = "build_checkpoint"
 # Primary-key order of every table, for the content digest and deterministic reads.
 _TABLE_ORDER = (
     ("store_meta", "key"),
@@ -840,7 +844,76 @@ class StoreBuilder:
         # Processes a full digest at the commit may use (1: the build's own; a store
         # under ``DIGEST_PARALLEL_MIN_BYTES`` is always digested by it).
         self.digest_workers = 1
+        # Kept to resume (:meth:`keep_to_resume`): a failure leaves the file, rolled back
+        # to its last checkpoint, for the next build to reopen (:meth:`reopen`).
+        self.kept = False
+        self.checkpoint: dict[str, Any] = {}
         self._conn.execute("BEGIN IMMEDIATE")
+
+    @classmethod
+    def reopen(cls, temp: str | Path, target: str | Path, *, seeded: bool
+               ) -> tuple["StoreBuilder", dict[str, Any]]:
+        """The builder of a build file kept to resume (:meth:`keep_to_resume`) and its
+        checkpoint (``store_meta`` ``build_checkpoint``), the file rolled back to it (a
+        journal left by a killed build is rolled back on the first read). ``seeded``: an
+        incremental build's file; its digest is then made in full (the segments it wrote
+        before are not known again). Raises ``StoreError`` when the file holds no
+        checkpoint."""
+        self = cls.__new__(cls)
+        self.target, self.temp = Path(target), Path(temp)
+        self.packed_bindings = frozenset()
+        self._shared = {}
+        self.seed_mode = "resumed"
+        self._part = False
+        self._conn = None
+        if not self.temp.is_file():
+            raise StoreError("checkpoint_missing")
+        self._open(seeded=True)
+        self._seed_parts = None
+        self.digest_mode = self.digest_segments = None
+        self.seconds = {}
+        self.digest_workers = 1
+        self.kept = True
+        self.checkpoint = {}
+        try:
+            row = self._conn.execute("SELECT value FROM store_meta WHERE key = ?",
+                                     (CHECKPOINT_META,)).fetchone()
+            held = json.loads(row[0]) if row else None
+        except (sqlite3.Error, ValueError):
+            held = None
+        if not isinstance(held, dict) or not isinstance(held.get("id"), str):
+            self.kept = False
+            self.discard()
+            raise StoreError("checkpoint_missing")
+        self.checkpoint = held
+        self._conn.execute("PRAGMA synchronous = NORMAL")
+        self._conn.execute("BEGIN IMMEDIATE")
+        return self, held
+
+    def keep_to_resume(self, checkpoint: Mapping[str, Any]) -> bool:
+        """Commit every row added so far as a checkpoint ``checkpoint`` (``id``: the build's;
+        ``steps``: the reports of the ``post_project`` steps done) the build resumes from
+        after a failure or a restart (:meth:`reopen`): the file is synced, rolled back to
+        this point when a later transaction fails or is killed (a rollback journal on disk,
+        synced), and no longer removed on a failure. The rows added after it are in a new
+        transaction. False, keeping nothing, when the rows cannot be committed yet (a
+        deferred foreign key of a seeded build not whole)."""
+        conn = self.connection
+        self.set_meta(CHECKPOINT_META, dict(checkpoint))
+        try:
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError:   # a deferred key not yet whole: no checkpoint here
+            conn.execute("DELETE FROM store_meta WHERE key = ?", (CHECKPOINT_META,))
+            return False
+        self.checkpoint = dict(checkpoint)
+        if not self.kept:
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            with open(self.temp, "rb") as handle:
+                os.fsync(handle.fileno())
+            self.kept = True
+        conn.execute("BEGIN IMMEDIATE")
+        return True
 
     def _open(self, *, seeded: bool) -> None:
         """Connect to the build's file (made empty, or the seed's copy), tuned for the
@@ -1166,26 +1239,45 @@ class StoreBuilder:
 
     def commit(self, *, built_at: str) -> str:
         """Check, digest, commit and atomically swap the generation in; returns its
-        content digest. On any failure the temp file is removed and the target is
+        content digest. On any failure the temp file is removed (a file kept to resume:
+        rolled back to its checkpoint, or kept with its checked rows when only the digest
+        or the swap failed: :meth:`digest_and_swap` then finishes it) and the target is
         untouched."""
         conn = self.connection
         try:
             started = time_module.monotonic()
             problems = self.check()
-            if problems:
+            if problems:   # never resumed: the rows themselves are wrong
+                self.kept = False
                 raise StoreError("store_invariant_violated", "; ".join(problems[:10]))
             self.seconds["check"] = round(time_module.monotonic() - started, 3)
-            started = time_module.monotonic()
             self.set_meta("built_at", built_at)
             self.set_meta("format", FORMAT)
             dirty = None
             if self._seed_parts is not None:
                 dirty = [tuple(row) for row in conn.execute(
                     "SELECT kind, segment FROM temp.plx_dirty")]
+            if self.kept:   # checked and committed: a restart only digests it again
+                self.set_meta(CHECKPOINT_META, {**self.checkpoint, "stepped": True})
             # The rows are committed to the build's own file before they are digested (the
             # digest's workers read them there); its digest is added after, in a second
             # transaction. The file is swapped in only after both.
             conn.execute("COMMIT")
+            return self.digest_and_swap(dirty)
+        except BaseException:
+            self.abort()
+            raise
+
+    def digest_and_swap(self, dirty: list[tuple[str, str]] | None = None) -> str:
+        """Digest the committed rows of the build's file (``dirty``: the segments written
+        since the seed; None: every one), add the digest, sync and swap the file in;
+        returns the content digest. The second half of :meth:`commit`, and what a build
+        resumed after its rows were checked and committed still has to do."""
+        conn = self.connection
+        try:
+            started = time_module.monotonic()
+            if conn.in_transaction:
+                conn.execute("COMMIT")
             workers = self.digest_workers
             if workers > 1 and self.temp.stat().st_size < DIGEST_PARALLEL_MIN_BYTES:
                 workers = 1
@@ -1197,6 +1289,7 @@ class StoreBuilder:
             digest = digest_of_parts(parts)
             self.set_meta("content_digest", digest)
             self.set_meta(DIGEST_PARTS, {"format": DIGEST_FORMAT, "parts": parts})
+            conn.execute("DELETE FROM store_meta WHERE key = ?", (CHECKPOINT_META,))
             self.seconds["digest"] = round(time_module.monotonic() - started, 3)
             conn.execute("COMMIT")
             conn.close()
@@ -1204,6 +1297,7 @@ class StoreBuilder:
             with open(self.temp, "rb") as handle:
                 os.fsync(handle.fileno())
             os.replace(self.temp, self.target)
+            self.kept = False
             _fsync_dir(self.target.parent)
             return digest
         except BaseException:
@@ -1211,6 +1305,19 @@ class StoreBuilder:
             raise
 
     def abort(self) -> None:
+        """Close and remove the build's file; a file kept to resume
+        (:meth:`keep_to_resume`) is only closed (its open transaction rolled back)."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+        if self.kept:
+            return
+        self.discard()
+
+    def discard(self) -> None:
+        """Remove the build's file (closed), kept or not."""
         if self._conn is not None:
             try:
                 self._conn.close()

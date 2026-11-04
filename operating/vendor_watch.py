@@ -1,7 +1,8 @@
 """The vendor-mail pass: the slow vendor checks, apart from the capture cycle.
 
-``vendor_no_reply`` (F28) and ``vendor_terms_unapplied`` (F27) investigate each purchase
-order recent mail names; on the live store that is hundreds of orders at tens of seconds
+``vendor_terms_unapplied`` (F27) investigates each purchase order recent mail names (on the
+host's process pool, ``operating.proactive_pool``; ``vendor_no_reply`` is a set-based rule
+of the build's own run); on the live store that is hundreds of orders at tens of seconds
 each when cold, which no post-build budget holds without keeping the cycle lock for hours.
 The build's own run (``host._proactive``) therefore only reuses their readings
 (``vendor_bound=0``); this pass investigates the orders whose mail thread changed
@@ -51,6 +52,7 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     from . import case_workspace_live as live
     from . import po_status
     from . import proactive_engine as pe
+    from . import proactive_pool
     from .host import engine_readers, projection_path
 
     store = projection_path(state_dir)
@@ -63,6 +65,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     runtime = live.offline_runtime(state_dir, config.mirror_audience, config.tenant,
                                    live=engine_readers(config), environ=environ)
     full: dict[str, Any] | None = None
+    # every core the host can spare reads as the same principal, offline (``proactive_pool``)
+    pool = proactive_pool.from_host_config(config, state_dir, store, environ)
     try:
         if refresh_new and pe.served_behind(store):
             # a generation was served since the last full run (the build's own run did not
@@ -74,7 +78,7 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                 ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
                                  scan_coverage="portal" in config.sources,
                                  budget=pe.Budget(share, reserve=pe.AMOUNTS_RESERVE_SECONDS),
-                                 vendor_bound=0)
+                                 vendor_bound=0, pool=pool)
             except Exception as error:  # noqa: BLE001 - the vendor checks still run
                 full = {"state": "failed", "error": type(error).__name__}
             else:
@@ -86,10 +90,12 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             found = pe.run(store, pe.inbox_path(store), day, call=session,
                            budget=pe.Budget(max(left, 1.0),
                                             reserve=pe.AMOUNTS_RESERVE_SECONDS),
-                           only=pe.INCREMENTAL, vendor_bound=bound)
+                           only=pe.INCREMENTAL, vendor_bound=bound, pool=pool)
         finally:
             session.close()
     finally:
+        if pool is not None:
+            pool.close()
         runtime.close()
     return {**{key: found.get(key) for key in ("detectors", "detector_reasons", "reused",
                                                "gaps_by_kind", "not_evaluated")},

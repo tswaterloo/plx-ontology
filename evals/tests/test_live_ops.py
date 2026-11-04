@@ -427,9 +427,9 @@ def world(changed: int = 0, **extra) -> lk.World:
         lk.PO_LINE: [mirror(lk.PO_LINE, {"id": "l1", "purchase_order_id": "p1",
                                          "product_id": "pr1", "quantity": "10",
                                          "quantity_received": "0"})],
-        lk.BATCH: [mirror(lk.BATCH, {"id": "b1", "batch_number": "BX-1", "batch_name": "BX-1",
+        lk.BATCH: [mirror(lk.BATCH, {"id": "b1", "batch_number": "BC-26101A", "batch_name": "BC-26101A",
                                      "status": "Allocated", "status_qc": "On-Hold"})],
-        lk.FM_BATCH: [mirror(lk.FM_BATCH, {"id": 11, "namebatch_c": "BX-1",
+        lk.FM_BATCH: [mirror(lk.FM_BATCH, {"id": 11, "namebatch_c": "BC-26101A",
                                            "status": "Allocated", "statusqc": "On-Hold"})],
         lk.RAW_LOT: [mirror(lk.RAW_LOT, {"id": 5, "lotnoqc": "LOT-55", "status_c": "Released",
                                          "expirydate": "2026-12-03"})],
@@ -579,7 +579,8 @@ class KeyTests(unittest.TestCase):
     def test_a_batch_is_counted_once_by_filemaker_the_system_of_record(self):
         """The same rule as the product's count: one batch per code held in both systems;
         FileMaker's status where the Portal's copy disagrees (and the rule says how many
-        do); a Portal-only copy, a code-less record or a staging test batch is no key."""
+        do); a Portal-only copy, a code-less record, a placeholder code or a staging test
+        batch is no key."""
         w = world()
         fm = lambda i, code, status="Allocated", qc="On-Hold": mirror(lk.FM_BATCH, {
             "id": i, "namebatch_c": code, "status": status, "statusqc": qc})
@@ -587,20 +588,24 @@ class KeyTests(unittest.TestCase):
             "id": f"g{i}", "batch_number": code, "batch_name": code, "status": status,
             "status_qc": qc})
         w.portal = {**w.portal,
-                    lk.FM_BATCH: [fm(1, "BC-1"), fm(2, "BC-2", qc="Released"),
-                                  fm(3, "BC-3", status="Cancelled"), fm(5, "BC-5"),
-                                  fm(6, None), fm(9000001, "TEST-BC-1")],
-                    lk.BATCH: [portal(1, "BC-1"), portal(2, "BC-2"), portal(3, "BC-3"),
-                               portal(4, "BC-4"), portal(5, "BC-5", qc="Released")]}
+                    lk.FM_BATCH: [fm(1, "BC-26001A"), fm(2, "BC-26002A", qc="Released"),
+                                  fm(3, "BC-26003A", status="Cancelled"), fm(5, "BC-26005A"),
+                                  fm(6, None), fm(9000001, "TEST-BC-1"),
+                                  # a generated batch's placeholder, on many rows, is no
+                                  # batch code (the schema's grammar): never one batch
+                                  fm(7, "BC-00A", status="Generated"),
+                                  fm(8, "BC-00A", status="Generated")],
+                    lk.BATCH: [portal(1, "BC-26001A"), portal(2, "BC-26002A"), portal(3, "BC-26003A"),
+                               portal(4, "BC-26004A"), portal(5, "BC-26005A", qc="Released")]}
         # "is it on hold?" of every batch either system shows held, answered by FileMaker:
         # released, cancelled there or no FileMaker batch at all is a key of its own
         asked = {c.identifier: c.facts[0] for c in lk.batch_on_hold(w)}
         self.assertEqual({code: (f["kind"], f["id"]) for code, f in asked.items()}, {
-            "BC-1": ("claim", "on_hold"), "BC-2": ("claim", "released"),
-            "BC-3": ("claim", "cancelled"), "BC-4": ("absent", "no_filemaker_batch"),
-            "BC-5": ("claim", "on_hold")})                # never TEST-BC-1 (staging)
+            "BC-26001A": ("claim", "on_hold"), "BC-26002A": ("claim", "released"),
+            "BC-26003A": ("claim", "cancelled"), "BC-26004A": ("absent", "no_filemaker_batch"),
+            "BC-26005A": ("claim", "on_hold")})                # never TEST-BC-1 (staging)
         self.assertTrue(all("public.batch" in r for code, f in asked.items()
-                            if code != "BC-4" for r in f["records"]))
+                            if code != "BC-26004A" for r in f["records"]))
         for f in asked.values():
             self.assertEqual(lo.key_problems({
                 "format": lo.KEY_FORMAT, "item_id": "i", "facts": [f],
@@ -1114,18 +1119,26 @@ class KeyTests(unittest.TestCase):
 
     def test_a_lot_on_several_rows_counts_once_and_the_bound_day_is_excluded(self):
         w = world()
-        rows = [mirror(lk.RAW_LOT, {"id": i, "lotnoqc": lot, "status_c": "Released",
+        rows = [mirror(lk.RAW_LOT, {"id": i, "lotnoqc": lot, "status_c": status,
                                     "expirydate": day})
-                for i, (lot, day) in enumerate((("L1", "2026-11-20"), ("L1", "2026-11-20"),
-                                                ("L2", "2026-12-31"), ("L3", "2027-01-01"),
-                                                ("L4", "2026-11-10")), start=10)]
-        rows.append(mirror(lk.RAW_LOT, {"id": 20, "lotnoqc": "L4", "status_c": "Released",
-                                        "expirydate": "2026-11-11"}))   # rows disagree
+                for i, (lot, status, day) in enumerate((
+                    ("L1", "Released", "2026-11-20"), ("l1 ", "Released", "2026-11-20"),
+                    ("L2", "Released", "2026-12-31"), ("L3", "Released", "2027-01-01"),
+                    ("L4", "Finished", "2026-11-10"), ("L4", "Released", "2026-11-10"),
+                    ("L5", "Rejected", "2026-11-15"), ("L6", "Quarantine", "2026-11-15"),
+                    ("L7", "Released", "2026-10-31"), ("L8", "Released", None)), start=10)]
         w.portal = {**w.portal, lk.RAW_LOT: rows}
         [count] = lk.lots_expiring_count(w)
         self.assertEqual(count.slots, {"until": "January 1"})
-        self.assertEqual(count.facts[0]["value"], "2")        # L1 once, L2; not L3, not L4
+        # L1 once (trimmed, case-blind), L2, L4 (its used-up line aside, one line is still
+        # Released); not L3 (the bound day), L5/L6 (not released), L7 (expired before
+        # as_of) or L8 (no expiry).
+        self.assertEqual(count.facts[0]["value"], "3")
+        self.assertEqual(len(count.facts[0]["records"]), 4)    # the Released rows counted
         self.assertIn("exclusive", count.reads[0])
+        # FileMaker's QC status is the schema's quality_controlled Lot.qc_status: a reader
+        # without the marking sees no released-lot count.
+        self.assertEqual(count.facts[0]["markings"], ["quality_controlled"])
 
     def test_a_group_sharing_a_record_with_a_visible_card_stays_dev(self):
         cards = [{"id": "LO-01", "family": "po_late", "instances": 1,
@@ -1276,7 +1289,12 @@ class KeyTests(unittest.TestCase):
         w.portal = {**w.portal,
                     more.SAGE_CUSTOMER: [mirror(more.SAGE_CUSTOMER, {
                         "id": "c", "namecust": "Old Co", "amtbaldueh": "120.50",
-                        "amtbalduet": "120.50"})],
+                        "amtbalduet": "120.50"})] + [
+                        # one name on several cards (a chain): no one balance, not keyed
+                        mirror(more.SAGE_CUSTOMER, {
+                            "id": f"g{i}", "namecust": name, "amtbaldueh": "641.56",
+                            "amtbalduet": "641.56"})
+                        for i, name in enumerate(("Chain Gym", "CHAIN GYM Inc."))],
                     # the header's shipdate is its invoice date, never the ship date
                     more.SAGE_ORDER: [mirror(more.SAGE_ORDER, {
                         "id": f"o{n}", "ordnumber": f"100009{n}  ", "complete": "5",

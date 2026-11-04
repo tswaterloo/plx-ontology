@@ -34,13 +34,15 @@ Set-based detectors (one pass over the store):
   supplier invoices bill (``PurchaseInvoice.invoices``) above what its lines received, in
   one unit (a unit not stated on both sides is ``not_evaluated``, never converted).
 
-Tool-call detectors (the run principal's ``plx.investigate``, bounded to
-``CALL_BOUND`` roots, most recent first; more candidates make the rule ``truncated``):
+* ``vendor_no_reply`` (F28's question over the whole store, ``vendor_no_reply``): every
+  open purchase order whose mail shows our request to the outside unanswered for 7 days
+  or more, people cleared first. The absence of a reply is the run's verdict: a reader
+  needs a grant on every audience the conversation's cleared copies sit in.
 
-* ``vendor_no_reply`` (F28 ``quote_follow_up``): a request to a vendor unanswered for 7
-  days or more, over the purchase orders mail named within ``MAIL_DAYS``. The absence of
-  a reply is the run's verdict: a reader needs a grant on every audience the
-  conversation's stored messages sit in;
+Tool-call detectors (the run principal's ``plx.investigate``, bounded to ``CALL_BOUND``
+roots, most recent first, or every root on the engine's process pool; more candidates
+make the rule ``truncated``):
+
 * ``vendor_terms_unapplied`` (F27 ``vendor_replies``): a term a vendor's reply offers that
   differs from or fills the system's field, never applied;
 * ``negative_margin`` (F10 ``order_margin`` through ``operating.customer_profit``): a
@@ -56,10 +58,11 @@ kind to its event type. Evidence label of fixture runs: ``isolated-fixture``.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ontology import store as ostore
@@ -692,12 +695,17 @@ def _mail_gap(st: Any, root: str, family: str, finding: Mapping[str, Any], *, ga
 
 def vendor_mail(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
                 cites: Callable, result: Callable, family: str, bound: int = CALL_BOUND,
-                cache: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                cache: Mapping[str, Any] | None = None,
+                pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None
+                ) -> dict[str, Any]:
     """F28 (``vendor_no_reply``) or F27 (``vendor_terms_unapplied``) over the purchase
     orders mail named recently, incrementally: a purchase order whose thread is unchanged
     since its last reading (``_cache_valid``) keeps that reading (no investigation; F28's
     days waiting counted on from it); only changed ones are investigated, newest mail
-    first, at most ``bound`` per run. The result's ``cache`` holds every reading."""
+    first, at most ``bound`` per run. The result's ``cache`` holds every reading.
+    ``pmap``: the engine's process pool (``operating.proactive_pool``): every changed one
+    is investigated on its workers (a positive ``bound`` no longer cuts; the budget does),
+    one not reached in time is read on a later run (``time_budget``)."""
     if call is None:
         return result([], status="not_configured", reasons=["tool_caller_not_given"])
     roots = _recent_mail_orders(st, as_of)
@@ -720,14 +728,29 @@ def vendor_mail(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
                                   skipped=skipped, index=index))
         skipped.update(entry.get("skipped") or {})
     spent = False
-    for root, fp, newest in stale[:bound]:
-        try:
-            run = _investigate(call, family, root)
-        except Exception as error:  # noqa: BLE001 - only the budget stops the scan
-            if type(error).__name__ != "TimeBudgetSpent":
-                raise
-            spent = True    # what was found stands; the rest is read on a later run
-            break
+    asked = stale if pmap is not None and bound > 0 else stale[:bound]
+    pooled: list[Any] | None = None
+    if pmap is not None and asked:
+        from .proactive_pool import NOT_READ, tool_call
+        pooled = pmap(tool_call, [("plx.investigate", {"family": family, "root": root})
+                                  for root, _fp, _newest in asked])
+    for n, (root, fp, newest) in enumerate(asked):
+        if pooled is not None:
+            answer = pooled[n]
+            if answer is NOT_READ or (isinstance(answer, Mapping) and "time_budget_exhausted"
+                                      in ((answer.get("answerability") or {}).get("reasons")
+                                          or ())):
+                spent = True   # read on a later run
+                continue
+            run = answer if isinstance(answer, Mapping) and not answer.get("error") else None
+        else:
+            try:
+                run = _investigate(call, family, root)
+            except Exception as error:  # noqa: BLE001 - only the budget stops the scan
+                if type(error).__name__ != "TimeBudgetSpent":
+                    raise
+                spent = True    # what was found stands; the rest is read on a later run
+                break
         if run is None:
             skipped["run_refused"] += 1
             continue
@@ -739,11 +762,229 @@ def vendor_mail(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
         for finding in findings:
             gaps.append(_mail_gap(st, root, family, finding, gap=gap, cites=cites,
                                   skipped=skipped, index=index))
-    out = _bounded(result, gaps, skipped, more=len(stale) > bound, spent=spent)
+    out = _bounded(result, gaps, skipped, more=len(stale) > len(asked), spent=spent)
+    out["coverage"] = {"unit": "purchase_orders_named_by_recent_mail", "total": len(roots),
+                       "evaluated": len(kept), "not_evaluated": {k: v for k, v in (
+                           ("not_read_this_run", len(roots) - len(kept)),) if v}}
     if bound == 0 and stale:   # the build's run: the vendor-mail pass reads them apart
         out["reasons"] = [APART_REASON]
     out["cache"], out["roots"] = kept, list(roots)
     out["reused"] = len(roots) - len(stale)
+    return out
+
+
+# --------------------------------------------------------------------------- vendor_no_reply
+
+NO_REPLY_WINDOW_DAYS = 90   # our request is looked at when sent within this many days
+MAX_NAMED_RECORDS = 4       # a message naming more purchase order records is a report
+# What a message of ours asks a vendor beyond a quote or price: when it ships or arrives.
+_ETA_WORDS = re.compile(r"\b(?:eta|etas|delivery|deliver(?:ed|ing)?|ship(?:s|ping|ment|ped)?|"
+                        r"dispatch(?:ed)?|arriv(?:e|al|ing)|tracking|status|update)\b", re.I)
+
+
+# Subject prefixes (stacked, any case, with "[External]" tags between): a reply, a forward.
+_PREFIXES = r"^\s*(?:(?:\[[^\]]{1,30}\]|[A-Za-z]{2,4}(?:\[\d+\])?\s*[:：]|回复[:：]|答复[:：]|转发[:：])\s*)*"
+_REPLY = re.compile(_PREFIXES[:-1] + r"?(?:RE|AW|SV|VS|R|RIF|ANTW|回复|答复)\s*[:：]", re.I)
+_FORWARD = re.compile(_PREFIXES + r"(?:FW|FWD|WG|TR|RV|转发)\s*[:：]", re.I)
+_FORWARDED = re.compile(r"forwarded message|begin forwarded message", re.I)
+
+
+def asks_vendor(text: Any) -> bool:
+    """Whether a message's own text (quoted history removed) asks: a term or ETA word and
+    a request word in one sentence (``operating.vendor_terms.asks_for_terms`` for the terms
+    a vendor states, here also when it ships or arrives)."""
+    from ontology.mentions import QuotedRanges
+
+    from .vendor_terms import _REQUEST_WORDS, asks_for_terms
+
+    if not isinstance(text, str) or not text.strip():
+        return False
+    if asks_for_terms(text):
+        return True
+    quoted = QuotedRanges(text)
+    own = "".join(ch for i, ch in enumerate(text) if not quoted.contains(i))
+    return any(_ETA_WORDS.search(sentence) and _REQUEST_WORDS.search(sentence)
+               for sentence in re.split(r"(?<=[.!?\n])", own))
+
+
+def _instant(raw: Any) -> datetime | None:
+    try:
+        text = str(raw).strip()
+        moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
+                    result: Callable, people: Any, orders: Mapping[str, tuple[str, str]],
+                    order_key: str = "order") -> dict[str, Any]:
+    """F28 over the whole store, set-based: every OPEN purchase order (``orders``: record ->
+    (its order across systems, that order's class), the late rule's join) whose mail shows
+    a request of ours to the outside, within ``NO_REPLY_WINDOW_DAYS``, unanswered for
+    ``NO_REPLY_DAYS`` or more.
+
+    Read in three plain scans (each stored message's conversation, sent time, sender,
+    subject and preview; the mailbox each copy sits in; the mail naming each purchase
+    order, never contradicted, from messages naming at most ``MAX_NAMED_RECORDS`` order
+    records). People first (``people``: ``operating.chunking.permissions.Exclusion``, the
+    guard plus the mail capture's directory and tenant domains): a copy in a mailbox the
+    exclusion does not clear is dropped unread (never a reply, never cited); a conversation
+    where a person of ours the exclusion does not clear wrote is not judged
+    (``participants_not_cleared``); with the guard unavailable or no tenant domain known
+    the rule is ``blocked`` (fail closed). Ours: a sender in a tenant domain; outside: any
+    other. Per conversation naming the order: our last message, if it asks (``asks_vendor``
+    on its subject and preview) and the outside wrote in that conversation before it, with
+    no later message from the outside, is a request waiting since it was sent. One gap per
+    order (its longest wait), citing our message; it requires a grant on every audience the
+    conversation's cleared copies sit in (the absence of a reply is the run's verdict). The
+    rule's ``coverage``: open orders, judged (some cleared conversation names them) and not
+    (by reason)."""
+    if people is None or getattr(people, "unavailable", None):
+        return result([], status="blocked", reasons=["people_exclusion_unavailable"])
+    domains = tuple(getattr(people, "internal", ()) or ())
+    if not domains:
+        return result([], status="blocked", reasons=["tenant_domains_unknown"])
+
+    def internal(address: str) -> bool:
+        domain = address.rsplit("@", 1)[1] if "@" in address else ""
+        return bool(domain) and any(domain == d or domain.endswith("." + d) for d in domains)
+
+    open_order: dict[str, str] = {m: order for m, (order, cls) in orders.items()
+                                  if cls == "open"}
+    open_orders = set(open_order.values())
+    members: dict[str, list[str]] = defaultdict(list)
+    for record, order in sorted(open_order.items()):
+        members[order].append(record)
+    # the mailboxes each message copy sits in, cleared first: a copy elsewhere is never read
+    clear_units: dict[str, bool] = {}
+    audience: dict[str, str] = {}
+    for oid, key in st.conn.execute(
+            "SELECT o.object_id, o.audience_key FROM objects o WHERE o.object_type = 'Email' "
+            "AND NOT " + ostore.removed_at_sql("o.object_id")):
+        if key not in clear_units:
+            clear_units[key] = bool(people.unit_clear(key))
+        if clear_units[key]:
+            audience[oid] = key
+    named: dict[str, set[str]] = defaultdict(set)
+    lead: dict[tuple[str, str], bool] = {}
+    for mail, po, tier in st.conn.execute(
+            "SELECT from_object, to_object, tier FROM links WHERE link_type = "
+            "'Email.mentions_purchase_order' AND superseded_at IS NULL AND tier <> "
+            "'contradicted'"):
+        if mail in audience:
+            named[mail].add(po)
+            lead[(mail, po)] = lead.get((mail, po), True) and tier not in (
+                "verified", "reviewed", "corroborated")
+    values: dict[str, dict[str, str]] = defaultdict(dict)
+    for prop in ("conversation_id", "sent_at", "sender", "subject", "body_preview"):
+        for oid, value in st.conn.execute(
+                "SELECT object_id, value FROM object_values WHERE property = ? AND "
+                "superseded_at IS NULL AND object_id LIKE 'Email:%'", (prop,)):
+            if oid in audience and value not in (None, ""):
+                values[oid][prop] = str(value)
+    threads: dict[str, list[str]] = defaultdict(list)
+    copies: dict[str, list[str]] = defaultdict(list)   # every copy, dated or not
+    for oid, row in values.items():
+        if "conversation_id" in row:
+            copies[row["conversation_id"]].append(oid)
+            if _instant(row.get("sent_at")) is not None:
+                threads[row["conversation_id"]].append(oid)
+    since = as_of - timedelta(days=NO_REPLY_WINDOW_DAYS)
+    skipped: Counter = Counter()
+    judged: set[str] = set()
+    uncleared: set[str] = set()
+    waiting: dict[str, tuple[int, str, str, bool, list[str]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for mail, pos in named.items():
+        if len(pos) > MAX_NAMED_RECORDS:
+            continue   # a report listing many orders is no request about one
+        orders_named = {open_order[p] for p in pos if p in open_order}
+        conversation = values.get(mail, {}).get("conversation_id")
+        if not orders_named or conversation is None:
+            continue
+        for order in sorted(orders_named):
+            if (order, conversation) in seen:
+                continue
+            seen.add((order, conversation))
+            thread = sorted(threads.get(conversation, ()),
+                            key=lambda o: (_instant(values[o]["sent_at"]), o))
+            # every copy of the conversation, an undated one included, is cleared first
+            senders = {o: (values[o].get("sender") or "").strip().casefold()
+                       for o in copies.get(conversation, ())}
+            if any(not s or "@" not in s or (internal(s) and not people.identity_clear(s))
+                   for s in senders.values()):
+                uncleared.add(order)   # someone of ours not cleared (or no sender): unjudged
+                continue
+            judged.add(order)
+            ours = [o for o in thread if internal(senders[o])]
+            if not ours:
+                continue
+            last = ours[-1]
+            sent = _instant(values[last]["sent_at"])
+            outside = [o for o in thread if not internal(senders[o])]
+            if not any(_instant(values[o]["sent_at"]) < sent for o in outside) \
+                    or any(_instant(values[o]["sent_at"]) > sent for o in outside):
+                continue   # never with the outside, or answered
+            waited = (as_of - sent.date()).days
+            if waited < NO_REPLY_DAYS or sent.date() < since:
+                continue
+            row = values[last]
+            subject = row.get("subject") or ""
+            if _FORWARD.match(subject) or _FORWARDED.search(row.get("body_preview") or ""):
+                # who a forward went to is not projected (no To/Cc): an internal forward to
+                # a colleague is never read as a request to the vendor
+                skipped["forward_not_judged"] += 1
+                continue
+            # the message's own text asks; a reply keeps the thread's subject, so the
+            # subject counts only on a message that is no reply
+            if not (asks_vendor(row.get("body_preview"))
+                    or (not _REPLY.match(subject) and asks_vendor(subject))):
+                skipped["last_message_asks_nothing"] += 1
+                continue
+            rep = members[order][0]
+            # firm when some message of the conversation names one of the order's records
+            # by a settled or corroborated link; else the order is named by a lead only
+            is_lead = not any(not lead.get((m, r), True) for m in thread
+                              for r in members[order])
+            before = waiting.get(order)
+            if before is None or waited > before[0]:
+                waiting[order] = (waited, last, rep, is_lead, thread)
+    gaps = []
+    for order, (waited, last, rep, is_lead, thread) in sorted(waiting.items()):
+        rows = st.versions(objects=[last])
+        if not rows:
+            skipped["basis_not_stored"] += 1
+            continue
+        sent = values[last]["sent_at"][:10]
+        made = gap(
+            "vendor_no_reply", "vendor_no_reply", rep, "PurchaseOrder", last,
+            summary=("Lead, not firm: " if is_lead else "")
+                    + f"Our request to the vendor of {sent} has had no reply for {waited} days",
+            missing="Whether the vendor answered outside the mail read here, or when it "
+                    "will confirm; follow up if not (nothing is sent)",
+            why=f"Our last message in a conversation with the outside about this order, "
+                f"sent {sent}, asks for a quote, price, confirmation or delivery date, and "
+                f"no later message from outside is in its conversation for {waited} days"
+                + (" (the message names the order by a mention, not a confirmed link)"
+                   if is_lead else "") + " (the request is cited).",
+            priority=("high" if waited >= 14 else "medium") if not is_lead else "low",
+            about=("PurchaseOrder", "confirmation"), groups=[cites(rows)],
+            event={"days": waited, "sent": sent})
+        if made is None:
+            skipped["request_uncited"] += 1
+            continue
+        made["requires"] = sorted({audience[o] for o in thread if o in audience})
+        made["follow_up"][order_key] = {"key": order, "rank": [0, rep]}
+        gaps.append(made)
+    out = result(gaps, not_evaluated=skipped)
+    unjudged = open_orders - judged
+    out["coverage"] = {"unit": "open_purchase_orders", "total": len(open_orders),
+                       "evaluated": len(judged),
+                       "not_evaluated": {k: v for k, v in sorted({
+                           "participants_not_cleared": len(uncleared - judged),
+                           "no_cleared_mail_names_it": len(unjudged - uncleared)}.items())
+                           if v}}
     return out
 
 
@@ -756,32 +997,51 @@ def _bounded(result: Callable, gaps: list, skipped: Counter, *, more: bool, spen
                   not_evaluated=skipped)
 
 
+INVOICE_DATES = ("posting_date", "invoice_date")   # BC's posting date, Sage's invoice date
+
+
 def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
-    """Orders whose posted invoices fall within ``MARGIN_DAYS`` before the newest posting
-    date the store holds (not after ``as_of``): the data's own recency, so a capture whose
-    invoices end earlier still yields its latest orders, most recently invoiced first."""
+    """Orders whose invoices (a BC posting date or a Sage invoice date) fall within
+    ``MARGIN_DAYS`` before the newest such date the store holds (not after ``as_of``): the
+    data's own recency, so a capture whose invoices end earlier still yields its latest
+    orders, most recently invoiced first."""
+    until = (as_of + timedelta(days=1)).isoformat()
     newest = st.conn.execute(
         "SELECT max(v.value) FROM links l JOIN object_values v ON v.object_id = l.from_object "
-        "AND v.property = 'posting_date' AND v.superseded_at IS NULL WHERE l.link_type = "
-        "'SalesInvoice.bills' AND l.superseded_at IS NULL AND v.value <= :until",
-        {"until": (as_of + timedelta(days=1)).isoformat()}).fetchone()[0]
+        "AND v.property IN (SELECT value FROM json_each(:props)) AND v.superseded_at IS NULL "
+        "WHERE l.link_type = 'SalesInvoice.bills' AND l.superseded_at IS NULL AND "
+        "v.value <= :until", {"until": until, "props": json.dumps(INVOICE_DATES)}).fetchone()[0]
     end = _day(newest)
     if end is None:
         return []
     since = (end - timedelta(days=MARGIN_DAYS)).isoformat()
     rows = st.conn.execute(
         "SELECT l.to_object, max(v.value) AS last FROM links l JOIN object_values v ON "
-        "v.object_id = l.from_object AND v.property = 'posting_date' AND v.superseded_at IS "
-        "NULL WHERE l.link_type = 'SalesInvoice.bills' AND l.superseded_at IS NULL AND "
-        "l.tier IN ('verified', 'reviewed', 'corroborated') AND v.value >= :since AND "
-        "v.value <= :until GROUP BY l.to_object ORDER BY last DESC, l.to_object",
-        {"since": since, "until": (as_of + timedelta(days=1)).isoformat()}).fetchall()
+        "v.object_id = l.from_object AND v.property IN (SELECT value FROM json_each(:props)) "
+        "AND v.superseded_at IS NULL WHERE l.link_type = 'SalesInvoice.bills' AND "
+        "l.superseded_at IS NULL AND l.tier IN ('verified', 'reviewed', 'corroborated') AND "
+        "v.value >= :since AND v.value <= :until GROUP BY l.to_object ORDER BY last DESC, "
+        "l.to_object", {"since": since, "until": until,
+                        "props": json.dumps(INVOICE_DATES)}).fetchall()
     return [r[0] for r in rows]
 
 
+def read_margin(call: Callable, root: str) -> Any:
+    """One order's checked margin (``customer_profit.read_order``), without its raw run: a
+    pool task (``operating.proactive_pool``)."""
+    from . import customer_profit as cp
+
+    order = cp.read_order(call, cp.Order(root, root, []))
+    order.run = None
+    return order
+
+
 def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
-                    cites: Callable, result: Callable, bound: int = CALL_BOUND
+                    cites: Callable, result: Callable, bound: int = CALL_BOUND,
+                    pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None
                     ) -> dict[str, Any]:
+    """``pmap``: the engine's process pool: every recently invoiced order is read on its
+    workers (no ``bound``; one not reached in time is ``time_budget``)."""
     if call is None:
         return result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import customer_profit as cp
@@ -789,15 +1049,29 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
     roots = _recent_invoiced_orders(st, as_of)
     gaps, skipped = [], Counter()
     spent = False
-    for root in roots[:bound]:
-        try:
-            order = cp.read_order(call, cp.Order(root, root, []))
-        except Exception as error:  # noqa: BLE001 - one order fails alone
-            if type(error).__name__ == "TimeBudgetSpent":
-                spent = True    # what was found stands; the rest is not looked at
-                break
-            skipped["run_failed"] += 1
-            continue
+    asked = roots if pmap is not None else roots[:bound]
+    if pmap is not None:
+        from .proactive_pool import NOT_READ
+        pooled = pmap(read_margin, asked)
+    for n, root in enumerate(asked):
+        if pmap is not None:
+            order = pooled[n]
+            if order is NOT_READ:
+                spent = True
+                skipped["time_budget"] += 1
+                continue
+            if not isinstance(order, cp.Order):
+                skipped["run_failed"] += 1
+                continue
+        else:
+            try:
+                order = cp.read_order(call, cp.Order(root, root, []))
+            except Exception as error:  # noqa: BLE001 - one order fails alone
+                if type(error).__name__ == "TimeBudgetSpent":
+                    spent = True    # what was found stands; the rest is not looked at
+                    break
+                skipped["run_failed"] += 1
+                continue
         if order.margin is None or order.currency is None:
             skipped["margin_not_decided"] += 1
             continue
@@ -824,4 +1098,10 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             groups=[cites(subject)] + [cites([rows[h]]) for h in handles],
             event={"amount": {"value": str(loss), "currency": order.currency,
                               "basis": "loss"}}))
-    return _bounded(result, gaps, skipped, more=len(roots) > bound, spent=spent)
+    out = _bounded(result, gaps, skipped, more=len(roots) > len(asked), spent=spent)
+    judged = len(asked) - sum(skipped.values())
+    out["coverage"] = {"unit": "orders_invoiced_recently", "total": len(roots),
+                       "evaluated": judged, "not_evaluated": {k: v for k, v in sorted({
+                           **dict(skipped), "not_asked": len(roots) - len(asked)}.items())
+                           if v}}
+    return out

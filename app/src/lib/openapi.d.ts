@@ -298,6 +298,29 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Suggestions
+         * @description What needs your attention and what to do: late or unconfirmed purchase orders
+         *     and the customer orders they hold up, "ETA confirmed?", customer orders at risk and
+         *     margin alerts, ranked by impact; each with how we know, confidence, what is missing
+         *     and a draft message for you to send yourself (never sent by the Workbench).
+         */
+        get: operations["suggestions_api_suggestions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 };
 export type webhooks = Record<string, never>;
 export type components = {
@@ -637,6 +660,11 @@ export type components = {
              */
             amount_suspect?: string | null;
             /**
+             * Counterpart
+             * @description A purchase order's supplier as this reader reads it (one supplier only); null when not readable or not a PO.
+             */
+            counterpart?: string | null;
+            /**
              * Days
              * @description Days late, slipped, waiting or to expiry, between cited dates.
              */
@@ -915,6 +943,14 @@ export type components = {
             /** Ok */
             ok: boolean;
         };
+        /** DraftFact */
+        DraftFact: {
+            /** Fact */
+            fact: string;
+            source: components["schemas"]["Source"];
+            /** Value */
+            value: string;
+        };
         /**
          * DraftFigure
          * @description One figure a proposal states (a PO number, a date, a line's quantity, a contact) and
@@ -927,6 +963,22 @@ export type components = {
             source?: components["schemas"]["Source"] | null;
             /** Value */
             value: string;
+        };
+        /** DraftTo */
+        DraftTo: {
+            /**
+             * Address
+             * @description Only an address the trail cleared for this reader (a vendor-side sender of a message it may open); else null.
+             */
+            address?: string | null;
+            /**
+             * Basis
+             * @description Where the recipient comes from, or what is missing.
+             */
+            basis: string;
+            /** Name */
+            name?: string | null;
+            source?: components["schemas"]["Source"] | null;
         };
         /** EntraConfig */
         EntraConfig: {
@@ -1619,6 +1671,46 @@ export type components = {
             verdict?: string | null;
         };
         /**
+         * ProactiveSuggestion
+         * @description One record that needs attention: what we noticed, how we know, what to do and a
+         *     draft message (never sent).
+         */
+        ProactiveSuggestion: {
+            /**
+             * Acknowledged
+             * @default false
+             */
+            acknowledged: boolean;
+            action: components["schemas"]["NextAction"];
+            confidence: components["schemas"]["SuggestionConfidence"];
+            draft?: components["schemas"]["SuggestionDraft"] | null;
+            eta?: components["schemas"]["SuggestionEta"] | null;
+            /** Event Types */
+            event_types?: string[];
+            /** Headline */
+            headline: string;
+            /** Id */
+            id: string;
+            impact: components["schemas"]["SuggestionImpact"];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "vendor_chase" | "customer_update" | "margin_review";
+            /** Missing */
+            missing?: string[];
+            /**
+             * New
+             * @default false
+             */
+            new: boolean;
+            /** Rank */
+            rank: number;
+            /** Reasoning */
+            reasoning?: components["schemas"]["SuggestionReason"][];
+            subject: components["schemas"]["ObjectRef"];
+        };
+        /**
          * ProductMargin
          * @description One item's margin over the customer's checked order lines of the period.
          */
@@ -2013,6 +2105,170 @@ export type components = {
             sublabel?: string | null;
             /** Type */
             type: string;
+        };
+        /** SuggestionConfidence */
+        SuggestionConfidence: {
+            /**
+             * Level
+             * @enum {string}
+             */
+            level: "high" | "medium" | "low";
+            /** Why */
+            why: string;
+        };
+        /**
+         * SuggestionDraft
+         * @description A message a person may copy, edit and send themselves: worded only from cited values
+         *     this reader may open, never from a message's text. Never sent by the Workbench.
+         */
+        SuggestionDraft: {
+            /**
+             * Audience
+             * @enum {string}
+             */
+            audience: "vendor" | "customer" | "internal";
+            /** Body */
+            body: string;
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "email" | "internal_note";
+            /**
+             * Facts
+             * @description Each stated fact and its source.
+             */
+            facts?: components["schemas"]["DraftFact"][];
+            /** Review */
+            review?: string | null;
+            /**
+             * Sent
+             * @default false
+             * @constant
+             */
+            sent: false;
+            /**
+             * Status
+             * @default draft_not_sent
+             * @constant
+             */
+            status: "draft_not_sent";
+            /** Subject */
+            subject: string;
+            to: components["schemas"]["DraftTo"];
+        };
+        /** SuggestionEta */
+        SuggestionEta: {
+            /**
+             * Answer
+             * @description ETA confirmed by the vendor? Unknown states are 'unknown', never yes.
+             * @enum {string}
+             */
+            answer: "yes" | "no" | "possibly" | "conflicting" | "hidden" | "unknown";
+            /**
+             * In Mail
+             * @description The confirmation is an email.
+             * @default false
+             */
+            in_mail: boolean;
+            source?: components["schemas"]["Source"] | null;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * When
+             * @description The vendor's confirmed date (yes only, and only beside a source you can open).
+             */
+            when?: string | null;
+        };
+        /** SuggestionImpact */
+        SuggestionImpact: {
+            amount?: components["schemas"]["Money"] | null;
+            /** Amount Basis */
+            amount_basis?: string | null;
+            /**
+             * Amount Suspect
+             * @description Why the total looks wrong in the source: never ranked by.
+             */
+            amount_suspect?: string | null;
+            /**
+             * Days At Risk
+             * @description The worst customer order's days at risk (a lower bound).
+             */
+            days_at_risk?: number | null;
+            /** Days Late */
+            days_late?: number | null;
+            /** Orders */
+            orders?: components["schemas"]["ObjectRef"][];
+            /**
+             * Orders At Risk
+             * @default 0
+             */
+            orders_at_risk: number;
+        };
+        /** SuggestionReason */
+        SuggestionReason: {
+            source?: components["schemas"]["Source"] | null;
+            /** Text */
+            text: string;
+        };
+        /**
+         * Suggestions
+         * @description What needs your attention and what to do about it, ranked by impact (customer
+         *     orders held up, money within its currency, days late); every other open finding is
+         *     counted by type. Suggestions only: nothing is sent or written.
+         */
+        Suggestions: {
+            /** As Of */
+            as_of?: string | null;
+            /** By Kind */
+            by_kind?: {
+                [key: string]: number;
+            };
+            /**
+             * Collapsed
+             * @description Open findings of other types (no drafted action), counted per type.
+             */
+            collapsed?: {
+                [key: string]: number;
+            };
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
+            /** Items */
+            items?: components["schemas"]["ProactiveSuggestion"][];
+            /**
+             * More
+             * @default 0
+             */
+            more: number;
+            /** Note */
+            note: string;
+            /**
+             * Rank Basis
+             * @default
+             */
+            rank_basis: string;
+            /**
+             * Sent
+             * @default false
+             * @constant
+             */
+            sent: false;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "read" | "not_configured" | "unavailable";
+            /**
+             * Total
+             * @description Records with a suggestion (all, not only shown).
+             */
+            total: number;
         };
         /** TimelineEvent */
         TimelineEvent: {
@@ -2807,6 +3063,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggestions_api_suggestions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Suggestions"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

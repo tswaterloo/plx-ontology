@@ -149,7 +149,9 @@ compact enough to capture every mailbox continuously:
 * The originals kept for a pending reading are bounded (``max_pending_ocr_bytes``,
   default 8 GiB): past it, a new PDF attachment is not downloaded
   (``content_status`` ``deferred:ocr_backlog``; its folder ``incomplete`` with reason
-  ``attachments_deferred``) and a later round reads it once OCR has drained the backlog.
+  ``attachments_deferred``) and a later round reads it once OCR has drained the backlog
+  (every spare core, ``ocr_workers_for``; whether a folder still holds one is answered
+  from the folders known to, ``has_deferred_attachments``, never a count of the pile).
 * A scope's ``ocr`` ``deferred`` (or ``compact --defer-ocr``) drops the bytes of scans
   waiting for OCR too: their text status becomes ``ocr_deferred`` (a new text version;
   the text layer stays read and indexed) and every answer on one carries the named gap
@@ -172,8 +174,9 @@ never addresses, subjects, bodies, names or ids)::
 from __future__ import annotations
 
 import argparse
+import collections
 from bisect import insort
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 import contextvars
@@ -858,7 +861,12 @@ class MailCaptureStore:
                              # messages: 0.2-3.6 s each, about 1-4 s per folder round).
                              ("attachments_by_status", "attachments(content_status, mailbox_id)"),
                              ("attachments_by_text_status", "attachments(text_status)"),
-                             ("message_events_by_handle", "message_events(l1_handle, event)")):
+                             ("message_events_by_handle", "message_events(l1_handle, event)"),
+                             # Whether a large original is a text (``_referenced_as_text``,
+                             # every settle under the store lock): 27 ms as a scan of the
+                             # live store's 134k text versions (2026-11-03).
+                             ("text_versions_by_text",
+                              "attachment_text_versions(text_sha256)")):
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {on}")
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
@@ -1017,6 +1025,8 @@ class MailCaptureStore:
             if latest["superseded_at"] is None:
                 self.db.execute("UPDATE messages SET last_seen_at=?, folder_id=? "
                                 "WHERE version_id=?", (now, folder_id, latest["version_id"]))
+                if latest["folder_id"] != folder_id:
+                    self._mark_if_deferred(handle, latest["mailbox_id"], folder_id)
                 return "seen"
             self._supersede_current(latest["mailbox_id"], latest["message_id"], now)
             self.db.execute(
@@ -1029,6 +1039,7 @@ class MailCaptureStore:
                  latest["body_sha256"], latest["attachments_status"], now, now))
             self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                             (handle, "reappeared", now))
+            self._mark_if_deferred(handle, latest["mailbox_id"], folder_id)
         return "reappeared"
 
     def _supersede_current(self, mailbox_id: str, message_id: str, now: str,
@@ -1102,8 +1113,8 @@ class MailCaptureStore:
         last-modified), so a message whose changeKey moved (read, flagged) does not
         re-download unchanged bytes."""
         rows = self.db.execute(
-            "SELECT * FROM attachments WHERE mailbox_id=? AND attachment_id=? AND "
-            "content_status='captured' AND message_handle IN (SELECT l1_handle FROM messages "
+            "SELECT * FROM attachments WHERE +mailbox_id=? AND attachment_id=? AND "
+            "+content_status='captured' AND message_handle IN (SELECT l1_handle FROM messages "
             "WHERE mailbox_id=? AND message_id=?)",
             (mailbox_id, attachment_id, mailbox_id, message_id))
         for row in rows:
@@ -1116,12 +1127,19 @@ class MailCaptureStore:
     def captured_attachments(self, mailbox_id: str, message_id: str) -> list[dict[str, Any]]:
         """The captured attachments of every stored version of one message (what
         :meth:`known_attachment` matches against), for a reader thread that may not
-        touch this store."""
+        touch this store.
+
+        Read through the message's versions (``messages_by_id``), then each version's
+        attachments (their primary key): ``+`` keeps the planner off the status index,
+        whose (``captured``, mailbox) range is every captured attachment of the mailbox
+        (measured 2026-11-03 on the live store: 70-150 ms per call, once per new message
+        under the store lock every lane waits on; through the key under 1 ms)."""
         return [{**dict(row), "metadata": json.loads(row["metadata"])}
                 for row in self.db.execute(
-                    "SELECT * FROM attachments WHERE mailbox_id=? AND content_status='captured' "
-                    "AND message_handle IN (SELECT l1_handle FROM messages WHERE mailbox_id=? "
-                    "AND message_id=?)", (mailbox_id, mailbox_id, message_id))]
+                    "SELECT * FROM attachments WHERE +mailbox_id=? AND "
+                    "+content_status='captured' AND message_handle IN (SELECT l1_handle FROM "
+                    "messages WHERE mailbox_id=? AND message_id=?)",
+                    (mailbox_id, mailbox_id, message_id))]
 
     def folder_listing(self, mailbox_id: str) -> tuple[list[dict[str, Any]], str | None]:
         """(the stored folder listing of a mailbox, when it was listed; None: never)."""
@@ -1181,6 +1199,10 @@ class MailCaptureStore:
                                  record["mailbox"], json.dumps(item["metadata"], sort_keys=True),
                                  item.get("content_sha256"), item["content_status"], now,
                                  item.get("text_status"), item.get("text_sha256")))
+        if any(item["content_status"] == ATTACHMENT_DEFERRED for item in attachments):
+            self._mark_deferred(record["mailbox"], folder_id)
+        else:   # a version re-listed with its earlier rows kept (same handle)
+            self._mark_if_deferred(record["citation"], record["mailbox"], folder_id)
         return superseded
 
     def fill_body(self, handle: str, record: Mapping[str, Any], body_status: str) -> None:
@@ -1207,6 +1229,10 @@ class MailCaptureStore:
                              message_handle, entry["id"]))
             self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                             (message_handle, "attachment_recovered", self.now()))
+        if entry["content_status"] == ATTACHMENT_DEFERRED:
+            row = self._latest(message_handle)
+            if row is not None:
+                self._mark_deferred(row["mailbox_id"], row["folder_id"])
 
     def add_attachments(self, message_handle: str, entries: Sequence[Mapping[str, Any]],
                         attachments_status: str) -> int:
@@ -1233,10 +1259,17 @@ class MailCaptureStore:
             if attachments_status not in _TRUNCATED_STATES:
                 self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                                 (message_handle, "attachment_list_recovered", now))
+        if any(item["content_status"] == ATTACHMENT_DEFERRED for item in entries):
+            self._mark_deferred(row["mailbox_id"], row["folder_id"])
         return added
 
     def text_unread(self, mailbox_id: str | None, folder_id: str | None, limit: int
                     ) -> list[dict[str, Any]]:
+        return self.text_unread_page(mailbox_id, folder_id, limit)[0]
+
+    def text_unread_page(self, mailbox_id: str | None, folder_id: str | None, limit: int,
+                         after: tuple[int, str] | None = None
+                         ) -> tuple[list[dict[str, Any]], tuple[int, str] | None]:
         """Captured attachments of current versions in a folder whose text was never
         read (captured before attachment text), and PDFs whose scanned pages were not
         OCR-read (no engine then, or a failure from before the OCR tool exits were typed
@@ -1245,17 +1278,24 @@ class MailCaptureStore:
         an extraction process did not finish (:data:`EXTRACTION_GAPS`), again until
         :data:`EXTRACTION_RETRIES` more of them did not either (then a named gap for good,
         its original kept). ``None`` for
-        the mailbox or folder: every one (the run's OCR backlog), newest version first."""
+        the mailbox or folder: every one (the run's OCR backlog), newest version first,
+        ``after`` the cursor of the page before (newest first only); with the page, the
+        cursor of the next (``None``: no more)."""
         # One folder: through the folder index (m.mailbox_id, m.folder_id); every one:
         # through the attachments' text status.
         where = " AND ".join(["1=1"] + (["a.mailbox_id=?"] if mailbox_id is not None else [])
                              + (["m.mailbox_id=a.mailbox_id AND m.folder_id=?"]
                                 if folder_id is not None else []))
-        order = ("m.version_id DESC" if mailbox_id is None or folder_id is None
-                 else "m.version_id")
+        newest_first = mailbox_id is None or folder_id is None
+        order = "m.version_id DESC" if newest_first else "m.version_id"
+        if after is not None:
+            if not newest_first:
+                raise CaptureError("text_unread_cursor_invalid")
+            where += " AND (m.version_id < ? OR (m.version_id = ? AND a.attachment_id > ?))"
         unread = ",".join("?" * len(TEXT_UNREAD))
         rows = self.db.execute(
-            "SELECT a.* FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
+            "SELECT a.*, m.version_id AS _version FROM attachments a JOIN messages m ON "
+            "m.l1_handle=a.message_handle "
             f"AND m.superseded_at IS NULL WHERE {where} AND "
             "a.content_status='captured' AND (a.text_status IS NULL OR a.text_status IN "
             f"({unread}) OR (a.text_status IN (?,?) AND NOT EXISTS (SELECT 1 FROM message_events e "
@@ -1263,13 +1303,16 @@ class MailCaptureStore:
             "(a.text_status IN (?,?) AND (SELECT COUNT(*) FROM message_events e "
             "WHERE e.l1_handle=a.l1_handle AND e.event='text_reextracted') < ?)) "
             f"ORDER BY {order}, a.attachment_id LIMIT ?",
-            (*[v for v in (mailbox_id, folder_id) if v is not None], *TEXT_UNREAD,
+            (*[v for v in (mailbox_id, folder_id) if v is not None],
+             *(() if after is None else (after[0], after[0], after[1])), *TEXT_UNREAD,
              *UNTYPED_OCR_FAILURES, *EXTRACTION_GAPS, EXTRACTION_RETRIES,
              limit)).fetchall()
-        return [dict(r) for r in rows if r["text_status"] is None
-                or r["text_status"] in EXTRACTION_GAPS or is_paged_file(
-            {"mime_type": (meta := json.loads(r["metadata"])).get("content_type"),
-             "name": meta.get("name")})]
+        cursor = ((rows[-1]["_version"], rows[-1]["attachment_id"])
+                  if len(rows) == limit else None)
+        return [{k: r[k] for k in r.keys() if k != "_version"} for r in rows
+                if r["text_status"] is None or r["text_status"] in EXTRACTION_GAPS
+                or is_paged_file({"mime_type": (meta := json.loads(r["metadata"])).get(
+                    "content_type"), "name": meta.get("name")})], cursor
 
     def text_chain(self, l1_handle: str) -> list[dict[str, Any]]:
         """Every reading of one attachment's text, oldest first (``version`` 1, 2, ...):
@@ -1518,6 +1561,65 @@ class MailCaptureStore:
             params.append(folder_id)
         return self.db.execute(sql, params).fetchone()[0]
 
+    # Whether a folder holds a deferred attachment is asked at every folder round's end
+    # under the store lock every lane waits on. As a count it read every deferred
+    # attachment of the mailbox (the live store's 248k, 2026-11-04: lanes stalled behind
+    # it at each folder completion). The folders that may hold one are kept per mailbox
+    # (``_deferred_folders``), read once by one grouped query and added to by every write
+    # that can put a deferred attachment in a folder (``_mark_deferred``); a folder in it
+    # is checked exactly (and dropped once it holds none), one not in it holds none.
+    def _deferred_folders_of(self, mailbox_id: str) -> set[str]:
+        cache = self.__dict__.setdefault("_deferred_folders", {})
+        folders = cache.get(mailbox_id)
+        if folders is None:
+            folders = cache[mailbox_id] = {r[0] for r in self.db.execute(
+                "SELECT DISTINCT m.folder_id FROM attachments a JOIN messages m ON "
+                "m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+                "a.mailbox_id=? AND a.content_status=?", (mailbox_id, ATTACHMENT_DEFERRED))}
+        return folders
+
+    def load_deferred_folders(self) -> None:
+        """Every mailbox's folders holding a deferred attachment, by one grouped query
+        (a run's start, before its lanes share the store lock)."""
+        cache: dict[str, set[str]] = {}
+        for row in self.db.execute(
+                "SELECT DISTINCT a.mailbox_id, m.folder_id FROM attachments a JOIN messages m "
+                "ON m.l1_handle=a.message_handle AND m.superseded_at IS NULL WHERE "
+                "a.content_status=?", (ATTACHMENT_DEFERRED,)):
+            cache.setdefault(row[0], set()).add(row[1])
+        for mailbox_id in self.db.execute("SELECT mailbox_id FROM mailboxes"):
+            cache.setdefault(mailbox_id[0], set())
+        self.__dict__["_deferred_folders"] = cache
+
+    def _mark_deferred(self, mailbox_id: str, folder_id: str) -> None:
+        cache = self.__dict__.get("_deferred_folders")
+        if cache is not None and mailbox_id in cache:
+            cache[mailbox_id].add(folder_id)
+
+    def _mark_if_deferred(self, handle: str, mailbox_id: str, folder_id: str) -> None:
+        """A version now current in ``folder_id`` (moved there, or back): its folder is
+        marked when one of its attachments is deferred (the attachments' key)."""
+        if self.db.execute("SELECT 1 FROM attachments WHERE message_handle=? AND "
+                           "+content_status=? LIMIT 1",
+                           (handle, ATTACHMENT_DEFERRED)).fetchone() is not None:
+            self._mark_deferred(mailbox_id, folder_id)
+
+    def has_deferred_attachments(self, mailbox_id: str, folder_id: str) -> bool:
+        """Whether a current version of this folder has an attachment deferred by a full
+        OCR backlog (``deferred:ocr_backlog``): exact, one indexed probe at most, never a
+        read of the mailbox's whole deferred pile."""
+        folders = self._deferred_folders_of(mailbox_id)
+        if folder_id not in folders:
+            return False
+        found = self.db.execute(
+            "SELECT 1 FROM messages m WHERE m.mailbox_id=? AND m.folder_id=? AND "
+            "m.superseded_at IS NULL AND EXISTS (SELECT 1 FROM attachments a WHERE "
+            "a.message_handle=m.l1_handle AND +a.content_status=?) LIMIT 1",
+            (mailbox_id, folder_id, ATTACHMENT_DEFERRED)).fetchone() is not None
+        if not found:
+            folders.discard(folder_id)
+        return found
+
     def compact(self, *, vacuum: bool = True, defer_ocr: bool = False,
                 free_bytes: Callable[[Path], int] = lambda path: shutil.disk_usage(path).free
                 ) -> dict[str, Any]:
@@ -1614,10 +1716,13 @@ class MailCaptureStore:
         self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.execute("PRAGMA foreign_keys = ON")
 
-    def degraded(self, mailbox_id: str, folder_id: str, limit: int) -> list[dict[str, Any]]:
+    def degraded(self, mailbox_id: str, folder_id: str, limit: int, *,
+                 deferred: bool = True) -> list[dict[str, Any]]:
         """Current versions in a folder whose body or an attachment read failed
         non-transiently, or whose attachment listing was truncated; a later run
-        retries them (whatever their changeKey)."""
+        retries them (whatever their changeKey). ``deferred`` False: not the versions
+        whose only fault is an attachment deferred by a full OCR backlog (while it is
+        full, a retry defers it again)."""
         rows = self.db.execute(
             "SELECT * FROM messages m WHERE mailbox_id=? AND folder_id=? AND "
             "superseded_at IS NULL AND (body_status LIKE ? OR attachments_status=? OR "
@@ -1625,7 +1730,8 @@ class MailCaptureStore:
             "(a.content_status IN ('unavailable', ?) OR a.content_status LIKE ?))) "
             "ORDER BY version_id LIMIT ?",
             (mailbox_id, folder_id, _DEGRADED_BODY, ATTACHMENTS_TRUNCATED,
-             ATTACHMENT_DEFERRED, _MISMATCH, limit)).fetchall()
+             ATTACHMENT_DEFERRED if deferred else "unavailable", _MISMATCH,
+             limit)).fetchall()
         return [dict(r) for r in rows]
 
     def mismatched(self, mailbox_id: str, folder_id: str | None = None) -> int:
@@ -2712,12 +2818,37 @@ OCR_BACKLOG_PER_RUN = 2000
 # (``lanes``), four concurrent reads per mailbox (Exchange's per-mailbox limit), two pages
 # per folder per turn, attachment text read by extraction processes (measured
 # 2026-10-31: text extraction held the capture's one interpreter lock, about 0.1-0.2 s of
-# CPU per message), OCR beside the capture on up to four threads (each runs one local OCR
-# process at a time). Page size stays 100: a listing is one GET per 100 messages against
+# CPU per message), OCR beside the capture on every spare core (``ocr_workers_for``: each
+# reading in an extraction process of its own at a lower priority). Page size stays 100: a listing is one GET per 100 messages against
 # about 2.5 GETs per message, and 200 pages of full headers near the guard's 4 MB bound.
 _CPUS = os.cpu_count() or 2
+# The memory one OCR reading may hold: its extraction process, a page rendered at 300 dpi
+# (pdftoppm) and tesseract on it, with room (each tool is bounded on its own).
+OCR_WORKER_BYTES = 1 << 30
+
+
+def ocr_workers_for(cpus: int, memory_bytes: int | None) -> int:
+    """The OCR readings a host runs at once: every core but two (the capture's own
+    process and its text extraction keep theirs; OCR runs at a lower priority,
+    :data:`OCR_NICE`), at most half the memory at :data:`OCR_WORKER_BYTES` each, at most
+    :data:`MAX_WORKERS`. Measured 2026-11-04: four OCR threads on a 16-core host left
+    the deferred-PDF pile growing (248k) while ten cores idled."""
+    by_memory = MAX_WORKERS if memory_bytes is None else memory_bytes // 2 // OCR_WORKER_BYTES
+    return max(1, min(MAX_WORKERS, cpus - 2, by_memory))
+
+
+def _memory_bytes() -> int | None:
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+# The niceness of an OCR extraction process (and the poppler/tesseract it runs): the
+# idle cores read the backlog, never the cores the capture's lanes and text need.
+OCR_NICE = 10
 PRODUCTION: dict[str, Any] = {"workers": 4, "pages_per_turn": 2, "defer_ocr": True,
-                              "ocr_workers": max(1, min(4, _CPUS // 2)),
+                              "ocr_workers": ocr_workers_for(_CPUS, _memory_bytes()),
                               "page_size": 100, "lanes": max(1, min(12, _CPUS * 3 // 4)),
                               "extract_workers": max(1, min(6, _CPUS // 2 - 2))}
 
@@ -3069,8 +3200,8 @@ class _Extractors:
     JSON (never pickle) from a process with no credential."""
 
     def __init__(self, workers: int, seconds: float,
-                 environ: Mapping[str, str] | None = None) -> None:
-        self.seconds = seconds
+                 environ: Mapping[str, str] | None = None, *, nice: int = 0) -> None:
+        self.seconds, self._nice = seconds, nice
         self._env = extraction_env(os.environ if environ is None else environ)
         self._idle: list[subprocess.Popen] = []
         self._ready = threading.Condition()
@@ -3078,7 +3209,10 @@ class _Extractors:
         self._idle = [self._start() for _ in range(workers)]
 
     def _start(self) -> "subprocess.Popen":
-        return subprocess.Popen([sys.executable, "-m", "integrations.extract_worker"],
+        command = [sys.executable, "-m", "integrations.extract_worker"]
+        if self._nice:
+            command += ["--nice", str(self._nice)]
+        return subprocess.Popen(command,
                                 cwd=str(REPO_ROOT), env=self._env, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
@@ -3172,9 +3306,23 @@ class _Extractors:
             self._end(process)
 
 
+# A run's OCR queue is filled again from the store's backlog (``_OcrQueue.refill``) once
+# fewer than this many readings per worker wait, at most every OCR_REFILL_SECONDS.
+OCR_REFILL_PER_WORKER = 4
+OCR_REFILL_SECONDS = 60.0
+# After its last folder turn a run goes on reading the OCR backlog this long at most
+# (within its budget): a run with little new mail would otherwise end its OCR with it,
+# the backlog would stay at its bound and the PDFs deferred by it would never be read.
+OCR_TAIL_SECONDS = 600.0
+
+
 class _OcrQueue:
     """The deferred OCR of captured attachments (``ocr_pending`` and the other unread
-    statuses), read from their stored bytes by ``workers`` threads beside the capture.
+    statuses), read from their stored bytes by ``workers`` threads beside the capture,
+    each reading in an extraction process of its own at :data:`OCR_NICE` (``processes``).
+    The queue takes :data:`OCR_BACKLOG_PER_RUN` of the store's backlog at a time, newest
+    first, and more as it drains (``refill``): every core given to OCR stays busy for the
+    whole run, never only for the first batch. Each attachment is read at most once a run.
     A thread reads only the blob file and runs the extractor; the capture thread alone
     writes each reading (``MailCaptureStore.fill_text``: a new text version) when it
     drains the queue. A reading not started once ``spent()`` is dropped and stays
@@ -3184,21 +3332,62 @@ class _OcrQueue:
     def __init__(self, store: MailCaptureStore, workers: int, spent: Callable[[], bool],
                  *, processes: bool = False) -> None:
         self.store, self._spent = store, spent
+        self._workers = workers
         self._pool = ThreadPoolExecutor(workers, thread_name_prefix="mail-ocr")
         # ``processes``: each reading in an extraction process of its own (bounded by
         # OCR_EXTRACT_SECONDS, scrubbed environment), never a parse in this process.
-        self._extractors = (_Extractors(workers, OCR_EXTRACT_SECONDS) if processes
-                            else None)
+        self._extractors = (_Extractors(workers, OCR_EXTRACT_SECONDS, nice=OCR_NICE)
+                            if processes else None)
         self._pending: dict[str, tuple[Future, str]] = {}
+        self._seen: set[str] = set()   # queued this run: read at most once
+        self._refilled_at = float("-inf")
+        # Where the next refill goes on in the store's backlog (newest first); ``None``
+        # once every row was taken (new scans are queued as they are stored).
+        self._cursor: tuple[int, str] | None = None
+        self._backlog_left = True
+        # Handles whose reading finished (each future's done callback): a drain after
+        # every stored message takes these, never a walk of every queued reading (the
+        # live queue holds thousands, walked under the store lock).
+        self._done: collections.deque[str] = collections.deque()
         self.counts = {"queued": 0, "read": 0, "texts_ocr": 0, "texts_ocr_unavailable": 0,
                        "left_pending": 0, "failed": 0, "originals_dropped": 0}
 
     def submit(self, l1_handle: str, digest: str, metadata: Mapping[str, Any]) -> None:
-        if l1_handle in self._pending or not isinstance(digest, str):
+        if l1_handle in self._seen or not isinstance(digest, str):
             return
-        self._pending[l1_handle] = (self._pool.submit(self._read, digest, dict(metadata)),
-                                    digest)
+        self._seen.add(l1_handle)
+        future = self._pool.submit(self._read, digest, dict(metadata))
+        self._pending[l1_handle] = (future, digest)
+        future.add_done_callback(lambda _f, handle=l1_handle: self._done.append(handle))
         self.counts["queued"] += 1
+
+    def refill(self, *, force: bool = False) -> int:
+        """Queue more of the store's OCR backlog (``text_unread``, newest first) once
+        fewer than :data:`OCR_REFILL_PER_WORKER` readings per worker wait, at most every
+        :data:`OCR_REFILL_SECONDS` (one indexed query; the caller holds the store lock);
+        ``force``: now. Returns the readings queued."""
+        if not force and (len(self._pending) >= OCR_REFILL_PER_WORKER * self._workers
+                          or time.monotonic() < self._refilled_at + OCR_REFILL_SECONDS):
+            return 0
+        self._refilled_at = time.monotonic()
+        if not self._backlog_left:   # a reading checks the budget as it starts (_read)
+            return 0
+        queued = self.counts["queued"]
+        rows, self._cursor = self.store.text_unread_page(None, None, OCR_BACKLOG_PER_RUN,
+                                                         self._cursor)
+        self._backlog_left = self._cursor is not None
+        for row in rows:
+            self.submit(row["l1_handle"], row["content_sha256"], json.loads(row["metadata"]))
+        return self.counts["queued"] - queued
+
+    def busy(self) -> bool:
+        return bool(self._pending)
+
+    def wait(self, seconds: float) -> None:
+        """Until a queued reading ends, or ``seconds``."""
+        futures = [future for future, _digest in self._pending.values()]
+        if futures:
+            wait_futures(futures, timeout=seconds, return_when=FIRST_COMPLETED)
 
     def _read(self, digest: str, metadata: Mapping[str, Any]
               ) -> tuple[str, str | None, dict[str, Any] | None] | None:
@@ -3216,7 +3405,16 @@ class _OcrQueue:
         """Store the readings done (each a new text version), then drop each original
         nothing needs any more (``settle_original``); returns the readings stored."""
         stored = 0
-        for handle, (future, digest) in list(self._pending.items()):
+        if wait:
+            handles = list(self._pending)
+        else:
+            handles = []
+            while self._done:
+                handles.append(self._done.popleft())
+        for handle in handles:
+            if handle not in self._pending:
+                continue
+            future, digest = self._pending[handle]
             if not (wait or future.done()):
                 continue
             del self._pending[handle]
@@ -3344,6 +3542,10 @@ def _new_counts() -> dict[str, int]:
         "backfill_pages")}
 
 
+# What a repair pass recovered (``MailCapture._repair_degraded``).
+_RECOVERED = ("bodies_recovered", "attachments_recovered", "attachment_lists_recovered")
+
+
 def _count_text(status: str, counts: dict[str, int]) -> None:
     counts["texts_ocr"] += status == TEXT_OCR
     counts["texts_ocr_unavailable"] += status == OCR_UNAVAILABLE
@@ -3374,8 +3576,11 @@ class MailCapture:
       Graph throttling (429 ``Retry-After``) holds every thread (``BoundedBackoff``).
     * ``defer_ocr`` and ``ocr_workers``: a scanned PDF is stored with its text layer as
       ``ocr_pending`` and OCR-read from its stored bytes by a pool beside the capture
-      (``ocr_workers`` threads), so a 60 s scan never holds the mail behind it. Readings
-      not finished when the budget ends stay pending; the next run reads them first."""
+      (``ocr_workers`` at once, each in an extraction process at :data:`OCR_NICE` when
+      ``extract_workers``), so a 60 s scan never holds the mail behind it. The whole
+      backlog is read a page at a time, also for :data:`OCR_TAIL_SECONDS` after the last
+      folder turn. Readings not finished when the budget ends stay pending; the next run
+      reads them first."""
 
     def __init__(self, store: MailCaptureStore, reader: Any, actor: Actor, *,
                  page_size: int = 50, throttle_waits: Sequence[float] = DEFAULT_THROTTLE_WAITS,
@@ -3450,6 +3655,11 @@ class MailCapture:
         # ``directory`` callable fills it): never first-tier unless the scope names them.
         self.disabled_mailboxes: set[str] = set()
         self._pages_read: dict[tuple[str, str], int] = {}   # per folder, this object's runs
+        # Folders whose degraded versions (a pass that recovered nothing) and unread texts
+        # this run retried already (``_repair_degraded``, ``_reextract``): not again at
+        # every turn (a backfill's every turn reaches the delta's end; each pass held the
+        # store lock about 0.1-0.9 s on the live store's large folders, 2026-11-03).
+        self._repaired: set[tuple[str, ...]] = set()
 
     def _spent(self) -> bool:
         return self._deadline is not None and self._monotonic() >= self._deadline
@@ -3584,10 +3794,13 @@ class MailCapture:
         return entry
 
     def _fetch_attachment(self, mailbox_id: str, message: Mapping[str, Any],
-                          meta: Mapping[str, Any], counts: dict[str, int]) -> dict[str, Any]:
+                          meta: Mapping[str, Any], counts: dict[str, int],
+                          known: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
         """One attachment entry, read and stored on this thread: bytes captured and
-        pinned, or why not."""
-        known = self.store.captured_attachments(mailbox_id, message["id"])
+        pinned, or why not (``known``: the message's captured attachments, read here
+        when not given)."""
+        if known is None:
+            known = self.store.captured_attachments(mailbox_id, message["id"])
         return self._commit_attachment(message, self._download(mailbox_id, message, meta,
                                                                known), counts)
 
@@ -3787,25 +4000,51 @@ class MailCapture:
         """Queue the deferred OCR of a just-stored version's scanned attachments."""
         if self._ocr is None:
             return
+        # ``+``: through the message's attachments (primary key), never the text-status
+        # index (every attachment awaiting OCR in the store, ~12k on the live store).
         for row in self.store.db.execute(
                 "SELECT l1_handle, content_sha256, metadata FROM attachments WHERE "
-                "message_handle=? AND text_status=? AND l1_handle IS NOT NULL",
+                "message_handle=? AND +text_status=? AND l1_handle IS NOT NULL",
                 (message_handle, OCR_PENDING)).fetchall():
             self._ocr.submit(row["l1_handle"], row["content_sha256"],
                              json.loads(row["metadata"]))
+
+    def _ocr_tail(self) -> None:
+        """The OCR backlog read on after the last folder turn: until it is empty, the
+        budget is spent or :data:`OCR_TAIL_SECONDS` passed."""
+        if self._ocr is None:
+            return
+        end = time.monotonic() + OCR_TAIL_SECONDS
+        while not self._spent() and time.monotonic() < end:
+            self._drain_ocr()
+            if not self._ocr.busy():
+                with self.store.lock:
+                    self._ocr.refill(force=True)
+                if not self._ocr.busy():
+                    return
+            self._ocr.wait(1.0)
 
     def _drain_ocr(self) -> None:
         if self._ocr is not None:
             with self.store.lock:
                 if self._ocr.drain():
                     self._check_backlog()
+                self._ocr.refill()
 
     def _repair_degraded(self, mailbox_id: str, folder_id: str,
                          counts: dict[str, int]) -> None:
         """Retry bodies and attachments a non-transient failure left out, for current
         versions of this folder (bounded per round). A read that now returns another
-        changeKey is left to the next delta round, which reports the change."""
-        for row in self.store.degraded(mailbox_id, folder_id, REPAIRS_PER_ROUND):
+        changeKey is left to the next delta round, which reports the change.
+
+        While the OCR backlog is at its bound an attachment it deferred is not retried
+        (it would be deferred again): every round of a history backfill ends here, and
+        the live store's 118k deferred PDFs made each round re-read the same 100
+        versions' attachments under the store lock for nothing (2026-11-03)."""
+        self._check_backlog()
+        retry_deferred = not self._backlog_full
+        for row in self.store.degraded(mailbox_id, folder_id, REPAIRS_PER_ROUND,
+                                       deferred=retry_deferred):
             if self._spent():
                 break   # the rest is retried in a later round
             handle = row["l1_handle"]
@@ -3835,13 +4074,17 @@ class MailCapture:
                 self.store.add_attachments(handle, entries, listed)
                 self._settle_new(counts)
                 counts["attachment_lists_recovered"] += listed not in _TRUNCATED_STATES
+            known = None
             for item in self.store.db.execute(
                     "SELECT * FROM attachments WHERE message_handle=? AND "
                     "(content_status IN ('unavailable', ?) OR content_status LIKE ?)",
-                    (handle, ATTACHMENT_DEFERRED, _MISMATCH)).fetchall():
+                    (handle, ATTACHMENT_DEFERRED if retry_deferred else "unavailable",
+                     _MISMATCH)).fetchall():
                 meta = json.loads(item["metadata"])
+                if known is None:
+                    known = self.store.captured_attachments(mailbox_id, message["id"])
                 try:
-                    entry = self._fetch_attachment(mailbox_id, message, meta, counts)
+                    entry = self._fetch_attachment(mailbox_id, message, meta, counts, known)
                 except NotVisible:
                     break
                 if entry["content_status"] not in ("unavailable", ATTACHMENT_DEFERRED) \
@@ -4015,8 +4258,16 @@ class MailCapture:
                             counts["absent_after_resync"] += store.reconcile_round(
                                 mailbox_id, folder_id, done["round_started_at"],
                                 done["received_since"])
-                        self._repair_degraded(mailbox_id, folder_id, counts)
-                        self._reextract(mailbox_id, folder_id, counts)
+                        if (mailbox_id, folder_id) not in self._repaired:
+                            recovered = sum(counts[k] for k in _RECOVERED)
+                            self._repair_degraded(mailbox_id, folder_id, counts)
+                            if sum(counts[k] for k in _RECOVERED) == recovered:
+                                # Nothing recovered: not again this run (a retry that
+                                # recovers goes on at the folder's next turn).
+                                self._repaired.add((mailbox_id, folder_id))
+                        if (mailbox_id, folder_id, "text") not in self._repaired:
+                            self._repaired.add((mailbox_id, folder_id, "text"))
+                            self._reextract(mailbox_id, folder_id, counts)
                         if self.history == "all" and done["backfill_status"] != "complete":
                             # The round is current: its deltaLink is kept, then the mail
                             # older than its window is read, newest first (_backfill).
@@ -4041,7 +4292,7 @@ class MailCapture:
                                               rounds_complete=done["rounds_complete"] + 1)
                             return {**result, "status": "incomplete", "complete": False,
                                     "reason": "attachment_lists_truncated"}
-                        if store.deferred_attachments(mailbox_id, folder_id):
+                        if store.has_deferred_attachments(mailbox_id, folder_id):
                             # PDFs not read while the OCR backlog was at its bound: read
                             # by a later round; the folder is not complete until then.
                             store.save_folder(mailbox_id, folder_key, next_url=None,
@@ -4489,12 +4740,14 @@ class MailCapture:
                      for folder in folders]
             self._defer_all = scope.ocr == "deferred"
             self._check_backlog(now=True)
+            # Before the lanes share the store lock: which folders hold a deferred
+            # attachment (``has_deferred_attachments`` at each folder round's end).
+            self.store.load_deferred_folders()
+            self._repaired = set()
             if self.ocr_workers and self._ocr is None and _ocr_engine():
                 self._ocr = _OcrQueue(self.store, self.ocr_workers, self._spent,
                                       processes=self.extract_workers > 0)
-                for row in self.store.text_unread(None, None, OCR_BACKLOG_PER_RUN):
-                    self._ocr.submit(row["l1_handle"], row["content_sha256"],
-                                     json.loads(row["metadata"]))
+                self._ocr.refill(force=True)
             self._priority = (MailPriority(self.store, scope, opened,
                                            disabled=self.disabled_mailboxes)
                               if scope.prioritized else None)
@@ -4504,6 +4757,7 @@ class MailCapture:
             try:
                 done = self._turns(schedule_units(
                     units, lambda unit: folder_standing(real.folder_state(*unit))))
+                self._ocr_tail()
             finally:
                 self.store = real
                 ocr = self._close_pools()

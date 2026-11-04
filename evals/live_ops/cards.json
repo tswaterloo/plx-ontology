@@ -1,6 +1,6 @@
 {
  "format": "plx-live-ops-cards/v1",
- "note": "Questions as an executive types them, each with 1-2 messy rephrasings (`messy`, asked as paraphrases) (short, messy, no use-case name). Each card names a family of evals/live_ops_keys.py, which picks the records it asks about and computes the key from the system of record on every run (scripts/eval_live_ops.py keys). A card asks about `instances` records; {slot} is the record's identifier. `facts` keeps only those facts of the family (default: all). Never an expected value here: keys are computed, stored outside the repository, and split dev / held out by evals.partition groups.",
+ "note": "Questions as an executive types them, each with 1-2 messy rephrasings (`messy`, asked as paraphrases) (short, messy, no use-case name). Each card names a family of evals/live_ops_keys.py, which picks the records it asks about and computes the key from the system of record on every run (scripts/eval_live_ops.py keys). A card asks about `instances` records; {slot} is the record's identifier. `facts` keeps only those facts of the family (default: all). Never an expected value here: keys are computed, stored outside the repository, and split dev / held out by evals.partition groups. Cards with \"suite\": \"ceo\" are the CEO suite (evals/live_ops_ceo.py and harder phrasings of core families): split on their own after the core (scripts/eval_live_ops.split), run alone with --suite ceo.",
  "cards": [
   {
    "id": "LO-01",
@@ -356,6 +356,218 @@
    "messy": [
     "{task} status/owner?"
    ]
+  },
+  {
+   "id": "CEO-01",
+   "family": "po_first_mail",
+   "instances": 6,
+   "question": "how do we know about {po}? show me the original email",
+   "messy": [
+    "wheres the first email on {po}",
+    "what email did {po} start from"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-02",
+   "family": "po_first_mail",
+   "instances": 4,
+   "question": "which email is {po} from? i want the source behind it",
+   "messy": [
+    "source email for {po}?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-03",
+   "family": "po_vendor_confirmed",
+   "instances": 6,
+   "question": "did the vendor confirm {po}? when",
+   "messy": [
+    "{po} confirmed by the supplier yet?",
+    "did we get an order confirmation on {po}"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-04",
+   "family": "po_no_vendor_mail",
+   "instances": 3,
+   "question": "has the supplier gotten back to us at all on {po}? any confirmation",
+   "messy": [
+    "{po} - vendor ever confirm?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-05",
+   "family": "customer_margin_why",
+   "instances": 2,
+   "question": "how profitable is {customer} for us and whats driving the cost",
+   "messy": [
+    "{customer} margin + biggest cost item?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-06",
+   "family": "late_po_next_step",
+   "instances": 6,
+   "question": "{po} is late - what should we do next and who do we chase? dont send anything, just tell me",
+   "messy": [
+    "next step on late {po}? who to call"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-07",
+   "family": "late_po_vendor_story",
+   "instances": 5,
+   "question": "{po}: who is the vendor, how late is it, and what did they last email us",
+   "messy": [
+    "give me the full story on {po} - vendor, due date, last email"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-08",
+   "family": "lot_expiry_file",
+   "instances": 5,
+   "question": "lot {lot} - when does it expire and where is its file on sharepoint",
+   "messy": [
+    "{lot} expiry + the doc?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-09",
+   "family": "sage_same_name",
+   "instances": 5,
+   "question": "which sage account is {customer}?",
+   "messy": [
+    "{customer} in sage - account #?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-10",
+   "family": "no_such_so",
+   "instances": 3,
+   "question": "when did {so} ship?",
+   "messy": [
+    "{so} status?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-11",
+   "family": "no_such_po",
+   "instances": 2,
+   "question": "wheres {po} at, is it lat?",
+   "messy": [
+    "{po} stauts"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-12",
+   "family": "vendor_nothing_late",
+   "instances": 5,
+   "question": "anything late from {vendor}?",
+   "messy": [
+    "{vendor} - any POs overdue?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-13",
+   "family": "bc_receipts_window",
+   "instances": 2,
+   "question": "how many purchase receipts did we post in BC in the last {days} days?",
+   "messy": [
+    "# BC receipts last {days} days?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-14",
+   "family": "bc_invoiced_quarter",
+   "instances": 4,
+   "question": "how much have we invoiced {customer} this quarter in BC?",
+   "messy": [
+    "{customer} BC invoices this qtr?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-15",
+   "family": "so_late_materials",
+   "instances": 3,
+   "question": "which POs are making customer order {so} late?",
+   "messy": [
+    "is {so} waiting on any late materials"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-16",
+   "family": "po_late",
+   "instances": 4,
+   "question": "is {po} runnin late or wat",
+   "messy": [
+    "{po} behind?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-17",
+   "family": "open_ar",
+   "instances": 4,
+   "question": "how much does {customer} owe us rn",
+   "messy": [
+    "{customer} owes us how much?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-18",
+   "family": "lot_expiry",
+   "instances": 3,
+   "question": "lot {lot} - when does it go bad",
+   "messy": [
+    "{lot} exp?"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-19",
+   "family": "batch_on_hold",
+   "instances": 3,
+   "question": "batch {batch} stuck in qc?",
+   "messy": [
+    "{batch} on hold or wat"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-20",
+   "family": "item_supplier_price",
+   "instances": 3,
+   "question": "wat did we pay last for {item} and who from",
+   "messy": [
+    "{item} last cost + supplier"
+   ],
+   "suite": "ceo"
+  },
+  {
+   "id": "CEO-21",
+   "family": "sage_order_shipped",
+   "instances": 3,
+   "question": "did {so} go out yet - ship date",
+   "messy": [
+    "{so} shipped when"
+   ],
+   "suite": "ceo"
   }
  ]
 }

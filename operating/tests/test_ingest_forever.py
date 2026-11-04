@@ -922,6 +922,74 @@ class ConcurrentIngestTest(unittest.TestCase):
                 self.assertEqual((done["reason"], done["runs"]), ("done", dict.fromkeys(names, 1)))
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "process priorities: Linux")
+class BuildPriorityTest(unittest.TestCase):
+    """Gen 8: SharePoint and mail captures took 420% and 90% CPU at the build workers'
+    own nice (load 46-51 on 16 CPUs). While a build runs, a capture child running when it
+    starts and one started during it run at nice 19; the build (the host's process, whose
+    workers it forks) keeps the host's priority, and a capture after the build starts at
+    the host's again."""
+
+    setUp = IngestModeTest.setUp
+
+    def test_captures_run_below_the_build(self) -> None:
+        host_nice = os.getpriority(os.PRIO_PROCESS, 0)
+        table = fake_table(self.script, "slow", "fast")
+        pids: dict[str, int] = {}
+        seen: dict[str, int] = {}
+
+        class Children:
+            def add(self, pid, name):
+                pids[name] = pid
+                seen[name + "@start"] = os.getpriority(os.PRIO_PROCESS, pid)
+
+            def remove(self, pid):
+                pass
+
+        refreshes: list[dict] = []
+
+        def refresh(batch, reason, exclusion):
+            if not refreshes:   # the first build: "slow" is still running
+                seen["slow@build"] = os.getpriority(os.PRIO_PROCESS, pids["slow"])
+                seen["build"] = os.getpriority(os.PRIO_PROCESS, 0)
+                seen["building"] = forever.PRIORITY.building()
+                started = forever.PRIORITY.building() and subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(5)"],
+                    start_new_session=True)
+                try:
+                    forever.PRIORITY.started(started.pid)
+                    seen["during@start"] = os.getpriority(os.PRIO_PROCESS, started.pid)
+                finally:
+                    forever.PRIORITY.ended(started.pid)
+                    started.kill()
+                    started.wait()
+                (self.state / "release").touch()
+            refreshes.append(dict(batch))
+
+        sections = {"slow": {"mode": "slow", "min_interval_seconds": 7200},
+                    "fast": {"min_interval_seconds": 7200}}
+        forever.Continuous(
+            table, sections, self.state, self.env,
+            grace=1, parallel=2, refresh=refresh, children=Children(),
+            should_stop=lambda: "done" if len(refreshes) >= 2 else None).run()
+        self.assertFalse(forever.PRIORITY.building())
+        after = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"],
+                                 start_new_session=True)
+        try:
+            forever.PRIORITY.started(after.pid)
+            seen["after@start"] = os.getpriority(os.PRIO_PROCESS, after.pid)
+        finally:
+            forever.PRIORITY.ended(after.pid)
+            after.kill()
+            after.wait()
+        self.assertEqual(seen, {
+            "slow@start": host_nice, "fast@start": host_nice, "slow@build": 19,
+            "build": host_nice, "building": True, "during@start": 19,
+            "after@start": host_nice})
+        with mock.patch.object(forever.sys, "platform", "darwin"):
+            self.assertFalse(forever.lower(os.getpid()))   # elsewhere: nothing changes
+
+
 class BuildExclusionTest(unittest.TestCase):
     """Live 2026-10-27, repeated: under ``serve`` the Portal mirror capture wrote while a
     build held its read snapshot, so its WAL could not be checkpointed and grew 4-6 GB

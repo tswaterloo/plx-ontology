@@ -1570,7 +1570,9 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
          margin_values: Callable[[Sequence[str]], Mapping[str, Sequence[Mapping[str, Any]]]]
          | None = None,
          landed_values: Callable[[Sequence[str], "Graph"], Mapping[str, Sequence[Mapping[str, Any]]]]
-         | None = None, first: Container[str] = ()) -> dict[str, Any]:
+         | None = None, first: Container[str] = (),
+         call_many: Callable[[str, Sequence[Mapping[str, Any]]], Sequence[Any]] | None = None
+         ) -> dict[str, Any]:
     """Every late PO's impact over the projection store (``st``: a
     ``proactive_engine._Store``): links set-based, the lateness verdict asked of
     ``plx.process`` (``call``) only for POs whose recorded links reach a consuming assembly
@@ -1588,7 +1590,12 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
     (``investigate_landed_values``; None: only the recorded unit cost is used).
     ``first``: purchase orders (any record of a PO's twins) whose verdict is asked before
     the others (the late and unconfirmed ones another rule found), so the ``bound`` is
-    spent on them first; only the order of the asking, never a verdict."""
+    spent on them first; only the order of the asking, never a verdict.
+    ``call_many(tool, arguments_list)``: the same calls asked together (the engine's
+    process pool, ``operating.proactive_pool``), one answer per arguments in order; an
+    answer that is no mapping (a call the time left did not reach, or one that failed) is
+    no verdict: that PO is counted ``pos_not_checked``, never undetermined or on time.
+    ``bound`` None: every PO reaching an assembly is asked."""
     graph = Graph((e for e in _store_edges(st)
                    if visible is None or (e.frm in visible and e.to in visible)),
                   LINK_TYPES + (LINE_SELLS,) + LEAD_ROUTE_TYPES)
@@ -1639,12 +1646,25 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
         roots.sort(key=lambda root: not any(
             r in first for r in graph.cluster(PO_TWINS, root)))
     late: dict[str, Late] = {}
-    for po in roots[:bound]:
-        try:
-            late[po] = _verdict(po, call("plx.process", {"from": po,
-                                                         "process": "po_delivery_window"}))
-        except Exception:  # noqa: BLE001 - one unread verdict is undetermined, never late
-            late[po] = Late(po, "undetermined", why="process_unread")
+    asked = roots if bound is None else roots[:bound]
+    unread = failed = 0
+    if call_many is not None:
+        answers = call_many("plx.process", [{"from": po, "process": "po_delivery_window"}
+                                            for po in asked])
+        for po, answer in zip(asked, answers):
+            if isinstance(answer, Mapping):
+                late[po] = _verdict(po, answer)
+            elif getattr(answer, "error", None):
+                failed += 1   # its worker failed: not checked, never late or on time
+            else:
+                unread += 1   # not reached in time: not checked
+    else:
+        for po in asked:
+            try:
+                late[po] = _verdict(po, call("plx.process", {"from": po,
+                                                             "process": "po_delivery_window"}))
+            except Exception:  # noqa: BLE001 - one unread verdict is undetermined, never late
+                late[po] = Late(po, "undetermined", why="process_unread")
     found = assess(late, graph, required=required, order_status=statuses,
                    assembly_status=ao_statuses)
     by_reason: dict[str, int] = {}
@@ -1699,7 +1719,10 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             "late_pos_with_partial_chain": sum(1 for i in impacts if i["chain"] == "partial"),
             "late_pos_considered": len(found.considered),
             "late_pos_with_orders_at_risk": len({o.worst for o in found.at_risk}),
-            "pos_checked": len(late), "pos_not_checked": max(0, len(roots) - bound),
+            "pos_checked": len(late),
+            "pos_not_checked": len(roots) - len(asked) + unread + failed,
+            "pos_not_checked_unread": unread, "pos_not_checked_failed": failed,
+            "pos_reaching_assembly": len(roots),
             "pos_not_reaching_assembly": unconsumed,
             "lateness_undetermined": len(found.undetermined),
             # why each undetermined verdict is (the entry's gap reason), by count
@@ -1724,7 +1747,7 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             "missing_links": missing_links(stopped),
             "days_at_risk_basis": DAYS_AT_RISK_BASIS,
             "samples": [sample(o) for o in found.at_risk[:samples]],
-            "truncated": found.cut or len(roots) > bound}
+            "truncated": found.cut or len(roots) > len(asked) or bool(unread + failed)}
 
 
 def scan_margins(orders: Sequence[Order], graph: Graph,

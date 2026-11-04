@@ -757,6 +757,7 @@ class AggregateTools:
             raise ToolError("unknown_property",
                             f"{object_type} declares no property {', '.join(unknown)}"[:600],
                             "call plx.schema for the type's properties")
+        base._require_co_sourced(object_type, arguments["filters"])
         filters = base._filters_as_stored(object_type, list(arguments["filters"]))
         found_scope = base._scope(actor, base._as_known_at(arguments))
         subject = f"{object_type} matching filters"

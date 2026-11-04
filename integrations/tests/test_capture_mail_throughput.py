@@ -248,6 +248,46 @@ class EveryFolderAndHistoryTests(ThroughputCase):
         self.assertEqual([m for m, _f in self.stored()],
                          ["OLD-3", "OLD-2", "OLD-1", "OLD-7", "OLD-6", "OLD-5", "OLD-4"])
 
+    def test_a_backfill_retries_a_failed_attachment_once_per_run_never_at_every_turn(self):
+        """Live 2026-11-03: every turn of a history backfill reaches its delta's end, and
+        each one retried the folder's degraded versions under the store lock (the same
+        100 versions every turn). A run retries a folder's once; the next run again."""
+        self.graph.put(BOX_A, "NEW", "CK-1", attachments=[file_attachment("BAD")])
+        for n in range(1, 7):
+            self.graph.put(BOX_A, f"OLD-{n}", "CK-1", received=f"2025-0{n}-01T09:00:00Z")
+        failing = r"/v1\.0/users/[^/]+/messages/NEW/attachments/BAD"
+        self.graph.fail_get[failing] = 999
+        scope = CaptureScope([{"address": UPN_A, "folders": ["inbox"]}], window_days=90,
+                             internal_domains=["example-plx.com"], allowlist=SYNTHETIC,
+                             history="all")
+        run = self.capture(pages_per_turn=1, page_size=1, throttle_waits=()).run(scope)
+        tries = 999 - self.graph.fail_get[failing]
+        self.assertEqual(len(self.stored()), 7)
+        self.assertEqual(run["mailboxes"][0]["folders"][0]["counts"]["backfill_pages"], 6)
+        self.assertEqual(self.store.db.execute(
+            "SELECT content_status FROM attachments").fetchone()[0], "unavailable")
+        # Read with its message, then retried once by the run (six turns; it was seven).
+        self.assertEqual(tries, 2)
+        self.capture(pages_per_turn=1, page_size=1, throttle_waits=()).run(scope)
+        self.assertEqual(999 - self.graph.fail_get[failing], 3)   # the next run retries it
+
+    def test_a_repair_that_recovers_goes_on_at_the_folders_next_turn(self):
+        for n in (1, 2):
+            self.graph.put(BOX_A, f"NEW-{n}", "CK-1", attachments=[file_attachment(f"BAD{n}")])
+            self.graph.fail_get[rf"/v1\.0/users/[^/]+/messages/NEW-{n}/attachments/BAD{n}"] = 1
+        for n in range(1, 7):
+            self.graph.put(BOX_A, f"OLD-{n}", "CK-1", received=f"2025-0{n}-01T09:00:00Z")
+        scope = CaptureScope([{"address": UPN_A, "folders": ["inbox"]}], window_days=90,
+                             internal_domains=["example-plx.com"], allowlist=SYNTHETIC,
+                             history="all")
+        with mock.patch.object(capture_mail, "REPAIRS_PER_ROUND", 1):
+            run = self.capture(pages_per_turn=1, page_size=1, throttle_waits=()).run(scope)
+        self.assertTrue(run["complete"], run["incomplete_reasons"])
+        self.assertEqual(run["mailboxes"][0]["folders"][0]["counts"]["attachments_recovered"],
+                         2)
+        self.assertEqual({r[0] for r in self.store.db.execute(
+            "SELECT content_status FROM attachments")}, {"captured"})
+
     def test_a_failed_folder_listing_keeps_the_mailbox_incomplete(self):
         self.graph.put(BOX_A, "IN-1", "CK-1")
         self.graph.fail_get[r"/v1\.0/users/[^/]+/mailFolders"] = 99
@@ -451,6 +491,166 @@ class OcrBesideTheCaptureTests(ThroughputCase):
         later = self.capture(defer_ocr=True, ocr_workers=1).run(self.scope)
         self.assertEqual(later["ocr"]["read"], 1)
         self.assertEqual(self.texts(), [("SCAN", 1, "ocr_pending"), ("SCAN", 2, "extracted_ocr")])
+
+
+class OcrBacklogDrainTests(OcrBesideTheCaptureTests):
+    """Live 2026-11-04: four OCR threads took 2,000 scans at a run's start and no more,
+    the deferred PDFs grew to 248k while most cores idled. A run reads its whole backlog
+    a page at a time, each scan once, and goes on after its last folder turn."""
+
+    def test_a_run_reads_its_whole_ocr_backlog_each_scan_once(self):
+        for n in (1, 10, 60):
+            with self.subTest(scans=n):
+                self.store.close()
+                self.store = capture_mail.MailCaptureStore(Path(self.tmp.name) / f"s{n}",
+                                                           clock=self.clock)
+                self.graph = FolderGraph()
+                for m in range(n):
+                    self.graph.put(BOX_A, f"M-{m}", "CK-1", attachments=[
+                        file_attachment(f"SCAN-{m}", f"scan {m} ".encode() * 40)])
+                with mock.patch.object(capture_mail, "_ocr_engine", lambda: False), \
+                        mock.patch("integrations.document_understanding."
+                                   "local_ocr_available", lambda: False):   # no OCR yet
+                    first = self.capture(defer_ocr=True, ocr_workers=2).run(self.scope)
+                self.assertTrue(first["complete"], first["incomplete_reasons"])
+                read: list[str] = []
+                plain = capture_mail._OcrQueue._read
+
+                def counted(queue, digest, metadata):
+                    read.append(metadata["id"])
+                    return plain(queue, digest, metadata)
+                with mock.patch.object(capture_mail, "OCR_BACKLOG_PER_RUN", 3), \
+                        mock.patch.object(capture_mail, "OCR_REFILL_SECONDS", 0.0), \
+                        mock.patch.object(capture_mail._OcrQueue, "_read", counted):
+                    run = self.capture(defer_ocr=True, ocr_workers=2).run(self.scope)
+                self.assertEqual(run["ocr"]["read"], n)
+                self.assertEqual(sorted(read), sorted(f"SCAN-{m}" for m in range(n)))
+                self.assertEqual(self.store.db.execute(
+                    "SELECT text_status, COUNT(*) FROM attachments GROUP BY 1").fetchall()
+                    [0][:], ("extracted_ocr", n))
+
+    def test_ocr_readings_run_in_processes_at_a_lower_priority(self):
+        queue = capture_mail._Extractors(1, 30.0, nice=capture_mail.OCR_NICE)
+        try:
+            pid = queue.pids()[0]
+            queue.read(b"plain", {"name": "a.txt", "content_type": "text/plain"},
+                       defer_ocr=True, defer_all=False)   # it has started
+            own = os.getpriority(os.PRIO_PROCESS, 0)   # 19 is the lowest priority
+            self.assertEqual(os.getpriority(os.PRIO_PROCESS, pid),
+                             min(19, own + capture_mail.OCR_NICE))
+            group = Path(f"/proc/{pid}/autogroup")
+            if group.exists():   # its session's scheduling group is lowered too
+                self.assertEqual(int(group.read_text().split("nice")[1]),
+                                 capture_mail.OCR_NICE)
+        finally:
+            queue.close()
+        self.assertEqual(capture_mail.ocr_workers_for(16, 61 << 30), 14)
+        self.assertEqual(capture_mail.ocr_workers_for(16, 8 << 30), 4)   # memory bound
+        self.assertEqual(capture_mail.ocr_workers_for(2, None), 1)
+        self.assertEqual(capture_mail.ocr_workers_for(64, None), capture_mail.MAX_WORKERS)
+
+
+class DeferredFolderTests(ThroughputCase):
+    """Live 2026-11-04: every folder round's end counted its mailbox's whole deferred
+    pile (248k) under the store lock every lane waits on. The per-folder answer comes
+    from the folders known to hold one, kept by each write; it must equal the count."""
+
+    def test_whether_a_folder_holds_a_deferred_attachment_matches_the_count(self):
+        import random
+
+        store, deferred = self.store, capture_mail.ATTACHMENT_DEFERRED
+        boxes, folders = (BOX_A, BOX_B), tuple(f"F{n}" for n in range(8))
+        for box in boxes:
+            store.db.execute("INSERT INTO mailboxes VALUES (?,?,?,?,?,?,?)",
+                             (box, f"{box}@x", "[]", "[]", "{}", "t", "t"))
+        store.db.commit()
+        rng = random.Random(7)
+        current: dict[tuple[str, str], tuple[str, str]] = {}   # (box, id) -> handle, folder
+        versions = 0
+
+        def add(box, mid, folder, statuses):
+            nonlocal versions
+            versions += 1
+            handle = f"graph-mail://{box}/{mid}@CK{versions}"
+            store.add_version(
+                {"mailbox": box, "id": mid, "citation": handle, "change_key": f"CK{versions}",
+                 "content_sha256": "d"}, folder_id=folder, body_status="captured",
+                attachments=[{"id": f"A{i}", "metadata": {"id": f"A{i}"},
+                              "content_status": st} for i, st in enumerate(statuses)])
+            current[(box, mid)] = (handle, folder)
+
+        def status():
+            return deferred if rng.random() < 0.1 else "captured"
+
+        def check(step):
+            for box in boxes:
+                for folder in (*folders, "F-NONE"):
+                    self.assertEqual(store.has_deferred_attachments(box, folder),
+                                     store.deferred_attachments(box, folder) > 0,
+                                     (step, box, folder))
+        for n in range(20):   # held before the run
+            add(rng.choice(boxes), f"M{n}", rng.choice(folders), [status()])
+        for loaded in (False, True):
+            if loaded:
+                store.load_deferred_folders()
+            else:
+                store.__dict__.pop("_deferred_folders", None)
+            for step in range(300):
+                check(step)
+                op = rng.choice((0, 1, 1, 2, 3, 3, 4))
+                box, mid = rng.choice(sorted(current))
+                handle, folder = current[(box, mid)]
+                if op == 0:   # a new message, or a new version of one
+                    add(box, rng.choice((mid, f"N{step}")), rng.choice(folders),
+                        [status(), status()])
+                elif op == 1:   # moved, same changeKey
+                    to = rng.choice(folders)
+                    store.observe(handle, to)
+                    current[(box, mid)] = (handle, to)
+                elif op == 2:   # a deferred attachment read later
+                    store.fill_attachment(handle, {"id": "A0", "metadata": {"id": "A0"},
+                                                   "content_status": "unavailable"})
+                elif op == 3:   # removed, then listed again elsewhere
+                    store.remove(box, mid, folder, "deleted")
+                    to = rng.choice(folders)
+                    store.observe(handle, to)
+                    current[(box, mid)] = (handle, to)
+                elif rng.random() < 0.3:   # deferred again on a retry
+                    store.fill_attachment(handle, {"id": "A0", "metadata": {"id": "A0"},
+                                                   "content_status": deferred})
+            check("end")
+
+    def test_a_folder_round_end_never_counts_the_mailbox_deferred_pile(self):
+        """The check reads one folder through its index, not the mailbox's pile."""
+        store, deferred = self.store, capture_mail.ATTACHMENT_DEFERRED
+        store.db.execute("INSERT INTO mailboxes VALUES (?,?,?,?,?,?,?)",
+                         (BOX_A, "a@x", "[]", "[]", "{}", "t", "t"))
+        with store.db:
+            for n in range(3000):
+                handle = f"graph-mail://{BOX_A}/P{n}@CK"
+                store.db.execute(
+                    "INSERT INTO messages (l1_handle, mailbox_id, message_id, change_key, "
+                    "folder_id, record, digest, body_status, recorded_at, last_seen_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (handle, BOX_A, f"P{n}", "CK", "PILE" if n else "SMALL", "{}", "d",
+                     "captured", "t", "t"))
+                store.db.execute(
+                    "INSERT INTO attachments (message_handle, attachment_id, mailbox_id, "
+                    "metadata, content_status, recorded_at) VALUES (?,?,?,?,?,?)",
+                    (handle, "A", BOX_A, "{}", deferred, "t"))
+        store.load_deferred_folders()
+        steps: list[int] = []
+        store.db.set_progress_handler(lambda: steps.append(1), 1000)
+        try:
+            self.assertTrue(store.has_deferred_attachments(BOX_A, "SMALL"))
+            self.assertFalse(store.has_deferred_attachments(BOX_A, "EMPTY"))
+        finally:
+            store.db.set_progress_handler(None, 0)
+        before = len(steps)
+        store.db.set_progress_handler(lambda: steps.append(1), 1000)
+        store.deferred_attachments(BOX_A, "SMALL")   # the count: the whole pile
+        store.db.set_progress_handler(None, 0)
+        self.assertLess(before * 20, len(steps) - before, (before, len(steps)))
 
 
 def lane_scope(upns, **kwargs) -> CaptureScope:
@@ -724,16 +924,69 @@ class LanesAndPriorityTests(ThroughputCase):
         for m in range(6):
             self.graph.put(BOX_A, f"NEW-A-{m}", "CK-1")
             self.graph.put(BOX_B, f"NEW-B-{m}", "CK-1")
+        pages: list[int] = []
+        page = capture_mail.MailCaptureStore.text_unread_page
+
+        def paged(store, mailbox_id, folder_id, limit, after=None):
+            if mailbox_id is None:
+                pages.append(limit)
+            return page(store, mailbox_id, folder_id, limit, after)
         with mock.patch("integrations.document_understanding.local_ocr_available",
                         lambda: True), mock.patch.object(capture_mail, "_ocr_engine",
-                                                         lambda: True):
+                                                         lambda: True), \
+                mock.patch.object(capture_mail.MailCaptureStore, "text_unread_page", paged):
             run = self.capture(lanes=2, workers=2, pages_per_turn=1, ocr_workers=1,
                                defer_ocr=True).run(every_folder_scope())
         held = {m for m, _f in self.stored()}
         self.assertTrue({f"NEW-A-{m}" for m in range(6)} | {f"NEW-B-{m}" for m in range(6)}
                         <= held)
-        # The run queued a bounded share of the backlog, never all of it.
-        self.assertLessEqual(run["ocr"].get("queued", 0), capture_mail.OCR_BACKLOG_PER_RUN)
+        # The backlog is taken a bounded page at a time (each under the store lock),
+        # never all of it at once; each scan is queued once.
+        self.assertTrue(pages)
+        self.assertLessEqual(max(pages), capture_mail.OCR_BACKLOG_PER_RUN)
+        self.assertLessEqual(run["ocr"].get("queued", 0), backlog)
+
+    def test_each_stored_message_reads_the_store_through_its_own_keys(self):
+        """Live 2026-11-03 (2.1M messages): the read of a new message's captured
+        attachments walked the status index's every captured attachment of its mailbox
+        (70-150 ms each, under the store lock every lane waits on: about 36k messages an
+        hour), its OCR queueing every attachment awaiting OCR, and a large original's
+        settle every text version. Each reads its own rows by key."""
+        db = self.store.db
+        with db:
+            db.execute("INSERT INTO mailboxes VALUES (?,?,?,?,?,?,?)",
+                       (BOX_A, UPN_A, "[]", "[]", "{}", "t", "t"))
+            for n in range(300):
+                handle = f"graph-mail://{BOX_A}/M-{n}@CK"
+                db.execute("INSERT INTO messages (l1_handle, mailbox_id, message_id, "
+                           "change_key, folder_id, record, digest, body_status, recorded_at, "
+                           "last_seen_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                           (handle, BOX_A, f"M-{n}", "CK", "F", "{}", "d", "captured", "t",
+                            "t"))
+                db.execute("INSERT INTO attachments (message_handle, attachment_id, l1_handle, "
+                           "mailbox_id, metadata, content_sha256, content_status, recorded_at, "
+                           "text_status) VALUES (?,?,?,?,?,?,?,?,?)",
+                           (handle, "A", handle + "#a", BOX_A, '{"size": 1}', "0" * 64,
+                            "captured", "t", "ocr_pending" if n % 2 else "extracted"))
+        seen: list[str] = []
+        query = db.execute
+
+        def explain(sql, params=()):
+            if sql.lstrip().upper().startswith(("SELECT", "WITH")):
+                seen.extend(r[3] for r in query("EXPLAIN QUERY PLAN " + sql, params))
+            return query(sql, params)
+        capture = self.capture()
+        capture._ocr = mock.Mock()
+        with mock.patch.object(self.store, "db", mock.Mock(execute=explain)):
+            held = self.store.captured_attachments(BOX_A, "M-7")
+            known = self.store.known_attachment(BOX_A, "M-7", "A", {"size": 1})
+            capture._queue_ocr_of(f"graph-mail://{BOX_A}/M-7@CK")
+            self.store._referenced_as_text("0" * 64)
+        self.assertEqual((len(held), known["attachment_id"]), (1, "A"))
+        self.assertEqual(capture._ocr.submit.call_count, 1)
+        self.assertEqual([p for p in seen if p.startswith("SCAN")
+                          or "attachments_by_status" in p or "attachments_by_text_status" in p],
+                         [], seen)
 
     def test_priority_mailboxes_recent_mail_first_older_history_and_bulk_folders_last(self):
         a, upn_a = self.add_mailbox(1)

@@ -15,9 +15,18 @@ equal a serial cold build's: one content digest.
 
 Tasks. A ``same_record`` link unit compares the stored values of its two ends while it
 projects (``Projector._conflicts`` reads them from the store being written), so it is one
-task with the binding units of both ends; a sharded binding's shard units are one task
-with the binding's unit. Every other unit is a task alone. A task's measured seconds are
-kept (``units.json`` ``parallel.seconds``) so the next build starts the longest first.
+task with the binding units of both ends. The bindings over one derived relation of a
+source (``DERIVED``: read from captured documents, the costly read of a build: on the
+live gen 8 build five such tasks ran 8 h each over the same input) are one task, which
+reads the relation once (:class:`_Spill`: the first binding's pass writes its records to
+a working file the later bindings read back), with their shard units. A sharded
+binding's shard units (``project_incremental.isolated``: each object's rows are a function
+of its own records alone) are cut into ``pieces`` tasks of consecutive shards, the first
+with the binding's unit (its gaps): each reads the relation and writes its shards' objects,
+so a binding of a thousand shards (``gl_je_detail``; ``graph_mail.messages`` was one 3.5 h
+task) runs on several workers. Every other unit is a task alone. A task is named by its
+first unit; its measured seconds are kept (``units.json`` ``parallel.seconds``) so the
+next build starts the longest first.
 
 Sources. A worker opens each capture source again from how the build opened it
 (``ontology.project.Reopenable``) and reads it only when its ``watermark`` equals the one the
@@ -25,12 +34,21 @@ build pinned (``project_incremental._pin``): equal marks mean equal bytes, so th
 projects the records the build fingerprinted. A source that cannot be opened again (one
 without ``opened_with``, a class a worker cannot import, arguments that do not pickle) or
 whose watermark is unknown makes the build serial (:class:`ParallelUnavailable`), as does a
-worker whose watermark differs or a report entry outside every unit; nothing is guessed.
+worker whose watermark differs; nothing is guessed. A report entry outside every unit is
+left out of the report and counted (``Result.unattributed``), as in every build mode.
 
-Readings and fields kept between builds (``integrations.captured_text.KeptReadings``,
+Readings, container member readings and fields kept between builds
+(``integrations.captured_text.KeptReadings``, ``integrations.kept_members``,
 ``ontology.document_fields.KeptFields``) keep one writer: a worker reads them through a
 read-only connection of its own and hands what it hit and what it read anew back to the
 build, which records it.
+
+Merge. A part is merged whole (its rows, links and event objects) as soon as its task
+ends, and deleted: its links may name objects of a part not merged yet, so the
+generation's foreign keys are not enforced while parts are merged; the commit's own
+``StoreBuilder.check`` (``PRAGMA foreign_key_check`` over every table) refuses a
+generation with a dangling one. The secondary indexes are built once at the end, by
+SQLite's multi-threaded sorter.
 
 Workers: ``PLX_BUILD_WORKERS`` (1 = serial), else up to ``MAX_WORKERS`` (one CPU left to
 the build's own merge and one to the host). Started with ``spawn``: a worker never
@@ -56,9 +74,12 @@ import shutil
 import sqlite3
 import sys
 import time
+import zlib
 from typing import Any, Callable, Iterator, Mapping, Sequence
+from collections.abc import Mapping as _MappingABC
 
-from ontology.project import ProjectionError, Projector, binding_unit
+from ontology.project import MEMBER_RELATION, ProjectionError, Projector, binding_unit
+from ontology.schema import DOCUMENT_FIELDS_RELATION
 from ontology import store_ddl
 from ontology.store import StoreBuilder, canonical, main_not_imported
 
@@ -68,7 +89,13 @@ MAX_WORKERS = 12
 # workers costs more than they save.
 MIN_CAPTURE_BYTES = 64 * 1024 * 1024
 # The memos a projection reads captured files through, whose kept store a worker reads.
-_KEPT = (("integrations.captured_text", "_CACHE"), ("ontology.document_fields", "_FIELDS"))
+_KEPT = (("integrations.captured_text", "_CACHE"), ("integrations.captured_text", "_MEMBER_READINGS"),
+         ("ontology.document_fields", "_FIELDS"))
+# Relations derived from captured documents (read anew on every pass over them): the
+# bindings over one of a source are one task, which reads it once (module docstring).
+DERIVED = frozenset({DOCUMENT_FIELDS_RELATION, MEMBER_RELATION})
+# Records a spill (:class:`_Spill`) compresses together.
+SPILL_BATCH = 256
 
 
 class ParallelUnavailable(Exception):
@@ -91,8 +118,10 @@ def workers(requested: int | None = None) -> int:
     return requested
 
 
-def tasks(the_plan: Any) -> list[tuple[str, ...]]:
-    """The plan's units cut into tasks (module docstring), each sorted, in unit order."""
+def tasks(the_plan: Any, pieces: int = 1) -> list[tuple[str, ...]]:
+    """The plan's units cut into tasks (module docstring), each sorted, in unit order: a
+    sharded binding's shards in at most ``pieces`` tasks, unless its unit is joined to
+    others (then its shards are with it)."""
     parent = {unit: unit for unit in the_plan.units}
 
     def find(unit: str) -> str:
@@ -105,16 +134,53 @@ def tasks(the_plan: Any) -> list[tuple[str, ...]]:
         if a in parent and b in parent:
             parent[find(a)] = find(b)
 
-    for unit, row in the_plan.rows.items():
+    shards: dict[str, list[tuple[int, int, str]]] = {}
+    for unit, row in sorted(the_plan.rows.items()):
         if row[0] == "links" and row[4] == "same_record":
             join(unit, binding_unit(row[2]))
             join(unit, binding_unit(row[3]))
         elif row[0] == "shard":
-            join(unit, binding_unit(row[1]))
+            shards.setdefault(row[1], []).append((row[3], row[2], unit))
+    derived: dict[tuple[str, str], list[str]] = {}
+    for bid, (_, b) in sorted(the_plan.bindings.items()):
+        if b.get("relation") in DERIVED and binding_unit(bid) in parent:
+            derived.setdefault((b["source"], b["relation"]), []).append(binding_unit(bid))
+    for units in derived.values():
+        for unit in units[1:]:
+            join(unit, units[0])
+    sizes: dict[str, int] = {}
+    for unit in parent:
+        sizes[find(unit)] = sizes.get(find(unit), 0) + 1
+    for bid, cut in sorted(shards.items()):
+        own = binding_unit(bid)
+        alone = sizes[find(own)] == 1
+        held = {0: own}   # piece -> a unit of its task (the first: the binding's own)
+        for k, count, unit in cut:
+            piece = k * max(1, min(pieces, count)) // count if alone else 0
+            join(unit, held.setdefault(piece, unit))
     groups: dict[str, list[str]] = {}
     for unit in sorted(the_plan.units):
         groups.setdefault(find(unit), []).append(unit)
     return sorted(tuple(group) for group in groups.values())
+
+
+def pieces(count: int) -> int:
+    """The tasks a sharded binding is cut into for ``count`` workers: half of them (each
+    task reads the binding's whole relation to pick its shards' records, so more pieces
+    read it more often), at least two."""
+    return max(2, (count + 1) // 2)
+
+
+def _spilled(the_plan: Any, scope: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    """The derived relations (``DERIVED``) that more than one binding of ``scope`` reads:
+    a task's worker reads each once (:class:`_Spill`)."""
+    readers: dict[tuple[str, str], int] = {}
+    for bid in scope:
+        b = the_plan.bindings[bid][1]
+        if b.get("relation") in DERIVED:
+            key = (b["source"], b["relation"])
+            readers[key] = readers.get(key, 0) + 1
+    return tuple(sorted(key for key, n in readers.items() if n > 1))
 
 
 def _kept_memo(module: str, memo: str) -> Any:
@@ -181,6 +247,7 @@ class Result:
     workers: int = 0
     merge_seconds: float = 0.0
     part_bytes: int = 0
+    unattributed: int = 0   # report entries outside every unit (left out, counted)
 
 
 # --------------------------------------------------------------------------- worker
@@ -262,7 +329,9 @@ def _kept_views(kept: Sequence[tuple[Any, ...]]) -> list[_ChildKept]:
     backing."""
     views = []
     for module, memo, kind, path, code in kept:
-        child = _ChildKept(kind, path, code)
+        # a store with a view of its own (``integrations.kept_members``), else the plain one
+        child = (kind.child_view(path, code) if hasattr(kind, "child_view")
+                 else _ChildKept(kind, path, code))
         _kept_memo(module, memo).backing = child
         views.append(child)
     return views
@@ -280,14 +349,131 @@ def _kept_stores() -> list[tuple[Any, ...]]:
     return kept
 
 
-def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...]) -> dict[str, Any]:
+class _Spill:
+    """A derived relation's records read once by a task (``DERIVED``): the first pass
+    reads them from the source and writes each, pickled as read, to a working file
+    (``path``, 0600, batches of ``SPILL_BATCH`` compressed); a later pass reads that
+    file back, record for record what the source yields again in its pinned snapshot.
+    A pass that did not reach the end (or a record that does not pickle) leaves no file:
+    the next pass reads the source again. Memory: one batch."""
+
+    def __init__(self, inner: Any, path: Path) -> None:
+        self.inner, self.path = inner, path
+        self.complete = self.writing = False
+        self.bytes = 0
+
+    def __iter__(self) -> Iterator[Any]:
+        if self.complete:
+            return self._read()
+        if self.writing:   # a pass while the first is still reading: the source's own
+            return iter(self.inner)
+        return self._write()
+
+    def _read(self) -> Iterator[Any]:
+        with open(self.path, "rb") as handle:
+            while True:
+                head = handle.read(8)
+                if not head:
+                    return
+                size = int.from_bytes(head, "big")
+                block = zlib.decompress(handle.read(size))
+                for rec in pickle.loads(block):
+                    yield pickle.loads(rec)
+
+    def _write(self) -> Iterator[Any]:
+        fd = os.open(str(self.path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        handle: Any = os.fdopen(fd, "wb")
+        batch: list[bytes] = []
+
+        def flush() -> None:
+            block = zlib.compress(pickle.dumps(batch, protocol=pickle.HIGHEST_PROTOCOL), 1)
+            handle.write(len(block).to_bytes(8, "big"))
+            handle.write(block)
+            batch.clear()
+        finished = False
+        self.writing = True
+        try:
+            for rec in self.inner:
+                if handle is not None:
+                    try:
+                        batch.append(pickle.dumps(rec, protocol=pickle.HIGHEST_PROTOCOL))
+                    except Exception:  # noqa: BLE001 - not spilled: read again next pass
+                        handle.close()
+                        handle = None
+                    else:
+                        if len(batch) >= SPILL_BATCH:
+                            flush()
+                yield rec
+            if handle is not None:
+                if batch:
+                    flush()
+                handle.close()
+                finished = True
+        finally:
+            self.writing = False
+            if handle is not None and not handle.closed:
+                handle.close()
+            if finished:
+                self.complete = True
+                self.bytes = self.path.stat().st_size
+            else:
+                self.path.unlink(missing_ok=True)
+
+
+class _Spilled(_MappingABC):
+    """A pinned source's records, its ``relations`` each read once (:class:`_Spill`)."""
+
+    def __init__(self, records: Mapping[str, Any], relations: Sequence[str],
+                 directory: Path) -> None:
+        self._records = records
+        self.spills: dict[str, _Spill] = {}
+        for relation in relations:
+            if relation in records:
+                self.spills[relation] = _Spill(
+                    records[relation],
+                    directory / f"spill-{os.getpid()}-{secrets.token_hex(6)}.bin")
+
+    def __getitem__(self, relation: str) -> Any:
+        if relation in self.spills:
+            return self.spills[relation]
+        return self._records[relation]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._records)
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+
+def _with_spills(opened: Mapping[str, Any], spill: Sequence[tuple[str, str]]
+                 ) -> tuple[dict[str, Any], list[_Spill]]:
+    """``opened`` (this worker's pinned sources) with the relations of ``spill`` (source,
+    relation) each read once by the task."""
+    from ontology.project_incremental import _Pinned
+
+    wanted: dict[str, list[str]] = {}
+    for name, relation in spill:
+        if name in opened:
+            wanted.setdefault(name, []).append(relation)
+    out, spills = dict(opened), []
+    for name, relations in wanted.items():
+        pinned = opened[name]
+        records = _Spilled(pinned._records, relations, Path(_STATE["dir"]))
+        out[name] = _Pinned(pinned._inner, records)
+        spills.extend(records.spills.values())
+    return out, spills
+
+
+def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...],
+         spill: tuple[tuple[str, str], ...] = ()) -> dict[str, Any]:
     if "unavailable" in _STATE:
         return {"index": index, "unavailable": _STATE["unavailable"]}
     started = time.monotonic()
     part = Path(_STATE["dir"]) / f"part-{index:05d}.sqlite"
     builder = StoreBuilder(part, foreign_keys=False)
+    sources, spills = _with_spills(_STATE["opened"], spill)
     try:
-        projector = Projector(_STATE["schema"], _STATE["opened"],
+        projector = Projector(_STATE["schema"], sources,
                               normalizer=_STATE["normalizer"],
                               as_known_at=_STATE["as_known_at"],
                               batch_size=_STATE["batch_size"], scratch_dir=_STATE["dir"],
@@ -302,6 +488,10 @@ def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...]) -> dict[str
     except BaseException:
         builder.abort()
         raise
+    finally:
+        for spilled in spills:
+            spilled.path.unlink(missing_ok=True)
+    peak[0] += max((spilled.bytes for spilled in spills), default=0)
     report = projector.report
     return {"index": index, "part": str(path), "unattributed": report.unattributed,
             "parts": {unit: report.parts[unit].as_dict() for unit in units
@@ -312,8 +502,8 @@ def _run(index: int, units: tuple[str, ...], scope: tuple[str, ...]) -> dict[str
 
 # --------------------------------------------------------------------------- build side
 
-def merge_part(builder: StoreBuilder, part: Path, batch: int, *, links: bool = False
-               ) -> None:
+def merge_part(builder: StoreBuilder, part: Path, batch: int, *,
+               links: bool | None = False) -> None:
     """Copy the rows of a part into ``builder``'s generation as stored, in a transaction
     of their own (the generation's connection is outside one: :func:`project`), by SQL
     over the part attached: objects, removals, identifiers and events as they
@@ -323,8 +513,8 @@ def merge_part(builder: StoreBuilder, part: Path, batch: int, *, links: bool = F
     so a later ``add`` finds them) and every id naming one mapped. The view rows
     (``object_values``, ``links``) are the part's: the content digest is of them.
     ``links`` False: every row but the links and event objects; True: those (they may
-    name objects of any part, so they are merged once every part's objects are: a
-    foreign key is never left pending). ``batch`` is unused (kept for callers)."""
+    name objects of any part: merged before those, with the generation's foreign keys
+    not enforced); None: every row. ``batch`` is unused (kept for callers)."""
     main = builder.connection
     main.execute("ATTACH DATABASE ? AS part", (str(part),))
     try:
@@ -353,12 +543,14 @@ def _copy(main: sqlite3.Connection, table: str, names: Sequence[str],
                  f"FROM part.{table} {alias}{joins}")
 
 
-def _merge_rows(builder: StoreBuilder, main: sqlite3.Connection, links: bool) -> None:
+def _merge_rows(builder: StoreBuilder, main: sqlite3.Connection, links: bool | None
+                ) -> None:
     D = store_ddl
-    if links:
+    if links is not False:
         _copy(main, "event_objects", _columns(main, "event_objects"))
         _merge_links(main)
-        return
+        if links:
+            return
     for table in ("objects", "object_removals", "identifiers", "events"):
         _copy(main, table, _columns(main, table))
     ver = main.execute("SELECT COALESCE(MAX(rowid), 0) FROM main.object_versions").fetchone()[0]
@@ -455,9 +647,10 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
     work.mkdir(mode=0o700)
     # A worker's directory is its build's: part and working files (captured rows, 0600).
     payload = pickle.dumps({**pickle.loads(payload), "dir": str(work)})
-    order = tasks(the_plan)
+    order = tasks(the_plan, pieces(count))
     scopes = [tuple(sorted(set().union(*(the_plan.units[u] for u in task))))
               for task in order]
+    spills = [_spilled(the_plan, scope) for scope in scopes]
     hints = hints or {}
     # Longest first: a task the last build measured by its seconds, an unmeasured one
     # first of all (it may be long), then by the bindings it reads.
@@ -467,7 +660,6 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
     builder.packed_bindings = frozenset(
         bid for bid, (_, b) in the_plan.bindings.items() if b.get("value_storage") == "packed")
     peaks: list[int] = []
-    merged: list[Path] = []
     # The generation's secondary indexes are built once the rows are in (one sorted pass
     # each, where the merge would update them row by row); the unique ones stay.
     indexes = [sql for (sql,) in builder.connection.execute(
@@ -479,15 +671,18 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
         builder.connection.execute(f'DROP INDEX "{name}"')
     # Each part is merged in a transaction of its own (it is attached to the generation's
     # connection, which SQLite allows only outside one); the build's own is opened again
-    # once every part is in. A build that cannot finish is laid down again from empty
-    # (``StoreBuilder.restart``).
+    # once every part is in. A part's links may name objects of a part merged later, so
+    # foreign keys are not enforced meanwhile (the commit checks them all,
+    # ``StoreBuilder.check``). A build that cannot finish is laid down again from empty
+    # (``StoreBuilder.restart``, which enforces them again).
     builder.connection.execute("COMMIT")
+    builder.connection.execute("PRAGMA foreign_keys = OFF")
     pool = futures.ProcessPoolExecutor(max_workers=count,
                                        mp_context=multiprocessing.get_context("spawn"),
                                        initializer=_init, initargs=(payload,))
     try:
         with main_not_imported():
-            pending = {pool.submit(_run, i, order[i], scopes[i]) for i in queue}
+            pending = {pool.submit(_run, i, order[i], scopes[i], spills[i]) for i in queue}
         while pending:
             if checkpoint is not None:
                 checkpoint()
@@ -497,27 +692,30 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
                 out = future.result()
                 if "unavailable" in out:
                     raise ParallelUnavailable(out["unavailable"])
-                if out["unattributed"]:
-                    raise ParallelUnavailable("report_entry_outside_every_unit")
+                # an entry outside every unit is left out of the report and counted
+                # (``project_incremental``: every mode alike), never a serial rerun
+                result.unattributed += int(out["unattributed"] or 0)
                 started = time.monotonic()
                 for (module, memo, *_), (used, new) in zip(kept, out["kept"]):
                     _kept_memo(module, memo).backing.absorb(used, new)
-                merge_part(builder, Path(out["part"]), batch_size)
-                merged.append(Path(out["part"]))
+                path = Path(out["part"])
+                size = path.stat().st_size
+                merge_part(builder, path, batch_size, links=None)
+                path.unlink()
+                result.part_bytes += size
                 result.merge_seconds += time.monotonic() - started
                 result.parts.update(out["parts"])
                 result.seconds[order[out["index"]][0]] = out["seconds"]
-                peaks.append(out["work_peak"])
-        # Every part's objects are in: their links and event objects now (in task order).
+                # Disk a task holds beside the generation: its working files, then its
+                # part until merged.
+                peaks.append(out["work_peak"] + size)
         started = time.monotonic()
-        result.part_bytes = sum(path.stat().st_size for path in merged)
-        for path in sorted(merged):
-            if checkpoint is not None:
-                checkpoint()
-            merge_part(builder, path, batch_size, links=True)
-            path.unlink()
+        threads = builder.connection.execute("PRAGMA threads").fetchone()[0]
+        builder.connection.execute(f"PRAGMA threads = {min(count, 8)}")
         for sql in indexes:
             builder.connection.execute(sql)
+        builder.connection.execute(f"PRAGMA threads = {int(threads)}")
+        builder.connection.execute("PRAGMA foreign_keys = ON")
         builder.connection.execute("BEGIN IMMEDIATE")
         result.merge_seconds += time.monotonic() - started
     except BaseException:
@@ -528,9 +726,8 @@ def project(builder: StoreBuilder, *, schema: Any, sources: Mapping[str, Any],
         raise
     pool.shutdown(wait=True)
     shutil.rmtree(work, ignore_errors=True)
-    # Disk beside the generation: the working files of the tasks that ran at once (at
-    # most) and the parts held until their links are merged.
-    result.work_peak = sum(sorted(peaks, reverse=True)[:count]) + result.part_bytes
+    # Disk beside the generation: what the tasks that ran at once held (at most).
+    result.work_peak = sum(sorted(peaks, reverse=True)[:count])
     result.merge_seconds = round(result.merge_seconds, 3)
     return result
 

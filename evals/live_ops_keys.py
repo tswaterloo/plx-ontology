@@ -969,15 +969,20 @@ def _row_lineage(rule: Mapping[str, Any], row: Mapping[str, Any]) -> str:
 
 def _batch_codes(world: World) -> dict[str, tuple[list[Mapping[str, Any]],
                                                   list[Mapping[str, Any]]]]:
-    """batch code -> (its FileMaker rows, its Portal copies), staging records left out."""
+    """batch code -> (its FileMaker rows, its Portal copies), staging records left out.
+    A code is a batch code by the schema's one identifier grammar (``batch_code``): a
+    placeholder a generated batch carries before it is named (``BC-00A`` on many rows) is
+    no code, so its rows are no one batch."""
     if "batch_codes" not in world._cache:
+        from ontology import identifiers
         rules = _binding_lineage_rules()
         out: dict[str, tuple[list, list]] = {}
         for side, (relation, column) in enumerate(((FM_BATCH, "namebatch_c"),
                                                    (BATCH, "batch_name"))):
             for item in world.rows(relation):
                 code = str(item["row"].get(column) or "").strip().upper()
-                if code and _row_lineage(rules[relation], item["row"]) != STAGING:
+                if code and identifiers.parse("batch_code", code) is not None \
+                        and _row_lineage(rules[relation], item["row"]) != STAGING:
                     out.setdefault(code, ([], []))[side].append(item)
         world._cache["batch_codes"] = out
     return world._cache["batch_codes"]
@@ -1122,7 +1127,8 @@ def batches_on_hold_count(world: World) -> list[Candidate]:
 def _released_lots(world: World) -> list[tuple[str, date, list[str]]]:
     """(lot number, expiry day, its receipt rows) of every released raw lot: a lot on
     several receipt rows is one lot, kept only when every row agrees it is Released and on
-    one expiry day (rows that disagree make no key)."""
+    one expiry day (rows that disagree make no key). The status is FileMaker's (system of
+    record), the schema's ``Lot.qc_status``: marked ``quality_controlled`` there and here."""
     by_lot: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in world.rows(RAW_LOT):
         lot = str(item["row"].get("lotnoqc") or "").strip()
@@ -1144,7 +1150,8 @@ def lot_expiry(world: World) -> list[Candidate]:
         if not 0 <= (day - world.as_of).days <= LOT_WINDOW_DAYS:
             continue
         out.append(Candidate(lot, "Lot", {"lot": lot}, [
-            _fact("date", "expiry", cites, ("api",), value=day.isoformat(), label="expir")],
+            _fact("date", "expiry", cites, ("api",), value=day.isoformat(), label="expir",
+                  markings=["quality_controlled"])],
             ["portal mirror receipt_raw_material: status_c Released on every row of the "
              "lotnoqc, one expirydate"],
             f"a released raw lot expiring within {LOT_WINDOW_DAYS} days"))
@@ -1152,17 +1159,31 @@ def lot_expiry(world: World) -> list[Candidate]:
 
 
 def lots_expiring_count(world: World) -> list[Candidate]:
-    """Released raw lots (distinct lot numbers) expiring from as_of up to, not including,
-    the first day of the month after next: "before <that day>"."""
+    """Released raw lots (distinct lot numbers, trimmed and case-blind) expiring from as_of
+    up to, not including, the first day of the month after next: "before <that day>". A
+    lot counts when one of its receiving lines is Released (FileMaker's QC status, the
+    schema's ``Lot.qc_status``) with an expiry in the window: a lot received twice, one
+    line used up (Finished) and one still Released, is a released lot. The product's
+    rule: ``plx.aggregate`` count_distinct ``lot_number`` over Lot filtered on
+    ``qc_status`` Released and ``expiry_date`` in the window."""
     bound = (world.as_of.replace(day=1) + timedelta(days=62)).replace(day=1)
-    lots = [(lot, cites) for lot, day, cites in _released_lots(world)
-            if world.as_of <= day < bound]
+    lots: dict[str, list[str]] = defaultdict(list)
+    for item in world.rows(RAW_LOT):
+        row = item["row"]
+        lot = str(row.get("lotnoqc") or "").strip().casefold()
+        status = row.get("status_c")
+        day = instant(row.get("expirydate"))
+        if lot and isinstance(status, str) and status.strip() == "Released" \
+                and day is not None and world.as_of <= day.date() < bound:
+            lots[lot].append(item["citation"])
     label = f"{bound.strftime('%B')} {bound.day}"
     return [Candidate("live-ops:lots-expiring", "Lot", {"until": label}, [
-        _fact("number", "expiring_count", [c for _lot, cites in lots for c in cites], ("api",),
-              value=str(len(lots)), label=LABELS["lot_count"], tolerance="0")],
-        ["portal mirror receipt_raw_material: distinct lotnoqc whose every row is Released "
-         f"with one expirydate, as_of <= expirydate < {bound.isoformat()} (exclusive)"],
+        _fact("number", "expiring_count", [c for cites in lots.values() for c in cites],
+              ("api",), value=str(len(lots)), label=LABELS["lot_count"], tolerance="0",
+              markings=["quality_controlled"])],
+        ["portal mirror receipt_raw_material: distinct lotnoqc (trimmed, case-blind) with a "
+         f"Released row (status_c) whose expirydate is as_of <= expirydate < "
+         f"{bound.isoformat()} (exclusive)"],
         f"count of distinct released raw lots expiring from as_of, before {bound.isoformat()} "
         "(the bound day itself excluded)")]
 
@@ -1196,3 +1217,11 @@ FAMILIES.update(_more.FAMILIES)
 PORTAL_RELATIONS = PORTAL_RELATIONS + tuple(r for r in _more.PORTAL_RELATIONS
                                             if r not in PORTAL_RELATIONS)
 BC_SETS = BC_SETS + tuple(s for s in _more.BC_SETS if s not in BC_SETS)
+
+# The CEO suite's families (``evals.live_ops_ceo``: how do we know, vendor confirmed,
+# profit with the why, next step, multi-hop, ambiguity, honest none, time windows).
+from evals import live_ops_ceo as _ceo  # noqa: E402 - it builds on the helpers above
+FAMILIES.update(_ceo.FAMILIES)
+FORMS.update({k: v for k, v in _ceo.FACT_FORMS.items() if k not in FORMS})
+PORTAL_RELATIONS = PORTAL_RELATIONS + tuple(r for r in _ceo.PORTAL_RELATIONS
+                                            if r not in PORTAL_RELATIONS)

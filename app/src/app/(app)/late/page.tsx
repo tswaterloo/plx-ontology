@@ -33,8 +33,10 @@ function Value({ po }: { po: LatePo }) {
   const shown = formatMoney(po.amount.amount, po.amount.currency);
   if (!po.amount_suspect) return <>{shown}</>;
   return (
-    <span title={`Check the data: ${po.amount_suspect}`} className="text-muted">
-      {shown} <span className="text-warn">(check)</span>
+    <span title={`Check the data: ${po.amount_suspect}`} className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5 text-muted">
+      <span>{shown}</span>
+      <span className="rounded bg-suspect-soft px-1 text-label font-medium text-suspect">Check total</span>
+      <span className="sr-only">: {po.amount_suspect}</span>
     </span>
   );
 }
@@ -268,7 +270,7 @@ export default function LatePage() {
                           </span>
                           {listShown(po) && <ListEta po={po} className="mt-1" />}
                           <span className="mt-0.5 block truncate text-meta text-muted tabular-nums">
-                            {[po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : null, po.amount ? formatMoney(po.amount.amount, po.amount.currency) + (po.amount_suspect ? " (check)" : "") : null].filter(Boolean).join(" · ") || po.reason}
+                            {[po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : null, po.amount ? formatMoney(po.amount.amount, po.amount.currency) + (po.amount_suspect ? " · total needs checking" : "") : null].filter(Boolean).join(" · ") || po.reason}
                           </span>
                         </Link>
                       </li>

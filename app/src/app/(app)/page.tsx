@@ -8,6 +8,7 @@ import { FreshnessLabel, HiddenNotice } from "@/components/answer-parts";
 import { AskBox, type Pin } from "@/components/ask-box";
 import { useAuth } from "@/components/auth";
 import { BriefingCounts, BriefingRow } from "@/components/briefing";
+import { ProactiveSuggestions } from "@/components/proactive-suggestions";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LoadProblem } from "@/components/ui/notice";
@@ -232,6 +233,8 @@ export default function HomePage() {
           {lateRead && <HiddenNotice hidden={na?.hidden} />}
         </CardBody>
       </Card>
+
+      <ProactiveSuggestions />
 
       <section className="mt-8 max-w-[760px]" aria-labelledby="ask-anything">
         <h2 id="ask-anything" className="mb-2 text-section">

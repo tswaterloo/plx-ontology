@@ -974,6 +974,9 @@ class BriefingItem(_Model):
     object_id: str
     object_type: str
     subject_label: str = Field(description="The record's display label for this reader.")
+    counterpart: Optional[str] = Field(None, description="A purchase order's supplier as this "
+                                                         "reader reads it (one supplier only); "
+                                                         "null when not readable or not a PO.")
     summary: str = Field(description="What happened; every date and figure is cited.")
     why: Optional[str] = None
     next_action: NextAction
@@ -1101,3 +1104,105 @@ class BriefingItems(_Model):
 class BriefingSeen(_Model):
     ok: bool
     at: Optional[str] = None
+
+
+# ---- proactive suggestions ("needs your attention: what to do") -------------------------
+
+class DraftTo(_Model):
+    name: Optional[str] = None
+    address: Optional[str] = Field(None, description="Only an address the trail cleared "
+                                                     "for this reader (a vendor-side sender "
+                                                     "of a message it may open); else null.")
+    basis: str = Field(description="Where the recipient comes from, or what is missing.")
+    source: Optional[Source] = None
+
+
+class DraftFact(_Model):
+    fact: str
+    value: str
+    source: Source
+
+
+class SuggestionDraft(_Model):
+    """A message a person may copy, edit and send themselves: worded only from cited values
+    this reader may open, never from a message's text. Never sent by the Workbench."""
+    status: Literal["draft_not_sent"] = "draft_not_sent"
+    sent: Literal[False] = False
+    channel: Literal["email", "internal_note"]
+    audience: Literal["vendor", "customer", "internal"]
+    to: DraftTo
+    subject: str
+    body: str
+    facts: list[DraftFact] = Field(default_factory=list, description="Each stated fact "
+                                                                     "and its source.")
+    review: Optional[str] = None
+
+
+class SuggestionEta(_Model):
+    answer: Literal["yes", "no", "possibly", "conflicting", "hidden", "unknown"] = Field(
+        description="ETA confirmed by the vendor? Unknown states are 'unknown', never yes.")
+    when: Optional[str] = Field(None, description="The vendor's confirmed date (yes only, "
+                                                  "and only beside a source you can open).")
+    in_mail: bool = Field(False, description="The confirmation is an email.")
+    source: Optional[Source] = None
+    text: str = ""
+
+
+class SuggestionReason(_Model):
+    text: str
+    source: Optional[Source] = None
+
+
+class SuggestionImpact(_Model):
+    amount: Optional[Money] = None
+    amount_basis: Optional[str] = None
+    amount_suspect: Optional[str] = Field(None, description="Why the total looks wrong in "
+                                                            "the source: never ranked by.")
+    days_late: Optional[int] = None
+    days_at_risk: Optional[int] = Field(None, description="The worst customer order's days "
+                                        "at risk (a lower bound).")
+    orders_at_risk: int = Field(0, ge=0)
+    orders: list[ObjectRef] = Field(default_factory=list)
+
+
+class SuggestionConfidence(_Model):
+    level: Literal["high", "medium", "low"]
+    why: str
+
+
+class ProactiveSuggestion(_Model):
+    """One record that needs attention: what we noticed, how we know, what to do and a
+    draft message (never sent)."""
+    id: str
+    kind: Literal["vendor_chase", "customer_update", "margin_review"]
+    event_types: list[str] = Field(default_factory=list)
+    rank: int = Field(ge=0)
+    headline: str
+    subject: ObjectRef
+    impact: SuggestionImpact
+    eta: Optional[SuggestionEta] = None
+    reasoning: list[SuggestionReason] = Field(default_factory=list)
+    action: NextAction
+    draft: Optional[SuggestionDraft] = None
+    confidence: SuggestionConfidence
+    missing: list[str] = Field(default_factory=list)
+    acknowledged: bool = False
+    new: bool = False
+
+
+class Suggestions(_Model):
+    """What needs your attention and what to do about it, ranked by impact (customer
+    orders held up, money within its currency, days late); every other open finding is
+    counted by type. Suggestions only: nothing is sent or written."""
+    status: Literal["read", "not_configured", "unavailable"]
+    total: int = Field(ge=0, description="Records with a suggestion (all, not only shown).")
+    more: int = Field(0, ge=0)
+    by_kind: dict[str, int] = Field(default_factory=dict)
+    collapsed: dict[str, int] = Field(default_factory=dict, description="Open findings of "
+                                      "other types (no drafted action), counted per type.")
+    items: list[ProactiveSuggestion] = Field(default_factory=list)
+    rank_basis: str = ""
+    note: str
+    as_of: Optional[str] = None
+    complete: bool = False
+    sent: Literal[False] = False
