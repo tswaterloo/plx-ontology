@@ -537,23 +537,29 @@ class RebuildTests(ProjectionCase):
                          ["OPEN"])
 
     def test_failed_build_leaves_the_previous_generation(self):
+        """Its invariants checked by the build's connection or, the rows committed first,
+        by three threads (``digest_workers``): the same problems; nothing swapped in."""
         path, report = self.build("failed/store.sqlite")
-        builder = StoreBuilder(path)
-        builder.add("objects", [{"object_id": "X:b:{}", "object_type": "X", "binding_id": "b",
-                                 "native_key": "{}", "audience_key": "api:public.x",
-                                 "first_recorded_at": T1_TEXT}])
-        builder.add("object_versions", [
-            {"object_id": "X:b:{}", "l1_handle": "h1", "digest": "d", "lineage": "fm_bronze",
-             "markings": "[]", "recorded_at": T1_TEXT, "superseded_at": T2_TEXT},
-            {"object_id": "X:b:{}", "l1_handle": "h2", "digest": "d", "lineage": "fm_bronze",
-             "markings": "[]", "recorded_at": "2026-09-29T12:30:00.000000Z",
-             "superseded_at": None}])
-        with self.assertRaises(StoreError) as caught:
-            builder.commit(built_at=T2_TEXT)
-        self.assertEqual(caught.exception.code, "store_invariant_violated")
-        self.assertIn("overlapping_versions:X:b:{}", str(caught.exception))
-        self.assertEqual(content_digest(self.raw(path)), report["content_digest"])
-        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["store.sqlite"])
+        for workers in (1, 3):
+            builder = StoreBuilder(path)
+            builder.digest_workers = workers
+            builder.add("objects", [{"object_id": "X:b:{}", "object_type": "X",
+                                     "binding_id": "b", "native_key": "{}",
+                                     "audience_key": "api:public.x",
+                                     "first_recorded_at": T1_TEXT}])
+            builder.add("object_versions", [
+                {"object_id": "X:b:{}", "l1_handle": "h1", "digest": "d",
+                 "lineage": "fm_bronze", "markings": "[]", "recorded_at": T1_TEXT,
+                 "superseded_at": T2_TEXT},
+                {"object_id": "X:b:{}", "l1_handle": "h2", "digest": "d",
+                 "lineage": "fm_bronze", "markings": "[]",
+                 "recorded_at": "2026-09-29T12:30:00.000000Z", "superseded_at": None}])
+            with self.assertRaises(StoreError) as caught:
+                builder.commit(built_at=T2_TEXT)
+            self.assertEqual(caught.exception.code, "store_invariant_violated")
+            self.assertEqual(str(caught.exception), "overlapping_versions:X:b:{}")
+            self.assertEqual(content_digest(self.raw(path)), report["content_digest"])
+            self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["store.sqlite"])
 
     def test_foreign_keys_are_on_for_the_writing_connection(self):
         builder = StoreBuilder(Path(self.tmp.name) / "fk" / "store.sqlite")

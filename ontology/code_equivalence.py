@@ -157,10 +157,11 @@ DERIVATION_CHANGES: Mapping[str, tuple[str | None, str]] = {
     "ontology/project_parallel.py": (
         "962c7549bb4a924881e196f491e5d970eb0c89e2ea2d0c17559d865a64c303ff",
         "1f5b18bcb4a0cc5cf23bddda3a28d8601af88f81f571ab789763942c4f50ebee"),
-    # the builder's checkpoint to resume (d5be43dd12): writes, never derives
+    # the builder's checkpoint to resume (d5be43dd12) and its commit's invariant queries
+    # run by threads over the committed rows (StoreBuilder): writes, never derives
     "ontology/store.py": (
         "e71e2bac47757c0cdf3472e85c0bb2ec03abfcfba96145b48661cb4beaff63af",
-        "866ef7e9725470c5fc81d62c41e08565082fc2b3cd35744482456c16239625e2"),
+        "b84f54fa7fa34e4c0605824bb71721be5ae4e9b3f48e48f1a518f8d3193f0f20"),
     # out of memory re-raised, never recorded as an unreadable container (READER_CHANGES)
     "operating/use_case_parts.py": (
         "9a232a4d5ba845247b89faa13b978c72965838d43aa0fd44ba272df1d75e495b",

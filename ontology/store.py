@@ -1165,47 +1165,40 @@ class StoreBuilder:
         self._open(seeded=False)
         self._conn.execute("BEGIN IMMEDIATE")
 
-    def check(self) -> list[str]:
-        """Invariant violations of the open generation (empty = sound)."""
-        conn = self.connection
-        problems = [f"foreign_key:{row[0]}:{row[2]}"
-                    for row in conn.execute("PRAGMA foreign_key_check").fetchmany(20)]
-        overlap = conn.execute(
-            """SELECT a.object_id FROM object_versions a JOIN object_versions b
+    # The invariants :meth:`check` reads: (problem prefix, query of the first offending
+    # rows' ids). A foreign key violation is ``PRAGMA foreign_key_check``'s.
+    _CHECKS = (
+        ("overlapping_versions",
+         """SELECT a.object_id FROM object_versions a JOIN object_versions b
                ON a.object_id = b.object_id AND a.recorded_at < b.recorded_at
                WHERE a.superseded_at IS NULL OR a.superseded_at > b.recorded_at
-               LIMIT 5""").fetchall()
-        problems += [f"overlapping_versions:{row[0]}" for row in overlap]
+               LIMIT 5"""),
         # Values (their shared source rows) and identifiers inside the version they cite.
-        outside = conn.execute(
-            """SELECT v.object_id FROM value_sources t JOIN object_versions v ON v.rowid = t.ver
+        ("object_values_outside_version",
+         """SELECT v.object_id FROM value_sources t JOIN object_versions v ON v.rowid = t.ver
                WHERE t.recorded_at < v.recorded_at
                   OR (v.superseded_at IS NOT NULL AND
                       (t.superseded_at IS NULL OR t.superseded_at > v.superseded_at))
-               LIMIT 5""").fetchall()
-        problems += [f"object_values_outside_version:{row[0]}" for row in outside]
-        orphan = conn.execute(
-            """SELECT t.src FROM value_sources t WHERE NOT EXISTS (
-               SELECT 1 FROM object_versions v WHERE v.rowid = t.ver) LIMIT 5""").fetchall()
-        problems += [f"object_values_without_version:{row[0]}" for row in orphan]
-        outside = conn.execute(
-            """SELECT t.object_id FROM identifiers t JOIN object_versions v
+               LIMIT 5"""),
+        ("object_values_without_version",
+         """SELECT t.src FROM value_sources t WHERE NOT EXISTS (
+               SELECT 1 FROM object_versions v WHERE v.rowid = t.ver) LIMIT 5"""),
+        ("identifiers_outside_version",
+         """SELECT t.object_id FROM identifiers t JOIN object_versions v
                ON v.object_id = t.object_id AND v.l1_handle = t.l1_handle
                WHERE t.recorded_at < v.recorded_at
                   OR (v.superseded_at IS NOT NULL AND
                       (t.superseded_at IS NULL OR t.superseded_at > v.superseded_at))
-               LIMIT 5""").fetchall()
-        problems += [f"identifiers_outside_version:{row[0]}" for row in outside]
-        orphan = conn.execute(
-            """SELECT t.object_id FROM identifiers t WHERE NOT EXISTS (
+               LIMIT 5"""),
+        ("identifiers_without_version",
+         """SELECT t.object_id FROM identifiers t WHERE NOT EXISTS (
                SELECT 1 FROM object_versions v WHERE v.object_id = t.object_id
-               AND v.l1_handle = t.l1_handle) LIMIT 5""").fetchall()
-        problems += [f"identifiers_without_version:{row[0]}" for row in orphan]
+               AND v.l1_handle = t.l1_handle) LIMIT 5"""),
         # The logical value key (object_id, property, l1_handle, field_path): one field per
         # source (a cell's key; a record's layout; never both) and per version (two sources
         # of one version share no field).
-        twice = conn.execute(
-            """WITH several AS (SELECT ver FROM value_sources GROUP BY ver HAVING count(*) > 1
+        ("object_values_duplicate_key",
+         """WITH several AS (SELECT ver FROM value_sources GROUP BY ver HAVING count(*) > 1
                                 UNION SELECT s.ver FROM value_sources s WHERE
                                 (SELECT count(*) FROM value_cells c WHERE c.src = s.src
                                  AND c.field IS NULL) > 1
@@ -1217,36 +1210,87 @@ class StoreBuilder:
                JOIN value_cells c ON c.src = s.src
                JOIN value_layout_fields lf ON lf.layout = c.layout
                JOIN object_versions v ON v.rowid = x.ver
-               GROUP BY x.ver, lf.field HAVING count(*) > 1 LIMIT 5""").fetchall()
-        problems += [f"object_values_duplicate_key:{row[0]}" for row in twice]
+               GROUP BY x.ver, lf.field HAVING count(*) > 1 LIMIT 5"""),
         # A cell's layout is its own field's; a record's positions are 0..n-1.
-        layout = conn.execute(
-            """SELECT c.src FROM value_cells c JOIN value_layout_fields lf ON lf.layout = c.layout
+        ("object_values_layout",
+         """SELECT c.src FROM value_cells c JOIN value_layout_fields lf ON lf.layout = c.layout
                WHERE c.field IS NOT NULL AND (lf.field <> c.field OR lf.pos <> 0
                      OR lf.path IS NOT NULL)
                UNION ALL SELECT c.src FROM value_cells c WHERE c.field IS NULL AND
                      json_array_length(c.value) <> (SELECT count(*) FROM value_layout_fields lf
                                                     WHERE lf.layout = c.layout)
-               LIMIT 5""").fetchall()
-        problems += [f"object_values_layout:{row[0]}" for row in layout]
-        first = conn.execute(
-            """SELECT o.object_id FROM objects o WHERE o.first_recorded_at <>
+               LIMIT 5"""),
+        ("object_first_recorded_at",
+         """SELECT o.object_id FROM objects o WHERE o.first_recorded_at <>
                (SELECT MIN(recorded_at) FROM object_versions v WHERE v.object_id = o.object_id)
                OR NOT EXISTS (SELECT 1 FROM object_versions v WHERE v.object_id = o.object_id)
-               LIMIT 5""").fetchall()
-        problems += [f"object_first_recorded_at:{row[0]}" for row in first]
+               LIMIT 5"""),
+    )
+
+    def check(self) -> list[str]:
+        """Invariant violations of the open generation (empty = sound)."""
+        conn = self.connection
+        problems = [f"foreign_key:{row[0]}:{row[2]}"
+                    for row in conn.execute("PRAGMA foreign_key_check").fetchmany(20)]
+        for prefix, query in self._CHECKS:
+            problems += [f"{prefix}:{row[0]}" for row in conn.execute(query).fetchall()]
+        return problems
+
+    def _check_committed(self, workers: int) -> list[str]:
+        """:meth:`check`, its queries run by ``workers`` threads, each over its own
+        read-only connection to the build's file, once the open transaction is committed
+        (SQLite runs a query without the GIL); the same problems in the same order. The
+        foreign keys are checked table by table; when one is violated, the problems are
+        :meth:`check`'s own. Serially (:meth:`check`) with one worker or when the rows
+        cannot be committed."""
+        conn = self.connection
+        if workers < 2:
+            return self.check()
+        try:
+            if conn.in_transaction:
+                conn.execute("COMMIT")
+        except sqlite3.Error:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            return self.check()
+        import concurrent.futures as futures
+
+        conn.execute("BEGIN IMMEDIATE")
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%REFERENCES%' "
+            "ORDER BY name")]
+        quote = '"'
+        jobs = ["PRAGMA foreign_key_check(" + quote + table.replace(quote, quote * 2) + quote
+                + ")" for table in tables] + [query for _prefix, query in self._CHECKS]
+        uri = self.temp.resolve().as_uri() + "?mode=ro"
+
+        def run(query: str) -> list[Any]:
+            with contextlib.closing(sqlite3.connect(uri, uri=True, timeout=60)) as reader:
+                reader.execute("PRAGMA cache_size = -65536")
+                if query.startswith("PRAGMA"):
+                    return reader.execute(query).fetchmany(1)
+                return reader.execute(query).fetchall()
+        with futures.ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+            found = list(pool.map(run, jobs))
+        if any(found[:len(tables)]):   # the violations as the whole check lists them
+            return self.check()
+        problems: list[str] = []
+        for (prefix, _query), rows in zip(self._CHECKS, found[len(tables):]):
+            problems += [f"{prefix}:{row[0]}" for row in rows]
         return problems
 
     def commit(self, *, built_at: str) -> str:
         """Check, digest, commit and atomically swap the generation in; returns its
-        content digest. On any failure the temp file is removed (a file kept to resume:
+        content digest. With ``digest_workers`` above one the rows are committed to the
+        build's file before they are checked (:meth:`_check_committed`). On any failure the
+        temp file is removed (a file kept to resume:
         rolled back to its checkpoint, or kept with its checked rows when only the digest
         or the swap failed: :meth:`digest_and_swap` then finishes it) and the target is
         untouched."""
         conn = self.connection
         try:
             started = time_module.monotonic()
-            problems = self.check()
+            problems = self._check_committed(self.digest_workers)
             if problems:   # never resumed: the rows themselves are wrong
                 self.kept = False
                 raise StoreError("store_invariant_violated", "; ".join(problems[:10]))

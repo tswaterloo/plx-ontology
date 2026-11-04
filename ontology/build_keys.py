@@ -78,6 +78,8 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         # an incremental build's changed units projected by worker processes into parts
         # merged into its seed
         "4a57d4fed7080b57658ccf0859c282a1553795442ab3aa2b064120c37fc49d01",
+        # the commit's invariant queries run by threads over the committed rows (rows untouched)
+        "0bc0be9cd031e1fe6083948df73ee87723dc09678f36813d7f95803e37a64294",
     }),
 }
 
