@@ -11,8 +11,10 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from integrations import live_source_guard as guard
+from integrations import graph_send
 from integrations.graph_send import ActionSender
 from integrations.people_exclusion import PeopleExclusion
 from operating import card_actions as ca
@@ -186,6 +188,80 @@ class Gate(unittest.TestCase):
                 guard.check_action_request("POST", bad_url, bad_body, environ=LIVE)
         with self.assertRaises(guard.ReadOnlyGuardError):
             guard.check_action_request("PATCH", url, body, environ=LIVE)
+
+
+class SendApp(unittest.TestCase):
+    """The send token comes from the app ``PLX_ACTIONS_GRAPH_CREDENTIALS`` names (a fake
+    token issuer: no token request leaves); every other path keeps ``MICROSOFT_GRAPH_*``."""
+
+    READ_ID, SEND_ID = "aaaaaaaa-0000-4000-8000-00000000000a", "bbbbbbbb-0000-4000-8000-00000000000b"
+    TENANT = "cccccccc-0000-4000-8000-00000000000c"
+
+    def env(self, prefix=None):
+        env = {**LIVE, "MICROSOFT_GRAPH_TENANT_ID": self.TENANT,
+               "MICROSOFT_GRAPH_CLIENT_ID": self.READ_ID, "MICROSOFT_GRAPH_CLIENT_SECRET": "r",
+               "AZURE_TENANT_ID": self.TENANT, "AZURE_CLIENT_ID": self.SEND_ID,
+               "AZURE_CLIENT_SECRET": "s"}
+        if prefix is not None:
+            env[graph_send.CREDENTIALS_ENV] = prefix
+        return env
+
+    def send(self, env, roles):
+        issued = []
+
+        class Issuer:   # stands in for the token POST; records whose credentials asked
+            def __init__(self, credentials, scope, transport):
+                issued.append(credentials.client_id)
+
+            def bearer(self):
+                return token(roles=list(roles))
+        graph = FakeGraph()
+        with mock.patch.object(graph_send.guard, "TokenProvider", Issuer):
+            result = ActionSender(env, post=graph).dispatch(
+                "send_email", VINCE, {"subject": "s", "body": "b", "to": ["a@b.example"]})
+        return result, issued, graph.calls
+
+    def test_the_send_token_comes_from_the_named_app_and_must_carry_mail_send(self):
+        result, issued, calls = self.send(self.env("AZURE"), ["Mail.Send"])
+        self.assertEqual((result["status"], issued, len(calls)), ("sent", [self.SEND_ID], 1))
+        result, issued, calls = self.send(self.env(), ["Mail.Send"])           # default
+        self.assertEqual((result["status"], issued), ("sent", [self.READ_ID]))
+        result, issued, calls = self.send(self.env("AZURE"), ["Mail.Read", "User.Read.All"])
+        self.assertEqual((result["status"], result["missing"], calls),
+                         ("dry_run", ["Mail.Send not granted on AZURE app"], []))
+        for unknown in ("BC", "azure", "MICROSOFT_GRAPH_X", "AWS"):        # fails closed
+            result, issued, calls = self.send(self.env(unknown), ["Mail.Send"])
+            self.assertEqual((result["status"], issued, calls), ("dry_run", [], []))
+            self.assertIn("PLX_ACTIONS_GRAPH_CREDENTIALS names no known send app",
+                          result["missing"])
+        env = self.env("AZURE")
+        del env["AZURE_CLIENT_SECRET"]
+        with mock.patch.object(graph_send.guard.GuardedTransport, "request",
+                               side_effect=AssertionError("no request")):
+            result = ActionSender(env, post=FakeGraph()).dispatch(
+                "send_email", VINCE, {"subject": "s", "body": "b", "to": ["a@b.example"]})
+        self.assertEqual(result["missing"], ["AZURE app credentials did not give a token"])
+        self.assertEqual(graph_send.probe(self.env("BC"))["token"], "refused")
+
+    def test_no_path_but_the_approved_send_reads_the_send_app_credentials(self):
+        with self.assertRaises(guard.ReadOnlyGuardError):
+            guard.ClientCredentials.from_env("AZURE", self.env("AZURE"))
+        self.assertEqual(guard.ClientCredentials.from_env(
+            "MICROSOFT_GRAPH", self.env("AZURE")).client_id, self.READ_ID)
+        root = Path(__file__).resolve().parents[2]
+        pattern = __import__("re").compile(
+            r"AZURE_(?:CLIENT|TENANT)|[\"']AZURE[\"']|action_credentials|_read_env"
+            r"|_default_bearer|PLX_ACTIONS_GRAPH_CREDENTIALS|ACTION_CREDENTIALS_ENV")
+        allowed = {"integrations/live_source_guard.py", "integrations/graph_send.py"}
+        found = set()
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(root).as_posix()
+            if (rel in allowed or "/tests/" in f"/{rel}" or rel.startswith((".", "docs/"))
+                    or "/." in rel):
+                continue
+            if pattern.search(path.read_text(encoding="utf-8", errors="replace")):
+                found.add(rel)
+        self.assertEqual(found, set())
 
 
 class OnceOnly(unittest.TestCase):

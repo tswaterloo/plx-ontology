@@ -6,13 +6,16 @@ Gated, default off. A request goes out only when all of these hold, checked in o
 1. ``PLX_ACTIONS_LIVE=1`` in the environment;
 2. the sender (the signed-in person's own address) is listed in ``PLX_ACTIONS_SENDERS``
    (comma separated): a shared or service mailbox is never the sender;
-3. Graph credentials (``MICROSOFT_GRAPH_*``) give a token;
+3. the send app's credentials give a token: the prefix named by
+   ``PLX_ACTIONS_GRAPH_CREDENTIALS`` (``MICROSOFT_GRAPH`` by default; ``AZURE`` for the
+   Entra admin app that holds Mail.Send). That token is used here, for the four
+   ``send_action`` shapes only; every read keeps the read-only ``MICROSOFT_GRAPH_*`` app;
 4. the token carries the permission the action needs: ``Mail.Send`` for mail
    (application ``roles`` or delegated ``scp``); for Teams ``ChatMessage.Send`` or
    ``Chat.ReadWrite`` as a *delegated* scope (Graph refuses an app-only chat post).
 
 Otherwise the action is a dry run: the exact request (method, URL, JSON body) is returned
-with every missing condition named ("Mail.Send not granted"). The request itself passes
+with every missing condition named ("Mail.Send not granted on AZURE app"). The request itself passes
 ``live_source_guard.send_action`` (four closed shapes, the flag re-checked inside the one
 sender); this module does no I/O of its own. Nothing here decides who may send what to
 whom: ``operating.card_actions`` does, before calling ``dispatch``.
@@ -32,6 +35,7 @@ from . import live_source_guard as guard
 
 FLAG = guard.ACTION_FLAG
 SENDERS_ENV = "PLX_ACTIONS_SENDERS"
+CREDENTIALS_ENV = guard.ACTION_CREDENTIALS_ENV
 GRAPH = f"https://{guard.GRAPH_HOST}/v1.0"
 MAIL_KINDS = frozenset({"send_email", "reply_in_thread", "forward"})
 TEAMS_KINDS = frozenset({"teams_message"})
@@ -108,15 +112,25 @@ def missing_permission(kind: str, bearer: str) -> str | None:
             "messages only on a signed-in person's token)")
 
 
+def credential_prefix(environ: Mapping[str, str]) -> str | None:
+    """The send app's credential prefix, None when ``PLX_ACTIONS_GRAPH_CREDENTIALS``
+    names no known app (then nothing is sent)."""
+    try:
+        return guard.action_credential_prefix(environ)
+    except ValueError:
+        return None
+
+
 def _default_bearer(environ: Mapping[str, str]) -> Callable[[], str]:
-    """The app's Graph token (client credentials), one provider kept so the token is
-    reused until near expiry."""
+    """The send app's Graph token (client credentials of the prefix in
+    ``PLX_ACTIONS_GRAPH_CREDENTIALS``), one provider kept so the token is reused until
+    near expiry. Only ``ActionSender`` uses it, only for ``send_action``."""
     held: list[guard.TokenProvider] = []
 
     def bearer() -> str:
         if not held:
             transport = guard.GuardedTransport(environ=environ)
-            credentials = guard.ClientCredentials.from_env("MICROSOFT_GRAPH", environ)
+            credentials = guard.action_credentials(environ)
             held.append(guard.TokenProvider(credentials, guard.GRAPH_SCOPE, transport))
         return held[0].bearer()
     return bearer
@@ -138,6 +152,9 @@ class ActionSender:
         """(what is missing for a live send, the bearer when nothing is). The token is
         asked for only once the flag and the sender are in place."""
         missing = []
+        prefix = credential_prefix(self.environ)
+        if prefix is None:
+            missing.append(f"{CREDENTIALS_ENV} names no known send app")
         if not guard.action_send_enabled(self.environ):
             missing.append(f"Sending is off ({FLAG}=1 not set)")
         if not sender:
@@ -148,10 +165,10 @@ class ActionSender:
             return missing, None
         try:
             token = self._bearer()
-        except (guard.SourceUnavailable, ValueError, OSError):
-            return ["Graph credentials did not give a token"], None
+        except (guard.SourceUnavailable, guard.ReadOnlyGuardError, ValueError, OSError):
+            return [f"{prefix} app credentials did not give a token"], None
         lack = missing_permission(kind, token)
-        return ([lack], None) if lack else ([], token)
+        return ([f"{lack} on {prefix} app"], None) if lack else ([], token)
 
     def dispatch(self, kind: str, sender: str | None, payload: Mapping[str, Any]
                  ) -> dict[str, Any]:
@@ -179,7 +196,9 @@ class ActionSender:
         result = {"status": "sent" if ok else "unknown" if status >= 500 else "failed",
                   "missing": [], "request": request, "http_status": status}
         if status == 403 and not ok:
-            result["missing"] = [missing_permission(kind, "") or "permission refused by Graph"]
+            lack = missing_permission(kind, "")
+            result["missing"] = [f"{lack} on {credential_prefix(self.environ)} app" if lack
+                                 else "permission refused by Graph"]
         return result
 
 
@@ -190,12 +209,16 @@ def probe(environ: Mapping[str, str] | None = None, *,
     and chat permissions (one token request; booleans and counts only)."""
     env = os.environ if environ is None else environ
     out: dict[str, Any] = {"flag_on": guard.action_send_enabled(env),
+                           "credentials": credential_prefix(env) or "unknown",
                            "senders_configured": len(configured_senders(env)),
                            "token": "not_requested", "mail_send_granted": None,
                            "chat_send_granted": None, "sends": 0}
+    if out["credentials"] == "unknown":
+        out["token"] = "refused"
+        return out
     try:
         token = (bearer or _default_bearer(env))()
-    except (guard.SourceUnavailable, ValueError, OSError):
+    except (guard.SourceUnavailable, guard.ReadOnlyGuardError, ValueError, OSError):
         out["token"] = "refused"
         return out
     out["token"] = "ok"

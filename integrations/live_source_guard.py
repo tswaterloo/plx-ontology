@@ -75,6 +75,9 @@ us read-only. Read-only is enforced only here, before any I/O:
   Graph shapes (``/users/{sender}/sendMail``, ``.../messages/{id}/reply``,
   ``.../messages/{id}/forward``, ``/chats/{id}/messages``, each with its closed body
   keys); ``_refuse_non_read_send`` re-checks the shape and the flag inside the sender.
+  Its token may come from a separate send app (``PLX_ACTIONS_GRAPH_CREDENTIALS``, e.g.
+  ``AZURE`` -> ``AZURE_*``), issued only through ``action_credentials``;
+  ``ClientCredentials.from_env`` refuses that prefix, so no read path can use it.
   Who may send what to whom is decided before, in ``operating.card_actions``.
 * Secrets (client secret, access tokens, download URLs) are held in
   ``Secret`` and never appear in exceptions, reprs, records or citations.
@@ -1504,6 +1507,33 @@ def send_action(url: str, bearer: Secret, body: bytes, *,
     return send("POST", url, headers, body, timeout, 200_000)
 
 
+# The send token's credentials. Reads use ``MICROSOFT_GRAPH_*`` (no Mail.Send); the one
+# approved send may use another Entra app that holds Mail.Send, named by its variable
+# prefix in ``PLX_ACTIONS_GRAPH_CREDENTIALS`` (closed set; default ``MICROSOFT_GRAPH``).
+# A send-only prefix (``AZURE``) is refused by ``ClientCredentials.from_env``: its token
+# is issued only through ``action_credentials`` and handed only to ``send_action``.
+ACTION_CREDENTIALS_ENV = "PLX_ACTIONS_GRAPH_CREDENTIALS"
+ACTION_CREDENTIAL_DEFAULT = "MICROSOFT_GRAPH"
+SEND_ONLY_PREFIXES = frozenset({"AZURE"})
+ACTION_CREDENTIAL_PREFIXES = frozenset({ACTION_CREDENTIAL_DEFAULT}) | SEND_ONLY_PREFIXES
+
+
+def action_credential_prefix(environ: Mapping[str, str] | None = None) -> str:
+    """The credential prefix of the send token; an unknown name raises ``ValueError``
+    (fails closed: nothing is sent)."""
+    env = os.environ if environ is None else environ
+    prefix = (env.get(ACTION_CREDENTIALS_ENV) or "").strip() or ACTION_CREDENTIAL_DEFAULT
+    if prefix not in ACTION_CREDENTIAL_PREFIXES:
+        raise ValueError(f"{ACTION_CREDENTIALS_ENV} names no known send app")
+    return prefix
+
+
+def action_credentials(environ: Mapping[str, str] | None = None) -> "ClientCredentials":
+    """Credentials for the approved-send token only (``integrations.graph_send``)."""
+    env = os.environ if environ is None else environ
+    return ClientCredentials._read_env(action_credential_prefix(env), env)
+
+
 # ------------------------------------------------------------------ credentials
 
 @dataclass(frozen=True, repr=False)
@@ -1527,7 +1557,16 @@ class ClientCredentials:
     @classmethod
     def from_env(cls, prefix: str, environ: Mapping[str, str] | None = None
                  ) -> "ClientCredentials":
-        """``prefix`` is ``MICROSOFT_GRAPH`` or ``BC``; values are never echoed."""
+        """``prefix`` is ``MICROSOFT_GRAPH`` or ``BC``; values are never echoed. A
+        send-only prefix (``SEND_ONLY_PREFIXES``) is refused: that app's token is for
+        ``send_action`` alone (``action_credentials``)."""
+        if prefix in SEND_ONLY_PREFIXES:
+            raise ReadOnlyGuardError(f"{prefix}_* credentials are for approved sends only")
+        return cls._read_env(prefix, environ)
+
+    @classmethod
+    def _read_env(cls, prefix: str, environ: Mapping[str, str] | None
+                  ) -> "ClientCredentials":
         env = os.environ if environ is None else environ
         names = [f"{prefix}_TENANT_ID", f"{prefix}_CLIENT_ID", f"{prefix}_CLIENT_SECRET"]
         missing = [name for name in names if not env.get(name)]
@@ -2452,4 +2491,5 @@ __all__ = ["ALLOWED_HOSTS", "BACKOFF_CAP_SECONDS", "BC_SCOPE", "BoundedBackoff",
            "SourceUnavailable", "TokenProvider", "canonical_sha256", "check_request",
            "jsonable", "parse_handle", "sharepoint_host_from_env", "tenant_download_hosts",
            "text_bytes", "urllib_sender", "ACTION_FLAG", "check_action_request",
+           "ACTION_CREDENTIALS_ENV", "action_credential_prefix", "action_credentials",
            "send_action"]
