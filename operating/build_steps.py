@@ -19,10 +19,12 @@ serves. The steps, each writing into the generation being built
 * ``sender_corroboration``: a document-field link (``SupplierConfirmation.confirms``) whose
   number the document or its carrying message names, sent from a distinctive domain of
   the target's own supplier, as a ``corroborated`` link beside the lead, and the carrying
-  message's own subject/body number as a ``lead`` (``ontology.sender_corroboration``;
-  after ``mentions`` and ``reviews``, so a rejected link is never raised);
+  message's own subject/body number as a ``lead`` (``ontology.sender_corroboration``, its
+  reads made by the build's workers: ``ontology.sender_parallel``; after ``mentions`` and
+  ``reviews``, so a rejected link is never raised);
 * ``text_index``: the words of captured document text ``plx.find`` searches
-  (``ontology.text_index.store_text_index``).
+  (``ontology.text_index.store_text_index``, its documents read by the build's workers:
+  ``ontology.text_parallel``).
 * ``twins``: a Portal-BC purchase-order pair the schema joins only on the number text,
   corroborated by its supplier and its date or total, as a ``corroborated`` same-record
   link beside the lead (``ontology.identity_scoring.twin_step``; after ``reviews``, so a
@@ -75,8 +77,8 @@ from ontology.identity_scoring import twin_step, your_reference_step
 from ontology.document_fields import store_document_links
 from ontology.finish_parallel import store_mention_links
 from ontology.mentions import Document
-from ontology.sender_corroboration import sender_corroboration_step
-from ontology.text_index import store_text_index
+from ontology.sender_parallel import sender_corroboration_step
+from ontology.text_parallel import store_text_index
 
 from . import kind_confirmation
 

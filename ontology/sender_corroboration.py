@@ -45,7 +45,7 @@ from collections import defaultdict
 from hashlib import sha256
 import json
 import re
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from ontology import mentions
 from ontology.store import canonical
@@ -234,83 +234,162 @@ def _exact(reason: list[Mapping[str, Any]]) -> bool:
 
 
 def _carrier_links(facts: _Facts, doc_type: str, link_type: str, target_type: str,
-                   email_link: str | None) -> list[dict[str, Any]]:
-    """The ``doccarrier:`` lead rows of every current mail object of ``doc_type``."""
+                   email_link: str | None, *,
+                   each: Callable[[list[dict[str, Any]]], Iterable[list[dict[str, Any]]]]
+                   | None = None) -> list[dict[str, Any]]:
+    """The ``doccarrier:`` lead rows of every current mail object of ``doc_type``.
+    ``each``: the rows of each of the documents, in their order (``_carrier_rows`` of
+    each by default)."""
     if email_link is None:
         return []
+    docs = [dict(doc) for doc in facts.query(
+        "SELECT o.object_id, v.l1_handle, v.digest, v.lineage, v.markings, "
+        "v.recorded_at, v.superseded_at FROM objects o JOIN object_versions v "
+        "ON v.object_id = o.object_id WHERE o.object_type = ? AND "
+        "v.superseded_at IS NULL ORDER BY o.object_id", [doc_type])]
+    found = (each(docs) if each is not None else
+             (_carrier_rows(facts, doc, link_type, target_type, email_link) for doc in docs))
+    return [row for rows in found for row in rows]
+
+
+def _carrier_rows(facts: _Facts, doc: Mapping[str, Any], link_type: str, target_type: str,
+                  email_link: str) -> list[dict[str, Any]]:
+    """The ``doccarrier:`` lead rows of one mail document (a row of ``_carrier_links``)."""
     rows: list[dict[str, Any]] = []
-    docs = facts.query("SELECT o.object_id, v.l1_handle, v.digest, v.lineage, v.markings, "
-                       "v.recorded_at, v.superseded_at FROM objects o JOIN object_versions v "
-                       "ON v.object_id = o.object_id WHERE o.object_type = ? AND "
-                       "v.superseded_at IS NULL ORDER BY o.object_id", [doc_type])
-    for doc in docs:
-        email = message_of(doc["object_id"])
-        if email is None:
+    email = message_of(doc["object_id"])
+    if email is None:
+        return rows
+    message = doc["l1_handle"].split("#", 1)[0]
+    own = {r["to_object"] for r in facts.query(
+        "SELECT to_object FROM links WHERE from_object = ? AND link_type = ? AND "
+        "superseded_at IS NULL", [doc["object_id"], link_type])}
+    named: dict[str, list[Any]] = defaultdict(list)
+    for link in facts.query("SELECT * FROM links WHERE from_object = ? AND link_type = ? "
+                            "AND superseded_at IS NULL ORDER BY link_id",
+                            [email, email_link]):
+        handles = json.loads(link["evidence_handles"])
+        why = {f.get("feature") for f in json.loads(link["why_not"])}
+        reason = json.loads(link["reason"])
+        mention = next((f for f in reason if f.get("feature") == "identifier_mention"), {})
+        cites = mention.get("citations") or []
+        # this message version's own text, or this attachment's name
+        in_carrier = handles[:1] == [message] and all(
+            c.get("l1_handle") in (message, doc["l1_handle"].split("&sha256=", 1)[0],
+                                   doc["l1_handle"]) for c in cites)
+        if not in_carrier or why & _VETOES or not mentions.exact_candidate(reason):
             continue
-        message = doc["l1_handle"].split("#", 1)[0]
-        own = {r["to_object"] for r in facts.query(
-            "SELECT to_object FROM links WHERE from_object = ? AND link_type = ? AND "
-            "superseded_at IS NULL", [doc["object_id"], link_type])}
-        named: dict[str, list[Any]] = defaultdict(list)
-        for link in facts.query("SELECT * FROM links WHERE from_object = ? AND link_type = ? "
-                                "AND superseded_at IS NULL ORDER BY link_id",
-                                [email, email_link]):
-            handles = json.loads(link["evidence_handles"])
-            why = {f.get("feature") for f in json.loads(link["why_not"])}
-            reason = json.loads(link["reason"])
-            mention = next((f for f in reason if f.get("feature") == "identifier_mention"), {})
-            cites = mention.get("citations") or []
-            # this message version's own text, or this attachment's name
-            in_carrier = handles[:1] == [message] and all(
-                c.get("l1_handle") in (message, doc["l1_handle"].split("&sha256=", 1)[0],
-                                       doc["l1_handle"]) for c in cites)
-            if not in_carrier or why & _VETOES or not mentions.exact_candidate(reason):
-                continue
-            named[mention["normalized"]].append(link)
-        if len(named) != 1:
-            continue   # none, or several numbers: the message does not say which
-        (normalized, links), = named.items()
-        for link in links:
-            target = link["to_object"]
-            if target in own or not target.startswith(target_type + ":"):
-                continue
-            window = mentions._overlap((doc["recorded_at"], doc["superseded_at"]),
-                                       (link["recorded_at"], link["superseded_at"]))
-            if window is None:
-                continue
-            reason = json.loads(link["reason"])
-            mention = next(f for f in reason if f.get("feature") == "identifier_mention")
-            feature = {"feature": "carrier_reference", "agrees": True,
-                       "identifier_kind": mention.get("identifier_kind"),
-                       "normalized": normalized, "citations": mention.get("citations"),
-                       "mention_group": _digest(doc["object_id"], doc["l1_handle"], email,
-                                                normalized)}
-            why_not = [{"feature": "machine_read", "agrees": None,
-                        "detail": "read from the message carrying the document (its subject, "
-                                  "body or attachment name), not from the document; a lead "
-                                  "until corroborated or reviewed"},
-                       {"feature": "external_assertion", "agrees": False,
-                        "cannot_confirm": list(mentions.EXTERNAL_UNCONFIRMABLE)}]
-            rows.append({
-                "link_id": CARRIER_PREFIX + _digest(doc["object_id"], doc["l1_handle"],
-                                                    link["link_id"]),
-                "link_type": link_type, "from_object": doc["object_id"], "to_object": target,
-                "tier": mentions.TIER, "binding_kind": mentions.BINDING_KIND,
-                "link_contract": None,
-                "reason": json.dumps([feature, mentions._candidate(reason)], sort_keys=True,
-                                     separators=(",", ":")),
-                "why_not": json.dumps(why_not, sort_keys=True, separators=(",", ":")),
-                "evidence_handles": json.dumps(list(dict.fromkeys(
-                    [doc["l1_handle"], *json.loads(link["evidence_handles"])])),
-                    separators=(",", ":")),
-                "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
-                "markings": mentions._marks(doc["markings"], link["markings"]),
-                "recorded_at": window[0], "superseded_at": window[1]})
+        named[mention["normalized"]].append(link)
+    if len(named) != 1:
+        return rows   # none, or several numbers: the message does not say which
+    (normalized, links), = named.items()
+    for link in links:
+        target = link["to_object"]
+        if target in own or not target.startswith(target_type + ":"):
+            continue
+        window = mentions._overlap((doc["recorded_at"], doc["superseded_at"]),
+                                   (link["recorded_at"], link["superseded_at"]))
+        if window is None:
+            continue
+        reason = json.loads(link["reason"])
+        mention = next(f for f in reason if f.get("feature") == "identifier_mention")
+        feature = {"feature": "carrier_reference", "agrees": True,
+                   "identifier_kind": mention.get("identifier_kind"),
+                   "normalized": normalized, "citations": mention.get("citations"),
+                   "mention_group": _digest(doc["object_id"], doc["l1_handle"], email,
+                                            normalized)}
+        why_not = [{"feature": "machine_read", "agrees": None,
+                    "detail": "read from the message carrying the document (its subject, "
+                              "body or attachment name), not from the document; a lead "
+                              "until corroborated or reviewed"},
+                   {"feature": "external_assertion", "agrees": False,
+                    "cannot_confirm": list(mentions.EXTERNAL_UNCONFIRMABLE)}]
+        rows.append({
+            "link_id": CARRIER_PREFIX + _digest(doc["object_id"], doc["l1_handle"],
+                                                link["link_id"]),
+            "link_type": link_type, "from_object": doc["object_id"], "to_object": target,
+            "tier": mentions.TIER, "binding_kind": mentions.BINDING_KIND,
+            "link_contract": None,
+            "reason": json.dumps([feature, mentions._candidate(reason)], sort_keys=True,
+                                 separators=(",", ":")),
+            "why_not": json.dumps(why_not, sort_keys=True, separators=(",", ":")),
+            "evidence_handles": json.dumps(list(dict.fromkeys(
+                [doc["l1_handle"], *json.loads(link["evidence_handles"])])),
+                separators=(",", ":")),
+            "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
+            "markings": mentions._marks(doc["markings"], link["markings"]),
+            "recorded_at": window[0], "superseded_at": window[1]})
     return rows
 
 
-def _firm_links(facts: _Facts, parties: _Parties, link_type: str, own: set[str],
-                extra: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def _screen(lead: Mapping[str, Any], rejected: set[tuple[str, str]]) -> tuple[str, Any]:
+    """A lead refused before its sender is read (``("count", reason)``), else
+    ``("sender", the Email object carrying it)``."""
+    reason, why = json.loads(lead["reason"]), json.loads(lead["why_not"])
+    if {f.get("feature") for f in why} & _VETOES or not _exact(reason):
+        return "count", "not_exact"
+    if (lead["from_object"], lead["to_object"]) in rejected:
+        return "count", "rejected"
+    email = message_of(lead["from_object"])
+    if email is None:
+        return "count", "no_sender"
+    return "sender", email
+
+
+def _sender(facts: _Facts, email: str, window: tuple[str, str | None]
+            ) -> tuple[str, Any] | None:
+    """(domain, value row) of the sender of ``email`` held over ``window`` (the first lead
+    of the message's: one sender per message), else None."""
+    row = facts.held_value(email, "sender", *window)
+    domain = mentions.mail_domain(row["value"]) if row is not None else None
+    return (domain, row) if domain else None
+
+
+def _verdict(facts: _Facts, parties: _Parties, lead: Mapping[str, Any],
+             sender: tuple[str, Any] | None, own: set[str]) -> tuple[Any, ...]:
+    """What the firm step decides of a lead whose message's sender is ``sender``:
+    ``("count", reason)``, or ``("passed", group, (party feature, sender row))``."""
+    if sender is None:
+        return "count", "no_sender"
+    domain, sender_row = sender
+    if any(mentions.domain_under(domain, d) for d in own):
+        return "count", "own_sender"
+    email = message_of(lead["from_object"])
+    start, end = lead["recorded_at"], lead["superseded_at"]
+    sent = next((mentions.day(r["value"]) for p in ("sent_at", "received_at")
+                 if (r := facts.held_value(email, p, start, end)) is not None), None)
+    ordered = facts.held_value(lead["to_object"], "order_date", start, end)
+    if ordered is not None and mentions.date_order(
+            mentions.day(ordered["value"]), sent)["status"] == "message_predates_target":
+        return "count", "message_predates_target"
+    found = parties.match(lead["to_object"], domain, start, end)
+    if found is None:
+        return "count", "no_party_domain"
+    group = _reference(json.loads(lead["reason"])).get("mention_group") or lead["link_id"]
+    return "passed", group, (found, sender_row)
+
+
+def _verdicts(facts: _Facts, parties: _Parties, leads: list[dict[str, Any]],
+              screened: list[tuple[str, Any]], windows: Mapping[str, tuple[str, str | None]],
+              own: set[str]) -> Iterator[tuple[Any, ...]]:
+    """:func:`_verdict` of each lead, in order (its screen's when it was refused)."""
+    senders: dict[str, tuple[str, Any] | None] = {}
+    for lead, (kind, value) in zip(leads, screened):
+        if kind == "count":
+            yield kind, value
+            continue
+        if value not in senders:
+            senders[value] = _sender(facts, value, windows[value])
+        yield _verdict(facts, parties, lead, senders[value], own)
+
+
+def _firm_links(facts: _Facts, parties: _Parties | None, link_type: str, own: set[str],
+                extra: list[dict[str, Any]], *,
+                judge: Callable[..., Iterable[tuple[Any, ...]]] | None = None
+                ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """The ``docfirm:`` rows of the current leads of ``link_type`` and ``extra`` (this
+    build's carrier leads) and why each other lead stays one. ``judge``: the verdicts of
+    the leads, in order, given the leads, their screens and the window each message's
+    sender is read over (:func:`_verdicts` over ``parties`` by default)."""
     counts = defaultdict(int)
     leads = [dict(r) for r in facts.query(
         "SELECT * FROM links WHERE link_type = ? AND tier = ? AND binding_kind = ? AND "
@@ -320,45 +399,20 @@ def _firm_links(facts: _Facts, parties: _Parties, link_type: str, own: set[str],
     rejected = {(r["from_object"], r["to_object"]) for r in facts.query(
         "SELECT from_object, to_object FROM links WHERE link_type = ? AND tier = "
         "'contradicted'", [link_type])}
+    screened = [_screen(lead, rejected) for lead in leads]
+    # a message's sender is read once, over the window of its first lead read so far
+    windows: dict[str, tuple[str, str | None]] = {}
+    for lead, (kind, value) in zip(leads, screened):
+        if kind == "sender" and value not in windows:
+            windows[value] = (lead["recorded_at"], lead["superseded_at"])
+    verdicts = (judge(leads, screened, windows) if judge is not None
+                else _verdicts(facts, parties, leads, screened, windows, own))
     passed: dict[tuple[str, str], list[tuple[dict, tuple]]] = defaultdict(list)
-    senders: dict[str, tuple[str, Any] | None] = {}
-    for lead in leads:
-        reason, why = json.loads(lead["reason"]), json.loads(lead["why_not"])
-        if {f.get("feature") for f in why} & _VETOES or not _exact(reason):
-            counts["not_exact"] += 1
-            continue
-        if (lead["from_object"], lead["to_object"]) in rejected:
-            counts["rejected"] += 1
-            continue
-        email = message_of(lead["from_object"])
-        if email is None:
-            counts["no_sender"] += 1
-            continue
-        start, end = lead["recorded_at"], lead["superseded_at"]
-        if email not in senders:
-            row = facts.held_value(email, "sender", start, end)
-            domain = mentions.mail_domain(row["value"]) if row is not None else None
-            senders[email] = (domain, row) if domain else None
-        if senders[email] is None:
-            counts["no_sender"] += 1
-            continue
-        sender, sender_row = senders[email]
-        if any(mentions.domain_under(sender, d) for d in own):
-            counts["own_sender"] += 1
-            continue
-        sent = next((mentions.day(r["value"]) for p in ("sent_at", "received_at")
-                     if (r := facts.held_value(email, p, start, end)) is not None), None)
-        ordered = facts.held_value(lead["to_object"], "order_date", start, end)
-        if ordered is not None and mentions.date_order(
-                mentions.day(ordered["value"]), sent)["status"] == "message_predates_target":
-            counts["message_predates_target"] += 1
-            continue
-        found = parties.match(lead["to_object"], sender, start, end)
-        if found is None:
-            counts["no_party_domain"] += 1
-            continue
-        group = _reference(reason).get("mention_group") or lead["link_id"]
-        passed[(lead["from_object"], group)].append((lead, (found, sender_row)))
+    for lead, verdict in zip(leads, verdicts, strict=True):
+        if verdict[0] == "count":
+            counts[verdict[1]] += 1
+        else:
+            passed[(lead["from_object"], verdict[1])].append((lead, verdict[2]))
     rows = []
     for (_doc, _group), found in sorted(passed.items()):
         targets = sorted({lead["to_object"] for lead, _ in found})

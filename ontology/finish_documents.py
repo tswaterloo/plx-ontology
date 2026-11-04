@@ -268,44 +268,7 @@ class GroupReader:
 
     def _portable(self, load: Any) -> tuple[Any, ...] | None:
         """(source spec, method, args, wrap) a worker reads ``load`` by; None: read here."""
-        from ontology import project_parallel as par
-        from ontology.store import canonical
-
-        plain = _plain_load(load)
-        if plain is None:
-            return None
-        group_load, wrap = plain
-        if wrap is not None:
-            if wrap not in self._wraps:
-                try:
-                    pickle.dumps(wrap)
-                    self._wraps[wrap] = True
-                except Exception:  # noqa: BLE001 - not a module-level function
-                    self._wraps[wrap] = False
-            if not self._wraps[wrap]:
-                return None
-        source = group_load.source
-        if id(source) not in self._specs:
-            spec = None
-            pool = par.DOCUMENTS
-            if pool is not None:
-                spec = getattr(pool, "_specs", {}).get(id(source))
-            if spec is None:   # outside a generation build: the source as it is open now
-                try:
-                    mark = source.watermark()
-                    spec = None if mark is None else par._source_spec(
-                        "", source, (), canonical(mark))
-                except Exception:  # noqa: BLE001 - read here
-                    spec = None
-            self._specs[id(source)] = spec
-        spec = self._specs[id(source)]
-        if spec is None:
-            return None
-        try:
-            method, args = group_load.portable()
-        except Exception:  # noqa: BLE001 - read here
-            return None
-        return spec, method, args, wrap
+        return portable_load(load, self._specs, self._wraps)
 
     def read_ahead(self, groups: Iterable[M.DocumentGroup], *_: Any, **__: Any
                    ) -> Iterator[tuple[Any, Any, Any]]:
@@ -397,10 +360,7 @@ class GroupReader:
         self.current.clear()
 
     def _absorb(self, taken: Any) -> None:
-        from ontology import project_parallel as par
-
-        for (module, memo, *_), (used, new) in zip(self._kept, taken):
-            par._kept_memo(module, memo).backing.absorb(used, new)
+        absorb_kept(self._kept, taken)
 
     def _yield(self, group: Any, load: Any, found: Any) -> tuple[Any, Any, Any]:
         """Set what the workers found for this group and give it to the step."""
@@ -487,6 +447,61 @@ class GroupReader:
         key = used[1] if isinstance(used, tuple) else None
         found = self.current.found.get((key, self.code))
         return None if found is None else found[0].get("resolved")
+
+
+def portable_load(load: Any, specs: dict[int, Any], wraps: dict[Any, bool]
+                  ) -> tuple[Any, ...] | None:
+    """(source spec, method, args, wrap) a worker reads a group's ``load`` by (a capture
+    source's ``GroupLoad``, perhaps wrapped by a module-level function); None: it is read
+    by the build's process. ``specs`` and ``wraps``: the caller's caches, by source and
+    by wrapping function."""
+    from ontology import project_parallel as par
+    from ontology.store import canonical
+
+    plain = _plain_load(load)
+    if plain is None:
+        return None
+    group_load, wrap = plain
+    if wrap is not None:
+        if wrap not in wraps:
+            try:
+                pickle.dumps(wrap)
+                wraps[wrap] = True
+            except Exception:  # noqa: BLE001 - not a module-level function
+                wraps[wrap] = False
+        if not wraps[wrap]:
+            return None
+    source = group_load.source
+    if id(source) not in specs:
+        spec = None
+        pool = par.DOCUMENTS
+        if pool is not None:
+            spec = getattr(pool, "_specs", {}).get(id(source))
+        if spec is None:   # outside a generation build: the source as it is open now
+            try:
+                mark = source.watermark()
+                spec = None if mark is None else par._source_spec(
+                    "", source, (), canonical(mark))
+            except Exception:  # noqa: BLE001 - read here
+                spec = None
+        specs[id(source)] = spec
+    spec = specs[id(source)]
+    if spec is None:
+        return None
+    try:
+        method, args = group_load.portable()
+    except Exception:  # noqa: BLE001 - read here
+        return None
+    return spec, method, args, wrap
+
+
+def absorb_kept(kept: Any, taken: Any) -> None:
+    """Record in the build's kept readings what a worker's views of them hit and kept
+    (``project_parallel._init_parse``)."""
+    from ontology import project_parallel as par
+
+    for (module, memo, *_), (used, new) in zip(kept, taken):
+        par._kept_memo(module, memo).backing.absorb(used, new)
 
 
 def _citation(document: Any, used: Any) -> Any:
@@ -622,4 +637,5 @@ def _derive(key: Any, found: Any, document: Any, used: Any) -> tuple[Any, ...]:
     return key, still, mentioned, resolved, used
 
 
-__all__ = ["GroupReader", "MIN_GROUPS", "TASK_GROUPS", "WINDOW_TASKS"]
+__all__ = ["GroupReader", "MIN_GROUPS", "TASK_GROUPS", "WINDOW_TASKS", "absorb_kept",
+           "portable_load"]

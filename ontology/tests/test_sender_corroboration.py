@@ -49,6 +49,55 @@ def oc(*lines):
     return pdf([["ORDER CONFIRMATION", *lines]])
 
 
+def world(root: Path, copies: int = 1) -> tuple[Path, dict[str, list]]:
+    """The mail capture (``<root>/mailstate``) of the fixture's messages, ``copies`` times
+    over (message ``n`` is case ``n % 7``), and the Portal rows they name."""
+    suppliers = [supplier(1, "Amber Polymers Inc.", "https://www.amberpoly.example"),
+                 supplier(3, "Cedar Metals", None),
+                 supplier(6, "Shared One", "sharedpack.example"),
+                 supplier(7, "Shared Two", "sharedpack.example")]
+    pos = [portal_po(1, "PO7001", "s1", "Pending"),
+           portal_po(3, "PO7003", "s3", "Pending"),
+           portal_po(4, "PO7004", "s1", "Pending"),
+           {**portal_po(10, "PO7010", "s1", "Pending"), "date_generated": "2026-12-01"},
+           portal_po(11, "PO7011", "s6", "Pending")]
+    mail = [  # (sender, subject, body, attachment lines)
+        ("sales@amberpoly.example", "OC", "We will deliver your order Oct 20th.",
+         ["Your PO: PO#7001"]),                                   # firm
+        ("cedar.metals.sales@gmail.com", "OC", "attached", ["Your PO: PO#7003"]),
+        ("sales@amberpoly.example", "Order confirmation PO#7004", "attached",
+         ["Total Amount: USD 10.00"]),                            # carrier, firm
+        (UPN_A, "FW: OC", "see below", ["Your PO: PO#7001"]),      # a colleague's forward
+        ("sales@amberpoly.example", "OC", "attached", ["Your PO: PO#7010"]),  # predates
+        ("sales@sharedpack.example", "OC", "attached", ["Your PO: PO#7011"]),
+        ("sales@amberpoly.example", "POs PO#7001 and PO#7004", "attached",
+         ["Total Amount: USD 20.00"])]                            # names two: no carrier
+    graph = FakeGraph()
+    for n, (sender, subject, body, lines) in enumerate(mail * copies):
+        mid = f"MSG-{n}"
+        graph.put(BOX_A, mid, f"CK-{n}", subject=subject, body=body,
+                  attachments=[file_attachment(f"ATT-{n}", oc(*lines), f"oc{n}.pdf")],
+                  received="2026-09-20T10:00:00Z")
+        graph.messages[BOX_A][mid]["from"] = {"emailAddress": {"address": sender}}
+    state = root / "mailstate"
+    store = MailCaptureStore(state, clock=Clock())
+    try:
+        api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+        run = MailCapture(store, graph_read.GraphMailReader(api, capture_audience()),
+                          CAPTURE, sleep=lambda s: None).run(SCOPE)
+        assert run["complete"], run
+    finally:
+        store.close()
+    for po in pos:   # a Portal order with no FileMaker twin to read (decision 4)
+        po["custom_fields"] = {**po["custom_fields"], "fmTable": "po", "fmId": po["id"]}
+    lines = [{"id": f"l{po['id']}", "purchase_order_id": po["id"], "quantity": "10",
+              "quantity_received": "0", "uom": "EA", "unit_cost": "1"} for po in pos]
+    rows = {"public.app_supplier": suppliers, "public.app_purchase_order": pos,
+            "public.app_purchase_order_line": lines}
+    return state, rows
+
+
 @unittest.skipUnless(importlib.util.find_spec("pypdf") and importlib.util.find_spec("reportlab"),
                      "confirmations are read from PDFs: needs pypdf and reportlab")
 class SenderCorroborationTests(unittest.TestCase):
@@ -59,50 +108,8 @@ class SenderCorroborationTests(unittest.TestCase):
             os.environ.pop(key)
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
-        suppliers = [supplier(1, "Amber Polymers Inc.", "https://www.amberpoly.example"),
-                     supplier(3, "Cedar Metals", None),
-                     supplier(6, "Shared One", "sharedpack.example"),
-                     supplier(7, "Shared Two", "sharedpack.example")]
-        pos = [portal_po(1, "PO7001", "s1", "Pending"),
-               portal_po(3, "PO7003", "s3", "Pending"),
-               portal_po(4, "PO7004", "s1", "Pending"),
-               {**portal_po(10, "PO7010", "s1", "Pending"), "date_generated": "2026-12-01"},
-               portal_po(11, "PO7011", "s6", "Pending")]
-        mail = [  # (sender, subject, body, attachment lines)
-            ("sales@amberpoly.example", "OC", "We will deliver your order Oct 20th.",
-             ["Your PO: PO#7001"]),                                   # firm
-            ("cedar.metals.sales@gmail.com", "OC", "attached", ["Your PO: PO#7003"]),
-            ("sales@amberpoly.example", "Order confirmation PO#7004", "attached",
-             ["Total Amount: USD 10.00"]),                            # carrier, firm
-            (UPN_A, "FW: OC", "see below", ["Your PO: PO#7001"]),      # a colleague's forward
-            ("sales@amberpoly.example", "OC", "attached", ["Your PO: PO#7010"]),  # predates
-            ("sales@sharedpack.example", "OC", "attached", ["Your PO: PO#7011"]),
-            ("sales@amberpoly.example", "POs PO#7001 and PO#7004", "attached",
-             ["Total Amount: USD 20.00"])]                            # names two: no carrier
-        graph = FakeGraph()
-        for n, (sender, subject, body, lines) in enumerate(mail):
-            mid = f"MSG-{n}"
-            graph.put(BOX_A, mid, f"CK-{n}", subject=subject, body=body,
-                      attachments=[file_attachment(f"ATT-{n}", oc(*lines), f"oc{n}.pdf")],
-                      received="2026-09-20T10:00:00Z")
-            graph.messages[BOX_A][mid]["from"] = {"emailAddress": {"address": sender}}
-        state = root / "mailstate"
-        store = MailCaptureStore(state, clock=Clock())
-        try:
-            api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
-                sleep=lambda s: None, jitter=lambda: 0.0))
-            run = MailCapture(store, graph_read.GraphMailReader(api, capture_audience()),
-                              CAPTURE, sleep=lambda s: None).run(SCOPE)
-            assert run["complete"], run
-        finally:
-            store.close()
+        state, rows = world(root)
         cls.path = root / "ontology.sqlite"
-        for po in pos:   # a Portal order with no FileMaker twin to read (decision 4)
-            po["custom_fields"] = {**po["custom_fields"], "fmTable": "po", "fmId": po["id"]}
-        lines = [{"id": f"l{po['id']}", "purchase_order_id": po["id"], "quantity": "10",
-                  "quantity_received": "0", "uom": "EA", "unit_cost": "1"} for po in pos]
-        rows = {"public.app_supplier": suppliers, "public.app_purchase_order": pos,
-                "public.app_purchase_order_line": lines}
         with MailCaptures(state, internal_domains=SCOPE.internal_domains) as captures:
             cls.report = build_store(
                 cls.path, SCHEMA, {"portal_api": Source("portal_api", rows),
