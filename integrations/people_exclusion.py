@@ -265,6 +265,12 @@ class PeopleExclusion:
             onedrive.pop(key, None)
         self._directory, self._directory_onedrive = addresses, onedrive
 
+    def known_domains(self) -> frozenset[str]:
+        """The mail domains the tenant's directory (attached or bound) holds addresses in:
+        an address there is a tenant person's and must be decided, never assumed external."""
+        held = set(self._directory or ()) | set(self._addresses)
+        return frozenset(a.rsplit("@", 1)[1] for a in held if "@" in a)
+
     @property
     def directory_loaded(self) -> bool:
         return self._directory is not None

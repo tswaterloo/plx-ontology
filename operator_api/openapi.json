@@ -40,6 +40,12 @@
             "title": "Card Id",
             "type": "string"
           },
+          "checked_sent_items": {
+            "default": false,
+            "description": "The person checked Sent Items after an unknown outcome and the message is not there.",
+            "title": "Checked Sent Items",
+            "type": "boolean"
+          },
           "confirm": {
             "description": "True only from the person's own Send/Confirm click.",
             "title": "Confirm",
@@ -213,6 +219,7 @@
               "pending",
               "sent",
               "failed",
+              "unknown",
               "dry_run",
               "follow_up",
               "done",
@@ -361,6 +368,22 @@
               }
             ],
             "title": "Subject"
+          },
+          "thread_recipients": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who a reply reaches as Graph addresses it (the message's Reply-To, else its sender), read from the message; never edited.",
+            "title": "Thread Recipients"
           },
           "to": {
             "anyOf": [
@@ -609,6 +632,7 @@
               "pending",
               "sent",
               "failed",
+              "unknown",
               "dry_run",
               "follow_up",
               "done",

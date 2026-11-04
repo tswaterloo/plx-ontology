@@ -20,16 +20,26 @@ more explicit confirm), and every refusal (``problems``). Hard refusals, fail cl
 * a sender or recipient who is an excluded person (``PLX_EXCLUDED_PEOPLE_OIDS``), and any
   internal address the exclusion guard cannot decide; an unavailable guard refuses every
   outbound action, for everyone;
+* everyone an action reaches is checked as Graph addresses it: a reply's Reply-To (else
+  the message's sender), read from the message itself (``Context.thread``; unreadable:
+  refused, and the preview lists them), and every member of a Teams chat
+  (``Context.chat_members``; unreadable: refused);
+* an address on a tenant domain (the sender's, ``PLX_ACTIONS_INTERNAL_DOMAINS``, any domain
+  the tenant directory holds an alias on, any ``*.onmicrosoft.com``) is decided by the
+  guard, never assumed external;
 * a reply or forward of a message that is not in the sender's own mailbox;
-* a forward or Teams note leaving the company; a Teams chat not configured for actions
-  (``PLX_ACTIONS_TEAMS_CHATS``: the chats an admin cleared, name=id pairs).
+* a forward leaving the company; a Teams chat not configured for actions
+  (``PLX_ACTIONS_TEAMS_CHATS``: the chats an admin cleared, name=id pairs);
+* a figure, spelled-out number or relative day ("ten thousand", "tomorrow", "next week")
+  that no citation or drafted text states, and a drafted figure moved to another label.
 
 ``ActionDesk.confirm`` does an action only on an explicit confirm by a named, signed-in
 person, for the payload hash the preview showed them, once per idempotency key. Every
 confirmed action is an append-only journal row (who, when, card, payload hash, recipients,
 subject, citations, result), hash-chained, never holding the message body. An outbound
 action is first journalled ``pending``; a second click, a second dialog or a retry after a
-crash finds that row and never sends again. The send itself is
+crash finds that row and never sends again; a send whose outcome is unknown (a 5xx, a cut
+connection, a crash) blocks a resend until the person says they checked Sent Items. The send itself is
 ``integrations.graph_send.ActionSender``: a dry run (with what is missing) unless sending
 is enabled and permitted.
 
@@ -70,7 +80,21 @@ _CHAT = re.compile(r"^19:[A-Za-z0-9_.-]{1,200}@(?:thread\.v2|unq\.gbl\.spaces)$"
 _KEY = re.compile(r"^[A-Za-z0-9_-]{16,80}$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # A date or a quantity in the text: a dated day first, then any number.
-_FIGURE = re.compile(r"\d{4}-\d{2}-\d{2}|\d+(?:[.,]\d+)*")
+_SPELLED = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|"
+            r"fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|"
+            r"fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|dozen|"
+            r"half|couple")
+_RELATIVE = (r"today|tonight|tomorrow|yesterday|overmorrow|"
+             r"(?:next|this|last|coming|following)\s+(?:week|month|quarter|year|weekend|"
+             r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+             r"end\s+of\s+(?:the\s+)?(?:day|week|month|quarter|year)|"
+             r"monday|tuesday|wednesday|thursday|friday|saturday|sunday")
+_TERM = re.compile(rf"\d{{4}}-\d{{2}}-\d{{2}}|\d+(?:[.,]\d+)*|\b(?:{_RELATIVE})\b|"
+                   rf"\b(?:{_SPELLED})\b", re.IGNORECASE)
+# A figure and the word before it on the same line: "ordered 200", "by 2026-10-24".
+_LABELLED = re.compile(r"([A-Za-z]+)[ \t:]{1,3}(\d{4}-\d{2}-\d{2}|\d+(?:[.,]\d+)*)")
+_SENDER = re.compile(r"^[A-Za-z0-9._+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$")
+_MESSAGE_ID = re.compile(r"^[A-Za-z0-9_=-]{1,400}$")
 
 
 class ActionRefused(ValueError):
@@ -145,11 +169,28 @@ class Context:
     exclusion: Any
     today: date
     environ: Mapping[str, str] = field(default_factory=dict)
+    # (mailbox oid, message id) -> {"from": address, "reply_to": [addresses] ([] none,
+    # None unknown)} read from the message itself; None: unreadable (a reply is refused)
+    thread: Callable[[str, str], Mapping[str, Any] | None] | None = None
+    # chat id -> its members [{"id": oid, "email": address}]; None: unreadable (refused)
+    chat_members: Callable[[str], Sequence[Mapping[str, Any]] | None] | None = None
 
     @property
     def internal_domains(self) -> frozenset[str]:
-        own = {self.sender.rsplit("@", 1)[1].lower()} if self.sender else set()
-        return frozenset(own | _domains(self.environ.get(INTERNAL_DOMAINS_ENV)))
+        """The sender's domain, the configured ones and every domain the tenant directory
+        holds an address in (an alias on any of them is a tenant person's)."""
+        own = {self.sender.rsplit("@", 1)[1].lower()} if self.sender and "@" in self.sender \
+            else set()
+        directory = getattr(self.exclusion, "known_domains", None)
+        held = set(directory()) if callable(directory) else set()
+        return frozenset(own | held | _domains(self.environ.get(INTERNAL_DOMAINS_ENV)))
+
+    def is_internal(self, domain: str) -> bool:
+        """A tenant domain: decided by the exclusion guard, never assumed external. Every
+        ``*.onmicrosoft.com`` counts (the tenant's own default domain among them)."""
+        domain = domain.lower()
+        return domain in self.internal_domains or domain == "onmicrosoft.com" \
+            or domain.endswith(".onmicrosoft.com")
 
 
 def _domains(raw: Any) -> set[str]:
@@ -209,8 +250,34 @@ def _text(value: Any, limit: int) -> str:
     return str(value or "").replace("\r\n", "\n").strip()[:limit]
 
 
-def _figures(text: str) -> list[str]:
-    return _FIGURE.findall(text or "")
+def _terms(text: str) -> list[str]:
+    """Every figure, spelled-out number and relative day in ``text`` (lower case)."""
+    return [m.group(0).lower() for m in _TERM.finditer(text or "")]
+
+
+def uncited_terms(text: str, drafted: str, cited: Iterable[str]) -> list[str]:
+    """The figures, spelled-out numbers and relative days of ``text`` that neither a cited
+    value nor the drafted text states."""
+    backed = set(_terms(drafted))
+    for value in cited:
+        backed |= set(_terms(value))
+    return list(dict.fromkeys(t for t in _terms(text) if t not in backed))
+
+
+def _labelled(text: str) -> list[tuple[str, str]]:
+    return [(m.group(2), m.group(1).lower()) for m in _LABELLED.finditer(text or "")]
+
+
+def swapped_figures(text: str, drafted: str) -> list[str]:
+    """Figures of the drafted text now beside a label the draft gave another figure
+    ("ordered 0 kg, received 200 kg" from "ordered 200 kg, received 0 kg")."""
+    by_label: dict[str, set[str]] = {}
+    for figure, label in _labelled(drafted):
+        by_label.setdefault(label, set()).add(figure)
+    figures = {f for held in by_label.values() for f in held}
+    return list(dict.fromkeys(f"{label} {figure}" for figure, label in _labelled(text)
+                              if label in by_label and figure in figures
+                              and figure not in by_label[label]))
 
 
 def _day(value: Any, label: str, low: date, high: date, problems: list[str]) -> str | None:
@@ -260,7 +327,9 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
     if kind not in {o["kind"] for o in offers(card)}:
         raise ActionRefused([f"{LABELS[kind]} is not offered on this card."])
     base = default_payload(kind, card, ctx)
-    edits = {k: v for k, v in (edits or {}).items() if v is not None}
+    # the thread's own recipients are read from the message, never taken from the edits
+    edits = {k: v for k, v in (edits or {}).items()
+             if v is not None and k != "thread_recipients"}
     if kind in ("reply_in_thread", "forward") and edits.get("in_reply_to") == thread_handle(card):
         del edits["in_reply_to"]   # echoed back from the preview: the card decides it
     unknown = set(edits) - set(base)
@@ -281,6 +350,8 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
             guard = None
         if not ctx.sender:
             problems.append("No signed-in mailbox: sign in as yourself to send.")
+        elif not _SENDER.fullmatch(ctx.sender):
+            problems.append("Your mailbox address cannot be used as a sender.")
         elif guard is not None:
             verdict = _excluded(guard, ctx.sender_oid, True) if ctx.sender_oid \
                 else _excluded(guard, ctx.sender, True)
@@ -288,30 +359,64 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                 problems.append("You cannot send from this mailbox." if verdict == "excluded"
                                 else "Your mailbox could not be checked against the "
                                      "exclusion list.")
-        internal = ctx.internal_domains
         draft_to = ((card.get("draft") or {}).get("to") or {}).get("address")
-        known = internal | _domains(ctx.environ.get(KNOWN_DOMAINS_ENV)) | (
+        known = _domains(ctx.environ.get(KNOWN_DOMAINS_ENV)) | (
             {_domain(draft_to)} if draft_to and "@" in draft_to else set())
+
+        def check(address: str, *, internal_only: bool = False, oid: str | None = None
+                  ) -> None:
+            """One person the action reaches: never excluded, decided when internal."""
+            inside = ctx.is_internal(_domain(address))
+            if guard is not None:
+                verdict = _excluded(guard, oid, True) if oid else None
+                verdict = verdict or _excluded(guard, address, inside)
+                if verdict == "excluded":
+                    problems.append(f"{address} cannot receive messages from the Workbench.")
+                elif verdict:
+                    problems.append(f"{address} could not be checked against the exclusion "
+                                    "list.")
+            if internal_only and not inside:
+                problems.append(f"A forward goes to colleagues only: {address} is outside "
+                                "the company.")
+            domain = _domain(address)
+            if not inside and domain not in known and domain not in unknown_domains:
+                unknown_domains.append(domain)
+
+        if kind in ("reply_in_thread", "forward"):
+            parts = mail_parts(thread_handle(card))
+            if parts is None or not _MESSAGE_ID.fullmatch(parts[1]):
+                problems.append("The cited message cannot be addressed.")
+            elif not ctx.sender_oid or parts[0] != ctx.sender_oid.lower():
+                problems.append("The cited message is not in your mailbox: send a new "
+                                "email instead.")
+            else:
+                message_id = parts[1]
+            payload["in_reply_to"] = thread_handle(card)
+        if kind == "reply_in_thread":
+            # Graph addresses a reply to the message's Reply-To, else its sender: those
+            # are read from the message itself and checked like any recipient
+            thread = ctx.thread(parts[0], parts[1]) if ctx.thread and message_id else None
+            payload["thread_recipients"] = []
+            if message_id and thread is None:
+                problems.append("Who the reply goes to (the message's sender and Reply-To) "
+                                "could not be read, so it cannot be checked.")
+            elif thread is not None:
+                reply_to = thread.get("reply_to")
+                found = list(reply_to) if reply_to else [thread.get("from")]
+                if reply_to is None or not all(isinstance(a, str) and _ADDRESS.fullmatch(a)
+                                               for a in found):
+                    problems.append("The message's Reply-To or sender is unknown, so the "
+                                    "reply cannot be checked.")
+                else:
+                    payload["thread_recipients"] = list(dict.fromkeys(a.lower() for a in found))
         if kind != "teams_message":
             payload["to"] = _addresses(raw.get("to"), "To", problems)
             payload["cc"] = _addresses(raw.get("cc"), "Cc", problems)
             if not payload["to"]:
                 problems.append("Add at least one recipient.")
-            for address in payload["to"] + payload["cc"]:
-                inside = _domain(address) in internal
-                if guard is not None:
-                    verdict = _excluded(guard, address, inside)
-                    if verdict == "excluded":
-                        problems.append(f"{address} cannot receive messages from the "
-                                        "Workbench.")
-                    elif verdict:
-                        problems.append(f"{address} could not be checked against the "
-                                        "exclusion list.")
-                if kind == "forward" and not inside:
-                    problems.append(f"A forward goes to colleagues only: {address} is "
-                                    "outside the company.")
-                if _domain(address) not in known and _domain(address) not in unknown_domains:
-                    unknown_domains.append(_domain(address))
+            for address in dict.fromkeys(payload["to"] + payload["cc"]
+                                         + payload.get("thread_recipients", [])):
+                check(address, internal_only=kind == "forward")
         if kind == "send_email":
             payload["subject"] = _text(raw.get("subject"), MAX_SUBJECT + 1)
             if "\n" in payload["subject"] or not payload["subject"]:
@@ -322,34 +427,47 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
             payload["subject"] = None
         if kind == "teams_message":
             chat = raw.get("chat_id")
+            payload["chat_id"] = chat if isinstance(chat, str) else None
             if chat not in {c["chat_id"] for c in teams_chats(ctx.environ)}:
                 problems.append("Pick a Teams chat configured for actions.")
-            payload["chat_id"] = chat if isinstance(chat, str) else None
+            else:
+                members = ctx.chat_members(chat) if ctx.chat_members else None
+                if not members:
+                    problems.append("The chat's members could not be read, so they cannot "
+                                    "be checked against the exclusion list.")
+                for member in members or ():
+                    address, oid = member.get("email"), member.get("id")
+                    if isinstance(address, str) and _ADDRESS.fullmatch(address):
+                        check(address.lower(), oid=oid if isinstance(oid, str) else None)
+                    elif guard is not None and isinstance(oid, str):
+                        verdict = _excluded(guard, oid, True)
+                        if verdict:
+                            problems.append("A member of this chat cannot receive messages "
+                                            "from the Workbench." if verdict == "excluded"
+                                            else "A member of this chat could not be checked "
+                                                 "against the exclusion list.")
+                    else:
+                        problems.append("A member of this chat could not be checked against "
+                                        "the exclusion list.")
         payload["body"] = _text(raw.get("body"), MAX_BODY + 1)
         if not payload["body"]:
             problems.append("The message is empty.")
         elif len(payload["body"]) > MAX_BODY:
             problems.append(f"The message is at most {MAX_BODY} characters.")
-        if kind in ("reply_in_thread", "forward"):
-            parts = mail_parts(thread_handle(card))
-            if parts is None:
-                problems.append("The cited message cannot be addressed.")
-            elif not ctx.sender_oid or parts[0] != ctx.sender_oid.lower():
-                problems.append("The cited message is not in your mailbox: send a new "
-                                "email instead.")
-            else:
-                message_id = parts[1]
-            payload["in_reply_to"] = thread_handle(card)
-        # every date and quantity in the text: cited, or in the drafted text (itself worded
-        # from cited values); anything else the person typed is refused
+        # every date, quantity, spelled-out number or relative day in the text: cited, or
+        # in the drafted text (itself worded from cited values), and each figure still
+        # beside the label it was drafted with; anything else the person typed is refused
         facts = _facts(card)
         text = f"{payload.get('subject') or ''}\n{payload['body']}"
-        backed = {f for fact in facts for f in _figures(fact["value"])}
-        backed |= set(_figures(f"{base.get('subject') or ''}\n{base.get('body') or ''}"))
-        uncited = list(dict.fromkeys(f for f in _figures(text) if f not in backed))
+        drafted = f"{base.get('subject') or ''}\n{base.get('body') or ''}"
+        uncited = uncited_terms(text, drafted, [fact["value"] for fact in facts])
+        swapped = swapped_figures(text, drafted)
         if uncited:
             problems.append("Not backed by a citation: " + ", ".join(uncited[:8])
                             + ". Use the cited value or remove it.")
+        if swapped:
+            problems.append("A cited figure moved to another label: " + ", ".join(swapped[:4])
+                            + ". Keep each figure with what it was cited for.")
         citations = [{**fact, "present": fact["value"] in text} for fact in facts]
     elif kind == "create_follow_up":
         payload["due"] = _day(raw.get("due"), "Due", ctx.today,
@@ -473,6 +591,25 @@ class _Held:
 
 # --------------------------------------------------------------------------- the desk
 
+# Outcomes that may have gone out: never resent until the person checked Sent Items.
+UNSURE = frozenset({"pending", "unknown"})
+
+
+def _outcomes(rows: Sequence[Mapping[str, Any]], card_id: str, digest: str) -> dict[str, str]:
+    """Each earlier send of this exact message (by idempotency key): its latest status."""
+    out: dict[str, str] = {}
+    for row in rows:
+        if row["card_id"] == card_id and row["payload_hash"] == digest \
+                and row["kind"] in OUTBOUND:
+            out[row["idempotency_key"]] = row["status"]
+    return out
+
+
+def _at(rows: Sequence[Mapping[str, Any]], outcomes: Mapping[str, str], status: str) -> str:
+    keys = {k for k, v in outcomes.items() if v == status}
+    return next(r["at"] for r in reversed(rows) if r["idempotency_key"] in keys)
+
+
 _LOCAL_STATUS = {"create_follow_up": "follow_up", "mark_done": "done", "snooze": "snoozed",
                  "dismiss": "dismissed"}
 
@@ -486,8 +623,8 @@ def _state_text(row: Mapping[str, Any]) -> str:
     if status == "failed":
         return "Send failed" + (f" (HTTP {row['http_status']})" if row.get("http_status")
                                 else "") + ": nothing is retried"
-    if status == "pending":
-        return "Sending started; its outcome is not recorded: check Sent Items"
+    if status in UNSURE:
+        return "Outcome unknown: check Sent Items before sending it again"
     if status == "follow_up":
         return f"Follow up due {row.get('due')}"
     if status == "snoozed":
@@ -522,10 +659,12 @@ class ActionDesk:
 
     def confirm(self, card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                 ctx: Context, *, confirmed: bool, idempotency_key: str,
-                shown_hash: str | None, confirm_unknown_domains: bool = False
-                ) -> dict[str, Any]:
+                shown_hash: str | None, confirm_unknown_domains: bool = False,
+                checked_sent_items: bool = False) -> dict[str, Any]:
         """Do ``kind`` once (module doc). Raises ``ActionRefused`` before anything happens
-        when the confirm, the person, the payload or a rule does not hold."""
+        when the confirm, the person, the payload or a rule does not hold. A message whose
+        earlier send has an unknown outcome (a 5xx, a cut connection, a crash) is sent
+        again only with ``checked_sent_items``: the person looked and it is not there."""
         if confirmed is not True:
             raise ActionRefused(["Nothing is done without your confirm."])
         if not ctx.actor_name or not (ctx.sender or ctx.sender_oid):
@@ -565,13 +704,15 @@ class ActionDesk:
                                              "action."], 409)
                     return {**_result(same[-1]), "replayed": True}
                 if outbound:
-                    done = [r for r in held.rows if r["card_id"] == found["card_id"]
-                            and r["payload_hash"] == found["payload_hash"]
-                            and r["status"] in ("sent", "pending")]
-                    if done:
-                        raise ActionRefused([f"This exact message was already "
-                                             f"{'sent' if done[-1]['status'] == 'sent' else 'being sent'}"
-                                             f" at {done[-1]['at']}."], 409)
+                    before = _outcomes(held.rows, found["card_id"], found["payload_hash"])
+                    if "sent" in before.values():
+                        raise ActionRefused(["This exact message was already sent at "
+                                             f"{_at(held.rows, before, 'sent')}."], 409)
+                    if set(before.values()) & UNSURE and checked_sent_items is not True:
+                        raise ActionRefused(["An earlier send of this message has an unknown "
+                                             "outcome: check your Sent Items, then confirm "
+                                             "that it is not there to send it again."], 409)
+                    row["checked_sent_items"] = bool(before) and checked_sent_items is True
                     held.append({**row, "at": self._now(), "status": "pending"})
                 else:
                     return _result(held.append({**row, "at": self._now(),

@@ -135,7 +135,7 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
             <span className="text-muted">Next: </span>
             {s.action.text}
           </p>
-          {onDone && <CardActions card={s} onDone={onDone} />}
+          {onDone && <CardActions card={s} onDone={onDone} state={state} />}
           {(s.impact.orders ?? []).length > 0 && (
             <p className="text-meta text-muted">
               Holds up{" "}

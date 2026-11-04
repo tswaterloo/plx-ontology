@@ -54,7 +54,8 @@ def _recipients(addresses: Any) -> list[dict[str, Any]]:
 def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """The exact Graph request of one action: ``{"method", "url", "body"}``. A reply and a
     forward name the cited message in the sender's own mailbox (``message_id``)."""
-    user = quote(sender.lower(), safe="")
+    # plain path parts: the guard refuses any '%' (an address or id needing encoding)
+    user = quote(sender.lower(), safe="@+'")
     if kind == "send_email":
         message = {"subject": payload["subject"],
                    "body": {"contentType": "Text", "content": payload["body"]},
@@ -76,7 +77,7 @@ def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str,
                 "body": {"comment": payload["body"],
                          "toRecipients": _recipients(payload.get("to"))}}
     if kind == "teams_message":
-        return {"method": "POST", "url": f"{GRAPH}/chats/{quote(payload['chat_id'], safe='')}"
+        return {"method": "POST", "url": f"{GRAPH}/chats/{quote(payload['chat_id'], safe=':@')}"
                 "/messages", "body": {"body": {"contentType": "text",
                                                "content": payload["body"]}}}
     raise ValueError("action_kind_not_sendable")
@@ -154,8 +155,10 @@ class ActionSender:
 
     def dispatch(self, kind: str, sender: str | None, payload: Mapping[str, Any]
                  ) -> dict[str, Any]:
-        """``{"status": "sent" | "dry_run" | "failed", "missing": [...], "request": ...,
-        "http_status"}``. A failure is never retried (a send may have gone out)."""
+        """``{"status": "sent" | "dry_run" | "failed" | "unknown", "missing": [...],
+        "request": ..., "http_status"}``. ``failed``: Graph refused it (4xx) or the guard
+        stopped it before I/O; ``unknown``: a 5xx or a transport failure after the request
+        left, so it may have gone out. Nothing is ever retried."""
         request = request_for(kind, sender or "me@unknown", payload)
         missing, token = self.gate(kind, sender)
         if token is None:
@@ -165,13 +168,16 @@ class ActionSender:
                           ensure_ascii=False).encode("utf-8")
         try:
             status, _headers, _raw = self._post(request["url"], guard.Secret(token), body)
-        except (guard.ReadOnlyGuardError, guard.SourceUnavailable, OSError) as error:
+        except guard.ReadOnlyGuardError as error:
             return {"status": "failed", "missing": [], "request": request,
+                    "http_status": None, "detail": type(error).__name__}
+        except (guard.SourceUnavailable, OSError) as error:
+            return {"status": "unknown", "missing": [], "request": request,
                     "http_status": None, "detail": type(error).__name__}
         # sendMail, reply and forward answer 202; a chat message 201.
         ok = status in (200, 201, 202)
-        result = {"status": "sent" if ok else "failed", "missing": [], "request": request,
-                  "http_status": status}
+        result = {"status": "sent" if ok else "unknown" if status >= 500 else "failed",
+                  "missing": [], "request": request, "http_status": status}
         if status == 403 and not ok:
             result["missing"] = [missing_permission(kind, "") or "permission refused by Graph"]
         return result

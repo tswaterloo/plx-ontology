@@ -432,6 +432,12 @@ export type components = {
             /** Card Id */
             card_id: string;
             /**
+             * Checked Sent Items
+             * @description The person checked Sent Items after an unknown outcome and the message is not there.
+             * @default false
+             */
+            checked_sent_items: boolean;
+            /**
              * Confirm
              * @description True only from the person's own Send/Confirm click.
              */
@@ -505,7 +511,7 @@ export type components = {
              * Status
              * @enum {string}
              */
-            status: "pending" | "sent" | "failed" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
+            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
             /** Subject */
             subject?: string | null;
             /** Text */
@@ -536,6 +542,11 @@ export type components = {
             reason?: string | null;
             /** Subject */
             subject?: string | null;
+            /**
+             * Thread Recipients
+             * @description Who a reply reaches as Graph addresses it (the message's Reply-To, else its sender), read from the message; never edited.
+             */
+            thread_recipients?: string[] | null;
             /** To */
             to?: string[] | null;
             /** Until */
@@ -629,7 +640,7 @@ export type components = {
              * Status
              * @enum {string}
              */
-            status: "pending" | "sent" | "failed" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
+            status: "pending" | "sent" | "failed" | "unknown" | "dry_run" | "follow_up" | "done" | "snoozed" | "dismissed";
             /** Text */
             text: string;
         };

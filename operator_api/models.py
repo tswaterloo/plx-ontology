@@ -1172,8 +1172,8 @@ class SuggestionConfidence(_Model):
 
 ActionKind = Literal["send_email", "reply_in_thread", "forward", "teams_message",
                      "create_follow_up", "mark_done", "snooze", "dismiss"]
-ActionStatus = Literal["pending", "sent", "failed", "dry_run", "follow_up", "done",
-                       "snoozed", "dismissed"]
+ActionStatus = Literal["pending", "sent", "failed", "unknown", "dry_run", "follow_up",
+                       "done", "snoozed", "dismissed"]
 
 
 class CardActionOffer(_Model):
@@ -1193,6 +1193,9 @@ class ActionPayload(_Model):
     subject: Optional[str] = Field(None, max_length=1000)
     body: Optional[str] = Field(None, max_length=20000)
     in_reply_to: Optional[str] = Field(None, max_length=4096)
+    thread_recipients: Optional[list[str]] = Field(
+        None, max_length=50, description="Who a reply reaches as Graph addresses it (the "
+        "message's Reply-To, else its sender), read from the message; never edited.")
     chat_id: Optional[str] = Field(None, max_length=300)
     due: Optional[str] = Field(None, max_length=10)
     until: Optional[str] = Field(None, max_length=10)
@@ -1215,6 +1218,8 @@ class ActionConfirm(ActionRequest):
     payload_hash: Optional[str] = Field(None, max_length=64, description="The preview's "
                                         "hash (outbound): what the person saw is what goes.")
     confirm_unknown_domains: bool = False
+    checked_sent_items: bool = Field(False, description="The person checked Sent Items "
+                                     "after an unknown outcome and the message is not there.")
 
 
 class ActionCitation(_Model):

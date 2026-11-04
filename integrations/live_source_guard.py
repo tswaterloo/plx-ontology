@@ -1434,16 +1434,19 @@ class GuardedTransport:
 # environment sets ``PLX_ACTIONS_LIVE=1``; then only these four Graph shapes, each with
 # its closed set of body keys, and nothing else (no PATCH, no delete, no other path).
 ACTION_FLAG = "PLX_ACTIONS_LIVE"
+# Path parts are plain characters only: no ``%`` (no encoded '/', '.', '\\' or anything
+# else can reach Graph through them), an address with a literal '@'.
 _ACTION_USER = r"(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}" \
-               r"|[A-Za-z0-9._%+'-]+%40[A-Za-z0-9.-]+)"
+               r"|[A-Za-z0-9._+'-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+)"
+_ACTION_MESSAGE = r"[A-Za-z0-9_=-]{1,400}"
 ACTION_PATHS = (
     (re.compile(rf"/v1\.0/users/{_ACTION_USER}/sendMail"),
      frozenset({"message", "saveToSentItems"})),
-    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/[A-Za-z0-9_=-]{{1,400}}/reply"),
+    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/{_ACTION_MESSAGE}/reply"),
      frozenset({"message", "comment"})),
-    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/[A-Za-z0-9_=-]{{1,400}}/forward"),
+    (re.compile(rf"/v1\.0/users/{_ACTION_USER}/messages/{_ACTION_MESSAGE}/forward"),
      frozenset({"comment", "toRecipients"})),
-    (re.compile(r"/v1\.0/chats/19%3A[A-Za-z0-9_.-]{1,200}%40(?:thread\.v2|unq\.gbl\.spaces)"
+    (re.compile(r"/v1\.0/chats/19:[A-Za-z0-9_.-]{1,200}@(?:thread\.v2|unq\.gbl\.spaces)"
                 r"/messages"), frozenset({"body"})),
 )
 MAX_ACTION_BODY_BYTES = 64_000
@@ -1459,6 +1462,8 @@ def _action_shape(path: str, body: bytes | None) -> bool:
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
+        return False
+    if "%" in path or ".." in path:
         return False
     for pattern, keys in ACTION_PATHS:
         if pattern.fullmatch(path):
@@ -1481,6 +1486,8 @@ def check_action_request(method: str, url: str, body: bytes | None, *,
     for teams in _teams_urls(env):
         if teams.strip() in url:
             raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
+    if "%" in url or ".." in parts.path or "//" in parts.path:
+        raise ReadOnlyGuardError("action: encoded or relative path parts refused")
     if not _action_shape(parts.path, body):
         raise ReadOnlyGuardError("action: not one of the approved send shapes")
 

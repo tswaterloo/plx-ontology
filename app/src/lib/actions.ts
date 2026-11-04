@@ -63,9 +63,13 @@ export function confirmLabel(preview: ActionPreview): string {
 }
 
 /** Why the confirm button is off, or null when it may be pressed. */
-export function confirmBlocked(preview: ActionPreview | null, opts: { edited: boolean; unknownConfirmed: boolean; busy: boolean }): string | null {
+export function confirmBlocked(
+  preview: ActionPreview | null,
+  opts: { edited: boolean; unknownConfirmed: boolean; busy: boolean; mustCheckSent?: boolean; sentChecked?: boolean },
+): string | null {
   if (!preview) return "Preparing the preview";
   if (opts.busy) return "Working";
+  if (preview.outbound && opts.mustCheckSent && !opts.sentChecked) return "Check Sent Items first";
   if (opts.edited) return "Review your changes first";
   if ((preview.problems ?? []).length) return "Fix what is listed first";
   if ((preview.unknown_domains ?? []).length && !opts.unknownConfirmed) return "Confirm the outside recipients";
@@ -84,6 +88,7 @@ export function actionChip(state: ActionResult | null | undefined, drafted: bool
     case "dry_run":
       return { status: "suspect", label: "Dry run: permission missing", title: missing || state.text };
     case "pending":
+    case "unknown":
       return { status: "risk", label: "Outcome unknown", title: state.text };
     case "follow_up":
       return { status: "new", label: "Follow-up set", title: state.text };
@@ -96,6 +101,11 @@ export function actionChip(state: ActionResult | null | undefined, drafted: bool
     default:
       return { status: "neutral", label: "Unknown state" };
   }
+}
+
+/** An earlier send may have gone out: the person checks Sent Items before sending again. */
+export function outcomeUnknown(state: ActionResult | null | undefined): boolean {
+  return !!state && (state.status === "pending" || state.status === "unknown");
 }
 
 /** Cards put away for now: done, dismissed or snoozed (an ended snooze is no state at all). */

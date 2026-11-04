@@ -79,9 +79,19 @@ def desk(env=None, *, roles=("Mail.Send",), scp="", graph=None, journal=None):
     return ca.ActionDesk(journal or ca.Journal(None), sender, clock=clock), graph
 
 
+def thread(mailbox, message_id, parties=None):
+    return parties if parties is not None else {"from": "orders@supplier.example",
+                                                "reply_to": []}
+
+
+def members(chat):
+    return [{"id": VINCE_OID, "email": VINCE}, {"id": COLLEAGUE_OID, "email": "ana@plx.example"}]
+
+
 def ctx(**over) -> ca.Context:
     base = dict(actor_name="Vince", sender=VINCE, sender_oid=VINCE_OID,
-                exclusion=exclusion(), today=date(2026, 11, 4), environ=LIVE)
+                exclusion=exclusion(), today=date(2026, 11, 4), environ=LIVE,
+                thread=thread, chat_members=members)
     return ca.Context(**{**base, **over})
 
 
@@ -98,7 +108,7 @@ class SendShape(unittest.TestCase):
         result = confirm(d, edits={"cc": ["ana@plx.example"]})
         self.assertEqual(result["status"], "sent")
         url, bearer, body = graph.calls[0]
-        self.assertEqual(url, "https://graph.microsoft.com/v1.0/users/vince%40plx.example/sendMail")
+        self.assertEqual(url, "https://graph.microsoft.com/v1.0/users/vince@plx.example/sendMail")
         self.assertEqual(body, {"message": {
             "subject": "PO 90388: please confirm the delivery date",
             "body": {"contentType": "Text", "content": card()["draft"]["body"]},
@@ -118,7 +128,7 @@ class SendShape(unittest.TestCase):
         d, graph = desk()
         self.assertEqual(confirm(d, "reply_in_thread")["status"], "sent")
         url, _, body = graph.calls[0]
-        self.assertEqual(url, "https://graph.microsoft.com/v1.0/users/vince%40plx.example/"
+        self.assertEqual(url, "https://graph.microsoft.com/v1.0/users/vince@plx.example/"
                               "messages/AAMkAD-msg_1=/reply")
         self.assertEqual(set(body), {"message", "comment"})
         other = ctx(sender_oid=COLLEAGUE_OID, sender="ana@plx.example")
@@ -153,18 +163,25 @@ class Gate(unittest.TestCase):
         d, graph = desk(env, scp="ChatMessage.Send")
         self.assertEqual(confirm(d, "teams_message", c=ctx(environ=env))["status"], "sent")
         self.assertEqual(graph.calls[0][0], "https://graph.microsoft.com/v1.0/chats/"
-                                            "19%3Aabc_def%40thread.v2/messages")
+                                            "19:abc_def@thread.v2/messages")
         found = d.preview(card(), "teams_message", {"chat_id": "19:other@thread.v2"},
                           ctx(environ=env))
         self.assertIn("Pick a Teams chat", " ".join(found["problems"]))
 
     def test_the_one_sender_refuses_a_graph_write_without_the_flag_or_off_the_shapes(self):
-        url = "https://graph.microsoft.com/v1.0/users/vince%40plx.example/sendMail"
+        url = "https://graph.microsoft.com/v1.0/users/vince@plx.example/sendMail"
         body = json.dumps({"message": {}, "saveToSentItems": True}).encode()
+        guard.check_action_request("POST", url, body, environ=LIVE)        # the shape passes
         with self.assertRaises(guard.ReadOnlyGuardError):
             guard._refuse_non_read_send("POST", url, body)          # flag unset here
+        chat = "https://graph.microsoft.com/v1.0/chats/19:abc@thread.v2/messages"
         for bad_url, bad_body in [(url.replace("sendMail", "messages/x/move"), body),
-                                  (url, json.dumps({"message": {}, "x": 1}).encode())]:
+                                  (url, json.dumps({"message": {}, "x": 1}).encode()),
+                                  (url.replace("@", "%40"), body),          # encoded parts
+                                  (url.replace("vince@", "vince%2F..%2F@"), body),
+                                  (chat.replace(":", "%3A"), b'{"body": {}}'),
+                                  (url.replace("sendMail", "messages/a%2Fb/reply"),
+                                   b'{"comment": "x"}')]:
             with self.assertRaises(guard.ReadOnlyGuardError):
                 guard.check_action_request("POST", bad_url, bad_body, environ=LIVE)
         with self.assertRaises(guard.ReadOnlyGuardError):
@@ -199,6 +216,72 @@ class OnceOnly(unittest.TestCase):
         self.assertEqual(confirm(d)["status"], "pending")      # same key: outcome unknown
         with self.assertRaises(ca.ActionRefused):
             confirm(d, key="m" * 20)
+        self.assertEqual(graph.calls, [])
+        self.assertEqual(confirm(d, key="c" * 20, checked_sent_items=True)["status"], "sent")
+        self.assertTrue(d.journal.rows()[-1]["checked_sent_items"])
+
+    def test_a_5xx_is_an_unknown_outcome_that_blocks_a_resend_until_sent_items_is_checked(self):
+        d, graph = desk(graph=FakeGraph(503))
+        result = confirm(d)
+        self.assertEqual(result["status"], "unknown")
+        self.assertIn("check Sent Items", result["text"])
+        with self.assertRaises(ca.ActionRefused) as refused:
+            confirm(d, key="r" * 20)
+        self.assertIn("Sent Items", refused.exception.problems[0])
+        graph.status = 202
+        self.assertEqual(confirm(d, key="r" * 20, checked_sent_items=True)["status"], "sent")
+        self.assertEqual(len(graph.calls), 2)
+        with self.assertRaises(ca.ActionRefused):   # once sent, never again
+            confirm(d, key="q" * 20, checked_sent_items=True)
+
+
+class Reach(unittest.TestCase):
+    """Everyone an action reaches, as Graph addresses it, is checked: a reply's Reply-To
+    or sender, a tenant alias on any domain, a Teams chat's members."""
+
+    def test_a_reply_lists_and_checks_who_graph_sends_it_to(self):
+        d, graph = desk()
+        found = d.preview(card(), "reply_in_thread", None, ctx(thread=lambda m, i: thread(
+            m, i, {"from": "orders@supplier.example", "reply_to": ["sales@supplier.example"]})))
+        self.assertEqual(found["payload"]["thread_recipients"], ["sales@supplier.example"])
+        self.assertEqual(found["problems"], [])
+        for parties, why in [({"from": "x@supplier.example", "reply_to": ["hidden@plx.example"]},
+                              "hidden@plx.example cannot receive"),
+                             ({"from": "x@supplier.example", "reply_to": None}, "unknown"),
+                             (None, "could not be read")]:
+            reader = (lambda m, i, p=parties: p) if parties is not None else (lambda m, i: None)
+            found = d.preview(card(), "reply_in_thread", None, ctx(thread=reader))
+            self.assertIn(why, " ".join(found["problems"]))
+        with self.assertRaises(ca.ActionRefused):
+            confirm(d, "reply_in_thread", c=ctx(thread=None))
+        self.assertEqual(graph.calls, [])
+
+    def test_a_tenant_alias_on_another_domain_is_decided_never_taken_for_external(self):
+        guard = exclusion()
+        guard.attach_directory([(VINCE_OID, VINCE, []),
+                                (EXCLUDED_OID, "hidden@plx.example", ["h@plx-alias.example"]),
+                                (COLLEAGUE_OID, "ana@plx.example", [])])
+        d, graph = desk()
+        for address, why in [("hidden@plxtenant.onmicrosoft.com", "could not be checked"),
+                             ("h@plx-alias.example", "cannot receive"),
+                             ("other@plx-alias.example", "could not be checked")]:
+            found = d.preview(card(), "send_email", {"cc": [address]}, ctx(exclusion=guard))
+            self.assertIn(f"{address} {why}", " ".join(found["problems"]))
+        self.assertEqual(graph.calls, [])
+
+    def test_a_teams_note_reaches_only_a_chat_whose_members_are_all_cleared(self):
+        chat = "19:abc_def@thread.v2"
+        env = {**LIVE, "PLX_ACTIONS_TEAMS_CHATS": f"Purchasing={chat}"}
+        d, graph = desk(env, scp="ChatMessage.Send")
+        bad = [lambda c: [*members(c), {"id": EXCLUDED_OID, "email": None}],
+               lambda c: [*members(c), {"id": None, "email": "hidden@plx.example"}],
+               lambda c: None, lambda c: []]
+        for reader in bad:
+            found = d.preview(card(), "teams_message", None,
+                              ctx(environ=env, chat_members=reader))
+            self.assertTrue(found["problems"], reader)
+            with self.assertRaises(ca.ActionRefused):
+                confirm(d, "teams_message", c=ctx(environ=env, chat_members=reader))
         self.assertEqual(graph.calls, [])
 
 
@@ -251,6 +334,24 @@ class WhatIsSent(unittest.TestCase):
                 d.confirm(card(), "send_email", None, ctx(), **{
                     "confirmed": True, "idempotency_key": "k" * 20,
                     "shown_hash": found["payload_hash"], **bad})
+        draft = card()["draft"]["body"]
+        for edited, term in [(draft + "\nWe need ten thousand more.", "ten"),
+                             (draft + "\nPlease ship tomorrow.", "tomorrow"),
+                             (draft + "\nWe can wait until next week.", "next week"),
+                             (draft + "\nSend 3 drums.", "3")]:
+            found = d.preview(card(), "send_email", {"body": edited}, ctx())
+            self.assertIn(term, found["uncited"], edited)
+        swapped = draft.replace("ordered 200 kg, received 0 kg", "ordered 0 kg, received 200 kg")
+        found = d.preview(card(), "send_email", {"body": swapped}, ctx())
+        self.assertEqual(found["uncited"], [])
+        self.assertIn("moved to another label", " ".join(found["problems"]))
+        reworded = draft.replace("Hello,", "Hi team, one quick follow-up:").replace(
+            "Open items:", "Still open:")
+        found = d.preview(card(), "send_email", {"body": reworded}, ctx())
+        self.assertIn("one", found["uncited"])     # spelled-out numbers need a citation too
+        found = d.preview(card(), "send_email", {"body": draft.replace("Hello,", "Hi team,")},
+                          ctx())
+        self.assertEqual(found["problems"], [])
         with self.assertRaises(ca.ActionRefused):
             d.preview(card(), "post_to_portal", None, ctx())
         with self.assertRaises(ca.ActionRefused):

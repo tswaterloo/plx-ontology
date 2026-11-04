@@ -3,7 +3,7 @@
 import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { confirmAction, previewAction } from "@/lib/api";
-import { confirmBlocked, confirmLabel, EDITABLE, edits, newIdempotencyKey, sameEdits, splitAddresses } from "@/lib/actions";
+import { confirmBlocked, confirmLabel, EDITABLE, edits, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses } from "@/lib/actions";
 import { plainError } from "@/lib/errors";
 import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer, ProactiveSuggestion } from "@/lib/types";
 import { Button } from "./ui/button";
@@ -51,6 +51,12 @@ function Fields({ kind, form, set, preview }: { kind: ActionKind; form: ActionPa
         </div>
       )}
       {preview.payload.in_reply_to && <p className="text-meta text-muted">In reply to the cited message; the thread keeps its own subject.</p>}
+      {(preview.payload.thread_recipients ?? []).length > 0 && (
+        <p className="text-meta" data-testid="action-thread-recipients">
+          <span className="text-muted">The reply also reaches the message's Reply-To or sender: </span>
+          {(preview.payload.thread_recipients ?? []).join(", ")}
+        </p>
+      )}
       {has("chat_id") && (
         <div>
           <Label htmlFor="action-chat">Teams chat</Label>
@@ -153,7 +159,21 @@ function Checks({ preview }: { preview: ActionPreview }) {
 
 /** Preview, edit and confirm one action. Nothing happens until the confirm button; the key
  * drawn when the dialog opens makes a repeat click return the first result. */
-export function ActionDialog({ card, offer, onClose, onDone }: { card: ProactiveSuggestion; offer: CardActionOffer; onClose: () => void; onDone: (r: ActionResult) => void }) {
+export function ActionDialog({
+  card,
+  offer,
+  onClose,
+  onDone,
+  state,
+}: {
+  card: ProactiveSuggestion;
+  offer: CardActionOffer;
+  onClose: () => void;
+  onDone: (r: ActionResult) => void;
+  state?: ActionResult | null;
+}) {
+  const mustCheckSent = outcomeUnknown(state);
+  const [sentChecked, setSentChecked] = useState(false);
   const [preview, setPreview] = useState<ActionPreview | null>(null);
   const [form, setForm] = useState<ActionPayload>({});
   const [error, setError] = useState<string | null>(null);
@@ -178,7 +198,7 @@ export function ActionDialog({ card, offer, onClose, onDone }: { card: Proactive
   }, [card.id, offer.kind]);
 
   const edited = !!preview && !sameEdits(offer.kind, form, preview.payload);
-  const blocked = confirmBlocked(preview, { edited, unknownConfirmed: unknownOk, busy });
+  const blocked = confirmBlocked(preview, { edited, unknownConfirmed: unknownOk, busy, mustCheckSent, sentChecked });
   const go = () => {
     if (!preview || blocked || sending.current) return;
     sending.current = true;
@@ -191,6 +211,7 @@ export function ActionDialog({ card, offer, onClose, onDone }: { card: Proactive
       idempotency_key: key.current,
       payload_hash: preview.payload_hash,
       confirm_unknown_domains: unknownOk,
+      checked_sent_items: mustCheckSent && sentChecked,
     }).then(
       (r) => onDone(r),
       (e) => {
@@ -217,6 +238,12 @@ export function ActionDialog({ card, offer, onClose, onDone }: { card: Proactive
               </Button>
             )}
             <Checks preview={preview} />
+            {preview.outbound && mustCheckSent && (
+              <label className="flex items-start gap-2 rounded-md border border-risk-line bg-risk-soft p-2.5 text-meta text-risk">
+                <input type="checkbox" checked={sentChecked} onChange={(e) => setSentChecked(e.target.checked)} className="mt-0.5" data-testid="action-sent-checked" />
+                <span>An earlier send of this card has an unknown outcome. I checked my Sent Items and it is not there.</span>
+              </label>
+            )}
             {(preview.unknown_domains ?? []).length > 0 && (
               <label className="flex items-start gap-2 rounded-md border border-risk-line bg-risk-soft p-2.5 text-meta text-risk">
                 <input type="checkbox" checked={unknownOk} onChange={(e) => setUnknownOk(e.target.checked)} className="mt-0.5" data-testid="action-unknown-ok" />
@@ -245,7 +272,7 @@ export function ActionDialog({ card, offer, onClose, onDone }: { card: Proactive
 }
 
 /** The card's action buttons; one opens its preview dialog. */
-export function CardActions({ card, onDone }: { card: ProactiveSuggestion; onDone: (r: ActionResult) => void }) {
+export function CardActions({ card, onDone, state }: { card: ProactiveSuggestion; onDone: (r: ActionResult) => void; state?: ActionResult | null }) {
   const [open, setOpen] = useState<CardActionOffer | null>(null);
   const offers = card.actions ?? [];
   if (!offers.length) return null;
@@ -260,6 +287,7 @@ export function CardActions({ card, onDone }: { card: ProactiveSuggestion; onDon
         <ActionDialog
           card={card}
           offer={open}
+          state={state}
           onClose={() => setOpen(null)}
           onDone={(r) => {
             setOpen(null);

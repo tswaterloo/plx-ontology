@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { actionChip, confirmBlocked, confirmLabel, edits, isPutAway, splitAddresses } from "./actions";
+import { actionChip, confirmBlocked, confirmLabel, edits, isPutAway, outcomeUnknown, splitAddresses } from "./actions";
 import type { ActionPreview, ActionResult } from "./types";
 
 const preview = (over: Partial<ActionPreview> = {}): ActionPreview => ({
@@ -50,6 +50,8 @@ describe("card actions", () => {
     expect(confirmBlocked(preview({ problems: ["Add at least one recipient."] }), ok)).not.toBeNull();
     expect(confirmBlocked(preview({ unknown_domains: ["x.example"] }), ok)).toBe("Confirm the outside recipients");
     expect(confirmBlocked(preview({ unknown_domains: ["x.example"] }), { ...ok, unknownConfirmed: true })).toBeNull();
+    expect(confirmBlocked(preview(), { ...ok, mustCheckSent: true })).toBe("Check Sent Items first");
+    expect(confirmBlocked(preview(), { ...ok, mustCheckSent: true, sentChecked: true })).toBeNull();
   });
 
   it("shows each state as a chip and unknown states fail closed", () => {
@@ -58,6 +60,9 @@ describe("card actions", () => {
     expect(actionChip(state("failed"), true)?.status).toBe("late");
     expect(actionChip(state("dry_run", ["Mail.Send not granted"]), true)).toMatchObject({ label: "Dry run: permission missing", title: "Mail.Send not granted" });
     expect(actionChip(state("something_new" as ActionResult["status"]), true)).toEqual({ status: "neutral", label: "Unknown state" });
+    expect(actionChip(state("unknown"), true)?.label).toBe("Outcome unknown");
+    expect(outcomeUnknown(state("unknown"))).toBe(true);
+    expect(outcomeUnknown(state("failed"))).toBe(false);
     expect(isPutAway(state("snoozed"))).toBe(true);
     expect(isPutAway(state("dry_run"))).toBe(false);
   });
