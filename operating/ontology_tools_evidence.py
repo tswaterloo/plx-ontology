@@ -1794,8 +1794,12 @@ class EvidenceTools:
         roles: dict[str, tuple[str, str]] = {}
         participants: list[str] = []
         if arguments.get("participant") is not None:
+            # a query's candidates narrow the participant's mail first: only the mail
+            # both hold is matched, dated and capped (never all of a busy vendor's mail,
+            # whose newest cap would cut an older message the query names)
             by_participant, roles, participants, cut = self._participant_documents(
-                scope, arguments["participant"], actor, tenant, since, until, gaps)
+                scope, arguments["participant"], actor, tenant, since, until, gaps,
+                within=candidate)
             scan_cut |= cut
             candidate = (by_participant if candidate is None
                          else candidate & by_participant)
@@ -1860,7 +1864,8 @@ class EvidenceTools:
 
     def _participant_documents(self, scope: Any, participant: str, actor: Actor,
                                tenant: frozenset[str] | None, since: dt.datetime | None,
-                               until: dt.datetime | None, gaps: list[dict[str, Any]]
+                               until: dt.datetime | None, gaps: list[dict[str, Any]],
+                               within: set[str] | None = None
                                ) -> tuple[set[str], dict[str, tuple[str, str]], list[str],
                                           bool]:
         """The mail whose sender, To or CC is ``participant`` (an address, a domain, or
@@ -1874,7 +1879,8 @@ class EvidenceTools:
         ``recipient_matches_unchecked`` gap says so), so a third party's mass mailing
         that lists them is not mail with them. Every value read is gated as any other
         (``_visible_value``); the newest ``DOC_SCAN_CAP`` within since/until are kept
-        (an older cut is said)."""
+        (an older cut is said). ``within``: only these messages are read (the query's
+        candidates when the call has one)."""
         text = participant.strip().lower()
         addresses: set[str] = set()
         domains: set[str] = set()
@@ -1915,7 +1921,7 @@ class EvidenceTools:
                              f"{MAX_PARTICIPANTS} were searched"))
             needles = needles[:MAX_PARTICIPANTS]
         wanted = set(needles)
-        rows, more = self._participant_rows(scope, needles)
+        rows, more = self._participant_rows(scope, needles, within)
         cut |= more
         roles: dict[str, tuple[str, str]] = {}
         # Messages an outside participant only received: mail with them only when one of
@@ -2033,14 +2039,16 @@ class EvidenceTools:
         return {found[0] for row in rows if _EMAIL_PROPERTY.match(row["property"])
                 for found in _ADDRESS.finditer(row["value"].lower())}
 
-    def _participant_rows(self, scope: Any, needles: Sequence[str]
+    def _participant_rows(self, scope: Any, needles: Sequence[str],
+                          within: set[str] | None = None
                           ) -> tuple[list[sqlite3.Row], bool]:
         """Visible sender/To/CC value rows of mail holding one of ``needles`` (a
         substring prefilter; the caller matches whole addresses and domains), read as
         ``_text_hits`` reads values: narrowed by the value word index where the store
-        has it, else scanned. At most ``PARTICIPANT_SCAN_CAP`` rows (more: cut)."""
+        has it, else scanned; ``within``: of those messages only. At most
+        ``PARTICIPANT_SCAN_CAP`` rows (more: cut)."""
         keys = [key for key in scope.audience_keys if _family(key) == "mail"]
-        if not keys or not needles:
+        if not keys or not needles or (within is not None and not within):
             return [], False
         params = scope.params(aud=json.dumps(keys), props=json.dumps(PARTICIPANT_PROPERTIES),
                               needles=json.dumps(list(needles)),
@@ -2050,6 +2058,9 @@ class EvidenceTools:
         held = ("v.property IN (SELECT value FROM json_each(:props)) AND v.value IS NOT NULL "
                 "AND EXISTS (SELECT 1 FROM json_each(:needles) n "
                 "WHERE instr(lower(v.value), n.value) > 0)")
+        if within is not None:
+            params["within"] = json.dumps(sorted(within))
+            held += " AND v.object_id IN (SELECT value FROM json_each(:within))"
         rows = None
         spans = self._cell_spans(["mail"])
         if spans == []:

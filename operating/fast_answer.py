@@ -4283,8 +4283,12 @@ class FastRun:
 
 
 # Seconds one fast answer's reads may take: a recipe still reading past it declines
-# (``time_budget``) and the agent answers; a fast answer is a few seconds of reads.
-BUDGET_SECONDS = 30.0
+# (``time_budget``) and the agent answers. A fast answer is a few seconds of reads alone
+# (a vendor's confirmation: 8-13 s of mail searches on gen 8), three times that beside
+# other answers on a loaded host: the 2026-11-04 run's fast answers reached 31 s and 7
+# of 105 declined at 30 s, each then answered by an agent session (40 s more, half of
+# them wrong or incomplete). Past 45 s the agent still answers.
+BUDGET_SECONDS = 45.0
 
 
 def answer(question: str, reads: Reads, why: Optional[list[str]] = None

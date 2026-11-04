@@ -278,7 +278,11 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
 
 # How the answer reads (``answer_shape_rule``): the verdict, a few figures, what is missing.
 MAX_BULLETS = 5
-COULD_NOT_CONFIRM = "What I couldn't confirm:"
+# The line naming what the answer leaves open, as the fast answers word it. Never "what I
+# couldn't confirm": on a question whether someone confirmed something it reads as "they
+# did not confirm" (an answer that found no confirmation would say the opposite of one
+# it simply did not read).
+NOT_SETTLED = "Not settled:"
 
 
 def answer_shape_rule() -> str:
@@ -300,7 +304,7 @@ def answer_shape_rule() -> str:
         "or title. Each bullet states one of your cited values or claims, nothing else. "
         "In the json block's \"text\" the lines are joined by \\n.",
         f"Then, only when the answer is partial (a gap the question asks about), one line "
-        f"starting \"{COULD_NOT_CONFIRM}\" naming what is missing in words, no figure. "
+        f"starting \"{NOT_SETTLED}\" naming what is missing in words, no figure. "
         "An answerable answer has no such line.",
         "A partial answer says plainly what you found (the verdict and bullets) and what "
         "is missing (that line); never only that it cannot be answered.",

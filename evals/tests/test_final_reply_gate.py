@@ -387,7 +387,7 @@ class FinalReplyGateTests(unittest.TestCase):
 
     def test_the_analyst_shape_loses_only_its_unbacked_bullet(self):
         # The answer's shape (``deep_investigation.answer_shape_rule``: verdict, "- "
-        # bullets, a "What I couldn't confirm" line) adds no figure: each bullet is one line
+        # bullets, a "Not settled:" line) adds no figure: each bullet is one line
         # the reply screen judges alone, so an unchecked figure takes only its own bullet.
         from operating import deep_investigation as deep
         claims = [{"id": "m1", "check": {"status": "passed"}, "text": "qty: 2400",
@@ -395,13 +395,30 @@ class FinalReplyGateTests(unittest.TestCase):
                                                        "field": "row.qty"}]}]
         text = ("Yes — the order asks for 2400 units.\n- Ordered 2400 units on the line.\n"
                 "- Shipped 2350 so far.\n- The carrier has not replied.\n"
-                + deep.COULD_NOT_CONFIRM + " the ship date.")
+                + deep.NOT_SETTLED + " the ship date.")
         reply = answer_gate.final_reply(text, claims, question="How many units are ordered?")
         self.assertEqual(reply["text"].splitlines(), [
             "Yes — the order asks for 2400 units.", "- Ordered 2400 units on the line.",
-            "- The carrier has not replied.", deep.COULD_NOT_CONFIRM + " the ship date.",
+            "- The carrier has not replied.", deep.NOT_SETTLED + " the ship date.",
             answer_gate.WITHHELD_STATEMENTS])
         self.assertEqual(reply["unbacked"], ["2350"])
+
+    def test_the_open_matters_line_never_denies_what_it_did_not_read(self):
+        # 2026-11-04: an agent answer to "did the vendor confirm PO#1?" ended "What I
+        # couldn't confirm: a separate order acknowledgement" and was read as "not
+        # confirmed" against a confirmation on record. The line the shape asks for
+        # names what is open without the asked verb: never a denial of it.
+        from evals import live_ops
+        from operating import deep_investigation as deep
+        rule = deep.answer_shape_rule()
+        self.assertIn(f'"{deep.NOT_SETTLED}"', rule)
+        self.assertNotIn("couldn't confirm", rule.lower())
+        line = deep.NOT_SETTLED + " a separate order acknowledgement of PO#1."
+        for denial in ("not confirmed", "no confirmation", "not acknowledged",
+                       "not received", "not late"):
+            self.assertFalse(live_ops.asserted(line, denial, claim_aware=True), denial)
+        self.assertTrue(live_ops.asserted("What I couldn't confirm: an acknowledgement.",
+                                          "not confirmed", claim_aware=True))
 
     def test_a_float_written_rounded_for_display_is_backed_nothing_looser(self):
         # A BC cell holds the float 116.25000000000001; the answer writes 116.25. The gate's

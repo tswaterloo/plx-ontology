@@ -241,8 +241,32 @@ class NewerMailTests(unittest.TestCase):
         self.assertIsNotNone(started[0])
         self.assertEqual(self.listed(answer)[:2], [("MSG-3", True), ("MSG-2", True)])
         self.assertNotIn("MSG-B2", json.dumps(answer))
-        self.assertIsNone(real(server.ontology.tools, {"participant": SUPPLIER}, READER_A,
-                               None, lambda: None))   # a participant search: never early
+        # An address or a domain participant scans early too, for the plan the top-up
+        # makes from the participants the projected search resolved (the argument
+        # itself), and lists what a late scan lists; a record's participants are
+        # resolved by the projected search only, so that search never scans early.
+        started.clear()
+        with mock.patch.object(mail_topup.EarlyScan, "start", side_effect=lambda *a, **k:
+                               started.append(real(*a, **k)) or started[-1]):
+            by_address = self.search(server, participant=SUPPLIER.upper())
+            by_domain = self.search(server, participant="@" + SUPPLIER.split("@")[1])
+        self.assertEqual([e is not None for e in started], [True, True])
+        self.assertEqual(started[0].plan["addresses"], frozenset({SUPPLIER}))
+        self.assertEqual(started[1].plan["domains"], frozenset({SUPPLIER.split("@")[1]}))
+        for found in (by_address, by_domain):
+            self.assertEqual(self.listed(found)[0], ("MSG-2", True))
+            self.assertNotIn("MSG-B2", json.dumps(found))
+        scans = []
+        real_scanned = mail_topup._scanned
+        with mock.patch.object(mail_topup, "_scanned", side_effect=lambda *a, **k:
+                               scans.append(1) or real_scanned(*a, **k)):
+            self.search(server, participant=SUPPLIER)
+        self.assertEqual(len(scans), 1)   # the early scan is the one read, never a second
+        self.assertIsNone(real(server.ontology.tools,
+                               {"participant": "Supplier:portal.app_supplier:1"},
+                               READER_A, None, lambda: None))
+        self.assertIsNone(real(server.ontology.tools, {"participant": "not an address"},
+                               READER_A, None, lambda: None))
         # An early scan made for another plan (here every mailbox, B's included) is never
         # read: the top-up scans under the call's own grants. A failed one: it scans too.
         tools = server.ontology.tools

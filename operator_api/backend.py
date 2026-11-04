@@ -3845,7 +3845,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
     from operating import agent_session as runner
     from operator_api.agent_ask import plain_tree, reply_prose
     from operating import answer_gate
-    from operating.deep_investigation import COULD_NOT_CONFIRM
+    from operating.deep_investigation import NOT_SETTLED
     from operator_ui.object_workspace import ITEM_REFUSED, NOT_GRANTED
 
     decision, _refused = runner._gate_results(ran.events)
@@ -3944,7 +3944,7 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
             direct = " ".join(fact.text for fact in facts)
         direct, removed = presentation.reader_prose(
             direct, [c.get("phrase") for c in passed])
-        if removed and not_found and direct and COULD_NOT_CONFIRM not in direct:
+        if removed and not_found and direct and NOT_SETTLED not in direct:
             direct += ("\n\nWhat I couldn't confirm from a source you can open is listed "
                        "below.")
         if not direct and facts:

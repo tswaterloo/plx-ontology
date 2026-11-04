@@ -420,15 +420,17 @@ def _scanned(plan: Mapping[str, Any], opened: Callable[[], Any], clock: Callable
 
 
 class EarlyScan:
-    """A query search's top-up scan started before the projected search it tops up, so
+    """A mail search's top-up scan started before the projected search it tops up, so
     the capture read (I/O-bound SQL, which releases the interpreter) overlaps the
     projection's and the SharePoint capture's reads instead of following them. It reads
     the capture through its own connection (``opened``), never the kept reader the
     per-item mail gate uses meanwhile. Only the scan runs early: its messages still pass
     :func:`top_up`'s per-item gate, room and gaps, and :func:`top_up` uses it only when
     its plan is the one it decides itself under the call's policy (else it scans again).
-    A participant search is never started early (its needles are the projected
-    search's). Any failure: :func:`top_up` scans itself, as without it."""
+    A participant search starts early only when its participant is an address or a
+    domain (``literal_participants``: the needles the projected search resolves are then
+    the argument itself); a record's participants are resolved by the projected search,
+    so that one scans after it. Any failure: :func:`top_up` scans itself, as without it."""
 
     def __init__(self, plan: Mapping[str, Any], opened: Callable[[], Any], *,
                  clock: Callable[[], float] = time.monotonic,
@@ -442,13 +444,17 @@ class EarlyScan:
     @classmethod
     def start(cls, tools: Any, arguments: Any, actor: Any, policy: Any,
               opened: Callable[[], Any], **bounds: Any) -> "EarlyScan | None":
-        """The early scan of a query search for ``actor`` under ``policy`` (the policy the
-        call is pinned to), or None when the call is not one :func:`top_up` scans for
-        a query."""
-        if not isinstance(arguments, Mapping) or not _topped_up(arguments) \
-                or arguments.get("participant") is not None:
+        """The early scan of a mail search for ``actor`` under ``policy`` (the policy the
+        call is pinned to), or None when the call is not one :func:`top_up` can plan
+        before its projected search."""
+        if not isinstance(arguments, Mapping) or not _topped_up(arguments):
             return None
-        plan = _plan(tools, arguments, actor, policy, None)
+        participants = None
+        if arguments.get("participant") is not None:
+            participants = literal_participants(arguments["participant"])
+            if participants is None:
+                return None
+        plan = _plan(tools, arguments, actor, policy, participants)
         return None if plan is None else cls(plan, opened, **bounds)
 
     def _run(self, opened: Callable[[], Any], clock: Callable[[], float], budget: float,
@@ -466,6 +472,24 @@ class EarlyScan:
             return None
         self._thread.join()
         return self._out
+
+
+def literal_participants(participant: Any) -> list[str] | None:
+    """The needles a ``plx.documents`` participant search resolves when the participant
+    is an address or a domain (``@example.com``), as the projected search resolves them
+    (``ontology_tools_evidence._participant_documents``: lower-cased, a domain without its
+    ``@``); None for anything else (a record's id: its addresses are read from the
+    record, under the reader's grants, by the projected search alone)."""
+    from operating.ontology_tools_evidence import _ADDRESS, _DOMAIN
+    if not isinstance(participant, str) or ot._OBJECT_ID.match(participant.strip()):
+        return None
+    text = participant.strip().lower()
+    if len(text) > 254:
+        return None
+    if _ADDRESS.fullmatch(text):
+        return [text]
+    domain = _DOMAIN.fullmatch(text)
+    return [domain[1]] if domain else None
 
 
 def top_up(tools: Any, arguments: Mapping[str, Any], actor: Any, result: dict[str, Any],

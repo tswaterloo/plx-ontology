@@ -325,6 +325,33 @@ class ParticipantTests(unittest.TestCase):
             self.assertEqual(len(seen), count)
             self.assertEqual(len(set(seen)), count)
 
+    def test_a_query_names_an_old_message_of_a_vendor_with_more_mail_than_the_cap(self):
+        # The query's candidates narrow the participant's mail before its newest-first
+        # cap: a busy vendor's newer mail never cuts the older message the query names
+        # (before, the cap kept the newest and the search found nothing, "scan_cap").
+        from unittest import mock
+        def extend(store):
+            for i in range(30):
+                message(store, f"busy-{i:02d}", sender=f"rep@{VENDOR}",
+                        to=[f"buyer@{OURS}"], at=f"2099-04-{1 + i % 28:02d}T{i // 28:02d}:00:00Z")
+        for indexed in (True, False):
+            busy = tools(extend=extend)
+            if not indexed:
+                busy.store.conn.execute("DROP TABLE value_text")
+            with self.subTest(indexed=indexed), mock.patch.object(ev, "DOC_SCAN_CAP", 20):
+                out = self.call(tools_=busy, participant=f"@{VENDOR}", query=fx.NUMBER)
+                self.assertEqual(self.listed(out), [("v-po", "from_them", "domain")])
+                self.assertFalse(out["completeness"]["truncated"])
+                self.assertNotIn("scan_cap", [g["reason"] for g in out["gaps"]])
+                # without a query the cap still keeps the newest and says it cut
+                out = self.call(tools_=busy, participant=f"@{VENDOR}", limit=50)
+                self.assertIn("scan_cap", [g["reason"] for g in out["gaps"]])
+                self.assertNotIn("v-po", json.dumps(out))
+                # another participant's mail the query names: none of it
+                out = self.call(tools_=busy, participant="@elsewhere.test", query=fx.NUMBER)
+                self.assertEqual(out["documents"], [])
+
+
 class OwnDomainSenderTest(unittest.TestCase):
     def test_only_a_known_service_host_carries_our_name(self):
         from ontology.mentions import sent_from_own_domain
