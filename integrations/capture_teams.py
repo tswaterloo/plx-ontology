@@ -1032,7 +1032,8 @@ class TeamsCapture:
 
     def _ordered(self, read: Callable[[Any], Any], items: Sequence[Any]) -> list[Any]:
         """``read`` of every item, in item order: on ``workers`` threads (GETs and the
-        guard only: no store write), else one at a time."""
+        guard only: ``read`` never touches ``self.store``, whose sqlite connection belongs
+        to this thread), else one at a time."""
         if self.workers == 1 or len(items) < 2:
             return [read(item) for item in items]
         with ThreadPoolExecutor(min(self.workers, len(items)),
@@ -2148,9 +2149,7 @@ class TeamsCapture:
                 return ("refused", PEOPLE_EXCLUDED)
             updated = self.hints.get(conversation.unit)
             prior = carried.get(chat)
-            held = (self.store.unit_acl(CHAT_KIND.name, conversation.unit)
-                    if prior is not None and updated is not None
-                    and prior["updated_at"] == updated else None)
+            held = held_acls.get(chat)
             if held is not None:
                 if self.people.excluded(held.get("identities") or []):
                     self.refused.add(chat.lower())
@@ -2172,6 +2171,15 @@ class TeamsCapture:
         start = next((i for i, chat in enumerate(ordered_chats)
                       if cursor is not None and chat > cursor), 0)
         window = (ordered_chats[start:] + ordered_chats[:start])[:config["max_chats"]]
+        # The memberships a carried chat would keep, read here on the store's own thread:
+        # ``read_chat`` runs on the census threads, and a sqlite connection refuses any
+        # other thread (2026-11-01..05: ProgrammingError ended every Teams run).
+        held_acls = {}
+        for chat in window:
+            unit = Conversation("chat", chat).unit
+            prior, updated = carried.get(chat), self.hints.get(unit)
+            if prior is not None and updated is not None and prior["updated_at"] == updated:
+                held_acls[chat] = self.store.unit_acl(CHAT_KIND.name, unit)
         reached = 0
         for read in self._ordered(read_chat, window):
             if read[0] == late:

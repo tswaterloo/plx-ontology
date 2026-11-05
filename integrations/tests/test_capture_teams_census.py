@@ -400,7 +400,9 @@ class ManyChatsGraph(FakeTeamsGraph):
         path = unquote(urlsplit(url).path)
         if path == f"/v1.0/users/{U_COS}/chats":
             self.calls.append((method, url))
-            return j(200, {"value": [{"id": c, "chatType": "group"}
+            return j(200, {"value": [{"id": c, "chatType": "group",
+                                      **({"lastUpdatedDateTime": self.chat_updated}
+                                         if self.chat_updated else {})}
                                      for c in [CHAT, *self.extra]]})
         found = re.fullmatch(r"/v1\.0/chats/([^/]+)(/.*)?", path)
         if found and found[1] in self.extra:
@@ -526,6 +528,33 @@ class CardinalityTests(CensusCase):
         self.assertEqual(report["census"]["chats_carried"], 0)
         self.assertEqual(report["census"]["chats_refused"]["people_excluded"], 1)
         self.assertEqual(member_reads(), 1)
+
+    def test_unchanged_chats_are_carried_on_the_census_threads_at_any_cardinality(self):
+        """2026-11-01..05: a census that carried more than one unchanged chat read their
+        held memberships on its worker threads through the store's sqlite connection,
+        which refuses any thread but its own: every Teams run died of ProgrammingError and
+        captured nothing. On the CLI's default threads, every unchanged chat is carried,
+        none lost or doubled, and the run captures."""
+        scope = json.loads((ROOT / "examples" / "teams_capture_scope.live-check.json")
+                           .read_text(encoding="utf-8"))
+        scope.pop("max_conversations")   # every due chat read each run, none rotated out
+        for extra in (0, 9, 59):   # 1, 10 and 60 chats
+            with self.subTest(chats=extra + 1):
+                self.fresh()
+                path = Path(self.home) / "scope.json"
+                path.write_text(json.dumps({**scope, "refresh_hours": 0}), encoding="utf-8")
+                graph = ManyChatsGraph(extra)
+                graph.chat_updated = "2026-10-20T08:00:00.000Z"
+                every = {CHAT, *graph.extra}
+                self.run_cli(graph, scope=str(path))
+                graph.calls.clear()
+                code, report, _ = self.run_cli(graph, scope=str(path))
+                census = report["census"]
+                self.assertEqual(census["chats_carried"], len(every))
+                listed = [c["chat_id"] for c in self.census_file()["chats"]]
+                self.assertEqual(sorted(listed), sorted(every))
+                self.assertEqual(self.read(graph)[1], every)   # each one's content read
+                self.assertEqual(code, 0, report["status"])
 
     def test_concurrent_reads_list_and_capture_exactly_what_one_at_a_time_does(self):
         """The census and the capture on eight threads (the CLI's default) and on one:

@@ -358,13 +358,32 @@ def reader_grants(owner: Any, policy: Any, actor: Actor, all_keys: Sequence[str]
         if hit is not None and hit[0] is policy and (hit[1] is all_keys
                                                      or hit[1] == all_keys):
             return hit[2]
-    keys = tuple(k for k in all_keys if policy.may_read(actor, k))
-    held = policy.held_markings(actor)
-    sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
-    out = (keys, held, sets, policy.granted_sources(actor))
+    # Outside a plan run, the same pinned policy object (one request's: a console answer,
+    # an Ask's every call) decides the same grants: kept per policy object and reader,
+    # the policy and the keys held beside them so no id is reused (each call deciding
+    # afresh walked every audience key: a sixth of a customer margin's time).
+    shared_key = (id(policy), actor)
+    with _GRANTS_LOCK:
+        hit = _GRANTS.get(shared_key)
+    if hit is not None and hit[0] is policy and (hit[1] is all_keys or hit[1] == all_keys):
+        out = hit[2]
+    else:
+        keys = tuple(k for k in all_keys if policy.may_read(actor, k))
+        held = policy.held_markings(actor)
+        sets = tuple(s for s in store_ddl.MARKING_SETS if set(json.loads(s)) <= held)
+        out = (keys, held, sets, policy.granted_sources(actor))
+        with _GRANTS_LOCK:
+            while len(_GRANTS) >= MAX_GRANTS_KEPT:
+                del _GRANTS[next(iter(_GRANTS))]
+            _GRANTS[shared_key] = (policy, all_keys, out)
     if kept is not None:
         kept["grants"] = (policy, all_keys, out)   # holds both: no id is reused
     return out
+
+
+_GRANTS: dict[tuple[int, Any], tuple[Any, Any, Any]] = {}
+_GRANTS_LOCK = threading.Lock()
+MAX_GRANTS_KEPT = 64
 
 
 @functools.lru_cache(maxsize=32)
