@@ -1148,6 +1148,156 @@ class MailCaptures(Reopenable):
                  "a.message_handle WHERE a.l1_handle IS NOT NULL AND a.content_sha256 "
                  "IS NOT NULL")
 
+    # The attachments read side by side (``_attached_rows``): at most this many readers,
+    # each over a range of mailboxes, for a snapshot of at least ``SPLIT_ROWS`` attachments.
+    SPLIT_READERS = 8
+    SPLIT_ROWS = 20000
+    _SPLIT_QUEUE = 8   # batches of rows a reader holds ahead of the range being yielded
+
+    def _attached_query(self, low: Any = None, high: Any = None) -> tuple[str, list[Any]]:
+        """The attachments the projection reads with their message's latest interval, in
+        their order; ``low``/``high``: only those of the mailboxes in [low, high) (None:
+        unbounded). A message's handle is ``graph-mail://<its mailbox>/...`` and an
+        attachment's mailbox is its message's (``capture_mail`` writes both from the
+        message), so a range's rows are exactly the whole query's rows of those
+        mailboxes: its messages' latest versions are found among the handles of the range
+        (on the handle index alone, as the whole query finds them among all handles)."""
+        order = " ORDER BY a.mailbox_id, m.message_id, a.attachment_id, m.recorded_at"
+        select = (f"SELECT a.*, {self._text}, m.message_id, m.recorded_at, "
+                  "m.superseded_at, m.last_seen_at, m.gone, m.record AS message, "
+                  "m.body_sha256 AS message_body ")
+        if low is None and high is None:
+            return select + self._ATTACHED + order, []
+        handles, mailboxes, args, boxes = [], [], [], []
+        for op, bound in ((">=", low), ("<", high)):
+            if bound is not None:
+                handles.append(f"l1_handle {op} ?")
+                args.append(f"graph-mail://{bound}/")
+                mailboxes.append(f"{{0}}.mailbox_id {op} ?")
+                boxes.append(bound)
+        mailbox = " AND ".join(mailboxes)
+        latest = (f"SELECT m.*, (m.removed_reason IS NOT NULL AND m.version_id = "
+                  "(SELECT MAX(x.version_id) FROM messages x WHERE x.mailbox_id = m.mailbox_id "
+                  "AND x.message_id = m.message_id)) AS gone FROM messages m WHERE "
+                  f"{mailbox.format('m')} AND m.version_id IN (SELECT MAX(version_id) FROM "
+                  f"messages WHERE {' AND '.join(handles)} GROUP BY l1_handle)")
+        return (select + f"FROM attachments a JOIN ({latest}) m ON m.l1_handle = "
+                "a.message_handle WHERE a.l1_handle IS NOT NULL AND a.content_sha256 IS NOT "
+                f"NULL AND {mailbox.format('a')}" + order, boxes + args + boxes)
+
+    def _attached_rows(self) -> Iterator[sqlite3.Row]:
+        """The rows of :meth:`_attached_query` in its order. In a snapshot whose marks are
+        known, the mailboxes are cut into ranges of about equal attachments, each read
+        (and sorted) by a thread on a connection of its own, opened under the same file
+        marks (equal marks, equal bytes), and the ranges yielded one after another, which
+        is the whole query's order (it sorts by mailbox first). The read waits on the
+        disk, so the ranges read side by side. Any reader that cannot open under those
+        marks makes it one read on the snapshot's own connection, as before."""
+        import queue
+        import threading
+
+        slices = self._mailbox_ranges()
+        if slices is None:
+            yield from self._conn.execute(self._attached_query()[0])
+            return
+        done = object()
+        queues = [queue.Queue(self._SPLIT_QUEUE) for _ in slices]
+        opened: queue.Queue = queue.Queue()
+        go, stop = threading.Event(), threading.Event()
+
+        def put(out: queue.Queue, item: Any) -> bool:
+            while not stop.is_set():
+                try:
+                    out.put(item, timeout=0.5)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+
+        def read(index: int, low: Any, high: Any) -> None:
+            out, conn, ready = queues[index], None, False
+            try:
+                conn = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
+                                       isolation_level=None)
+                conn.row_factory = sqlite3.Row
+                from integrations.source_mirror import attach_scoped
+                attach_scoped(conn)
+                ready = begin_snapshot(conn) == self._marks
+            except BaseException:  # noqa: BLE001 - read on the snapshot's own connection
+                ready = False
+            finally:
+                opened.put(ready)
+            try:
+                go.wait()
+                if not ready or stop.is_set():
+                    return
+                sql, args = self._attached_query(low, high)
+                cursor = conn.execute(sql, args)
+                while True:
+                    rows = cursor.fetchmany(256)
+                    if not rows or not put(out, rows):
+                        break
+                put(out, (done, None))
+            except BaseException as exc:  # noqa: BLE001 - raised where the rows are read
+                put(out, (done, exc))
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        threads = [threading.Thread(target=read, args=(i, low, high), daemon=True)
+                   for i, (low, high) in enumerate(slices)]
+        for thread in threads:
+            thread.start()
+        try:
+            if not all([opened.get() for _ in threads]):
+                stop.set()
+                go.set()
+                yield from self._conn.execute(self._attached_query()[0])
+                return
+            go.set()
+            for out in queues:
+                while True:
+                    rows = out.get()
+                    if isinstance(rows, tuple):
+                        if rows[1] is not None:
+                            raise rows[1]
+                        break
+                    yield from rows
+        finally:
+            stop.set()
+            go.set()
+            for thread in threads:
+                thread.join()
+
+    def _mailbox_ranges(self) -> list[tuple[Any, Any]] | None:
+        """[low, high) mailbox ranges of about equal attachments (the first without a low
+        bound, the last without a high one, so every mailbox is in exactly one), or None
+        for one read: a snapshot without known marks, fewer than ``SPLIT_ROWS``
+        attachments or one mailbox."""
+        if self._marks is None or self.SPLIT_READERS < 2:
+            return None
+        counts = self._conn.execute("SELECT mailbox_id, count(*) FROM attachments "
+                                    "GROUP BY mailbox_id ORDER BY mailbox_id").fetchall()
+        total = sum(n for _, n in counts)
+        if total < self.SPLIT_ROWS or len(counts) < 2:
+            return None
+        # A range bounds handles by ``graph-mail://<mailbox>/``: that is the mailbox order
+        # only when no id holds a '/' and none is a prefix of another that sorts before
+        # '/' after it (``ab`` and ``ab.c``); any such id makes it one read.
+        ids = {m for m, _ in counts} | {m for (m,) in self._conn.execute(
+            "SELECT DISTINCT mailbox_id FROM messages")}
+        if (any(not isinstance(m, str) or "/" in m for m in ids)
+                or sorted(ids) != sorted(ids, key=lambda m: m + "/")):
+            return None
+        lows: list[Any] = [None]
+        held = 0
+        for mailbox, n in counts:
+            if held and held * self.SPLIT_READERS >= total * len(lows):
+                lows.append(mailbox)
+            held += n
+        return [(low, lows[i + 1] if i + 1 < len(lows) else None)
+                for i, low in enumerate(lows)]
+
     def __init__(self, state_dir: str | Path, *, internal_domains: Iterable[str] = ()) -> None:
         root = Path(state_dir).expanduser() / "mail-capture"
         self.path = root / "capture.db"
@@ -1277,12 +1427,7 @@ class MailCaptures(Reopenable):
                         audience_key=f"mail:{row['mailbox_id']}",
                         missing_from_source_since=missing)
             elif relation == "attachments":
-                for row in self._conn.execute(
-                        f"SELECT a.*, {self._text}, m.message_id, m.recorded_at, "
-                        "m.superseded_at, m.last_seen_at, m.gone, m.record AS message, "
-                        "m.body_sha256 AS message_body "
-                        + self._ATTACHED + " ORDER BY a.mailbox_id, m.message_id, "
-                        "a.attachment_id, m.recorded_at"):
+                for row in self._attached_rows():
                     metadata = json.loads(row["metadata"])
                     superseded, missing = self._interval(row)
                     text = ({"text_status": row["text_status"],

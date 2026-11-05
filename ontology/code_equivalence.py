@@ -68,6 +68,12 @@ READER_CHANGES: Mapping[tuple[str, str], tuple[str | None, str | None]] = {
     ("operating.use_case_parts", "_zip"): (
         "c45cec3531288ae74821d859cc0adce37d990bf0f0b5ec0c1afdc333d7041a5d",
         "587d753455518abfd3190368770b29af5eb8bdf25951cf3367d4f613b8aee4ad"),
+    # The mail attachments read by mailbox ranges on threads of their own, under the
+    # snapshot's file marks: the same rows in the same order, else one
+    # read as before (ontology/tests/test_build_prints.py SplitMailReadTests).
+    ("ontology.project", "MailCaptures"): (
+        "8a8512cebea3f48b03cc546271ac5bc89ea16509cf4db0393cad63644039b1c9",
+        "4e35c9f8d667ae647772fdd338639bb06be4c17e1f10ca0b35f805fa7a13f97e"),
     # The parallel projection's scheduling: the bindings over one derived relation are one
     # task that reads it once, a sharded binding cut into pieces (dd6d87e5a3, ROWS_CODE_DIGESTS); the relation
     # names it groups by (already defined at BASE_COMMIT, newly reached).
@@ -152,10 +158,11 @@ DERIVATION_CHANGES: Mapping[str, tuple[str | None, str]] = {
     # finish and counts (finish_generation, projected_counts) are not derivation; the
     # projector writing only the chosen objects' rows of an object-local binding and
     # keeping each object's report entries apart (Projector, _Report, object_unit): it projects records, never derives one; the meetings capture as a
-    # capture source of its own (CAPTURE_SOURCES, _NOT_DERIVATION: another source's reader)
+    # capture source of its own (CAPTURE_SOURCES, _NOT_DERIVATION: another source's reader);
+    # the mail attachments read by mailbox ranges side by side (MailCaptures, ontology/tests/test_build_prints.py)
     "ontology/project.py": (
         "2409495cb9bd2b9bac667ca4724a471698c748db7b0305de24e9692b8710efaf",
-        "ef8735e7b58435143fa15a7c8e125fb84be6d087afd6906599cd07f1f2606f22"),
+        "6968d6c14a93f94bad3eca3cc80b2e22b50182f4a1e7fa7b3ce47ce8b6a33ac2"),
     # the mention step's failures per document (DocumentFailures), the store's windows in
     # its memo key and a read-ahead load that fails left to the step: the mention step,
     # which derives no documentFields or containerMembers record; the meetings document

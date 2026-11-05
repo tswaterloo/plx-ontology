@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -23,6 +24,7 @@ from unittest import mock
 from ontology import build_prints as bp
 from ontology import project_incremental as inc
 from ontology.generator.fixture import SyntheticCaptures, sources
+from ontology.project import MailCaptures
 from ontology.tests.test_project_parallel import Drifting
 
 CLOCK = lambda: datetime(2026, 1, 3, tzinfo=timezone.utc)  # noqa: E731
@@ -173,6 +175,101 @@ class DocumentSourcePrintsTests(unittest.TestCase):
         expected = self.check(lambda: MailCaptures(
             root / "capture", internal_domains=md.SCOPE.internal_domains))
         self.assertTrue(any(bid.startswith("graph_mail.") for bid in expected[2]))
+
+
+class SplitMailReadTests(unittest.TestCase):
+    """The mail attachments read by mailbox ranges side by side
+    (``MailCaptures._attached_rows``): every attachment row, derived record, relation
+    fingerprint and shard print equals the one read's, and a reader that cannot open
+    under the snapshot's file marks leaves it one read."""
+
+    @classmethod
+    def setUpClass(cls):
+        from ontology.schema import load_schema
+        cls.schema = load_schema()
+        cls.plan = inc.plan(cls.schema)
+
+    def store(self, extra=()):
+        """The mail fixture with its mailbox copied under three more ids (one sorting
+        before it), so the attachments span four mailboxes (and under ``extra``)."""
+        import sqlite3
+        from ontology.tests import test_mail_documents as md
+
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        root = md.captured_mail_with_documents(self)
+        conn = sqlite3.connect(str(root / "capture" / "mail-capture" / "capture.db"))
+        try:
+            (held,), = conn.execute("SELECT DISTINCT mailbox_id FROM attachments").fetchall()
+            columns = {t: [r[1] for r in conn.execute(f"PRAGMA table_info({t})")]
+                       for t in ("messages", "attachments")}
+            for other in ("00000000-0000-0000-0000-000000000001", held[:-1] + "b",
+                          held[:-1] + "c", *(e(held) for e in extra)):
+                for table, renamed in (("messages", ("l1_handle", "mailbox_id")),
+                                       ("attachments", ("message_handle", "l1_handle",
+                                                        "mailbox_id"))):
+                    names = [c for c in columns[table] if c != "version_id"]
+                    picked = [f"replace({c}, :held, :other)" if c in renamed else c
+                              for c in names]
+                    conn.execute(f"INSERT INTO {table} ({', '.join(names)}) SELECT "
+                                 f"{', '.join(picked)} FROM {table} WHERE mailbox_id = :held",
+                                 {"held": held, "other": other})
+            conn.commit()
+        finally:
+            conn.close()
+        return lambda: MailCaptures(root / "capture",
+                                    internal_domains=md.SCOPE.internal_domains)
+
+    def read(self, opener, readers):
+        relations = ("attachments", "documentFields", "containerMembers")
+        held = forced(self.plan)
+        with mock.patch.object(MailCaptures, "SPLIT_READERS", readers), \
+                mock.patch.object(MailCaptures, "SPLIT_ROWS", 1):
+            with opener() as one:
+                records = {r: list(map(inc._fingerprint_cells, recs))
+                           for r, recs in one.records(relations).items()}
+            with opener() as one:
+                prints = serial_prints({one.source: one}, self.plan, None, held)
+        return records, prints
+
+    def test_mail_read_by_mailbox_ranges_equals_one_read(self):
+        opener = self.store()
+        with opener() as one, mock.patch.object(MailCaptures, "SPLIT_READERS", 3), \
+                mock.patch.object(MailCaptures, "SPLIT_ROWS", 1):
+            one.records(["attachments"])
+            self.assertEqual(len(one._mailbox_ranges()), 3)
+        one_read = self.read(opener, 1)
+        split = self.read(opener, 3)
+        self.assertEqual(split, one_read)
+        self.assertGreaterEqual(len(one_read[0]["attachments"]), 32)
+        self.assertGreater(len(one_read[0]["documentFields"]), 0)
+        self.assertTrue(any(bid.startswith("graph_mail.") for bid in one_read[1][2]))
+
+    def test_a_mailbox_id_whose_handles_sort_apart_leaves_one_read(self):
+        # ``<id>.x``'s handles sort before ``<id>``'s ('.' < '/'), its mailbox after
+        opener = self.store(extra=(lambda held: held + ".x",))
+        with opener() as one, mock.patch.object(MailCaptures, "SPLIT_READERS", 3), \
+                mock.patch.object(MailCaptures, "SPLIT_ROWS", 1):
+            one.records(["attachments"])
+            self.assertIsNone(one._mailbox_ranges())
+        self.assertEqual(self.read(opener, 3), self.read(opener, 1))
+
+    def test_a_reader_under_other_file_marks_leaves_one_read(self):
+        from ontology import project
+
+        opener = self.store()
+        one_read = self.read(opener, 1)
+        marks = project.begin_snapshot
+        calls = []
+
+        def drifted(conn):   # a reader's file marks moved since the snapshot
+            found = marks(conn)
+            if threading.current_thread() is threading.main_thread():
+                return found
+            calls.append(1)
+            return found if len(calls) % 3 else [["moved"]]
+        with mock.patch.object(project, "begin_snapshot", drifted):
+            self.assertEqual(self.read(opener, 3), one_read)
+        self.assertGreater(len(calls), 2)
 
 
 class SpeedProbe(unittest.TestCase):

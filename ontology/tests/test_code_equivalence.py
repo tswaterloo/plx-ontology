@@ -36,7 +36,10 @@ DERIVATION_DEFINITIONS = {
                             "finish_generation", "projected_counts",
                             "Projector", "_Report", "object_unit",
                             # the meetings capture source (another source's reader)
-                            "CAPTURE_SOURCES", "_meetings_captures"},
+                            "CAPTURE_SOURCES", "_meetings_captures",
+                            # the mail attachments read by mailbox ranges side by side:
+                            # the same rows in the same order (test_build_prints)
+                            "MailCaptures"},
     # the mention step's per-document failures (a step, not a derivation)
     "ontology/mentions.py": {"_memo_code", "_store_links", "read_ahead",
                              "DOCUMENT_KINDS"},   # the meetings document kinds
