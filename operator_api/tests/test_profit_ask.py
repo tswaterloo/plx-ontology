@@ -304,12 +304,19 @@ class ProfitAskTests(unittest.TestCase):
         with mock.patch.object(cp, "MAX_ORDERS", 2):
             _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
         text = answer["direct_answer"]
-        self.assertTrue(text.startswith("I can't give a customer total for Northwind Test "
+        # said partial first, with how many orders were read of how many
+        self.assertTrue(text.startswith("Partial answer: 2 of 4 orders read. "
+                                        "I can't give a customer total for Northwind Test "
                                         "Foods in the last 12 months: it has 4 orders in the "
                                         "period and only the 2 most recent orders were read (2 more "
                                         "in the period not read)"), text)
         self.assertNotIn("profitable", text)
         self.assertIn("Worst of the 2 most recent orders read SO-101", text)
+        # each order's margin is one of the orders read, never worded as a final figure
+        orders = [f["text"] for f in answer["facts"] if f["text"].startswith("Order ")]
+        self.assertTrue(orders)
+        for fact in orders:
+            self.assertIn(" (partial answer: one of 2 of 4 orders read): revenue ", fact)
         profit = answer["profitability"]
         self.assertEqual((profit["margin"], profit["orders_in_period"], profit["orders_read"]),
                          (None, 4, 2))
@@ -358,6 +365,7 @@ class ProfitAskTests(unittest.TestCase):
         with mock.patch.object(cp, "customer_orders", cut):
             _names, answer = self.ask(View(self), "Is Northwind Test Foods profitable?")
         text = answer["direct_answer"]
+        self.assertTrue(text.startswith("Partial answer: 4 of at least 4 orders read. "), text)
         self.assertIn("it has at least 4 orders in the period and only the 4 most recent "
                       "orders were read (the order list itself was cut, so more may exist)", text)
         self.assertNotIn("0 more", text)

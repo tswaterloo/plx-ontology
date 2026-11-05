@@ -137,6 +137,21 @@ class SendShape(unittest.TestCase):
         found = d.preview(card(), "reply_in_thread", None, other)
         self.assertIn("not in your mailbox", " ".join(found["problems"]))
 
+    def test_a_reply_carries_the_threads_subject_with_one_tag_never_stacked(self):
+        for subject, sent in [("PO 90388 delivery", "Re: PO 90388 delivery"),
+                              ("RE: RE: PO 90388 delivery", "RE: PO 90388 delivery"),
+                              ("Re: FW: PO 90388", "Re: PO 90388"),
+                              ("aw: Re[2]: sv: PO 90388", "aw: PO 90388"),
+                              ("Fwd: PO 90388", "Fwd: PO 90388"), (None, None)]:
+            d, graph = desk()
+            reader = lambda m, i, s=subject: {"from": "orders@supplier.example",  # noqa: E731
+                                              "reply_to": [], "subject": s}
+            # the thread's own subject (its date and number) is cited, never "uncited"
+            self.assertEqual(confirm(d, "reply_in_thread", c=ctx(thread=reader))["status"],
+                             "sent", subject)
+            message = graph.calls[0][2]["message"]
+            self.assertEqual(message.get("subject"), sent, subject)
+
 
 class Gate(unittest.TestCase):
     def test_without_flag_sender_or_scope_the_confirm_is_a_dry_run_naming_what_is_missing(self):

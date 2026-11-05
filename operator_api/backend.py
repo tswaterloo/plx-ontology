@@ -3435,6 +3435,11 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     counted, in_period, read = totals["counted"], totals["orders"], totals["read"]
     exact = profit.get("coverage", {}).get("count_exact", True)
     basis = profit["period"]["basis"]
+    # Not every order of the period read (the read limit or the time budget): the answer
+    # says first that it is partial, and each order's figure is worded as one of those read,
+    # never as the customer's figure.
+    partial = (f"Partial answer: {read} of {'' if exact else 'at least '}{in_period} orders "
+               "read." if not totals.get("complete") else None)
     if not totals.get("complete"):
         headline = (f"I can't give a customer total for {cust['name']} in {period}: it has "
                     f"{'' if exact else 'at least '}{in_period} orders in the period and "
@@ -3492,7 +3497,10 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
     for order in [o for o in profit["orders"] if o["decided"]][:5]:
         loss = order["margin"] < 0
         oc = order["currency"]          # the order's own checked currency
-        text = (f"Order {order['number']}: revenue {money_words(order['revenue'], oc)}, "
+        text = (f"Order {order['number']}"
+                + (f" (partial answer: one of {read} of {'' if exact else 'at least '}"
+                   f"{in_period} orders read)" if partial else "")
+                + f": revenue {money_words(order['revenue'], oc)}, "
                 f"item cost {money_words(order['booked_cost'], oc)}, "
                 + (f"loss {MARGIN_BASIS} {money_words(-order['margin'], oc)}" if loss else
                    f"margin {MARGIN_BASIS} {money_words(order['margin'], oc)}") + ".")
@@ -3530,6 +3538,8 @@ def profit_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest,
         parts.append("Why: " + " ".join(drivers[:3]))
     # the order asked about first, then its customer; else the customer first
     parts = parts + [headline] if profit.get("focus") else [headline] + parts
+    if partial:
+        parts.insert(0, partial)
     items = profit.get("items") or {}
     products = profit.get("products") or []
     if len(products) > 1:

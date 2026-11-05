@@ -81,7 +81,7 @@ class ActionsMixin:
         if api is None:
             return None
         try:
-            raw = api.get_json(grammar.url("graph.message", {"$select": "from,replyTo"},
+            raw = api.get_json(grammar.url("graph.message", {"$select": "from,replyTo,subject"},
                                            user=mailbox, message=message_id),
                                headers={"Prefer": 'IdType="ImmutableId"'})
         except (SourceUnavailable, NotVisible, ValueError):
@@ -146,8 +146,9 @@ class ActionsMixin:
 
 
 def thread_parties(raw: Any) -> Optional[dict[str, Any]]:
-    """A Graph message's sender and Reply-To addresses ({"from", "reply_to"}), or None when
-    the answer is not a message (an unreadable party is ``None``: the reply is refused)."""
+    """A Graph message's sender, Reply-To addresses and subject ({"from", "reply_to",
+    "subject"}), or None when the answer is not a message (an unreadable party is ``None``:
+    the reply is refused; an unreadable subject is ``None``: Graph words the reply's)."""
     if not isinstance(raw, Mapping):
         return None
 
@@ -159,4 +160,5 @@ def thread_parties(raw: Any) -> Optional[dict[str, Any]]:
     reply_to = raw.get("replyTo")
     parties = [address(v) for v in reply_to] if isinstance(reply_to, list) else None
     return {"from": address(raw.get("from")),
-            "reply_to": None if parties is None or None in parties else parties}
+            "reply_to": None if parties is None or None in parties else parties,
+            "subject": raw["subject"] if isinstance(raw.get("subject"), str) else None}

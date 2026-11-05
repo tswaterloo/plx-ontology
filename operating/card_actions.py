@@ -170,7 +170,8 @@ class Context:
     today: date
     environ: Mapping[str, str] = field(default_factory=dict)
     # (mailbox oid, message id) -> {"from": address, "reply_to": [addresses] ([] none,
-    # None unknown)} read from the message itself; None: unreadable (a reply is refused)
+    # None unknown), "subject": text or None} read from the message itself; None:
+    # unreadable (a reply is refused)
     thread: Callable[[str, str], Mapping[str, Any] | None] | None = None
     # chat id -> its members [{"id": oid, "email": address}]; None: unreadable (refused)
     chat_members: Callable[[str], Sequence[Mapping[str, Any]] | None] | None = None
@@ -409,6 +410,10 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
                                     "reply cannot be checked.")
                 else:
                     payload["thread_recipients"] = list(dict.fromkeys(a.lower() for a in found))
+            # the reply's subject is the thread's own with one tag, never "RE: RE:" (None:
+            # unreadable, Graph words it); the person does not edit it
+            from operating.proactive_events import reply_subject
+            subject = reply_subject((thread or {}).get("subject"))
         if kind != "teams_message":
             payload["to"] = _addresses(raw.get("to"), "To", problems)
             payload["cc"] = _addresses(raw.get("cc"), "Cc", problems)
@@ -424,7 +429,7 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
             elif len(payload["subject"]) > MAX_SUBJECT:
                 problems.append(f"The subject is at most {MAX_SUBJECT} characters.")
         else:
-            payload["subject"] = None
+            payload["subject"] = subject if kind == "reply_in_thread" else None
         if kind == "teams_message":
             chat = raw.get("chat_id")
             payload["chat_id"] = chat if isinstance(chat, str) else None
@@ -458,7 +463,9 @@ def review(card: Mapping[str, Any], kind: str, edits: Mapping[str, Any] | None,
         # in the drafted text (itself worded from cited values), and each figure still
         # beside the label it was drafted with; anything else the person typed is refused
         facts = _facts(card)
-        text = f"{payload.get('subject') or ''}\n{payload['body']}"
+        # a reply's subject is the cited thread's own, not words the person typed
+        typed = payload.get("subject") if kind == "send_email" else None
+        text = f"{typed or ''}\n{payload['body']}"
         drafted = f"{base.get('subject') or ''}\n{base.get('body') or ''}"
         uncited = uncited_terms(text, drafted, [fact["value"] for fact in facts])
         swapped = swapped_figures(text, drafted)

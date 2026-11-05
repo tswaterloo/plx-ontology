@@ -787,6 +787,22 @@ _PREFIXES = r"^\s*(?:(?:\[[^\]]{1,30}\]|[A-Za-z]{2,4}(?:\[\d+\])?\s*[:：]|回�
 _REPLY = re.compile(_PREFIXES[:-1] + r"?(?:RE|AW|SV|VS|R|RIF|ANTW|回复|答复)\s*[:：]", re.I)
 _FORWARD = re.compile(_PREFIXES + r"(?:FW|FWD|WG|TR|RV|转发)\s*[:：]", re.I)
 _FORWARDED = re.compile(r"forwarded message|begin forwarded message", re.I)
+# One reply or forward tag ("RE:", "Fwd:", "AW:", "SV:", "Re[2]:", any case) and a run of them.
+_TAG = r"(re|fwd?|aw|sv)\s*(?:\[\d+\])?\s*[:：]"
+_TAGS = re.compile(rf"^\s*{_TAG}(?:\s*{_TAG})*\s*", re.I)
+
+
+def reply_subject(subject: Any) -> str | None:
+    """The subject a reply to a message of ``subject`` carries: one tag, never stacked. A
+    subject with no reply or forward tag gets "Re: "; one that starts with tags keeps its
+    first tag alone ("RE: RE: x" is "RE: x", "Re: FW: x" is "Re: x"). None or blank: None."""
+    if not isinstance(subject, str) or not subject.strip():
+        return None
+    found = _TAGS.match(subject)
+    if found is None:
+        return f"Re: {subject.strip()}"
+    rest = subject[found.end():].strip()
+    return f"{found.group(1)}: {rest}" if rest else f"{found.group(1)}:"
 
 
 def asks_vendor(text: Any) -> bool:

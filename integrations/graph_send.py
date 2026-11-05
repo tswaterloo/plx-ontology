@@ -70,6 +70,8 @@ def request_for(kind: str, sender: str, payload: Mapping[str, Any]) -> dict[str,
                 "body": {"message": message, "saveToSentItems": True}}
     if kind == "reply_in_thread":
         message = {"toRecipients": _recipients(payload.get("to"))}
+        if payload.get("subject"):   # one reply tag, never stacked (card_actions.review)
+            message["subject"] = payload["subject"]
         if payload.get("cc"):
             message["ccRecipients"] = _recipients(payload["cc"])
         return {"method": "POST", "url": f"{GRAPH}/users/{user}/messages/"
