@@ -175,7 +175,8 @@ from integrations.captured_text import kept_readings
 from integrations.kept_members import MEMBERS_FILE, kept_members
 from ontology.document_fields import kept_fields
 from ontology import build_adopt, build_keys, build_prints, store_ddl
-from ontology.store import StoreBuilder, StoreError, _fsync_dir, canonical, known_at
+from ontology.store import (_DIRTY_TRIGGERS, StoreBuilder, StoreError, _fsync_dir, canonical,
+                            known_at, object_segment)
 
 FORMAT = "plx-projection-generations/v1"
 CURRENT = "CURRENT"
@@ -1192,15 +1193,10 @@ def _prefix(the_plan: Plan, binding: str) -> tuple[str, str]:
 
 def _delete_unit(conn: sqlite3.Connection, the_plan: Plan, unit: str,
                  events: Mapping[str, list[tuple[str, Mapping[str, Any]]]]) -> None:
-    """Delete one unit's rows from a seeded generation (foreign keys deferred: the
-    partial build writes the unit's rows again before the commit checks them)."""
+    """Delete one binding unit's rows from a seeded generation (foreign keys deferred:
+    the partial build writes the unit's rows again before the commit checks them; a link
+    unit's are ``_delete_links``')."""
     where = the_plan.rows[unit]
-    if where[0] == "links":
-        _, lid, frm, to, kind = where
-        conn.execute("DELETE FROM link_rows WHERE from_object >= ? AND from_object < ? AND "
-                     "link_type = ? AND binding_kind = ? AND to_object >= ? AND to_object < ?",
-                     (*_prefix(the_plan, frm), lid, kind, *_prefix(the_plan, to)))
-        return
     if where[0] != "binding":
         return
     binding = where[1]
@@ -2029,9 +2025,16 @@ def _foreign_keys(conn: sqlite3.Connection, *, on: bool) -> None:
     keys enforced (``on``: deferred to its commit, as ``_seed_delete`` defers them) or
     not (the parallel merge of an incremental build: ``StoreBuilder.check`` checks every
     key before the generation is committed). The build's file is its own until then: a
-    build that fails before its first checkpoint removes it."""
+    build that fails before its first checkpoint removes it. So while the keys are off
+    (the seed's deletes and the merge, which run before any checkpoint) the file keeps no
+    rollback journal: a failure there discards it, and on the live 126 GB store the
+    journal of the deletes alone passed 60 GB (every page they change written twice). The
+    journal is back (``DELETE``) before the keys are on again."""
     if conn.in_transaction:
         conn.execute("COMMIT")
+    mode = "DELETE" if on else "OFF"
+    if conn.execute(f"PRAGMA journal_mode = {mode}").fetchone()[0].upper() != mode:
+        raise StoreError("journal_mode_unchanged")
     conn.execute(f"PRAGMA foreign_keys = {'ON' if on else 'OFF'}")
     conn.execute("BEGIN IMMEDIATE")
     if on:
@@ -2306,19 +2309,100 @@ def _seed_delete(conn: sqlite3.Connection, the_plan: Plan, schema: Any,
                  "AND NOT EXISTS (SELECT 1 FROM value_cells c WHERE c.src = value_sources.src)")
     conn.execute("DROP TABLE temp.plx_posted")
     shards: dict[str, set[int]] = {}
-    for unit in sorted(dirty):
-        if the_plan.rows[unit][0] == "shard":
-            _, bid, count, k = the_plan.rows[unit]
-            shards.setdefault(bid, set()).add(k)
-            continue
-        if the_plan.rows[unit][0] == "binding" and the_plan.rows[unit][1] in delta:
-            _delete_objects(conn, the_plan, the_plan.rows[unit][1], events)
-            continue
-        _delete_unit(conn, the_plan, unit, events)
-    conn.execute("DROP TABLE temp.plx_unit_events")
-    for bid, chosen in sorted(shards.items()):
-        count = the_plan.rows[shard_unit(bid, min(chosen))][2]
-        _delete_shards(conn, the_plan, bid, count, chosen)
+    links: list[tuple[Any, ...]] = []
+    with _binding_segments(conn) as mark:
+        for unit in sorted(dirty):
+            if the_plan.rows[unit][0] == "shard":
+                _, bid, count, k = the_plan.rows[unit]
+                shards.setdefault(bid, set()).add(k)
+                continue
+            if the_plan.rows[unit][0] == "binding" and the_plan.rows[unit][1] in delta:
+                low, high = _prefix(the_plan, the_plan.rows[unit][1])
+                if conn.execute("SELECT 1 FROM temp.plx_delta_objects WHERE object_id >= ? "
+                                "AND object_id < ? LIMIT 1", (low, high)).fetchone():
+                    mark(low)
+                _delete_objects(conn, the_plan, the_plan.rows[unit][1], events)
+                continue
+            if the_plan.rows[unit][0] == "binding":
+                mark(_prefix(the_plan, the_plan.rows[unit][1])[0])
+            if the_plan.rows[unit][0] == "links":
+                links.append(the_plan.rows[unit])
+                continue
+            _delete_unit(conn, the_plan, unit, events)
+        conn.execute("DROP TABLE temp.plx_unit_events")
+        _delete_links(conn, the_plan, links)
+        for bid, chosen in sorted(shards.items()):
+            mark(_prefix(the_plan, bid)[0])
+            count = the_plan.rows[shard_unit(bid, min(chosen))][2]
+            _delete_shards(conn, the_plan, bid, count, chosen)
+
+
+def _delete_links(conn: sqlite3.Connection, the_plan: Plan,
+                  units: Iterable[tuple[Any, ...]]) -> None:
+    """Delete the links of the link ``units`` (their ``Plan.rows``: link type, from and to
+    binding, binding kind) from a seeded generation: the rows ``_delete_unit`` deletes for
+    each, in one read of the links from each from binding's objects (``links_from``)
+    instead of one per unit."""
+    by_from: dict[str, list[tuple[str, str, str, str]]] = {}
+    for _, lid, frm, to, kind in units:
+        by_from.setdefault(frm, []).append((lid, kind, *_prefix(the_plan, to)))
+    if not by_from:
+        return
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS plx_link_units (link_type TEXT NOT NULL, "
+                 "binding_kind TEXT NOT NULL, to_low TEXT NOT NULL, to_high TEXT NOT NULL)")
+    for frm, wanted in sorted(by_from.items()):
+        conn.execute("DELETE FROM temp.plx_link_units")
+        conn.executemany("INSERT INTO temp.plx_link_units VALUES (?, ?, ?, ?)", sorted(wanted))
+        conn.execute("DELETE FROM link_rows WHERE from_object >= ? AND from_object < ? AND "
+                     "EXISTS (SELECT 1 FROM temp.plx_link_units u WHERE "
+                     "u.link_type = link_rows.link_type AND "
+                     "u.binding_kind = link_rows.binding_kind AND "
+                     "link_rows.to_object >= u.to_low AND link_rows.to_object < u.to_high)",
+                     _prefix(the_plan, frm))
+    conn.execute("DROP TABLE temp.plx_link_units")
+
+
+# The tables whose rows of a binding the seed's deletes remove by the binding's id range
+# (``_delete_unit``, ``_delete_objects``, ``_delete_shards``): every such row is in the
+# binding's digest segment.
+_BINDING_TABLES = ("value_cells", "value_sources", "identifiers", "object_versions",
+                   "object_removals", "objects")
+
+
+@contextlib.contextmanager
+def _binding_segments(conn: sqlite3.Connection) -> Iterator[Callable[[str], None]]:
+    """``mark(low)``: record in ``temp.plx_dirty`` the digest segment of the binding whose
+    object ids start with ``low`` (``_prefix``), whose rows are about to be deleted. A
+    seeded builder's delete triggers on ``_BINDING_TABLES`` (``store._DIRTY_TRIGGERS``)
+    record that segment row by row, a value's by looking up its source and version (most
+    of the deletes' time); they are dropped meanwhile and created again after. A mark
+    without a deleted row only digests that segment again (the same parts). An id prefix
+    that is not its own segment (a ':' in the type or binding) marks every segment. A
+    builder without the triggers (an unseeded one, or a seed whose parts do not compose
+    its digest) marks nothing."""
+    names = [f"plx_dirty_{table}_delete" for table in _BINDING_TABLES]
+    held = {name for (name,) in conn.execute(
+        "SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name IN "
+        f"({', '.join('?' for _ in names)})", names)}
+    if not held:
+        yield lambda low: None
+        return
+    statements = [sql for sql in _DIRTY_TRIGGERS
+                  if any(f" {name} " in sql for name in held)]
+    if len(held) != len(names) or len(statements) != len(names):
+        raise StoreError("dirty_triggers_unexpected")
+
+    def mark(low: str) -> None:
+        segment = object_segment(low)
+        conn.execute("INSERT OR IGNORE INTO temp.plx_dirty VALUES (?, ?)",
+                     ("object_id", segment) if segment == low else ("all", ""))
+    for name in sorted(held):
+        conn.execute(f"DROP TRIGGER temp.{name}")
+    try:
+        yield mark
+    finally:
+        for sql in statements:
+            conn.execute(sql)
 
 
 def _delete_objects(conn: sqlite3.Connection, the_plan: Plan, binding: str,

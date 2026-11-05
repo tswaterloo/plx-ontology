@@ -389,6 +389,43 @@ class IncrementalParallelTests(unittest.TestCase):
                     self.assertEqual(built.report["gaps"], cold["gaps"])
                     self.assertEqual(built.report["counts"], cold["counts"])
 
+    def test_a_build_failing_in_its_unjournaled_merge_is_discarded_and_the_next_equals_cold(self):
+        """The seed's deletes and the merge write the build's file with no rollback
+        journal (its foreign keys off): a failure there leaves the committed generation
+        current and no build file, and the next build, digested by segments, equals a
+        cold one."""
+        merge, modes = par.merge_part, []
+
+        def failing(builder, part, batch, **kwargs):
+            modes.append(builder.connection.execute("PRAGMA journal_mode").fetchone()[0])
+            if len(modes) == 2:
+                raise OSError("disk_lost")
+            return merge(builder, part, batch, **kwargs)
+        changed = sources(self.schema, self.ROWS, ["public.app_purchase_order", "sage.ap_pjd",
+                                                   "messages"])
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(inc, "SHARD_RECORDS", 1):
+            state = Path(tmp) / "state"
+            first = inc.build_generation(state, self.schema, sources(self.schema, self.ROWS),
+                                         clock=CLOCK, workers=1)
+            with mock.patch.object(par, "merge_part", failing), \
+                    self.assertRaisesRegex(OSError, "disk_lost"):
+                inc.build_generation(state, self.schema, changed, clock=CLOCK, workers=3,
+                                     space=incremental_path)
+            self.assertEqual(modes, ["off", "off"])
+            self.assertEqual(inc.current_generation(state).id, first.id)
+            self.assertEqual([p.name for p in (state / "generations").iterdir()], [first.id])
+            built = inc.build_generation(state, self.schema, changed, clock=CLOCK, workers=3,
+                                         space=incremental_path)
+            cold = build_store(Path(tmp) / "cold.sqlite", self.schema, changed, clock=CLOCK)
+            self.assertEqual((built.mode, built.digest["mode"]), ("incremental", "segments"))
+            self.assertIn("project.parallel", built.seconds)
+            with closing(sqlite3.connect(built.store)) as conn:
+                self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+                self.assertEqual(store.content_digest(conn), built.content_digest)
+            self.assertEqual(built.content_digest, cold["content_digest"])
+            self.assertEqual(tables(built.store), tables(cold["store"]))
+
     def test_a_worker_reading_other_bytes_leaves_its_units_to_the_build(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
