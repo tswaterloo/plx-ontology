@@ -64,7 +64,12 @@ MAX_PAGES = 8             # answer pages read per plan run
 # Seconds one answer spends reading orders (their dates, then their margins): past it no
 # further order is read, and the orders read are ranked as a partial answer that says so
 # (never a total or verdict over a subset). The breakdown, item names and why still read.
-BUDGET_SECONDS = 40.0
+# A customer of 46 orders took 37 s of reads on an idle gen-8 host, so 40 s left no room:
+# on the 2026-11-04 gen-9 run, with reads 5x slower beside a build, the budget cut it at 9
+# orders and the answer could give no total. The customer's name lookup before it no
+# longer walks every mail holding the name (up to 27 s, ``OntologyTools.
+# _may_hold_document_text``), so the answer spends that time here instead.
+BUDGET_SECONDS = 60.0
 MATERIAL_POS = 2          # purchase orders of an item whose landed cost is read
 CENT = Decimal("0.01")
 UNIT = Decimal("0.0001")

@@ -130,6 +130,29 @@ class MailTextTests(unittest.TestCase):
                          {"citation": f"graph-mail://{BOX_A}/MSG-2@CK-2-1",
                           "field_path": "row.body_text", "sender_class": "external"})
 
+    def test_a_typed_find_reads_document_text_only_for_a_type_that_can_hold_it(self):
+        # A purchase order (a Portal row) holds no captured document text: its find never
+        # walks the chunks holding the words (on the live store a customer's name in its
+        # mail cost 5-27 s per find for nothing). A document type still finds by its text.
+        tools = self.tools()
+        walked: list[str | None] = []
+        chunk_matches = tools.store.chunk_matches
+
+        def counted(scope, words, object_type, after, batch):
+            walked.append(object_type)
+            return chunk_matches(scope, words, object_type, after, batch)
+        tools.store.chunk_matches = counted
+        po_find = find(tools, "lanolin reconciliation", READER_A,
+                       object_type="PurchaseOrder")
+        self.assertEqual(po_find["candidates"], [])
+        self.assertEqual(walked, [])
+        found = find(tools, "lanolin reconciliation", READER_A, object_type="Attachment")
+        self.assertEqual(len(found["candidates"]), 1, json.dumps(found)[:1500])
+        self.assertEqual(found["candidates"][0]["reason"], "document_text")
+        self.assertEqual(walked[:1], ["Attachment"])
+        self.assertTrue(tools.store.holds_text_of(["graph-mail"]))
+        self.assertFalse(tools.store.holds_text_of(["api", "bc"]))
+
     def test_a_withheld_record_never_appears(self):
         # Mailbox B holds the phrase in a body and an attachment: READER_A's item ACL
         # denies it, OUTSIDER is denied both mailboxes; SQL admits all of them.

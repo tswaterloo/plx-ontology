@@ -735,6 +735,7 @@ class StoreReader:
         self.facts: tuple[tuple[int, int], dict[Any, Any]] | None = None
         self._audiences: tuple[tuple[int, int], tuple[str, ...]] | None = None
         self._meta: tuple[tuple[int, int], dict[str, str]] | None = None
+        self._text_schemes: tuple[tuple[int, int], dict[str, bool]] | None = None
 
     @classmethod
     def open(cls, path: str | Path) -> "StoreReader":
@@ -934,6 +935,33 @@ class StoreReader:
             if len(out) >= batch:
                 break
         return out
+
+    def holds_text_of(self, schemes: Sequence[str]) -> bool:
+        """Whether the document-text index holds a field cited under one of ``schemes``
+        (``graph-mail``: a citation ``graph-mail://...``): one index seek per scheme (the
+        ``text_fields`` key leads with its citation), kept until the store changes. A
+        store without the index holds none; one that cannot be read says True (the word
+        pass then runs, as before)."""
+        with self.lock:
+            try:
+                stamp = (self.conn.execute("PRAGMA data_version").fetchone()[0],
+                         self.conn.total_changes)
+                if self._text_schemes is None or self._text_schemes[0] != stamp:
+                    self._text_schemes = (stamp, {})
+                held = self._text_schemes[1]
+                for scheme in schemes:
+                    if scheme not in held:
+                        # every citation of the scheme sorts in [scheme://, scheme:/0)
+                        held[scheme] = self.conn.execute(
+                            "SELECT 1 FROM text_fields WHERE citation >= ? AND citation < ? "
+                            "LIMIT 1", (f"{scheme}://", f"{scheme}:/0")).fetchone() is not None
+                    if held[scheme]:
+                        return True
+                return False
+            except sqlite3.OperationalError as error:
+                if "no such table" in str(error):
+                    return False
+                return True
 
     def chunk_matches(self, scope: _Scope, words: str, object_type: str | None, after: int,
                       batch: int) -> list[sqlite3.Row]:
@@ -3615,9 +3643,10 @@ class OntologyTools:
             ("display_name", lambda after: self.store.text_matches(scope, phrase, typed, after,
                                                                    batch)),
             ("display_text", lambda after: self.store.text_matches(scope, words, typed, after,
-                                                                   batch)),
-            ("document_text", lambda after: self.store.chunk_matches(scope, words, object_type,
-                                                                     after, batch))]
+                                                                   batch))]
+        if self._may_hold_document_text(object_type):
+            passes.append(("document_text", lambda after: self.store.chunk_matches(
+                scope, words, object_type, after, batch)))
         if typed is not None:
             # Other text is never a declared identifier's property or carrier
             # (``_carried``): that value is found by its identifier (its grammar and scope
@@ -3683,6 +3712,26 @@ class OntologyTools:
         except sqlite3.OperationalError:
             return out, True, None   # a query the index cannot read proves no absence
         return out, False, None
+
+    def _may_hold_document_text(self, object_type: str | None) -> bool:
+        """Whether a record of ``object_type`` (None: any) can hold captured document
+        text, so the ``document_text`` pass can match one. A field of that index belongs
+        to an object projected from the document's own record, a record of the source
+        its binding reads: a type none of whose bindings' sources has a field in the
+        index (a customer: Business Central and Portal rows, never documents) matches
+        nothing there, and that pass would only walk every chunk holding the words (a
+        customer name in thousands of mails: 5-27 s per find on the live store) to
+        drop each by type. Unknown (no schema, a source with no citation scheme): the
+        pass runs."""
+        if object_type is None or self.schema is None:
+            return True
+        sources = {b.get("source") for b in (self.schema.object_types.get(object_type) or {})
+                   .get("bindings") or () if isinstance(b, Mapping)}
+        schemes = [scheme for scheme, source in _SCHEME_SOURCE.items() if source in sources]
+        if not sources or any(s not in _SCHEME_SOURCE.values() for s in sources):
+            return True
+        holds = getattr(self.store, "holds_text_of", None)
+        return True if holds is None else holds(schemes)
 
     def _hybrid_matches(self, scope: _Scope, query: str, needle: str,
                         object_type: str | None) -> list[_Match] | None:
