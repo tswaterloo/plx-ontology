@@ -43,9 +43,9 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
              refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic
              ) -> dict[str, Any]:
     """One vendor-mail pass over the served projection of ``state_dir``; counts only.
-    ``refresh_new``: first the full engine run (``proactive_engine.refresh``, within
-    ``REFRESH_BUDGET_SECONDS`` and half the pass) when the served generation is not the
-    one the inbox's last full run read (``full_refresh``: its counts, else None)."""
+    ``refresh_new``: first the full engine run (``proactive_engine.refresh``, within half
+    the pass) when the served generation is not the one the inbox's last full run read
+    (``full_refresh``: its counts, else None)."""
     from integrations.source_mirror import AudienceMap
     from ontology.core import Actor
 
@@ -73,7 +73,9 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             # run, failed or is still to come): the whole engine runs over it now, in this
             # fresh process, so Home and the briefing never list older data's findings
             # for long (``proactive_engine.read_inbox`` hides them meanwhile)
-            share = min(float(pe.REFRESH_BUDGET_SECONDS), seconds / 2)
+            # outside the cycle lock: half the pass, not the build's bound
+            # (``REFRESH_BUDGET_SECONDS``), so every rule finishes on a cold store
+            share = seconds / 2
             try:
                 ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
                                  scan_coverage="portal" in config.sources,

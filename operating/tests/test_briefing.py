@@ -441,6 +441,69 @@ class DetectorTest(Case):
         # a reader without finance may not open the figure: never sees the loss
         self.assertNotIn("negative_margin", self.events(held=frozenset()))
 
+    def test_negative_margin_window_counts_back_from_each_systems_own_newest_invoice(self):
+        """BC's invoices end months before Sage's: each system's 30 days count back from
+        its own newest invoice date, so BC's latest orders are read too; the systems take
+        turns, each most recent first, so Sage's slow margin reads never keep BC's unread."""
+        w = World()
+        orders = {}
+        for name, binding, day in (
+                ("sage_later", "portal.sage_oe_invoice_header", "2026-10-25"),   # after
+                ("sage_new", "portal.sage_oe_invoice_header", "2026-10-15"),
+                ("sage_mid", "portal.sage_oe_invoice_header", "2026-10-02"),
+                ("sage_old", "portal.sage_oe_invoice_header", "2026-09-10"),
+                ("bc_new", "bc.sales_invoices", "2026-08-20"),
+                ("bc_mid", "bc.sales_invoices", "2026-08-10"),
+                ("bc_old", "bc.sales_invoices", "2026-07-10")):
+            orders[name] = w.obj("SalesOrder", {}, binding=binding.replace("invoice", "order"))
+            invoice = w.obj("SalesInvoice", {"posting_date": day}, binding=binding)
+            w.link("SalesInvoice.bills", invoice, orders[name])
+        asked = []
+
+        def read_order(_call, order):
+            asked.append(order.object_id)
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            summary = self.run_engine(w, call=lambda *_: {})
+        self.assertEqual(asked, [orders[n] for n in ("bc_new", "sage_new", "bc_mid",
+                                                     "sage_mid")])
+        self.assertEqual(summary["coverage"]["negative_margin"]["total"], 4)
+
+    def test_margins_are_read_on_the_pool_from_the_runs_start(self):
+        """With a pool the order margins are read while the store-only rules run (the pool
+        idles otherwise), once: the rule takes those readings at its turn."""
+        from decimal import Decimal
+        w = World()
+        loser = w.obj("SalesOrder", {})
+        invoice = w.obj("SalesInvoice", {"posting_date": "2026-10-10"})
+        figure = handle(w.n)
+        w.link("SalesInvoice.bills", invoice, loser)
+        maps = []
+
+        class Pool:   # in-process
+            def map(self, task, items, left=None):
+                if task is proactive_events.read_margin:
+                    maps.append((threading.current_thread().name, list(items)))
+                return [task(lambda *_: {}, item) for item in items]
+
+        def read_order(_call, order):
+            order.margin, order.revenue, order.cost = (Decimal("-1"), Decimal("1"),
+                                                       Decimal("2"))
+            order.currency = "CAD"
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figure])]
+            return order
+
+        import threading
+        from operating import proactive_events
+        with mock.patch.object(cp, "read_order", read_order):
+            summary = self.run_engine(w, call=lambda *_: {}, pool=Pool(),
+                                      budget=pe.Budget(600))
+        # read once, from the start: beside the store-only rules, not at the rule's turn
+        self.assertEqual(maps, [("proactive-head-start", [loser])])
+        self.assertEqual(summary["detectors"]["negative_margin"], "complete")
+        self.assertEqual([g["object_id"] for g in self.events()["negative_margin"]], [loser])
+
     def test_negative_margin_is_read_with_finance_and_cited_at_its_value_markings(self):
         """The store marks a figure's money on its value, not its record: the engine's own
         sessions hold finance (else every margin is withheld) and the loss is cited at the

@@ -28,6 +28,7 @@ from unittest import mock
 from verify import live_verify as lv
 from integrations.http import SourceHttpError
 from ontology.core import Actor
+from ontology import store as ostore
 from ontology.store import StoreBuilder
 from operating import po_status
 from operating import proactive_engine as pe
@@ -1066,6 +1067,23 @@ class PoLatenessTest(Engine):
                 self.inbox.unlink(missing_ok=True)
 
 
+def single_query_links(self, types, tiers=None, *, held=True):
+    """The engine's link read before it read each type once in rowid ranges side by side:
+    one query over the ``links`` view per call (``held``: both ends not removed)."""
+    from ontology import store as ostore
+    sql = ("SELECT l.link_id, l.link_type, l.from_object, l.to_object, l.tier, l.markings "
+           "FROM links l WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
+           "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
+    if held:
+        sql += (" AND NOT " + ostore.removed_at_sql("l.from_object")
+                + " AND NOT " + ostore.removed_at_sql("l.to_object"))
+    params = {"types": json.dumps(list(types))}
+    if tiers is not None:
+        sql += " AND l.tier IN (SELECT value FROM json_each(:tiers))"
+        params["tiers"] = json.dumps(list(tiers))
+    return [dict(row) for row in self.conn.execute(sql, params)]
+
+
 def single_query_values(self, types, props=None, *, objects=None):
     """The engine's value read before it went object first in chunks: one query over the
     ``object_values`` view per call (the reference the faster read must equal)."""
@@ -1215,6 +1233,9 @@ class FastReadEquivalenceTest(Engine):
         return gaps, cites, runs, causes, summary
 
     def test_chunked_reads_find_exactly_what_the_view_queries_found(self):
+        """Values read object first in chunks and links read once per type in rowid ranges
+        on several threads (``_Store.links``, any range size) find what one query each
+        over the views found: the same inbox, a removed record's links left out."""
         for n in (1, 10, 60):
             world, late = self.world(n)
             for path in self.dir.glob("*.sqlite*"):
@@ -1222,18 +1243,24 @@ class FastReadEquivalenceTest(Engine):
             world.build(self.store)
             moment = datetime(2026, 10, 19, 6, tzinfo=timezone.utc)
             with mock.patch.object(pe._Store, "values", single_query_values), \
+                    mock.patch.object(pe._Store, "links", single_query_links), \
                     mock.patch.object(pe, "_quantity_rows", view_quantity_rows):
                 pe.run(self.store, self.dir / "old.sqlite", AS_OF, coverage=self.coverage,
                        qc_link_types=(QC_LINK,), clock=lambda: moment)
             old = self.inbox_rows(self.dir / "old.sqlite")
             self.assertTrue(old[0])
-            for chunk in (1, 3, pe.VALUES_CHUNK):
-                with self.subTest(n=n, chunk=chunk), mock.patch.object(pe, "VALUES_CHUNK", chunk):
+            for chunk, threads in ((1, "1"), (3, "3"), (pe.VALUES_CHUNK, "16")):
+                with self.subTest(n=n, chunk=chunk), \
+                        mock.patch.object(pe, "VALUES_CHUNK", chunk), \
+                        mock.patch.object(pe, "PARALLEL_LINK_ROWS", 0), \
+                        mock.patch.dict(os.environ, {pe.SCAN_THREADS_ENV: threads}):
                     new_inbox = self.dir / f"new-{chunk}.sqlite"
                     pe.run(self.store, new_inbox, AS_OF, coverage=self.coverage,
                            qc_link_types=(QC_LINK,), clock=lambda: moment)
                     new = self.inbox_rows(new_inbox)
-                    self.assertEqual(new, old)
+                    self.assertEqual(new[:4], old[:4])
+                    self.assertEqual({k: v for k, v in new[4].items() if k != "seconds"},
+                                     {k: v for k, v in old[4].items() if k != "seconds"})
             shown = {g["object_id"] for g in pe.read_inbox(
                 self.dir / "old.sqlite", self.store, reader="plx:ops", may_read=everyone,
                 held=ALL_MARKINGS, decide=admit, limit=500)["gaps"]}
@@ -1251,6 +1278,25 @@ class FastReadEquivalenceTest(Engine):
                             (("NoSuchType",), None, None)):
                         self.assertEqual(st.values(types, props, objects=objects),
                                          single_query_values(st, types, props, objects=objects))
+                with mock.patch.object(pe, "PARALLEL_LINK_ROWS", 0):
+                    ranged = pe._Store(self.store, threads=4)
+                    try:
+                        for types, tiers, held in (
+                                (("PurchaseOrderLine.line_of",), None, True),
+                                (("PurchaseOrderLine.line_of",), None, False),
+                                (("SupplierConfirmation.confirms", "PurchaseOrderLine.line_of"),
+                                 pe.CONFIRMING, True),
+                                (("NoSuchType.link",), None, True)):
+                            self.assertEqual(ranged.links(types, tiers, held=held),
+                                             single_query_links(st, types, tiers, held=held))
+                        self.assertEqual(ranged.scope(), [tuple(r) for r in st.conn.execute(
+                            "SELECT o.audience_key, v.markings, count(*) FROM objects o "
+                            "JOIN object_versions v ON v.object_id = o.object_id AND "
+                            "v.superseded_at IS NULL WHERE NOT "
+                            + ostore.removed_at_sql("o.object_id")
+                            + " GROUP BY o.audience_key, v.markings")])
+                    finally:
+                        ranged.close()
                 self.assertEqual(pe._quantity_rows(st), view_quantity_rows(st))
             finally:
                 st.close()
@@ -1714,11 +1760,16 @@ class PoolSizeTest(unittest.TestCase):
         self.assertTrue(1 <= pp.workers({}) <= pp.MAX_WORKERS)
         # never more than a quarter of the free memory (nor POOL_BYTES) at WORKER_BYTES each
         with mock.patch.object(pp, "_available_bytes", return_value=10 * pp.WORKER_BYTES), \
+                mock.patch.object(pp, "_cgroup_cap", return_value=None), \
                 mock.patch.object(pp.os, "cpu_count", return_value=64):
             self.assertEqual(pp.workers({}), 2)
         with mock.patch.object(pp, "_available_bytes", return_value=10 ** 13), \
+                mock.patch.object(pp, "_cgroup_cap", return_value=None), \
                 mock.patch.object(pp.os, "cpu_count", return_value=64):
             self.assertEqual(pp.workers({}) * pp.WORKER_BYTES <= pp.POOL_BYTES, True)
+            # under a unit's memory cap: what it leaves beside the engine's own process
+            with mock.patch.object(pp, "_cgroup_cap", return_value=12 * 2 ** 30):
+                self.assertEqual(pp.workers({}), 2)
         self.assertIsNone(pp.from_host_config(None, Path("."), Path("."),
                                               {pp.WORKERS_ENV: "1"}))
 

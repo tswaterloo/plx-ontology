@@ -43,6 +43,11 @@ WORKER_BYTES = 2_500_000_000     # a worker's session over a full store (~2.2 GB
 # helped push the shared host into a global OOM on 2026-11-04).
 POOL_BYTES = 8_000_000_000
 MEMORY_SHARE = 4
+# The engine's own process beside its pool at its peak on the live store (the run's link
+# rows, the quantity rule's values): under a memory cap (the unit's cgroup ``memory.max``,
+# e.g. the vendor pass's 12 GB) the pool gets what the cap leaves beside it, so the run is
+# never pushed into swap or reclaim (the 11-05 pass reached its unit's MemoryHigh).
+ENGINE_BYTES = 6_000_000_000
 TASKS_PER_WORKER = 50            # a worker is replaced after this many tasks: no slow growth
 WORKERS_ENV = "PLX_PROACTIVE_WORKERS"
 # Only the people exclusion reaches a worker's runtime from the environment it is given.
@@ -98,9 +103,25 @@ def _available_bytes() -> int | None:
     return None
 
 
+def _cgroup_cap() -> int | None:
+    """This process's cgroup (v2) memory cap in bytes; None: none, or not readable."""
+    try:
+        with open("/proc/self/cgroup", encoding="ascii") as handle:
+            path = next((line.strip().split(":", 2)[2] for line in handle
+                         if line.startswith("0::")), None)
+        if path is None:
+            return None
+        with open(f"/sys/fs/cgroup{path}/memory.max", encoding="ascii") as handle:
+            raw = handle.read().strip()
+        return None if raw == "max" else int(raw)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def workers(environ: Mapping[str, str] | None = None) -> int:
     """How many workers this host runs: every core but two, at most ``MAX_WORKERS``, and no
-    more than ``POOL_BYTES`` or a ``MEMORY_SHARE``-th of its available memory holds at
+    more than ``POOL_BYTES``, a ``MEMORY_SHARE``-th of its available memory or what this
+    process's memory cap leaves beside the engine (``ENGINE_BYTES``) holds at
     ``WORKER_BYTES`` each; ``PLX_PROACTIVE_WORKERS`` overrides (the operator's choice)."""
     env = os.environ if environ is None else environ
     raw = env.get(WORKERS_ENV)
@@ -112,6 +133,9 @@ def workers(environ: Mapping[str, str] | None = None) -> int:
     cores = max(1, (os.cpu_count() or 1) - 2)
     memory = _available_bytes()
     allowed = POOL_BYTES if memory is None else min(POOL_BYTES, memory // MEMORY_SHARE)
+    cap = _cgroup_cap()
+    if cap is not None:
+        allowed = min(allowed, max(0, cap - ENGINE_BYTES))
     return max(1, min(cores, allowed // WORKER_BYTES, MAX_WORKERS))
 
 

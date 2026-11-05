@@ -117,6 +117,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -132,6 +133,14 @@ INBOX_SCHEMA = "plx-gap-inbox/v1"
 MAX_SHOWN = 100
 CARD_BOUND = 500
 VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
+# The link scan (``_Store.links``): threads (every core unless ``SCAN_THREADS_ENV`` says),
+# rowid ranges per thread (a slow range is evened out by the others), the table size from
+# which it splits, and the link rows a run keeps for the rules after it (~1 GB).
+SCAN_THREADS_ENV = "PLX_PROACTIVE_SCAN_THREADS"
+LINK_PARTS_PER_THREAD = 4
+PARALLEL_LINK_ROWS = 200_000
+LINK_CACHE_ROWS = 3_000_000
+LINK_COLUMNS = ("link_id", "link_type", "from_object", "to_object", "tier", "markings")
 KEEP_RUNS = 100
 # The host cycle's full refresh (``after_build(scheduled=)``) starts no detector and makes
 # no tool call after this many seconds: the cycle lock is not held unboundedly. Sized for a
@@ -189,6 +198,8 @@ WHOLE_ONLY = frozenset({"po_impact_margin"})
 LATENESS_GRAPH = Path(__file__).resolve().parents[1] / "ontology" / "schema" / "process" \
     / "po_delivery_window.json"
 UNREADABLE = '["unreadable"]'   # a markings value no reader holds (fail closed)
+RECEIPT_LINKS = ("ReceiptLine.same_record_as", "ReceiptLine.receives_line",
+                 "ReceiptLine.line_of")
 CONFIRMATION_TYPE = "SupplierConfirmation"
 CONFIRMATION_LINK = po_status.CONFIRMS   # confirmation -> the order it confirms
 CONFIRMED_DATE = "delivery_date"
@@ -203,21 +214,85 @@ Cite = tuple  # (l1_handle, object_id, canonical markings)
 
 # --------------------------------------------------------------------------- store reads
 
-class _Store:
-    """One store generation, read only, every read over current records not removed."""
+def scan_threads(environ: Mapping[str, str] | None = None) -> int:
+    """Threads a link scan reads with: every core (``PLX_PROACTIVE_SCAN_THREADS``
+    overrides; 1: one connection, no thread)."""
+    raw = (os.environ if environ is None else environ).get(SCAN_THREADS_ENV, "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 1
+    return max(1, os.cpu_count() or 1)
 
-    def __init__(self, path: Path) -> None:
+
+def _connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    # No query of a detector may build a transient index over a whole table: on a
+    # store of millions of value cells that index is a multi-GB temp file and minutes.
+    conn.execute("PRAGMA automatic_index = OFF")
+    return conn
+
+
+def _link_row(row: Sequence[Any]) -> tuple:
+    """A link row as kept (``_LinkRows``): its type, tier and markings shared strings."""
+    return (row[0], row[1], sys.intern(row[2]), row[3], row[4], sys.intern(row[5]),
+            sys.intern(row[6]), bool(row[7]))
+
+
+class _LinkRows:
+    """The run's link rows by link type, read once (``_Store.links``): each row
+    (rowid, link_id, link_type, from_object, to_object, tier, markings, gone), ``gone``
+    when either end is removed; every current link not contradicted, in rowid order.
+    Kept up to ``LINK_CACHE_ROWS`` rows."""
+
+    def __init__(self) -> None:
+        self.by_type: dict[str, list[tuple]] = {}
+        self.kept = 0
+        self.lock = threading.Lock()
+
+
+class _Store:
+    """One store generation, read only, every read over current records not removed.
+
+    The link table has no index by link type, so each link read scans it whole (about a
+    minute on the live store, ~20 reads a run): ``links`` reads every type it is asked for
+    once per run, the table split into rowid ranges read side by side on ``threads``
+    connections, and keeps the rows for the rules after it (``prefetch_links``)."""
+
+    def __init__(self, path: Path, *, threads: int | None = None) -> None:
         if not Path(path).is_file():
             raise ostore.StoreError("store_missing")
-        self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        # No query of a detector may build a transient index over a whole table: on a
-        # store of millions of value cells that index is a multi-GB temp file and minutes.
-        self.conn.execute("PRAGMA automatic_index = OFF")
+        self.path = Path(path)
+        self.conn = _connect(self.path)
         problem = ostore.format_problem(self.conn)
         if problem is not None:
             self.conn.close()
             raise ostore.StoreError("store_format_mismatch", problem)
+        self.digest = self.meta("content_digest")
+        self.threads = scan_threads() if threads is None else max(1, threads)
+        self.link_rows = _LinkRows()
+        # the budget's SQLite progress handler (``Budget.interrupt``), on every connection
+        # this store opens: a scan stops at the deadline as the detectors' queries do
+        self.interrupt: Callable[[], int] | None = None
+        self._memo: dict[str, Any] = {}
+
+    def watch(self, interrupt: Callable[[], int] | None) -> None:
+        self.interrupt = interrupt
+        if interrupt is None:
+            self.conn.set_progress_handler(None, 0)
+        else:
+            self.conn.set_progress_handler(interrupt, 10000)
+
+    def memo(self, key: str, make: Callable[[], Any]) -> Any:
+        """What ``make()`` reads, once per run (several rules ask for it)."""
+        with self.link_rows.lock:
+            if key in self._memo:
+                return self._memo[key]
+        made = make()
+        with self.link_rows.lock:
+            return self._memo.setdefault(key, made)
 
     def close(self) -> None:
         self.conn.close()
@@ -262,20 +337,82 @@ class _Store:
                 entry["props"].setdefault(row["property"], []).append(dict(row))
         return out
 
-    def links(self, types: Sequence[str], tiers: Sequence[str] | None = None
-              ) -> list[dict[str, Any]]:
-        """Current links of these types between records not removed; never contradicted."""
-        sql = ("SELECT l.link_id, l.link_type, l.from_object, l.to_object, l.tier, l.markings "
-               "FROM links l "
+    def links(self, types: Sequence[str], tiers: Sequence[str] | None = None, *,
+              held: bool = True) -> list[dict[str, Any]]:
+        """Current links of these types, never contradicted, in the store's (rowid)
+        order; ``held``: only those between records not removed."""
+        rows = self._link_rows(list(dict.fromkeys(types)))
+        tier_set = None if tiers is None else frozenset(tiers)
+        return [dict(zip(LINK_COLUMNS, row[1:7])) for row in rows
+                if (tier_set is None or row[5] in tier_set) and not (held and row[7])]
+
+    def prefetch_links(self, types: Iterable[str]) -> None:
+        """Read the links of these types in one scan, kept for the rules after it."""
+        self._link_rows(list(dict.fromkeys(types)))
+
+    def _link_rows(self, types: list[str]) -> list[tuple]:
+        cache = self.link_rows
+        with cache.lock:
+            missing = [t for t in types if t not in cache.by_type]
+            found = {t: cache.by_type[t] for t in types if t in cache.by_type}
+            if missing:
+                read = self._scan_links(missing)
+                for name in missing:
+                    rows = read.get(name, [])
+                    found[name] = rows
+                    if cache.kept + len(rows) <= LINK_CACHE_ROWS:
+                        cache.by_type[name] = rows
+                        cache.kept += len(rows)
+        if len(types) == 1:
+            return found[types[0]]
+        return sorted((row for name in types for row in found[name]), key=lambda r: r[0])
+
+    def _scan_links(self, types: Sequence[str]) -> dict[str, list[tuple]]:
+        """type -> its rows (``_LinkRows``), in rowid order (``_ranged``)."""
+        sql = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
+               "l.markings, (" + ostore.removed_at_sql("l.from_object") + " OR "
+               + ostore.removed_at_sql("l.to_object") + ") AS gone FROM link_rows l "
                "WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
-               "AND l.superseded_at IS NULL AND l.tier <> 'contradicted' "
-               "AND NOT " + ostore.removed_at_sql("l.from_object")
-               + " AND NOT " + ostore.removed_at_sql("l.to_object"))
-        params: dict[str, Any] = {"types": json.dumps(list(types))}
-        if tiers is not None:
-            sql += " AND l.tier IN (SELECT value FROM json_each(:tiers))"
-            params["tiers"] = json.dumps(list(tiers))
-        return [dict(row) for row in self.conn.execute(sql, params)]
+               "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
+        out: dict[str, list[tuple]] = defaultdict(list)
+        for rows in self._ranged("link_rows", "l", sql, " ORDER BY l.rowid",
+                                 {"types": json.dumps(list(types))}, _link_row):
+            for row in rows:   # the ranges in rowid order, each in rowid order
+                out[row[2]].append(row)
+        return out
+
+    def _ranged(self, table: str, alias: str, sql: str, tail: str,
+                params: Mapping[str, Any], shape: Callable[[Any], Any]) -> list[list[Any]]:
+        """``sql`` (over ``table`` as ``alias``, then ``tail``) read by rowid ranges of the
+        table side by side, one connection per thread (each checked to read this
+        generation), the ranges' rows in rowid order of the ranges; a small table, one
+        thread or a generation replaced meanwhile: one read on this connection."""
+        top = self.conn.execute(f"SELECT max(rowid) FROM {table}").fetchone()[0] or 0
+        if self.threads > 1 and top >= PARALLEL_LINK_ROWS:
+            from concurrent.futures import ThreadPoolExecutor
+
+            step = top // (self.threads * LINK_PARTS_PER_THREAD) + 1
+            ranged = sql + f" AND {alias}.rowid >= :lo AND {alias}.rowid < :hi" + tail
+
+            def part(lo: int) -> list[Any]:
+                conn = _connect(self.path)
+                try:
+                    if self.interrupt is not None:
+                        conn.set_progress_handler(self.interrupt, 10000)
+                    held = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                        "'content_digest'").fetchone()
+                    if (held[0] if held else None) != self.digest:
+                        raise ostore.StoreError("store_replaced")
+                    return [shape(r) for r in conn.execute(ranged, {**params, "lo": lo,
+                                                                    "hi": lo + step})]
+                finally:
+                    conn.close()
+            try:
+                with ThreadPoolExecutor(self.threads) as pool:
+                    return list(pool.map(part, range(0, top + 1, step)))
+            except ostore.StoreError:
+                pass   # another generation is served now: read this one on this connection
+        return [[shape(r) for r in self.conn.execute(sql + tail, dict(params))]]
 
     def versions(self, object_type: str | None = None, handles: Iterable[str] | None = None,
                  objects: Iterable[str] | None = None) -> list[dict[str, Any]]:
@@ -296,12 +433,29 @@ class _Store:
             params["objects"] = json.dumps(sorted(set(objects)))
         return [dict(row) for row in self.conn.execute(sql, params)]
 
+    def audience_keys(self) -> set[str]:
+        """Every audience key a record of the store sits in (removed ones too), read once
+        per run by object rowid ranges side by side (``_ranged``): a scan of every record
+        (minutes on the live store), asked by several rules."""
+        def read() -> frozenset[str]:
+            return frozenset(key for rows in self._ranged(
+                "objects", "o", "SELECT DISTINCT o.audience_key FROM objects o WHERE 1",
+                "", {}, lambda r: r[0]) for key in rows)
+        return set(self.memo("audience_keys", read))
+
     def scope(self) -> list[tuple[str, str, int]]:
-        """(audience key, current markings, objects): the whole store the run covered."""
-        return [tuple(row) for row in self.conn.execute(
-            "SELECT o.audience_key, v.markings, count(*) FROM objects o JOIN object_versions v "
-            "ON v.object_id = o.object_id AND v.superseded_at IS NULL WHERE NOT "
-            + ostore.removed_at_sql("o.object_id") + " GROUP BY o.audience_key, v.markings")]
+        """(audience key, current markings, objects): the whole store the run covered,
+        counted by object rowid ranges side by side (``_ranged``) and summed."""
+        counts: Counter = Counter()
+        for rows in self._ranged(
+                "objects", "o",
+                "SELECT o.audience_key, v.markings, count(*) FROM objects o JOIN "
+                "object_versions v ON v.object_id = o.object_id AND v.superseded_at IS NULL "
+                "WHERE NOT " + ostore.removed_at_sql("o.object_id"),
+                " GROUP BY o.audience_key, v.markings", {}, tuple):
+            for key, marks, n in rows:
+                counts[(key, marks)] += n
+        return [(key, marks, n) for (key, marks), n in sorted(counts.items())]
 
 
 def _markings(*texts: str | None) -> str:
@@ -436,6 +590,23 @@ def _coverage(total: int, evaluated: int, not_evaluated: Mapping[str, int], *,
 
 
 @functools.lru_cache(maxsize=1)
+def _run_link_types() -> list[str]:
+    """The link types a full run's rules read, read in one scan up front (``_Store.links``;
+    a type not listed is read when a rule asks for it, as fast, just not shared)."""
+    from . import impact_chain as ic
+    from . import proactive_events as ev
+
+    amounts = [name for spec in suspect_money.SPECS.values()
+               for name in (spec.get("line_of"), spec.get("item"), spec.get("uom"),
+                            spec["party"][1] if (spec.get("party") or ("",))[0] == "link"
+                            else None) if name]
+    return list(dict.fromkeys([
+        *po_status.TWIN_LINKS, po_status.LINE_OF, po_status.RECEIVES_LINE,
+        po_status.CONFIRMS, *RECEIPT_LINKS, *_identity_link_types(), *declared_qc_links(),
+        pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *ev.LINK_TYPES,
+        *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts]))
+
+
 def _identity_link_types() -> tuple[str, ...]:
     from ontology.schema import load_schema
     from .ontology_tools import identity_link_type
@@ -461,12 +632,18 @@ PO_STATUS_PROPS = tuple(po_status.SOURCE_OF)
 _ORDER = "order"
 
 
+def _po_source(st: _Store) -> po_status.StoreSource:
+    """The whole store's purchase orders as the one PO reader reads them, read once per
+    run (the late rule and the receipt quantity rule both read every order)."""
+    return st.memo("po_source", lambda: po_status.StoreSource(st))
+
+
 def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     """Each settled PO read by the one purchase-order reader (``po_status.read`` over
     ``po_status.StoreSource``: status, lines, FM QC log, ranked need date, promise and
     verdict); this rule adds only its counts, skips, citations and gaps."""
     name = "late_or_unconfirmed_po"
-    src = po_status.StoreSource(st)
+    src = _po_source(st)
     skipped = _Skips()
     counts: Counter = Counter()
     classes: Counter = Counter()
@@ -718,14 +895,14 @@ def _po_receipt_quantity_mismatch(st: _Store, as_of: date) -> dict[str, Any]:
     name = "po_receipt_quantity_mismatch"
     ordered = st.values(("PurchaseOrderLine",), ("ordered_quantity",))
     received = st.values(("ReceiptLine",), ("received_quantity",))
-    src = po_status.StoreSource(st)
-    twins = st.links(("ReceiptLine.same_record_as",), SETTLED)
+    src = _po_source(st)
+    twins = st.links((RECEIPT_LINKS[0],), SETTLED)
     root = _clusters(((l["from_object"], l["to_object"]) for l in twins), received)
     identity: dict[str, list[str]] = defaultdict(list)
     for link in twins:
         if link["from_object"] in root:
             identity[root[link["from_object"]]].append(link["markings"])
-    receives = st.links(("ReceiptLine.receives_line",))
+    receives = st.links((RECEIPT_LINKS[1],))
     targets: dict[str, set[str]] = defaultdict(set)
     link_marks: dict[str, list[str]] = defaultdict(list)
     unsettled: dict[str, list[Part]] = defaultdict(list)
@@ -833,7 +1010,7 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
     receipts = st.values(("Receipt",), ("received_date", "receipt_number"))
     lines_of: dict[str, set[str]] = defaultdict(set)
     line_marks: dict[tuple[str, str], str] = {}
-    for link in st.links(("ReceiptLine.line_of",), CONFIRMING):
+    for link in st.links((RECEIPT_LINKS[2],), CONFIRMING):
         lines_of[link["to_object"]].add(link["from_object"])
         line_marks[(link["to_object"], link["from_object"])] = link["markings"]
     qc: dict[str, set[str]] = defaultdict(set)
@@ -1391,7 +1568,7 @@ def _lateness_audiences(st: _Store) -> list[str]:
     bindings.discard(None)
     row = st.meta("audience_keys")
     stored = set(json.loads(row)) if row else set()
-    stored |= {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+    stored |= st.audience_keys()
     prefix_of = {source: prefix for prefix, source in _AUDIENCE_SOURCE.items()}
     need: set[str] = set()
     for bid in sorted(bindings):
@@ -1433,7 +1610,7 @@ def _reader_judges_lateness(st: _Store, may_read: Callable[[str], bool] | None) 
         return True
     row = st.meta("audience_keys")
     held = set(json.loads(row)) if row else set()
-    held |= {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+    held |= st.audience_keys()
     return all(may_read(key) for key in _lateness_audiences(st)
                if key in held and key.startswith(_DECIDING_AUDIENCES))
 
@@ -1450,7 +1627,7 @@ def _promise_audiences(st: _Store) -> list[str]:
     and the mailboxes' (a promise is read from the carrying message too)."""
     row = st.meta("audience_keys")
     keys = {k for k in (json.loads(row) if row else ()) if isinstance(k, str)}
-    keys |= {r[0] for r in st.conn.execute("SELECT DISTINCT audience_key FROM objects")}
+    keys |= st.audience_keys()
     found = {r[0] for r in st.conn.execute(
         "SELECT DISTINCT audience_key FROM objects WHERE object_type = ?",
         (po_status.CONFIRMATION_TYPE,))}
@@ -1776,7 +1953,7 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
                  vendor_bound: int | None = None, *,
                  pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None,
                  results: Callable[[], Mapping[str, Mapping[str, Any]]] = dict,
-                 people: Callable[[], Any] = lambda: None
+                 people: Callable[[], Any] = lambda: None, margins: Any = None
                  ) -> dict[str, Callable[[], dict[str, Any]]]:
     """The proactive event detectors (``operating.proactive_events``) as engine steps.
     ``results()``: this run's results so far (the vendor rule reads the late rule's order
@@ -1797,6 +1974,12 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
             return ran[LATE_RULE].get("po_orders")
         return _late_or_unconfirmed_po(st, as_of)["po_orders"]
 
+    def margin_map(task: Callable, items: Sequence[Any]) -> list[Any]:
+        """The margins read since the run's start (``margins``: ``_HeadStart``)."""
+        if task is margins.task and list(items) == margins.items:
+            return margins.collect()
+        return pmap(task, items)
+
     def no_reply() -> dict[str, Any]:
         found = orders()
         if found is None:
@@ -1815,7 +1998,10 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
         "vendor_terms_unapplied": lambda: ev.vendor_mail(
             st, as_of, call, family="F27", cache=(cache or {}).get("vendor_terms_unapplied"),
             **mail, **common),
-        "negative_margin": lambda: ev.negative_margin(st, as_of, call, pmap=pmap, **common)}
+        "negative_margin": lambda: ev.negative_margin(
+            st, as_of, call, pmap=pmap if margins is None else margin_map,
+            roots=st.memo("margin_roots", lambda: ev._recent_invoiced_orders(st, as_of)),
+            **common)}
 
 
 def currency_word(raw: Any) -> str | None:
@@ -2079,6 +2265,73 @@ class Budget:
         return int(self.left() <= 0)
 
 
+class _HeadStart:
+    """``pool.map(task, items)`` started before its rule's turn, on a thread that only
+    waits on the pool: the workers read while the store-only rules run on the main thread
+    (the pool idles otherwise). Until the rule's turn the map reads to the detectors'
+    deadline; from it (``collect``) to the rule's share of the time, as ``Budget.pooled``;
+    ``stop`` ends it unread (the rule never ran)."""
+
+    def __init__(self, pool: Any, task: Callable, items: Sequence[Any],
+                 budget: Budget | None) -> None:
+        self.task, self.items, self.budget = task, list(items), budget
+        self.turn = self.stopped = False
+        self.out: list[Any] | None = None
+        self.error: BaseException | None = None
+        self.thread = threading.Thread(target=self._run_map, args=(pool,), daemon=True,
+                                       name="proactive-head-start")
+        self.thread.start()
+
+    def left(self) -> float:
+        if self.stopped:
+            return 0.0
+        if self.budget is None:
+            return float("inf")
+        if self.turn:
+            return self.budget.left()
+        return self.budget.deadline - self.budget.monotonic()
+
+    def _run_map(self, pool: Any) -> None:
+        try:
+            self.out = pool.map(self.task, self.items, left=self.left)
+        except BaseException as error:  # noqa: BLE001 - raised in the rule that collects
+            self.error = error
+
+    def collect(self) -> list[Any]:
+        from . import proactive_pool
+
+        self.turn = True
+        self.thread.join()
+        if self.error is not None:
+            raise self.error
+        out = list(self.out or [])
+        if self.budget is not None and any(r is proactive_pool.NOT_READ for r in out):
+            self.budget.refused += 1   # as ``Budget.pooled``: its rule is not complete
+        return out
+
+    def stop(self) -> None:
+        self.stopped = True
+        self.thread.join()
+
+
+def _margin_head_start(st: _Store, as_of: date, pool: Any, budget: Budget | None,
+                       order: Sequence[str]) -> _HeadStart | None:
+    """The negative-margin rule's order margins read on the pool from the run's start
+    (``_HeadStart``): each read is one order's margin investigation (minutes for a Sage
+    order on the live store), the slowest rule of a run. None without a pool, when the rule
+    does not run, the time is spent or no order was invoiced recently."""
+    if pool is None or "negative_margin" not in order or (budget is not None
+                                                           and budget.spent()):
+        return None
+    from . import proactive_events as ev
+
+    try:
+        roots = st.memo("margin_roots", lambda: ev._recent_invoiced_orders(st, as_of))
+    except sqlite3.OperationalError:
+        return None   # interrupted at the deadline: the rule reads them at its turn
+    return _HeadStart(pool, ev.read_margin, roots, budget) if roots else None
+
+
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
@@ -2107,7 +2360,10 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     per-run record bound; the budget still bounds them), else one call at a time.
     ``people``: the people exclusion the vendor-mail rule clears senders and mailboxes
     with (``operating.chunking.permissions.Exclusion``); None: read from the environment
-    and the mail capture of the state directory the store sits in (``_people``)."""
+    and the mail capture of the state directory the store sits in (``_people``).
+    A full run reads every link type its rules read in one scan first (``_Store.links``);
+    with a pool, the margins of the recently invoiced orders are read on it from the start
+    (``_margin_head_start``), while the store-only rules run."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
@@ -2126,8 +2382,24 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     cache = _read_cache(Path(inbox))
     st = _Store(Path(store_path))
     if budget is not None:
-        st.conn.set_progress_handler(budget.interrupt, 10000)
+        st.watch(budget.interrupt)
     try:
+        results: dict[str, dict[str, Any]] = {}
+        seconds: dict[str, float] = {}
+        unknown = set(only or ()) - set(DETECTORS)
+        if unknown:
+            raise ValueError("detector_unknown")
+        order = list(DETECTORS) if only is None else [d for d in DETECTORS if d in only]
+        if only is None and not (budget is not None and budget.spent()):
+            # every link type the rules read, in one scan of the link table (``_Store``)
+            started = time.monotonic()
+            try:
+                st.prefetch_links(_run_link_types())
+            except sqlite3.OperationalError:
+                pass   # stopped at the deadline: each rule then stops at its own read
+            seconds["link_scan"] = round(time.monotonic() - started, 1)
+        head = _margin_head_start(st, as_of, pool if call is not None else None, budget,
+                                  order)
         steps: dict[str, Callable[[], dict[str, Any]]] = {
             "late_or_unconfirmed_po": lambda: _late_or_unconfirmed_po(st, as_of),
             "po_receipt_quantity_mismatch": lambda: _po_receipt_quantity_mismatch(st, as_of),
@@ -2151,50 +2423,50 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             **_event_steps(st, as_of, call, cache, vendor_bound, pmap=pmap,
                            results=lambda: results,
                            people=lambda: people if people is not None
-                           else _people(Path(store_path)))}
-        results: dict[str, dict[str, Any]] = {}
-        seconds: dict[str, float] = {}
-        unknown = set(only or ()) - set(DETECTORS)
-        if unknown:
-            raise ValueError("detector_unknown")
-        for name in DETECTORS if only is None else [d for d in DETECTORS if d in only]:
-            if budget is not None and budget.spent():
-                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                continue
-            refused = budget.refused if budget is not None else 0
-            if budget is not None and name in SHARED_TIME:
-                later = [d for d in DETECTORS[DETECTORS.index(name):] if d in SHARED_TIME
-                         and (only is None or d in only)]
-                budget.share(SHARED_TIME[name], sum(SHARED_TIME[d] for d in later))
-            started = time.monotonic()
-            try:
-                results[name] = steps[name]()
-            except TimeBudgetSpent:
-                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-            except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
-                if budget is not None and budget.left() <= 0 \
-                        and isinstance(error, sqlite3.OperationalError):
-                    # its query was interrupted at the deadline: cut short, not failed
+                           else _people(Path(store_path)), margins=head)}
+        try:
+            for name in order:
+                if budget is not None and budget.spent():
                     results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                else:
-                    results[name] = _result([], status="failed",
-                                            reasons=[type(error).__name__])
-            finally:
-                if budget is not None:
-                    budget.unshare()
-                seconds[name] = round(time.monotonic() - started, 1)
-            if budget is not None and budget.refused > refused \
-                    and results[name]["status"] != "failed":
-                # a call it made was refused: what it found stands, never all it would find
-                results[name]["status"] = "truncated"
-                if TIME_BUDGET not in results[name]["reasons"]:
-                    results[name]["reasons"].append(TIME_BUDGET)
+                    continue
+                refused = budget.refused if budget is not None else 0
+                if budget is not None and name in SHARED_TIME:
+                    later = [d for d in DETECTORS[DETECTORS.index(name):]
+                             if d in SHARED_TIME and d in order]
+                    budget.share(SHARED_TIME[name], sum(SHARED_TIME[d] for d in later))
+                started = time.monotonic()
+                try:
+                    results[name] = steps[name]()
+                except TimeBudgetSpent:
+                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
+                    if budget is not None and budget.left() <= 0 \
+                            and isinstance(error, sqlite3.OperationalError):
+                        # its query was interrupted at the deadline: cut short, not failed
+                        results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                    else:
+                        results[name] = _result([], status="failed",
+                                                reasons=[type(error).__name__])
+                finally:
+                    if budget is not None:
+                        budget.unshare()
+                    seconds[name] = round(time.monotonic() - started, 1)
+                if budget is not None and budget.refused > refused \
+                        and results[name]["status"] != "failed":
+                    # a call it made was refused: what it found stands, never all it would
+                    # find
+                    results[name]["status"] = "truncated"
+                    if TIME_BUDGET not in results[name]["reasons"]:
+                        results[name]["reasons"].append(TIME_BUDGET)
+        finally:
+            if head is not None:
+                head.stop()   # its rule did not run (the time ran out): no read goes on
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
         _with_amounts(st, results)
         # the bound is spent on the detectors and the amounts only: the run's record (scope,
         # digest) is always read whole, so a run cut short still folds what it found
-        st.conn.set_progress_handler(None, 0)
+        st.watch(None)
         scope = st.scope()
         digest = st.meta("content_digest")
     finally:

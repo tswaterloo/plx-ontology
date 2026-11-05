@@ -46,9 +46,9 @@ make the rule ``truncated``):
 * ``vendor_terms_unapplied`` (F27 ``vendor_replies``): a term a vendor's reply offers that
   differs from or fills the system's field, never applied;
 * ``negative_margin`` (F10 ``order_margin`` through ``operating.customer_profit``): a
-  sales order invoiced within ``MARGIN_DAYS`` before the newest posting date the store
-  holds whose decided, checked margin is below zero; every figure it rests on is its own
-  citation group.
+  sales order invoiced within ``MARGIN_DAYS`` before the newest invoice date its own
+  system holds (BC's and Sage's each count back from their own) whose decided, checked
+  margin is below zero; every figure it rests on is its own citation group.
 
 Late purchase orders, a late PO hitting a customer order (``orders_at_risk``) and the
 receipt quantity mismatch are the engine's own rules; ``operating.briefing`` maps every
@@ -91,6 +91,14 @@ ACCEPTED_WORDS = frozenset({"accepted"})
 POSTED_INVOICE = frozenset({"open", "paid"})
 
 QUOTE_ORDER_LINKS = ("Quote.converted_to", "SalesOrder.created_from_quote")
+MAIL_PO_LINK = "Email.mentions_purchase_order"
+INVOICE_LINK = "SalesInvoice.bills"
+INVOICE_LINKS = ("PurchaseInvoice.invoices", "PurchaseInvoiceLine.line_of",
+                 "PurchaseInvoiceLine.for_item", "PurchaseOrderLine.line_of",
+                 "PurchaseOrderLine.for_item")
+# Every link type these rules read (the engine reads them in one scan, ``_Store.links``).
+LINK_TYPES = ("PurchaseOrderLine.line_of", "SupplierConfirmation.confirms",
+              *QUOTE_ORDER_LINKS, *INVOICE_LINKS, MAIL_PO_LINK, INVOICE_LINK)
 
 
 def _day(raw: Any) -> date | None:
@@ -417,9 +425,7 @@ def invoice_quantity_mismatch(st: Any, as_of: date, *, gap: Callable, cites: Cal
                               result: Callable, settled: Sequence[str]) -> dict[str, Any]:
     gaps = []
     skipped: Counter = Counter()
-    links = st.links(["PurchaseInvoice.invoices", "PurchaseInvoiceLine.line_of",
-                      "PurchaseInvoiceLine.for_item", "PurchaseOrderLine.line_of",
-                      "PurchaseOrderLine.for_item"], settled)
+    links = st.links(list(INVOICE_LINKS), settled)
     by_type: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for link in links:
         by_type[link["link_type"]].append(link)
@@ -567,12 +573,9 @@ class _MailIndex:
             "superseded_at IS NULL") if value not in (None, "")}
         wanted = set(roots)
         self.mail: dict[str, set[str]] = defaultdict(set)
-        for mail, order in st.conn.execute(
-                "SELECT from_object, to_object FROM links WHERE link_type = "
-                "'Email.mentions_purchase_order' AND superseded_at IS NULL AND tier <> "
-                "'contradicted'"):
-            if order in wanted:
-                self.mail[order].add(mail)
+        for link in st.links([MAIL_PO_LINK], held=False):
+            if link["to_object"] in wanted:
+                self.mail[link["to_object"]].add(link["from_object"])
 
     def thread(self, mail: Iterable[str]) -> set[str]:
         """These messages and every stored message of their conversations."""
@@ -892,20 +895,31 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             audience[oid] = key
     named: dict[str, set[str]] = defaultdict(set)
     lead: dict[tuple[str, str], bool] = {}
-    for mail, po, tier in st.conn.execute(
-            "SELECT from_object, to_object, tier FROM links WHERE link_type = "
-            "'Email.mentions_purchase_order' AND superseded_at IS NULL AND tier <> "
-            "'contradicted'"):
+    for link in st.links([MAIL_PO_LINK], held=False):
+        mail, po, tier = link["from_object"], link["to_object"], link["tier"]
         if mail in audience:
             named[mail].add(po)
             lead[(mail, po)] = lead.get((mail, po), True) and tier not in (
                 "verified", "reviewed", "corroborated")
     values: dict[str, dict[str, str]] = defaultdict(dict)
-    for prop in ("conversation_id", "sent_at", "sender", "subject", "body_preview"):
-        for oid, value in st.conn.execute(
-                "SELECT object_id, value FROM object_values WHERE property = ? AND "
-                "superseded_at IS NULL AND object_id LIKE 'Email:%'", (prop,)):
-            if oid in audience and value not in (None, ""):
+    for oid, value in st.conn.execute(
+            "SELECT object_id, value FROM object_values WHERE property = 'conversation_id' "
+            "AND superseded_at IS NULL AND object_id LIKE 'Email:%'"):
+        if oid in audience and value not in (None, ""):
+            values[oid]["conversation_id"] = str(value)
+    # the rest of a message is read only for the conversations a message naming an open
+    # order (few enough records) sits in: every copy of each, cleared (each a scan of the
+    # store's whole mail before, minutes on the live store)
+    asked = {values.get(mail, {}).get("conversation_id") for mail, pos in named.items()
+             if len(pos) <= MAX_NAMED_RECORDS and any(p in open_order for p in pos)}
+    wanted = sorted(oid for oid, row in values.items() if row["conversation_id"] in asked)
+    for start in range(0, len(wanted), 500):
+        for oid, prop, value in st.conn.execute(
+                "SELECT object_id, property, value FROM object_values WHERE superseded_at IS "
+                "NULL AND property IN ('sent_at', 'sender', 'subject', 'body_preview') AND "
+                "object_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(wanted[start:start + 500]),)):
+            if value not in (None, ""):
                 values[oid][prop] = str(value)
     threads: dict[str, list[str]] = defaultdict(list)
     copies: dict[str, list[str]] = defaultdict(list)   # every copy, dated or not
@@ -1026,28 +1040,55 @@ INVOICE_DATES = ("posting_date", "invoice_date")   # BC's posting date, Sage's i
 
 def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
     """Orders whose invoices (a BC posting date or a Sage invoice date) fall within
-    ``MARGIN_DAYS`` before the newest such date the store holds (not after ``as_of``): the
-    data's own recency, so a capture whose invoices end earlier still yields its latest
-    orders, most recently invoiced first."""
-    until = (as_of + timedelta(days=1)).isoformat()
-    newest = st.conn.execute(
-        "SELECT max(v.value) FROM links l JOIN object_values v ON v.object_id = l.from_object "
-        "AND v.property IN (SELECT value FROM json_each(:props)) AND v.superseded_at IS NULL "
-        "WHERE l.link_type = 'SalesInvoice.bills' AND l.superseded_at IS NULL AND "
-        "v.value <= :until", {"until": until, "props": json.dumps(INVOICE_DATES)}).fetchone()[0]
-    end = _day(newest)
-    if end is None:
-        return []
-    since = (end - timedelta(days=MARGIN_DAYS)).isoformat()
-    rows = st.conn.execute(
-        "SELECT l.to_object, max(v.value) AS last FROM links l JOIN object_values v ON "
-        "v.object_id = l.from_object AND v.property IN (SELECT value FROM json_each(:props)) "
-        "AND v.superseded_at IS NULL WHERE l.link_type = 'SalesInvoice.bills' AND "
-        "l.superseded_at IS NULL AND l.tier IN ('verified', 'reviewed', 'corroborated') AND "
-        "v.value >= :since AND v.value <= :until GROUP BY l.to_object ORDER BY last DESC, "
-        "l.to_object", {"since": since, "until": until,
-                        "props": json.dumps(INVOICE_DATES)}).fetchall()
-    return [r[0] for r in rows]
+    ``MARGIN_DAYS`` before the newest such date their own system holds (not after
+    ``as_of``): each system's own recency (``po_status.system_of`` of the invoice), so a
+    system whose invoices end earlier (BC's capture ends months before Sage's) still
+    yields its latest orders. The systems take turns, each most recently invoiced first
+    (days before its newest, then the date, then the order), so one system's slow margin
+    reads (a Sage order's run takes minutes) never keep another's orders unread."""
+    from .po_status import system_of
+
+    links = st.links([INVOICE_LINK], held=False)
+    invoices = sorted({link["from_object"] for link in links})
+    dated: dict[str, date] = {}   # invoice -> its latest invoice date, not after as_of
+    for start in range(0, len(invoices), 500):
+        for oid, raw in st.conn.execute(
+                "SELECT object_id, value FROM object_values WHERE superseded_at IS NULL AND "
+                "property IN (SELECT value FROM json_each(:props)) AND object_id IN "
+                "(SELECT value FROM json_each(:chunk))",
+                {"props": json.dumps(INVOICE_DATES),
+                 "chunk": json.dumps(invoices[start:start + 500])}):
+            day = _day(raw)
+            if day is not None and day <= as_of and (oid not in dated or day > dated[oid]):
+                dated[oid] = day
+    newest: dict[str, date] = {}
+    for oid, day in dated.items():
+        system = system_of(oid)
+        if system not in newest or day > newest[system]:
+            newest[system] = day
+    last: dict[str, tuple[int, date]] = {}   # order -> (days before its system's newest, day)
+    last_invoice: dict[str, str] = {}        # order -> that invoice (its system)
+    for link in links:
+        if link["tier"] not in ("verified", "reviewed", "corroborated"):
+            continue
+        day = dated.get(link["from_object"])
+        if day is None:
+            continue
+        top = newest[system_of(link["from_object"])]
+        back = (top - day).days
+        if back > MARGIN_DAYS:
+            continue
+        order = link["to_object"]
+        if order not in last or (back, -day.toordinal()) < (last[order][0],
+                                                            -last[order][1].toordinal()):
+            last[order] = (back, day)
+            last_invoice[order] = link["from_object"]
+    per_system: dict[str, list[str]] = defaultdict(list)
+    for order in sorted(last, key=lambda o: (last[o][0], -last[o][1].toordinal(), o)):
+        per_system[system_of(last_invoice[order])].append(order)
+    turns = [(rank, system, order) for system, orders in per_system.items()
+             for rank, order in enumerate(orders)]
+    return [order for _rank, _system, order in sorted(turns)]
 
 
 def _value_markings(st: Any, objects: Iterable[str], *, key: str = "l1_handle"
@@ -1077,15 +1118,16 @@ def read_margin(call: Callable, root: str) -> Any:
 
 def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
                     cites: Callable, result: Callable, bound: int = CALL_BOUND,
-                    pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None
-                    ) -> dict[str, Any]:
+                    pmap: Callable[[Callable, Sequence[Any]], list[Any]] | None = None,
+                    roots: Sequence[str] | None = None) -> dict[str, Any]:
     """``pmap``: the engine's process pool: every recently invoiced order is read on its
-    workers (no ``bound``; one not reached in time is ``time_budget``)."""
+    workers (no ``bound``; one not reached in time is ``time_budget``). ``roots``: the
+    recently invoiced orders (``_recent_invoiced_orders``) when already read."""
     if call is None:
         return result([], status="not_configured", reasons=["tool_caller_not_given"])
     from . import customer_profit as cp
 
-    roots = _recent_invoiced_orders(st, as_of)
+    roots = _recent_invoiced_orders(st, as_of) if roots is None else list(roots)
     gaps, skipped = [], Counter()
     spent = False
     asked = roots if pmap is not None else roots[:bound]

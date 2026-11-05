@@ -515,6 +515,14 @@ class CaseHostTools:
         self._temp: tempfile.TemporaryDirectory | None = None
         self._tools: OntologyTools | None = None
         self._reader_keys: list[str] = []
+        # The served store's own audience keys (``_reader_keys`` adds the overlay's).
+        self._base_reader_keys: list[str] = []
+        # The row-delta overlay over the served generation (``operating/delta_overlay``):
+        # the opened one, the pointer state it was decided at (opened, absent or refused),
+        # and whether this request checked the pointer.
+        self._overlay: Any = None
+        self._overlay_stamp: Any = None
+        self._overlay_checked = False
         self._bc_units: dict[str, str] = {}
         self._bc_lookup: Any = None
         self._reader: StoreReader | None = None
@@ -546,6 +554,7 @@ class CaseHostTools:
         again."""
         if self._reader is not None:
             self._reader.conn.close()
+        self._drop_overlay()
         if self._temp is not None:
             self._temp.cleanup()
         (self._temp, self._tools, self._reader, self._answers, self._evidence,
@@ -578,6 +587,8 @@ class CaseHostTools:
                 swapped = True
         mail = getattr(getattr(self.runtime, "live", None), "mail", None)
         block = getattr(mail, "directory_cache", None)
+        if self._depth == 0:
+            self._overlay_checked = False   # the pointer is read again by this request
         self._depth += 1
         try:
             with block() if callable(block) else nullcontext():
@@ -631,6 +642,7 @@ class CaseHostTools:
             from .ontology_tools_traverse import kept_audience_keys
             kept_audience_keys(reader)   # the generation's kept facts: no object scan
             self._reader_keys = reader.audience_keys()
+            self._base_reader_keys = list(self._reader_keys)
             self._bc_units = served_bc_units(reader, self._store_identity)
             self._bc_lookup = lookups.get("bc")
             policy = ReadPolicy(self.actor.tenant, {})  # decided again on every call
@@ -696,6 +708,7 @@ class CaseHostTools:
         values = (actor.tenant, tuple(sorted(actor.principals)), actor.clearance,
                   None if entitlement is None else (entitlement.fingerprint or None),
                   entitlement is None, self._store_identity,
+                  None if self._overlay is None else self._overlay.stamp,
                   _file_stamp(self.knowledge_namespaces))
         if entitlement is not None and not entitlement.fingerprint:
             return None   # an entitlement that names no fingerprint: never kept
@@ -815,6 +828,7 @@ class CaseHostTools:
                           "host rebuilds it on its next capture cycle)")
         if name in self._registered:
             return self._registered[name](arguments, self.actor)
+        self._check_overlay()
         tools.policy = self.policy_for(actor)
         if name in ANSWER_TOOLS:
             if self._answers is None or self._answers.base is not tools:
@@ -825,6 +839,87 @@ class CaseHostTools:
         if name in self.table:  # plx.around/timeline/process/investigate (and the base)
             return self.table[name]["handler"](arguments, actor)
         return tools.call(name, arguments, actor)
+
+    # ------------------------------------------------------------ row-delta overlay
+
+    def _drop_overlay(self) -> None:
+        if self._overlay is not None:
+            self._overlay.close()
+        self._overlay, self._overlay_stamp = None, None
+        self._reader_keys = list(self._base_reader_keys)
+
+    def _check_overlay(self) -> None:
+        """Once per request: (re)open the row-delta overlay when its pointer file changed
+        (``delta_overlay.open_overlay``), else keep the one decided. The policy is decided
+        over the served store's audience keys and the overlay's (a unit only the delta
+        holds is decided the same way: denied unless granted). Never raises: an overlay
+        that cannot be opened is not applied."""
+        if self._overlay_checked or self.store_path is None or self._tools is None:
+            return
+        self._overlay_checked = True
+        from . import delta_overlay
+        stamp = None
+        try:
+            pointer = delta_overlay.pointer_path(self.store_path)
+            stamp = delta_overlay.pointer_stamp(pointer)
+            if stamp == self._overlay_stamp:
+                return
+            self._drop_overlay()
+            self._overlay_stamp = stamp
+            if stamp is None:
+                return
+            overlay = delta_overlay.open_overlay(pointer, stamp, self._tools)
+            if overlay is None:
+                return
+            keys = sorted(set(self._base_reader_keys) | set(overlay.audience_keys()))
+            self._overlay = overlay
+            self._reader_keys = keys
+        except Exception:  # noqa: BLE001 - the served generation answers alone
+            self._drop_overlay()
+            self._overlay_stamp = stamp   # tried again when the pointer changes
+
+    def _overlaid(self, name: str, arguments: Any, actor: Any, served: Any) -> dict[str, Any]:
+        """``plx.object``/``plx.find`` (``served``: the table's handler over the served
+        store) with the row-delta overlay applied: an owned object is read from the
+        overlay, a find's owned candidates come from it (``delta_overlay.merge_find``).
+        The overlay's tools read under this call's policy object. Any overlay failure
+        serves the served store's answer."""
+        overlay = self._overlay
+        if overlay is None or self._tools is None:
+            return served(arguments, actor)
+        base_tools = self._tools
+        from . import delta_overlay
+        try:
+            for layer in overlay.layers:
+                layer.tools.policy = base_tools.policy
+                layer.tools.clock = base_tools.clock
+            if name == "plx.object":
+                layer = overlay.owner(arguments.get("object_id")
+                                      if isinstance(arguments, dict) else None)
+                if layer is not None:
+                    result = layer.tools.call(name, arguments, actor)
+                    error = result.get("error")
+                    code = error.get("code") if isinstance(error, dict) else error
+                    if code not in ("store_unavailable", "contract_violation"):
+                        return result
+                return served(arguments, actor)
+        except Exception:  # noqa: BLE001 - the served generation answers alone
+            return served(arguments, actor)
+        result = served(arguments, actor)
+        if name != "plx.find" or not isinstance(arguments, dict):
+            return result
+        try:
+            answers = [(layer.tools.call(name, arguments, actor), layer.serves)
+                       for layer in overlay.layers]
+            merged = delta_overlay.merge_find(result, answers, overlay.owned, arguments)
+        except Exception:  # noqa: BLE001 - the served answer stands
+            merged = None
+        if merged is None:
+            return result
+        for candidate in (merged, delta_overlay.with_unmerged_gap(result)):
+            if candidate is not None and base_tools._checked(name, candidate) is candidate:
+                return candidate
+        return result
 
     @contextmanager
     def per_call(self) -> Iterator[None]:
@@ -915,10 +1010,17 @@ class CaseHostTools:
         plx.around/timeline, plx.process and plx.investigate (its plans dispatch through
         this same table). Built on first use."""
         if self._table is None:
-            self._table = tool_table(self.tools, self.runtime, schema=self.schema,
-                                     follow_ups=self.follow_ups,
-                                     label_reserve=self.label_reserve,
-                                     documents=self._document_read)
+            table = tool_table(self.tools, self.runtime, schema=self.schema,
+                               follow_ups=self.follow_ups, label_reserve=self.label_reserve,
+                               documents=self._document_read)
+            # plx.find/plx.object read the row-delta overlay too, whether called by a
+            # reader or dispatched by a plan of plx.investigate through this table.
+            for name in ("plx.find", "plx.object"):
+                spec = table.get(name)
+                if spec is not None:
+                    spec["handler"] = (lambda arguments, actor, _n=name, _h=spec["handler"]:
+                                       self._overlaid(_n, arguments, actor, _h))
+            self._table = table
         return self._table
 
 
