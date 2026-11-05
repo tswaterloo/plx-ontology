@@ -52,7 +52,7 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
           {typeof inPeriod === "number" && inPeriod > 0 && <span className="font-normal text-muted"> · {real.length} of {inPeriod} checked</span>}
           {partial && <span className="mt-0.5 block text-meta font-normal text-muted">{sentence(note!)}</span>}
         </caption>
-        <thead className="text-eyebrow uppercase text-muted">
+        <thead className="text-label text-muted">
           <tr className="h-8 border-y border-border-strong bg-bg-subtle">
             <th scope="col" className="px-2 py-2 text-left">Order</th>
             <th scope="col" className="py-2 text-right">Revenue</th>
@@ -118,7 +118,7 @@ export function ProductRanking({ products }: { products: ProductMargin[] }) {
   return (
     <table className="w-full text-row" data-testid="product-ranking">
       <caption className="mb-2 text-left text-section">By product, worst margin first</caption>
-      <thead className="text-eyebrow uppercase text-muted">
+      <thead className="text-label text-muted">
         <tr className="h-8 border-y border-border-strong bg-bg-subtle">
           <th scope="col" className="px-2 py-2 text-left">Item</th>
           <th scope="col" className="py-2 text-right">Qty</th>
@@ -135,7 +135,7 @@ export function ProductRanking({ products }: { products: ProductMargin[] }) {
               <SourceChips sources={p.sources} />
             </td>
             <td className="py-2 text-right tabular-nums">{p.quantity}{p.unit ? ` ${p.unit}` : ""}</td>
-            <td className="py-2 text-right tabular-nums text-muted">{p.unit_cost_range ?? "—"}</td>
+            <td className="py-2 text-right tabular-nums text-muted">{p.unit_cost_range ?? "–"}</td>
             <td className="py-2 text-right">
               <Signed m={p.margin} />
               {p.margin_pct && <span className="block text-meta text-muted">{p.margin_pct}%</span>}
@@ -165,7 +165,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
       {lines.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-row" aria-label="Order lines">
-            <thead className="text-eyebrow uppercase text-muted">
+            <thead className="text-label text-muted">
               <tr className="h-8 border-y border-border-strong bg-bg-subtle">
                 <th scope="col" className="px-1 py-1.5 text-left">Item</th>
                 <th scope="col" className="px-1 py-1.5 text-right">Qty</th>
@@ -181,13 +181,13 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
                   <td className="px-1 py-1.5">
                     <span className="font-medium">{l.label}</span> <SourceChips sources={l.sources} max={1} />
                   </td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "—"}</td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.revenue) || "—"}</td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.booked_cost) || "—"}</td>
+                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "–"}</td>
+                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.revenue) || "–"}</td>
+                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.booked_cost) || "–"}</td>
                   <td className="whitespace-nowrap px-1 py-1.5 text-right">
                     <Signed m={l.margin} />
                   </td>
-                  {lines.length > 1 && <td className="px-1 py-1.5 text-right tabular-nums text-muted">{l.share_of_cost_pct ? `${l.share_of_cost_pct}%` : "—"}</td>}
+                  {lines.length > 1 && <td className="px-1 py-1.5 text-right tabular-nums text-muted">{l.share_of_cost_pct ? `${l.share_of_cost_pct}%` : "–"}</td>}
                 </tr>
               ))}
             </tbody>
@@ -216,7 +216,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
       )}
       {(b.drivers ?? []).length > 0 && (
         <details className="border-t border-border pt-2 text-row">
-          <summary className="cursor-pointer text-meta text-muted hover:text-fg">What drove the margin, in full</summary>
+          <summary className="cursor-pointer text-meta text-muted hover:text-fg">All margin drivers</summary>
           <ul className="mt-1 space-y-1" aria-label="What drove the margin">
             {(b.drivers ?? []).map((d, i) => (
               <li key={i}>{d}</li>
@@ -237,9 +237,9 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
     <div className="space-y-4" data-testid="profitability">
       <CustomerVerdict p={p} />
       <StatRow>
-        <Stat label="Revenue" value={money(p.revenue) || "—"} caption={p.period} />
-        <Stat label="Item cost" value={money(p.booked_cost) || "—"} caption="booked in Business Central" />
-        <Stat label="Margin" value={money(p.margin) || "—"} status={p.margin ? (isLoss(p.margin) ? "late" : "ok") : undefined} caption={p.margin_pct ? `${p.margin_pct}% of revenue` : undefined} />
+        <Stat label="Revenue" value={money(p.revenue) || "Not stated"} caption={p.period} />
+        <Stat label="Item cost" value={money(p.booked_cost) || "Not stated"} caption="booked in Business Central" />
+        <Stat label="Margin" value={money(p.margin) || "Not stated"} status={p.margin ? (isLoss(p.margin) ? "late" : "ok") : undefined} caption={p.margin_pct ? `${p.margin_pct}% of revenue` : undefined} />
         <Stat
           label="Orders with a margin"
           value={`${counted} of ${inPeriod}${p.orders_in_period_exact === false ? "+" : ""}`}
@@ -260,7 +260,7 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
       )}
       <ProductRanking products={p.products ?? []} />
       {p.breakdown && <CostBreakdown breakdown={p.breakdown} />}
-      {p.next_action && <NextActionCard action={p.next_action} title="Suggested next step" />}
+      {p.next_action && <NextActionCard action={p.next_action} title="Next step" />}
     </div>
   );
 }

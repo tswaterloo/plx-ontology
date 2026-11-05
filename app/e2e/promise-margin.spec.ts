@@ -30,7 +30,7 @@ test("ETA confirmed and margin why", async ({ page }, info) => {
   await expect(eta.getByTestId("eta-line").first()).toContainText("Late by 5 days");
   await expect(eta.getByTestId("eta-line").first()).toContainText("matched by item code");
   await shot(page, "eta-per-line", project);
-  await eta.getByRole("button", { name: "Open the confirmation" }).click();
+  await eta.getByRole("button", { name: "Open confirmation" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");
 

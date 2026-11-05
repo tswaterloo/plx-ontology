@@ -1,6 +1,5 @@
 "use client";
 
-import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { confirmAction, previewAction } from "@/lib/api";
 import { confirmBlocked, confirmLabel, EDITABLE, edits, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses } from "@/lib/actions";
@@ -119,7 +118,7 @@ function Checks({ preview }: { preview: ActionPreview }) {
       )}
       {preview.outbound && (preview.missing ?? []).length > 0 && (
         <div className="rounded-md border border-suspect-line bg-suspect-soft p-2.5 text-suspect" data-testid="action-missing">
-          <p className="font-medium">Sending is not enabled for you yet, so confirming records a dry run and sends nothing:</p>
+          <p className="font-medium">Sending is off for you. Confirming logs a dry run and sends nothing. Missing:</p>
           <ul className="list-disc pl-5">
             {(preview.missing ?? []).map((m, n) => (
               <li key={n}>{m}</li>
@@ -129,7 +128,7 @@ function Checks({ preview }: { preview: ActionPreview }) {
       )}
       {cites.length > 0 && (
         <div>
-          <p className="font-medium">Cited facts in it</p>
+          <p className="font-medium">Figures used</p>
           <ul className="mt-1 space-y-0.5">
             {cites.map((c, n) => (
               <li key={n} className={c.present ? "" : "text-muted line-through"} title={c.handle}>
@@ -143,7 +142,7 @@ function Checks({ preview }: { preview: ActionPreview }) {
       {preview.request && (
         <div>
           <button type="button" onClick={() => setRequest(!request)} aria-expanded={request} className="inline-flex items-center gap-1 font-medium text-accent hover:underline cursor-pointer">
-            {request ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+            <span aria-hidden>{request ? "▾" : "▸"}</span>
             Exact request
           </button>
           {request && (
@@ -228,7 +227,7 @@ export function ActionDialog({
       <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4" data-testid="action-dialog">
         {error && <p className="rounded-md border border-late-line bg-late-soft p-2.5 text-meta text-late">{error}</p>}
         {!preview ? (
-          !error && <p className="text-row text-muted">Preparing the preview…</p>
+          !error && <p className="text-row text-muted">Loading preview…</p>
         ) : (
           <>
             <Fields kind={offer.kind} form={form} set={setForm} preview={preview} />
@@ -248,7 +247,6 @@ export function ActionDialog({
               <label className="flex items-start gap-2 rounded-md border border-risk-line bg-risk-soft p-2.5 text-meta text-risk">
                 <input type="checkbox" checked={unknownOk} onChange={(e) => setUnknownOk(e.target.checked)} className="mt-0.5" data-testid="action-unknown-ok" />
                 <span>
-                  <AlertTriangle className="mr-1 inline size-3.5" aria-hidden />
                   Outside the known vendor, customer and company domains: {(preview.unknown_domains ?? []).join(", ")}. I checked these recipients.
                 </span>
               </label>

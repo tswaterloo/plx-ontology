@@ -54,7 +54,7 @@ const briefing: Briefing = {
 describe("BriefingCard", () => {
   it("states the count, the rank basis and every top item with its next action and open link", () => {
     render(<BriefingCard briefing={briefing} />);
-    expect(screen.getByTestId("briefing-today").textContent).toBe("Today in one line: In the latest check: 1 PO went late.");
+    expect(screen.getByTestId("briefing-today").textContent).toBe("Today: In the latest check: 1 PO went late.");
     expect(screen.getByTestId("briefing-heading").textContent).toContain("2 items need attention");
     // the rank basis sits behind "How this is ranked", not printed on the page
     expect(screen.queryByText("Ranked by dollars at risk.")).toBeNull();
@@ -72,7 +72,7 @@ describe("BriefingCard", () => {
     );
     // hidden items are a count only, per type
     expect(screen.getByTestId("briefing-counts").textContent).toContain(
-      "Late purchase order: 2 more for your team are in places you can't open (a count only).",
+      "Late purchase order: 2 more for your team are in places you can't open.",
     );
     expect(screen.getByTestId("briefing-counts").textContent).toContain("3 more items you may see are routed to other teams.");
   });
@@ -218,7 +218,7 @@ describe("BriefingCard", () => {
 describe("shortSummary", () => {
   it("says each summary short and in one style, with its stop", async () => {
     const { shortSummary } = await import("./briefing");
-    expect(shortSummary("An open purchase order needed by 2026-07-14 has no supplier confirmation")).toBe("Needed by 14 Jul; no confirmed date.");
+    expect(shortSummary("An open purchase order needed by 2026-07-14 has no supplier confirmation")).toBe("Needed by 14 Jul; no supplier date.");
     expect(shortSummary("An open purchase order has no due date recorded")).toBe("No due date on record.");
   });
 });

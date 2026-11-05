@@ -92,7 +92,7 @@ describe("ConflictCard", () => {
     expect(card).toHaveTextContent("3,000");
     expect(card).toHaveTextContent("3,200");
     expect(within(card).getAllByText("Used")).toHaveLength(1);
-    expect(card).toHaveTextContent("The systems disagree on quantity received");
+    expect(card).toHaveTextContent("Systems disagree on quantity received");
     expect(card).toHaveTextContent("BC is the system of record for receipts.");
     expect(card).toHaveTextContent("Copied nightly from BC.");
   });
@@ -111,7 +111,7 @@ describe("ConflictCard", () => {
     render(<ConflictCard conflict={{ field: "date", values: [{ value: "a", source: bc, trusted: false, why: "" }, { value: "b", source: bc, trusted: false, why: "" }] }} />);
     expect(screen.queryByText("Used")).toBeNull();
     expect(screen.getByTestId("conflict-card")).toHaveTextContent("Neither value is confirmed");
-    expect(screen.getByTestId("conflict-card")).toHaveTextContent("We're not picking one.");
+    expect(screen.getByTestId("conflict-card")).toHaveTextContent("Neither value is confirmed, so neither is used.");
   });
 });
 
@@ -424,7 +424,7 @@ describe("AnswerCard: a question that needs a pick, and a stale read", () => {
         }}
       />,
     );
-    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Partly answered · Portal data may be out of date");
+    expect(screen.getByTestId("outcome-badge")).toHaveTextContent("Partly answered: Portal data is out of date");
     expect(screen.getByTestId("outcome-badge")).not.toHaveTextContent("isn't on record");
   });
 });
@@ -454,7 +454,7 @@ describe("Feedback", () => {
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer }} />);
     await userEvent.click(screen.getByRole("button", { name: "Yes, this answer was right" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Something went wrong on our side");
+    expect(alert).toHaveTextContent("Server error");
     expect(alert).not.toHaveTextContent("Traceback");
   });
 });
@@ -556,7 +556,7 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     const late = { ...answer, facts, list_total: 34, did_you_mean: two };
     const pick = vi.fn();
     const { unmount } = render(<AnswerCard onPick={pick} turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: late }} />);
-    expect(screen.getByTestId("show-all")).toHaveTextContent("12 of 34 shown — show all");
+    expect(screen.getByTestId("show-all")).toHaveTextContent("12 of 34 shown. Show all");
     expect(screen.getByTestId("show-all")).toHaveAttribute("href", "/late");
     await userEvent.click(screen.getByRole("button", { name: /DIVE11/ }));
     expect(pick).toHaveBeenCalledWith({ object_id: "Customer:a", type: "Customer", label: "Diversified (DIVE11)" });
@@ -585,7 +585,7 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     );
     render(<ObjectView type="PurchaseOrder" id="1" />);
     expect(await screen.findByTestId("object-title")).toHaveTextContent("PO 1");
-    expect(screen.getByTestId("checking")).toHaveTextContent("lateness, people, landed cost and how we know");
+    expect(screen.getByTestId("checking")).toHaveTextContent("late lines, people, landed cost and evidence");
     for (const name of ["late", "people", "landed_cost", "trail"]) expect(screen.getAllByTestId(`section-loading-${name}`).length).toBeGreaterThan(0);
     // each section is its own call, for the record the quick read resolved
     expect(calls.filter((u) => u.startsWith("/api/object-section/")).sort()).toEqual(
@@ -595,11 +595,11 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     held.people(section("people", { people: [{ name: "Dana Ortiz", role: "buyer", sources: [] }] }));
     expect(await screen.findByTestId("people")).toHaveTextContent("Dana Ortiz");
     expect(screen.queryByTestId("section-loading-people")).toBeNull();
-    expect(screen.getByTestId("checking")).toHaveTextContent("lateness, landed cost and how we know");
+    expect(screen.getByTestId("checking")).toHaveTextContent("late lines, landed cost and evidence");
     held.late(section("late", { status: { state: "late", text: "Late by 3 days", sources: [] } }));
     held.landed_cost(section("landed_cost", { landed_cost: null }));
     held.trail(new Response(JSON.stringify({ code: "not_found", message: "" }), { status: 404 }));
-    expect(await screen.findByTestId("checks-failed")).toHaveTextContent("Could not finish checking how we know");
+    expect(await screen.findByTestId("checks-failed")).toHaveTextContent("Couldn't load evidence");
     expect(screen.queryByTestId("checking")).toBeNull();
     expect(document.querySelector("[data-testid^='section-loading-']")).toBeNull();
   });
@@ -642,7 +642,7 @@ describe("AnswerCard: the analyst's shape", () => {
     expect(list.querySelectorAll("li")).toHaveLength(4);
     // the missing line is the answer's own, said once, never glued to a bullet
     const missing = screen.getByTestId("could-not-confirm");
-    expect(missing).toHaveTextContent("What I couldn't confirm: The supplier's new ship date.");
+    expect(missing).toHaveTextContent("Not found: The supplier's new ship date.");
     expect(bullets[2]).not.toHaveTextContent("confirm");
     const asks = within(screen.getByTestId("follow-ups")).getAllByRole("button");
     expect(asks.map((b) => b.textContent)).toEqual(shaped.follow_ups);
@@ -658,7 +658,7 @@ describe("AnswerCard: the analyst's shape", () => {
     unmount();
     const gapsOnly: Answer = { ...full, outcome: "partial", direct_answer: "PO 106001 is open.\n\nWhat I couldn't confirm from a source you can open is listed below.", not_found: shaped.not_found };
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: gapsOnly }} />);
-    expect(screen.getByTestId("could-not-confirm")).toHaveTextContent("What I couldn't confirm: Supplier new ship date.");
+    expect(screen.getByTestId("could-not-confirm")).toHaveTextContent("Not found: Supplier new ship date.");
     expect(screen.getByTestId("answer-card")).not.toHaveTextContent("is listed below");
   });
 

@@ -64,7 +64,7 @@ describe("ProposalCards", () => {
     const card = screen.getByTestId("proposed-change");
     expect(within(card).getByText(/15 Jan 2099/)).toBeTruthy();
     expect(within(card).getByText(/28 Jan 2099/)).toBeTruthy();
-    expect(card.textContent).toMatch(/Apply it yourself in Business Central; the Workbench writes nothing/);
+    expect(card.textContent).toMatch(/Make the change in Business Central. The Workbench doesn't write to it./);
     expect(screen.queryByTestId("open-in-outlook")).toBeNull();
   });
 

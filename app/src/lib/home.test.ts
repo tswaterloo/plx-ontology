@@ -9,15 +9,15 @@ const brief = (items: BriefingItem[], extra: Partial<Briefing> = {}) => ({ statu
 
 describe("Home headline", () => {
   it("says what is late and how many need a call: those with someone to chase, else the top three", () => {
-    expect(headline(home(12), brief([it_("Bob"), it_(null), it_("Ann")]))?.text).toBe("12 purchase orders are late. 2 need a call today.");
-    expect(headline(home(12), brief([it_(null), it_(null), it_(null), it_(null)]))?.text).toBe("12 purchase orders are late. 3 need a call today.");
-    expect(headline(home(1), null)?.text).toBe("1 purchase order is late.");
+    expect(headline(home(12), brief([it_("Bob"), it_(null), it_("Ann")]))?.text).toBe("12 POs late. 2 to call today.");
+    expect(headline(home(12), brief([it_(null), it_(null), it_(null), it_(null)]))?.text).toBe("12 POs late. 3 to call today.");
+    expect(headline(home(1), null)?.text).toBe("1 PO late.");
   });
 
   it("says plainly when nothing is late, when nothing is routed, and claims nothing it could not read", () => {
-    expect(headline(home(0), brief([it_(null)]))).toEqual({ text: "Nothing is late today.", sub: "1 item to look at this week." });
+    expect(headline(home(0), brief([it_(null)]))).toEqual({ text: "No late POs.", sub: "1 other item open." });
     expect(headline(home(5), brief([], { routing_basis: "no_department_on_record" }))?.text).toBe(
-      "No department is on record for you, so nothing is routed to you yet.",
+      "No department on record for you, so nothing is routed to you.",
     );
     expect(headline(home(5, "unavailable"), null)).toBeNull();
     expect(headline(null, null)).toBeNull();
@@ -26,8 +26,8 @@ describe("Home headline", () => {
   it("never says nothing is late while the checks are re-running on newer data", () => {
     const na = { status: "read", late_total: 0, late_pos: [], refreshing: true, checked_on: "2026-11-01T08:14:36+00:00" };
     const h = headline({ greeting_name: "V", examples: [], recent_questions: [], needs_attention: na } as unknown as HomeResponse, brief([]));
-    expect(h?.text).toBe("Checking today's list against the latest data.");
+    expect(h?.text).toBe("Rechecking against the latest data.");
     expect(h?.sub).toMatch(/re-running on the latest data \(last checked 1 Nov\)/);
-    expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("Checking today's list against the latest data.");
+    expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("Rechecking against the latest data.");
   });
 });

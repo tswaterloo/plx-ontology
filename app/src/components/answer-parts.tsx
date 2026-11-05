@@ -1,6 +1,5 @@
 "use client";
 
-import { AlertTriangle, ChevronRight, EyeOff, Scale } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
@@ -84,7 +83,7 @@ export function SourceLine({ source, record, prefix = "From" }: { source: Source
   const sys = SYSTEM_LABEL[source.system] ?? source.system;
   const name = sourceName(source, record);
   const tail = name.startsWith(`${source.system} · `) ? name.slice(source.system.length + 3) : name === sys ? "" : name;
-  const text = [`${prefix} ${sys}`, tail, source.as_of ? `read ${formatDate(source.as_of, { short: true })}` : null].filter(Boolean).join(" · ");
+  const text = [`${prefix} ${sys}`, tail, source.as_of ? `read ${formatDate(source.as_of, { short: true })}` : null].filter(Boolean).join(", ");
   const opens = !!source.handle || !!source.open_url;
   return (
     <p className="text-meta text-muted" data-testid="source-line">
@@ -127,16 +126,16 @@ export function FactList({
   const shown = max && !all ? list.slice(0, Math.max(0, max - extra.length)) : list;
   return (
     <div className="space-y-2">
-      <ul className="space-y-2" aria-label="Supporting facts" data-testid="fact-list">
+      <ul className="space-y-1" aria-label="Supporting facts" data-testid="fact-list">
         {extra.map((x, i) => (
-          <li key={`x${i}`} className="flex gap-3 text-body">
-            <span className="mt-[11px] h-px w-2.5 shrink-0 bg-faint" aria-hidden />
+          <li key={`x${i}`} className="flex gap-2 text-body">
+            <span className="shrink-0 text-faint" aria-hidden>–</span>
             <span className="min-w-0 break-words">{x}</span>
           </li>
         ))}
         {shown.map((f, i) => (
-          <li key={i} className="flex gap-3 text-body">
-            <span className="mt-[11px] h-px w-2.5 shrink-0 bg-faint" aria-hidden />
+          <li key={i} className="flex gap-2 text-body">
+            <span className="shrink-0 text-faint" aria-hidden>–</span>
             <span className="min-w-0 break-words">
               {factText(f, currency)}
               {unconfirmed(f) && <span className="text-muted"> (not confirmed)</span>}{" "}
@@ -146,7 +145,7 @@ export function FactList({
         ))}
       </ul>
       {max && list.length + extra.length > max && (
-        <button type="button" onClick={() => setAll((v) => !v)} className="text-meta font-medium text-accent hover:underline cursor-pointer" aria-expanded={all}>
+        <button type="button" onClick={() => setAll((v) => !v)} className="text-meta text-accent hover:underline cursor-pointer" aria-expanded={all}>
           {all ? "Show fewer" : `Show all ${list.length + extra.length}`}
         </button>
       )}
@@ -177,8 +176,8 @@ export function missingText(n: NotFoundItem, subject?: string | null): string {
   const whereRaw = readable(n.where_it_would_live).replace(/\s*[.]$/, "");
   // a source read too long ago: "Portal data may be out of date", never "the Portal. Stale source."
   if (/^(?:stale source|source stale)$/i.test(whereRaw) && !/^Some records$/.test(what))
-    return `${what.replace(/^the\s+/i, "").replace(/^./, (c) => c.toUpperCase())} data may be out of date.`;
-  if (/^schema drift$/i.test(whereRaw) && what === "Some records") return "Some records may be incomplete: saved in an older format; the Workbench team can refresh them.";
+    return `${what.replace(/^the\s+/i, "").replace(/^./, (c) => c.toUpperCase())} data is out of date.`;
+  if (/^schema drift$/i.test(whereRaw) && what === "Some records") return "Some records are in an older format and may be incomplete. The Workbench team can refresh them.";
   for (const [re, w] of WHERE_WORDS) if (re.test(whereRaw)) return `${what}: ${w}.`;
   if (subject) {
     const esc = subject.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -199,17 +198,14 @@ export function missingText(n: NotFoundItem, subject?: string | null): string {
 
 const sentenceCase = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
-export function NotFoundSection({ items, title = "What we couldn't find", bare = false, subject }: { items: NotFoundItem[] | undefined; title?: string; bare?: boolean; subject?: string | null }) {
+export function NotFoundSection({ items, title = "Not found", bare = false, subject }: { items: NotFoundItem[] | undefined; title?: string; bare?: boolean; subject?: string | null }) {
   if (!items || items.length === 0) return null;
   return (
     <section className={cn(!bare && "border-t border-rule")} data-testid="not-found">
-      {!bare && <h3 className="flex min-h-11 items-center text-section">{title}</h3>}
-      <ul className="space-y-1.5 text-row">
+      {!bare && <h3 className="flex min-h-10 items-center text-section">{title}</h3>}
+      <ul className="space-y-1 text-row">
         {items.map((n, i) => (
-          <li key={i} className="flex gap-2.5">
-            <span className="mt-[7px] size-1.5 shrink-0 bg-risk" aria-hidden />
-            <span>{sentenceCase(missingText(n, subject))}</span>
-          </li>
+          <li key={i}>{sentenceCase(missingText(n, subject))}</li>
         ))}
       </ul>
     </section>
@@ -248,10 +244,9 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
     <section
       role="note"
       aria-label="Items you don't have access to"
-      className="flex gap-2.5 border-t border-border pt-3 text-meta"
+      className="border-t border-border pt-2 text-meta"
       data-testid="hidden-notice"
     >
-      <EyeOff className="mt-px size-3.5 shrink-0 text-faint" aria-hidden />
       <div className="space-y-0.5">
         <p className="font-medium text-fg">
           {unknown
@@ -316,11 +311,8 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
   const what = conflict.subject ? `${field} (${conflict.subject})` : field;
   const used = trusted.length === 1 ? trusted[0] : null;
   return (
-    <section aria-label={`Conflicting values for ${what}`} className="rounded-lg border border-dotted border-suspect-line bg-surface p-4" data-testid="conflict-card">
-      <h3 className="mb-2 flex items-center gap-2 text-section text-fg">
-        <Scale className="size-4 shrink-0 text-suspect" strokeWidth={1.5} aria-hidden />
-        The systems disagree on {what}
-      </h3>
+    <section aria-label={`Conflicting values for ${what}`} className="rounded-sm border border-dotted border-suspect-line px-3 py-2" data-testid="conflict-card">
+      <h3 className="mb-1 text-section text-suspect">Systems disagree on {what}</h3>
       <table className="w-full text-row">
         <caption className="sr-only">Values for {what}, by system</caption>
         <tbody>
@@ -332,7 +324,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
               <td className="py-2 pr-3 font-medium tabular-nums">
                 {conflictValue(conflict, v.value)}
                 {used === v && (
-                  <span className="ml-2 inline-flex h-5 items-center rounded-sm bg-ok-soft px-1.5 text-label text-ok">Used</span>
+                  <span className="ml-2 text-meta font-normal text-ok">Used</span>
                 )}
                 {v.why && used === v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
                 {v.why && used !== v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
@@ -346,7 +338,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
       </table>
       {!used && (
         <p className="mt-2 text-row text-muted">
-          Neither value is confirmed. We&apos;re not picking one. Ask {owner || "the record's owner"} which is right.
+          Neither value is confirmed, so neither is used. Ask {owner || "the record's owner"} which is right.
         </p>
       )}
     </section>
@@ -358,7 +350,7 @@ function whyUsed(why: string): string {
   const w = readable(why);
   if (/trusted here|declared precedence/i.test(w)) {
     const m = /with the (.+?) record, which is trusted here/i.exec(w);
-    return m ? `We use the ${m[1].replace(/^Portal ar customer$/i, "AR").replace(/^Portal oe order header$/i, "Sage order")} record for this field.` : "We use the other record for this field.";
+    return m ? `The ${m[1].replace(/^Portal ar customer$/i, "AR").replace(/^Portal oe order header$/i, "Sage order")} record wins for this field.` : "The other record wins for this field.";
   }
   return w;
 }
@@ -382,7 +374,7 @@ export function behindCutOff(freshness: Freshness | null | undefined, now?: Date
     const day = formatDate(s.as_of, { short: true, now });
     byDay.set(day, [...(byDay.get(day) ?? []), SYSTEM_LABEL[s.system] ?? s.system]);
   }
-  return [...byDay].map(([day, names]) => `${names.join(" and ")} to ${day}`).join(" · ");
+  return [...byDay].map(([day, names]) => `${names.join(" and ")} to ${day}`).join("; ");
 }
 
 /**
@@ -412,11 +404,10 @@ export function FreshnessLabel({
     <div className="space-y-1" data-testid="freshness">
       <p className="text-meta text-muted" title={detail || undefined}>
         {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
-        {freshness.as_of && behind ? <span data-testid="freshness-behind"> · {behind}</span> : null}
+        {freshness.as_of && behind ? <span data-testid="freshness-behind">; {behind}</span> : null}
       </p>
       {old.length > 0 && (
-        <p className="inline-flex items-center gap-1.5 text-meta text-risk" data-testid="freshness-old">
-          <AlertTriangle className="size-3.5" aria-hidden />
+        <p className="text-meta text-risk" data-testid="freshness-old">
           {old.map((s) => `${SYSTEM_LABEL[s.system] ?? s.system} last read ${formatDate(s.as_of, { short: true, now })}`).join(" · ")}.
         </p>
       )}
@@ -442,7 +433,7 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
     const old = used && s.stale && (s.age_seconds ?? 0) > WEEK;
     return {
       system: SYSTEM_LABEL[s.system] ?? s.system,
-      what: used ? `${plural(n, s.system === "Email" ? "message" : "record")} cited` : "Searched, nothing cited",
+      what: used ? `${plural(n, s.system === "Email" ? "message" : "record")} cited` : "Searched, none cited",
       asOf: s.as_of ? formatDate(s.as_of, { short: true, now }) : "",
       old,
     };
@@ -450,7 +441,7 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
   for (const [sys, set] of bySystem)
     if (!(freshness?.sources ?? []).some((s) => s.system === sys))
       rows.push({ system: SYSTEM_LABEL[sys as keyof typeof SYSTEM_LABEL] ?? sys, what: `${plural(set.size, "record")} cited`, asOf: "", old: false });
-  if (rows.length === 0) return <p className="text-row text-muted">No source list came with this answer.</p>;
+  if (rows.length === 0) return <p className="text-row text-muted">No source list.</p>;
   return (
     <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)_auto] gap-x-4 gap-y-1.5 text-row" data-testid="checked-list">
       {rows.map((r) => (
@@ -478,11 +469,11 @@ export function Disclosure({
 }) {
   return (
     <details className="group border-t border-border" open={defaultOpen} data-testid={testId}>
-      <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 py-2 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
-        <h3 className="font-medium">{label}</h3>
+      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 py-1.5 text-row text-fg hover:underline [&::-webkit-details-marker]:hidden">
+        <span className="inline-block w-3 text-[10px] text-muted transition-transform group-open:rotate-90" aria-hidden>▶</span>
+        <h3 className="font-normal">{label}</h3>
       </summary>
-      <div className="space-y-3 pb-4 pl-5">{children}</div>
+      <div className="space-y-3 pb-3 pl-[18px]">{children}</div>
     </details>
   );
 }

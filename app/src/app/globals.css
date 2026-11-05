@@ -31,28 +31,20 @@
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-variant-numeric: lining-nums;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    font-size: 14px;
+    line-height: 20px;
+    font-variant-numeric: lining-nums tabular-nums;
   }
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: 2px;
   }
   ::selection {
     background: var(--accent-soft);
   }
-  /* What a page says is set in the serif: titles, the answer's lead, figures. */
-  .text-display,
-  .text-title,
-  .text-answer,
-  .text-stat {
-    font-family: var(--font-serif);
-    font-optical-sizing: auto;
-  }
-  .text-stat {
-    font-variant-numeric: lining-nums tabular-nums;
+  a {
+    text-underline-offset: 2px;
   }
   ::placeholder {
     color: var(--fg-faint);
@@ -74,7 +66,7 @@
   scroll-margin-bottom: 24px;
 }
 
-/* A placeholder bar: still, faint, never a shimmer. */
+/* A placeholder bar: still and faint. */
 .skeleton {
   background: var(--surface-2);
   border-radius: 2px;

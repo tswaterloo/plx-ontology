@@ -28,7 +28,7 @@ function Value({ po }: { po: LatePo }) {
   if (!po.amount)
     return (
       <span className="text-muted" title="No value on this order">
-        <span aria-hidden>—</span>
+        <span aria-hidden>–</span>
         <span className="sr-only">No value</span>
       </span>
     );
@@ -37,7 +37,7 @@ function Value({ po }: { po: LatePo }) {
   return (
     <span title={`Check the data: ${po.amount_suspect}`} className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5 text-muted">
       <span>{shown}</span>
-      <span className="rounded-sm border border-dotted border-suspect-line px-1 text-label font-medium text-suspect">Check total</span>
+      <span className="rounded-sm border border-dotted border-suspect-line px-1 text-label text-suspect">Check total</span>
       <span className="sr-only">: {po.amount_suspect}</span>
     </span>
   );
@@ -49,7 +49,7 @@ function ListEta({ po, className, linked = false, quiet = false }: { po: LatePo;
   if (!shown)
     return linked ? (
       <Link href={hrefOf(po)} className="whitespace-nowrap text-meta text-muted hover:text-accent hover:underline">
-        Check on the PO
+        Open PO
       </Link>
     ) : null;
   const pill = <EtaPill shown={shown} className={className} testId="late-eta" quiet={quiet} />;
@@ -132,40 +132,39 @@ export default function LatePage() {
   const uniformEta = useMemo(() => shown.length > 3 && shown.every((p) => listShown(p)?.label === listShown(shown[0])?.label), [shown]);
   const maxDays = useMemo(() => Math.max(0, ...items.map((p) => p.days_late ?? 0)), [items]);
   const unconfirmed = useMemo(() => items.filter((p) => listShown(p)).length, [items]);
-  const verdict =
-    error ? "Late purchase orders" : total === null ? null : items.length === 0 ? "Nothing is late." : `${total} purchase ${total === 1 ? "order is" : "orders are"} late`;
+  const verdict = "Late POs";
   const why =
     total === null || error || items.length === 0
       ? null
       : [
-          oldest && typeof oldest.days_late === "number" ? `Oldest: ${recordLabel("PurchaseOrder", oldest.label)}${oldest.supplier ? ` from ${oldest.supplier}` : ""}, ${plural(oldest.days_late, "day")} past its date` : null,
-          unconfirmed > 0 ? `${unconfirmed} with no supplier confirmation` : null,
+          `${total} past the needed-by date.`,
+          oldest && typeof oldest.days_late === "number" ? `Oldest: ${recordLabel("PurchaseOrder", oldest.label)}${oldest.supplier ? ` (${oldest.supplier})` : ""}, ${plural(oldest.days_late, "day")}.` : null,
+          unconfirmed > 0 ? `${unconfirmed} with no supplier date.` : null,
         ]
           .filter(Boolean)
-          .join(" · ") + ".";
+          .join(" ");
 
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
       <PageHeader
-        className="mb-8"
-        eyebrow="Late orders"
+        className="mb-4"
         testId="late-header"
-        title={verdict ?? "Late purchase orders"}
+        title={verdict}
         sub={why}
       />
       {items.length > 1 && !error && (
-        <div className="mb-10">
+        <div className="mb-6">
           <LateShape items={items} onSupplier={(name) => setFilter((f) => ({ ...f, supplier: name }))} picked={filter.supplier} />
         </div>
       )}
       <Card data-testid="late-all" ref={list}>
         <CardHeader>
-          <CardTitle>{filtered ? "Matching orders" : "Every late order"}</CardTitle>
+          <CardTitle>{filtered ? "Matching POs" : "All late POs"}</CardTitle>
           {total !== null && (
             <span className="text-meta text-muted tabular-nums" data-testid="late-all-count">
-              {filtered ? `${shown.length} of ${items.length} match` : plural(items.length, "order")}
-              {total > items.length ? ` · ${total - items.length} more not read` : ""}
-              {asOf ? ` · as of ${formatDate(asOf)}` : ""}
+              {filtered ? `${shown.length} of ${items.length} match` : plural(items.length, "PO")}
+              {total > items.length ? ` · ${total - items.length} more not loaded` : ""}
+              {asOf ? ` · BC as of ${formatDate(asOf)}` : ""}
             </span>
           )}
         </CardHeader>
@@ -173,13 +172,13 @@ export default function LatePage() {
           {error ? (
             <LoadProblem message={error} busy={busy} onRetry={load} />
           ) : total === null ? (
-            <Pending label="Reading late purchase orders from Business Central" />
+            <Pending label="Reading late POs from Business Central" />
           ) : items.length === 0 ? (
-            <p className="py-4 text-row text-muted">No purchase order you can see is past its date. New late orders show here as soon as Business Central has them.</p>
+            <p className="py-4 text-row text-muted">No late POs. A PO shows here the day it passes its needed-by date in Business Central.</p>
           ) : (
             <>
               <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="late-filters">
-                <div role="tablist" aria-label="Days late" className="flex flex-wrap rounded border border-border-strong">
+                <div role="tablist" aria-label="Days late" className="flex flex-wrap rounded-sm border border-border-strong">
                   {DAY_BANDS.map((b) => (
                     <button
                       key={b.id}
@@ -201,10 +200,10 @@ export default function LatePage() {
                     onChange={(e) => setFilter((f) => ({ ...f, supplier: e.target.value === "\u0000all" ? null : e.target.value }))}
                     className="h-7 rounded border border-border-strong bg-surface px-2 text-fg"
                   >
-                    <option value={"\u0000all"}>Every supplier</option>
+                    <option value={"\u0000all"}>All suppliers</option>
                     {suppliers.map(([name, n]) => (
                       <option key={name || "\u0000none"} value={name}>
-                        {name || "No supplier shown"} ({n})
+                        {name || "No supplier"} ({n})
                       </option>
                     ))}
                   </select>
@@ -224,42 +223,42 @@ export default function LatePage() {
                     ))}
                   </select>
                 </label>
-                <span className="text-meta text-faint sm:ml-auto">Values in each order&apos;s own currency</span>
+                <span className="text-meta text-faint sm:ml-auto">Value in the PO&apos;s currency</span>
               </div>
               {shown.length === 0 ? (
                 <p className="py-4 text-row text-muted" data-testid="late-none-match">
-                  No late order matches these filters. Pick &ldquo;Every supplier&rdquo; or another band to widen it.
+                  No POs match these filters.
                 </p>
               ) : (
                 <>
                   <table className="hidden w-full text-row sm:table" data-testid="late-table">
                     <caption className="sr-only">Late purchase orders</caption>
                     <thead>
-                      <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
+                      <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
                         {COLUMNS.map((c) => (
                           <th key={c.key} scope="col" className={cn("px-2 font-semibold first:pl-3", c.right && "text-right")} aria-sort={sort.key === c.key ? (falling(sort) ? "descending" : "ascending") : "none"}>
-                            <button type="button" onClick={() => onSort(c.key)} className="cursor-pointer font-semibold uppercase hover:text-fg">
+                            <button type="button" onClick={() => onSort(c.key)} className="cursor-pointer font-medium hover:text-fg">
                               {c.label}
                               {sort.key === c.key ? (falling(sort) ? " ↓" : " ↑") : ""}
                             </button>
                           </th>
                         ))}
                         <th scope="col" className="px-2 font-semibold">
-                          ETA confirmed?
+                          Supplier date
                         </th>
                       </tr>
                     </thead>
                     <tbody>
                       {shown.map((po) => (
-                        <tr key={po.object_id} className="h-10 border-b border-border hover:bg-surface has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="late-row">
+                        <tr key={po.object_id} className="h-9 border-b border-border hover:bg-surface has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="late-row">
                           <td className="px-2 pl-3 font-medium">
                             <Link href={hrefOf(po)} className="hover:text-accent hover:underline focus-visible:outline-offset-4" data-row-link>
                               {recordLabel("PurchaseOrder", po.label)}
                             </Link>
                           </td>
-                          <td className="px-2">{po.supplier ?? <span className="text-muted">Not shown</span>}</td>
-                          <td className="whitespace-nowrap px-2 tabular-nums">{po.due_date ? formatDate(po.due_date) : <span className="text-muted">Not shown</span>}</td>
-                          <td className="whitespace-nowrap px-2 text-right font-semibold tabular-nums text-late">
+                          <td className="px-2">{po.supplier ?? <span className="text-muted">None</span>}</td>
+                          <td className="whitespace-nowrap px-2 tabular-nums">{po.due_date ? formatDate(po.due_date) : <span className="text-muted">None</span>}</td>
+                          <td className="whitespace-nowrap px-2 text-right tabular-nums text-late">
                             {/* a bar on a shared scale beside the number: the column reads as a picture */}
                             <span className="inline-flex items-center justify-end gap-2">
                               {typeof po.days_late === "number" && maxDays > 0 && (
@@ -267,7 +266,7 @@ export default function LatePage() {
                                   <span className="h-full bg-late-line" style={{ width: `${Math.max(2, (po.days_late / maxDays) * 96)}px` }} />
                                 </span>
                               )}
-                              <span className="w-8">{po.days_late ?? "—"}</span>
+                              <span className="w-8">{po.days_late ?? "–"}</span>
                             </span>
                           </td>
                           <td className="whitespace-nowrap px-2 text-right tabular-nums">
@@ -280,6 +279,9 @@ export default function LatePage() {
                       ))}
                     </tbody>
                   </table>
+                  {uniformEta && listShown(shown[0]) && (
+                    <p className="mb-1 text-meta text-muted sm:hidden">Supplier date, all of these: {listShown(shown[0])!.label}</p>
+                  )}
                   <ul className="-mx-2 divide-y divide-border sm:hidden">
                     {shown.map((po) => (
                       <li key={po.object_id}>
@@ -289,11 +291,11 @@ export default function LatePage() {
                               {recordLabel("PurchaseOrder", po.label)}
                               {po.supplier ? <span className="font-normal text-muted"> · {po.supplier}</span> : null}
                             </span>
-                            <span className="shrink-0 font-semibold tabular-nums text-late">{po.days_late ?? "—"} days</span>
+                            <span className="shrink-0 tabular-nums text-late">{po.days_late ?? "–"} days</span>
                           </span>
-                          {listShown(po) && <ListEta po={po} className="mt-1" />}
+                          {listShown(po) && !uniformEta && <ListEta po={po} className="mt-1" />}
                           <span className="mt-0.5 block truncate text-meta text-muted tabular-nums">
-                            {[po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : null, po.amount ? formatMoney(po.amount.amount, po.amount.currency) + (po.amount_suspect ? " · total needs checking" : "") : null].filter(Boolean).join(" · ") || po.reason}
+                            {[po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : null, po.amount ? formatMoney(po.amount.amount, po.amount.currency) + (po.amount_suspect ? " · check total" : "") : null].filter(Boolean).join(" · ") || po.reason}
                           </span>
                         </Link>
                       </li>

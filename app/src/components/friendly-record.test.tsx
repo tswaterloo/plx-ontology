@@ -68,7 +68,7 @@ describe("friendly URLs", () => {
     params = { ref: "Diversified" };
     render(<FriendlyRecord kind="customer" />);
     const chooser = await screen.findByTestId("friendly-chooser");
-    expect(await screen.findByText("2 customers share this name.")).toBeInTheDocument();
+    expect(await screen.findByText("Customer Diversified: 2 records")).toBeInTheDocument();
     const links = chooser.querySelectorAll("a");
     expect([...links].map((a) => a.getAttribute("href"))).toEqual([DIVERSIFIED[0].open_url, DIVERSIFIED[1].open_url]);
     expect(chooser).toHaveTextContent("C01100");
@@ -82,7 +82,7 @@ describe("friendly URLs", () => {
     );
     params = { ref: "V06110" };
     render(<FriendlyRecord kind="supplier" />);
-    expect(await screen.findByText("No supplier “V06110” that you can open.")).toBeInTheDocument();
+    expect(await screen.findByText("No supplier “V06110” that you can open")).toBeInTheDocument();
   });
 });
 

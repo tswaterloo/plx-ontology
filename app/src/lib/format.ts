@@ -273,16 +273,16 @@ export function plainReasons(text: string): string {
     .replace(/^Lateness is not stated:\s*/i, "Can't say yet whether it's late: ")
     .replace(/\bNot settled: /g, "Still to confirm: ")
     .replace(/\blead carrier:\s*/gi, "")
-    .replace(/\bthe ([a-z_ ]+?) capture is stale\b/gi, (_m, sys: string) => `the ${captureName(sys)} data we read may be out of date`)
+    .replace(/\bthe ([a-z_ ]+?) capture is stale\b/gi, (_m, sys: string) => `the ${captureName(sys)} data is out of date`)
     .replace(/\bthe ([a-z_ ]+?) read here may be out of date\b/gi, (_m, sys: string) =>
-      /^(projection|mirror)$/i.test(sys) ? "our copy of the records may be out of date" : `the ${captureName(sys)} data we read may be out of date`)
+      /^(projection|mirror)$/i.test(sys) ? "the Workbench copy of the records is out of date" : `the ${captureName(sys)} data is out of date`)
     .replace(/\ban? [A-Z][a-zA-Z]+\.same_record_as link below the tier floor(?: \(lead\))?(?: is (?:not counted|no)\b)?/g, "a possible match to another copy of this order isn't confirmed")
     .replace(/\ban? [A-Z][a-zA-Z]+\.([a-z_]+) link below the tier floor(?: \(lead\))?(?: is (?:not counted|no)\b)?/g, (_m, l: string) => `an unconfirmed ${l.replace(/_/g, " ")} link`)
     .replace(/\b[A-Z][a-zA-Z]+\.([a-z_]+) link\b/g, (_m, l: string) => `${l.replace(/_/g, " ")} link`)
     .replace(/\s*below the tier floor(?: \(lead\))?/gi, " (unconfirmed)")
     .replace(/\bthe due dates are not proven complete or readable\b/gi, "not every due date could be confirmed")
-    .replace(/\bthe projector could not read\b/gi, "we couldn't read")
-    .replace(/\bnot proven complete\b/gi, "may be incomplete");
+    .replace(/\bthe projector could not read\b/gi, "couldn't read")
+    .replace(/\bnot proven complete\b/gi, "not confirmed complete");
   // "x; x" -> "x": the same reason reached twice
   // a clause's own words: after its last "x: " lead-in, without the closing stop
   const key = (c: string) => c.slice(c.lastIndexOf(": ") + 1).replace(/[.\s]+$/, "").trim().toLowerCase();

@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bell, FlaskConical, Home, ListChecks, LogOut, Menu as MenuIcon, MessageSquare, Search, Timer, X } from "lucide-react";
+import { Menu as MenuIcon, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -18,9 +18,9 @@ import { ErrorNotice } from "./ui/notice";
 
 export function Logo({ className }: { className?: string }) {
   return (
-    <span className={cn("inline-flex items-baseline gap-1.5 font-serif text-[18px] leading-6 tracking-[-0.01em] text-fg", className)}>
-      <span className="font-semibold">PLX</span>
-      <span className="font-normal text-muted">Workbench</span>
+    <span className={cn("inline-flex items-baseline gap-1 text-[15px] leading-6 text-fg", className)}>
+      <span className="font-bold">PLX</span>
+      <span className="font-normal">Workbench</span>
     </span>
   );
 }
@@ -46,15 +46,14 @@ export function DevBanner() {
     <div
       role="note"
       title={["Demo sign-in, not Microsoft: not for staff use", label].filter(Boolean).join(". ")}
-      className="flex items-center justify-center gap-1.5 truncate border-b border-border bg-bg-subtle px-3 py-1 text-center text-label text-muted"
+      className="truncate border-b border-risk-line bg-risk-soft px-3 py-1 text-center text-meta text-fg"
       data-testid="dev-banner"
     >
-      <FlaskConical className="size-3.5 shrink-0" aria-hidden />
-      <span>Demo sign-in</span>
+      <span className="font-medium">Demo sign-in</span>
       {label && <span className="sr-only">: {label}</span>}
       {access && (
         <span className="font-normal" data-testid="access-banner">
-          <span aria-hidden>· </span>
+          <span aria-hidden>. </span>
           {access}
         </span>
       )}
@@ -69,7 +68,7 @@ export function AccessBanner() {
   return (
     <div
       role="note"
-      className="flex items-center justify-center gap-2 border-b border-border bg-bg-subtle px-3 py-1 text-center text-label text-muted"
+      className="border-b border-border bg-bg-subtle px-3 py-1 text-center text-meta text-muted"
       data-testid="access-banner"
     >
       <span>{access}</span>
@@ -101,7 +100,7 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
   const path = usePathname();
   const saved = useSaved();
   const late = useLateCount();
-  const item = (href: string, label: string, Icon: typeof Home, count?: number | null) => {
+  const item = (href: string, label: string, count?: number | null) => {
     const on = href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
     return (
       <Link
@@ -109,14 +108,13 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
         onClick={onNavigate}
         aria-current={on ? "page" : undefined}
         className={cn(
-          "flex min-h-8 items-center gap-2.5 rounded px-2.5 py-1.5 text-row transition-colors",
-          on ? "bg-border font-medium text-fg" : "text-muted hover:bg-border/60 hover:text-fg",
+          "flex min-h-8 items-center gap-2 rounded-sm px-2.5 py-1 text-row",
+          on ? "bg-surface-2 font-semibold text-fg" : "text-fg hover:bg-surface-2",
         )}
       >
-        <Icon className="size-4 shrink-0" strokeWidth={1.5} aria-hidden />
         <span className="flex-1">{label}</span>
         {typeof count === "number" && count > 0 && (
-          <span className="text-meta font-medium tabular-nums text-late" aria-label={`${count} late`}>
+          <span className="text-meta tabular-nums text-late" aria-label={`${count} late`}>
             {count}
           </span>
         )}
@@ -125,14 +123,14 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
   };
   return (
     <nav aria-label="Main" className="flex h-full flex-col gap-0.5">
-      {item("/", "Today", Home)}
-      {item("/late", "Late orders", Timer, late)}
-      {item("/briefing", "Briefing", Bell)}
-      {item("/ask", "Ask", MessageSquare)}
-      {item("/actions", "Actions", ListChecks)}
-      <div className="mt-7 px-2.5 pb-1.5 text-eyebrow uppercase text-faint">Saved</div>
+      {item("/", "Today")}
+      {item("/late", "Late POs", late)}
+      {item("/briefing", "Briefing")}
+      {item("/ask", "Ask")}
+      {item("/actions", "Action log")}
+      <div className="mt-6 px-2.5 pb-1 text-meta font-semibold text-muted">Saved</div>
       {saved.length === 0 ? (
-        <p className="px-2.5 text-meta text-faint">Answers and pages you save appear here.</p>
+        <p className="px-2.5 text-meta text-faint">Nothing saved.</p>
       ) : (
         <ul className="space-y-0.5 overflow-auto">
           {saved.slice(0, 8).map((s) => (
@@ -140,7 +138,7 @@ function Nav({ onNavigate }: { onNavigate?: () => void }) {
               <Link
                 href={s.href}
                 onClick={onNavigate}
-                className="block truncate rounded px-2.5 py-1 text-meta text-muted hover:bg-border/60 hover:text-fg"
+                className="block truncate rounded-sm px-2.5 py-1 text-meta text-fg hover:bg-surface-2"
               >
                 {s.label}
               </Link>
@@ -159,13 +157,13 @@ function GlobalSearch() {
     <button
       type="button"
       onClick={open}
-      className="group hidden h-8 w-full max-w-[440px] items-center gap-2.5 rounded border border-border-strong bg-surface px-3 text-left text-row text-faint transition-colors hover:border-control hover:text-muted sm:flex cursor-pointer"
+      className="group hidden h-8 w-full max-w-[440px] items-center gap-2 rounded-sm border border-border-strong bg-bg px-2.5 text-left text-row text-faint hover:border-control sm:flex cursor-pointer"
       data-testid="global-search"
       aria-label="Search records or ask (⌘K)"
     >
       <Search className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden />
-      <span className="flex-1 truncate">Find a PO, supplier or customer, or ask…</span>
-      <kbd className="rounded-sm border border-border px-1 font-mono text-[11px] leading-4 text-faint" aria-hidden>
+      <span className="flex-1 truncate">Search POs, SOs, suppliers, customers</span>
+      <kbd className="font-mono text-[11px] leading-4 text-faint" aria-hidden>
         ⌘K
       </kbd>
     </button>
@@ -187,15 +185,15 @@ function UserMenu() {
     <Menu.Root>
       <Menu.Trigger
         aria-label={`Account: ${u.name}`}
-        className="flex size-7 items-center justify-center rounded-full border border-border-strong text-[11px] font-semibold tracking-wide text-fg hover:border-control cursor-pointer"
+        className="rounded-sm px-2 py-1 text-row text-fg hover:bg-surface-2 cursor-pointer"
       >
-        {initials || "?"}
+        {u.name || initials || "Account"}
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Content
           align="end"
           sideOffset={8}
-          className="z-50 w-64 rounded-xl border border-border bg-raised p-1.5 shadow-pop animate-fade-in"
+          className="z-50 w-64 rounded border border-border-strong bg-raised p-1 shadow-pop"
         >
           <div className="px-2.5 py-2">
             <p className="truncate text-row font-medium">{u.name}</p>
@@ -211,9 +209,9 @@ function UserMenu() {
               await signOut();
               router.replace("/signin");
             }}
-            className="flex cursor-pointer items-center gap-2 rounded px-2.5 py-2 text-row data-[highlighted]:bg-surface-2"
+            className="flex cursor-pointer items-center rounded-sm px-2.5 py-1.5 text-row data-[highlighted]:bg-surface-2"
           >
-            <LogOut className="size-4" aria-hidden /> Sign out
+            Sign out
           </Menu.Item>
         </Menu.Content>
       </Menu.Portal>
@@ -224,7 +222,7 @@ function UserMenu() {
 function ShellSkeleton() {
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 sm:px-8">
-      <Pending label="Checking your sign-in" />
+      <Pending label="Signing in" />
     </div>
   );
 }
@@ -253,9 +251,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <DevBanner />
       <AccessBanner />
       <div className="flex min-h-0 flex-1">
-        <aside className="hidden w-[216px] shrink-0 bg-bg-subtle lg:block">
+        <aside className="hidden w-[200px] shrink-0 border-r border-border bg-bg-subtle lg:block">
           <div className="sticky top-0 flex h-dvh flex-col px-3 py-3">
-            <Link href="/" className="mb-6 flex h-8 items-center px-2.5">
+            <Link href="/" className="mb-4 flex h-8 items-center px-2.5">
               <Logo />
             </Link>
             <Nav />
@@ -271,8 +269,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <MenuIcon className="size-5" aria-hidden />
               </Dialog.Trigger>
               <Dialog.Portal>
-                <Dialog.Overlay className="fixed inset-0 z-40 bg-[rgb(28_26_23/0.32)] animate-fade-in" />
-                <Dialog.Content className="fixed inset-y-0 left-0 z-50 flex w-[82vw] max-w-xs flex-col bg-bg-subtle px-3 py-4 shadow-pop animate-fade-in">
+                <Dialog.Overlay className="fixed inset-0 z-40 bg-[rgb(0_0_0/0.3)]" />
+                <Dialog.Content className="fixed inset-y-0 left-0 z-50 flex w-[82vw] max-w-xs flex-col border-r border-border-strong bg-bg-subtle px-3 py-4">
                   <div className="mb-5 flex items-center justify-between px-2">
                     <Dialog.Title asChild>
                       <span>

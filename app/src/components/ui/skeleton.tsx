@@ -5,14 +5,10 @@ export function Skeleton({ className }: { className?: string }) {
   return <div aria-hidden className={cn("skeleton h-4 w-full", className)} />;
 }
 
-/**
- * The one way a part of a page says it is loading: a small pulsing square and what is being
- * read, in words. No skeleton walls.
- */
+/** The one way a part of a page says it is loading: what is being read, in words. */
 export function Pending({ label, className, testId }: { label: string; className?: string; testId?: string }) {
   return (
-    <p role="status" aria-label={label} className={cn("flex items-center gap-2 py-2 text-meta text-muted", className)} data-testid={testId}>
-      <span className="size-1.5 shrink-0 bg-accent animate-breathe" aria-hidden />
+    <p role="status" aria-label={label} className={cn("py-2 text-meta text-muted", className)} data-testid={testId} data-pending="">
       <span>{/[.…]$/.test(label) ? label : `${label}…`}</span>
     </p>
   );
@@ -22,7 +18,7 @@ export function SkeletonLines({ label = "Loading" }: { lines?: number; label?: s
   return <Pending label={label} />;
 }
 
-/** A figures strip while it loads: nothing (the masthead says what is being read). */
+/** A figures line while it loads: nothing (the header says what is being read). */
 export function SkeletonStats(_: { count?: number }) {
   return null;
 }

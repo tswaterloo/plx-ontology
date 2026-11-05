@@ -150,11 +150,11 @@ describe("plain words for gaps and money in prose", () => {
   it("says the server's plumbing gaps as a reader would, and prose amounts with their currency", async () => {
     const { proseMoney } = await import("./format");
     expect(missingText({ what: "projection", where_it_would_live: "schema drift" })).toBe(
-      "Some records may be incomplete: saved in an older format; the Workbench team can refresh them.",
+      "Some records are in an older format and may be incomplete. The Workbench team can refresh them.",
     );
     // a stale read says which system's data may be out of date, never "the Portal. Stale source."
-    expect(missingText({ what: "the Portal", where_it_would_live: "stale source" })).toBe("Portal data may be out of date.");
-    expect(missingText({ what: "Business Central", where_it_would_live: "stale source" })).toBe("Business Central data may be out of date.");
+    expect(missingText({ what: "the Portal", where_it_would_live: "stale source" })).toBe("Portal data is out of date.");
+    expect(missingText({ what: "Business Central", where_it_would_live: "stale source" })).toBe("Business Central data is out of date.");
     expect(missingText({ what: "A value the question asks for", where_it_would_live: "conflicting sources" })).toBe("Part of what you asked: the sources disagree on it.");
     expect(proseMoney("is in Draft and totals 9680 USD.")).toBe("is in Draft and totals $9,680.00 USD.");
     expect(proseMoney("a total of 14,611.33 CAD due")).toBe("a total of $14,611.33 CAD due");

@@ -1,6 +1,5 @@
 "use client";
 
-import { Monitor, Moon, Sun } from "lucide-react";
 import { ThemeProvider as NextThemes, useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
@@ -14,9 +13,9 @@ export function ThemeProvider({ children, nonce }: { children: React.ReactNode; 
 }
 
 const OPTIONS = [
-  { value: "light", label: "Light theme", Icon: Sun },
-  { value: "dark", label: "Dark theme", Icon: Moon },
-  { value: "system", label: "Match system theme", Icon: Monitor },
+  { value: "light", label: "Light theme", text: "Light" },
+  { value: "dark", label: "Dark theme", text: "Dark" },
+  { value: "system", label: "Match system theme", text: "Auto" },
 ] as const;
 
 export function ThemeToggle({ className }: { className?: string }) {
@@ -24,8 +23,8 @@ export function ThemeToggle({ className }: { className?: string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   return (
-    <div role="radiogroup" aria-label="Theme" className={cn("inline-flex rounded-lg border border-border p-0.5", className)}>
-      {OPTIONS.map(({ value, label, Icon }) => {
+    <div role="radiogroup" aria-label="Theme" className={cn("inline-flex rounded border border-border-strong text-meta", className)}>
+      {OPTIONS.map(({ value, label, text }) => {
         const on = mounted && theme === value;
         return (
           <button
@@ -36,11 +35,11 @@ export function ThemeToggle({ className }: { className?: string }) {
             aria-label={label}
             onClick={() => setTheme(value)}
             className={cn(
-              "rounded-md p-1.5 transition-colors cursor-pointer",
-              on ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
+              "border-l border-border-strong px-2 py-0.5 first:border-l-0 cursor-pointer",
+              on ? "bg-surface-2 font-medium text-fg" : "text-muted hover:text-fg",
             )}
           >
-            <Icon className="size-3.5" aria-hidden />
+            {text}
           </button>
         );
       })}

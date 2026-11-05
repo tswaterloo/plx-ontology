@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "@/lib/cn";
 import { STATUS_CLASS, type Shown, type Status } from "@/lib/status";
 
-/** A status in at most three words: 20 px, 2 px radius, soft fill, no border; a data problem gets a dotted line. */
+/** A status in at most three words: soft fill, dark text; a data problem gets a dotted line. */
 export function StatusBadge({
   status,
   label,
@@ -19,7 +19,7 @@ export function StatusBadge({
     <span
       data-status={s}
       className={cn(
-        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-label",
+        "inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-label font-normal",
         c.soft,
         c.fg,
         s === "suspect" && cn("border border-dotted", c.line),
@@ -33,7 +33,7 @@ export function StatusBadge({
   );
 }
 
-/** The quiet form for rows and lists: a small square in the status colour and the word, no fill. */
+/** The quiet form for rows and lists: the word in its status colour, no fill. */
 export function StatusWord({
   status,
   label,
@@ -47,8 +47,7 @@ export function StatusWord({
   const c = STATUS_CLASS[s];
   // a neutral state is said, not signalled: plain faint words, no square
   return (
-    <span data-status={s} className={cn("inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-label", s === "neutral" ? "text-faint" : cn("font-medium", c.fg), className)} {...props}>
-      {s !== "neutral" && <span className={cn("size-1.5 shrink-0", c.dot)} aria-hidden />}
+    <span data-status={s} className={cn("inline-flex shrink-0 items-center whitespace-nowrap text-meta", s === "neutral" ? "text-muted" : cn("font-medium", c.fg), className)} {...props}>
       {text}
     </span>
   );

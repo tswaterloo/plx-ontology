@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowRight, ChevronDown, Info, Mail } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useListKeys } from "@/lib/list-keys";
@@ -50,7 +49,7 @@ export function itemFacts(item: BriefingItem): string[] {
 /** An item's summary said short ("Needed by 24 Jun; no confirmed date."). */
 export function shortSummary(summary: string): string {
   const m = /^An open purchase order needed by (\d{4}-\d{2}-\d{2}) has no supplier confirmation\.?$/i.exec(summary.trim());
-  if (m) return `Needed by ${formatDate(m[1], { short: true })}; no confirmed date.`;
+  if (m) return `Needed by ${formatDate(m[1], { short: true })}; no supplier date.`;
   if (/^An open purchase order has no due date recorded\.?$/i.test(summary.trim())) return "No due date on record.";
   const u = /^An open purchase order needed by (\d{4}-\d{2}-\d{2})(.*)$/i.exec(summary.trim());
   if (u) return `Needed by ${formatDate(u[1], { short: true })}${readable(u[2]).replace(/^,?\s*/, "; ")}`;
@@ -91,8 +90,6 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
   return (
     <li className="-mx-2 px-2 py-3 has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="briefing-item">
       <div className="flex items-start gap-3">
-        {/* its place in the list as shown: ranks of items left out (tests, other teams) would leave gaps */}
-        <span className="w-4 shrink-0 pt-px text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{position ?? item.rank}</span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <Link href={href} className="min-w-0 truncate text-row font-medium hover:underline focus-visible:outline-offset-4" data-row-link>
@@ -102,8 +99,8 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
             <Marks item={item} />
             <span className="ml-auto flex items-baseline gap-4">
               {numbers && <span className="text-meta tabular-nums text-muted">{numbers}</span>}
-              <Link href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`} className="inline-flex items-center gap-1 whitespace-nowrap text-meta font-medium text-accent hover:underline">
-                {who ? `Chase ${who}` : "Open"} <ArrowRight className="size-3.5" aria-hidden />
+              <Link href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`} className="whitespace-nowrap text-meta text-accent hover:underline">
+                {who ? `Chase ${who}` : "Open"}
               </Link>
             </span>
           </div>
@@ -114,15 +111,15 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
                 type="button"
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
-                className="inline-flex shrink-0 items-center gap-0.5 hover:text-fg cursor-pointer"
+                className="shrink-0 hover:text-fg hover:underline cursor-pointer"
               >
-                How we know <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden />
+                {open ? "Hide evidence" : "Evidence"}
               </button>
             )}
           </div>
           {item.amount && item.amount_suspect && <p className="mt-0.5 text-meta text-suspect">{itemFacts(item)[0]}</p>}
           {open && item.trail && (
-            <div className="mt-3 border-l-2 border-border-strong pl-4">
+            <div className="mt-2">
               <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
             </div>
           )}
@@ -138,7 +135,6 @@ function Row({ item }: { item: BriefingItem }) {
   const facts = itemFacts(item);
   return (
     <li className="flex items-start gap-3 py-2 text-row" data-testid="briefing-row">
-      <span className="w-6 shrink-0 text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{item.rank}</span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{recordLabel(item.object_type, item.subject_label)}</span>
@@ -146,7 +142,7 @@ function Row({ item }: { item: BriefingItem }) {
         </div>
         <p className="text-meta text-muted">{[shortSummary(item.summary), ...facts].join(" · ")}</p>
       </div>
-      <Link href={href} className="shrink-0 text-meta font-medium text-accent hover:underline">
+      <Link href={href} className="shrink-0 text-meta text-accent hover:underline">
         Open
       </Link>
     </li>
@@ -168,7 +164,7 @@ function Group({ group, view, loadItems }: { group: BriefingGroup; view: Briefin
       setRows((prev) => [...(offset === 0 ? [] : (prev ?? [])), ...(got.items ?? [])]);
       setMore(got.more);
     } catch {
-      setError("This list didn't load. Try again.");
+      setError("Couldn't load this list. Try again.");
     } finally {
       setBusy(false);
     }
@@ -178,9 +174,7 @@ function Group({ group, view, loadItems }: { group: BriefingGroup; view: Briefin
   return (
     <li className="py-2.5" data-testid="briefing-group">
       <div className="flex flex-wrap items-center gap-2 text-row">
-        {/* the kind's colour only: its badge would say the label twice ("Late PO Late purchase order") */}
-        <span className={cn("size-1.5 shrink-0", STATUS_CLASS[kind.status].dot)} aria-hidden />
-        <span className="font-medium">{group.label}</span>
+        <span className={cn("font-medium", kind.status !== "neutral" && STATUS_CLASS[kind.status].fg)}>{group.label}</span>
         <span className="tabular-nums text-muted">{group.count}</span>
         {group.new_since_visit > 0 && <span className="text-label font-medium text-new">{group.new_since_visit} new</span>}
         {group.acknowledged > 0 && <span className="text-meta text-muted">{group.acknowledged} acknowledged</span>}
@@ -189,7 +183,7 @@ function Group({ group, view, loadItems }: { group: BriefingGroup; view: Briefin
             type="button"
             onClick={() => page(0)}
             disabled={busy}
-            className="ml-auto text-row font-medium text-accent hover:underline cursor-pointer"
+            className="ml-auto text-row text-accent hover:underline cursor-pointer"
           >
             +{rest} more
           </button>
@@ -231,7 +225,7 @@ export function BriefingCounts({ briefing, compact = false }: { briefing: Briefi
       {unchecked.length > 1 ? (
         <details>
           <summary className="cursor-pointer hover:text-fg">
-            {unchecked.length} checks didn&apos;t run in full this time{compact ? "" : ", so this list may be short"}
+            {unchecked.length} checks didn&apos;t finish this run{compact ? "" : "; the list may be incomplete"}
           </summary>
           <div className="mt-1 space-y-1">{lines}</div>
         </details>
@@ -247,11 +241,11 @@ export function BriefingCounts({ briefing, compact = false }: { briefing: Briefi
       {Object.entries(briefing.hidden_by_type ?? {}).map(([type, n]) => (
         <p key={type}>
           {(groups.find((g) => g.event_type === type)?.label ?? labelOf(type)) + ": "}
-          {n} more for your team {n === 1 ? "is" : "are"} in places you can&apos;t open (a count only).
+          {n} more for your team {n === 1 ? "is" : "are"} in places you can&apos;t open.
         </p>
       ))}
       {briefing.routing_basis === "no_department_on_record" && (
-        <p>No department is on record for you, so nothing is routed to you yet.</p>
+        <p>No department on record for you, so nothing is routed to you.</p>
       )}
     </div>
   );
@@ -293,8 +287,8 @@ export function BriefingCard({
     return (
       <p className="text-row text-muted" data-testid="briefing-unavailable">
         {briefing.status === "not_configured"
-          ? "The watch list hasn't run on this server yet."
-          : "Your briefing couldn't be read just now. Try again in a few minutes."}
+          ? "The briefing hasn't run on this server."
+          : "Couldn't load the briefing. Try again in a few minutes."}
       </p>
     );
   }
@@ -307,23 +301,23 @@ export function BriefingCard({
   const shownItems = tab === "all" ? items : items.filter((i) => i.event_type === tab);
   const shownGroups = tab === "all" ? groups : groups.filter((g) => g.event_type === tab);
   const tabCls = (on: boolean) =>
-    cn("-mb-px inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-row cursor-pointer", on ? "border-rule font-medium text-fg" : "border-transparent text-muted hover:text-fg");
+    cn("-mb-px inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-row cursor-pointer", on ? "border-fg font-semibold text-fg" : "border-transparent text-muted hover:text-fg");
   return (
     <div className="space-y-4" ref={listRef}>
       {briefing.today && (
-        <p className="text-row font-medium text-fg" data-testid="briefing-today">
-          <span className="text-muted font-normal">Today in one line: </span>
+        <p className="text-row text-fg" data-testid="briefing-today">
+          <span className="text-muted">Today: </span>
           {briefing.today}
         </p>
       )}
       <p className="text-row text-muted" data-testid="briefing-heading">
         {atLeast}
         {plural(briefing.count, "item")} {briefing.count === 1 ? "needs" : "need"} attention{sinceVisit ? " since your last visit" : ""}
-        <button type="button" onClick={() => setRankOpen((v) => !v)} aria-expanded={rankOpen} className="ml-2 inline-flex items-center gap-0.5 text-meta hover:text-fg cursor-pointer">
-          <Info className="size-3.5" aria-hidden /> How this is ranked
+        <button type="button" onClick={() => setRankOpen((v) => !v)} aria-expanded={rankOpen} className="ml-2 text-meta text-accent hover:underline cursor-pointer">
+          How this is ranked
         </button>
       </p>
-      {rankOpen && <p className="border-l-2 border-border-strong pl-3 text-meta text-muted">{readable(briefing.rank_basis)}</p>}
+      {rankOpen && <p className="text-meta text-muted">{readable(briefing.rank_basis)}</p>}
       <div className="flex flex-wrap items-center gap-x-5 border-b border-border" role="tablist" aria-label="Show">
         <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={tabCls(!sinceVisit && tab === "all")}>
           All <span className="tabular-nums text-muted">{briefing.count}</span>
@@ -338,7 +332,7 @@ export function BriefingCard({
         ))}
       </div>
       {shownItems.length === 0 ? (
-        <p className="text-row text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing routed to you needs attention."}</p>
+        <p className="text-row text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing open for you."}</p>
       ) : (
         <ol className="divide-y divide-border">
           {shownItems.map((i, n) => (
@@ -348,7 +342,7 @@ export function BriefingCard({
       )}
       {shownGroups.length > 0 && briefing.count > items.length && (
         <div data-testid="briefing-groups">
-          <h2 className="text-section">Everything else, by type</h2>
+          <h2 className="mt-2 text-section">The rest, by type</h2>
           <ul className="divide-y divide-border">
             {shownGroups.map((g) => (
               <Group key={`${view}-${g.event_type}`} group={g} view={view} loadItems={loadItems} />
@@ -359,9 +353,7 @@ export function BriefingCard({
       <BriefingCounts briefing={briefing} />
       {types.length > 0 && (
         <details className="group">
-          <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-            What was checked <ChevronDown className="size-3.5 group-open:rotate-180" aria-hidden />
-          </summary>
+          <summary className="cursor-pointer text-row text-muted hover:text-fg">What was checked</summary>
           <ul className="mt-1 space-y-0.5 text-meta" data-testid="briefing-checks">
             {types.map((t) => (
               <li key={t.event_type}>
@@ -374,9 +366,7 @@ export function BriefingCard({
         </details>
       )}
       <details className="group">
-        <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-          <Mail className="size-3.5" aria-hidden /> Daily digest preview <ChevronDown className="size-3.5 group-open:rotate-180" aria-hidden />
-        </summary>
+        <summary className="cursor-pointer text-row text-muted hover:text-fg">Daily digest preview</summary>
         <div className="mt-2 space-y-1">
           <p className="text-meta text-muted">Preview only: this digest is not sent.</p>
           <pre className="whitespace-pre-wrap rounded border border-border bg-surface p-3 font-mono text-[12px] leading-[18px]" data-testid="digest-preview">

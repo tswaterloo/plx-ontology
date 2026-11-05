@@ -1,6 +1,5 @@
 "use client";
 
-import { AlertTriangle, ChevronDown, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { getSource } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -186,17 +185,17 @@ export function SourceDocument({
   const kind = email ? "Email" : recordKind(view.handle, view.label);
   const eyebrow = [SYSTEM_LABEL[view.system] ?? view.system, !email && kind && kind !== SYSTEM_LABEL[view.system] ? kind : null]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
   const body = email ? readableBody(text) : text;
   const { main, signature } = email ? splitSignature(body) : { main: body, signature: "" };
   const H = headingLevel === 1 ? "h1" : "h2";
   const citedCount = cited.length > 0 ? lead.filter((_, i) => i < cited.length).length : 0;
   return (
     <div className="min-w-0 space-y-5" data-testid="source-document">
-      <header className={cn("min-w-0 space-y-1.5", headingLevel === 1 && "border-b-2 border-rule pb-4")}>
-        <p className="text-eyebrow uppercase text-muted">
+      <header className={cn("min-w-0 space-y-1.5", headingLevel === 1 && "border-b border-border pb-4")}>
+        <p className="text-meta text-muted">
           {eyebrow}
-          {email && view.as_of ? ` · ${formatDateTime(view.as_of)}` : ""}
+          {email && view.as_of ? `, ${formatDateTime(view.as_of)}` : ""}
         </p>
         <H id={titleId} className={cn("break-words", headingLevel === 1 ? "text-display" : "text-title")} data-testid="source-title">
           {title}
@@ -205,27 +204,27 @@ export function SourceDocument({
         {actions}
       </header>
       {view.changed_since && (
-        <p className="flex items-center gap-2 border-t border-risk-line pt-3 text-row">
-          <AlertTriangle className="size-4 shrink-0 text-risk" aria-hidden />
-          This has changed since the answer cited it. Read it again before you act.
+        <p className="rounded-sm border border-risk-line bg-risk-soft px-3 py-2 text-row">
+          Changed since the answer cited it. Reread before acting.
         </p>
       )}
       {email && <EmailHeader fields={view.fields} asOf={view.as_of} />}
       {quote && (
-        <blockquote className="border-l-2 border-accent bg-accent-soft px-4 py-3 font-serif text-[17px] leading-[26px] italic" data-testid="cited-passage">
+        <blockquote className="rounded-sm bg-[var(--risk-soft)] px-3 py-2 text-body" data-testid="cited-passage">
+          <span className="mb-0.5 block text-meta text-muted">Cited passage</span>
           “{quote}”
         </blockquote>
       )}
       {text ? (
         <div className="space-y-3">
-          {quote && <h3 className="text-eyebrow uppercase text-muted">Full message</h3>}
+          {quote && <h3 className="text-meta font-semibold text-fg">Full message</h3>}
           <div className="whitespace-pre-wrap break-words text-body" data-testid="source-text">
             {main}
           </div>
           {signature && (
             <div>
               <button type="button" onClick={() => setSig((v) => !v)} aria-expanded={sig} className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer">
-                {sig ? "Hide signature" : "Show signature"} <ChevronDown className={cn("size-3.5", sig && "rotate-180")} aria-hidden />
+                {sig ? "Hide signature" : "Show signature"}
               </button>
               {sig && <div className="mt-2 whitespace-pre-wrap break-words text-meta text-muted">{signature}</div>}
             </div>
@@ -244,7 +243,7 @@ export function SourceDocument({
           )}
         </>
       ) : (
-        <p className="text-row text-muted">This source has no readable text.</p>
+        <p className="text-row text-muted">No readable text.</p>
       )}
     </div>
   );
@@ -298,19 +297,18 @@ export function SourceLoader({
     }
   }
   if (error && !view) return <ErrorNotice message={error} onRetry={load} />;
-  if (!view) return <SkeletonLines lines={6} label="Opening the source" />;
+  if (!view) return <SkeletonLines lines={6} label="Loading the source" />;
   return (
-    <div className="min-w-0 animate-fade-in">
+    <div className="min-w-0">
       <SourceDocument view={view} text={text} cited={cited} quote={quote} headingLevel={headingLevel} titleId={titleId} actions={actions?.(view)} />
       {view.next_offset ? (
         <button
           type="button"
           onClick={loadMore}
           disabled={more}
-          className="mt-4 inline-flex items-center gap-2 rounded-lg border border-control px-3 py-1.5 text-row hover:bg-surface-2 cursor-pointer"
+          className="mt-4 rounded-sm border border-control px-3 py-1 text-row hover:bg-surface-2 cursor-pointer"
         >
-          {more && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-          Show more
+          {more ? "Loading…" : "Show more"}
         </button>
       ) : null}
       {error && <ErrorNotice className="mt-3" message={error} />}

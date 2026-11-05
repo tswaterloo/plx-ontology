@@ -71,7 +71,7 @@ describe("ProfitabilityView", () => {
     // one line: no "share of cost" column
     expect(b).not.toHaveTextContent("Share of cost");
     expect(within(b).getAllByRole("button", { name: /Business Central/ }).length).toBe(2);
-    expect(screen.getByTestId("next-action")).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
+    expect(screen.getByTestId("next-action")).toHaveTextContent("Nothing is sent or changed from here.");
     // the margin basis is said once, as a footnote, not on every header
     expect(table).toHaveTextContent("Margin*");
     expect(screen.getByTestId("profitability")).toHaveTextContent("*Item cost only. Freight, labour and overhead aren't included.");

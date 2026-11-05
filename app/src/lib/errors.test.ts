@@ -7,7 +7,7 @@ describe("plainError", () => {
     expect(plainError(new ApiError(403, "no_workbench_access"))).toMatch(/doesn't have Workbench access/);
     expect(plainError(new ApiError(500, "internal", "9f3a01bc"))).toMatch(/incident 9f3a01bc/);
     expect(plainError(new ApiError(403, "http_403"))).toMatch(/don't have access/);
-    expect(plainError(new ApiError(504, "weird"))).toMatch(/too long/);
+    expect(plainError(new ApiError(504, "weird"))).toMatch(/Timed out/);
     expect(plainError(new TypeError("Failed to fetch"))).toMatch(/Can't reach/);
   });
 

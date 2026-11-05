@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowRight, Bookmark, BookmarkCheck, Check } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
@@ -18,7 +17,6 @@ import { ProposalCards } from "./proposal-cards";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, SourceChips, SourceListRow } from "./source-chip";
 import { ErrorNotice } from "./ui/notice";
-import { Skeleton } from "./ui/skeleton";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
 /** Answer prose as the app writes it: money as money, every PO/SO number spaced one way
@@ -29,7 +27,24 @@ export const prose = (s: string) =>
     .replace(/(\d+ days? late)\. An open purchase order needed by (.+?) has no supplier confirmation/g, "$1, needed by $2; no supplier confirmation")
     // a run-on where the server joined two sentences without a stop ("…on its header Still to confirm: …")
     .replace(/([a-z0-9)])\s+(Still to confirm:)/g, "$1. $2")
-    .replace(/\b(Longest late|Oldest):\s+(?=\d{5,}\b)/g, "$1: PO ");
+    .replace(/\b(Longest late|Oldest):\s+(?=\d{5,}\b)/g, "$1: PO ")
+    // the server's first-person stock lines, said as the software states a fact
+    .replace(/\bI stopped researching at the time limit; the parts not yet checked are listed as open\./g, "Stopped at the time limit. Parts not checked are listed under Not found.")
+    .replace(/\bI stopped researching at the time limit\b/g, "Stopped at the time limit")
+    .replace(/\bI couldn't find records you can see that answer this\./g, "No records you can see answer this.")
+    .replace(/\bI found related records but could not confirm an answer from what you can see\./g, "Related records found, but none you can see confirms an answer.")
+    .replace(/\bI can't find that purchase order: /g, "")
+    .replace(/\bI found no message (from the vendor )?naming /g, (_m, v: string | undefined) => `No message ${v ?? ""}names `)
+    .replace(/, so I can't list late purchase orders yet/g, ", so late purchase orders can't be listed yet")
+    .replace(/\bI couldn't confirm\b/g, "Couldn't confirm")
+    .replace(/\s*\(it is on the late list on your home page\)/g, "");
+
+/**
+ * Server text that leaks an internal name ("purchaseOrder.renumbered to@portal.app", a bare
+ * "PurchaseOrder", "Link key not served") says nothing to a reader: such a line is left out.
+ */
+export const internalWords = (s: string) =>
+  /@[a-z]+\.app\b|\b[a-z]+[A-Z][A-Za-z]*\.[a-z]|^\s*[A-Z][a-z]+[A-Z][A-Za-z]+\.?\s*$|\bLink key not served\b|\b(?:PurchaseOrder|SalesOrder|AssemblyOrder)\b/.test(s);
 
 export type TurnPhase = "thinking" | "streaming" | "done" | "error";
 
@@ -68,23 +83,22 @@ function SubjectsLine({ refs, timeFrame }: { refs: ObjectRef[]; timeFrame?: stri
   if (refs.length === 0 && !timeFrame) return null;
   const shown = all ? refs : refs.slice(0, 4);
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-meta text-muted" data-testid="understanding">
-      {shown.map((r) => (
-        <Link
-          key={r.object_id}
-          href={refHref(r)}
-          className="inline-flex h-6 items-center rounded-sm border border-border-strong px-2 font-medium text-fg hover:border-accent hover:text-accent"
-          data-testid="entity-link"
-        >
-          {recordLabel(r.type, r.label)}
-        </Link>
+    <div className="flex flex-wrap items-baseline gap-x-1 text-meta text-muted" data-testid="understanding">
+      <span>About</span>
+      {shown.map((r, i) => (
+        <span key={r.object_id}>
+          <Link href={refHref(r)} className="text-accent hover:underline" data-testid="entity-link">
+            {recordLabel(r.type, r.label)}
+          </Link>
+          {i < shown.length - 1 || refs.length > 4 ? "," : ""}
+        </span>
       ))}
       {refs.length > 4 && (
-        <button type="button" onClick={() => setAll((v) => !v)} className="inline-flex h-6 items-center px-1 hover:text-fg cursor-pointer" aria-expanded={all}>
-          {all ? "fewer" : `+${refs.length - 4} more`}
+        <button type="button" onClick={() => setAll((v) => !v)} className="text-accent hover:underline cursor-pointer" aria-expanded={all}>
+          {all ? "fewer" : `${refs.length - 4} more`}
         </button>
       )}
-      {timeFrame && <span className="inline-flex h-6 items-center px-1 text-faint">{timeFrame}</span>}
+      {timeFrame && <span className="text-muted">({timeFrame})</span>}
     </div>
   );
 }
@@ -103,10 +117,9 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
   const last = lastPick(ids);
   const ordered = last ? [...choices].sort((a, b) => Number(b.object_id === last) - Number(a.object_id === last)) : choices;
   return (
-    <div className="border-l-2 border-accent py-1 pl-4 text-row" data-testid="did-you-mean">
-      <p className="mb-2">
-        <span className="font-medium">Did you mean</span>
-        {text ? <> “{text}” as</> : null}…
+    <div className="text-row" data-testid="did-you-mean">
+      <p className="mb-1.5">
+        <span className="font-medium">Which one{text ? <> is “{text}”</> : null}?</span>
       </p>
       <div className="flex flex-wrap gap-1.5">
         {ordered.map((c) => (
@@ -119,11 +132,11 @@ function DidYouMean({ text, choices, onPick }: { text?: string; choices: Pick[];
             }}
             disabled={!onPick}
             data-last-pick={c.object_id === last ? "true" : undefined}
-            className="min-h-8 max-w-full rounded border border-control bg-surface px-3 py-1 text-left text-meta font-medium hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-60 cursor-pointer"
+            className="min-h-8 max-w-full rounded-sm border border-control px-2.5 py-1 text-left text-meta hover:bg-surface-2 disabled:cursor-default disabled:opacity-60 cursor-pointer"
           >
             {choiceLabel(c)}
             <span className="font-normal text-muted"> · {typeLabel(c.type)}</span>
-            {c.object_id === last && <span className="font-normal text-accent"> · last picked</span>}
+            {c.object_id === last && <span className="font-normal text-muted"> (last picked)</span>}
           </button>
         ))}
       </div>
@@ -135,7 +148,6 @@ function SaveButton({ question, href }: { question: string; href: string }) {
   const saved = useSaved();
   const key = `q:${question}`;
   const on = saved.some((s) => s.key === key);
-  const Icon = on ? BookmarkCheck : Bookmark;
   return (
     <button
       type="button"
@@ -143,9 +155,9 @@ function SaveButton({ question, href }: { question: string; href: string }) {
       aria-label={on ? "Remove from saved" : "Save this question"}
       title={on ? "Saved" : "Save"}
       onClick={() => toggleSaved({ key, kind: "question", label: question, href })}
-      className={cn("flex size-8 items-center justify-center rounded transition-colors hover:bg-surface-2 cursor-pointer", on ? "text-accent" : "text-muted hover:text-fg")}
+      className={cn("rounded-sm px-2 py-1 text-meta hover:bg-surface-2 cursor-pointer", on ? "font-medium text-fg" : "text-accent")}
     >
-      <Icon className="size-4" aria-hidden />
+      {on ? "Saved" : "Save"}
     </button>
   );
 }
@@ -171,10 +183,7 @@ function Progress({ turn }: { turn: Turn }) {
   const writing = turn.phase === "streaming" || !!turn.verdict;
   const found = turn.sourcesFound ? ` (${plural(turn.sourcesFound, "source")} found)` : "";
   const steps: { label: string; state: "done" | "active" | "todo" }[] = [
-    {
-      label: turn.understanding ? (understood.length ? `Understood: ${understood.slice(0, 2).join(", ")}` : "Understood the question") : "Reading your question",
-      state: turn.understanding || work.length ? "done" : "active",
-    },
+    ...(understood.length && !work.length ? [{ label: `Found ${understood.slice(0, 2).join(", ")}`, state: "done" as const }] : []),
     ...(work.length
       ? work.map((label, i) => ({
           label: i === work.length - 1 ? `${label}${writing ? "" : "…"}${found}` : label,
@@ -182,33 +191,25 @@ function Progress({ turn }: { turn: Turn }) {
         }))
       : [
           {
-            label: `Checking the records and messages you can open${found}`,
-            state: (writing ? "done" : turn.understanding ? "active" : "todo") as "done" | "active" | "todo",
+            label: `Searching BC, the Portal, mail and files${found}`,
+            state: (writing ? "done" : "active") as "done" | "active" | "todo",
           },
         ]),
-    { label: "Writing the answer", state: writing ? "active" : "todo" },
+    ...(writing ? [{ label: "Writing", state: "active" as const }] : []),
   ];
   return (
     <div className="space-y-1" role="status" aria-live="polite" data-testid="progress">
-      <ol className="space-y-1 text-meta">
+      <ol className="space-y-0.5 text-meta" data-pending="">
         {steps.map((s, i) => (
-          <li key={i} className={cn("flex items-center gap-2.5", s.state === "todo" ? "text-faint" : s.state === "done" ? "text-muted" : "text-fg")}>
-            <span className="flex size-3.5 shrink-0 items-center justify-center" aria-hidden>
-              {s.state === "done" ? (
-                <Check className="size-3.5 text-ok" />
-              ) : s.state === "active" ? (
-                <span className="size-1.5 bg-accent animate-breathe" />
-              ) : (
-                <span className="size-1.5 border border-faint" />
-              )}
-            </span>
-            <span>{s.label}</span>
+          <li key={i} className={s.state === "done" ? "text-muted" : "text-fg"}>
+            {s.label}
+            {s.state === "active" ? "…" : ""}
             <span className="sr-only">{s.state === "done" ? "(done)" : s.state === "active" ? "(in progress)" : ""}</span>
           </li>
         ))}
       </ol>
-      <p className="pl-6 text-meta tabular-nums text-faint">
-        {elapsed} s{elapsed >= 15 && turn.phase === "thinking" ? " · questions about one order take about a minute" : ""}
+      <p className="text-meta tabular-nums text-faint">
+        {elapsed} s{elapsed >= 15 && turn.phase === "thinking" ? ". Questions about one order take about a minute." : ""}
       </p>
     </div>
   );
@@ -333,26 +334,24 @@ function LateLedger({ rows }: { rows: NonNullable<ReturnType<typeof lateRows>> }
   return (
     <div className="space-y-2" data-testid="fact-list">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[420px] text-row" aria-label="Late purchase orders">
+        <table className="w-full text-row" aria-label="Late purchase orders">
           <thead>
-            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
-              <th scope="col" className="px-2 font-semibold">PO</th>
-              <th scope="col" className="px-2 font-semibold">Needed by</th>
-              <th scope="col" className="px-2 text-right font-semibold">Days late</th>
-              {!allUnconfirmed && <th scope="col" className="px-2 font-semibold">Confirmation</th>}
-              <th scope="col" className="px-2 text-right font-semibold">
-                <span className="sr-only">Source</span>
-              </th>
+            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
+              <th scope="col" className="px-2 font-medium">PO</th>
+              <th scope="col" className="px-2 font-medium">Needed by</th>
+              <th scope="col" className="px-2 text-right font-medium">Days late</th>
+              {!allUnconfirmed && <th scope="col" className="px-2 font-medium">Supplier date</th>}
+              <th scope="col" className="hidden px-2 text-right font-medium sm:table-cell">Source</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => (
               <tr key={`${r.po}-${i}`} className="h-9 border-b border-border">
-                <td className="whitespace-nowrap px-2 font-medium">{r.po}</td>
+                <td className="whitespace-nowrap px-2">{r.po}</td>
                 <td className="whitespace-nowrap px-2 tabular-nums">{r.due}</td>
-                <td className="whitespace-nowrap px-2 text-right font-semibold tabular-nums text-late">{r.days}</td>
-                {!allUnconfirmed && <td className="px-2 text-meta text-muted">{r.unconfirmed ? "None found" : "On record"}</td>}
-                <td className="px-2 text-right">
+                <td className="whitespace-nowrap px-2 text-right tabular-nums text-late">{r.days}</td>
+                {!allUnconfirmed && <td className="px-2 text-meta text-muted">{r.unconfirmed ? "None" : "On record"}</td>}
+                <td className="hidden px-2 text-right sm:table-cell">
                   <SourceChips sources={r.fact.sources} max={1} />
                 </td>
               </tr>
@@ -360,7 +359,7 @@ function LateLedger({ rows }: { rows: NonNullable<ReturnType<typeof lateRows>> }
           </tbody>
         </table>
       </div>
-      {allUnconfirmed && <p className="text-meta text-muted">None of these has a supplier confirmation on record.</p>}
+      {allUnconfirmed && <p className="text-meta text-muted">None of these has a supplier date on record.</p>}
     </div>
   );
 }
@@ -388,7 +387,7 @@ function SourcesList({ sources }: { sources: Source[] }) {
   const shown = all ? sources : sources.slice(0, 6);
   return (
     <section className="border-t border-border pt-3" aria-label="Sources" data-testid="answer-sources">
-      <h3 className="text-eyebrow uppercase text-muted">Sources</h3>
+      <h3 className="text-meta font-semibold text-fg">Sources</h3>
       <ol className="mt-1.5 grid grid-cols-1 gap-x-6 sm:grid-cols-2">
         {shown.map((src, i) => (
           <li key={src.handle} className="min-w-0">
@@ -397,7 +396,7 @@ function SourcesList({ sources }: { sources: Source[] }) {
         ))}
       </ol>
       {sources.length > shown.length && (
-        <button type="button" onClick={() => setAll(true)} className="mt-1 text-meta font-medium text-accent hover:underline cursor-pointer">
+        <button type="button" onClick={() => setAll(true)} className="mt-1 text-meta text-accent hover:underline cursor-pointer">
           All {sources.length} sources
         </button>
       )}
@@ -409,18 +408,22 @@ function SourcesList({ sources }: { sources: Source[] }) {
 function FollowUps({ items, onAsk }: { items: string[]; onAsk?: (q: string) => void }) {
   if (items.length === 0) return null;
   return (
-    <div className="flex flex-wrap gap-1.5" aria-label="Ask next" data-testid="follow-ups">
-      {items.map((q) => (
-        <button
-          key={q}
-          type="button"
-          onClick={() => onAsk?.(q)}
-          disabled={!onAsk}
-          className="min-h-8 rounded border border-border-strong px-3 py-1 text-left text-meta text-fg hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-60 cursor-pointer"
-        >
-          {q}
-        </button>
-      ))}
+    <div className="text-row" aria-label="Ask next" data-testid="follow-ups">
+      <p className="text-meta text-muted">Ask next</p>
+      <ul>
+        {items.map((q) => (
+          <li key={q}>
+            <button
+              type="button"
+              onClick={() => onAsk?.(q)}
+              disabled={!onAsk}
+              className="py-0.5 text-left text-accent hover:underline disabled:cursor-default disabled:text-muted disabled:no-underline cursor-pointer"
+            >
+              {q}
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -430,14 +433,14 @@ function Confidence({ a }: { a: Answer }) {
   const records = new Set((a.facts ?? []).flatMap((f) => f.sources.map((s) => s.handle))).size;
   if (a.assistant_unavailable)
     return (
-      <p className="flex items-center gap-2 text-meta text-risk" data-testid="outcome-badge">
-        <span className="size-1.5 bg-risk" aria-hidden /> Assistant unavailable · these facts come straight from the records.
+      <p className="text-meta text-risk" data-testid="outcome-badge">
+        Assistant unavailable. The facts below come straight from the records.
       </p>
     );
   if (a.outcome === "partial" && (a.did_you_mean ?? []).length > 0 && (a.facts ?? []).length === 0)
     return (
-      <p className="flex items-center gap-2 text-meta text-muted" data-testid="outcome-badge">
-        <span className="size-1.5 border border-faint" aria-hidden /> Pick one to get the answer
+      <p className="text-meta text-muted" data-testid="outcome-badge">
+        Pick one to get the answer
       </p>
     );
   if (a.outcome === "partial") {
@@ -447,32 +450,32 @@ function Confidence({ a }: { a: Answer }) {
       : (a.not_found ?? []).some((n) => /conflicting sources/i.test(n.where_it_would_live))
         ? "the sources disagree"
         : stale
-          ? missingText(stale).replace(/\.$/, "") // "Portal data may be out of date": the system keeps its capital
-          : (a.not_found ?? [])[0]
-          ? `${missingText(a.not_found![0]).replace(/[.:].*$/, "").replace(/^./, (c) => c.toLowerCase())} isn't on record`
+          ? missingText(stale).replace(/\.$/, "") // "Portal data is out of date": the system keeps its capital
+          : (a.not_found ?? []).find((n) => !internalWords(n.what))
+          ? `${missingText((a.not_found ?? []).find((n) => !internalWords(n.what))!).replace(/[.:].*$/, "").replace(/^./, (c) => c.toLowerCase())} isn't on record`
           : null;
     return (
-      <p className="flex items-center gap-2 text-meta text-risk" data-testid="outcome-badge">
-        <span className="size-1.5 bg-risk" aria-hidden /> Partly answered{why ? ` · ${why}` : ""}
+      <p className="text-meta text-risk" data-testid="outcome-badge">
+        Partly answered{why ? `: ${why}` : ""}
       </p>
     );
   }
   if (a.outcome === "not_found" || a.outcome === "abstained")
     return (
-      <p className="flex items-center gap-2 text-meta text-muted" data-testid="outcome-badge">
-        <span className="size-1.5 border border-faint" aria-hidden /> Not on record{(a.not_found ?? [])[0] ? ` · ${readable(a.not_found![0].where_it_would_live)}` : ""}
+      <p className="text-meta text-muted" data-testid="outcome-badge">
+        Not on record{(a.not_found ?? [])[0] ? `: ${readable(a.not_found![0].where_it_would_live)}` : ""}
       </p>
     );
   if (a.outcome === "refused")
     return (
-      <p className="flex items-center gap-2 text-meta text-muted" data-testid="outcome-badge">
-        <span className="size-1.5 border border-faint" aria-hidden /> Can&apos;t answer this
+      <p className="text-meta text-muted" data-testid="outcome-badge">
+        Can&apos;t answer this
       </p>
     );
   if (records === 0) return null;
   return (
-    <p className="flex items-center gap-2 text-meta text-muted" data-testid="confidence">
-      <span className="size-1.5 bg-ok" aria-hidden /> Answered from {plural(records, "record")}
+    <p className="text-meta text-muted" data-testid="confidence">
+      From {plural(records, "record")}
     </p>
   );
 }
@@ -515,7 +518,8 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
     const kind = recordKind(s.handle, s.label);
     return kind && kind === typeLabel(subjects[0].type) && s.system !== "Email" ? recordLabel(subjects[0].type, subjects[0].label) : null;
   };
-  const missingCount = (a?.not_found ?? []).length + (a?.hidden && (a.hidden.count === null || (a.hidden.count ?? 0) > 0) ? 1 : 0);
+  const notFound = (a?.not_found ?? []).filter((n) => !internalWords(`${n.what} ${n.where_it_would_live}`));
+  const missingCount = notFound.length + (a?.hidden && (a.hidden.count === null || (a.hidden.count ?? 0) > 0) ? 1 : 0);
   const steps = trailStepCount(a?.trail);
   // the work's own steps, kept after the answer lands: how it was pulled
   const pulled = (turn.steps ?? []).filter((t) => t !== "Reading your question").map((t) => readable(t).replace(/…$/, ""));
@@ -532,11 +536,11 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
   // a list of late orders reads as a ledger when every fact is one late-order line
   const ledger = typeof a?.list_total === "number" && lines.length === 0 ? lateRows(otherFacts) : null;
   // what the answer couldn't confirm, in one line: its own words, else the gaps it lists
-  const gaps = (a?.not_found ?? []).map((n) => missingText(n).replace(/[.:].*$/, "")).filter(Boolean);
-  const missing = a ? (missingSaid ?? (gaps.length ? gaps.slice(0, 2).join("; ") + (gaps.length > 2 ? `; ${gaps.length - 2} more` : "") : null)) : null;
+  const gaps = (a?.not_found ?? []).filter((n) => !internalWords(n.what)).map((n) => missingText(n).replace(/[.:].*$/, "")).filter(Boolean);
+  const missing = a ? ((missingSaid && !internalWords(missingSaid) ? missingSaid : null) ?? (gaps.length ? gaps.slice(0, 2).join("; ") + (gaps.length > 2 ? `; ${gaps.length - 2} more` : "") : null)) : null;
   return (
     <CiteNumbers.Provider value={a ? numbers : null}>
-    <article className="space-y-4 animate-fade-in" aria-busy={busy} data-testid="answer-card">
+    <article className="space-y-3" aria-busy={busy} data-testid="answer-card">
       <SubjectsLine refs={refs} timeFrame={u?.time_frame} />
       {ambiguous.map((e, i) => (
         <DidYouMean
@@ -573,16 +577,13 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
           )}
           {longLead && turn.phase !== "streaming" && (
             <button type="button" onClick={() => setFullLead((v) => !v)} aria-expanded={fullLead} className="mt-1 text-meta font-medium text-accent hover:underline cursor-pointer">
-              {fullLead ? "Show less" : "Read the whole answer"}
+              {fullLead ? "Show less" : "Show all"}
             </button>
           )}
-          {turn.phase === "streaming" && <span className="ml-0.5 inline-block h-5 w-[2px] translate-y-1 bg-accent animate-blink" aria-hidden />}
+    
         </div>
       ) : turn.phase === "thinking" ? (
-        <div className="space-y-2.5" aria-hidden>
-          <Skeleton className="h-5 w-11/12" />
-          <Skeleton className="h-5 w-3/4" />
-        </div>
+        null
       ) : null}
 
       {turn.phase === "error" && (
@@ -590,7 +591,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
           message={
             turn.notice || /^Stopped\./.test(turn.error ?? "")
               ? (turn.error ?? "")
-              : `This answer didn't finish. ${(turn.error ?? "Try again.").replace(/^Something went wrong on our side\.\s*/, "")}`
+              : `This answer didn't finish. ${(turn.error ?? "Try again.").replace(/^Server error\.\s*/, "")}`
           }
           tone={turn.notice ? "notice" : "error"}
           onRetry={turn.notice === "off" ? undefined : onRetry}
@@ -614,14 +615,14 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
           <SourcesList sources={cited} />
           {missing && (
             <p className="text-row text-muted" data-testid="could-not-confirm">
-              <span className="font-medium text-fg">What I couldn&apos;t confirm: </span>
+              <span className="font-medium text-fg">Not found: </span>
               {prose(missing).replace(/\.?$/, ".")}
             </p>
           )}
-          <FollowUps items={a.follow_ups ?? []} onAsk={onAsk} />
+          <FollowUps items={(a.follow_ups ?? []).filter((q) => !internalWords(q))} onAsk={onAsk} />
           {typeof a.list_total === "number" && a.list_total > (a.facts ?? []).length && (
-            <Link href="/late" className="inline-flex text-row font-medium text-accent hover:underline" data-testid="show-all">
-              {(a.facts ?? []).length} of {a.list_total} shown — show all
+            <Link href="/late" className="inline-flex text-row text-accent hover:underline" data-testid="show-all">
+              {(a.facts ?? []).length} of {a.list_total} shown. Show all
             </Link>
           )}
           {a.profitability && <ProfitabilityView p={a.profitability} />}
@@ -629,57 +630,48 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             <ConflictCard key={i} conflict={c} />
           ))}
           {(ask || primary) && (
-            <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-3" data-testid="who-to-ask">
+            <div className="flex flex-wrap items-center justify-between gap-3 py-1" data-testid="who-to-ask">
               <p className="min-w-0 flex-1 text-row">
                 {ask ? (
                   <>
-                    <span className="font-medium">Who to ask: </span>
+                    <span className="text-muted">Ask: </span>
                     {ask.replace(/^Ask /, "")}
                   </>
-                ) : (
-                  <span className="text-muted">Open the record for its full history.</span>
-                )}
+                ) : null}
               </p>
               {primary && (
                 <Link
                   href={refHref(primary)}
-                  className="inline-flex h-8 items-center gap-1.5 rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110"
+                  className="inline-flex h-8 items-center rounded-sm border border-control px-3 text-row hover:bg-surface-2"
                   data-testid="subject-link"
                 >
-                  Open {recordLabel(primary.type, primary.label)} <ArrowRight className="size-4" aria-hidden />
+                  Open {recordLabel(primary.type, primary.label)}
                 </Link>
               )}
             </div>
           )}
           <div className="border-b border-border">
-            {pulled.length > 0 && (
-              <Disclosure label={`How it was pulled (${plural(pulled.length, "step")})`} testId="how-pulled">
-                <ol className="relative ml-1 space-y-1.5 border-l border-border pl-4 text-meta" aria-label="How the answer was pulled">
-                  {pulled.map((step, i) => (
-                    <li key={i} className="relative text-muted">
-                      <span className="absolute -left-[19.5px] top-[5px] size-1.5 bg-ok ring-[3px] ring-bg" aria-hidden />
-                      {step}
-                    </li>
-                  ))}
-                </ol>
-              </Disclosure>
-            )}
-            <Disclosure label={`What I checked (${plural(sourcesN, "source")})`} testId="what-checked" defaultOpen={a.outcome === "not_found"}>
+            <Disclosure label={`Systems searched (${sourcesN})`} testId="what-checked" defaultOpen={a.outcome === "not_found"}>
               <CheckedList freshness={a.freshness} facts={a.facts} />
+              {pulled.length > 0 && (
+                <p className="mt-2 text-meta text-muted" data-testid="how-pulled">
+                  Steps: {pulled.join("; ")}.
+                </p>
+              )}
             </Disclosure>
             {missingCount > 0 && (
-              <Disclosure label={`What's missing (${(a.not_found ?? []).length || missingCount})`} testId="whats-missing" defaultOpen={a.outcome === "partial"}>
-                <NotFoundSection items={a.not_found} bare />
+              <Disclosure label={`Not found (${notFound.length || missingCount})`} testId="whats-missing" defaultOpen={a.outcome === "partial"}>
+                <NotFoundSection items={notFound} bare />
                 <HiddenNotice hidden={a.hidden} />
               </Disclosure>
             )}
             {steps > 0 && (
-              <Disclosure label={`How we know (${plural(steps, "step")})`} testId="how-we-know">
+              <Disclosure label={`Evidence (${steps})`} testId="how-we-know">
                 <EvidenceTrailCard trail={a.trail} bare showNext={false} />
               </Disclosure>
             )}
             {(a.proposals ?? []).length > 0 && (
-              <Disclosure label={`Proposed follow-ups (${(a.proposals ?? []).length})`} testId="answer-proposals">
+              <Disclosure label={`Drafts (${(a.proposals ?? []).length})`} testId="answer-proposals">
                 <ProposalCards proposals={a.proposals} />
               </Disclosure>
             )}

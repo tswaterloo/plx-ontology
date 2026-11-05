@@ -1,6 +1,5 @@
 "use client";
 
-import { Check, ChevronDown, ChevronRight, Copy } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { actionChip, isPutAway } from "@/lib/actions";
@@ -80,17 +79,16 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
     <div className="rounded-lg border border-border bg-surface p-4" data-testid="suggestion-draft">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-label font-medium">
-          {title} <span className="font-normal text-muted">· not sent; nothing goes until you review and confirm it</span>
+          {title} <span className="font-normal text-muted">(not sent)</span>
         </p>
-        <button type="button" onClick={copy} className="inline-flex items-center gap-1 rounded border border-control px-2 py-1 text-label hover:bg-surface-2 cursor-pointer" data-testid="copy-draft">
-          {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+        <button type="button" onClick={copy} className="rounded-sm border border-control px-2 py-0.5 text-meta hover:bg-surface-2 cursor-pointer" data-testid="copy-draft">
           {copied ? "Copied" : "Copy draft"}
         </button>
       </div>
       <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-meta">
         <dt className="text-muted">To</dt>
         <dd data-testid="draft-to">
-          {draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : draft.to.name ?? "—"}
+          {draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : draft.to.name ?? "No address"}
           {!draft.to.address && <span className="block text-muted">{draft.to.basis}</span>}
         </dd>
         <dt className="text-muted">Subject</dt>
@@ -100,7 +98,7 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
       {draft.review && <p className="mt-2 text-meta text-muted">{draft.review}</p>}
       {(draft.facts ?? []).length > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-meta text-muted">Every fact in it is cited:</span>
+          <span className="text-meta text-muted">Figures from:</span>
           {(draft.facts ?? []).slice(0, 6).map((f, n) => (
             <SourceChip key={`${f.source.handle}-${n}`} source={f.source} record={readable(f.value)} />
           ))}
@@ -118,16 +116,21 @@ export function suggestionHeadline(s: Pick<ProactiveSuggestion, "headline" | "su
 
 const sentence = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
+/** The server's standing note under the follow-ups (operator_api SUGGESTIONS_NOTE), said shorter. */
+const SERVER_NOTE = "Nothing is sent until you review a draft and confirm it yourself; it then goes from your own mailbox, or is recorded as a dry run while sending is not enabled.";
+
 export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSuggestion; position: number; state?: ActionResult | null; onDone?: (r: ActionResult) => void }) {
   const [open, setOpen] = useState(position === 1);
   const eta = etaBadge(s.eta);
   const chip = actionChip(state, !!s.draft);
   const href = safeHref(s.subject.open_url) ?? objectHref(s.subject.type, s.subject.object_id);
+  // a reason that only repeats the supplier-date line above it is said once
+  const etaWords = s.eta ? readable(s.eta.text).trim() : "";
+  const reasons = (s.reasoning ?? []).filter((r) => !etaWords || !readable(r.text).includes(etaWords));
   const amount = s.impact.amount && !s.impact.amount_suspect ? formatMoney(s.impact.amount.amount, s.impact.amount.currency) : null;
   return (
     <li className="py-3" data-testid="suggestion">
       <div className="flex items-start gap-3">
-        <span className="w-4 shrink-0 pt-px text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{position}</span>
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <Link href={href} className="text-row font-medium hover:underline" data-testid="suggestion-headline">
@@ -140,10 +143,7 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
               {chip && <StatusWord shown={chip} title={chip.title} data-testid="action-state" />}
             </span>
           </div>
-          <p className="text-row text-muted">
-            <span className="text-faint">Next: </span>
-            {s.action.text}
-          </p>
+          <p className="text-row text-fg">{s.action.text}</p>
           {(s.impact.orders ?? []).length > 0 && (
             <p className="text-meta text-muted">
               Holds up{" "}
@@ -158,15 +158,15 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
             </p>
           )}
           <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer" data-testid="suggestion-toggle">
-            {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-            {onDone && (s.actions ?? []).length > 0 ? `Act on it${s.draft ? ", see the draft" : ""} and how we know` : `How we know${s.draft ? " and the draft" : ""}`}
+            <span aria-hidden>{open ? "▾" : "▸"}</span>
+            {onDone && (s.actions ?? []).length > 0 ? (s.draft ? "Draft, actions and evidence" : "Actions and evidence") : s.draft ? "Draft and evidence" : "Evidence"}
           </button>
           {open && (
-            <div className="space-y-3 border-l-2 border-border-strong pt-1 pl-4" data-testid="suggestion-detail">
+            <div className="space-y-3 pt-1" data-testid="suggestion-detail">
               {onDone && <CardActions card={s} onDone={onDone} state={state} />}
               {s.eta && (
                 <p className="text-row">
-                  <span className="font-medium">ETA confirmed? </span>
+                  <span className="font-medium">Supplier date: </span>
                   {readable(s.eta.text)}
                   {s.eta.source && (
                     <span className="ml-1.5 align-middle">
@@ -175,11 +175,11 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
                   )}
                 </p>
               )}
-              {(s.reasoning ?? []).length > 0 && (
-                <ol className="list-decimal space-y-1 pl-5 text-row" data-testid="suggestion-reasoning">
-                  {(s.reasoning ?? []).map((r, n) => (
+              {reasons.length > 0 && (
+                <ul className="space-y-0.5 text-row" data-testid="suggestion-reasoning">
+                  {reasons.map((r, n) => (
                     <li key={n}>
-                      {readable(r.text)}
+                      {readable(r.text).replace(/^ETA confirmed\? (?:yes|no|possibly|unknown)\.\s*/i, "")}
                       {r.source && (
                         <span className="ml-1.5 align-middle">
                           <SourceChip source={r.source} />
@@ -187,14 +187,16 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
                       )}
                     </li>
                   ))}
-                </ol>
+                </ul>
               )}
-              <p className="text-meta text-muted">
-                <span className={cn("font-medium", CONFIDENCE_TEXT[s.confidence.level] ?? "text-muted")}>{sentence(s.confidence.level)} confidence.</span> {sentence(readable(s.confidence.why))}
-              </p>
+              {s.confidence.level !== "high" && (
+                <p className="text-meta text-muted">
+                  <span className={cn("font-medium", CONFIDENCE_TEXT[s.confidence.level] ?? "text-muted")}>{s.confidence.level === "medium" ? "Check before acting." : "Weak evidence."}</span> {sentence(readable(s.confidence.why))}
+                </p>
+              )}
               {(s.missing ?? []).length > 0 && (
                 <div className="text-meta" data-testid="suggestion-missing">
-                  <p className="font-medium">What's missing</p>
+                  <p className="font-medium">Not on record</p>
                   <ul className="list-disc pl-5 text-muted">
                     {(s.missing ?? []).map((m, n) => (
                       <li key={n}>{m}</li>
@@ -211,7 +213,7 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
   );
 }
 
-/** "What to do next" on Today: the ranked suggestions, loaded apart from the briefing. */
+/** "Follow-ups" on Today: the ranked suggestions, loaded apart from the briefing. */
 export function ProactiveSuggestions({ limit = 5, className }: { limit?: number; className?: string }) {
   const [data, setData] = useState<Suggestions | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -241,16 +243,16 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
   return (
     <Card className={cn("mt-6", className)} data-testid="suggestions">
       <CardHeader>
-        <CardTitle>What to do next</CardTitle>
-        {data && data.total > 0 && <span className="text-meta text-muted">{plural(data.total, "item")}, by impact</span>}
+        <CardTitle>Follow-ups</CardTitle>
+        {data && data.total > 0 && <span className="text-meta text-muted">{data.total}, biggest impact first</span>}
       </CardHeader>
       <CardBody>
         {error ? (
           <LoadProblem message={error} onRetry={load} />
         ) : !data ? (
-          <SkeletonRows rows={3} label="Working out what to do next" />
+          <SkeletonRows rows={3} label="Loading follow-ups" />
         ) : every.length === 0 ? (
-          <p className="text-row text-muted">Nothing needs a follow-up from you right now.</p>
+          <p className="text-row text-muted">No follow-ups.</p>
         ) : (
           <>
             <ol className="divide-y divide-border border-t border-border">
@@ -265,16 +267,16 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
             )}
             {away.length > 0 && (
               <button type="button" onClick={() => setPutAway(!putAway)} className="mt-1 block text-meta text-muted hover:text-fg hover:underline cursor-pointer" data-testid="put-away-toggle">
-                {putAway ? "Hide" : "Show"} {plural(away.length, "card")} you put away (done, snoozed or dismissed)
+                {putAway ? "Hide" : "Show"} {away.length} done, snoozed or dismissed
               </button>
             )}
-            {data.more > 0 && <p className="mt-1 text-meta text-muted">{plural(data.more, "more record")} need attention; see the briefing.</p>}
+            {data.more > 0 && <p className="mt-1 text-meta text-muted">{plural(data.more, "more record")} in the <Link href="/briefing" className="text-accent hover:underline">briefing</Link>.</p>}
           </>
         )}
         {data && (
           <div className="mt-2 space-y-1 text-meta text-muted">
             {extra && <p data-testid="suggestions-collapsed">{extra}</p>}
-            <p>{data.note}</p>
+            <p>{data.note === SERVER_NOTE ? "Nothing is sent until you confirm it. Mail goes from your own mailbox, or is logged as a dry run while sending is off." : data.note}</p>
           </div>
         )}
       </CardBody>

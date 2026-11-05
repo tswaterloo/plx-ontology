@@ -146,14 +146,14 @@ describe("readable: the reasoning engine's words, said plainly", () => {
       "Lateness is not stated: the due dates are not proven complete or readable: the portal_api capture is stale; lead carrier: the portal_api capture is stale; a PurchaseOrder.same_record_as link below the tier floor (lead) is no.";
     const said = readable(raw);
     expect(said).toBe(
-      "Can't say yet whether it's late: not every due date could be confirmed: the Portal data we read may be out of date; a possible match to another copy of this order isn't confirmed.",
+      "Can't say yet whether it's late: not every due date could be confirmed: the Portal data is out of date; a possible match to another copy of this order isn't confirmed.",
     );
     for (const word of ["portal_api", "tier floor", "lead carrier", "same_record_as", "PurchaseOrder."]) expect(said).not.toContain(word);
   });
 
   it("says a stale read in the answer's own sentence by its system", () => {
     expect(readable("Not settled: the portal api read here may be out of date; the projection read here may be out of date.")).toBe(
-      "Still to confirm: the Portal data we read may be out of date; our copy of the records may be out of date.",
+      "Still to confirm: the Portal data is out of date; the Workbench copy of the records is out of date.",
     );
   });
 

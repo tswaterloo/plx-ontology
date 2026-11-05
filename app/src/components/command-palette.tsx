@@ -1,7 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowRight, Bell, CornerDownLeft, Home, ListChecks, MessageSquare, Search, Timer, type LucideIcon } from "lucide-react";
+import { Bell, Home, ListChecks, MessageSquare, Search, Timer, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { suggest } from "@/lib/api";
@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { stashPending } from "@/lib/pending";
-import { arrange, typeIcon, type Arranged } from "./ask-box";
+import { arrange, type Arranged } from "./ask-box";
 
 /**
  * The command bar: one field that finds any record by number or name, goes anywhere in the
@@ -24,11 +24,11 @@ type Item =
   | { kind: "example"; id: string; q: string };
 
 const PLACES: { label: string; href: string; icon: LucideIcon; hint: string; words: string }[] = [
-  { label: "Today", href: "/", icon: Home, hint: "What needs you", words: "today home front page briefing" },
-  { label: "Late orders", href: "/late", icon: Timer, hint: "Every late purchase order", words: "late orders purchase pos overdue" },
-  { label: "Briefing", href: "/briefing", icon: Bell, hint: "Everything that needs attention", words: "briefing alerts attention" },
-  { label: "Ask", href: "/ask", icon: MessageSquare, hint: "A new question", words: "ask question chat" },
-  { label: "Actions", href: "/actions", icon: ListChecks, hint: "What you did from the Workbench", words: "actions log journal" },
+  { label: "Today", href: "/", icon: Home, hint: "Late POs and what to chase", words: "today home front page briefing" },
+  { label: "Late POs", href: "/late", icon: Timer, hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
+  { label: "Briefing", href: "/briefing", icon: Bell, hint: "Everything open, ranked", words: "briefing alerts attention" },
+  { label: "Ask", href: "/ask", icon: MessageSquare, hint: "New question", words: "ask question chat" },
+  { label: "Action log", href: "/actions", icon: ListChecks, hint: "Emails sent and tasks logged", words: "actions log journal" },
 ];
 
 const PaletteCtx = createContext<{ open: () => void }>({ open: () => undefined });
@@ -151,9 +151,9 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(28_26_23/0.28)]" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.25)]" />
         <Dialog.Content
-          className="fixed top-[12vh] left-1/2 z-50 flex max-h-[min(560px,76vh)] w-[min(640px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-xl border border-border-strong bg-raised shadow-pop focus:outline-none"
+          className="fixed top-[12vh] left-1/2 z-50 flex max-h-[min(560px,76vh)] w-[min(640px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded border border-border-strong bg-raised shadow-pop focus:outline-none"
           aria-describedby={undefined}
           data-testid="command-palette"
         >
@@ -168,7 +168,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 setActive(0);
               }}
               onKeyDown={onKeyDown}
-              placeholder="Find a PO, supplier, customer or lot, or ask anything"
+              placeholder="PO, SO, supplier, customer or lot number, or a question"
               className="h-13 min-w-0 flex-1 bg-transparent text-[16px] text-fg placeholder:text-faint focus:outline-none"
               role="combobox"
               aria-expanded
@@ -177,13 +177,13 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               aria-label="Find a record, go somewhere or ask"
               data-testid="palette-input"
             />
-            {searching && <span className="size-1.5 shrink-0 bg-accent animate-breathe" aria-hidden />}
+            {searching && <span className="text-meta text-faint">Searching…</span>}
             <kbd className="hidden rounded-sm border border-border px-1 font-mono text-[11px] leading-4 text-faint sm:block">esc</kbd>
           </div>
           <ul ref={list} id="palette-list" role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
             {items.map((g) => (
               <li key={g.group} role="presentation">
-                <p className="px-2.5 pt-2.5 pb-1 text-eyebrow uppercase text-faint" role="presentation">
+                <p className="px-2.5 pt-2.5 pb-1 text-label text-faint" role="presentation">
                   {g.group}
                 </p>
                 <ul role="presentation">
@@ -211,7 +211,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
                         {i === active && <span className="absolute inset-y-1.5 left-0 w-0.5 bg-accent" aria-hidden />}
                         <Row it={it} />
                         <span className={cn("ml-auto shrink-0 text-faint", i === active ? "opacity-100" : "opacity-0")} aria-hidden>
-                          <CornerDownLeft className="size-3.5" />
+                          <span className="text-[11px]">Enter</span>
                         </span>
                       </li>
                     );
@@ -246,7 +246,6 @@ function Row({ it }: { it: Item }) {
   if (it.kind === "ask" || it.kind === "example")
     return (
       <>
-        <MessageSquare className="size-4 shrink-0 text-faint" strokeWidth={1.5} aria-hidden />
         <span className="min-w-0 truncate">
           {it.kind === "ask" && <span className="text-faint">Ask </span>}
           <span className="text-fg">{it.q}</span>
@@ -256,18 +255,14 @@ function Row({ it }: { it: Item }) {
   if (it.kind === "go")
     return (
       <>
-        <it.icon className="size-4 shrink-0 text-faint" strokeWidth={1.5} aria-hidden />
         <span className="text-fg">{it.label}</span>
         <span className="hidden truncate text-meta text-faint sm:inline">{it.hint}</span>
-        <ArrowRight className="size-3.5 shrink-0 text-faint" aria-hidden />
       </>
     );
   const s = it.s;
-  const Icon = typeIcon(s.type);
   const sub = [typeLabel(s.type), s.facts ?? s.sublabel].filter(Boolean).join(" · ");
   return (
     <>
-      <Icon className="size-4 shrink-0 text-faint" strokeWidth={1.5} aria-hidden />
       <span className="min-w-0 flex-1 truncate">
         <span className="font-medium text-fg">{recordLabel(s.type, s.label)}</span>
         <span className="ml-2 text-meta text-faint">{sub}</span>

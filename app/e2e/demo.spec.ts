@@ -210,7 +210,7 @@ test("demo walkthrough", async ({ page }, info) => {
   await page.goto("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A00000");
   await expect(page.getByRole("alert").filter({ hasText: "couldn't find that" })).toBeVisible();
   await page.goto("/object/not%20a%20type/1");
-  await expect(page.getByText("We couldn't find that page")).toBeVisible();
+  await expect(page.getByText("Page not found")).toBeVisible();
   await expectNoRawErrors(page);
 
   // 11. Sign out: back to sign-in, and this person's saved list is gone from the browser.

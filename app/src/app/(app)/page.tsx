@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowRight, CheckCircle2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,15 +27,15 @@ import type { Briefing, HomeResponse, LatePo } from "@/lib/types";
 const TZ = "America/Toronto";
 
 function today(now = new Date()): string {
-  return now.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: TZ });
+  return now.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: TZ });
 }
 
 /** "{error} didn't load. Try again." with the incident kept for the Reference line. */
 function didntLoad(thing: string, err: unknown): string {
   const msg = plainError(err);
-  if (/^Something went wrong on our side/.test(msg)) {
+  if (/^Server error/.test(msg)) {
     const inc = /incident ([0-9a-f]+)/.exec(msg)?.[1];
-    return `${thing} didn't load. Try again.${inc ? ` (incident ${inc})` : ""}`;
+    return `Couldn't load ${thing}. Try again.${inc ? ` (incident ${inc})` : ""}`;
   }
   return msg;
 }
@@ -59,7 +58,7 @@ export default function HomePage() {
       .catch((e) => {
         if (c.signal.aborted) return;
         setBusy(noticeKind(e) === "busy");
-        setError(didntLoad("Home", e));
+        setError(didntLoad("Today", e));
       });
     return () => c.abort();
   }, []);
@@ -84,7 +83,7 @@ export default function HomePage() {
       .catch((e) => {
         if (c.signal.aborted) return;
         setBriefingBusy(noticeKind(e) === "busy");
-        setBriefingError(didntLoad("Your briefing", e));
+        setBriefingError(didntLoad("the briefing", e));
       })
       .finally(() => clearTimeout(t));
     return () => {
@@ -134,53 +133,51 @@ export default function HomePage() {
   // a question asked again is listed once (its latest time)
   const recent = (home?.recent_questions ?? []).filter((r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i);
 
-  const loadingLine = !home && !error ? "Reading Business Central for late orders" : !briefing && !briefingError ? (slow ? "Checking mail, Teams and files for what changed" : "Ranking what needs you today") : null;
+  const loadingLine = !home && !error ? "Reading late POs from Business Central" : !briefing && !briefingError ? (slow ? "Reading mail, Teams and files" : "Loading the briefing") : null;
 
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
-      <header className="border-b-2 border-rule pb-5" data-testid="home-header">
-        <p className="text-eyebrow uppercase text-muted">
-          {today()}
-        </p>
-        {head ? (
-          <h1 className="mt-2 max-w-[44ch] text-display text-balance" data-testid="headline">
+      <header className="border-b border-border pb-3" data-testid="home-header">
+        <h1 className="text-display">
+          Today <span className="font-normal text-muted">{today()}</span>
+        </h1>
+        {head && (
+          <p className="mt-0.5 text-row text-fg" data-testid="headline">
             {head.text}
-          </h1>
-        ) : (
-          <h1 className="mt-2 text-display">Today</h1>
+            {head.sub && <span className="text-muted"> {head.sub}</span>}
+          </p>
         )}
-        {head?.sub && <p className="mt-2 max-w-[68ch] text-body text-muted">{head.sub}</p>}
-        {loadingLine && <Pending label={loadingLine} className="mt-2 pb-0" />}
+        {loadingLine && <Pending label={loadingLine} className="pb-0" />}
       </header>
 
-      <section aria-label="Key numbers" className={cn(lateAll && lateAll.length > 0 && "grid grid-cols-1 border-b border-border-strong lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-x-10")}>
+      <section aria-label="Late POs in figures" className={cn(lateAll && lateAll.length > 0 && "grid grid-cols-1 border-b border-border lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-x-10")}>
         {error ? null : !home ? (
           <SkeletonStats />
         ) : lateRead && lateTotal > 0 ? (
-          <StatRow className={cn("border-t-0", lateAll && lateAll.length > 0 && "border-b-0 lg:border-r lg:border-border lg:pr-6")} stack={!!lateAll && lateAll.length > 0}>
-            <Stat label="Late POs" value={lateTotal} status="late" caption="See the list →" href="/late" testId="stat-late" />
+          <StatRow className={cn(lateAll && lateAll.length > 0 && "lg:flex-col lg:gap-y-4 lg:border-r lg:border-border lg:pr-6")}>
+            <Stat label="Late POs" value={lateTotal} status="late" href="/late" testId="stat-late" />
             {oldest && typeof oldest.days_late === "number" && (
               <Stat
                 label="Oldest"
                 value={`${oldest.days_late} days`}
                 status="late"
-                caption={[recordLabel("PurchaseOrder", oldest.label), oldest.supplier].filter(Boolean).join(" · ")}
+                caption={[recordLabel("PurchaseOrder", oldest.label), oldest.supplier].filter(Boolean).join(", ")}
                 href={safeHref(oldest.open_url) ?? objectHref("PurchaseOrder", oldest.object_id)}
                 testId="stat-oldest"
               />
             )}
             {unconfirmed > 0 && (
               <Stat
-                label="No confirmed date"
+                label="No supplier date"
                 value={`${unconfirmed} of ${late.length}`}
                 status="risk"
-                caption={late.length < lateTotal ? `among the ${late.length} oldest` : "vendor hasn't confirmed"}
+                caption={late.length < lateTotal ? `of the ${late.length} oldest` : undefined}
                 href="/late"
                 testId="stat-unconfirmed"
               />
             )}
             {suspect > 0 && (
-              <Stat label="Check the data" value={suspect} status="suspect" caption="totals or systems disagree" href="/briefing" testId="stat-suspect" />
+              <Stat label="Totals to check" value={suspect} status="suspect" caption="systems disagree" href="/briefing" testId="stat-suspect" />
             )}
           </StatRow>
         ) : null}
@@ -193,20 +190,20 @@ export default function HomePage() {
         {na && !lateRead && (
           <p className="mt-4 text-row text-muted" data-testid="attention-unavailable">
             {na.status === "not_configured"
-              ? "The late-order check isn't switched on for this server yet."
-              : "Business Central couldn't be read just now, so late orders aren't shown. Try again in a few minutes."}
+              ? "The late-PO check is off on this server."
+              : "Couldn't read Business Central, so late POs aren't shown. Try again in a few minutes."}
           </p>
         )}
       </section>
 
-      <div className="mt-10 grid grid-cols-1 gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <div className="min-w-0 space-y-10">
+      <div className="mt-6 grid grid-cols-1 gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="min-w-0 space-y-8">
           <Card data-testid="briefing" ref={needsYou}>
             <CardHeader>
-              <CardTitle>Needs you today</CardTitle>
+              <CardTitle>Needs action</CardTitle>
               {briefing?.status === "read" && briefing.count > 0 && (
-                <Link href="/briefing" className="inline-flex items-center gap-1 text-meta font-medium text-accent hover:underline" data-testid="see-all">
-                  See all {briefing.count} <ArrowRight className="size-3.5" aria-hidden />
+                <Link href="/briefing" className="text-meta text-accent hover:underline" data-testid="see-all">
+                  All {briefing.count} in the briefing
                 </Link>
               )}
             </CardHeader>
@@ -214,19 +211,19 @@ export default function HomePage() {
               {briefingError ? (
                 <LoadProblem message={briefingError} busy={briefingBusy} onRetry={loadBriefing} />
               ) : !briefing ? (
-                <SkeletonRows label="Ranking what needs you today" />
+                <SkeletonRows label="Loading the briefing" />
               ) : briefing.status !== "read" ? (
                 <p className="text-row text-muted" data-testid="briefing-unavailable">
                   {briefing.status === "not_configured"
-                    ? "The watch list hasn't run on this server yet."
-                    : "Your briefing couldn't be read just now. Try again in a few minutes."}
+                    ? "The briefing hasn't run on this server."
+                    : "Couldn't load the briefing. Try again in a few minutes."}
                 </p>
               ) : top.length === 0 && (briefing.refreshing || na?.refreshing) ? (
                 <p className="text-row text-muted" data-testid="briefing-refreshing">
                   {refreshingLine(briefing.checked_on ?? na?.checked_on)}
                 </p>
               ) : top.length === 0 ? (
-                <EmptyState icon={CheckCircle2} title="Nothing needs you today." line="Late orders, slipped dates and vendors who haven't replied will show here." />
+                <EmptyState title="Nothing needs action." line="Late POs, moved dates and suppliers who haven't replied are listed here." />
               ) : (
                 <>
                   <ol className="divide-y divide-border border-t border-border" data-testid="needs-you">
@@ -243,7 +240,7 @@ export default function HomePage() {
                     <BriefingCounts briefing={briefing} compact />
                     {(briefing.test_records_hidden || na?.test_records_hidden) && (
                       <p className="text-meta text-muted" data-testid="briefing-tests-hidden">
-                        {briefing.test_records_hidden ?? na?.test_records_hidden} and left out of the counts.
+                        {briefing.test_records_hidden ?? na?.test_records_hidden}, not counted.
                       </p>
                     )}
                   </div>
@@ -256,22 +253,22 @@ export default function HomePage() {
           <ProactiveSuggestions className="mt-0" />
         </div>
 
-        <aside className="min-w-0 space-y-10" aria-label="Ask and recent">
+        <aside className="min-w-0 space-y-8" aria-label="Ask and recent">
           <section className="border-t border-rule" aria-labelledby="ask-anything">
-            <h2 id="ask-anything" className="flex min-h-11 items-center text-section">
-              Ask anything
+            <h2 id="ask-anything" className="flex min-h-10 items-center text-section">
+              Ask
             </h2>
-            <AskBox size="md" onSubmit={ask} placeholder="Ask about any order, supplier, customer or lot…" />
-            <ul className="mt-3 divide-y divide-border border-t border-border" aria-label="Example questions">
+            <AskBox size="md" onSubmit={ask} placeholder="Question about a PO, SO, supplier or lot" />
+            <p className="mt-3 text-meta text-muted">For example:</p>
+            <ul className="mt-0.5" aria-label="Example questions">
               {examples.map((q) => (
                 <li key={q}>
                   <button
                     type="button"
                     onClick={() => ask(q)}
-                    className="group flex w-full items-baseline gap-2 py-2 text-left text-row text-muted transition-colors hover:text-fg cursor-pointer"
+                    className="py-0.5 text-left text-row text-accent hover:underline cursor-pointer"
                   >
-                    <ArrowRight className="size-3.5 shrink-0 translate-y-0.5 text-faint group-hover:text-accent" aria-hidden />
-                    <span>{q}</span>
+                    {q}
                   </button>
                 </li>
               ))}
@@ -280,16 +277,16 @@ export default function HomePage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Recent questions</CardTitle>
+              <CardTitle>Your recent questions</CardTitle>
               {home && recent.length > 0 && <span className="tabular-nums">{recent.length}</span>}
             </CardHeader>
             <CardBody>
               {error ? (
-                <p className="text-meta text-muted">Your recent questions show here once Today loads.</p>
+                <p className="text-meta text-muted">Not loaded.</p>
               ) : !home ? (
-                <p className="text-meta text-faint">Your recent questions show here.</p>
+                <p className="text-meta text-faint">Loading…</p>
               ) : recent.length === 0 ? (
-                <p className="text-meta text-muted">Questions you ask show up here.</p>
+                <p className="text-meta text-muted">None yet.</p>
               ) : (
                 <ul className="divide-y divide-border">
                   {recent.slice(0, 5).map((r, i) => (
@@ -297,7 +294,7 @@ export default function HomePage() {
                       <button
                         type="button"
                         onClick={() => ask(r.question)}
-                        className="flex w-full items-baseline justify-between gap-3 py-2 text-left text-row transition-colors hover:text-accent cursor-pointer"
+                        className="flex w-full items-baseline justify-between gap-3 py-1.5 text-left text-row hover:text-accent hover:underline cursor-pointer"
                       >
                         <span className="line-clamp-1">{r.question}</span>
                         <span className="shrink-0 text-meta tabular-nums text-faint">{ago(r.asked_at)}</span>
@@ -316,12 +313,12 @@ export default function HomePage() {
             </CardHeader>
             <CardBody>
               {saved.length === 0 ? (
-                <p className="text-meta text-muted">Save an answer or a record with its bookmark to keep it here.</p>
+                <p className="text-meta text-muted">Nothing saved. Use Save on an answer or a record.</p>
               ) : (
                 <ul className="divide-y divide-border">
                   {saved.slice(0, 5).map((s) => (
                     <li key={s.key}>
-                      <Link href={s.href} className="block truncate py-2 text-row hover:text-accent">
+                      <Link href={s.href} className="block truncate py-1.5 text-row text-accent hover:underline">
                         {s.label}
                       </Link>
                     </li>

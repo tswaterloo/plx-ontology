@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardBody } from "@/components/ui/card";
 import { LoadProblem } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { SkeletonRows } from "@/components/ui/skeleton";
@@ -29,8 +29,8 @@ function What({ r }: { r: ActionLogRow }) {
       <>
         {r.subject && <span className="block">{r.subject}</span>}
         <span className="block text-muted">
-          To {(r.to ?? []).join(", ") || "—"}
-          {(r.cc ?? []).length > 0 && ` · Cc ${(r.cc ?? []).join(", ")}`}
+          To {(r.to ?? []).join(", ") || "nobody"}
+          {(r.cc ?? []).length > 0 && `; cc ${(r.cc ?? []).join(", ")}`}
         </span>
       </>
     );
@@ -54,34 +54,27 @@ export default function ActionsPage() {
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
       <PageHeader
-        className="mb-8"
-        eyebrow="Actions"
-        title="What you did from the Workbench"
-        sub="Every action you confirmed on a suggestion: when, to whom, the facts it cited and what happened. The log can't be edited, and the text of a message isn't kept."
+        className="mb-4"
+        title="Action log"
+        sub="Emails, Teams messages and tasks you confirmed, newest first. Entries can't be edited; message bodies aren't stored."
       />
-      <Card>
-        <CardHeader>
-          <CardTitle>Your actions</CardTitle>
-          {rows && rows.length > 0 && <span className="tabular-nums">{rows.length}</span>}
-        </CardHeader>
+      <Card className="border-t-0">
         <CardBody>
           {error ? (
             <LoadProblem message={error} onRetry={load} />
           ) : !rows ? (
-            <SkeletonRows rows={4} label="Reading your actions" />
+            <SkeletonRows rows={4} label="Loading the log" />
           ) : rows.length === 0 ? (
-            <p className="py-2 text-row text-muted">
-              Nothing yet. Actions you confirm from <span className="text-fg">What to do next</span> on Today are listed here, newest first.
-            </p>
+            <p className="py-2 text-row text-muted">No actions yet. Confirm one from Follow-ups on Today.</p>
           ) : (
             <table className="w-full text-row" data-testid="actions-log">
               <thead>
-                <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
-                  <th className="px-2 pl-3 font-semibold">When</th>
-                  <th className="px-2 font-semibold">Record</th>
-                  <th className="px-2 font-semibold">Action</th>
-                  <th className="hidden px-2 font-semibold md:table-cell">What</th>
-                  <th className="px-2 font-semibold">Result</th>
+                <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
+                  <th className="px-2 pl-3 font-medium">When</th>
+                  <th className="px-2 font-medium">Record</th>
+                  <th className="px-2 font-medium">Action</th>
+                  <th className="hidden px-2 font-medium md:table-cell">Details</th>
+                  <th className="px-2 font-medium">Result</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -90,7 +83,7 @@ export default function ActionsPage() {
                   return (
                     <tr key={r.seq} className="align-top" data-testid="actions-log-row">
                       <td className="whitespace-nowrap px-2 py-2.5 pl-3 tabular-nums text-meta text-muted">{formatDateTime(r.at)}</td>
-                      <td className="px-2 py-2.5 font-medium">{r.card_label || "A suggestion"}</td>
+                      <td className="px-2 py-2.5">{r.card_label || "Follow-up"}</td>
                       <td className="px-2 py-2.5">
                         {KIND[r.kind] ?? r.kind}
                         <span className="block text-meta text-muted">{r.actor}</span>

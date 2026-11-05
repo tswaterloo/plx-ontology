@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowRight, Bookmark, BookmarkCheck, Check, CheckSquare, ChevronDown, Database, FileText, Mail, MessageSquare, MessagesSquare } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -52,15 +51,15 @@ function useElapsed(on: boolean): number {
 /** The page's shape while it gathers: the header from the link's label at once, then a step line. */
 function ObjectSkeleton({ type, label }: { type: string; label?: string | null }) {
   const t = useElapsed(true);
-  const step = t < 8 ? "Reading Business Central…" : t < 20 ? "Checking the supplier's mail and files…" : "Building the trail…";
+  const step = t < 8 ? "Reading Business Central…" : t < 20 ? "Searching mail and files…" : "Linking receipts and emails…";
   return (
     <div className="space-y-4" role="status" aria-label="Loading">
-      <div className="space-y-2 border-b-2 border-rule pb-5">
-        <p className="text-eyebrow uppercase text-muted">{typeLabel(type)}</p>
-        {label ? <h1 className="text-display">{label}</h1> : <h1 className="text-display text-faint">Opening the record</h1>}
+      <div className="space-y-0.5 border-b border-border pb-3">
+        <p className="text-meta text-muted">{typeLabel(type)}</p>
+        {label ? <h1 className="text-display">{label}</h1> : <h1 className="text-display text-faint">Loading</h1>}
       </div>
-      <Pending label={t < 3 ? "Reading the record" : step} />
-      {t >= 20 && <p className="max-w-[68ch] text-meta text-faint">This record takes up to a minute to gather while we check mail and files. You can leave this page; it keeps loading.</p>}
+      <Pending label={t < 3 ? "Loading the record" : step} />
+      {t >= 20 && <p className="max-w-[80ch] text-meta text-faint">Records with a lot of mail take up to a minute.</p>}
     </div>
   );
 }
@@ -90,24 +89,24 @@ export function LinesTable({ lines, title = "Lines" }: { lines: LateLine[]; titl
         <table className="hidden w-full text-row sm:table">
           <caption className="sr-only">{title}, late first</caption>
           <thead>
-            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
-              <th scope="col" className="px-3 font-semibold">Item</th>
-              <th scope="col" className="text-right font-semibold">Ordered</th>
-              <th scope="col" className="pl-6 font-semibold">Needed by</th>
-              <th scope="col" className="px-3 text-right font-semibold">Status</th>
+            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
+              <th scope="col" className="px-3 font-medium">Item</th>
+              <th scope="col" className="text-right font-medium">Ordered</th>
+              <th scope="col" className="pl-6 font-medium">Needed by</th>
+              <th scope="col" className="px-3 text-right font-medium">Status</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map((l, i) => {
               const st = lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : l.days_late === 0 ? "on_time" : null, l.days_late);
               return (
-                <tr key={i} className="h-10 border-b border-border">
+                <tr key={i} className="h-9 border-b border-border">
                   <td className="px-3 font-medium">
                     {name(l, i)} {l.sources && l.sources.length > 0 && <SourceChips sources={l.sources} max={1} />}
                   </td>
-                  <td className="whitespace-nowrap text-right tabular-nums">{l.quantity ?? "—"}</td>
-                  <td className="whitespace-nowrap pl-6 tabular-nums">{l.due_date ? formatDate(l.due_date) : "—"}</td>
-                  <td className="px-3 text-right">{st ? <StatusWord shown={st} /> : <span className="text-muted">—</span>}</td>
+                  <td className="whitespace-nowrap text-right tabular-nums">{l.quantity ?? ""}</td>
+                  <td className="whitespace-nowrap pl-6 tabular-nums">{l.due_date ? formatDate(l.due_date) : ""}</td>
+                  <td className="px-3 text-right">{st ? <StatusWord shown={st} /> : null}</td>
                 </tr>
               );
             })}
@@ -122,7 +121,7 @@ export function LinesTable({ lines, title = "Lines" }: { lines: LateLine[]; titl
                   <span className="min-w-0 truncate">{name(l, i)}</span>
                   {st && <StatusWord shown={st} />}
                 </div>
-                <p className="text-meta text-muted">{[l.quantity ? `Ordered ${l.quantity}` : null, l.due_date ? `Needed ${formatDate(l.due_date, { short: true })}` : null].filter(Boolean).join(" · ") || "No quantity or date on record"}</p>
+                <p className="text-meta text-muted">{[l.quantity ? `Ordered ${l.quantity}` : null, l.due_date ? `Needed ${formatDate(l.due_date, { short: true })}` : null].filter(Boolean).join(" · ") || "No quantity or date"}</p>
               </li>
             );
           })}
@@ -148,17 +147,16 @@ function SupplierOrders({ obj }: { obj: ObjectPage }) {
   return (
     <Card data-testid="supplier-orders">
       <CardHeader>
-        <CardTitle>Purchase orders (late first)</CardTitle>
+        <CardTitle>Purchase orders</CardTitle>
         <span>{rows.length}</span>
       </CardHeader>
       <CardBody className="px-0 sm:px-0">
         <ul className="divide-y divide-border border-t border-border">
           {shown.map(({ p, late }) => (
             <li key={p.object_id}>
-              <Link href={refHref(p)} className="group flex min-h-10 items-center gap-3 py-2 text-row hover:text-accent">
-                <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(p.type, p.label)}</span>
+              <Link href={refHref(p)} className="group flex min-h-9 items-center gap-3 py-1.5 text-row">
+                <span className="min-w-0 flex-1 truncate text-accent group-hover:underline">{recordLabel(p.type, p.label)}</span>
                 {late && <StatusWord status="late" label={days && lateLabels.size === 1 ? `${days} days late` : "Late"} />}
-                <ArrowRight className="size-3.5 shrink-0 text-faint group-hover:text-accent" aria-hidden />
               </Link>
             </li>
           ))}
@@ -177,7 +175,7 @@ function OrderTable({ title, rows, testId }: { title: string; rows: OrderRow[]; 
   if (rows.length === 0) return null;
   return (
     <div data-testid={testId}>
-      <p className="mb-1 text-eyebrow uppercase text-muted">{title}</p>
+      <p className="mb-1 text-meta font-semibold text-fg">{title}</p>
       <ul className="divide-y divide-border border-t border-border">
         {rows.map((r) => (
           <li key={`${r.object_id}-${r.label}`} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-row">
@@ -211,11 +209,11 @@ function CustomerCard({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrder
         {(c.revenue ?? []).length > 0 && (
           <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2" data-testid="revenue">
             {c.revenue!.map((r, i) => (
-              <div key={i} className="border-l-2 border-border-strong pl-3">
-                <p className="text-eyebrow uppercase text-muted">
+              <div key={i}>
+                <p className="text-meta text-muted">
                   {r.label} · {readable(r.period)}
                 </p>
-                <p className="mt-1 font-serif text-[22px] leading-7 tabular-nums">{money(r.money)}</p>
+                <p className="text-stat tabular-nums">{money(r.money)}</p>
                 <p className="text-meta text-muted">
                   {plural(r.count, "record")} in {SYSTEM_LABEL[r.system] ?? r.system} <SourceChips sources={r.sources} max={1} />
                 </p>
@@ -267,7 +265,7 @@ function Activity({ events }: { events: TimelineEvent[] }) {
           budget -= rows.length;
           return (
             <div key={m.month}>
-              <h3 className="mb-1 text-eyebrow uppercase text-muted">{m.month}</h3>
+              <h3 className="mb-1 text-meta font-semibold text-muted">{m.month}</h3>
               <ul className="space-y-1">
                 {rows.map(({ event: e, count }, i) => (
                   <ActivityRow key={i} e={e} count={count} />
@@ -303,7 +301,7 @@ function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
     <li>
       {e.source && count === 1 ? (
         <>
-          <button type="button" onClick={() => setOpen(true)} className="-mx-2 flex w-[calc(100%+1rem)] items-baseline gap-3 rounded-lg px-2 py-1 text-left hover:bg-surface-2 cursor-pointer">
+          <button type="button" onClick={() => setOpen(true)} className="-mx-2 flex w-[calc(100%+1rem)] items-baseline gap-3 rounded-sm px-2 py-1 text-left hover:bg-surface-2 cursor-pointer">
             {body}
           </button>
           {open && <EvidenceDrawer source={e.source} open={open} onOpenChange={setOpen} />}
@@ -315,22 +313,20 @@ function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
   );
 }
 
-const LINK_ICON = { email: Mail, teams: MessagesSquare, document: FileText, record: Database, task: CheckSquare } as const;
+const LINK_TAG = { email: "Email", teams: "Teams", document: "File", record: "Record", task: "Task" } as const;
 
 function ThreadRow({ t }: { t: Thread }) {
   const [open, setOpen] = useState<LinkedItem | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const Icon = LINK_ICON[t.kind] ?? MessageSquare;
+  const tag = LINK_TAG[t.kind] ?? "Message";
   const first = t.items[0];
   return (
     <li className="py-2">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center text-faint">
-          <Icon className="size-4" strokeWidth={1.5} aria-hidden />
-        </span>
+        <span className="w-12 shrink-0 pt-px text-meta text-muted">{tag}</span>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => (t.count > 1 ? setExpanded((v) => !v) : setOpen(first))} className="text-left text-row font-medium hover:underline cursor-pointer" aria-expanded={t.count > 1 ? expanded : undefined}>
-            <span className="line-clamp-2">{/^email message$/i.test(t.subject) ? "Email (no subject captured)" : t.subject}</span>
+            <span className="line-clamp-2">{/^email message$/i.test(t.subject) ? "(no subject)" : t.subject}</span>
           </button>
           <p className="text-meta text-muted">
             {[t.count > 1 ? `${t.count} messages` : null, t.latest ? `latest ${formatDate(t.latest, { short: true })}` : null].filter(Boolean).join(" · ")}
@@ -381,17 +377,9 @@ function People({ people }: { people: Person[] }) {
         <CardTitle>People</CardTitle>
       </CardHeader>
       <CardBody>
-        <ul className="space-y-3">
+        <ul className="space-y-2">
           {people.map((p, i) => (
-            <li key={i} className="flex items-center gap-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border-strong text-[11px] font-semibold tracking-wide text-muted" aria-hidden>
-                {p.name
-                  .split(/[\s@.]+/)
-                  .map((x) => x[0])
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase()}
-              </span>
+            <li key={i}>
               <span className="min-w-0">
                 <span className="block truncate text-row font-medium">{p.name}</span>
                 <span className="block truncate text-meta text-muted">{[p.role, p.organisation].filter(Boolean).join(" · ")}</span>
@@ -416,15 +404,15 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
       <CardBody className="space-y-3">
         {groups.map((g) => (
           <div key={g.type}>
-            <p className="text-eyebrow uppercase text-muted">
-              {g.label} <span className="ml-1 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>
+            <p className="text-meta font-semibold text-fg">
+              {g.label} <span className="ml-1 font-normal tabular-nums text-muted">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>
             </p>
             {g.items.length > 0 ? (
               <ul className="-mx-2">
                 {g.items.slice(0, 6).map((r) => (
                   <li key={r.object_id}>
-                    <Link href={refHref(r)} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-row hover:bg-surface-2">
-                      <span className="truncate">{recordLabel(r.type, readable(r.label))}</span>
+                    <Link href={refHref(r)} className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-row hover:bg-surface-2">
+                      <span className="truncate text-accent">{recordLabel(r.type, readable(r.label))}</span>
                       {r.times > 1 && <span className="shrink-0 text-meta text-muted">×{r.times}</span>}
                     </Link>
                   </li>
@@ -483,22 +471,22 @@ function ConflictsBadge({ conflicts, open, onToggle }: { conflicts: Conflict[]; 
       type="button"
       onClick={onToggle}
       aria-expanded={open}
-      className={cn("inline-flex h-[22px] items-center gap-1 rounded-md border px-2 text-label cursor-pointer", STATUS_CLASS.suspect.soft, STATUS_CLASS.suspect.fg, STATUS_CLASS.suspect.line)}
+      className={cn("inline-flex h-5 items-center rounded-sm border border-dotted px-1.5 text-label font-normal cursor-pointer", STATUS_CLASS.suspect.soft, STATUS_CLASS.suspect.fg, STATUS_CLASS.suspect.line)}
       data-testid="conflicts-badge"
     >
-      {plural(conflicts.length, "data conflict")} <ChevronDown className={cn("size-3.5", open && "rotate-180")} aria-hidden />
+      {plural(conflicts.length, "data conflict")} {open ? "▴" : "▾"}
     </button>
   );
 }
 
 function ConflictRows({ conflicts }: { conflicts: Conflict[] }) {
   return (
-    <ul className="space-y-1.5 rounded-xl border border-suspect-line bg-suspect-soft/60 p-4 text-row" data-testid="conflict-rows">
+    <ul className="space-y-1.5 rounded-sm border border-dotted border-suspect-line bg-suspect-soft px-3 py-2 text-row" data-testid="conflict-rows">
       {conflicts.map((c, i) => (
         <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span>{conflictSentence(c)}</span>
           <SourceChips sources={c.values.map((v) => v.source)} />
-          {c.values.some((v) => v.trusted) && <span className="text-meta text-muted">We use the {c.values.find((v) => v.trusted)!.source.system === "BC" ? "Business Central" : "AR"} record for this field.</span>}
+          {c.values.some((v) => v.trusted) && <span className="text-meta text-muted">Using the {c.values.find((v) => v.trusted)!.source.system === "BC" ? "Business Central" : "AR"} value.</span>}
         </li>
       ))}
     </ul>
@@ -512,7 +500,7 @@ function WhoToChase({ obj, head }: { obj: ObjectPage; head: RecordHead }) {
   const who = next.contact?.replace(/\s*<[^>]+>/, "") ?? head.counterpart?.label ?? null;
   return (
     <section id="chase" className="scroll-mt-20 border-t border-rule pb-2" aria-label="Who to chase" data-testid="who-to-chase">
-      <h2 className="flex min-h-11 items-center text-section">Who to chase</h2>
+      <h2 className="flex min-h-10 items-center text-section">Who to chase</h2>
       {who && (
         <p className="text-row font-medium">
           {who}
@@ -525,7 +513,7 @@ function WhoToChase({ obj, head }: { obj: ObjectPage; head: RecordHead }) {
       ) : (
         who && <p className="mt-1 text-meta text-muted">Last message from {who}: none found</p>
       )}
-      <p className="mt-2 text-meta text-faint">A suggestion only; nothing is sent.</p>
+      <p className="mt-1 text-meta text-faint">Nothing is sent from here.</p>
     </section>
   );
 }
@@ -542,14 +530,8 @@ function AoSteps({ obj }: { obj: ObjectPage }) {
         <ol className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:gap-x-5">
           {steps.map((s) => (
             <li key={s.label} className="flex items-center gap-2 text-row">
-              {s.done ? (
-                <Check className="size-4 text-ok" aria-label="Done" />
-              ) : (
-                <span className="flex size-4 items-center justify-center text-risk" aria-label="Not on record">
-                  ?
-                </span>
-              )}
               <span className={cn(!s.done && "text-risk")}>{s.label}</span>
+              <span className={cn("text-meta", s.done ? "text-ok" : "text-risk")}>{s.done ? "done" : "not on record"}</span>
               {s.at && <span className="text-meta tabular-nums text-muted">{formatDate(s.at, { short: true })}</span>}
             </li>
           ))}
@@ -569,7 +551,7 @@ function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null |
   return (
     <Card data-testid="margin">
       <CardHeader>
-        <CardTitle>{order ? "Margin and why" : "Profitability"}</CardTitle>
+        <CardTitle>{order ? "Margin" : "Profitability"}</CardTitle>
         {p && <span>{p.margin_basis ?? "on item cost only"}</span>}
       </CardHeader>
       <CardBody className="space-y-4">
@@ -593,7 +575,7 @@ function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null |
   );
 }
 
-const SECTION_WORDS: Record<SectionName, string> = { late: "lateness", people: "people", landed_cost: "landed cost", trail: "how we know", margin: "margin" };
+const SECTION_WORDS: Record<SectionName, string> = { late: "late lines", people: "people", landed_cost: "landed cost", trail: "evidence", margin: "margin" };
 
 /** "lateness, people and how we know": the sections named in reading order. */
 export function sectionWords(names: ReadonlySet<SectionName>): string {
@@ -634,7 +616,7 @@ function SameName({ obj }: { obj: ObjectPage }) {
         <span key={r.object_id}>
           {i > 0 ? " · " : ""}
           <Link href={refHref(r)} className="text-accent hover:underline">
-            {r.label} →
+            {r.label}
           </Link>
         </span>
       ))}
@@ -699,7 +681,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         if (e instanceof ApiError && e.status === 404) setNotFound(true);
         setBusy(noticeKind(e) === "busy");
         const msg = plainError(e);
-        setError(/took too long/.test(msg) ? `This ${typeLabel(type).toLowerCase()} is taking too long to gather. Try again in a minute, or ask about it instead.` : msg);
+        setError(/took too long|^Timed out/.test(msg) ? `This ${typeLabel(type).toLowerCase()} timed out. Try again in a minute.` : msg);
       });
     return () => c.abort();
   }, [type, id]);
@@ -747,12 +729,16 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const hasRail =
     head.keyFacts.some((k) => k.value) || !!src || pending.has("people") || (obj.people ?? []).length > 0 || groupRelated(otherRelated).some((g) => g.items.length > 0);
 
+  // a minor record (an order line, a product) often has only its details: they take the main column
+  const mainEmpty =
+    !custody && !isPo && !isAo && !isSupplier && !isCustomer && !isSalesOrder && !obj.customer && !obj.trail && conflicts.length === 0 &&
+    (obj.proposals ?? []).length === 0 && (obj.linked ?? []).length === 0 && (obj.timeline ?? []).length === 0 && lines.length === 0 && !obj.landed_cost;
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
-      <div className="space-y-8">
-        <header className="flex flex-col gap-4 border-b-2 border-rule pb-5 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-2">
-            <p className="text-eyebrow uppercase text-muted">{typeLabel(obj.type)}</p>
+      <div className="space-y-6">
+        <header className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-1">
+            <p className="text-meta text-muted">{typeLabel(obj.type)}</p>
             <h1 className="break-words text-display" data-testid="object-title">
               {head.title}
               {counterpart && (
@@ -776,7 +762,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
                     <span key={r.object_id}>
                       {head.subline ? " · " : ""}also recorded as{" "}
                       <Link href={refHref(r)} className="text-accent hover:underline">
-                        {r.label} →
+                        {r.label}
                       </Link>
                     </span>
                   ))}
@@ -784,12 +770,12 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
             )}
             {isCustomer && <SameName obj={obj} />}
             {head.lead && !head.badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase()) && (
-              <p className={cn("max-w-[68ch] text-body", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-muted")} data-testid="object-lead">
+              <p className={cn("max-w-[80ch] text-row", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-muted")} data-testid="object-lead">
                 {head.lead}
               </p>
             )}
             {(head.badges.length > 0 || (isCustomer && conflicts.length > 0)) && (
-              <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="object-status">
+              <div className="flex flex-wrap items-center gap-2" data-testid="object-status">
                 {head.badges.slice(0, 2).map((b) => (
                   <StatusBadge key={b.label} shown={b} />
                 ))}
@@ -802,21 +788,20 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
               type="button"
               aria-pressed={isSaved}
               onClick={() => toggleSaved({ key, kind: "object", label: head.askLabel, href: objectHref(type, id) })}
-              className={cn("inline-flex h-8 items-center gap-1.5 rounded border border-control px-3 text-row hover:bg-surface cursor-pointer", isSaved && "text-accent")}
+              className={cn("inline-flex h-8 items-center rounded-sm border border-control px-3 text-row hover:bg-surface cursor-pointer", isSaved && "font-medium")}
             >
-              {isSaved ? <BookmarkCheck className="size-4" aria-hidden /> : <Bookmark className="size-4" aria-hidden />}
               {isSaved ? "Saved" : "Save"}
             </button>
             <Link
               href={`/ask?q=${encodeURIComponent(isAo ? `Why did ${head.askLabel} fall short?` : `What's the latest on ${head.askLabel}?`)}&object=${encodeURIComponent(obj.object_id)}`}
-              className="inline-flex h-8 items-center rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110"
+              className="inline-flex h-8 items-center rounded-sm bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110"
             >
               {isAo ? "Ask why it fell short" : `Ask about ${head.askLabel}`}
             </Link>
           </div>
         </header>
         {head.stats.length > 0 && (
-          <StatRow className="-mt-8 border-t-0">
+          <StatRow className="-mt-6 border-b border-border">
             {head.stats.slice(0, 4).map((s) => (
               <StatTile key={s.label} s={s} />
             ))}
@@ -824,13 +809,13 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         )}
 
         {pending.size > 0 && (
-          <p className="flex items-center gap-2 text-meta text-muted" role="status" data-testid="checking">
-            <span className="size-1.5 shrink-0 bg-accent animate-breathe" aria-hidden /> Checking {sectionWords(pending)}…
+          <p className="text-meta text-muted" role="status" data-testid="checking" data-pending="">
+            Loading {sectionWords(pending)}…
           </p>
         )}
         {pending.size === 0 && failed.size > 0 && (
           <p className="text-meta text-muted" role="status" data-testid="checks-failed">
-            Could not finish checking {sectionWords(failed)}.{" "}
+            Couldn&apos;t load {sectionWords(failed)}.{" "}
             <button type="button" onClick={load} className="text-accent hover:underline cursor-pointer">
               Try again
             </button>
@@ -841,8 +826,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
 
         {custody && <CustodyRail custody={custody} />}
 
-        <div className={cn("grid grid-cols-1 gap-x-12 gap-y-10", hasRail && "lg:grid-cols-[minmax(0,1fr)_300px]")}>
-          <div className="min-w-0 space-y-10">
+        <div className={cn("grid grid-cols-1 gap-x-10 gap-y-8", hasRail && !mainEmpty && "lg:grid-cols-[minmax(0,1fr)_280px]")}>
+          <div className={cn("min-w-0 space-y-8", mainEmpty && "hidden")}>
             {isPo && (pending.has("trail") ? <SectionSkeleton name="trail" title="ETA confirmed?" lines={2} /> : <EtaCard eta={obj.trail?.trails?.[0]?.eta} />)}
             {(isPo || isAo) && (pending.has("trail") ? <SectionSkeleton name="trail" title="Who to chase" lines={2} /> : <WhoToChase obj={obj} head={head} />)}
             <ProposalCards proposals={obj.proposals} />
@@ -861,10 +846,10 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
             <Linked items={obj.linked ?? []} />
             <Activity events={obj.timeline ?? []} />
           </div>
-          <div className={cn("min-w-0 space-y-10", !hasRail && "hidden")}>
+          <div className={cn("min-w-0 space-y-8", !hasRail && "hidden", mainEmpty && "max-w-[560px]")}>
             {(head.keyFacts.some((k) => k.value) || src) && <Card data-testid="summary">
               <CardHeader>
-                <CardTitle>Key facts</CardTitle>
+                <CardTitle>Details</CardTitle>
               </CardHeader>
               <CardBody>
                 <KeyFacts

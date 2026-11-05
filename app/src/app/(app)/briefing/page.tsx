@@ -19,7 +19,7 @@ export default function BriefingPage() {
     setError(null);
     getBriefing(c.signal)
       .then(setBriefing)
-      .catch((e) => !c.signal.aborted && setError(plainError(e).replace(/^Something went wrong on our side\./, "Your briefing didn't load.")));
+      .catch((e) => !c.signal.aborted && setError(plainError(e).replace(/^Server error\./, "Couldn't load the briefing.")));
     // suppliers for the rows' names; a failure only leaves them out
     getHome(c.signal)
       .then((h) => setLate(h.needs_attention?.late_pos ?? []))
@@ -30,15 +30,14 @@ export default function BriefingPage() {
   return (
     <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
       <PageHeader
-        className="mb-6"
-        eyebrow="Briefing"
-        title="Everything that needs attention"
-        sub="Most urgent first. Open a row for the record, who to chase and how we know."
+        className="mb-4"
+        title="Briefing"
+        sub="Everything open for your team, most urgent first."
       />
       {error ? (
         <ErrorNotice message={error} onRetry={load} />
       ) : !briefing ? (
-        <SkeletonRows label="Ranking what needs attention" />
+        <SkeletonRows label="Loading the briefing" />
       ) : (
         <BriefingCard briefing={briefing} latePos={late} />
       )}

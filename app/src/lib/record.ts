@@ -234,7 +234,7 @@ function supplierHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   const lateRows = (obj.late_lines ?? []).filter((l) => l.days_late !== 0);
   const days = /Late by (\d+) days/i.exec(obj.status?.text ?? "")?.[1];
   const lateN = new Set(lateRows.map((l) => l.line)).size || (obj.status?.state === "late" ? 1 : 0);
-  const owe = balance === undefined ? null : isZero(balance) ? `Nothing is owed to ${name}.` : `We owe ${moneyText(balance, currency)}.`;
+  const owe = balance === undefined ? null : isZero(balance) ? `Nothing is owed to ${name}.` : `Owed to them: ${moneyText(balance, currency)}.`;
   const lead = [
     blocked ? `${name} is blocked in Business Central.` : null,
     lateN > 0 ? `${plural(lateN, "purchase order")} ${lateN === 1 ? "is" : "are"} late${days ? `, by ${lateN === 1 ? "" : "up to "}${days} days` : ""}.` : pos.length ? `No late purchase orders. ${plural(pos.length, "order")} on record.` : null,
@@ -247,7 +247,7 @@ function supplierHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     { label: "POs on record", value: String(pos.length) },
     { label: "Late", value: String(lateN), status: lateN > 0 ? "late" : undefined, caption: days ? `up to ${days} days` : undefined },
   ];
-  if (balance !== undefined) stats.push({ label: "We owe", value: moneyText(balance, currency) ?? balance });
+  if (balance !== undefined) stats.push({ label: "Owed to supplier", value: moneyText(balance, currency) ?? balance });
   stats.push({ label: "Last message", value: lastMsg ? formatDate(lastMsg.at, { short: true }) : "none found", caption: lastMsg?.label, source: lastMsg?.source });
   return {
     title: name,
@@ -392,9 +392,14 @@ const INTERNAL_FACT = /(?:^|_)(?:\w*uniq|guid|row_?version|etag|system_id|last_m
 
 /** Every other type: its status sentence, its facts as key facts. */
 function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  // a record with no name of its own arrives labelled by its internal id ("SalesOrderLine:bc.…:{"id":…}"):
+  // it is called by its kind and the record it belongs to, never by the id
+  const parent = (obj.related ?? []).find((r) => /Order$/.test(r.type) && !/Line$/.test(r.type));
+  const internal = /:\{|^[A-Za-z]+:[a-z]+\./.test(obj.label);
+  const name = internal ? `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}${typeLabel(obj.type).toLowerCase()}` : recordLabel(obj.type, obj.label);
   const s = obj.status && !/not_established|^read$/.test(obj.status.state) ? { status: recordState(obj.status.state), label: shortState(obj.status.state) } : null;
   return {
-    title: recordLabel(obj.type, obj.label),
+    title: name.charAt(0).toUpperCase() + name.slice(1),
     subline: usefulSummary(obj),
     lead: fallbackLead(obj),
     badges: s && s.label ? [s] : [],
@@ -403,7 +408,7 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
       .filter((x) => x.label.toLowerCase() !== "name" && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
       .slice(0, 6)
       .map((x) => ({ label: x.label, value: factValue(x.value) })),
-    askLabel: recordLabel(obj.type, obj.label),
+    askLabel: name,
   };
 }
 

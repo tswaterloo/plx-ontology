@@ -24,17 +24,17 @@ const BY_CODE: Record<string, string> = {
   dev_ticket_not_accepted: "This demo sign-in doesn't take an access link. Leave it empty.",
   access_link_refused: "This access link has expired or isn't valid. Ask for a new one.",
   dev_login_not_served: "Demo sign-in is off here. Sign in with Microsoft.",
-  not_found: "We couldn't find that, or you don't have access to it.",
+  not_found: "Couldn't find that, or you don't have access to it.",
   invalid_request: "That request wasn't understood. Try rephrasing it.",
   origin_refused: "This page isn't trusted by the Workbench. Open the Workbench from its usual link.",
-  not_served: "That part of the Workbench isn't switched on here yet.",
-  busy: "The Workbench is answering several questions right now. Try again in a minute.",
+  not_served: "That part of the Workbench is off on this server.",
+  busy: "The server is busy. Try again in a minute.",
   action_refused: "That action can't be done as it stands. Review it again to see what needs changing.",
-  ask_not_served: "Asking questions isn't switched on on this server yet. Home and record pages still work.",
+  ask_not_served: "Ask is off on this server. Today and record pages still work.",
   // app-side codes
   forbidden: "You don't have access to this. Ask the owner or your team lead if you need it.",
-  rate_limited: "Lots of questions at once. Give it a few seconds and try again.",
-  timeout: "That took too long to answer. Try a narrower question, or try again in a moment.",
+  rate_limited: "Too many questions at once. Try again in a few seconds.",
+  timeout: "Timed out. Try a narrower question, or try again in a moment.",
   upstream_unavailable: "One of the business systems isn't answering right now. Try again in a few minutes.",
   stream_interrupted: "The answer was cut off. Ask again to get the full answer.",
   network: "Can't reach the Workbench. Check your connection and try again.",
@@ -54,7 +54,7 @@ const BY_STATUS: Record<number, string> = {
   504: BY_CODE.timeout,
 };
 
-export const GENERIC_ERROR = "Something went wrong on our side. Try again; if it keeps happening, tell the Workbench team.";
+export const GENERIC_ERROR = "Server error. Try again; if it keeps happening, tell the Workbench team.";
 
 const INCIDENT = /\bincident ([0-9a-f]{6,16})\b/;
 

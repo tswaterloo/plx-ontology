@@ -70,7 +70,7 @@ describe("EvidenceTrailCard", () => {
     expect(within(card).getByTestId("eta-check")).toHaveTextContent("Confirmed by supplier");
     const action = within(card).getByTestId("next-action");
     expect(action).toHaveTextContent("ask the vendor (Bob <bob@vendor.example>) for a new date");
-    expect(action).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
+    expect(action).toHaveTextContent("Nothing is sent or changed from here.");
     expect(within(card).getByTestId("trail-hidden")).toHaveTextContent("2 more steps in places you can't open.");
   });
 
@@ -93,7 +93,7 @@ describe("EvidenceTrailCard", () => {
     render(<EvidenceTrailCard trail={{ ...trail, trails: [undetermined] }} />);
     const card = screen.getByTestId("evidence-trail");
     const verdict = within(card).getByTestId("trail-verdict");
-    expect(verdict).toHaveTextContent("Can't say yet whether it's late: not every due date could be confirmed: the Portal data we read may be out of date; a possible match to another copy of this order isn't confirmed.");
+    expect(verdict).toHaveTextContent("Can't say yet whether it's late: not every due date could be confirmed: the Portal data is out of date; a possible match to another copy of this order isn't confirmed.");
     // the late list's check is shown beside the live verdict (the server adds it when they differ), never dropped
     expect(within(verdict).getByTestId("trail-verdict-beside")).toHaveTextContent("On your late list as of 3 Feb 2099: 112 days late.");
     expect(card).not.toHaveTextContent(/portal_api|tier floor|lead carrier|same_record_as/);
@@ -187,7 +187,7 @@ describe("EvidenceTrailCard", () => {
   it("labels a row whose lateness was not read as such", () => {
     const r = { assembly: { object_id: "a", type: "AssemblyOrder", label: "AO-1", open_url: "/o/a" }, item: { object_id: "i", type: "Product", label: "P-1", open_url: "/o/i" }, po: { object_id: "p", type: "PurchaseOrder", label: "PO 5", open_url: "/o/p" } };
     render(<EvidenceTrailCard trail={{ kind: "materials", title: "From the recorded links: 1 purchase order for this order's materials, 0 late", hidden_steps: 0, materials: [r] }} />);
-    expect(screen.getByTestId("materials")).toHaveTextContent("Lateness not read");
+    expect(screen.getByTestId("materials")).toHaveTextContent("Not checked");
     expect(screen.getByTestId("evidence-trail")).toHaveTextContent("From the recorded links");
   });
 
@@ -247,10 +247,10 @@ describe("EvidenceTrailCard", () => {
     expect(steps[3]).toHaveTextContent("Test came back contaminated");
     expect(steps[0]).toHaveTextContent("Not checked against its source");
     expect(within(card).getByTestId("trail-hidden")).toHaveTextContent("2 more steps in places you can't open. There may be more.");
-    expect(within(card).getByTestId("trail-incomplete")).toHaveTextContent("Only the latest steps are shown");
+    expect(within(card).getByTestId("trail-incomplete")).toHaveTextContent("Latest steps only");
     const action = within(card).getByTestId("next-action");
     expect(action).toHaveTextContent("Ask Quality for the hold or release decision on B-1");
-    expect(action).toHaveTextContent("A suggestion only: nothing has been sent or changed.");
+    expect(action).toHaveTextContent("Nothing is sent or changed from here.");
     expect(card).not.toHaveTextContent("Dana Reyes <");
   });
 });

@@ -3,35 +3,12 @@
 import * as HoverCard from "@radix-ui/react-hover-card";
 import Link from "next/link";
 import { createContext, useContext, useState } from "react";
-import {
-  Calculator,
-  Database,
-  ExternalLink,
-  Maximize2,
-  FileText,
-  Globe,
-  ListChecks,
-  Mail,
-  MessagesSquare,
-  Table2,
-  type LucideIcon,
-} from "lucide-react";
 import { cn } from "@/lib/cn";
 import { currencyCode, fieldKey, fieldLabel, fieldValue, formatDate, formatDateTime, formatMoney, isInternalField, isUnsetDate, recordKind, safeHref, sourceHref, SYSTEM_LABEL } from "@/lib/format";
 import type { Source, SourceSystem } from "@/lib/types";
 import { mailField, SourceLoader } from "./source-view";
 import { Sheet } from "./ui/sheet";
 
-const ICON: Record<SourceSystem, LucideIcon> = {
-  BC: Database,
-  Portal: Globe,
-  Sage: Calculator,
-  FileMaker: Table2,
-  Email: Mail,
-  Teams: MessagesSquare,
-  File: FileText,
-  MC: ListChecks,
-};
 
 function known(system: string): system is SourceSystem {
   return system in SYSTEM_LABEL;
@@ -167,7 +144,7 @@ export function SourcePreview({ source }: { source: Source }) {
         )}
       </div>
       {source.quote ? (
-        <blockquote className="border-l-2 border-accent pl-3 font-serif text-[15px] leading-[22px] italic text-fg">“{source.quote}”</blockquote>
+        <blockquote className="border-l-2 border-border-strong pl-3 text-row text-fg">“{source.quote}”</blockquote>
       ) : fields.length > 0 ? (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
           {fields.map(([k, v]) => (
@@ -181,9 +158,7 @@ export function SourcePreview({ source }: { source: Source }) {
         <p className="text-muted">No passage was quoted for this source.</p>
       )}
       {source.as_of && <p className="text-meta text-muted">Read {formatDateTime(source.as_of)}</p>}
-      <p className="flex items-center gap-1 text-meta text-accent">
-        <ExternalLink className="size-3" aria-hidden /> Click to open it
-      </p>
+      <p className="text-meta text-accent">Click to open</p>
     </div>
   );
 }
@@ -202,7 +177,7 @@ export function EvidenceDrawer({
   const cited = Object.keys(source.fields ?? {});
   const full = source.handle ? `${sourceHref(source.handle)}${cited.map((f) => `&field=${encodeURIComponent(f)}`).join("")}` : safeHref(source.open_url);
   return (
-    <Sheet open={open} onOpenChange={onOpenChange} title={`Evidence · ${sys}`}>
+    <Sheet open={open} onOpenChange={onOpenChange} title={`Source: ${sys}`}>
       {open && source.handle ? (
         <SourceLoader
           handle={source.handle}
@@ -211,8 +186,8 @@ export function EvidenceDrawer({
           headingLevel={2}
           actions={() =>
             full ? (
-              <Link href={full} className="inline-flex items-center gap-1 pt-1 text-meta font-medium text-accent hover:underline">
-                <Maximize2 className="size-3.5" aria-hidden /> Open full page
+              <Link href={full} className="pt-1 text-meta text-accent hover:underline">
+                Open full page
               </Link>
             ) : null
           }
@@ -233,7 +208,6 @@ export function SourceChip({ source, className, record }: { source: Source; clas
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
   const system = known(source.system) ? source.system : null;
-  const Icon = system ? ICON[system] : FileText;
   const href = safeHref(source.open_url);
   const opens = !!href || !!source.handle;
   const name = sourceName(source, record);
@@ -241,12 +215,12 @@ export function SourceChip({ source, className, record }: { source: Source; clas
   const n = source.handle ? cites?.get(source.handle) : undefined;
   const chipClass = n !== undefined
     ? cn(
-        "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm bg-accent-soft px-1 align-[1px] font-sans text-[11px] font-semibold leading-none tabular-nums text-accent transition-colors hover:bg-accent hover:text-accent-fg",
+        "inline-block px-px align-super font-sans text-[11px] leading-none tabular-nums text-accent hover:underline",
         opens && "cursor-pointer",
         className,
       )
     : cn(
-    "inline-flex h-5 max-w-[16rem] items-center gap-1.5 rounded-sm border border-border bg-surface px-1.5 align-middle text-label font-normal text-muted transition-colors hover:border-accent hover:text-accent",
+    "inline-flex max-w-[16rem] items-baseline gap-1 align-baseline text-meta font-normal text-accent hover:underline",
     opens && "cursor-pointer",
     className,
   );
@@ -258,10 +232,8 @@ export function SourceChip({ source, className, record }: { source: Source; clas
   ) : (
     <>
       {tagged ? (
-        <span className="shrink-0 text-[10px] font-semibold uppercase leading-none tracking-[0.06em] text-faint">{lead}</span>
-      ) : (
-        <Icon className="size-3 shrink-0 text-faint" strokeWidth={1.5} aria-hidden />
-      )}
+        <span className="shrink-0 text-muted">{lead}</span>
+      ) : null}
       {(!tagged || tail.length > 0) && (
         <span className="truncate">{tagged ? tail.join(" · ").replace(new RegExp(`^${lead}\\s+(?=\\S)`, "i"), "") : name}</span>
       )}
@@ -297,7 +269,7 @@ export function SourceChip({ source, className, record }: { source: Source; clas
             align="start"
             sideOffset={6}
             collisionPadding={12}
-            className="z-40 w-[min(22rem,calc(100vw-24px))] rounded-xl border border-border bg-raised p-3 shadow-pop animate-fade-in"
+            className="z-40 w-[min(22rem,calc(100vw-24px))] rounded border border-border-strong bg-raised p-3 shadow-pop"
             data-testid="source-preview"
           >
             <SourcePreview source={source} />
@@ -319,7 +291,7 @@ export function SourceChips({ sources, max = 2, record }: { sources: Source[] | 
   const shown = cites ? list : list.slice(0, max);
   const rest = list.length - shown.length;
   return (
-    <span className="inline-flex flex-wrap items-center gap-1 align-middle">
+    <span className="inline-flex flex-wrap items-baseline gap-x-1 align-baseline">
       {shown.map((s, i) => (
         <SourceChip key={i} source={s} record={record?.(s)} />
       ))}
@@ -335,10 +307,10 @@ function MoreChip({ sources }: { sources: Source[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-5 items-center rounded-sm border border-border px-1.5 text-label text-muted hover:border-accent hover:text-accent cursor-pointer"
+        className="text-meta text-accent hover:underline cursor-pointer"
         aria-label={`${sources.length} more sources`}
       >
-        +{sources.length}
+        {sources.length} more
       </button>
       {open && (
         <Sheet open={open} onOpenChange={setOpen} title={`${sources.length} more sources`}>
@@ -377,17 +349,15 @@ export function SourceListRow({ source, n }: { source: Source; n: number }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group grid w-full grid-cols-[22px_minmax(0,1fr)] items-baseline gap-x-2 rounded py-1 text-left text-meta hover:bg-surface cursor-pointer"
+        className="group grid w-full grid-cols-[18px_minmax(0,1fr)] items-baseline gap-x-1.5 rounded-sm py-0.5 text-left text-meta hover:bg-surface cursor-pointer"
         aria-label={`Source ${n}: ${system ? SYSTEM_LABEL[system] : "source"}, ${name}`}
         data-testid="answer-source"
       >
-        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm bg-accent-soft px-1 text-[11px] font-semibold tabular-nums text-accent group-hover:bg-accent group-hover:text-accent-fg">
-          {n}
-        </span>
+        <span className="text-right tabular-nums text-muted">{n}.</span>
         <span className="min-w-0 truncate">
-          <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-faint">{system ? SHORT[system] : "Source"}</span>
-          <span className="text-fg">{what}</span>
-          {source.as_of && !message && <span className="text-faint"> · read {formatDate(source.as_of, { short: true })}</span>}
+          <span className="text-accent group-hover:underline">{what}</span>
+          <span className="text-muted">, {system ? SYSTEM_LABEL[system] : "source"}</span>
+          {source.as_of && !message && <span className="text-faint">, read {formatDate(source.as_of, { short: true })}</span>}
         </span>
       </button>
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}

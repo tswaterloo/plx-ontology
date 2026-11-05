@@ -7,11 +7,9 @@ import { suggest } from "@/lib/api";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { ObjectView } from "./object-view";
-import { arrange, sharedName } from "./ask-box";
-import { ArrowRight } from "lucide-react";
+import { arrange } from "./ask-box";
 import { Card } from "./ui/card";
 import { PageHeader } from "./ui/page-header";
-import { Skeleton } from "./ui/skeleton";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
 export const FRIENDLY_TYPE = {
@@ -80,34 +78,33 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
     return () => c.abort();
   }, [type, refText]);
   const kind = typeLabel(type).toLowerCase();
+  // "PO 100040", "Customer Diversified": how the reader names what they opened
+  const said = /^(?:PO|SO)\s/.test(recordLabel(type, refText)) ? recordLabel(type, refText) : `${typeLabel(type)} ${refText}`;
   return (
-    <div className="space-y-6" data-testid="friendly-chooser">
+    <div className="space-y-3" data-testid="friendly-chooser">
       <PageHeader
-        eyebrow={typeLabel(type)}
-        title={found === null ? <Skeleton className="h-[30px] w-72 max-w-full sm:h-[34px]" /> : found.length === 0 ? `No ${kind} “${refText}” that you can open.` : near ? `Which ${kind} did you mean?` : found.length > 1 ? `${sharedName(found.length, type)}.` : `One ${kind} is named “${refText}”.`}
+        title={found === null ? said : found.length === 0 ? `No ${kind} “${refText}” that you can open` : near ? `${said}: close matches` : found.length > 1 ? `${said}: ${found.length} records` : said}
         sub={
           found === null ? (
             <span role="status">Looking for {kind} “{refText}”…</span>
           ) : found.length === 0 ? (
-            "Check the number or name, or search for it above."
+            "Check the number or name, or search above."
           ) : near ? (
             `No ${kind} is named exactly “${refText}”. These names start with it.`
           ) : found.length > 1 ? (
-            "Pick the one you mean. Records that only share a name are never merged."
+            "Pick one. Records that share a name or number are kept apart."
           ) : null
         }
       />
       {found && found.length > 0 && (
-        <Card>
+        <Card className="border-t-0">
           <ul className="divide-y divide-border">
             {found.map((s) => (
               <li key={s.object_id}>
-                <Link href={safeHref(s.open_url) ?? "/"} className="group flex items-center justify-between gap-4 px-4 py-3 hover:bg-surface-2 sm:px-5">
-                  <span className="min-w-0">
-                    <span className="block truncate text-row font-medium group-hover:underline">{recordLabel(s.type, s.label)}</span>
-                    {s.facts || s.systems.length ? <span className="block truncate text-meta text-muted">{[s.facts, s.systems.join(" and ")].filter(Boolean).join(" · ")}</span> : null}
-                  </span>
-                  <ArrowRight className="size-4 shrink-0 text-muted group-hover:text-accent" aria-hidden />
+                <Link href={safeHref(s.open_url) ?? "/"} className="group flex items-baseline gap-4 py-2 hover:bg-surface">
+                  <span className="w-40 shrink-0 truncate text-row text-accent group-hover:underline">{recordLabel(s.type, s.label)}</span>
+                  {s.facts ? <span className="min-w-0 flex-1 truncate text-row">{s.facts}</span> : <span className="flex-1" />}
+                  {s.systems.length ? <span className="shrink-0 text-meta text-muted">{s.systems.join(", ")}</span> : null}
                 </Link>
               </li>
             ))}

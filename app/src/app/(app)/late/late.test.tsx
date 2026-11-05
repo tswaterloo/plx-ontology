@@ -37,11 +37,11 @@ describe("late list", () => {
     expect(rows()).toHaveLength(n);
     expect(new Set(rows().map((r) => r.textContent)).size).toBe(n);
     expect(f).toHaveBeenCalledTimes(Math.ceil(n / 100));
-    expect(screen.getByTestId("late-all-count")).toHaveTextContent(n === 1 ? "1 order" : `${n} orders`);
+    expect(screen.getByTestId("late-all-count")).toHaveTextContent(n === 1 ? "1 PO" : `${n} POs`);
     // the page leads with the verdict and the why: how many, the oldest, and how long
     const head = screen.getByTestId("late-header");
-    expect(head).toHaveTextContent(n === 1 ? "1 purchase order is late" : `${n} purchase orders are late`);
-    expect(head).toHaveTextContent(`Oldest: PO ${100000 + n} from ${n % 3 === 0 ? "DSM" : "Acme"}, ${n === 1 ? "1 day" : `${n} days`} past its date`);
+    expect(head).toHaveTextContent(`Late POs${n} past the needed-by date.`);
+    expect(head).toHaveTextContent(`Oldest: PO ${100000 + n} (${n % 3 === 0 ? "DSM" : "Acme"}), ${n === 1 ? "1 day" : `${n} days`}.`);
   });
 
   it("a busy server is a calm notice that tries again by itself", async () => {
@@ -51,7 +51,7 @@ describe("late list", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => (++calls === 1 ? new Response(JSON.stringify({ error: { code: "busy", message: "x" } }), { status: 503 }) : ok(url))));
     render(<LatePage />);
     const notice = await screen.findByTestId("server-notice");
-    expect(notice).toHaveTextContent("try again by itself");
+    expect(notice).toHaveTextContent("Retrying in a few seconds");
     expect(screen.queryByRole("alert")).toBeNull();
     await vi.advanceTimersByTimeAsync(21_000);
     await screen.findByTestId("late-table");

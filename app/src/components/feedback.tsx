@@ -1,6 +1,5 @@
 "use client";
 
-import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { useId, useState } from "react";
 import { sendFeedback } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -41,7 +40,7 @@ export function Feedback({ answerId }: { answerId: string }) {
   if (state === "up-sent" || state === "down-sent") {
     return (
       <p role="status" className="text-meta text-muted" data-testid="feedback-thanks">
-        Thanks — {state === "up-sent" ? "glad it helped." : "we'll use this to improve answers."}
+        {state === "up-sent" ? "Marked correct." : "Sent to the Workbench team."}
       </p>
     );
   }
@@ -55,9 +54,9 @@ export function Feedback({ answerId }: { answerId: string }) {
           title="Was this right? Yes"
           onClick={() => submit(1)}
           disabled={state === "sending"}
-          className="flex size-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer"
+          className="rounded-sm px-2 py-1 text-meta text-accent hover:bg-surface-2 disabled:opacity-50 cursor-pointer"
         >
-          <ThumbsUp className="size-4" aria-hidden />
+          Correct
         </button>
         <button
           type="button"
@@ -67,16 +66,16 @@ export function Feedback({ answerId }: { answerId: string }) {
           onClick={() => setState(state === "down-open" ? "idle" : "down-open")}
           disabled={state === "sending"}
           className={cn(
-            "flex size-8 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50 cursor-pointer",
+            "rounded-sm px-2 py-1 text-meta text-accent hover:bg-surface-2 disabled:opacity-50 cursor-pointer",
             state === "down-open" && "bg-surface-2 text-fg",
           )}
         >
-          <ThumbsDown className="size-4" aria-hidden />
+          Wrong
         </button>
       </div>
       {state === "down-open" && (
         <form
-          className="space-y-3 rounded-lg border border-border bg-surface p-3 animate-fade-in"
+          className="space-y-3 rounded-sm border border-border-strong p-3"
           onSubmit={(e) => {
             e.preventDefault();
             void submit(-1);
@@ -94,8 +93,8 @@ export function Feedback({ answerId }: { answerId: string }) {
                     aria-pressed={on}
                     onClick={() => setReasons(on ? reasons.filter((x) => x !== r) : [...reasons, r])}
                     className={cn(
-                      "rounded border px-2.5 py-1 text-meta transition-colors cursor-pointer",
-                      on ? "border-accent bg-accent-soft text-accent" : "border-border bg-surface text-fg hover:bg-surface-2",
+                      "rounded-sm border px-2 py-0.5 text-meta cursor-pointer",
+                      on ? "border-fg bg-surface-2 font-medium text-fg" : "border-border-strong text-fg hover:bg-surface-2",
                     )}
                   >
                     {r}
@@ -114,22 +113,22 @@ export function Feedback({ answerId }: { answerId: string }) {
               onChange={(e) => setNote(e.target.value)}
               rows={2}
               maxLength={2000}
-              placeholder="Tell us more (optional): what should it have said?"
-              className="w-full resize-none rounded-lg border border-control bg-surface px-3 py-2 text-row placeholder:text-muted focus:border-accent focus:shadow-[0_0_0_3px_var(--accent-soft)] focus:outline-none"
+              placeholder="What should it have said? (optional)"
+              className="w-full resize-none rounded-sm border border-control bg-bg px-3 py-2 text-row placeholder:text-faint focus:border-fg"
             />
           </div>
           <div className="flex justify-end gap-2">
             <button
               type="button"
               onClick={() => setState("idle")}
-              className="rounded-lg px-3 py-1.5 text-row text-muted hover:bg-surface-2 cursor-pointer"
+              className="rounded-sm px-3 py-1 text-row text-fg hover:bg-surface-2 cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={reasons.length === 0 && note.trim() === ""}
-              className="rounded-lg bg-accent px-3 py-1.5 text-row font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
+              className="rounded-sm bg-accent px-3 py-1 text-row font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
             >
               Send feedback
             </button>

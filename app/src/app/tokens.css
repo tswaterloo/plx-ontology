@@ -1,111 +1,94 @@
-/* Design tokens: colour, type and spacing ("Ledger": paper and ink, a serif for what a page
-   says, a sans for what you scan, rules instead of boxes). Components read these through
-   Tailwind's @theme names below (bg-surface, text-late, text-answer, ...); nothing else
-   defines colour. Every text/background pair meets WCAG AA in its theme; status fg on its
-   soft fill is >= 5.4:1 (light) and >= 6.2:1 (dark). */
+/* Design tokens. Plain office software: white paper, black text, one blue for links and
+   buttons, colour only where it means a status. One sans face (Public Sans) with tabular
+   figures. Components read these through Tailwind's @theme names below. Every
+   text/background pair meets WCAG AA in its theme. */
 
 :root {
-  --bg: #f6f3ec; /* paper */
-  --bg-subtle: #eeeae1; /* sidebar, table header: one step down */
-  --surface: #fbfaf6; /* inputs, hovered rows */
-  --surface-2: #eeeae1; /* sunken fills, active nav */
+  --bg: #ffffff;
+  --bg-subtle: #f5f5f4; /* sidebar, table header */
+  --surface: #fafafa; /* inputs, hovered rows */
+  --surface-2: #efefee; /* sunken fills, active nav */
   --raised: #ffffff; /* popovers, menus, drawer */
-  --fg: #1c1a17; /* ink, 15.7:1 */
-  --fg-muted: #57514a; /* 7.1:1 */
-  --fg-faint: #6e675d; /* 5.0:1: meta, placeholders */
-  --border: #e2dcd0; /* hairline between rows */
-  --border-strong: #c8c0b1; /* rule between groups */
-  --rule-ink: #1c1a17; /* the ink rule above a section */
-  --control-border: #8c8579; /* 3.3:1: inputs need a 3:1 boundary */
-  --accent: #0b5c63; /* ink-teal, 7.0:1: actions, links and focus only */
+  --fg: #1b1b1b;
+  --fg-muted: #545454; /* 7.5:1 */
+  --fg-faint: #6a6a6a; /* 5.4:1 */
+  --border: #e3e3e1;
+  --border-strong: #c9c9c6;
+  --rule-ink: #c9c9c6;
+  --control-border: #8a8a86; /* 3.4:1 */
+  --accent: #1d5ea8; /* links, buttons, focus: 6.6:1 */
   --accent-fg: #ffffff;
-  --accent-soft: #dfedea;
-  --ring: #0b7f89;
-  --shadow: 0 1px 2px rgb(28 26 23 / 0.06), 0 6px 16px rgb(28 26 23 / 0.1); /* popovers, menus, drawer only */
+  --accent-soft: #e7eef8;
+  --ring: #1d5ea8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.08); /* popovers, menus, drawer only */
 
-  /* Status: fg (text, glyph), soft (fill), line (badge border). */
-  --late: #a3221b;
-  --late-soft: #f8e3dd;
-  --late-line: #e2a497;
-  --risk: #875200;
-  --risk-soft: #f6ebd2;
-  --risk-line: #d9b66e;
-  --ok: #2e6a2e;
-  --ok-soft: #e4eedc;
-  --ok-line: #a7c598;
-  --suspect: #6c3b73; /* a data problem must not look like a business problem */
-  --suspect-soft: #efe4ee;
-  --suspect-line: #c7a5c8;
-  --new: #1e4e8c;
-  --new-soft: #e1e9f3;
-  --new-line: #a4bbdb;
-  --neutral: #57514a;
-  --neutral-soft: #ebe7df;
-  --neutral-line: #cdc6b9;
+  /* Status: fg (text), soft (fill), line (border). */
+  --late: #b42318;
+  --late-soft: #fbeae8;
+  --late-line: #eeb3ac;
+  --risk: #8a5100;
+  --risk-soft: #fbf1dd;
+  --risk-line: #e2c07c;
+  --ok: #1d6a35;
+  --ok-soft: #e7f2e9;
+  --ok-line: #a3cbad;
+  --suspect: #6a3a87; /* a data problem must not look like a business problem */
+  --suspect-soft: #f3ebf7;
+  --suspect-line: #c9b1d9;
+  --new: #1d5ea8;
+  --new-soft: #e7eef8;
+  --new-line: #aac3e3;
+  --neutral: #545454;
+  --neutral-soft: #f0f0ef;
+  --neutral-line: #d1d1ce;
 
-  /* Type scale (mobile first; larger from 640 px). Display, title, answer and figures are
-     set in the serif; everything scanned is in the sans. */
-  --fs-display: 26px;
-  --lh-display: 30px;
-  --fs-title: 20px;
-  --lh-title: 26px;
-  --fs-answer: 19px;
-  --lh-answer: 28px;
-  --fs-stat: 24px;
-  --lh-stat: 28px;
+  --fs-display: 20px;
+  --lh-display: 26px;
+  --fs-title: 16px;
+  --lh-title: 22px;
+  --fs-answer: 15px;
+  --lh-answer: 23px;
+  --fs-stat: 20px;
+  --lh-stat: 26px;
 }
 
-@media (min-width: 640px) {
-  :root {
-    --fs-display: 32px;
-    --lh-display: 36px;
-    --fs-title: 22px;
-    --lh-title: 28px;
-    --fs-answer: 21px;
-    --lh-answer: 30px;
-    --fs-stat: 28px;
-    --lh-stat: 32px;
-  }
-}
-
-/* Night edition: warm ink, not near-black grey. */
 .dark {
-  --bg: #191714;
-  --bg-subtle: #131210;
-  --surface: #201e1a;
-  --surface-2: #26231e;
-  --raised: #29261f;
-  --fg: #ede8de; /* 14.7:1 */
-  --fg-muted: #b5ad9f; /* 8.0:1 */
-  --fg-faint: #9a9184; /* 5.8:1 */
-  --border: #332f29;
-  --border-strong: #4b463d;
-  --rule-ink: #8f8a81;
-  --control-border: #7a7266; /* 3.8:1 */
-  --accent: #6bbab8;
-  --accent-fg: #0e1615;
-  --accent-soft: #1a3533;
-  --ring: #7fcbc8;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 6px 16px rgb(0 0 0 / 0.4);
+  --bg: #161616;
+  --bg-subtle: #1c1c1c;
+  --surface: #1f1f1f;
+  --surface-2: #272727;
+  --raised: #222222;
+  --fg: #ebebeb; /* 15:1 */
+  --fg-muted: #ababab; /* 8.3:1 */
+  --fg-faint: #8f8f8f; /* 5.9:1 */
+  --border: #2d2d2d;
+  --border-strong: #444444;
+  --rule-ink: #444444;
+  --control-border: #767676;
+  --accent: #8ab4e8;
+  --accent-fg: #0f1722;
+  --accent-soft: #1b2738;
+  --ring: #8ab4e8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.4);
 
-  --late: #f0897c;
-  --late-soft: #3b1d18;
-  --late-line: #73332b;
-  --risk: #e3b45a;
+  --late: #f19a8f;
+  --late-soft: #3a1c18;
+  --late-line: #6e332c;
+  --risk: #e2b660;
   --risk-soft: #33280f;
-  --risk-line: #6b5321;
-  --ok: #98c784;
-  --ok-soft: #1f2b18;
-  --ok-line: #425d35;
-  --suspect: #d1a4d2;
-  --suspect-soft: #2f1f30;
-  --suspect-line: #5e405f;
-  --new: #93b8ec;
-  --new-soft: #1a2639;
-  --new-line: #36527d;
-  --neutral: #b5ad9f;
-  --neutral-soft: #27241f;
-  --neutral-line: #4b463d;
+  --risk-line: #6a5221;
+  --ok: #8fc79c;
+  --ok-soft: #1a2a1e;
+  --ok-line: #3e5e45;
+  --suspect: #cfa9e0;
+  --suspect-soft: #2c1f33;
+  --suspect-line: #5a4166;
+  --new: #8ab4e8;
+  --new-soft: #1b2738;
+  --new-line: #34507a;
+  --neutral: #ababab;
+  --neutral-soft: #242424;
+  --neutral-line: #444444;
 }
 
 @theme inline {
@@ -155,54 +138,47 @@
   --color-info: var(--new);
   --color-info-soft: var(--new-soft);
 
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-serif: var(--font-newsreader), "Iowan Old Style", Georgia, serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: var(--font-public-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --font-serif: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --shadow-card: none;
   --shadow-pop: var(--shadow);
 
-  /* Small radii only: 2 for badges and markers, 4 for buttons and inputs, 6 for popovers. */
+  /* Small radii only: 3 for everything, 4 for popovers. */
   --radius-xs: 2px;
-  --radius-sm: 2px;
+  --radius-sm: 3px;
   --radius-md: 3px;
-  --radius-lg: 4px;
-  --radius-xl: 6px;
-  --radius-2xl: 6px;
-  --radius-3xl: 6px;
+  --radius-lg: 3px;
+  --radius-xl: 4px;
+  --radius-2xl: 4px;
+  --radius-3xl: 4px;
 
-  /* Type: text-display ... text-eyebrow. Nothing below 11 px; weights 400/500/600 only. */
+  /* Type: one sans family; weight and size carry the hierarchy. Nothing below 12 px. */
   --text-display: var(--fs-display);
   --text-display--line-height: var(--lh-display);
-  --text-display--letter-spacing: -0.012em;
-  --text-display--font-weight: 500;
+  --text-display--font-weight: 600;
   --text-title: var(--fs-title);
   --text-title--line-height: var(--lh-title);
-  --text-title--letter-spacing: -0.006em;
-  --text-title--font-weight: 500;
+  --text-title--font-weight: 600;
   --text-answer: var(--fs-answer);
   --text-answer--line-height: var(--lh-answer);
-  --text-answer--letter-spacing: -0.004em;
   --text-answer--font-weight: 400;
-  --text-section: 15px;
+  --text-section: 14px;
   --text-section--line-height: 20px;
-  --text-section--letter-spacing: -0.005em;
   --text-section--font-weight: 600;
-  --text-body: 15px;
-  --text-body--line-height: 24px;
+  --text-body: 14px;
+  --text-body--line-height: 21px;
   --text-row: 14px;
   --text-row--line-height: 20px;
-  --text-meta: 13px;
-  --text-meta--line-height: 18px;
+  --text-meta: 12px;
+  --text-meta--line-height: 17px;
   --text-label: 12px;
   --text-label--line-height: 16px;
-  --text-label--letter-spacing: 0.01em;
   --text-label--font-weight: 500;
   --text-stat: var(--fs-stat);
   --text-stat--line-height: var(--lh-stat);
-  --text-stat--letter-spacing: -0.01em;
-  --text-stat--font-weight: 500;
-  --text-eyebrow: 11px;
-  --text-eyebrow--line-height: 14px;
-  --text-eyebrow--letter-spacing: 0.08em;
-  --text-eyebrow--font-weight: 600;
+  --text-stat--font-weight: 600;
+  --text-eyebrow: 12px;
+  --text-eyebrow--line-height: 16px;
+  --text-eyebrow--font-weight: 500;
 }

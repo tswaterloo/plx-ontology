@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowUpRight, CircleAlert, EyeOff, Info } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
@@ -39,7 +38,7 @@ const UNCONFIRMED_WORDS: Record<string, string> = {
   unchecked: "Not checked against its source",
 };
 
-/** The rule behind a lateness verdict, in plain words (shown behind "Rule ⓘ"). */
+/** The rule behind a lateness verdict, in plain words (shown behind "Rule"). */
 export const LATE_RULE = "Late means still open after the needed-by date, or received after it. A supplier's promise doesn't move that date.";
 
 /** Server step wording, said plainly. */
@@ -66,11 +65,11 @@ function StepSource({ source, children, label }: { source: Source | null | undef
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group -mx-2 flex w-[calc(100%+1rem)] items-start gap-2 rounded-lg px-2 py-1 text-left hover:bg-surface-2 cursor-pointer"
+        className="group -mx-2 flex w-[calc(100%+1rem)] items-start gap-2 rounded-sm px-2 py-1 text-left hover:bg-surface-2 cursor-pointer"
         aria-label={label}
       >
         <span className="min-w-0 flex-1">{children}</span>
-        <ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-muted group-hover:text-accent" aria-hidden />
+        <span className="shrink-0 text-meta text-accent group-hover:underline" aria-hidden>Source</span>
       </button>
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
     </>
@@ -100,13 +99,13 @@ function Step({ step, group }: { step: TrailStep; group?: TrailStep[] }) {
         <span>{kind.label}</span>
         {span && (
           <>
-            <span aria-hidden>·</span>
+            <span aria-hidden className="-ml-1.5">,</span>
             <time dateTime={step.at ?? undefined}>{span}</time>
           </>
         )}
         {sys && (
           <>
-            <span aria-hidden>·</span>
+            <span aria-hidden className="-ml-1.5">,</span>
             <span>{sys}</span>
           </>
         )}
@@ -117,12 +116,12 @@ function Step({ step, group }: { step: TrailStep; group?: TrailStep[] }) {
           {stepWords([step.sender ? `From ${step.sender.replace(/\s*<[^>]+>/, "")}` : null, step.detail].filter(Boolean).join(" · "))}
         </span>
       )}
-      {unconfirmed && <span className="mt-0.5 block text-meta text-muted">? {unconfirmed}</span>}
+      {unconfirmed && <span className="mt-0.5 block text-meta text-risk">{unconfirmed}</span>}
     </>
   );
   return (
     <li className="relative" data-testid="trail-step" data-kind={step.kind}>
-      <span className={cn("absolute -left-[23px] top-[7px] size-1.5 ring-[3px] ring-bg", STATUS_CLASS[kind.status].dot)} aria-hidden />
+      <span className="absolute -left-[23.5px] top-[8px] size-[7px] rounded-full border border-control bg-bg" aria-hidden />
       <StepSource source={step.source} label={`${kind.label}: ${title}. Open the evidence`}>
         {body}
       </StepSource>
@@ -199,17 +198,16 @@ function Verdict({ text, rule, check, status = "neutral", beside = [] }: { text:
   const [open, setOpen] = useState(false);
   const words = rule ? (/^rule: an open purchase order|^late means/i.test(rule) ? LATE_RULE : stepWords(rule.replace(/^Rule:\s*/, ""))) : null;
   return (
-    <div data-testid="trail-verdict" className={cn("border-l-2 py-1 pl-3", STATUS_CLASS[status].line)}>
-      <p className="text-eyebrow uppercase text-muted">Conclusion</p>
-      <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-row font-medium">
-        <span>{stepWords(text)}</span>
+    <div data-testid="trail-verdict">
+      <p className="flex flex-wrap items-baseline gap-x-2 text-row font-semibold">
+        <span className={status !== "neutral" ? STATUS_CLASS[status].fg : undefined}>{stepWords(text)}</span>
         {words && (
-          <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="inline-flex items-center gap-0.5 text-meta font-normal text-muted hover:text-fg cursor-pointer">
-            Rule <Info className="size-3.5" aria-hidden />
+          <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="text-meta font-normal text-accent hover:underline cursor-pointer">
+            Rule
           </button>
         )}
       </p>
-      {check && UNCONFIRMED_WORDS[check] && <p className="mt-0.5 text-meta text-muted">? {UNCONFIRMED_WORDS[check]}</p>}
+      {check && UNCONFIRMED_WORDS[check] && <p className="mt-0.5 text-meta text-risk">{UNCONFIRMED_WORDS[check]}</p>}
       {open && words && <p className="mt-1 text-meta text-muted">{words}</p>}
       {beside.map((b, i) => (
         <div key={i} className="mt-2 border-t border-border pt-2" data-testid="trail-verdict-beside">
@@ -257,8 +255,8 @@ export function EtaBadge({ eta }: { eta: EtaCheck }) {
       {!eta.promise && <span className="text-muted">{stepWords(eta.text)}</span>}
       {src && (src.handle || safeHref(src.open_url)) && (
         <>
-          <button type="button" onClick={() => setOpen(true)} className="text-meta font-medium text-accent hover:underline cursor-pointer">
-            Open the confirmation
+          <button type="button" onClick={() => setOpen(true)} className="text-meta text-accent hover:underline cursor-pointer">
+            Open confirmation
           </button>
           {open && <EvidenceDrawer source={src} open={open} onOpenChange={setOpen} />}
         </>
@@ -283,13 +281,13 @@ export function NextActionCard({ action, title = "Who to chase" }: { action: Nex
       <p className="mt-1 text-fg">{stepWords(action.text)}</p>
       {src && (src.handle || safeHref(src.open_url)) && (
         <>
-          <button type="button" onClick={() => setOpen(true)} className="mt-1 text-meta font-medium text-accent hover:underline cursor-pointer">
-            Open the last message from them
+          <button type="button" onClick={() => setOpen(true)} className="mt-1 text-meta text-accent hover:underline cursor-pointer">
+            Open their last message
           </button>
           {open && <EvidenceDrawer source={src} open={open} onOpenChange={setOpen} />}
         </>
       )}
-      <p className="mt-2 text-meta text-muted">A suggestion only: nothing has been sent or changed.</p>
+      <p className="mt-1 text-meta text-muted">Nothing is sent or changed from here.</p>
     </section>
   );
 }
@@ -304,8 +302,7 @@ export function hiddenText(count: number, mayBeMore: boolean): string | null {
 function Hidden({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <p className="flex items-center gap-1.5 text-meta text-muted" data-testid="trail-hidden">
-      <EyeOff className="size-3.5" aria-hidden />
+    <p className="text-meta text-muted" data-testid="trail-hidden">
       {text}
     </p>
   );
@@ -335,16 +332,11 @@ export function PoTrailView({ trail, showSubject = true, showNext = true, showEt
       )}
       {verdict && <Verdict text={verdict} rule={verdictStep?.detail ?? (trail.state ? LATE_RULE : null)} check={verdictStep?.check} status={late?.status} beside={beside} />}
       {showEta && trail.eta && <EtaBadge eta={trail.eta} />}
-      <Steps steps={trail.steps ?? []} label={`How we know: ${trail.subject.label}`} />
+      <Steps steps={trail.steps ?? []} label={`Evidence: ${trail.subject.label}`} />
       <Hidden text={hiddenText(trail.hidden_steps ?? 0, !!trail.may_hide_more)} />
       {(trail.not_found ?? []).filter((n) => !verdict || !reasonKey(verdict).includes(reasonKey(n.where_it_would_live)) || !reasonKey(n.where_it_would_live)).map((n, i) => (
-        <p key={i} className="flex gap-1.5 text-meta text-muted">
-          <span className="text-risk" aria-hidden>
-            ?
-          </span>
-          <span>
-            {readable(n.what)}: {readable(n.where_it_would_live)}
-          </span>
+        <p key={i} className="text-meta text-muted">
+          <span className="text-fg">{readable(n.what)}:</span> {readable(n.where_it_would_live)}
         </p>
       ))}
       {showNext && trail.next_action && <NextActionCard action={trail.next_action} />}
@@ -359,11 +351,11 @@ function Materials({ rows }: { rows: MaterialRow[] }) {
       <table className="w-full text-row" data-testid="materials">
         <caption className="sr-only">Purchase orders of the order's materials, late first</caption>
         <thead>
-          <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
-            <th scope="col" className="px-2 font-semibold">Material</th>
-            <th scope="col" className="font-semibold">Assembly</th>
-            <th scope="col" className="font-semibold">PO</th>
-            <th scope="col" className="px-2 text-right font-semibold">Status</th>
+          <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
+            <th scope="col" className="px-2 font-medium">Material</th>
+            <th scope="col" className="font-medium">Assembly order</th>
+            <th scope="col" className="font-medium">PO</th>
+            <th scope="col" className="px-2 text-right font-medium">Status</th>
           </tr>
         </thead>
         <tbody>
@@ -377,7 +369,7 @@ function Materials({ rows }: { rows: MaterialRow[] }) {
                 </Link>
               </td>
               <td className="px-2 py-2 text-right" title={r.verdict ?? undefined}>
-                {r.state ? <StatusWord shown={{ ...lateness(r.state, r.days_late)!, label: stateWords(r.state, r.days_late, true) }} /> : <StatusWord status="neutral" label="Lateness not read" />}
+                {r.state ? <StatusWord shown={{ ...lateness(r.state, r.days_late)!, label: stateWords(r.state, r.days_late, true) }} /> : <StatusWord status="neutral" label="Not checked" />}
               </td>
             </tr>
           ))}
@@ -432,17 +424,16 @@ export function EvidenceTrailCard({
   return (
     <section
       className={cn("space-y-4", !bare && "border-t border-rule pb-2")}
-      aria-label="How we know"
+      aria-label="Evidence"
       data-testid="evidence-trail"
     >
-      {!bare && <h2 className="-mb-1 flex min-h-11 items-center text-section">How we know</h2>}
+      {!bare && <h2 className="-mb-1 flex min-h-10 items-center text-section">Evidence</h2>}
       {/^how we know/i.test(trail.title) ? <p className="sr-only">{trail.title}</p> : <p className="text-meta text-muted">{readable(trail.title)}</p>}
       <Materials rows={rows} />
       {gaps.length > 0 && (
         <ul className="space-y-1 text-meta text-muted" data-testid="trail-gaps">
           {gaps.map((g, i) => (
-            <li key={i} className="flex gap-1.5">
-              <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-risk" aria-hidden />
+            <li key={i}>
               <span>
                 <span className="text-fg">{readable(g.what)}</span>
                 {g.state === "note"
@@ -463,13 +454,12 @@ export function EvidenceTrailCard({
       {trail.kind === "why" ? (
         <>
           {trail.complete === false && (
-            <p className="flex items-center gap-1.5 text-meta text-muted" data-testid="trail-incomplete">
-              <CircleAlert className="size-3.5 text-risk" aria-hidden />
-              Only the latest steps are shown; the record has more.
+            <p className="text-meta text-muted" data-testid="trail-incomplete">
+              Latest steps only; the record has more.
             </p>
           )}
           <Hidden text={hiddenText(trail.hidden_steps ?? 0, !!trail.may_hide_more)} />
-          {showNext && trail.next_action && <NextActionCard action={trail.next_action} title="Suggested next step" />}
+          {showNext && trail.next_action && <NextActionCard action={trail.next_action} title="Next step" />}
         </>
       ) : (
         (trail.kind !== "purchase_order" || trails.length !== 1) && (

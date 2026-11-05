@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, MessageSquarePlus, Package, Square, Truck, User, X, type LucideIcon } from "lucide-react";
+import { Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Truck, User, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { suggest as fetchSuggest } from "@/lib/api";
@@ -153,7 +153,7 @@ export function spanFor(phrase: { start: number; end: number; text: string }, la
 export function AskBox({
   onSubmit,
   size = "lg",
-  placeholder = "Ask anything about orders, suppliers, customers, lots…",
+  placeholder = "Question about a PO, SO, supplier or lot",
   autoFocus,
   disabled,
   busy,
@@ -370,7 +370,7 @@ export function AskBox({
         {pins.length > 0 && (
           <div className="flex flex-wrap gap-1 px-2 pt-1" aria-label="Picked items">
             {pins.map((p) => (
-              <span key={p.object_id} className="inline-flex items-center gap-0.5 rounded-sm bg-accent-soft py-0.5 pl-1.5 text-label text-accent">
+              <span key={p.object_id} className="inline-flex items-center gap-0.5 rounded-sm border border-border-strong py-0.5 pl-1.5 text-meta text-fg">
                 {p.label}
                 <button
                   type="button"
@@ -416,9 +416,9 @@ export function AskBox({
               type="button"
               onClick={onStop}
               aria-label="Stop answering"
-              className="mb-1 flex size-8 shrink-0 items-center justify-center rounded bg-fg text-bg transition-opacity hover:opacity-85 cursor-pointer"
+              className="mb-1 h-8 shrink-0 rounded-sm border border-control px-3 text-row text-fg hover:bg-surface-2 cursor-pointer"
             >
-              <Square className="size-3.5 fill-current" aria-hidden />
+              Stop
             </button>
           ) : (
             <button
@@ -427,11 +427,11 @@ export function AskBox({
               disabled={!value.trim() || disabled || busy}
               aria-disabled={!value.trim() || disabled || busy}
               className={cn(
-                "flex shrink-0 items-center justify-center rounded bg-accent text-accent-fg transition-colors hover:brightness-110 disabled:bg-transparent disabled:text-faint cursor-pointer disabled:cursor-default",
-                size === "sm" ? "m-0.5 size-[30px]" : "mb-1 size-8",
+                "shrink-0 rounded-sm bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110 disabled:bg-surface-2 disabled:text-faint cursor-pointer disabled:cursor-default",
+                size === "sm" ? "m-0.5 h-[30px]" : "mb-1 h-8",
               )}
             >
-              <ArrowUp className="size-4" aria-hidden />
+              Ask
             </button>
           )}
         </div>
@@ -442,7 +442,7 @@ export function AskBox({
         aria-label="Suggestions"
         hidden={!open || items.length === 0}
         className={cn(
-          "absolute inset-x-0 z-40 max-h-80 overflow-auto rounded-xl border border-border bg-raised p-1.5 shadow-pop animate-fade-in",
+          "absolute inset-x-0 z-40 max-h-80 overflow-auto rounded border border-border-strong bg-raised p-1 shadow-pop",
           up ? "bottom-full mb-2" : "top-full mt-2",
         )}
         data-testid="suggestions"
@@ -452,7 +452,6 @@ export function AskBox({
           Records
         </li>
         {items.map((s, i) => {
-          const Icon = typeIcon(s.type);
           const sub = [typeLabel(s.type), s.facts ?? s.sublabel].filter(Boolean).join(" · ");
           return (
             <Fragment key={`${s.object_id}-${i}`}>
@@ -472,26 +471,18 @@ export function AskBox({
               }}
               onMouseEnter={() => setActive(i)}
               className={cn(
-                "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-row",
+                "flex cursor-pointer items-center gap-3 rounded-sm px-3 py-1.5 text-row",
                 i === active ? "bg-surface-2" : "",
               )}
               data-type={s.type}
             >
-              <span className="flex size-7 shrink-0 items-center justify-center text-faint">
-                <Icon className="size-4" strokeWidth={1.5} aria-hidden />
-              </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-fg">{recordLabel(s.type, s.label)}</span>
                 <span className="block truncate text-meta text-muted">{sub}</span>
               </span>
               {(s.systems ?? []).length > 0 && (
-                <span className="hidden shrink-0 items-center gap-2 text-meta text-muted sm:inline-flex" aria-label={`Found in ${s.systems!.join(" and ")}`}>
-                  {s.systems!.map((x) => (
-                    <span key={x} className="inline-flex items-center gap-1">
-                      <span className="size-1 bg-faint" aria-hidden />
-                      {x}
-                    </span>
-                  ))}
+                <span className="hidden shrink-0 text-meta text-muted sm:inline" aria-label={`Found in ${s.systems!.join(" and ")}`}>
+                  {s.systems!.join(", ")}
                 </span>
               )}
               <button
@@ -504,11 +495,10 @@ export function AskBox({
                   e.stopPropagation();
                   pick(s);
                 }}
-                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-meta text-muted hover:border-accent hover:text-accent cursor-pointer"
+                className="min-h-7 shrink-0 rounded-sm border border-border-strong px-2 py-0.5 text-meta text-fg hover:bg-surface-2 cursor-pointer"
                 data-testid="ask-about"
               >
-                <MessageSquarePlus className="size-3.5" aria-hidden />
-                <span className="hidden sm:inline">Ask about</span>
+                Ask
               </button>
             </li>
             </Fragment>
@@ -516,14 +506,14 @@ export function AskBox({
         })}
       </ul>
       {searching && !open && (
-        <p className={cn("absolute inset-x-0 z-40 rounded-xl border border-border bg-raised px-3 py-2 text-meta text-muted shadow-pop", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
+        <p className={cn("absolute inset-x-0 z-40 rounded border border-border-strong bg-raised px-3 py-2 text-meta text-muted shadow-pop", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
           Searching…
         </p>
       )}
       {empty && !open && (
         <p
           className={cn(
-            "absolute inset-x-0 z-40 rounded-xl border border-border bg-surface px-3 py-2 text-meta text-muted shadow-pop",
+            "absolute inset-x-0 z-40 rounded border border-border-strong bg-raised px-3 py-2 text-meta text-muted shadow-pop",
             up ? "bottom-full mb-2" : "top-full mt-2",
           )}
           role="status"

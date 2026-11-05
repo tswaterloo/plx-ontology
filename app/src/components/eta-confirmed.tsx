@@ -10,14 +10,13 @@ import type { EtaCheck, ObjectRef, PromiseLine, Source } from "@/lib/types";
 import { EvidenceDrawer } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 
-/** A status that may run longer than three words (it wraps on a narrow screen): a small square in its colour and the words. */
+/** A status that may run longer than three words (it wraps on a narrow screen): the words in its colour. */
 export function EtaPill({ shown, className, testId, quiet = false }: { shown: EtaShown | null; className?: string; testId?: string; quiet?: boolean }) {
   if (!shown) return null;
   const c = STATUS_CLASS[shown.status];
   // quiet: the same status down a whole column is said once above it, then in plain muted words
   return (
-    <span data-status={shown.status} data-testid={testId} className={cn("inline-flex items-baseline gap-1.5 text-label", quiet ? "text-muted" : cn("font-medium", shown.status === "neutral" ? "text-muted" : c.fg), className)}>
-      {!quiet && <span className={cn("size-1.5 shrink-0 translate-y-[-1px] self-center", c.dot)} aria-hidden />}
+    <span data-status={shown.status} data-testid={testId} className={cn("inline-flex items-baseline text-meta", quiet ? "text-muted" : cn(shown.status === "neutral" ? "text-muted" : cn("font-medium", c.fg)), className)}>
       {shown.label}
     </span>
   );
@@ -29,7 +28,7 @@ function Evidence({ source, label }: { source: Source | null | undefined; label:
   if (!source || !(source.handle || safeHref(source.open_url))) return null;
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)} className="whitespace-nowrap text-meta font-medium text-accent hover:underline cursor-pointer">
+      <button type="button" onClick={() => setOpen(true)} className="whitespace-nowrap text-meta text-accent hover:underline cursor-pointer">
         {label}
       </button>
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
@@ -68,15 +67,15 @@ export function EtaCard({ eta }: { eta: EtaCheck | null | undefined }) {
   return (
     <Card data-testid="eta-card">
       <CardHeader>
-        <CardTitle>ETA confirmed?</CardTitle>
+        <CardTitle>Supplier confirmation</CardTitle>
       </CardHeader>
       <CardBody className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <EtaPill shown={shown} testId="eta-badge" />
           <EtaPill shown={late} testId="eta-late" />
-          <Evidence source={source} label={p?.link === "unconfirmed_link" || eta.state === "lead_only" ? "Open the possible confirmation" : "Open the confirmation"} />
+          <Evidence source={source} label={p?.link === "unconfirmed_link" || eta.state === "lead_only" ? "Open possible confirmation" : "Open confirmation"} />
         </div>
-        {p?.link === "unconfirmed_link" && <p className="text-meta text-muted">The document names this PO, but its link to it isn&apos;t confirmed, so its date isn&apos;t counted.</p>}
+        {p?.link === "unconfirmed_link" && <p className="text-meta text-muted">The document mentions this PO but isn&apos;t linked to it, so its date isn&apos;t used.</p>}
         {!p && eta.text && <p className="text-meta text-muted">{eta.text}</p>}
         {lines.length > 0 && (
           <ul className="divide-y divide-border border-t border-border text-row" aria-label="Promised date per line">

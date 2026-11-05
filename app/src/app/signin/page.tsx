@@ -1,6 +1,5 @@
 "use client";
 
-import { ChevronDown, FlaskConical, Loader2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth";
@@ -90,16 +89,12 @@ function SignIn() {
         <Logo />
         <ThemeToggle />
       </div>
-      <main id="main" className="flex flex-1 items-start justify-center px-4 pt-[14vh] pb-16">
-        <div className="w-full max-w-[360px]">
-          <div className="space-y-2 border-b border-rule pb-5">
-            <p className="text-eyebrow uppercase text-muted">PLX Workbench</p>
+      <main id="main" className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-8 pb-16 sm:px-8 sm:pt-16">
+        <div className="w-full max-w-[380px]">
+          <div className="border-b border-border pb-3">
             <h1 className="text-display">Sign in</h1>
-            <p className="text-row text-muted">
-              Orders, suppliers, customers and lots across Business Central, the Portal, mail, Teams and files, each answer with its sources.
-            </p>
           </div>
-          <div className="space-y-4 pt-6">
+          <div className="space-y-4 pt-4">
             {state.status === "loading" || state.status === "signed-in" ? (
               <Pending label="Checking your session" />
             ) : state.status === "error" ? (
@@ -110,7 +105,7 @@ function SignIn() {
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="h-10 w-full rounded border border-control text-row font-medium hover:bg-surface cursor-pointer"
+                  className="h-9 w-full rounded-sm border border-control text-row hover:bg-surface cursor-pointer"
                 >
                   Sign out and use another account
                 </button>
@@ -121,21 +116,19 @@ function SignIn() {
                   type="button"
                   onClick={microsoft}
                   disabled={!entra || busy}
-                  className="flex h-10 w-full items-center justify-center gap-3 rounded border border-control bg-surface text-row font-medium text-fg transition-colors hover:bg-raised disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
+                  className="flex h-9 w-full items-center justify-center gap-2.5 rounded-sm border border-control bg-bg text-row font-medium text-fg hover:bg-surface disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
                 >
-                  {busy && entra ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <MicrosoftMark />}
-                  Sign in with Microsoft
+                  <MicrosoftMark />
+                  {busy && entra ? "Signing in…" : "Sign in with Microsoft"}
                 </button>
                 <p className="text-meta text-muted">
                   {entra
-                    ? "Use your PLX work account. You'll only see what your role allows."
+                    ? "Use your PLX work account. You see only what your role allows."
                     : "Microsoft sign-in is off on this demo server."}
                 </p>
                 {devAvailable && (
                   <div className="space-y-3 border-t border-border pt-4">
-                    <p className="flex items-center gap-1.5 text-eyebrow uppercase text-risk">
-                      <FlaskConical className="size-3.5" strokeWidth={1.5} aria-hidden /> Demo server
-                    </p>
+                    <p className="text-meta font-semibold text-risk">Demo server</p>
                     {note && <p className="text-row text-muted">{note}</p>}
                     <form
                       className="space-y-3"
@@ -155,24 +148,23 @@ function SignIn() {
                             autoComplete="off"
                             value={ticket}
                             onChange={(e) => setTicket(e.target.value.replace(/^.*#(?:ticket|access)=/, ""))}
-                            className="h-10 w-full rounded border border-control bg-surface px-3 text-row focus:border-fg"
+                            className="h-9 w-full rounded-sm border border-control bg-bg px-3 text-row focus:border-fg"
                           />
                         </div>
                       ) : (
                         <button
                           type="button"
                           onClick={() => setShowTicket(true)}
-                          className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer"
+                          className="text-meta text-accent hover:underline cursor-pointer"
                         >
-                          <ChevronDown className="size-3" aria-hidden /> I have an access link
+                          Use an access link
                         </button>
                       )}
                       <button
                         type="submit"
                         disabled={busy || (showTicket && !ticket.trim())}
-                        className="flex h-10 w-full items-center justify-center gap-2 rounded bg-accent text-row font-medium text-accent-fg hover:brightness-110 disabled:opacity-50 cursor-pointer"
+                        className="h-9 w-full rounded-sm bg-accent text-row font-medium text-accent-fg hover:brightness-110 disabled:opacity-50 cursor-pointer"
                       >
-                        {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
                         Continue with demo sign-in
                       </button>
                     </form>

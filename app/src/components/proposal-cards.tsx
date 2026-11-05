@@ -5,7 +5,6 @@
 // built here); a proposed update is a before/after the person applies in BC or the Portal.
 // Nothing here sends mail or writes to any system.
 
-import { ArrowRight, Copy, Mail } from "lucide-react";
 import { useState } from "react";
 import { formatDate } from "@/lib/format";
 import { draftText, mailtoHref } from "@/lib/proposals";
@@ -47,11 +46,11 @@ function Draft({ p }: { p: Proposal }) {
       </label>
       <textarea className={`${field} min-h-56 font-sans`} value={body} onChange={(e) => setBody(e.target.value)} aria-label="Draft text" />
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={copy} className="inline-flex h-8 items-center gap-1.5 rounded border border-control px-3 text-row hover:bg-surface-2 cursor-pointer">
-          <Copy className="size-4" aria-hidden /> {copied ? "Copied" : "Copy"}
+        <button type="button" onClick={copy} className="h-8 rounded-sm border border-control px-3 text-row hover:bg-surface-2 cursor-pointer">
+          {copied ? "Copied" : "Copy"}
         </button>
-        <a href={mailtoHref(to, subject, body)} className="inline-flex h-8 items-center gap-1.5 rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110" data-testid="open-in-outlook">
-          <Mail className="size-4" aria-hidden /> Open in Outlook
+        <a href={mailtoHref(to, subject, body)} className="inline-flex h-8 items-center rounded-sm bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110" data-testid="open-in-outlook">
+          Open in Outlook
         </a>
       </div>
     </div>
@@ -77,7 +76,6 @@ function Change({ p }: { p: Proposal }) {
           <tr>
             <th scope="row" className="py-1.5 pr-4 text-left font-normal text-muted">Proposed</th>
             <td className="py-1.5 font-medium tabular-nums">
-              <ArrowRight className="mr-1 inline size-3.5" aria-hidden />
               {dateOr(c.after)}
               <span className="mt-1 block font-normal sm:hidden"><SourceChips sources={[c.evidence]} max={1} /></span>
             </td>
@@ -86,7 +84,7 @@ function Change({ p }: { p: Proposal }) {
         </tbody>
       </table>
       <p className="text-row">{c.why}</p>
-      <p className="text-meta text-muted">Apply it yourself in {SYSTEM_NAME[c.system] ?? c.system}; the Workbench writes nothing.</p>
+      <p className="text-meta text-muted">Make the change in {SYSTEM_NAME[c.system] ?? c.system}. The Workbench doesn&apos;t write to it.</p>
     </div>
   );
 }
@@ -98,18 +96,18 @@ function ProposalCard({ p }: { p: Proposal }) {
     <Panel data-testid="proposal" data-kind={p.kind}>
       <div className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-2.5">
         <h3 className="text-row font-semibold">{p.title}</h3>
-        <span className="shrink-0 text-eyebrow uppercase text-faint">{p.kind === "record_update" ? "Proposed update" : "Draft"}</span>
+        <span className="shrink-0 text-meta text-muted">{p.kind === "record_update" ? "Proposed update" : "Draft, not sent"}</span>
       </div>
       <div className="space-y-3 p-4">
         {p.change ? <Change p={p} /> : <Draft p={p} />}
         {missing.length > 0 && (
           <p className="text-meta text-risk" data-testid="proposal-missing">
-            Not in the records you can see: {missing.join("; ")}.
+            Not on record: {missing.join("; ")}.
           </p>
         )}
         {!p.change && cited.length > 0 && (
           <details className="text-meta text-muted">
-            <summary className="cursor-pointer">Where each figure comes from</summary>
+            <summary className="cursor-pointer">Sources for each figure</summary>
             <ul className="mt-1 space-y-1">
               {cited.map((f, i) => (
                 <li key={i} className="flex flex-wrap items-center gap-2">
@@ -131,8 +129,8 @@ export function ProposalCards({ proposals }: { proposals: Proposal[] | null | un
   return (
     <section id="proposals" className="scroll-mt-20 space-y-3 border-t border-rule" aria-label="Proposed follow-ups" data-testid="proposals">
       <div className="pt-2.5">
-        <h2 className="text-section">Proposed follow-ups</h2>
-        <p className="mt-1 text-meta text-muted">Drafted from the records below. Nothing is sent or changed: edit, copy or open it in your own mail client.</p>
+        <h2 className="text-section">Drafts</h2>
+        <p className="mt-0.5 text-meta text-muted">Nothing is sent or changed from here. Edit, copy, or open in Outlook.</p>
       </div>
       {proposals.map((p) => (
         <ProposalCard key={p.id} p={p} />

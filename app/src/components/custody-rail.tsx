@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowUpRight } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/cn";
 import { brokenScale, dayLabel, yearOf, type Custody, type CustodyEvent, type Track, type MarkKind } from "@/lib/custody";
@@ -76,7 +75,7 @@ function useWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] 
   return [ref, w];
 }
 
-export function CustodyRail({ custody, title = "Chain of custody" }: { custody: Custody; title?: string }) {
+export function CustodyRail({ custody, title = "Timeline" }: { custody: Custody; title?: string }) {
   const [box, width] = useWidth<HTMLDivElement>();
   const { events } = custody;
   // the focused event: the latest by default (what a reader wants first)
@@ -90,9 +89,9 @@ export function CustodyRail({ custody, title = "Chain of custody" }: { custody: 
         <h2 className="text-section">{title}</h2>
         <p className="text-meta text-muted">
           {events.length} events
-          {custody.due !== null && <> · needed by {dayLabel(custody.due, yearOf(custody.today))}</>}
-          {lateDays !== null && lateDays > 0 && <span className="font-medium text-late"> · {lateDays} days late</span>}
-          {custody.promises.length > 1 && <> · promise moved {custody.promises.length - 1}×</>}
+          {custody.due !== null && <>, needed by {dayLabel(custody.due, yearOf(custody.today))}</>}
+          {lateDays !== null && lateDays > 0 && <>, <span className="text-late">{lateDays} days late</span></>}
+          {custody.promises.length > 1 && <>, promise moved {custody.promises.length - 1} times</>}
         </p>
       </div>
       <div ref={box} className="min-w-0">
@@ -105,12 +104,12 @@ export function CustodyRail({ custody, title = "Chain of custody" }: { custody: 
       {width >= 560 && focused && (
         <p className="flex min-h-9 flex-wrap items-baseline gap-x-2 border-t border-border py-2 text-meta" aria-live="polite" data-testid="custody-readout">
           <span className="tabular-nums text-muted">{formatDateTime(focused.at)}</span>
-          <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-faint">{TRACK_TAG[focused.track]}</span>
+          <span className="text-[11px] font-medium text-faint">{TRACK_TAG[focused.track]}</span>
           <span className="font-medium text-fg">{readable(focused.title).replace(/^bc\b/i, "BC")}</span>
-          {focused.detail && <span className="min-w-0 truncate font-serif text-[14px] italic text-muted">{readable(focused.detail)}</span>}
+          {focused.detail && <span className="min-w-0 truncate text-meta text-muted">{readable(focused.detail)}</span>}
           {focused.source && (
             <button type="button" onClick={() => setOpen(focused)} className="ml-auto inline-flex items-center gap-0.5 font-medium text-accent hover:underline cursor-pointer">
-              Open source <ArrowUpRight className="size-3.5" aria-hidden />
+              Open source
             </button>
           )}
         </p>
@@ -219,7 +218,7 @@ function Chart({
         const empty = !events.some((e) => e.track === l);
         return (
           <g key={l}>
-            <text x={0} y={trackY(l) + 4} className="fill-muted text-[10px] font-semibold uppercase tracking-[0.06em]">
+            <text x={0} y={trackY(l) + 4} className="fill-muted text-[11px] font-medium">
               {TRACK_TAG[l]}
             </text>
             <line x1={GUTTER} x2={width - PAD_R} y1={trackY(l)} y2={trackY(l)} className="stroke-border" strokeDasharray={empty ? "1 3" : undefined} />
@@ -247,7 +246,7 @@ function Chart({
       {/* the supplier's promise, as it moved: dashed from each promised day to the next, the slip labelled */}
       {hasPromises && (
         <g>
-          <text x={0} y={TOP + PROMISE_H / 2 + 4} className="fill-muted text-[10px] font-semibold uppercase tracking-[0.06em]">
+          <text x={0} y={TOP + PROMISE_H / 2 + 4} className="fill-muted text-[11px] font-medium">
             Promised
           </text>
           {promises.map((p, i) => {
@@ -279,14 +278,14 @@ function Chart({
       {due !== null && (
         <g>
           <line x1={x(due)} x2={x(due)} y1={TOP - 14} y2={bottom} className="stroke-fg" />
-          <text x={x(due) + 4} y={TOP - 18} className="fill-fg text-[10px] font-semibold uppercase tracking-[0.06em]">
+          <text x={x(due) + 4} y={TOP - 18} className="fill-fg text-[11px] font-medium">
             Needed {dayLabel(due, thisYear)}
           </text>
         </g>
       )}
       <g>
         <line x1={x(today)} x2={x(today)} y1={TOP - 14} y2={bottom} className="stroke-accent" strokeDasharray="2 2" />
-        <text x={x(today) - 4} y={TOP - 18} textAnchor="end" className="fill-accent text-[10px] font-semibold uppercase tracking-[0.06em]">
+        <text x={x(today) - 4} y={TOP - 18} textAnchor="end" className="fill-accent text-[11px] font-medium">
           {custody.stale ? "As of" : "Today"} {dayLabel(today, thisYear)}
         </text>
       </g>
@@ -360,7 +359,7 @@ function Spine({ custody, onOpen }: { custody: Custody; onOpen: (e: CustodyEvent
               </span>
             </span>
             {r.kind === "marker" ? (
-              <p className={cn("min-h-11 pt-2.5 pl-2 text-eyebrow uppercase", r.tone === "accent" ? "text-accent" : "text-fg")}>
+              <p className={cn("min-h-11 pt-2.5 pl-2 text-label", r.tone === "accent" ? "text-accent" : "text-fg")}>
                 {r.label}
                 {r.tone === "accent" && gap && gap[1] === today && <span className="ml-2 normal-case tracking-normal text-late">{gap[1] - gap[0]} days late</span>}
               </p>
@@ -372,10 +371,10 @@ function Spine({ custody, onOpen }: { custody: Custody; onOpen: (e: CustodyEvent
                 className="min-h-11 py-2 pl-2 text-left disabled:cursor-default cursor-pointer"
               >
                 <span className="block text-row">
-                  <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-faint">{TRACK_TAG[r.e.track]}</span>
+                  <span className="mr-1.5 text-[11px] font-medium text-faint">{TRACK_TAG[r.e.track]}</span>
                   {readable(r.e.title)}
                 </span>
-                {r.e.detail && <span className="block font-serif text-[14px] italic leading-5 text-muted">{readable(r.e.detail)}</span>}
+                {r.e.detail && <span className="block text-meta leading-5 text-muted">{readable(r.e.detail)}</span>}
                 <span className="sr-only">{MARK_WORD[r.e.mark]}</span>
               </button>
             )}

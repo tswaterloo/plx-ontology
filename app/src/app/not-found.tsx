@@ -4,12 +4,11 @@ import { AppShell } from "@/components/shell";
 export default function NotFound() {
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-[12vh] pb-16 sm:px-8">
-        <div className="max-w-[560px] space-y-3">
-          <p className="text-eyebrow uppercase text-muted">Page not found</p>
-          <h1 className="text-display">We couldn&apos;t find that page</h1>
-          <p className="text-body text-muted">The link may be old, or the number may be off by a digit. Search above, or go back to Today.</p>
-          <Link href="/" className="mt-2 inline-flex h-8 items-center rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110">
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 pb-16 sm:px-8">
+        <div className="max-w-[560px] space-y-2">
+          <h1 className="border-b border-border pb-3 text-display">Page not found</h1>
+          <p className="text-row text-muted">Check the address or the record number, or search for it above.</p>
+          <Link href="/" className="inline-block text-row text-accent hover:underline">
             Go to Today
           </Link>
         </div>
