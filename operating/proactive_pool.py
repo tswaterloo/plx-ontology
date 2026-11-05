@@ -139,8 +139,10 @@ def _init(spec: WorkerSpec) -> None:
     runtime = live.offline_runtime(Path(spec.state_dir), Path(spec.mirror_audience),
                                    spec.tenant, live=readers, environ=env)
     actor = Actor(spec.tenant, frozenset({spec.principal}), "restricted")
+    from .proactive_engine import engine_marking_grants
     session = live._Session(runtime, actor, AudienceMap.from_file(Path(spec.mirror_audience)),
-                            Path(spec.store), captures=Path(spec.state_dir))
+                            Path(spec.store), captures=Path(spec.state_dir),
+                            marking_grants=engine_marking_grants(actor))
 
     def close() -> None:
         session.close()

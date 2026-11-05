@@ -441,6 +441,83 @@ class DetectorTest(Case):
         # a reader without finance may not open the figure: never sees the loss
         self.assertNotIn("negative_margin", self.events(held=frozenset()))
 
+    def test_negative_margin_is_read_with_finance_and_cited_at_its_value_markings(self):
+        """The store marks a figure's money on its value, not its record: the engine's own
+        sessions hold finance (else every margin is withheld) and the loss is cited at the
+        value's markings, so a reader without finance never sees it."""
+        from decimal import Decimal
+        from ontology.core import Actor
+        from operating import case_workspace_live as live
+        from operating import proactive_pool
+        w = World()
+        loser = w.obj("SalesOrder", {})
+        invoice = w.obj("SalesInvoice", {"posting_date": "2026-10-10", "subtotal": "100"})
+        figure = handle(w.n)
+        for row in w.rows["object_values"]:
+            if row["object_id"] == invoice and row["property"] == "subtotal":
+                row["markings"] = '["finance"]'
+        w.link("SalesInvoice.bills", invoice, loser)
+
+        def read_order(_call, order):
+            order.margin, order.revenue, order.cost = (Decimal("-1"), Decimal("100"),
+                                                       Decimal("101"))
+            order.currency = "CAD"
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figure])]
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        self.assertEqual([g["object_id"] for g in self.events()["negative_margin"]], [loser])
+        self.assertNotIn("negative_margin", self.events(held=ALL - {"finance"}))
+
+        engine = Actor("plx", frozenset({"svc:engine"}), "restricted")
+        held = {"finance": ["svc:engine"]}
+        with mock.patch.object(live, "_Session") as session, \
+                mock.patch.object(pe, "run", return_value={}):
+            pe.refresh(mock.Mock(), engine, None, self.store, AS_OF, captures=None,
+                       scan_coverage=False)
+        self.assertEqual(session.call_args.kwargs["marking_grants"], held)
+        spec = proactive_pool.WorkerSpec("/state", str(self.store), "plx", "svc:engine",
+                                         "/mirror.json", None)
+        with mock.patch.object(live, "_Session") as session, \
+                mock.patch.object(live, "offline_runtime"), \
+                mock.patch("integrations.source_mirror.AudienceMap.from_file"), \
+                mock.patch.object(proactive_pool, "_CALL", None):
+            proactive_pool._init(spec)
+        self.assertEqual(session.call_args.kwargs["marking_grants"], held)
+
+    def test_vendor_term_over_a_marked_price_is_shown_only_to_price_readers(self):
+        """A reply's price that differs from a PO line's price tells what the hidden price
+        is not: the line is cited at its values' markings, and a price (one the system
+        leaves empty included) at purchasing_prices."""
+        for marked in (True, False):
+            with self.subTest(marked=marked):
+                w = World()
+                order = po_with(w)
+                line = w.obj("PurchaseOrderLine", {"unit_price": "11.00"} if marked else {})
+                for row in w.rows["object_values"]:
+                    if row["object_id"] == line and row["property"] == "unit_price":
+                        row["markings"] = '["purchasing_prices"]'
+                request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z",
+                                          "conversation_id": "c1"}, audience="mail:box")
+                w.link("Email.mentions_purchase_order", request, order, "lead")
+                reply = handle(w.n)
+                word = "differs" if marked else "fills"
+
+                def call(_tool, _args, word=word, request=request, line=line, reply=reply):
+                    return {"answer": [{
+                        "name": "replies_1", "kind": "computed",
+                        "value": {"untrusted_text": "price 12.50 USD per kg",
+                                  "origin": {"citation": reply}},
+                        "steps": [f"proposed update ({word}): price 12.50 USD per kg"],
+                        "basis": [request, line]}]}
+
+                self.run_engine(w, call=call)
+                self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 1)
+                self.assertNotIn("vendor_terms_unapplied",
+                                 self.events(held=ALL - {"finance", "purchasing_prices"}))
+                self.inbox.unlink()
+
     def test_slow_investigations_share_the_time_and_keep_what_they_found(self):
         """Each investigation can take minutes on a full store: the three tool-call event
         detectors share what is left in turn, so a slow vendor-mail scan never leaves the

@@ -85,7 +85,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                 full = {"state": "ran", **{key: ran.get(key) for key in (
                     "detectors", "detector_reasons", "gaps_found")}}
         left = seconds - (monotonic() - started)
-        session = live._Session(runtime, actor, audience, store, captures=state_dir)
+        session = live._Session(runtime, actor, audience, store, captures=state_dir,
+                                marking_grants=pe.engine_marking_grants(actor))
         try:
             found = pe.run(store, pe.inbox_path(store), day, call=session,
                            budget=pe.Budget(max(left, 1.0),

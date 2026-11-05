@@ -77,7 +77,7 @@ CALL_BOUND_REASON = "event_bound"
 APART_REASON = "read_apart"   # left to the separate vendor-mail pass
 NO_REPLY_DAYS = 7    # F28's threshold: a request waiting this long is overdue
 CACHE_DAYS = 14      # a vendor-mail reading is redone at least this often
-CACHE_VERSION = 1    # bump when what a reading means changes: every root is read again
+CACHE_VERSION = 2    # bump when what a reading means changes: every root is read again
 
 REVISED_DATES = {"PurchaseOrder": ("expected_date",),
                  "PurchaseOrderLine": ("bc_expected_receipt_date",)}
@@ -641,11 +641,14 @@ def _findings(run: Mapping[str, Any], family: str, skipped: Counter) -> list[dic
             continue
         steps = [str(s.get("text") if isinstance(s, Mapping) else s)
                  for s in entry.get("steps") or ()]
-        kind = next((("differs" if "(differs)" in s else "fills") for s in steps
-                     if s.startswith("proposed update")), None)
+        proposed = next((s for s in steps if s.startswith("proposed update")), None)
+        kind = None if proposed is None else "differs" if "(differs)" in proposed else "fills"
+        # the term's field (``vendor_terms._shown``): a price compares a marked system price
+        price = proposed is not None and proposed.split(": ", 1)[-1].startswith("price")
         handles = sorted(set(_entry_handles(entry)))
         if kind is not None and handles:
-            out.append({"name": name, "basis": basis, "handles": handles, "kind": kind})
+            out.append({"name": name, "basis": basis, "handles": handles, "kind": kind,
+                        "price": price})
     return out
 
 
@@ -681,6 +684,10 @@ def _mail_gap(st: Any, root: str, family: str, finding: Mapping[str, Any], *, ga
         skipped["reply_not_stored"] += 1
         return None
     word = "differs from" if finding["kind"] == "differs" else "fills an empty"
+    # The verdict tells what the system's field holds: each system record is cited at its
+    # values' markings too, and a price (an empty one included) at purchasing_prices.
+    marks = _value_markings(st, basis[1:], key="object_id")
+    price = ['["purchasing_prices"]'] if finding.get("price", True) else []
     return gap(
         "vendor_terms_unapplied", detector, root, "PurchaseOrder",
         f"{finding['name']}|{finding['handles'][0]}",
@@ -690,7 +697,8 @@ def _mail_gap(st: Any, root: str, family: str, finding: Mapping[str, Any], *, ga
         why="A reply from the vendor states a term the system does not hold as "
             "stated (the reply and the record are cited).",
         priority="medium", about=("PurchaseOrder", "confirmation"),
-        groups=[cites(reply)] + [cites([by_object[b]]) for b in basis])
+        groups=[cites(reply), cites([by_object[basis[0]]])] + [
+            cites([by_object[b]], *marks.get(b, ()), *price) for b in basis[1:]])
 
 
 def vendor_mail(st: Any, as_of: date, call: Callable | None, *, gap: Callable,
@@ -1042,6 +1050,21 @@ def _recent_invoiced_orders(st: Any, as_of: date) -> list[str]:
     return [r[0] for r in rows]
 
 
+def _value_markings(st: Any, objects: Iterable[str], *, key: str = "l1_handle"
+                    ) -> dict[str, list[str]]:
+    """l1 handle (``key="object_id"``: object) -> the markings of its current values: money
+    is marked on its value (``finance``, ``purchasing_prices``), not on its record's
+    version, so a citation carries both."""
+    out: dict[str, list[str]] = defaultdict(list)
+    column = {"l1_handle": "l1_handle", "object_id": "object_id"}[key]
+    for found, markings in st.conn.execute(
+            f"SELECT DISTINCT {column}, markings FROM object_values WHERE superseded_at IS "
+            "NULL AND object_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(objects)),)):
+        out[found].append(markings)
+    return out
+
+
 def read_margin(call: Callable, root: str) -> Any:
     """One order's checked margin (``customer_profit.read_order``), without its raw run: a
     pool task (``operating.proactive_pool``)."""
@@ -1101,6 +1124,7 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             skipped["figures_not_stored"] += 1
             continue
         subject = st.versions(objects=[root])
+        marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
         loss = -order.margin
         gaps.append(gap(
             "negative_margin", "negative_margin", root, "SalesOrder", "margin",
@@ -1111,7 +1135,7 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
                 "booked item-ledger cost (freight, duty and overhead are not in it), from "
                 "the order margin engine's checked figures (each figure cited).",
             priority="high", about=("SalesOrder", "margin"),
-            groups=[cites(subject)] + [cites([rows[h]]) for h in handles],
+            groups=[cites(subject)] + [cites([rows[h]], *marks.get(h, ())) for h in handles],
             event={"amount": {"value": str(loss), "currency": order.currency,
                               "basis": "loss"}}))
     out = _bounded(result, gaps, skipped, more=len(roots) > len(asked), spent=spent)

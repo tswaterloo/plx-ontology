@@ -2873,6 +2873,20 @@ def record_visit(inbox: Any, reader: str, *,
     return at
 
 
+# The markings the engine's own reader holds in its tool calls: an invoiced order's margin
+# rests on finance-marked money (BC and Sage revenue and cost), so without it every margin
+# is withheld and ``negative_margin`` never decides one. Its findings cite each figure at
+# its value's markings, so a reader who does not hold finance never sees the loss
+# (``read_inbox`` trims per reader).
+ENGINE_MARKINGS = ("finance",)
+
+
+def engine_marking_grants(actor: Any) -> dict[str, list[str]]:
+    """``marking_grants`` of the engine's case sessions: ``ENGINE_MARKINGS`` held by the
+    run principal (``actor``'s principals) only."""
+    return {marking: sorted(actor.principals) for marking in ENGINE_MARKINGS}
+
+
 def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as_of: date,
             *, captures: Path | None, scan_coverage: bool = True,
             budget: Budget | None = None,
@@ -2894,7 +2908,8 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
         return customer_po_coverage.coverage(runtime.mirror, investigator,
                                              statuses=("absent_in_this_source",))
 
-    session = live._Session(runtime, investigator, audience, projection, captures=captures)
+    session = live._Session(runtime, investigator, audience, projection, captures=captures,
+                            marking_grants=engine_marking_grants(investigator))
     try:
         # the reader the engine's verdicts are read as (the capture principal, granted
         # what it captured: ``host.engine_readers``): every reader's inbox and briefing
