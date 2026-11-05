@@ -378,9 +378,15 @@ class NoVendorMailTests(_VendorMail, unittest.TestCase):
         self.assertEqual(draft.answerability, "partial")
         # mail linked to the order, or vendor mail naming it with no confirmation subject:
         # a confirmation may be in it, so the agent reads it
-        linked = [self.doc(9, "2026-02-01", "RE: PO#4820", direction="to_them")]
+        linked = [self.doc(9, "2026-02-01", "RE: PO#4820", direction="to_them",
+                           mentions=("PO4820",))]
         with self.assertRaises(fa.Unanswerable):
             _run_ask(fc.po_confirmed, self.answers([[]], linked=linked), ask)
+        # mail linked only through another record (a lead twin's number) names no order
+        # of this number: still none on record
+        twin = [self.doc(9, "2026-02-01", "RE: PO#5174", mentions=("PO5174",))]
+        draft, _ = _run_ask(fc.po_confirmed, self.answers([[]], linked=twin), ask)
+        self.assertIn("no vendor confirmation is on record", " ".join(draft.sentences))
         with self.assertRaises(fa.Unanswerable):
             _run_ask(fc.po_confirmed, self.answers([[self.doc(1, "2026-02-01",
                                                               "RE: PO#4820 dates")]]), ask)

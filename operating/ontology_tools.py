@@ -254,6 +254,10 @@ REFUSED_CODES = frozenset({"relation_unavailable", "unknown_relation"})
 # Gaps about how a source was captured or served (``_source_freshness_gaps``).
 FRESHNESS_REASONS = frozenset({"stale_source", "freshness_unknown", "source_unavailable",
                                "schema_drift"}) | REFUSED_CODES
+# The scan_cap gap's opening when every record named by the query's words was read before
+# the cut (``fast_answer`` reads a name's cards as complete on it).
+NAMED_READ_NOTE = ("the search stopped at its scan cap, after every record whose name is or "
+                   "begins with these words")
 TEXT_SCAN_CAP = 400  # readable objects a display-text search returns at most
 LEAD_SCAN_CAP = 2000  # identifier rows one prefix or same-number range reads at most
 FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
@@ -870,9 +874,13 @@ class StoreReader:
         and testing the word matches as a set (cold "470": 1.5 s; probing each layout per
         match: 2.5 s)."""
         try:
+            # counted only up to the threshold: the whole count of a common word read
+            # every match a second time (the candidates below read them once)
             hits = self.conn.execute(
-                "SELECT count(*) FROM value_text WHERE value_text MATCH :words "
-                "AND rowid > :after", {"words": words, "after": after}).fetchone()[0]
+                "SELECT count(*) FROM (SELECT rowid FROM value_text WHERE value_text "
+                "MATCH :words AND rowid > :after LIMIT :narrow)",
+                {"words": words, "after": after, "narrow": TEXT_LAYOUT_NARROW_ROWS}
+            ).fetchone()[0]
             if hits < TEXT_LAYOUT_NARROW_ROWS:
                 return None
             return sorted(row[0] for row in self.conn.execute(
@@ -886,7 +894,8 @@ class StoreReader:
 
     def text_matches(self, scope: _Scope, words: str,
                      typed_properties: Sequence[str] | None, after: int, batch: int, *,
-                     beside: bool = False, object_type: str | None = None
+                     beside: bool = False, object_type: str | None = None,
+                     type_properties: Sequence[str] | None = None
                      ) -> list[sqlite3.Row]:
         """Readable values holding every word of ``words`` (an FTS5 query over
         ``value_text``) among the given ``Type.property`` pairs (``beside``: every other
@@ -899,17 +908,22 @@ class StoreReader:
         object and permission rows are read; among declared properties, a word matching
         many rows is intersected with the layout index first (``_layout_candidates``),
         so a common number costs one index range per property, not one random read per
-        row that holds it. Both only skip rows the pass's own predicates reject: the
-        rows returned, their order and the page are those of the plain index scan."""
+        row that holds it. ``type_properties`` (the asked type's declared properties, for
+        a ``beside`` pass of one ``object_type``) narrows it the same way: a value of
+        that type is one of its properties, so a name every other record repeats (our
+        own company's, on every order) is no longer read row by row only to be dropped
+        by type. Both only skip rows the pass's own predicates reject: the rows
+        returned, their order and the page are those of the plain index scan."""
         typed = "(o.object_type || '.' || v.property) IN (SELECT value FROM json_each(:typed)) "
         where = ("AND v.value_type = 'text' " if typed_properties is None else
                  "AND v.value_type = 'text' AND NOT " + typed if beside else "AND " + typed)
         if object_type is not None:
             where += "AND o.object_type = :type "
         named = typed_properties is not None and not beside
+        narrowed = bool(beside and object_type is not None and type_properties)
         layouts = self._text_layouts(
             sorted({pair.split(".", 1)[-1] for pair in typed_properties or ()})
-            if named else None)
+            if named else sorted(set(type_properties or ())) if narrowed else None)
         params = scope.params(words=words, after=after, batch=batch, type=object_type,
                               typed=json.dumps(list(typed_properties or ())),
                               layouts=json.dumps(layouts))
@@ -919,7 +933,8 @@ class StoreReader:
                 + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
                 + where + "ORDER BY f.rowid LIMIT :batch")
         select = "SELECT v.*, o.object_type, o.binding_id AS object_binding, o.audience_key "
-        candidates = self._layout_candidates(words, layouts, after) if named else None
+        candidates = self._layout_candidates(words, layouts, after) \
+            if named or narrowed else None
         if candidates is None:
             return list(self.conn.execute(
                 select + "FROM value_text f JOIN value_cells cell ON cell.rowid = f.rowid "
@@ -2751,7 +2766,8 @@ class OntologyTools:
         with plug.call_state():
             query = arguments.get("query")
             if (isinstance(query, str) and plug.enabled() and "as_known_at" not in arguments
-                    and _text_tokens(query, []) and not _names_identifier(query)):
+                    and _text_tokens(query, []) and not _names_identifier(query)
+                    and self._may_hold_document_text(arguments.get("object_type"))):
                 # Hybrid retrieval runs before the store lock is taken; its hits are gated
                 # under the lock (``_hybrid_matches``).
                 plug.prefetch(self.policy, actor, self._item_allowed, query)
@@ -3332,8 +3348,7 @@ class OntologyTools:
             if text_truncated and named:
                 notes.append(_gap(
                     "unknown", "scan_cap", f"query:{' '.join(query.split())}"[:700],
-                    f"the search stopped at its scan cap, after every record whose name "
-                    f"is or begins with these words ({named}) was read: they are listed "
+                    f"{NAMED_READ_NOTE} ({named}) was read: they are listed "
                     f"first; other records holding the words may be cut; narrow it with "
                     f"object_type, identifier_kind or filters"))
 
@@ -3656,12 +3671,21 @@ class OntologyTools:
                             if object_type is None or tid == object_type
                             for prop in declared.get("properties") or ()
                             if isinstance(prop, Mapping) and prop.get("identifier_kind")]
+            own = None
+            if object_type is not None:
+                own = [prop["name"] for prop in (self.schema.object_types.get(object_type)
+                                                 or {}).get("properties") or ()
+                       if isinstance(prop, Mapping) and isinstance(prop.get("name"), str)]
             passes.append(("value_text", lambda after: self.store.text_matches(
-                scope, words, held, after, batch, beside=True, object_type=object_type)))
-        # Hybrid hits first (their objects are not matched again by the word index,
-        # whose matches follow), so the AND-matching index only adds what search missed.
+                scope, words, held, after, batch, beside=True, object_type=object_type,
+                type_properties=own or None)))
+        # Hybrid hits first, so the AND-matching index only adds what search missed. A
+        # hit stands as a document lead until the index matches the object's own name,
+        # display text or other value: that match replaces it in its place (a task asked
+        # by its id was found by a description naming the id and lost its id match).
         out: list[_Match] = list(hybrid or ())
         objects: set[str] = {m.object_id for m in out}
+        ranked_only: set[str] = set(objects)
         scanned = 0
         named: set[str] = set()
 
@@ -3676,6 +3700,14 @@ class OntologyTools:
                 if reason == "display_text":
                     # the name pass read its own rows: the word passes keep their budget
                     named_done, scanned = True, 0
+                    if object_type is not None and named:
+                        # a typed find whose words name records of the type: those are
+                        # what it asks for, listed first. The word passes (any record of
+                        # the type holding every word or a word's prefix) would read
+                        # every row with a common prefix ("pet": our own company's name,
+                        # on every record) to add leads after them: said cut instead
+                        # (``scan_cap``: the named records were all read).
+                        return cut()
                 naming, reason = reason == "display_name", (
                     "display_text" if reason == "display_name" else reason)
                 earlier, after = set(objects), 0
@@ -3693,12 +3725,24 @@ class OntologyTools:
                             continue
                         if naming and not _names_query(row["value"], asked_name):
                             continue
-                        match = None if version is None or row["object_id"] in earlier else (
+                        own = row["object_id"] in ranked_only and reason != "document_text"
+                        match = None if version is None or (
+                            row["object_id"] in earlier and not own) else (
                             _chunk_match(row, version, needle, tokens)
                             if reason == "document_text" else _value_text_match(row, reason,
                                                                                 needle))
                         if match is None or (reason == "document_text"
                                              and row["object_id"] in objects):
+                            continue
+                        if own:
+                            at = next(i for i, m in enumerate(out)
+                                      if m.object_id == row["object_id"])
+                            match.order = out[at].order
+                            if naming:
+                                match.exact = True
+                                named.add(row["object_id"])
+                            out[at] = match
+                            ranked_only.discard(row["object_id"])
                             continue
                         if row["object_id"] not in objects and len(objects) >= TEXT_SCAN_CAP:
                             return cut()
@@ -3746,6 +3790,16 @@ class OntologyTools:
         keeps no history) or search could not run: the word index alone answers."""
         from operating.search import plug
         if not plug.enabled() or not plug.is_now(scope.at, self.clock()):
+            return None
+        if not self._may_hold_document_text(object_type):
+            # a hit is quoted from the object's stored text: a type holding none (a
+            # customer, a supplier) has no hit to keep, so search is never run for it
+            return None
+        if _names_identifier(query):
+            # a query that can name an identifier is answered by it and by the word
+            # index's exact matches, never by meaning (as plx.find's prefetch and
+            # plx.documents decide): its hits were only near misses, and quoting them read
+            # every chunk of every hit (a PO number no record holds: 44 s)
             return None
         hits = plug.ranked(self.policy, scope.actor, self._item_allowed, query).hits
         if not hits:

@@ -475,7 +475,7 @@ def po_confirmed(reads: Reads, ask: Ask, draft: Draft) -> None:
         # its text is linked to the order, read next)
         names = _Naming(reads, po)
         if any(_mentions(d, po) or names(d) for d in found) \
-                or _linked_mail(reads, draft, root, unread):
+                or _linked_mail(reads, draft, root, unread, po):
             raise Unanswerable("no_confirmation_found")
         draft.sentences.append(
             f"I found no message naming {po} in the mail you can see, none from the vendor "
@@ -498,18 +498,34 @@ def po_confirmed(reads: Reads, ask: Ask, draft: Draft) -> None:
                         "mention": ask.mention})
 
 
-def _linked_mail(reads: Reads, draft: Draft, root: str, unread: list[str]) -> bool:
-    """Whether any message is linked to the order (``plx.documents`` ``object_id``: the
-    projection's resolved mentions of it). A withheld match or a listing its scan cap
-    cut counts as linked mail (nothing is said absent on a search read in part)."""
+LINKED_READ = 10   # messages linked to an order read for whether one names it
+ORDER_KINDS = frozenset({"petra_po", "bc_document_no"})   # kinds an order's number is read as
+
+
+def _linked_mail(reads: Reads, draft: Draft, root: str, unread: list[str], po: str) -> bool:
+    """Whether a message linked to the order (``plx.documents`` ``object_id``: the
+    projection's resolved mentions of it) names the order itself (``_mentions``). A
+    message linked only through another record (a lead twin's number, an attachment)
+    does not. A withheld match, a listing its scan cap cut or more linked messages than
+    ``LINKED_READ`` count as naming it (nothing is said absent on a search read in
+    part)."""
     result = reads.call("plx.documents", {"object_id": root, "sources": ["graph_mail"],
-                                          "limit": 1})
+                                          "limit": LINKED_READ})
     completeness = result.get("completeness") or {}
-    if fa._withheld(result) or completeness.get("reason") == "scan_cap":
+    if fa._withheld(result) or completeness.get("reason") == "scan_cap" \
+            or completeness.get("next_cursor"):
         return True
     _scan_cut(result, draft, unread)
     unread += fa._unread_sources(result, draft)
-    return bool(result.get("documents")) or bool(completeness.get("next_cursor"))
+    digits = re.sub(r"\D", "", po)
+
+    def names(doc: Mapping[str, Any]) -> bool:
+        # the order's number as any order kind reads it (Business Central's bare 100109)
+        return _mentions(doc, po) or any(
+            isinstance(m, Mapping) and m.get("identifier_kind") in ORDER_KINDS
+            and re.sub(r"\D", "", str(m.get("normalized") or "")) == digits
+            for m in doc.get("mentions") or ())
+    return any(names(d) for d in result.get("documents") or ())
 
 
 def po_first_mail(reads: Reads, ask: Ask, draft: Draft) -> None:

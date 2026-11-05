@@ -531,6 +531,41 @@ class DocumentsTests(unittest.TestCase):
                          "row.name")
         self.assertEqual(by_words["searched"]["queries"], ["packing list"])
 
+    def test_a_hybrid_hit_gives_way_to_the_records_own_text_match(self):
+        # Hybrid search ranked the message as a document lead (a passage of its body);
+        # the word index matches its own subject: that match is the one shown, so a
+        # record asked by what its own field says is never only a lead of its body.
+        from unittest import mock
+        from operating import ontology_tools as ot
+        lead = ot._Match(M1, "lead", "document_text", "primary", "display_text", "x", "x",
+                         "body_text", "graph_mail.messages", M1_H, "row.body_text", order=1)
+        with mock.patch.object(type(self.tools.base), "_hybrid_matches",
+                               lambda *args, **kwargs: [lead]):
+            out = ok(self, "plx.find", self.tools.base.call("plx.find", {"query": SUBJECT},
+                                                            FULL))
+        found = [c for c in out["candidates"] if c["object"]["object_id"] == M1]
+        self.assertEqual([(c["reason"], c["matched"]["property"]) for c in found],
+                         [("display_text", "subject")])
+
+    def test_a_typed_find_of_a_type_holding_no_text_never_runs_hybrid_search(self):
+        # A hybrid hit is quoted from its object's stored text: a purchase order (Portal
+        # and Business Central rows) holds none, so a typed find never ranks the whole
+        # corpus for it (customer names: 35-49 s on a busy host, every hit dropped).
+        from unittest import mock
+        from operating.search import plug
+        ran = []
+        with mock.patch.object(plug, "enabled", lambda: True), \
+                mock.patch.object(plug, "is_now", lambda *args: True), \
+                mock.patch.object(plug, "prefetch", lambda *a, **k: ran.append("prefetch")), \
+                mock.patch.object(plug, "ranked",
+                                  lambda *a, **k: ran.append("ranked") or mock.Mock(hits=[])):
+            ok(self, "plx.find", self.tools.base.call(
+                "plx.find", {"query": "Shipping update", "object_type": "PurchaseOrder"}, FULL))
+            self.assertEqual(ran, [])
+            ok(self, "plx.find", self.tools.base.call("plx.find", {"query": "Shipping update"},
+                                                      FULL))
+            self.assertEqual(ran, ["prefetch", "ranked"])
+
     def test_no_match_states_what_was_searched_never_absence(self):
         out = ok(self, "plx.documents", self.call(query="nothing like this here",
                                                   sources=["graph_mail"], since="2099-01-01",

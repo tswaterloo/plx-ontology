@@ -378,8 +378,13 @@ def _name_holds(question: str, folded: str, tokens: Sequence[str],
     rest = name
     for token in tokens:
         rest = rest.replace(token, " ")
+    # a word of a token no record kind reads, set off by a hyphen ("1-Shoppe"), is the
+    # name's own word too; a token of one run ("3CEXAMPLE") may be any code
+    joined = [part for token, kind in zip(tokens, kinds) if kind is None
+              for part in token.split("-")[1:] + token.split("-")[:1]
+              if "-" in token and re.fullmatch(r"[^\W\d_]{3,}", part)]
     return any(not _NAME_FILLER.fullmatch(word.lower())
-               for word in _NAME_WORD.findall(rest))
+               for word in _NAME_WORD.findall(rest) + joined)
 
 
 def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
@@ -1072,6 +1077,16 @@ def by_identifier(reads: Reads, token: str, types: Sequence[str],
     return exact[0]
 
 
+def _names_read(found: Mapping[str, Any]) -> bool:
+    """A find cut after it read every record whose name is or begins with the query's
+    words (its ``scan_cap`` gap's ``named_read``): every card of that name is listed."""
+    from .ontology_tools import NAMED_READ_NOTE
+    return not _withheld(found) and any(
+        isinstance(g, Mapping) and g.get("reason") == "scan_cap"
+        and str(g.get("detail") or "").startswith(NAMED_READ_NOTE)
+        for g in found.get("gaps") or ())
+
+
 def by_name(reads: Reads, name: str, binding: str, object_type: str = "Customer"
             ) -> dict[str, Any] | Choices:
     """The one customer (or ``object_type``: a supplier) of ``binding``'s system whose name,
@@ -1106,7 +1121,7 @@ def by_name(reads: Reads, name: str, binding: str, object_type: str = "Customer"
             held = {e["object"]["object_id"] for e in exact}
             exact += [c for c in named(page) if c["object"]["object_id"] not in held]
         reads.names_paged = True
-        reads.names_complete = not _cut(page) and not (
+        reads.names_complete = (not _cut(page) or _names_read(page)) and not (
             page.get("completeness") or {}).get("next_cursor")
     if not exact:
         raise Unanswerable(f"{object_type.lower()}_not_resolved")
@@ -1189,8 +1204,39 @@ def _amount(value: Decimal) -> str:
 # --------------------------------------------------------------------------- recipes
 
 
+# The Mission Control task property holding its own id ("TASK-3383"): no identifier kind
+# reads it, so a text find reaches it only after every title and description naming it.
+TASK_ID_PROPERTY = "task_id"
+
+
+def task_filter(token: str) -> dict[str, Any]:
+    """The ``plx.find`` of the Mission Control task whose own id is ``token``: its id
+    property filtered exactly, no text search."""
+    return {"object_type": "MCTask", "limit": FIND_LIMIT, "filters": [
+        {"property": TASK_ID_PROPERTY, "op": "eq", "value": token.strip().upper()}]}
+
+
+def _task(reads: Reads, token: str) -> dict[str, Any] | Choices:
+    """The task whose own id is ``token``: read by its id property (``task_filter``), a
+    few hundred milliseconds where a text find walks every title and description naming
+    the id (43 s on a busy host, and the task's own match cut after them); several are
+    ``Choices``; none found that way is looked for as text (``by_identifier``)."""
+    found = reads.call("plx.find", task_filter(token))
+    if _withheld(found):
+        raise Unanswerable("task_withheld")
+    tasks = _candidates(found, ("MCTask",))
+    ids = list(dict.fromkeys(c["object"]["object_id"] for c in tasks))
+    if len(ids) > 1:
+        return Choices(token, [{"object_id": c["object"]["object_id"],
+                                "object_type": "MCTask",
+                                "display": c["object"].get("display")} for c in tasks])
+    if ids:
+        return tasks[0]
+    return by_identifier(reads, token, ("MCTask",))
+
+
 def task_status(reads: Reads, ask: Ask, draft: Draft) -> None:
-    found = by_identifier(reads, ask.mention, ("MCTask",))
+    found = _task(reads, ask.mention)
     if isinstance(found, Choices):
         raise _Choice(found)
     row = reads.row(_handle_of(found))
@@ -2463,6 +2509,16 @@ _KIND_SAID = {"changed": "changed", "first_captured": "new", "removed": "removed
 # The property that holds a record's own number, per object type a change lists.
 _NUMBER_OF = {"PurchaseOrder": "po_number", "SalesOrder": "order_number",
               "AssemblyOrder": "code"}
+
+
+def _keyed_only(obj: Mapping[str, Any]) -> bool:
+    """Whether a listed record is shown only by its own row key (a FileMaker record's
+    ``row.id`` sequence, "5611"): a number that reads as the order's and is not it (that
+    record's order is PO#5586)."""
+    display = obj.get("display")
+    origin = display.get("origin") if isinstance(display, Mapping) else None
+    return isinstance(origin, Mapping) and origin.get("field_path") == "row.id" \
+        and bool(re.fullmatch(r"\d+", str(plain(display) or "").strip()))
 MAX_CHANGES = 10
 
 
@@ -2478,16 +2534,20 @@ def changes(reads: Reads, ask: Ask, draft: Draft) -> None:
     if _withheld(result):
         raise Unanswerable("changes_withheld")
     noun = question_types[0][1] if len(question_types) == 1 else "record"
-    listed = []
+    listed, unnumbered = [], False
     for at, change in enumerate(result.get("changes") or (), 1):
         obj = change.get("object") or {}
         kind = _KIND_SAID.get(str(change.get("kind")))
         if kind is None:
             raise Unanswerable("unknown_change_kind")
+        if _keyed_only(obj):
+            unnumbered = True    # shown by its row key only: no order number to name it by
+            continue
         number = _cited_number(reads, draft, f"changed_{at}", obj,
                                _NUMBER_OF.get(str(obj.get("object_type"))))
         if number is None:
-            raise Unanswerable("change_unnumbered")
+            unnumbered = True    # no order number on its record (a Sage PO header)
+            continue
         fields = [str(f.get("property")).replace("_", " ") for f in change.get("fields") or ()
                   if isinstance(f, Mapping)][:4]
         listed.append(f"{number} ({kind}" + (f": {', '.join(fields)}" if fields else "") + ")")
@@ -2501,6 +2561,13 @@ def changes(reads: Reads, ask: Ask, draft: Draft) -> None:
     if more:
         draft.gaps.append({"state": "unknown", "reason": "list_paged",
                            "subject": f"more {noun}s changed than listed"})
+        draft.answerability = "partial"
+    if unnumbered:
+        # never named by a record key, which reads as an order number and is not one
+        draft.gaps.append({"state": "unknown", "reason": "change_unnumbered",
+                           "subject": f"changed {noun}s with no order number"})
+        draft.sentences.append(f"Not settled: other {noun}s changed too but carry no order "
+                               "number on the records you can see, so they are not named.")
         draft.answerability = "partial"
     # a source not captured since then may have changed unseen: said, never left out
     unseen = [str(g.get("subject")) for g in result.get("gaps") or ()
@@ -2884,13 +2951,20 @@ def teams_po(reads: Reads, ask: Ask, draft: Draft) -> None:
                                           "portal.fm_generated_purchase_order"))
     root = picked["object"]["object_id"]
     po = _said(draft, "po_number", picked, ask.mention)
+    # the order's number is said from the cell the find matched: that record is read so
+    # the answer gate binds it (a find's candidate alone is no evidence of its cell)
+    reads.call("plx.read", {"citation": _handle_of(picked)})
     messages = []
     for link in _TEAMS_LINKS:
         around = reads.call("plx.around", {"from": root, "limit": 50, "path": [{"link": link}]})
         if _cut(around):
             raise Unanswerable("messages_cut_or_withheld")
         messages += list(around.get("objects") or ())
-    if not messages or len(messages) > MAX_ORDERS_READ:
+    if not messages:
+        # none linked to the order (a chat the projection did not resolve to it): the
+        # Teams messages whose own text names its number, as the reader can search them
+        return _teams_by_text(reads, draft, root, po, ask)
+    if len(messages) > MAX_ORDERS_READ:
         raise Unanswerable("messages_not_listable")
     dated = []
     for message in messages:
@@ -2912,6 +2986,52 @@ def teams_po(reads: Reads, ask: Ask, draft: Draft) -> None:
             or row.get("row.body_truncated") is True:
         raise Unanswerable("message_text_unread")
     day = draft.value("message_date", stamp[:10], row["citation"], field_path)
+    quoted = draft.value("message_text", " ".join(text.split()), row["citation"],
+                         "row.body_text")
+    draft.sentences.append(f"The latest Teams message naming {po} is from {day}: "
+                           f"\"{quoted}\".")
+    draft.roots.append({"object_id": root, "object_type": "PurchaseOrder",
+                        "mention": ask.mention})
+
+
+def _teams_by_text(reads: Reads, draft: Draft, root: str, po: str, ask: Ask) -> None:
+    """The latest Teams message whose own text names order ``po`` (the shared identifier
+    grammar, ``ontology.mentions``, reads its number there), from a Teams search of the
+    number: every message listed read (``MAX_ORDERS_READ`` at most), the newest by its
+    creation time quoted. A cut or withheld search, none naming it, a tie or a long or
+    truncated text is the agent's."""
+    from ontology import mentions
+    digits = re.sub(r"\D", "", po)
+    want = {_norm_id(po), "PO" + digits}
+    result = reads.call("plx.documents", {"query": po, "sources": ["teams"], "limit": 20})
+    completeness = result.get("completeness") or {}
+    if _withheld(result) or completeness.get("next_cursor") or completeness.get("truncated"):
+        raise Unanswerable("messages_cut_or_withheld")
+    handles = list(dict.fromkeys(str(d.get("citation")) for d in result.get("documents") or ()
+                                 if d.get("kind") == "teams_message" and d.get("citation")))
+    if len(handles) > MAX_ORDERS_READ:
+        raise Unanswerable("messages_not_listable")
+    named = []
+    for handle in handles:
+        row = reads.row(handle, need=("row.body_text", "row.created_at",
+                                      "row.body_truncated"))
+        text, stamp = row.get("row.body_text"), row.get("row.created_at")
+        if not isinstance(text, str) or not isinstance(stamp, str) or not _DAY.match(stamp):
+            continue
+        if any(_norm_id(m.get("normalized")) in want for m in mentions.extract(text)):
+            named.append((stamp, row))
+    if not named:
+        raise Unanswerable("messages_not_listable")
+    newest = max(at for at, _row in named)
+    last = [row for at, row in named if at == newest]
+    if len(last) != 1:
+        raise Unanswerable("messages_tie")
+    row = last[0]
+    text = row["row.body_text"]
+    if not text.strip() or len(text) > 300 or row.get("row.body_truncated") is True \
+            or str(row.get("row.body_truncated")).lower() == "true":
+        raise Unanswerable("message_text_unread")
+    day = draft.value("message_date", newest[:10], row["citation"], "row.created_at")
     quoted = draft.value("message_text", " ".join(text.split()), row["citation"],
                          "row.body_text")
     draft.sentences.append(f"The latest Teams message naming {po} is from {day}: "
@@ -3051,6 +3171,48 @@ HELD_BATCH_FILTERS = (
     {"property": "batch_number", "op": "absent"})
 
 
+MAX_UNNAMED_CODES = 10   # placeholder codes one hold count leaves out, at most
+MAX_HELD_PAGES = 24      # pages of held batch records one hold count lists, at most
+HELD_PAGE = 20           # held records one page lists (a fuller page is trimmed to fit, uncursored)
+
+
+def _unnamed_batch_codes(reads: Reads) -> list[str]:
+    """The codes on FileMaker's held batch records that the batch-code grammar does not
+    read as a batch code (a placeholder a generated batch carries before it is named, on
+    many records at once): no one batch, so never counted as one. Read from the held
+    records themselves (a filtered find, each shown by its code, paged to its end,
+    ``MAX_HELD_PAGES`` at most: an aggregate's group list is cut at its result size); a
+    listing cut short, a record with no code shown, or more such codes than
+    ``MAX_UNNAMED_CODES`` is ``Unanswerable``."""
+    from ontology import identifiers
+    arguments: dict[str, Any] = {"object_type": "Batch", "limit": HELD_PAGE,
+                                 "filters": [dict(f) for f in HELD_BATCH_FILTERS]}
+    out: list[str] = []
+    for _page in range(MAX_HELD_PAGES):
+        found = reads.call("plx.find", arguments)
+        if _withheld(found):
+            raise Unanswerable("count_cut")
+        for candidate in _candidates(found, ("Batch",)):
+            code = plain((candidate.get("object") or {}).get("display"))
+            if not isinstance(code, str) or not code.strip():
+                raise Unanswerable("count_cut")
+            if identifiers.parse("batch_code", code.strip().upper()) is None \
+                    and code not in out:
+                out.append(code)
+        completeness = found.get("completeness") or {}
+        cursor = completeness.get("next_cursor")
+        if not cursor:
+            if completeness.get("truncated"):
+                raise Unanswerable("count_cut")
+            break
+        arguments = dict(arguments, cursor=cursor)
+    else:
+        raise Unanswerable("count_cut")
+    if len(out) > MAX_UNNAMED_CODES:
+        raise Unanswerable("too_many_unnamed_codes")
+    return out
+
+
 def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     """How many batches are on QC hold, each physical batch once: one ``plx.aggregate``
     ``count_distinct`` of the batch code over FileMaker's batch records (the system of
@@ -3062,8 +3224,10 @@ def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     here (``batch_status`` compares them for one batch). An aggregate cut short, a value
     withheld, any group but one, a cited record not FileMaker's or none held is the
     agent's."""
+    unnamed = _unnamed_batch_codes(reads)
     result = reads.call("plx.aggregate", {
-        "object_type": "Batch", "filters": [dict(f) for f in HELD_BATCH_FILTERS],
+        "object_type": "Batch", "filters": [dict(f) for f in HELD_BATCH_FILTERS] + [
+            {"property": "batch_code", "op": "ne", "value": code} for code in unnamed],
         "measure": {"op": "count_distinct", "property": "batch_code"}})
     reasons = {g.get("reason") if isinstance(g, Mapping) else None
                for g in result.get("gaps") or ()}
@@ -3101,6 +3265,9 @@ def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     draft.sentences.append(
         f"{said} you can see {'are' if many else 'is'} on QC hold in FileMaker, the system "
         "of record for batch QC status, each batch counted once by its batch code.")
+    if unnamed:
+        draft.sentences.append("Records still carrying a placeholder code (no batch code "
+                               "yet) are not counted.")
     if records != n:   # its own sentence: a count's clause holds its one figure
         draft.sentences.append(f"They are on {records} FileMaker records: a code on more "
                                "than one record counts once.")
@@ -4058,6 +4225,9 @@ DOCUMENT_INTENTS = {"lot_file": ("sharepoint",)}
 # and the party's orders listed for an open-orders question (``follow_reads``).
 MAX_FOLLOWED = 4
 ORDER_INTENTS = {"open_sos": ("Customer", "SalesOrder.ordered_by")}
+# The object type a party intent's mention names (``Intent.entity``).
+PARTY_TYPES = {"customer": "Customer", "vendor": "Supplier"}
+PARTY_INTENTS = {"vendor_late": "vendor"}   # parsed apart from ``INTENTS``
 
 
 def first_reads(question: str) -> list[tuple[str, dict[str, Any]]]:
@@ -4080,7 +4250,18 @@ def first_reads(question: str) -> list[tuple[str, dict[str, Any]]]:
         return [("plx.changes", arguments)]
     if not ask.mention:
         return []
-    out: list[tuple[str, dict[str, Any]]] = [("plx.find", {"query": ask.mention})]
+    find: dict[str, Any] = {"query": ask.mention}
+    party = PARTY_TYPES.get(INTENTS_BY_NAME[ask.intent].entity
+                            if ask.intent in INTENTS_BY_NAME else
+                            PARTY_INTENTS.get(ask.intent, ""))
+    if party is not None:
+        # A party's name found as that party: an untyped find of a name also walks every
+        # mail and file chunk holding its words (5-40 s on the live store, the session's
+        # research time gone before its first turn), a typed one reads the party records.
+        find["object_type"] = party
+    if INTENTS_BY_NAME.get(ask.intent) is INTENTS_BY_NAME["task_status"]:
+        find = task_filter(ask.mention)    # a task by its own id, never a text search
+    out: list[tuple[str, dict[str, Any]]] = [("plx.find", find)]
     if ask.intent in INTENT_PLANS:
         out.append(("plx.investigate", {"family": INTENT_PLANS[ask.intent],
                                         "root": {"identifier": ask.mention}}))

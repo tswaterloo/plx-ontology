@@ -1878,7 +1878,12 @@ class ClaudeCodeAgent:
                                      else None, self.max_steps,
                                      ends if self.budget_seconds is not None else None)
             deadline = None if self.budget_seconds is None else started + calls_end
-            server_env = self._server_env(server, deadline)
+            # Every call's end is read from a file (``call_limits.DEADLINE_FILE_ENV``), so
+            # it moves with the session's clock when the task waits for its first reads.
+            calls_file = Path(work) / "call-deadline" if deadline is not None else None
+            if calls_file is not None:
+                calls_file.write_text(f"{deadline:.3f}", encoding="utf-8")
+            server_env = self._server_env(server, calls_file)
             # The reader's host started after their last session (``HostSpares``) is
             # taken when this session is its exact key; else it starts now, as before.
             key = spare_key(host, [server["command"], *server.get("args", [])],
@@ -1917,7 +1922,17 @@ class ClaudeCodeAgent:
                     if feeds:
                         # The task goes in on stdin once the host's first reads are in.
                         argv = [argv[0], "-p", *argv[3:], "--input-format", "stream-json"]
-                        options["feed"] = lambda: _fed(prompt, gate)
+
+                        def feed() -> str:
+                            task = _fed(prompt, gate)
+                            # The session's clock starts when it has its task: the time
+                            # its first reads took (up to PREFETCH_WAIT_SECONDS, longer
+                            # than its research share on a busy host) is not taken from
+                            # its research, its calls or its end.
+                            _shift_clock(budget, self._shift_room(time.time() - started),
+                                         deadline, calls_file, spare)
+                            return task
+                        options["feed"] = feed
                     if ends is not None and getattr(self.spawn, "stops", False):
                         options["stop"] = ends
                     spawned = (argv, str(session), {**agent_environment(os.environ),
@@ -1992,9 +2007,20 @@ class ClaudeCodeAgent:
         return run
 
 
-    def _server_env(self, server: Mapping[str, Any], deadline: float | None
+    def _shift_room(self, waited: float) -> float:
+        """How far the session's clock moves for a task that waited ``waited`` seconds:
+        all of it, but never so far that the session would end within
+        ``SHIFT_MARGIN_SECONDS`` of its process's own time limit (``timeout``), which
+        would cut it before it answers."""
+        if self.timeout is None or self.budget_seconds is None:
+            return max(0.0, waited)
+        room = float(self.timeout) - float(self.budget_seconds) - SHIFT_MARGIN_SECONDS
+        return max(0.0, min(waited, room))
+
+    def _server_env(self, server: Mapping[str, Any], deadline_file: Path | None
                     ) -> dict[str, str]:
-        """The host server's own environment for one session of this agent."""
+        """The host server's own environment for one session of this agent;
+        ``deadline_file``: the file holding the second every call must end by."""
         env = {**(server.get("env") or {}),
                "PYTHONPATH": (server.get("env") or {}).get("PYTHONPATH", str(REPO_ROOT))}
         if self.budget_seconds is not None:
@@ -2002,8 +2028,8 @@ class ClaudeCodeAgent:
             # (``call_limits``, enforced by the host): no slow call outlives the session.
             from operating import call_limits
             env[call_limits.LIMITS_ENV] = "on"
-            if deadline is not None:
-                env[call_limits.DEADLINE_ENV] = f"{deadline:.3f}"
+            if deadline_file is not None:
+                env[call_limits.DEADLINE_FILE_ENV] = str(deadline_file)
         return env
 
     def _start_spare(self, host: Host) -> None:
@@ -2025,6 +2051,34 @@ PREFETCH_HEADING = (
     "first-ranked candidate: check it is the record the question means. Where these "
     "reads already hold every value the question asks for, submit your answer to the "
     "gate in your first turn; else read only what they leave open:")
+
+
+# Seconds a moved session clock keeps clear of the session process's own time limit.
+SHIFT_MARGIN_SECONDS = 5.0
+
+
+def _shift_clock(budget: "deep.Budget | None", waited: float, calls_end: float | None,
+                 calls_file: Path | None, spare: Any) -> None:
+    """Move a session's research deadline, its end and every call's end ``waited``
+    seconds later: the time its task waited for the host's first reads. Measured on a
+    busy host: the first reads took up to PREFETCH_WAIT_SECONDS and the task reached the
+    session with 0-7 of its 24 research seconds left, so it read nothing and abstained."""
+    if waited <= 0:
+        return
+    if budget is not None:
+        if budget.deadline is not None:
+            budget.deadline += waited
+        if budget.ends_at is not None:
+            budget.ends_at += waited
+    if calls_end is None:
+        return
+    moved = calls_end + waited
+    if spare is not None:
+        spare.set_deadline(moved)
+    elif calls_file is not None:
+        tmp = calls_file.with_suffix(".tmp")
+        tmp.write_text(f"{moved:.3f}", encoding="utf-8")
+        os.replace(tmp, calls_file)
 
 
 def _fed(prompt: str, gate: "HostGate") -> str:

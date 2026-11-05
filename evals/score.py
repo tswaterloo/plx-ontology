@@ -2654,7 +2654,12 @@ def _fact_in(text: Any, fact: str, polarity: str = "positive") -> bool:
     words = [_stem(w) for w in _WORD.findall(re.sub(r"n[’']t\b", " not", _fold(fact)))]
     if not number and not words:
         return False
-    for clause in _clauses(str(text)):
+    clauses = _clauses(str(text))
+    if not number and len(_clauses(fact)) > 1:
+        # a value that itself holds a clause stop ("Acme Co. Ltd", "Re: PO 4"): its words
+        # in a row anywhere in the text, the negator window taken from where it starts
+        clauses = [" ".join(clauses)]
+    for clause in clauses:
         spans: list[tuple[int, int]] = []
         if number:
             spans = [m.span() for m in _NUMBER_TOKEN.finditer(clause)

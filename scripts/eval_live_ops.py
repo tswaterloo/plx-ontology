@@ -931,13 +931,15 @@ class RoutedAgent:
         if fast is None:
             from operating import fast_answer as fast
         ran = None
+        tried: list[dict[str, Any]] = []
         if fast.serves(self.question):
             try:
                 _session_host, server = self._open(host)
                 why: list[str] = []
-                ran = fast.answer(self.question, fast.Reads.of_server(server), why) \
-                    if self._fast is None else fast.answer(
-                        self.question, fast.Reads.of_server(server))
+                reads = fast.Reads.of_server(server)
+                tried = getattr(reads, "events", [])
+                ran = fast.answer(self.question, reads, why) \
+                    if self._fast is None else fast.answer(self.question, reads)
                 declined += [f"fast_path:{code}" for code in why[-1:]]
             except Exception as error:  # noqa: BLE001 - any failure here: the agent answers
                 declined.append(f"fast_path_unavailable:{type(error).__name__}")
@@ -962,6 +964,11 @@ class RoutedAgent:
         result.agent["routed"] = "agent"
         if declined:
             result.agent["declined"] = declined
+        if tried:
+            # where a declined fast answer spent its time: each call's tool and duration
+            result.agent["fast_path_calls"] = [
+                {"name": e.get("name"), "elapsed_ms": e.get("elapsed_ms"),
+                 "is_error": bool(e.get("is_error"))} for e in tried if isinstance(e, dict)]
         return result
 
     def _open(self, host: Any) -> tuple[Any, Any]:

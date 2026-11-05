@@ -1215,6 +1215,19 @@ class AnswerParsingTests(unittest.TestCase):
         self.assertIsNone(sc.row_identity("original://abc#page=1"))
 
 
+class FactWordingTests(unittest.TestCase):
+    def test_a_name_holding_a_stop_is_stated_by_its_own_words(self):
+        # "Co." ended a clause, so a vendor named "Acme Co. Ltd" was never stated, even
+        # by itself; a negated or broken mention still states nothing.
+        fact = {"value": "Acme Labels Co. Ltd", "kind": "text"}
+        for text, said in (("The vendor is Acme Labels Co. Ltd.", True),
+                           ("Acme Labels Co. Ltd", True),
+                           ("The vendor is not Acme Labels Co. Ltd.", False),
+                           ("Acme Labels Co. and Other Ltd", False)):
+            with self.subTest(text=text):
+                self.assertEqual(sc.fact_stated(text, fact), said)
+
+
 class OutcomeTests(unittest.TestCase):
     """correct / wrong / blocked / justified abstention, with coverage beside accuracy."""
 

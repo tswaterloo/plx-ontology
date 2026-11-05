@@ -239,6 +239,15 @@ class FollowReadsTests(unittest.TestCase):
         question = "whats the last email we had with ACME"
         self.assertIn(("plx.documents", {"query": "ACME", "sources": ["graph_mail"],
                                          "limit": 10}), fast_answer.first_reads(question))
+        # a party's name is found as that party, never by a walk of every mail chunk
+        for asked, party in ((question, "Customer"), ("open AR for ACME?", "Customer"),
+                             ("what do we have open w/ ACME?", "Supplier"),
+                             ("anything late from ACME?", "Supplier")):
+            with self.subTest(asked=asked):
+                self.assertEqual(fast_answer.first_reads(asked)[0],
+                                 ("plx.find", {"query": "ACME", "object_type": party}))
+        self.assertEqual(fast_answer.first_reads("status on PO#4819?")[0],
+                         ("plx.find", {"query": "PO#4819"}))
         reads = fast_answer.follow_reads(question, [("plx.find", {"query": "ACME"}, found)])
         self.assertEqual(reads, [("plx.documents", {"participant": f"Customer:c:{n}",
                                                     "sources": ["graph_mail"], "limit": 5})
@@ -444,6 +453,59 @@ def _run(recipe, answers, ask):
     return draft, reads
 
 
+class NamesReadTests(unittest.TestCase):
+    def test_a_find_cut_after_every_named_record_lists_every_card_of_the_name(self):
+        # A typed find ends once its name pass named records (the word passes would read
+        # every row of a common prefix): cut, but with every card of the name read, so a
+        # name held by several cards is answered, never declined as cut.
+        from operating.ontology_tools import NAMED_READ_NOTE
+        cards = [{"object": {"object_id": f'Customer:portal.sage_ar_customer:{{"id":"{n}"}}',
+                             "object_type": "Customer",
+                             "display": _cell("ACME WEBSTORE", f"api://c/{n}", "row.namecust")},
+                  "tier": "lead"} for n in range(fast_answer.FIND_LIMIT)]
+        page = {"candidates": cards, "completeness": {"truncated": True, "next_cursor": None},
+                "gaps": [{"state": "unknown", "reason": "scan_cap", "subject": "query:x",
+                          "detail": f"{NAMED_READ_NOTE} (10) was read: listed first"}]}
+        reads = StubReads(lambda name, args: page if name == "plx.find" else None)
+        found = fast_answer.by_name(reads, "ACME WEBSTORE", "portal.sage_ar_customer")
+        self.assertEqual(len(found.candidates), fast_answer.FIND_LIMIT)
+        self.assertTrue(reads.names_complete)
+        page["gaps"] = [{"state": "unknown", "reason": "scan_cap", "subject": "query:x"}]
+        reads = StubReads(lambda name, args: page if name == "plx.find" else None)
+        fast_answer.by_name(reads, "ACME WEBSTORE", "portal.sage_ar_customer")
+        self.assertFalse(reads.names_complete)
+
+
+class TaskByIdTests(unittest.TestCase):
+    def test_a_task_is_read_by_its_own_id_never_by_a_text_search(self):
+        # "where's TASK-3383 at": its id property filtered exactly; a text find walked
+        # every title and description naming the id (43 s) and lost the task's own match
+        task = 'MCTask:mission_control.tasks:{"id":"TASK-3383"}'
+        handle = "mc://live/tasks/TASK-3383@g-1"
+
+        def answers(name, args):
+            if name == "plx.find":
+                self.assertNotIn("query", args)
+                self.assertEqual(args["filters"], [{"property": "task_id", "op": "eq",
+                                                    "value": "TASK-3383"}])
+                return {"candidates": [{"object": {
+                    "object_id": task, "object_type": "MCTask",
+                    "display": _cell("Fix the routing", handle, "row.title")},
+                    "tier": "lead", "reason": "filter_match"}]}
+            if name == "plx.read":
+                return {"status": "resolved", "citation": handle, "fields": {
+                    "row.id": "TASK-3383", "row.stage": "review",
+                    "row.accountableOwner": "vince"}}
+            return None
+        draft, reads = _run(fast_answer.task_status, answers,
+                            fast_answer.Ask("task_status", "task-3383", None))
+        self.assertEqual({v["name"]: v["value"] for v in draft.values},
+                         {"task": "TASK-3383", "stage": "review", "owner": "vince"})
+        self.assertEqual([n for n, _a in reads.calls], ["plx.find", "plx.read"])
+        self.assertEqual(fast_answer.first_reads("where's TASK-3383 at and who owns it"),
+                         [("plx.find", fast_answer.task_filter("TASK-3383"))])
+
+
 class SharedPoNumberTests(unittest.TestCase):
     """A number Business Central and the Portal both hold names one order only when an
     identity link joins them: "whats going on w/ po PO100040" was answered "received,
@@ -583,7 +645,7 @@ class NewRecipeTests(unittest.TestCase):
     at its output boundary over stubbed tool results: what is said is cited, what the
     reader may not see or the reads leave unsure declines."""
 
-    def held(self, records, codes, *, cap=50, **result):
+    def held(self, records, codes, *, cap=50, unnamed=(), **result):
         """plx.aggregate's count_distinct of the batch code over FileMaker's held batches:
         ``records`` FileMaker records holding ``codes`` distinct codes, a citation each up
         to ``cap`` (a ``citations_capped`` gap past it)."""
@@ -598,8 +660,31 @@ class NewRecipeTests(unittest.TestCase):
         def answers(name, args):
             if name == "plx.read":   # a counted record's own batch code
                 return _read_member(args, handles, "row.namebatch_c", "BC-26{:03d}A")
+            if name == "plx.find":
+                # the held records themselves, each shown by its code (and placeholders)
+                return {"candidates": [
+                    {"object": {"object_id": f"Batch:b:{code}", "object_type": "Batch",
+                                "display": _cell(code, f"api://public.batch/{code}",
+                                                 "row.namebatch_c")}}
+                    for code in [f"BC-26{i:03d}A" for i in range(codes)] + list(unnamed)],
+                    "completeness": {"complete": True, "next_cursor": None}}
             return copy.deepcopy(out) if name == "plx.aggregate" else None
         return answers, handles
+
+    def test_a_placeholder_code_on_held_records_is_no_batch_and_never_counted(self):
+        # FileMaker's generated batches carry one placeholder code before they are named:
+        # counted as a batch, the count read one more than the batches on hold (a false
+        # answer). The codes the batch-code grammar does not read are left out by value.
+        ask = fast_answer.Ask("batch_hold_count", "", None)
+        answers, _handles = self.held(5, 5, unnamed=("BC-00A",))
+        draft, reads = _run(fast_answer.batch_hold_count, answers, ask)
+        counted = [a for n, a in reads.calls if n == "plx.aggregate"]
+        self.assertIn({"property": "batch_code", "op": "ne", "value": "BC-00A"},
+                      counted[0]["filters"])
+        self.assertIn("placeholder code", " ".join(draft.sentences))
+        answers, _handles = self.held(5, 5, unnamed=tuple(f"X{i}" for i in range(11)))
+        with self.assertRaises(fast_answer.Unanswerable):
+            _run(fast_answer.batch_hold_count, answers, ask)
 
     def gated(self, draft, reads, rows):
         """The draft's values through the claim gate, bound to what its reads returned."""
@@ -635,8 +720,8 @@ class NewRecipeTests(unittest.TestCase):
                 draft, reads = _run(fast_answer.batch_hold_count, answers, ask)
                 # one count, then at most three counted records read to name them
                 self.assertEqual([c[0] for c in reads.calls],
-                                 ["plx.aggregate"] + ["plx.read"] * min(codes, 3))
-                filters = {(f["property"], f["op"]) for f in reads.calls[0][1]["filters"]}
+                                 ["plx.find", "plx.aggregate"] + ["plx.read"] * min(codes, 3))
+                filters = {(f["property"], f["op"]) for f in reads.calls[1][1]["filters"]}
                 self.assertIn(("batch_number", "absent"), filters)   # FileMaker's records
                 values = {v["name"]: v for v in draft.values}
                 self.assertEqual(values["on_hold_count"]["value"], str(codes))
@@ -688,8 +773,9 @@ class NewRecipeTests(unittest.TestCase):
 
         def portal(name, args):                 # a cited record that is no FileMaker batch
             out = answers(name, args)
-            out["groups"][0]["inputs_citations"][1]["l1_handle"] = \
-                "api://public.app_batch_record/c1@g"
+            if name == "plx.aggregate":
+                out["groups"][0]["inputs_citations"][1]["l1_handle"] = \
+                    "api://public.app_batch_record/c1@g"
             return out
         with self.assertRaises(fast_answer.Unanswerable) as no:
             _run(fast_answer.batch_hold_count, portal, ask)
@@ -1592,6 +1678,46 @@ class NewRecipeTests(unittest.TestCase):
         with self.assertRaises(fast_answer.Unanswerable):
             _run(fast_answer.teams_po, answers, fast_answer.Ask("teams_po", "PO7125", None))
 
+    def test_teams_talk_no_link_reaches_is_found_by_the_number_in_its_own_text(self):
+        # no message linked to the order (a chat the projection did not resolve): the
+        # Teams messages listed for its number, the newest whose own text names it
+        po = {"object": {"object_id": "PurchaseOrder:portal.app_purchase_order:{}",
+                         "object_type": "PurchaseOrder",
+                         "display": _cell("PO#7125", "api://p/1", "row.po_number")},
+              "matched": {"raw": _cell("PO#7125", "api://p/1", "row.po_number")},
+              "tier": "verified"}
+        rows = {"teams-chat://c/1": ("2026-03-17T19:02:17.8Z", "Any news on PO#7125?"),
+                "teams-chat://c/2": ("2026-04-01T10:00:00Z", "Invoice 200187125 paid"),
+                "teams-chat://c/3": ("2026-01-02T10:00:00Z", "PO 7125 is placed")}
+
+        def answers(name, args):
+            if name == "plx.find":
+                return {"candidates": [po]}
+            if name == "plx.around":
+                return {"objects": [], "completeness": {"complete": True}}
+            if name == "plx.documents":
+                return {"documents": [{"citation": h, "kind": "teams_message"} for h in rows]
+                        + [{"citation": "teams-chat://c/x", "kind": "teams_chat"}],
+                        "completeness": {"complete": True, "next_cursor": None}}
+            if name == "plx.read" and args["citation"] == "api://p/1":   # the order's row
+                return {"status": "resolved", "citation": "api://p/1",
+                        "fields": {"row.po_number": "PO#7125"}}
+            if name == "plx.read":
+                at, text = rows[args["citation"]]
+                return {"status": "resolved", "citation": args["citation"], "fields": {
+                    "row.created_at": at, "row.body_text": text,
+                    "row.body_truncated": False}}
+            return None
+        draft, _ = _run(fast_answer.teams_po, answers,
+                        fast_answer.Ask("teams_po", "PO#7125", None))
+        values = {v["name"]: v["value"] for v in draft.values}
+        self.assertEqual((values["message_date"], values["message_text"]),
+                         ("2026-03-17", "Any news on PO#7125?"))
+        rows.pop("teams-chat://c/1")
+        rows.pop("teams-chat://c/3")   # only a digit run inside another number: none
+        with self.assertRaises(fast_answer.Unanswerable):
+            _run(fast_answer.teams_po, answers, fast_answer.Ask("teams_po", "PO#7125", None))
+
 
 class ReceiptVsPoWordingTests(unittest.TestCase):
     def test_an_all_digit_order_and_item_are_named_never_read_as_quantities(self):
@@ -1970,6 +2096,39 @@ class ChangesRecipeTests(unittest.TestCase):
                 "changes": [], "gaps": [], "withheld": {}})
 
 
+    def test_a_record_shown_by_its_row_key_or_with_no_number_is_never_named_by_one(self):
+        # A FileMaker order is displayed by its row key ("5611": its order is PO#5586) and
+        # a Sage header holds no order number: neither is named (an agent called the key
+        # "PO 5611", a false answer); the numbered ones are listed and the rest said open.
+        def change(oid, cell):
+            return {"kind": "first_captured", "fields": [],
+                    "object": {"object_id": oid, "object_type": "PurchaseOrder",
+                               "display": cell}}
+        result = {"gaps": [], "completeness": {"complete": True}, "changes": [
+            change('PurchaseOrder:portal.app_purchase_order:{"id":"c1"}',
+                   _cell("PO100513", "api://public.app_purchase_order/c1@g",
+                         "row.po_number")),
+            change('PurchaseOrder:portal.fm_generated_purchase_order:{"id":5611}',
+                   _cell("5611", "api://public.generated_purchase_order/5611@g", "row.id")),
+            change('PurchaseOrder:portal.sage_po_header:{"porhseq":"1"}', None)]}
+        cards = {'PurchaseOrder:portal.app_purchase_order:{"id":"c1"}': [{
+            "property": "po_number", "value": "PO100513",
+            "citation": {"l1_handle": "api://public.app_purchase_order/c1@g",
+                         "field_path": "row.po_number"}}]}
+        reads, draft = StubReads(lambda name, args: result if name == "plx.changes" else {
+            "values": cards.get(args.get("object_id"), [])} if name == "plx.object"
+            else None), fast_answer.Draft()
+        fast_answer.changes(reads, fast_answer.Ask(
+            "changes", "", None, since=changes_fixture.SINCE, since_said="yesterday",
+            types=("PurchaseOrder",)), draft)
+        said = " ".join(draft.sentences)
+        self.assertIn("PO100513 (new)", said)
+        self.assertNotIn("5611", said)
+        self.assertEqual([v["value"] for v in draft.values], ["PO100513"])
+        self.assertIn("change_unnumbered", [g["reason"] for g in draft.gaps])
+        self.assertEqual(draft.answerability, "partial")
+
+
 class VendorOpenPosTests(unittest.TestCase):
     """A vendor's open orders past the gate's per-claim citations: the count claim cites
     at most that many (more is refused whole), every order still named and cited."""
@@ -2265,6 +2424,9 @@ class PartyNameTokenTests(unittest.TestCase):
             "EXAMPLE HOLDINGS INC -1000 DLG sage balance due?":
                 ("open_ar", "EXAMPLE HOLDINGS INC -1000 DLG", "sage"),
             "open AR for 7654321 ONT. LTD": ("open_ar", "7654321 ONT. LTD", None),
+            # a name that is one hyphenated token with a word of its own
+            "how much does 1-Example owe us rn": ("open_ar", "1-Example", None),
+            "what sales orders are open for 2-Example?": ("open_sos", "2-Example", None),
             # a system word inside the name: the system asked in is the one read
             "what was Northside BC Limited's balance in Sage":
                 ("open_ar", "Northside BC Limited", "sage"),

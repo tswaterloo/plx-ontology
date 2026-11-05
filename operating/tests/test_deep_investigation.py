@@ -579,7 +579,10 @@ class StoppedResearch(Temp):
             TIMED = %r
             # the limits this host process was started with
             with open(%r, "w", encoding="utf-8") as out:
-                json.dump({k: os.environ.get(k) for k in (%r, %r)}, out)
+                seen = {k: os.environ.get(k) for k in (%r, %r)}
+                with open(seen[%r], encoding="utf-8") as at:
+                    seen["deadline"] = at.read()
+                json.dump(seen, out)
             for line in sys.stdin:
                 m = json.loads(line)
                 if "id" not in m:
@@ -596,7 +599,8 @@ class StoppedResearch(Temp):
                                              "result": r}) + "\\n")
                 sys.stdout.flush()
         """) % (call_limits.timed_out_text("plx.find", 40), str(env_seen),
-                call_limits.LIMITS_ENV, call_limits.DEADLINE_ENV), encoding="utf-8")
+                call_limits.LIMITS_ENV, call_limits.DEADLINE_FILE_ENV,
+                call_limits.DEADLINE_FILE_ENV), encoding="utf-8")
         host_script = slow_host
         answer = {"format": "plx-eval-answer/v1", "answerability": "partial",
                   "text": "Part.", "values": [], "gaps": []}
@@ -638,11 +642,32 @@ class StoppedResearch(Temp):
         seen["env"] = json.loads(env_seen.read_text(encoding="utf-8"))
         self.assertEqual(seen["env"][call_limits.LIMITS_ENV], "on")
         # every call ends 50 s before the session's 150 s (a third of any budget)
-        self.assertAlmostEqual(float(seen["env"][call_limits.DEADLINE_ENV]) - time.time(),
-                               100, delta=10)
+        self.assertAlmostEqual(float(seen["env"]["deadline"]) - time.time(), 100, delta=10)
         # the agent's own words stand when it said so itself
         own = "I stopped researching at the time limit; not yet checked: the receipt."
         self.assertEqual(agent_session.research_stopped(own), own)
+
+
+class FedClock(Temp):
+    def test_a_task_that_waited_for_its_first_reads_keeps_its_research_and_call_time(self):
+        # The task reached the session 30 s after it started (its first reads on a busy
+        # host): its research deadline, its end and every call's end move 30 s later, so
+        # the session still has its research share once it has its task.
+        budget = deep.Budget(100.0, 30, 140.0)
+        calls = self.root / "call-deadline"
+        calls.write_text("126.000", encoding="utf-8")
+        agent_session._shift_clock(budget, 30.0, 126.0, calls, None)
+        self.assertEqual((budget.deadline, budget.ends_at), (130.0, 170.0))
+        self.assertEqual(call_limits.limit_for("plx.read", {
+            call_limits.LIMITS_ENV: "on", call_limits.DEADLINE_FILE_ENV: str(calls)},
+            now=150.0), 6.0)
+        # never past the session process's own time limit (the app's: its whole budget)
+        app = agent_session.ClaudeCodeAgent(budget_seconds=40, timeout=60)
+        self.assertEqual(app._shift_room(30.0), 15.0)
+        self.assertEqual(agent_session.ClaudeCodeAgent(budget_seconds=60, timeout=60)
+                         ._shift_room(30.0), 0.0)
+        self.assertEqual(agent_session.ClaudeCodeAgent(budget_seconds=40, timeout=300)
+                         ._shift_room(30.0), 30.0)
 
 
 class AnswerBudget(unittest.TestCase):
