@@ -464,6 +464,8 @@ const EVENT_VERB: Record<string, string> = { required: "due", posted: "posted", 
  * ("Posted ×3" only when the verb is unknown).
  */
 export function activityTitle(title: string, count: number): string {
+  // "Bc invoiced: …" (a system's code in sentence case) says the system as it is written
+  title = title.replace(/^bc\b/i, "BC");
   const m = /^([A-Za-z ]+):\s*(.+)$/.exec(title.trim());
   const verb = m ? EVENT_VERB[m[1].trim().toLowerCase()] : undefined;
   if (!m || !verb) return count > 1 ? `${m?.[1] ?? readable(title)} ×${count}` : readable(title);

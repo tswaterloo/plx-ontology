@@ -13,6 +13,7 @@ const securityHeaders = [
 
 const config: NextConfig = {
   reactStrictMode: true,
+  devIndicators: false, // dev only: no floating badge over the page
   poweredByHeader: false,
   compress: false, // never buffer the answer stream; Caddy compresses static assets
   // the dev rewrite's proxy gives up at 30 s by default; a record page takes up to ~2 min

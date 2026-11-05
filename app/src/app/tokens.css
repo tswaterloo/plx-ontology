@@ -1,102 +1,111 @@
-/* Design tokens: colour, type and spacing. Components read these through Tailwind's
-   @theme names below (bg-surface, text-late, text-answer, ...); nothing else defines colour.
-   Every text/background pair meets WCAG AA in its theme; status fg on its soft fill is
-   >= 5.2:1 (light) and >= 8.3:1 (dark). */
+/* Design tokens: colour, type and spacing ("Ledger": paper and ink, a serif for what a page
+   says, a sans for what you scan, rules instead of boxes). Components read these through
+   Tailwind's @theme names below (bg-surface, text-late, text-answer, ...); nothing else
+   defines colour. Every text/background pair meets WCAG AA in its theme; status fg on its
+   soft fill is >= 5.4:1 (light) and >= 6.2:1 (dark). */
 
 :root {
-  --bg: #fafafa; /* off-white page so white cards read without shadows */
-  --bg-subtle: #f4f4f5;
-  --surface: #ffffff;
-  --surface-2: #f4f4f5;
-  --fg: #18181b;
-  --fg-muted: #52525b; /* 7.0:1 on white */
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --control-border: #8a8a93; /* 3.4:1 on white: inputs need a 3:1 boundary */
-  --accent: #4338ca; /* 8.6:1 on white; actions and links only */
+  --bg: #f6f3ec; /* paper */
+  --bg-subtle: #eeeae1; /* sidebar, table header: one step down */
+  --surface: #fbfaf6; /* inputs, hovered rows */
+  --surface-2: #eeeae1; /* sunken fills, active nav */
+  --raised: #ffffff; /* popovers, menus, drawer */
+  --fg: #1c1a17; /* ink, 15.7:1 */
+  --fg-muted: #57514a; /* 7.1:1 */
+  --fg-faint: #6e675d; /* 5.0:1: meta, placeholders */
+  --border: #e2dcd0; /* hairline between rows */
+  --border-strong: #c8c0b1; /* rule between groups */
+  --rule-ink: #1c1a17; /* the ink rule above a section */
+  --control-border: #8c8579; /* 3.3:1: inputs need a 3:1 boundary */
+  --accent: #0b5c63; /* ink-teal, 7.0:1: actions, links and focus only */
   --accent-fg: #ffffff;
-  --accent-soft: #eef2ff;
-  --ring: #6366f1;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px rgb(0 0 0 / 0.08); /* popovers, menus, drawer only */
+  --accent-soft: #dfedea;
+  --ring: #0b7f89;
+  --shadow: 0 1px 2px rgb(28 26 23 / 0.06), 0 6px 16px rgb(28 26 23 / 0.1); /* popovers, menus, drawer only */
 
-  /* Status: fg (text, icon), soft (fill), line (badge border, left rule). */
-  --late: #b42318;
-  --late-soft: #fef3f2;
-  --late-line: #fda29b;
-  --risk: #b54708;
-  --risk-soft: #fffaeb;
-  --risk-line: #fec84b;
-  --ok: #067647;
-  --ok-soft: #ecfdf3;
-  --ok-line: #75e0a7;
-  --suspect: #6941c6; /* a data problem must not look like a business problem */
-  --suspect-soft: #f4f3ff;
-  --suspect-line: #bdb4fe;
-  --new: #175cd3;
-  --new-soft: #eff8ff;
-  --new-line: #84caff;
-  --neutral: #52525b;
-  --neutral-soft: #f4f4f5;
-  --neutral-line: #d4d4d8;
+  /* Status: fg (text, glyph), soft (fill), line (badge border). */
+  --late: #a3221b;
+  --late-soft: #f8e3dd;
+  --late-line: #e2a497;
+  --risk: #875200;
+  --risk-soft: #f6ebd2;
+  --risk-line: #d9b66e;
+  --ok: #2e6a2e;
+  --ok-soft: #e4eedc;
+  --ok-line: #a7c598;
+  --suspect: #6c3b73; /* a data problem must not look like a business problem */
+  --suspect-soft: #efe4ee;
+  --suspect-line: #c7a5c8;
+  --new: #1e4e8c;
+  --new-soft: #e1e9f3;
+  --new-line: #a4bbdb;
+  --neutral: #57514a;
+  --neutral-soft: #ebe7df;
+  --neutral-line: #cdc6b9;
 
-  /* Type scale (mobile first; larger from 640 px). */
-  --fs-display: 24px;
+  /* Type scale (mobile first; larger from 640 px). Display, title, answer and figures are
+     set in the serif; everything scanned is in the sans. */
+  --fs-display: 26px;
   --lh-display: 30px;
-  --fs-title: 22px;
-  --lh-title: 28px;
-  --fs-answer: 17px;
-  --lh-answer: 26px;
+  --fs-title: 20px;
+  --lh-title: 26px;
+  --fs-answer: 19px;
+  --lh-answer: 28px;
   --fs-stat: 24px;
   --lh-stat: 28px;
 }
 
 @media (min-width: 640px) {
   :root {
-    --fs-display: 28px;
-    --lh-display: 34px;
-    --fs-title: 24px;
-    --lh-title: 32px;
-    --fs-answer: 18px;
-    --lh-answer: 28px;
+    --fs-display: 32px;
+    --lh-display: 36px;
+    --fs-title: 22px;
+    --lh-title: 28px;
+    --fs-answer: 21px;
+    --lh-answer: 30px;
     --fs-stat: 28px;
     --lh-stat: 32px;
   }
 }
 
+/* Night edition: warm ink, not near-black grey. */
 .dark {
-  --bg: #0b0b0e;
-  --bg-subtle: #111115;
-  --surface: #141418;
-  --surface-2: #1d1d22;
-  --fg: #f4f4f5;
-  --fg-muted: #a1a1aa; /* 7.6:1 on #141418 */
-  --border: #27272d;
-  --border-strong: #3a3a42;
-  --control-border: #6b6b75; /* 3.5:1 */
-  --accent: #a5b4fc;
-  --accent-fg: #11113a;
-  --accent-soft: #1e1b4b;
-  --ring: #818cf8;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  --bg: #191714;
+  --bg-subtle: #131210;
+  --surface: #201e1a;
+  --surface-2: #26231e;
+  --raised: #29261f;
+  --fg: #ede8de; /* 14.7:1 */
+  --fg-muted: #b5ad9f; /* 8.0:1 */
+  --fg-faint: #9a9184; /* 5.8:1 */
+  --border: #332f29;
+  --border-strong: #4b463d;
+  --rule-ink: #8f8a81;
+  --control-border: #7a7266; /* 3.8:1 */
+  --accent: #6bbab8;
+  --accent-fg: #0e1615;
+  --accent-soft: #1a3533;
+  --ring: #7fcbc8;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 6px 16px rgb(0 0 0 / 0.4);
 
-  --late: #fda29b;
-  --late-soft: #3a1512;
-  --late-line: #b42318;
-  --risk: #fec84b;
-  --risk-soft: #33240a;
-  --risk-line: #b54708;
-  --ok: #75e0a7;
-  --ok-soft: #0b2b1c;
-  --ok-line: #067647;
-  --suspect: #bdb4fe;
-  --suspect-soft: #221a42;
-  --suspect-line: #6941c6;
-  --new: #84caff;
-  --new-soft: #0b2440;
-  --new-line: #175cd3;
-  --neutral: #a1a1aa;
-  --neutral-soft: #1d1d22;
-  --neutral-line: #3a3a42;
+  --late: #f0897c;
+  --late-soft: #3b1d18;
+  --late-line: #73332b;
+  --risk: #e3b45a;
+  --risk-soft: #33280f;
+  --risk-line: #6b5321;
+  --ok: #98c784;
+  --ok-soft: #1f2b18;
+  --ok-line: #425d35;
+  --suspect: #d1a4d2;
+  --suspect-soft: #2f1f30;
+  --suspect-line: #5e405f;
+  --new: #93b8ec;
+  --new-soft: #1a2639;
+  --new-line: #36527d;
+  --neutral: #b5ad9f;
+  --neutral-soft: #27241f;
+  --neutral-line: #4b463d;
 }
 
 @theme inline {
@@ -104,10 +113,13 @@
   --color-bg-subtle: var(--bg-subtle);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-raised: var(--raised);
   --color-fg: var(--fg);
   --color-muted: var(--fg-muted);
+  --color-faint: var(--fg-faint);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
+  --color-rule: var(--rule-ink);
   --color-control: var(--control-border);
   --color-accent: var(--accent);
   --color-accent-fg: var(--accent-fg);
@@ -143,26 +155,37 @@
   --color-info: var(--new);
   --color-info-soft: var(--new-soft);
 
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: var(--font-newsreader), "Iowan Old Style", Georgia, serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
   --shadow-card: none;
   --shadow-pop: var(--shadow);
 
-  /* Type: text-display ... text-eyebrow. Nothing below 12 px. */
+  /* Small radii only: 2 for badges and markers, 4 for buttons and inputs, 6 for popovers. */
+  --radius-xs: 2px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --radius-2xl: 6px;
+  --radius-3xl: 6px;
+
+  /* Type: text-display ... text-eyebrow. Nothing below 11 px; weights 400/500/600 only. */
   --text-display: var(--fs-display);
   --text-display--line-height: var(--lh-display);
-  --text-display--letter-spacing: -0.02em;
-  --text-display--font-weight: 600;
+  --text-display--letter-spacing: -0.012em;
+  --text-display--font-weight: 500;
   --text-title: var(--fs-title);
   --text-title--line-height: var(--lh-title);
-  --text-title--letter-spacing: -0.015em;
-  --text-title--font-weight: 600;
+  --text-title--letter-spacing: -0.006em;
+  --text-title--font-weight: 500;
   --text-answer: var(--fs-answer);
   --text-answer--line-height: var(--lh-answer);
-  --text-answer--letter-spacing: -0.005em;
-  --text-answer--font-weight: 500;
+  --text-answer--letter-spacing: -0.004em;
+  --text-answer--font-weight: 400;
   --text-section: 15px;
-  --text-section--line-height: 22px;
+  --text-section--line-height: 20px;
+  --text-section--letter-spacing: -0.005em;
   --text-section--font-weight: 600;
   --text-body: 15px;
   --text-body--line-height: 24px;
@@ -172,14 +195,14 @@
   --text-meta--line-height: 18px;
   --text-label: 12px;
   --text-label--line-height: 16px;
-  --text-label--letter-spacing: 0.02em;
+  --text-label--letter-spacing: 0.01em;
   --text-label--font-weight: 500;
   --text-stat: var(--fs-stat);
   --text-stat--line-height: var(--lh-stat);
-  --text-stat--letter-spacing: -0.02em;
-  --text-stat--font-weight: 600;
-  --text-eyebrow: 12px;
-  --text-eyebrow--line-height: 16px;
-  --text-eyebrow--letter-spacing: 0.06em;
+  --text-stat--letter-spacing: -0.01em;
+  --text-stat--font-weight: 500;
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 14px;
+  --text-eyebrow--letter-spacing: 0.08em;
   --text-eyebrow--font-weight: 600;
 }

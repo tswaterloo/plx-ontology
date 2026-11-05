@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, EyeOff, Scale } from "lucide-react";
+import { AlertTriangle, ChevronRight, EyeOff, Scale } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
@@ -129,14 +129,14 @@ export function FactList({
     <div className="space-y-2">
       <ul className="space-y-2" aria-label="Supporting facts" data-testid="fact-list">
         {extra.map((x, i) => (
-          <li key={`x${i}`} className="flex gap-2.5 text-body">
-            <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted" aria-hidden />
+          <li key={`x${i}`} className="flex gap-3 text-body">
+            <span className="mt-[11px] h-px w-2.5 shrink-0 bg-faint" aria-hidden />
             <span className="min-w-0 break-words">{x}</span>
           </li>
         ))}
         {shown.map((f, i) => (
-          <li key={i} className="flex gap-2.5 text-body">
-            <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted" aria-hidden />
+          <li key={i} className="flex gap-3 text-body">
+            <span className="mt-[11px] h-px w-2.5 shrink-0 bg-faint" aria-hidden />
             <span className="min-w-0 break-words">
               {factText(f, currency)}
               {unconfirmed(f) && <span className="text-muted"> (not confirmed)</span>}{" "}
@@ -197,18 +197,18 @@ export function missingText(n: NotFoundItem, subject?: string | null): string {
   return `${what}${rest ? `: ${rest[0].toLowerCase()}${rest.slice(1)}` : ""}. Ask ${m[1].trim()}.`;
 }
 
+const sentenceCase = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+
 export function NotFoundSection({ items, title = "What we couldn't find", bare = false, subject }: { items: NotFoundItem[] | undefined; title?: string; bare?: boolean; subject?: string | null }) {
   if (!items || items.length === 0) return null;
   return (
-    <section className={cn(!bare && "rounded-xl border border-border bg-surface p-4")} data-testid="not-found">
-      {!bare && <h3 className="mb-2 text-section">{title}</h3>}
+    <section className={cn(!bare && "border-t border-rule")} data-testid="not-found">
+      {!bare && <h3 className="flex min-h-11 items-center text-section">{title}</h3>}
       <ul className="space-y-1.5 text-row">
         {items.map((n, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="text-risk" aria-hidden>
-              ?
-            </span>
-            <span>{missingText(n, subject)}</span>
+          <li key={i} className="flex gap-2.5">
+            <span className="mt-[7px] size-1.5 shrink-0 bg-risk" aria-hidden />
+            <span>{sentenceCase(missingText(n, subject))}</span>
           </li>
         ))}
       </ul>
@@ -248,11 +248,11 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
     <section
       role="note"
       aria-label="Items you don't have access to"
-      className="flex gap-3 rounded-xl border border-border bg-surface-2 p-4 text-row"
+      className="flex gap-2.5 border-t border-border pt-3 text-meta"
       data-testid="hidden-notice"
     >
-      <EyeOff className="mt-0.5 size-4 shrink-0 text-muted" aria-hidden />
-      <div className="space-y-1">
+      <EyeOff className="mt-px size-3.5 shrink-0 text-faint" aria-hidden />
+      <div className="space-y-0.5">
         <p className="font-medium text-fg">
           {unknown
             ? "Some items may be hidden from you because you don't have access."
@@ -316,23 +316,23 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
   const what = conflict.subject ? `${field} (${conflict.subject})` : field;
   const used = trusted.length === 1 ? trusted[0] : null;
   return (
-    <section aria-label={`Conflicting values for ${what}`} className="rounded-xl border border-suspect-line bg-suspect-soft/60 p-4" data-testid="conflict-card">
+    <section aria-label={`Conflicting values for ${what}`} className="rounded-lg border border-dotted border-suspect-line bg-surface p-4" data-testid="conflict-card">
       <h3 className="mb-2 flex items-center gap-2 text-section text-fg">
-        <Scale className="size-4 shrink-0 text-suspect" aria-hidden />
+        <Scale className="size-4 shrink-0 text-suspect" strokeWidth={1.5} aria-hidden />
         The systems disagree on {what}
       </h3>
       <table className="w-full text-row">
         <caption className="sr-only">Values for {what}, by system</caption>
         <tbody>
           {conflict.values.map((v, i) => (
-            <tr key={i} className="border-t border-suspect-line/50 align-top first:border-0">
+            <tr key={i} className="border-t border-border align-top first:border-0">
               <th scope="row" className="py-2 pr-3 text-left font-normal text-muted">
                 {valueSystem(v.source)}
               </th>
-              <td className="py-2 pr-3 font-semibold tabular-nums">
+              <td className="py-2 pr-3 font-medium tabular-nums">
                 {conflictValue(conflict, v.value)}
                 {used === v && (
-                  <span className="ml-2 inline-flex h-5 items-center rounded-md border border-ok-line bg-ok-soft px-1.5 text-label text-ok">Used</span>
+                  <span className="ml-2 inline-flex h-5 items-center rounded-sm bg-ok-soft px-1.5 text-label text-ok">Used</span>
                 )}
                 {v.why && used === v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
                 {v.why && used !== v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
@@ -477,14 +477,12 @@ export function Disclosure({
   testId?: string;
 }) {
   return (
-    <details className="group rounded-lg border border-border bg-surface" open={defaultOpen} data-testid={testId}>
-      <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-        <span className="inline-block transition-transform group-open:rotate-90" aria-hidden>
-          ▸
-        </span>
+    <details className="group border-t border-border" open={defaultOpen} data-testid={testId}>
+      <summary className="flex min-h-10 cursor-pointer list-none items-center gap-2 py-2 text-row text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-3.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden />
         <h3 className="font-medium">{label}</h3>
       </summary>
-      <div className="space-y-3 border-t border-border px-3 py-3">{children}</div>
+      <div className="space-y-3 pb-4 pl-5">{children}</div>
     </details>
   );
 }

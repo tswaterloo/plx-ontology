@@ -76,7 +76,7 @@ export function Feedback({ answerId }: { answerId: string }) {
       </div>
       {state === "down-open" && (
         <form
-          className="space-y-3 rounded-xl border border-border bg-bg-subtle p-3 animate-fade-in"
+          className="space-y-3 rounded-lg border border-border bg-surface p-3 animate-fade-in"
           onSubmit={(e) => {
             e.preventDefault();
             void submit(-1);
@@ -94,7 +94,7 @@ export function Feedback({ answerId }: { answerId: string }) {
                     aria-pressed={on}
                     onClick={() => setReasons(on ? reasons.filter((x) => x !== r) : [...reasons, r])}
                     className={cn(
-                      "rounded-full border px-2.5 py-1 text-meta transition-colors cursor-pointer",
+                      "rounded border px-2.5 py-1 text-meta transition-colors cursor-pointer",
                       on ? "border-accent bg-accent-soft text-accent" : "border-border bg-surface text-fg hover:bg-surface-2",
                     )}
                   >

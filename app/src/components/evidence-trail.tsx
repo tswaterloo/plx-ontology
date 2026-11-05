@@ -10,7 +10,7 @@ import { lateness, STATUS_CLASS, type Status } from "@/lib/status";
 import type { EtaCheck, EvidenceTrail, MaterialRow, NextAction, PoTrail, Source, TrailStep } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
 import { EvidenceDrawer } from "./source-chip";
-import { StatusBadge } from "./ui/status-badge";
+import { StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** What each step kind is, in words, and its dot's status colour. */
 const KIND: Record<TrailStep["kind"], { label: string; status: Status }> = {
@@ -122,7 +122,7 @@ function Step({ step, group }: { step: TrailStep; group?: TrailStep[] }) {
   );
   return (
     <li className="relative" data-testid="trail-step" data-kind={step.kind}>
-      <span className={cn("absolute -left-[23px] top-2.5 size-2 rounded-full ring-2 ring-surface", STATUS_CLASS[kind.status].dot)} aria-hidden />
+      <span className={cn("absolute -left-[23px] top-[7px] size-1.5 ring-[3px] ring-bg", STATUS_CLASS[kind.status].dot)} aria-hidden />
       <StepSource source={step.source} label={`${kind.label}: ${title}. Open the evidence`}>
         {body}
       </StepSource>
@@ -199,7 +199,7 @@ function Verdict({ text, rule, check, status = "neutral", beside = [] }: { text:
   const [open, setOpen] = useState(false);
   const words = rule ? (/^rule: an open purchase order|^late means/i.test(rule) ? LATE_RULE : stepWords(rule.replace(/^Rule:\s*/, ""))) : null;
   return (
-    <div data-testid="trail-verdict" className={cn("rounded-lg border-l-[3px] px-3 py-2", STATUS_CLASS[status].soft, STATUS_CLASS[status].line)}>
+    <div data-testid="trail-verdict" className={cn("border-l-2 py-1 pl-3", STATUS_CLASS[status].line)}>
       <p className="text-eyebrow uppercase text-muted">Conclusion</p>
       <p className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-row font-medium">
         <span>{stepWords(text)}</span>
@@ -275,7 +275,7 @@ export function NextActionCard({ action, title = "Who to chase" }: { action: Nex
   const [open, setOpen] = useState(false);
   const src = action.contact_source;
   return (
-    <section className="rounded-xl border border-border bg-surface p-4 text-row" aria-label={title} data-testid="next-action">
+    <section className="border-t border-border pt-3 text-row" aria-label={title} data-testid="next-action">
       <p className="text-meta text-muted">{title}</p>
       {action.contact ? (
         <p className="mt-1 font-medium">{action.contact.replace(/\s*<[^>]+>/, "")}</p>
@@ -355,29 +355,29 @@ export function PoTrailView({ trail, showSubject = true, showNext = true, showEt
 function Materials({ rows }: { rows: MaterialRow[] }) {
   if (rows.length === 0) return null;
   return (
-    <div className="-mx-1 overflow-x-auto">
+    <div className="overflow-x-auto">
       <table className="w-full text-row" data-testid="materials">
         <caption className="sr-only">Purchase orders of the order's materials, late first</caption>
         <thead>
-          <tr className="border-b border-border text-left text-label text-muted">
-            <th scope="col" className="px-1 py-2">Material</th>
-            <th scope="col" className="py-2">Assembly</th>
-            <th scope="col" className="py-2">PO</th>
-            <th scope="col" className="px-1 py-2 text-right">Status</th>
+          <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
+            <th scope="col" className="px-2 font-semibold">Material</th>
+            <th scope="col" className="font-semibold">Assembly</th>
+            <th scope="col" className="font-semibold">PO</th>
+            <th scope="col" className="px-2 text-right font-semibold">Status</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i} className="border-b border-border align-top last:border-0">
-              <td className="px-1 py-2">{r.item.label}</td>
+              <td className="px-2 py-2">{r.item.label}</td>
               <td className="py-2 text-muted">{r.assembly.label}</td>
               <td className="py-2">
-                <Link href={safeHref(r.po.open_url) ?? objectHref(r.po.type, r.po.object_id)} className="font-medium hover:underline">
+                <Link href={safeHref(r.po.open_url) ?? objectHref(r.po.type, r.po.object_id)} className="font-medium hover:text-accent hover:underline">
                   {recordLabel(r.po.type, r.po.label)}
                 </Link>
               </td>
-              <td className="px-1 py-2 text-right" title={r.verdict ?? undefined}>
-                {r.state ? <StatusBadge shown={{ ...lateness(r.state, r.days_late)!, label: stateWords(r.state, r.days_late, true) }} /> : <StatusBadge status="neutral" label="Lateness not read" />}
+              <td className="px-2 py-2 text-right" title={r.verdict ?? undefined}>
+                {r.state ? <StatusWord shown={{ ...lateness(r.state, r.days_late)!, label: stateWords(r.state, r.days_late, true) }} /> : <StatusWord status="neutral" label="Lateness not read" />}
               </td>
             </tr>
           ))}
@@ -431,11 +431,11 @@ export function EvidenceTrailCard({
   const whyVerdict = steps.find((s) => s.kind === "verdict");
   return (
     <section
-      className={cn("space-y-4", !bare && "rounded-xl border border-border bg-surface p-4 sm:p-5")}
+      className={cn("space-y-4", !bare && "border-t border-rule pb-2")}
       aria-label="How we know"
       data-testid="evidence-trail"
     >
-      {!bare && <h2 className="text-section">How we know</h2>}
+      {!bare && <h2 className="-mb-1 flex min-h-11 items-center text-section">How we know</h2>}
       {/^how we know/i.test(trail.title) ? <p className="sr-only">{trail.title}</p> : <p className="text-meta text-muted">{readable(trail.title)}</p>}
       <Materials rows={rows} />
       {gaps.length > 0 && (

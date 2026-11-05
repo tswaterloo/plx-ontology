@@ -2,14 +2,15 @@
 
 import { ArrowRight, ChevronDown, Info, Mail } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useListKeys } from "@/lib/list-keys";
 import { EvidenceTrailCard } from "@/components/evidence-trail";
 import { getBriefing, getBriefingItems } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
 import { briefingKind, STATUS_CLASS } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
-import { StatusBadge } from "./ui/status-badge";
+import { StatusWord } from "./ui/status-badge";
 
 type LoadView = (view: BriefingView) => Promise<Briefing>;
 type LoadItems = (eventType: string, offset: number, view: BriefingView) => Promise<BriefingItems>;
@@ -59,8 +60,8 @@ export function shortSummary(summary: string): string {
 function Marks({ item }: { item: BriefingItem }) {
   return (
     <>
-      {item.new_since_visit && <StatusBadge status="new" label="New" />}
-      {item.acknowledged && <StatusBadge status="neutral" label="Acknowledged" />}
+      {item.new_since_visit && <span className="text-label font-medium text-new">New</span>}
+      {item.acknowledged && <span className="text-label text-muted">Acknowledged</span>}
     </>
   );
 }
@@ -88,25 +89,25 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
   const numbers = [typeof days === "number" ? plural(days, "day") : null, amount].filter(Boolean).join(" · ");
   const who = chaseWho(item, supplier);
   return (
-    <li className="py-3" data-testid="briefing-item">
+    <li className="-mx-2 px-2 py-3 has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="briefing-item">
       <div className="flex items-start gap-3">
         {/* its place in the list as shown: ranks of items left out (tests, other teams) would leave gaps */}
-        <span className="w-5 shrink-0 pt-0.5 text-right text-meta tabular-nums text-muted">{position ?? item.rank}</span>
+        <span className="w-4 shrink-0 pt-px text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{position ?? item.rank}</span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <StatusBadge shown={kind} />
-            <Marks item={item} />
-            <Link href={href} className="min-w-0 truncate text-row font-medium hover:underline">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <Link href={href} className="min-w-0 truncate text-row font-medium hover:underline focus-visible:outline-offset-4" data-row-link>
               {subject}
             </Link>
-            <span className="ml-auto flex items-center gap-3">
-              {numbers && <span className="text-row tabular-nums text-muted">{numbers}</span>}
-              <Link href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`} className="inline-flex items-center gap-1 whitespace-nowrap text-row font-medium text-accent hover:underline">
+            <StatusWord shown={kind} />
+            <Marks item={item} />
+            <span className="ml-auto flex items-baseline gap-4">
+              {numbers && <span className="text-meta tabular-nums text-muted">{numbers}</span>}
+              <Link href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`} className="inline-flex items-center gap-1 whitespace-nowrap text-meta font-medium text-accent hover:underline">
                 {who ? `Chase ${who}` : "Open"} <ArrowRight className="size-3.5" aria-hidden />
               </Link>
             </span>
           </div>
-          <div className={cn("mt-0.5 flex flex-wrap items-baseline gap-x-3 text-meta text-muted", dense && "mt-0")}>
+          <div className={cn("mt-0.5 flex flex-wrap items-baseline gap-x-3 text-meta text-muted", dense && "mt-0.5")}>
             <span className="min-w-0 basis-full sm:basis-0 sm:flex-1 sm:truncate">{shortSummary(item.summary)}</span>
             {item.trail && (
               <button
@@ -121,7 +122,7 @@ export function BriefingRow({ item, latePo, dense = false, position }: { item: B
           </div>
           {item.amount && item.amount_suspect && <p className="mt-0.5 text-meta text-suspect">{itemFacts(item)[0]}</p>}
           {open && item.trail && (
-            <div className="mt-3 rounded-xl border border-border bg-surface p-4">
+            <div className="mt-3 border-l-2 border-border-strong pl-4">
               <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
             </div>
           )}
@@ -137,7 +138,7 @@ function Row({ item }: { item: BriefingItem }) {
   const facts = itemFacts(item);
   return (
     <li className="flex items-start gap-3 py-2 text-row" data-testid="briefing-row">
-      <span className="w-6 shrink-0 text-right text-meta tabular-nums text-muted">{item.rank}</span>
+      <span className="w-6 shrink-0 text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{item.rank}</span>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{recordLabel(item.object_type, item.subject_label)}</span>
@@ -178,10 +179,10 @@ function Group({ group, view, loadItems }: { group: BriefingGroup; view: Briefin
     <li className="py-2.5" data-testid="briefing-group">
       <div className="flex flex-wrap items-center gap-2 text-row">
         {/* the kind's colour only: its badge would say the label twice ("Late PO Late purchase order") */}
-        <span className={cn("size-2 shrink-0 rounded-full", STATUS_CLASS[kind.status].dot)} aria-hidden />
+        <span className={cn("size-1.5 shrink-0", STATUS_CLASS[kind.status].dot)} aria-hidden />
         <span className="font-medium">{group.label}</span>
         <span className="tabular-nums text-muted">{group.count}</span>
-        {group.new_since_visit > 0 && <StatusBadge status="new" label={`${group.new_since_visit} new`} />}
+        {group.new_since_visit > 0 && <span className="text-label font-medium text-new">{group.new_since_visit} new</span>}
         {group.acknowledged > 0 && <span className="text-meta text-muted">{group.acknowledged} acknowledged</span>}
         {rest > 0 && rows === null && (
           <button
@@ -277,6 +278,8 @@ export function BriefingCard({
   const [tab, setTab] = useState<string>("all");
   const [rankOpen, setRankOpen] = useState(false);
   useEffect(() => setBriefing(first), [first]);
+  const listRef = useRef<HTMLDivElement>(null);
+  useListKeys(listRef);
   async function choose(next: BriefingView) {
     if (next === view) return;
     setView(next);
@@ -304,9 +307,9 @@ export function BriefingCard({
   const shownItems = tab === "all" ? items : items.filter((i) => i.event_type === tab);
   const shownGroups = tab === "all" ? groups : groups.filter((g) => g.event_type === tab);
   const tabCls = (on: boolean) =>
-    cn("inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-row cursor-pointer", on ? "bg-surface-2 font-medium text-fg" : "text-muted hover:text-fg");
+    cn("-mb-px inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-row cursor-pointer", on ? "border-rule font-medium text-fg" : "border-transparent text-muted hover:text-fg");
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" ref={listRef}>
       {briefing.today && (
         <p className="text-row font-medium text-fg" data-testid="briefing-today">
           <span className="text-muted font-normal">Today in one line: </span>
@@ -320,8 +323,8 @@ export function BriefingCard({
           <Info className="size-3.5" aria-hidden /> How this is ranked
         </button>
       </p>
-      {rankOpen && <p className="rounded-lg bg-surface-2 p-3 text-meta text-muted">{readable(briefing.rank_basis)}</p>}
-      <div className="flex flex-wrap items-center gap-1 border-b border-border pb-2" role="tablist" aria-label="Show">
+      {rankOpen && <p className="border-l-2 border-border-strong pl-3 text-meta text-muted">{readable(briefing.rank_basis)}</p>}
+      <div className="flex flex-wrap items-center gap-x-5 border-b border-border" role="tablist" aria-label="Show">
         <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={tabCls(!sinceVisit && tab === "all")}>
           All <span className="tabular-nums text-muted">{briefing.count}</span>
         </button>
@@ -376,7 +379,7 @@ export function BriefingCard({
         </summary>
         <div className="mt-2 space-y-1">
           <p className="text-meta text-muted">Preview only: this digest is not sent.</p>
-          <pre className="whitespace-pre-wrap rounded-lg bg-surface-2 p-3 text-meta" data-testid="digest-preview">
+          <pre className="whitespace-pre-wrap rounded border border-border bg-surface p-3 font-mono text-[12px] leading-[18px]" data-testid="digest-preview">
             {briefing.digest_preview}
           </pre>
         </div>
@@ -386,5 +389,6 @@ export function BriefingCard({
 }
 
 function labelOf(type: string): string {
-  return type.replace(/_/g, " ");
+  const words = type.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

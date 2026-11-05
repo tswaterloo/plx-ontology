@@ -1,15 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, CardBody } from "@/components/ui/card";
+import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadProblem } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { SkeletonRows } from "@/components/ui/skeleton";
-import { StatusBadge } from "@/components/ui/status-badge";
+import { StatusWord } from "@/components/ui/status-badge";
 import { actionChip } from "@/lib/actions";
 import { getActionsLog } from "@/lib/api";
 import { plainError } from "@/lib/errors";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, plural } from "@/lib/format";
 import type { ActionLogRow } from "@/lib/types";
 
 const KIND: Record<string, string> = {
@@ -52,25 +52,36 @@ export default function ActionsPage() {
   }, []);
   useEffect(() => load(), [load]);
   return (
-    <div className="space-y-6">
-      <PageHeader eyebrow="Actions" title="What you did from the Workbench" sub="Every action you confirmed on a suggestion: who, when, to whom, the cited facts it carried and what happened. Kept append-only; message text is not stored, only its fingerprint." />
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
+      <PageHeader
+        className="mb-8"
+        eyebrow="Actions"
+        title="What you did from the Workbench"
+        sub="Every action you confirmed on a suggestion: when, to whom, the facts it cited and what happened. The log can't be edited, and the text of a message isn't kept."
+      />
       <Card>
+        <CardHeader>
+          <CardTitle>Your actions</CardTitle>
+          {rows && rows.length > 0 && <span className="tabular-nums">{rows.length}</span>}
+        </CardHeader>
         <CardBody>
           {error ? (
             <LoadProblem message={error} onRetry={load} />
           ) : !rows ? (
             <SkeletonRows rows={4} label="Reading your actions" />
           ) : rows.length === 0 ? (
-            <p className="text-row text-muted">No actions yet. Use the buttons on a card under What to do next on Today.</p>
+            <p className="py-2 text-row text-muted">
+              Nothing yet. Actions you confirm from <span className="text-fg">What to do next</span> on Today are listed here, newest first.
+            </p>
           ) : (
             <table className="w-full text-row" data-testid="actions-log">
               <thead>
-                <tr className="text-left text-meta text-muted">
-                  <th className="pb-2 font-medium">When</th>
-                  <th className="pb-2 font-medium">Record</th>
-                  <th className="pb-2 font-medium">Action</th>
-                  <th className="hidden pb-2 font-medium md:table-cell">What</th>
-                  <th className="pb-2 font-medium">Result</th>
+                <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
+                  <th className="px-2 pl-3 font-semibold">When</th>
+                  <th className="px-2 font-semibold">Record</th>
+                  <th className="px-2 font-semibold">Action</th>
+                  <th className="hidden px-2 font-semibold md:table-cell">What</th>
+                  <th className="px-2 font-semibold">Result</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -78,17 +89,21 @@ export default function ActionsPage() {
                   const chip = actionChip(r, false);
                   return (
                     <tr key={r.seq} className="align-top" data-testid="actions-log-row">
-                      <td className="whitespace-nowrap py-2 pr-3 tabular-nums text-meta">{formatDateTime(r.at)}</td>
-                      <td className="py-2 pr-3">{r.card_label || r.card_id}</td>
-                      <td className="py-2 pr-3">
+                      <td className="whitespace-nowrap px-2 py-2.5 pl-3 tabular-nums text-meta text-muted">{formatDateTime(r.at)}</td>
+                      <td className="px-2 py-2.5 font-medium">{r.card_label || "A suggestion"}</td>
+                      <td className="px-2 py-2.5">
                         {KIND[r.kind] ?? r.kind}
                         <span className="block text-meta text-muted">{r.actor}</span>
                       </td>
-                      <td className="hidden py-2 pr-3 text-meta md:table-cell">
+                      <td className="hidden px-2 py-2.5 text-meta md:table-cell">
                         <What r={r} />
-                        {(r.citations ?? []).length > 0 && <span className="block text-muted">{(r.citations ?? []).length} cited facts · {r.payload_hash.slice(0, 12)}</span>}
+                        {(r.citations ?? []).length > 0 && (
+                          <span className="block text-faint" title={`Fingerprint ${r.payload_hash.slice(0, 12)}`}>
+                            {plural((r.citations ?? []).length, "cited fact")}
+                          </span>
+                        )}
                       </td>
-                      <td className="py-2">{chip && <StatusBadge shown={chip} title={chip.title ?? r.text} />}</td>
+                      <td className="px-2 py-2.5">{chip && <StatusWord shown={chip} title={chip.title ?? r.text} />}</td>
                     </tr>
                   );
                 })}

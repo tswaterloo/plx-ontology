@@ -5,17 +5,17 @@
 
 /* Tokens live in tokens.css. */
 @theme inline {
-  --animate-fade-in: fade-in 180ms ease-out both;
-  --animate-shimmer: shimmer 1.4s linear infinite;
+  --animate-fade-in: fade-in 120ms ease-out both;
   --animate-blink: blink 1s steps(2, start) infinite;
+  --animate-breathe: breathe 1.2s ease-in-out infinite;
 
   @keyframes fade-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: none; }
+    from { opacity: 0; }
+    to { opacity: 1; }
   }
-  @keyframes shimmer {
-    from { background-position: -200% 0; }
-    to { background-position: 200% 0; }
+  @keyframes breathe {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
   }
   @keyframes blink {
     to { visibility: hidden; }
@@ -31,6 +31,7 @@
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
+    font-variant-numeric: lining-nums;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -42,6 +43,21 @@
   ::selection {
     background: var(--accent-soft);
   }
+  /* What a page says is set in the serif: titles, the answer's lead, figures. */
+  .text-display,
+  .text-title,
+  .text-answer,
+  .text-stat {
+    font-family: var(--font-serif);
+    font-optical-sizing: auto;
+  }
+  .text-stat {
+    font-variant-numeric: lining-nums tabular-nums;
+  }
+  ::placeholder {
+    color: var(--fg-faint);
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -52,9 +68,14 @@
   }
 }
 
+/* A list row reached with j / k clears the sticky top bar. */
+[data-row-link] {
+  scroll-margin-top: 64px;
+  scroll-margin-bottom: 24px;
+}
+
+/* A placeholder bar: still, faint, never a shimmer. */
 .skeleton {
-  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 37%, var(--surface-2) 63%);
-  background-size: 400% 100%;
-  animation: var(--animate-shimmer);
-  border-radius: 6px;
+  background: var(--surface-2);
+  border-radius: 2px;
 }

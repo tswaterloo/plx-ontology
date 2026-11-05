@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Answer, Hidden, Source } from "@/lib/types";
-import { AnswerCard, bulletFact, type Turn } from "./answer-card";
+import { AnswerCard, bulletFact, lateRows, type Turn } from "./answer-card";
 import { ConflictCard, HiddenNotice } from "./answer-parts";
 import { ObjectView } from "./object-view";
 import { SourceChip } from "./source-chip";
@@ -683,5 +683,16 @@ describe("answer prose", () => {
       "PO 100095: 111 days late, needed by 14 Jul 2026; no supplier confirmation",
     );
     expect(prose("See PO 4809 and SO77120.")).toBe("See PO 4809 and SO 77120.");
+  });
+});
+
+describe("a late-order list answer", () => {
+  it("reads as a ledger only when every fact is a late-order line", () => {
+    const line = (po: string, days: number) => ({ text: `${po}: ${days} days late. An open purchase order needed by 2026-07-14 has no supplier confirmation.`, sources: [] });
+    const rows = lateRows([line("PO100095", 114), line("106001", 134), line("PO 100094", 114)]);
+    expect(rows?.map((r) => [r.po, r.days, r.unconfirmed])).toEqual([["PO 100095", 114, true], ["PO 106001", 134, true], ["PO 100094", 114, true]]);
+    expect(rows?.[0].due).toBe("14 Jul 2026");
+    expect(lateRows([line("PO1", 3), line("PO2", 4), { text: "Supplier: DSM", sources: [] }])).toBeNull();
+    expect(lateRows([line("PO1", 3)])).toBeNull();
   });
 });

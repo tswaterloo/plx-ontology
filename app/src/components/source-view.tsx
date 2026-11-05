@@ -93,7 +93,7 @@ export function EmailHeader({ fields, asOf }: { fields: Record<string, string> |
   const sent = sentRaw ? formatDateTime(sentRaw) : "";
   const from = mailField(fields, "from");
   return (
-    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5" data-testid="email-header">
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 border-y border-border bg-bg-subtle px-4 py-3" data-testid="email-header">
       <dt className="text-meta text-muted">From</dt>
       <dd className={cn("min-w-0 break-words text-row font-medium", !from && "font-normal text-muted")}>{from || "Sender not captured"}</dd>
       <People label="To" people={mailList(fields, "to")} fold={3} />
@@ -193,32 +193,32 @@ export function SourceDocument({
   const citedCount = cited.length > 0 ? lead.filter((_, i) => i < cited.length).length : 0;
   return (
     <div className="min-w-0 space-y-5" data-testid="source-document">
-      <header className="min-w-0 space-y-1">
+      <header className={cn("min-w-0 space-y-1.5", headingLevel === 1 && "border-b-2 border-rule pb-4")}>
         <p className="text-eyebrow uppercase text-muted">
           {eyebrow}
           {email && view.as_of ? ` · ${formatDateTime(view.as_of)}` : ""}
         </p>
-        <H id={titleId} className="break-words text-title" data-testid="source-title">
+        <H id={titleId} className={cn("break-words", headingLevel === 1 ? "text-display" : "text-title")} data-testid="source-title">
           {title}
         </H>
         {!email && view.as_of && <p className="text-meta text-muted">Read {formatDateTime(view.as_of)}</p>}
         {actions}
       </header>
       {view.changed_since && (
-        <p className="flex items-center gap-2 rounded-xl border border-risk-line bg-risk-soft p-3 text-row">
+        <p className="flex items-center gap-2 border-t border-risk-line pt-3 text-row">
           <AlertTriangle className="size-4 shrink-0 text-risk" aria-hidden />
           This has changed since the answer cited it. Read it again before you act.
         </p>
       )}
       {email && <EmailHeader fields={view.fields} asOf={view.as_of} />}
       {quote && (
-        <blockquote className="rounded-r-lg border-l-[3px] border-accent bg-accent-soft px-4 py-3 text-body" data-testid="cited-passage">
+        <blockquote className="border-l-2 border-accent bg-accent-soft px-4 py-3 font-serif text-[17px] leading-[26px] italic" data-testid="cited-passage">
           “{quote}”
         </blockquote>
       )}
       {text ? (
         <div className="space-y-3">
-          {quote && <h3 className="text-section">Full message</h3>}
+          {quote && <h3 className="text-eyebrow uppercase text-muted">Full message</h3>}
           <div className="whitespace-pre-wrap break-words text-body" data-testid="source-text">
             {main}
           </div>

@@ -2,7 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import * as React from "react";
 import { cn } from "@/lib/cn";
 
-/** What is true, and what to do: icon, title, one line, an optional action. */
+/** What is true, and what to do: one plain sentence, the evidence, at most one action. No illustration. */
 export function EmptyState({
   icon: Icon,
   title,
@@ -17,13 +17,13 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col items-center px-4 py-8 text-center", className)} data-testid="empty-state">
-      <span className="flex size-10 items-center justify-center rounded-full bg-surface-2 text-muted">
-        <Icon className="size-5" aria-hidden />
-      </span>
-      <p className="mt-3 text-section">{title}</p>
-      {line && <p className="mt-1 max-w-md text-row text-muted">{line}</p>}
-      {action && <div className="mt-4">{action}</div>}
+    <div className={cn("py-4", className)} data-testid="empty-state">
+      <p className="flex items-center gap-2 text-row font-medium text-fg">
+        <Icon className="size-4 shrink-0 text-ok" aria-hidden />
+        {title}
+      </p>
+      {line && <p className="mt-1 max-w-[68ch] text-row text-muted">{line}</p>}
+      {action && <div className="mt-3">{action}</div>}
     </div>
   );
 }

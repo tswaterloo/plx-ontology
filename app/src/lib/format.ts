@@ -389,6 +389,7 @@ export function recordLabel(type: string | null | undefined, label: string): str
   if (/^\d[\w-]*$/.test(l)) {
     if (/^PurchaseOrder$|^purchase_order$/.test(type ?? "")) return `PO ${l}`;
     if (/^SalesOrder$|^sales_order$/.test(type ?? "")) return `SO ${l}`;
+    if (/^Lot$|^lot$/.test(type ?? "")) return `Lot ${l}`;
   }
   return l.replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^AO (AO-)/, "$1").replace(/^MO (AO-)/, "MO $1");
 }

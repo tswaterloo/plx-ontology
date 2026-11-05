@@ -33,10 +33,10 @@ export function Sheet({
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       {trigger && <Dialog.Trigger asChild>{trigger}</Dialog.Trigger>}
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 animate-fade-in" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(28_26_23/0.32)] animate-fade-in" />
         <Dialog.Content
           className={cn(
-            "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-surface shadow-pop animate-fade-in focus:outline-none sm:w-[520px]",
+            "fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border-strong bg-bg shadow-pop animate-fade-in focus:outline-none sm:w-[520px]",
             className,
           )}
           data-testid="evidence-drawer"

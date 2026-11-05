@@ -11,7 +11,7 @@ import { formatDate } from "@/lib/format";
 import { draftText, mailtoHref } from "@/lib/proposals";
 import type { Proposal } from "@/lib/types";
 import { SourceChips } from "./source-chip";
-import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
+import { Panel } from "./ui/card";
 
 const SYSTEM_NAME: Record<string, string> = { BC: "Business Central", Portal: "the Portal", FileMaker: "FileMaker", Sage: "Sage" };
 
@@ -33,7 +33,7 @@ function Draft({ p }: { p: Proposal }) {
       setCopied(false);
     }
   };
-  const field = "w-full rounded-lg border border-control bg-surface px-3 py-1.5 text-row";
+  const field = "mt-1 w-full rounded border border-control bg-raised px-3 py-1.5 text-row text-fg";
   return (
     <div className="space-y-2">
       <label className="block text-meta text-muted">
@@ -47,10 +47,10 @@ function Draft({ p }: { p: Proposal }) {
       </label>
       <textarea className={`${field} min-h-56 font-sans`} value={body} onChange={(e) => setBody(e.target.value)} aria-label="Draft text" />
       <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={copy} className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-control bg-surface px-3 text-row hover:bg-surface-2 cursor-pointer">
+        <button type="button" onClick={copy} className="inline-flex h-8 items-center gap-1.5 rounded border border-control px-3 text-row hover:bg-surface-2 cursor-pointer">
           <Copy className="size-4" aria-hidden /> {copied ? "Copied" : "Copy"}
         </button>
-        <a href={mailtoHref(to, subject, body)} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-accent px-3 text-row font-medium text-accent-fg hover:opacity-90" data-testid="open-in-outlook">
+        <a href={mailtoHref(to, subject, body)} className="inline-flex h-8 items-center gap-1.5 rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110" data-testid="open-in-outlook">
           <Mail className="size-4" aria-hidden /> Open in Outlook
         </a>
       </div>
@@ -67,16 +67,21 @@ function Change({ p }: { p: Proposal }) {
         <tbody>
           <tr className="border-b border-border">
             <th scope="row" className="py-1.5 pr-4 text-left font-normal text-muted">{c.field} now</th>
-            <td className="py-1.5 tabular-nums line-through decoration-risk">{dateOr(c.before)}</td>
-            <td className="py-1.5 text-right"><SourceChips sources={[c.before_source]} max={1} /></td>
+            <td className="py-1.5 tabular-nums">
+              <span className="line-through decoration-risk">{dateOr(c.before)}</span>
+              {/* on a phone the source sits under the value, so the row never runs off the screen */}
+              <span className="mt-1 block sm:hidden"><SourceChips sources={[c.before_source]} max={1} /></span>
+            </td>
+            <td className="hidden py-1.5 text-right sm:table-cell"><SourceChips sources={[c.before_source]} max={1} /></td>
           </tr>
           <tr>
             <th scope="row" className="py-1.5 pr-4 text-left font-normal text-muted">Proposed</th>
             <td className="py-1.5 font-medium tabular-nums">
               <ArrowRight className="mr-1 inline size-3.5" aria-hidden />
               {dateOr(c.after)}
+              <span className="mt-1 block font-normal sm:hidden"><SourceChips sources={[c.evidence]} max={1} /></span>
             </td>
-            <td className="py-1.5 text-right"><SourceChips sources={[c.evidence]} max={1} /></td>
+            <td className="hidden py-1.5 text-right sm:table-cell"><SourceChips sources={[c.evidence]} max={1} /></td>
           </tr>
         </tbody>
       </table>
@@ -90,12 +95,12 @@ function ProposalCard({ p }: { p: Proposal }) {
   const cited = (p.figures ?? []).filter((f) => f.source);
   const missing = p.missing ?? [];
   return (
-    <Card data-testid="proposal" data-kind={p.kind}>
-      <CardHeader>
-        <CardTitle>{p.title}</CardTitle>
-        <span>{p.kind === "record_update" ? "Proposed update" : "Draft"}</span>
-      </CardHeader>
-      <CardBody className="space-y-3">
+    <Panel data-testid="proposal" data-kind={p.kind}>
+      <div className="flex items-baseline justify-between gap-3 border-b border-border px-4 py-2.5">
+        <h3 className="text-row font-semibold">{p.title}</h3>
+        <span className="shrink-0 text-eyebrow uppercase text-faint">{p.kind === "record_update" ? "Proposed update" : "Draft"}</span>
+      </div>
+      <div className="space-y-3 p-4">
         {p.change ? <Change p={p} /> : <Draft p={p} />}
         {missing.length > 0 && (
           <p className="text-meta text-risk" data-testid="proposal-missing">
@@ -115,8 +120,8 @@ function ProposalCard({ p }: { p: Proposal }) {
             </ul>
           </details>
         )}
-      </CardBody>
-    </Card>
+      </div>
+    </Panel>
   );
 }
 
@@ -124,9 +129,11 @@ function ProposalCard({ p }: { p: Proposal }) {
 export function ProposalCards({ proposals }: { proposals: Proposal[] | null | undefined }) {
   if (!proposals || proposals.length === 0) return null;
   return (
-    <section id="proposals" className="scroll-mt-20 space-y-3" aria-label="Proposed follow-ups" data-testid="proposals">
-      <h2 className="text-section">Proposed follow-ups</h2>
-      <p className="text-meta text-muted">Drafted from the records below. Nothing is sent or changed: edit, copy or open it in your own mail client.</p>
+    <section id="proposals" className="scroll-mt-20 space-y-3 border-t border-rule" aria-label="Proposed follow-ups" data-testid="proposals">
+      <div className="pt-2.5">
+        <h2 className="text-section">Proposed follow-ups</h2>
+        <p className="mt-1 text-meta text-muted">Drafted from the records below. Nothing is sent or changed: edit, copy or open it in your own mail client.</p>
+      </div>
       {proposals.map((p) => (
         <ProposalCard key={p.id} p={p} />
       ))}

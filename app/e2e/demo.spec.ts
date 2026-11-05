@@ -116,7 +116,8 @@ test("demo walkthrough", async ({ page }, info) => {
   // Sources: chips on facts; hover (or focus) shows the quoted passage.
   const chips = card.getByTestId("source-chip");
   expect(await chips.count()).toBeGreaterThanOrEqual(3);
-  const mailChip = chips.filter({ hasText: "Maple Leaf Soapworks" }).first();
+  // numbered markers on the claims; each names its source in its accessible name
+  const mailChip = card.getByRole("button", { name: /^Source: Email, .*Maple Leaf Soapworks/ }).first();
   if (phone) await mailChip.focus();
   else await mailChip.hover();
   await expect(page.getByTestId("source-preview")).toContainText("saponification line was down");

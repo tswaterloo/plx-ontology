@@ -10,13 +10,14 @@ import type { EtaCheck, ObjectRef, PromiseLine, Source } from "@/lib/types";
 import { EvidenceDrawer } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 
-/** A status pill that may run longer than three words (it wraps on a narrow screen). */
-export function EtaPill({ shown, className, testId }: { shown: EtaShown | null; className?: string; testId?: string }) {
+/** A status that may run longer than three words (it wraps on a narrow screen): a small square in its colour and the words. */
+export function EtaPill({ shown, className, testId, quiet = false }: { shown: EtaShown | null; className?: string; testId?: string; quiet?: boolean }) {
   if (!shown) return null;
   const c = STATUS_CLASS[shown.status];
+  // quiet: the same status down a whole column is said once above it, then in plain muted words
   return (
-    <span data-status={shown.status} data-testid={testId} className={cn("inline-flex min-h-[22px] items-center gap-1.5 rounded-md border px-2 py-0.5 text-label", c.soft, c.fg, c.line, className)}>
-      <span className={cn("size-1.5 shrink-0 rounded-full", c.dot)} aria-hidden />
+    <span data-status={shown.status} data-testid={testId} className={cn("inline-flex items-baseline gap-1.5 text-label", quiet ? "text-muted" : cn("font-medium", shown.status === "neutral" ? "text-muted" : c.fg), className)}>
+      {!quiet && <span className={cn("size-1.5 shrink-0 translate-y-[-1px] self-center", c.dot)} aria-hidden />}
       {shown.label}
     </span>
   );

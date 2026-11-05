@@ -2,7 +2,7 @@
 
 import * as HoverCard from "@radix-ui/react-hover-card";
 import Link from "next/link";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import {
   Calculator,
   Database,
@@ -31,17 +31,6 @@ const ICON: Record<SourceSystem, LucideIcon> = {
   Teams: MessagesSquare,
   File: FileText,
   MC: ListChecks,
-};
-
-const DOT: Record<SourceSystem, string> = {
-  BC: "bg-emerald-500",
-  Portal: "bg-sky-500",
-  Sage: "bg-lime-500",
-  FileMaker: "bg-orange-500",
-  Email: "bg-amber-500",
-  Teams: "bg-violet-500",
-  File: "bg-slate-500",
-  MC: "bg-rose-500",
 };
 
 function known(system: string): system is SourceSystem {
@@ -118,6 +107,13 @@ export function fieldEntries(fields: Source["fields"], cited: string[] = []): [s
   return [...lead, ...more].slice(0, 12);
 }
 
+/**
+ * Citation numbers for the sources of one answer (handle -> 1, 2, …). Inside it a chip whose
+ * source is numbered is set as a small numbered marker on the claim; the numbered list under
+ * the answer names each one. Outside it (record pages) chips name their source.
+ */
+export const CiteNumbers = createContext<ReadonlyMap<string, number> | null>(null);
+
 /** Short system names for chips; the full name is in the aria label and the drawer. */
 const SHORT: Record<SourceSystem, string> = {
   BC: "BC",
@@ -155,15 +151,23 @@ export function sourceName(source: Source, record?: string | null): string {
 export function SourcePreview({ source }: { source: Source }) {
   const sys = known(source.system) ? SYSTEM_LABEL[source.system] : "Source";
   const fields = fieldEntries(source.fields, Object.keys(source.fields ?? {}));
+  // the system is said once: "Email · Maple Leaf Soapworks, 21 Oct", not "Email · Email · …"
+  const name = sourceName(source);
+  const short = known(source.system) ? SHORT[source.system] : "";
+  const shownName = short && name.startsWith(`${short} · `) ? name.slice(short.length + 3) : name === short || name === sys ? "" : name;
   return (
     <div className="space-y-2 text-row">
       <div className="flex items-center gap-2 text-meta text-muted">
         <span className="font-medium text-fg">{sys}</span>
-        <span aria-hidden>·</span>
-        <span className="truncate">{sourceName(source)}</span>
+        {shownName && (
+          <>
+            <span aria-hidden>·</span>
+            <span className="truncate">{shownName}</span>
+          </>
+        )}
       </div>
       {source.quote ? (
-        <blockquote className="border-l-2 border-accent pl-3 text-fg">“{source.quote}”</blockquote>
+        <blockquote className="border-l-2 border-accent pl-3 font-serif text-[15px] leading-[22px] italic text-fg">“{source.quote}”</blockquote>
       ) : fields.length > 0 ? (
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
           {fields.map(([k, v]) => (
@@ -233,22 +237,40 @@ export function SourceChip({ source, className, record }: { source: Source; clas
   const href = safeHref(source.open_url);
   const opens = !!href || !!source.handle;
   const name = sourceName(source, record);
-  const chipClass = cn(
-    "inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border border-border bg-surface-2 px-1.5 align-middle text-label text-fg transition-colors hover:border-border-strong hover:bg-border",
+  const cites = useContext(CiteNumbers);
+  const n = source.handle ? cites?.get(source.handle) : undefined;
+  const chipClass = n !== undefined
+    ? cn(
+        "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm bg-accent-soft px-1 align-[1px] font-sans text-[11px] font-semibold leading-none tabular-nums text-accent transition-colors hover:bg-accent hover:text-accent-fg",
+        opens && "cursor-pointer",
+        className,
+      )
+    : cn(
+    "inline-flex h-5 max-w-[16rem] items-center gap-1.5 rounded-sm border border-border bg-surface px-1.5 align-middle text-label font-normal text-muted transition-colors hover:border-accent hover:text-accent",
     opens && "cursor-pointer",
     className,
   );
-  const inner = (
+  // "BC · PO line": the system as a small-caps tag, then what it is
+  const [lead, ...tail] = name.split(" · ");
+  const tagged = !!system && lead === SHORT[system];
+  const inner = n !== undefined ? (
+    <>{n}</>
+  ) : (
     <>
-      <span className={cn("size-1.5 shrink-0 rounded-full", system ? DOT[system] : "bg-slate-400")} aria-hidden />
-      <Icon className="size-3 shrink-0 text-muted" aria-hidden />
-      <span className="truncate">{name}</span>
+      {tagged ? (
+        <span className="shrink-0 text-[10px] font-semibold uppercase leading-none tracking-[0.06em] text-faint">{lead}</span>
+      ) : (
+        <Icon className="size-3 shrink-0 text-faint" strokeWidth={1.5} aria-hidden />
+      )}
+      {(!tagged || tail.length > 0) && (
+        <span className="truncate">{tagged ? tail.join(" · ").replace(new RegExp(`^${lead}\\s+(?=\\S)`, "i"), "") : name}</span>
+      )}
     </>
   );
   const aria = `Source: ${system ? SYSTEM_LABEL[system] : "source"}, ${name}${opens ? " (opens the evidence)" : ""}`;
   return (
     <>
-      <HoverCard.Root openDelay={200} closeDelay={80} open={hover && !open} onOpenChange={setHover}>
+      <HoverCard.Root openDelay={120} closeDelay={150} open={hover && !open} onOpenChange={setHover}>
         <HoverCard.Trigger asChild>
           {opens ? (
             <button
@@ -275,7 +297,7 @@ export function SourceChip({ source, className, record }: { source: Source; clas
             align="start"
             sideOffset={6}
             collisionPadding={12}
-            className="z-40 w-[min(22rem,calc(100vw-24px))] rounded-xl border border-border bg-surface p-3 shadow-pop animate-fade-in"
+            className="z-40 w-[min(22rem,calc(100vw-24px))] rounded-xl border border-border bg-raised p-3 shadow-pop animate-fade-in"
             data-testid="source-preview"
           >
             <SourcePreview source={source} />
@@ -289,9 +311,12 @@ export function SourceChip({ source, className, record }: { source: Source; clas
 
 /** At most `max` chips; the rest collapse into "+N" (which opens the first hidden one). */
 export function SourceChips({ sources, max = 2, record }: { sources: Source[] | null | undefined; max?: number; record?: (s: Source) => string | null | undefined }) {
-  const list = sources ?? [];
+  const cites = useContext(CiteNumbers);
+  const all = sources ?? [];
+  // numbered markers are small: every one shows, each number once
+  const list = cites ? all.filter((s, i) => !s.handle || all.findIndex((x) => x.handle === s.handle) === i) : all;
   if (list.length === 0) return null;
-  const shown = list.slice(0, max);
+  const shown = cites ? list : list.slice(0, max);
   const rest = list.length - shown.length;
   return (
     <span className="inline-flex flex-wrap items-center gap-1 align-middle">
@@ -310,7 +335,7 @@ function MoreChip({ sources }: { sources: Source[] }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex h-6 items-center rounded-md border border-border px-1.5 text-label text-muted hover:bg-surface-2 cursor-pointer"
+        className="inline-flex h-5 items-center rounded-sm border border-border px-1.5 text-label text-muted hover:border-accent hover:text-accent cursor-pointer"
         aria-label={`${sources.length} more sources`}
       >
         +{sources.length}
@@ -319,7 +344,7 @@ function MoreChip({ sources }: { sources: Source[] }) {
         <Sheet open={open} onOpenChange={setOpen} title={`${sources.length} more sources`}>
           <ul className="space-y-3">
             {sources.map((s, i) => (
-              <li key={i} className="rounded-lg border border-border p-3">
+              <li key={i} className="border-t border-border pt-3">
                 <SourcePreview source={s} />
                 <div className="mt-2">
                   <SourceChip source={s} />
@@ -329,6 +354,43 @@ function MoreChip({ sources }: { sources: Source[] }) {
           </ul>
         </Sheet>
       )}
+    </>
+  );
+}
+
+/** One numbered row of an answer's sources: its number, system, what it is and when it was read; it opens the evidence. */
+export function SourceListRow({ source, n }: { source: Source; n: number }) {
+  const [open, setOpen] = useState(false);
+  const system = known(source.system) ? source.system : null;
+  const name = sourceName(source);
+  const [lead, ...tail] = name.split(" · ");
+  const tagged = !!system && lead === SHORT[system];
+  const message = system === "Email" || system === "Teams";
+  // a message is named by its own label ("from Maple Leaf Soapworks, 21 Oct"), one date only
+  const what = message && source.label && !/^(?:email|teams)? ?message$/i.test(source.label.trim())
+    ? source.label.replace(/^(?:email|teams|message)\s+/i, "").replace(/^from\s+/i, "")
+    : tagged
+      ? tail.join(" · ").replace(new RegExp(`^${lead}\\s+(?=\\S)`, "i"), "") || SYSTEM_LABEL[system!]
+      : name;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="group grid w-full grid-cols-[22px_minmax(0,1fr)] items-baseline gap-x-2 rounded py-1 text-left text-meta hover:bg-surface cursor-pointer"
+        aria-label={`Source ${n}: ${system ? SYSTEM_LABEL[system] : "source"}, ${name}`}
+        data-testid="answer-source"
+      >
+        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm bg-accent-soft px-1 text-[11px] font-semibold tabular-nums text-accent group-hover:bg-accent group-hover:text-accent-fg">
+          {n}
+        </span>
+        <span className="min-w-0 truncate">
+          <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-faint">{system ? SHORT[system] : "Source"}</span>
+          <span className="text-fg">{what}</span>
+          {source.as_of && !message && <span className="text-faint"> · read {formatDate(source.as_of, { short: true })}</span>}
+        </span>
+      </button>
+      {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
     </>
   );
 }

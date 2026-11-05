@@ -277,9 +277,16 @@ export function CardActions({ card, onDone, state }: { card: ProactiveSuggestion
   const offers = card.actions ?? [];
   if (!offers.length) return null;
   return (
-    <div className="flex flex-wrap gap-1.5" data-testid="card-actions">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5" data-testid="card-actions">
       {offers.map((o) => (
-        <Button key={o.kind} variant={o.kind === "send_email" ? "primary" : "outline"} size="sm" className="h-7 px-2.5 text-meta" onClick={() => setOpen(o)} data-testid={`action-${o.kind}`}>
+        <Button
+          key={o.kind}
+          variant={o.kind === "send_email" ? "outline" : "ghost"}
+          size="sm"
+          className={o.kind === "send_email" ? "h-7 px-2.5 text-meta" : "h-7 px-2 text-meta font-normal text-muted hover:text-fg"}
+          onClick={() => setOpen(o)}
+          data-testid={`action-${o.kind}`}
+        >
           {o.label}
         </Button>
       ))}

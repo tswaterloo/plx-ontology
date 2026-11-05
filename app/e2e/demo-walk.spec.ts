@@ -78,7 +78,7 @@ async function expectClean(page: Page, where: string) {
   for (const re of RAW_NUMBER) expect(text, `${where}: raw number ${re}`).not.toMatch(re);
   // A card (the Card surface) whose only text is its title, or none at all.
   const empty = await page.evaluate(() =>
-    [...document.querySelectorAll("main div.rounded-xl.border.bg-surface")]
+    [...document.querySelectorAll("main [data-card]")]
       .filter((c) => (c as HTMLElement).offsetParent !== null)
       .filter((c) => {
         const title = c.querySelector("h2")?.textContent?.trim() ?? "";

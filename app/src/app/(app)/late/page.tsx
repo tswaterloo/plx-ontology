@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useListKeys } from "@/lib/list-keys";
 import { getLateList } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
@@ -9,11 +10,12 @@ import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref } fr
 import { DAY_BANDS, inDayBand, matches, sortLate, supplierCounts, VALUE_BANDS, type DayBand, type LateFilter, type SortKey, type ValueBand } from "@/lib/late";
 import type { LatePo } from "@/lib/types";
 import { EtaPill } from "@/components/eta-confirmed";
+import { LateShape } from "@/components/late-shape";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { listShown } from "@/lib/eta";
 import { LoadProblem } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Pending } from "@/components/ui/skeleton";
 
 const PAGE = 100;
 const MOST = 1000; // the list reads at most this many orders, then says how many it left out
@@ -35,14 +37,14 @@ function Value({ po }: { po: LatePo }) {
   return (
     <span title={`Check the data: ${po.amount_suspect}`} className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5 text-muted">
       <span>{shown}</span>
-      <span className="rounded bg-suspect-soft px-1 text-label font-medium text-suspect">Check total</span>
+      <span className="rounded-sm border border-dotted border-suspect-line px-1 text-label font-medium text-suspect">Check total</span>
       <span className="sr-only">: {po.amount_suspect}</span>
     </span>
   );
 }
 
 /** The row's "ETA confirmed?" answer, linking to the order's own check (firm or lead, and its date). */
-function ListEta({ po, className, linked = false }: { po: LatePo; className?: string; linked?: boolean }) {
+function ListEta({ po, className, linked = false, quiet = false }: { po: LatePo; className?: string; linked?: boolean; quiet?: boolean }) {
   const shown = listShown(po);
   if (!shown)
     return linked ? (
@@ -50,7 +52,7 @@ function ListEta({ po, className, linked = false }: { po: LatePo; className?: st
         Check on the PO
       </Link>
     ) : null;
-  const pill = <EtaPill shown={shown} className={className} testId="late-eta" />;
+  const pill = <EtaPill shown={shown} className={className} testId="late-eta" quiet={quiet} />;
   if (!linked) return pill;
   return (
     <Link href={hrefOf(po)} className="hover:opacity-80" title="Open the order's confirmation check">
@@ -111,6 +113,11 @@ export default function LatePage() {
     return () => c.abort();
   }, []);
   useEffect(() => load(), [load]);
+  // "Who is late" on Today links here with ?supplier=
+  useEffect(() => {
+    const want = new URLSearchParams(window.location.search).get("supplier");
+    if (want) setFilter((f) => ({ ...f, supplier: want }));
+  }, []);
 
   const suppliers = useMemo(() => supplierCounts(items), [items]);
   const shown = useMemo(() => sortLate(items.filter((p) => matches(p, filter)), sort.key, sort.desc), [items, filter, sort]);
@@ -119,6 +126,11 @@ export default function LatePage() {
   const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, desc: !s.desc } : { key, desc: false }));
 
   const oldest = useMemo(() => sortLate(items, "days", false)[0], [items]);
+  const list = useRef<HTMLDivElement>(null);
+  useListKeys(list);
+  // every row the same ETA answer: the header's line says it; the cells go quiet
+  const uniformEta = useMemo(() => shown.length > 3 && shown.every((p) => listShown(p)?.label === listShown(shown[0])?.label), [shown]);
+  const maxDays = useMemo(() => Math.max(0, ...items.map((p) => p.days_late ?? 0)), [items]);
   const unconfirmed = useMemo(() => items.filter((p) => listShown(p)).length, [items]);
   const verdict =
     error ? "Late purchase orders" : total === null ? null : items.length === 0 ? "Nothing is late." : `${total} purchase ${total === 1 ? "order is" : "orders are"} late`;
@@ -133,15 +145,20 @@ export default function LatePage() {
           .join(" · ") + ".";
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
       <PageHeader
-        className="mb-6"
+        className="mb-8"
         eyebrow="Late orders"
         testId="late-header"
-        title={verdict ?? <Skeleton className="h-[30px] w-72 max-w-full sm:h-[34px]" />}
+        title={verdict ?? "Late purchase orders"}
         sub={why}
       />
-      <Card data-testid="late-all">
+      {items.length > 1 && !error && (
+        <div className="mb-10">
+          <LateShape items={items} onSupplier={(name) => setFilter((f) => ({ ...f, supplier: name }))} picked={filter.supplier} />
+        </div>
+      )}
+      <Card data-testid="late-all" ref={list}>
         <CardHeader>
           <CardTitle>{filtered ? "Matching orders" : "Every late order"}</CardTitle>
           {total !== null && (
@@ -156,17 +173,13 @@ export default function LatePage() {
           {error ? (
             <LoadProblem message={error} busy={busy} onRetry={load} />
           ) : total === null ? (
-            <div className="space-y-2" role="status" aria-label="Loading">
-              <Skeleton className="h-10" />
-              <Skeleton className="h-10" />
-              <Skeleton className="h-10" />
-            </div>
+            <Pending label="Reading late purchase orders from Business Central" />
           ) : items.length === 0 ? (
-            <p className="py-6 text-center text-row text-muted">No purchase order you can see is past its date. New late orders show here as soon as Business Central has them.</p>
+            <p className="py-4 text-row text-muted">No purchase order you can see is past its date. New late orders show here as soon as Business Central has them.</p>
           ) : (
             <>
-              <div className="mb-4 flex flex-wrap items-center gap-2" data-testid="late-filters">
-                <div role="tablist" aria-label="Days late" className="flex flex-wrap gap-1">
+              <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="late-filters">
+                <div role="tablist" aria-label="Days late" className="flex flex-wrap rounded border border-border-strong">
                   {DAY_BANDS.map((b) => (
                     <button
                       key={b.id}
@@ -174,9 +187,9 @@ export default function LatePage() {
                       role="tab"
                       aria-selected={filter.days === b.id}
                       onClick={() => setFilter((f) => ({ ...f, days: b.id }))}
-                      className={cn("rounded-lg border border-border px-2.5 py-1 text-meta cursor-pointer", filter.days === b.id ? "bg-surface-2 font-medium text-fg" : "text-muted hover:bg-surface-2")}
+                      className={cn("border-l border-border-strong px-2.5 py-1 text-meta first:border-l-0 cursor-pointer", filter.days === b.id ? "bg-fg font-medium text-bg" : "text-muted hover:bg-surface hover:text-fg")}
                     >
-                      {b.label} <span className="tabular-nums text-muted">{dayCount(b.id)}</span>
+                      {b.label} <span className={cn("tabular-nums", filter.days === b.id ? "opacity-70" : "text-faint")}>{dayCount(b.id)}</span>
                     </button>
                   ))}
                 </div>
@@ -186,7 +199,7 @@ export default function LatePage() {
                     aria-label="Supplier"
                     value={filter.supplier ?? "\u0000all"}
                     onChange={(e) => setFilter((f) => ({ ...f, supplier: e.target.value === "\u0000all" ? null : e.target.value }))}
-                    className="rounded-lg border border-border bg-surface px-2 py-1"
+                    className="h-7 rounded border border-border-strong bg-surface px-2 text-fg"
                   >
                     <option value={"\u0000all"}>Every supplier</option>
                     {suppliers.map(([name, n]) => (
@@ -202,7 +215,7 @@ export default function LatePage() {
                     aria-label="Value"
                     value={filter.value}
                     onChange={(e) => setFilter((f) => ({ ...f, value: e.target.value as ValueBand }))}
-                    className="rounded-lg border border-border bg-surface px-2 py-1"
+                    className="h-7 rounded border border-border-strong bg-surface px-2 text-fg"
                   >
                     {VALUE_BANDS.map((b) => (
                       <option key={b.id} value={b.id}>
@@ -211,10 +224,10 @@ export default function LatePage() {
                     ))}
                   </select>
                 </label>
-                <span className="text-meta text-muted">Values are in each order&apos;s own currency.</span>
+                <span className="text-meta text-faint sm:ml-auto">Values in each order&apos;s own currency</span>
               </div>
               {shown.length === 0 ? (
-                <p className="py-6 text-center text-row text-muted" data-testid="late-none-match">
+                <p className="py-4 text-row text-muted" data-testid="late-none-match">
                   No late order matches these filters. Pick &ldquo;Every supplier&rdquo; or another band to widen it.
                 </p>
               ) : (
@@ -222,36 +235,46 @@ export default function LatePage() {
                   <table className="hidden w-full text-row sm:table" data-testid="late-table">
                     <caption className="sr-only">Late purchase orders</caption>
                     <thead>
-                      <tr className="h-9 border-b border-border text-left text-label text-muted">
+                      <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
                         {COLUMNS.map((c) => (
-                          <th key={c.key} scope="col" className={cn("px-2", c.right && "text-right")} aria-sort={sort.key === c.key ? (falling(sort) ? "descending" : "ascending") : "none"}>
-                            <button type="button" onClick={() => onSort(c.key)} className="cursor-pointer hover:text-fg">
+                          <th key={c.key} scope="col" className={cn("px-2 font-semibold first:pl-3", c.right && "text-right")} aria-sort={sort.key === c.key ? (falling(sort) ? "descending" : "ascending") : "none"}>
+                            <button type="button" onClick={() => onSort(c.key)} className="cursor-pointer font-semibold uppercase hover:text-fg">
                               {c.label}
                               {sort.key === c.key ? (falling(sort) ? " ↓" : " ↑") : ""}
                             </button>
                           </th>
                         ))}
-                        <th scope="col" className="px-2">
+                        <th scope="col" className="px-2 font-semibold">
                           ETA confirmed?
                         </th>
                       </tr>
                     </thead>
                     <tbody>
                       {shown.map((po) => (
-                        <tr key={po.object_id} className="h-11 border-b border-border last:border-0 hover:bg-surface-2" data-testid="late-row">
-                          <td className="px-2 font-medium">
-                            <Link href={hrefOf(po)} className="hover:underline">
+                        <tr key={po.object_id} className="h-10 border-b border-border hover:bg-surface has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="late-row">
+                          <td className="px-2 pl-3 font-medium">
+                            <Link href={hrefOf(po)} className="hover:text-accent hover:underline focus-visible:outline-offset-4" data-row-link>
                               {recordLabel("PurchaseOrder", po.label)}
                             </Link>
                           </td>
                           <td className="px-2">{po.supplier ?? <span className="text-muted">Not shown</span>}</td>
                           <td className="whitespace-nowrap px-2 tabular-nums">{po.due_date ? formatDate(po.due_date) : <span className="text-muted">Not shown</span>}</td>
-                          <td className="whitespace-nowrap px-2 text-right font-medium tabular-nums text-late">{po.days_late ?? "—"}</td>
+                          <td className="whitespace-nowrap px-2 text-right font-semibold tabular-nums text-late">
+                            {/* a bar on a shared scale beside the number: the column reads as a picture */}
+                            <span className="inline-flex items-center justify-end gap-2">
+                              {typeof po.days_late === "number" && maxDays > 0 && (
+                                <span className="hidden h-1.5 w-[96px] justify-end md:flex" aria-hidden>
+                                  <span className="h-full bg-late-line" style={{ width: `${Math.max(2, (po.days_late / maxDays) * 96)}px` }} />
+                                </span>
+                              )}
+                              <span className="w-8">{po.days_late ?? "—"}</span>
+                            </span>
+                          </td>
                           <td className="whitespace-nowrap px-2 text-right tabular-nums">
                             <Value po={po} />
                           </td>
                           <td className="px-2">
-                            <ListEta po={po} linked />
+                            <ListEta po={po} linked quiet={uniformEta} />
                           </td>
                         </tr>
                       ))}
@@ -260,13 +283,13 @@ export default function LatePage() {
                   <ul className="-mx-2 divide-y divide-border sm:hidden">
                     {shown.map((po) => (
                       <li key={po.object_id}>
-                        <Link href={hrefOf(po)} className="block rounded-lg px-2 py-3 hover:bg-surface-2">
+                        <Link href={hrefOf(po)} className="block px-2 py-3 hover:bg-surface focus-visible:bg-accent-soft focus-visible:-outline-offset-2" data-row-link>
                           <span className="flex items-center justify-between gap-2 text-row font-medium">
                             <span className="min-w-0 truncate">
                               {recordLabel("PurchaseOrder", po.label)}
                               {po.supplier ? <span className="font-normal text-muted"> · {po.supplier}</span> : null}
                             </span>
-                            <span className="shrink-0 tabular-nums text-bad">{po.days_late ?? "—"} days</span>
+                            <span className="shrink-0 font-semibold tabular-nums text-late">{po.days_late ?? "—"} days</span>
                           </span>
                           {listShown(po) && <ListEta po={po} className="mt-1" />}
                           <span className="mt-0.5 block truncate text-meta text-muted tabular-nums">

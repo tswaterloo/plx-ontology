@@ -363,14 +363,14 @@ export function AskBox({
           submit();
         }}
         className={cn(
-          "group relative flex flex-col rounded-2xl border border-control bg-surface transition-shadow focus-within:border-accent focus-within:shadow-[0_0_0_3px_var(--accent-soft)]",
-          big ? "p-3" : size === "sm" ? "rounded-xl p-0.5" : "p-2",
+          "group relative flex flex-col rounded border border-control bg-surface transition-colors focus-within:border-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
+          big ? "p-3" : size === "sm" ? "p-0.5" : "p-1.5",
         )}
       >
         {pins.length > 0 && (
           <div className="flex flex-wrap gap-1 px-2 pt-1" aria-label="Picked items">
             {pins.map((p) => (
-              <span key={p.object_id} className="inline-flex items-center gap-0.5 rounded-md bg-accent-soft py-0.5 pl-1.5 text-label text-accent">
+              <span key={p.object_id} className="inline-flex items-center gap-0.5 rounded-sm bg-accent-soft py-0.5 pl-1.5 text-label text-accent">
                 {p.label}
                 <button
                   type="button"
@@ -406,7 +406,7 @@ export function AskBox({
             onKeyDown={onKeyDown}
             onBlur={() => setTimeout(close, 120)}
             className={cn(
-              "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-muted focus:outline-none",
+              "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-faint focus:outline-none",
               size === "sm" ? "min-h-[34px] py-1.5" : "min-h-[44px] py-2.5",
               big ? "text-answer font-normal" : size === "sm" ? "text-row" : "text-body",
             )}
@@ -416,7 +416,7 @@ export function AskBox({
               type="button"
               onClick={onStop}
               aria-label="Stop answering"
-              className="mb-1 flex size-10 shrink-0 items-center justify-center rounded-full bg-fg text-bg transition-opacity hover:opacity-85 cursor-pointer"
+              className="mb-1 flex size-8 shrink-0 items-center justify-center rounded bg-fg text-bg transition-opacity hover:opacity-85 cursor-pointer"
             >
               <Square className="size-3.5 fill-current" aria-hidden />
             </button>
@@ -427,11 +427,11 @@ export function AskBox({
               disabled={!value.trim() || disabled || busy}
               aria-disabled={!value.trim() || disabled || busy}
               className={cn(
-                "flex shrink-0 items-center justify-center rounded-full bg-accent text-accent-fg transition-colors hover:opacity-90 disabled:border disabled:border-border disabled:bg-surface-2 disabled:text-muted cursor-pointer disabled:cursor-default",
-                size === "sm" ? "m-0.5 size-[30px]" : "mb-1 size-10",
+                "flex shrink-0 items-center justify-center rounded bg-accent text-accent-fg transition-colors hover:brightness-110 disabled:bg-transparent disabled:text-faint cursor-pointer disabled:cursor-default",
+                size === "sm" ? "m-0.5 size-[30px]" : "mb-1 size-8",
               )}
             >
-              <ArrowUp className="size-5" aria-hidden />
+              <ArrowUp className="size-4" aria-hidden />
             </button>
           )}
         </div>
@@ -442,7 +442,7 @@ export function AskBox({
         aria-label="Suggestions"
         hidden={!open || items.length === 0}
         className={cn(
-          "absolute inset-x-0 z-40 max-h-80 overflow-auto rounded-xl border border-border bg-surface p-1.5 shadow-pop animate-fade-in",
+          "absolute inset-x-0 z-40 max-h-80 overflow-auto rounded-xl border border-border bg-raised p-1.5 shadow-pop animate-fade-in",
           up ? "bottom-full mb-2" : "top-full mt-2",
         )}
         data-testid="suggestions"
@@ -477,8 +477,8 @@ export function AskBox({
               )}
               data-type={s.type}
             >
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
-                <Icon className="size-4" aria-hidden />
+              <span className="flex size-7 shrink-0 items-center justify-center text-faint">
+                <Icon className="size-4" strokeWidth={1.5} aria-hidden />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-fg">{recordLabel(s.type, s.label)}</span>
@@ -488,7 +488,7 @@ export function AskBox({
                 <span className="hidden shrink-0 items-center gap-2 text-meta text-muted sm:inline-flex" aria-label={`Found in ${s.systems!.join(" and ")}`}>
                   {s.systems!.map((x) => (
                     <span key={x} className="inline-flex items-center gap-1">
-                      <span className={cn("size-1.5 rounded-full", x === "BC" ? "bg-emerald-500" : x === "Portal" ? "bg-sky-500" : "bg-slate-400")} aria-hidden />
+                      <span className="size-1 bg-faint" aria-hidden />
                       {x}
                     </span>
                   ))}
@@ -504,7 +504,7 @@ export function AskBox({
                   e.stopPropagation();
                   pick(s);
                 }}
-                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-lg border border-border px-2 py-1 text-meta text-muted hover:border-accent hover:text-accent cursor-pointer"
+                className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded border border-border px-2 py-1 text-meta text-muted hover:border-accent hover:text-accent cursor-pointer"
                 data-testid="ask-about"
               >
                 <MessageSquarePlus className="size-3.5" aria-hidden />
@@ -516,7 +516,7 @@ export function AskBox({
         })}
       </ul>
       {searching && !open && (
-        <p className={cn("absolute inset-x-0 z-40 rounded-xl border border-border bg-surface px-3 py-2 text-meta text-muted shadow-pop", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
+        <p className={cn("absolute inset-x-0 z-40 rounded-xl border border-border bg-raised px-3 py-2 text-meta text-muted shadow-pop", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
           Searching…
         </p>
       )}

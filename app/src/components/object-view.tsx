@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Bookmark, BookmarkCheck, Check, CheckSquare, ChevronDown, Database, FileText, Loader2, Mail, MessageSquare, MessagesSquare } from "lucide-react";
+import { ArrowRight, Bookmark, BookmarkCheck, Check, CheckSquare, ChevronDown, Database, FileText, Mail, MessageSquare, MessagesSquare } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -14,6 +14,8 @@ import { toggleSaved, useSaved } from "@/lib/saved";
 import type { Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, NotFoundSection, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
+import { custodyOf } from "@/lib/custody";
+import { CustodyRail } from "./custody-rail";
 import { EtaCard } from "./eta-confirmed";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
 import { ProposalCards } from "./proposal-cards";
@@ -21,9 +23,9 @@ import { EvidenceDrawer, SourceChips } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 import { KeyFacts } from "./ui/key-facts";
 import { LoadProblem } from "./ui/notice";
-import { Skeleton, SkeletonLines, SkeletonStats } from "./ui/skeleton";
+import { Pending } from "./ui/skeleton";
 import { Stat, StatRow } from "./ui/stat";
-import { StatusBadge } from "./ui/status-badge";
+import { StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
 export function toneOf(state: string): Tone {
@@ -52,18 +54,13 @@ function ObjectSkeleton({ type, label }: { type: string; label?: string | null }
   const t = useElapsed(true);
   const step = t < 8 ? "Reading Business Central…" : t < 20 ? "Checking the supplier's mail and files…" : "Building the trail…";
   return (
-    <div className="space-y-6" role="status" aria-label="Loading">
-      <div className="space-y-2">
+    <div className="space-y-4" role="status" aria-label="Loading">
+      <div className="space-y-2 border-b-2 border-rule pb-5">
         <p className="text-eyebrow uppercase text-muted">{typeLabel(type)}</p>
-        {label ? <h1 className="text-title">{label}</h1> : <Skeleton className="h-8 w-2/3" />}
-        {t >= 3 && <p className="text-meta text-muted">{step}</p>}
-        {t >= 20 && <p className="text-meta text-muted">This record takes up to a minute to gather while we check mail and files. You can leave this page; it keeps loading.</p>}
+        {label ? <h1 className="text-display">{label}</h1> : <h1 className="text-display text-faint">Opening the record</h1>}
       </div>
-      <SkeletonStats />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Skeleton className="h-40 rounded-xl lg:col-span-2" />
-        <Skeleton className="h-40 rounded-xl" />
-      </div>
+      <Pending label={t < 3 ? "Reading the record" : step} />
+      {t >= 20 && <p className="max-w-[68ch] text-meta text-faint">This record takes up to a minute to gather while we check mail and files. You can leave this page; it keeps loading.</p>}
     </div>
   );
 }
@@ -93,24 +90,24 @@ export function LinesTable({ lines, title = "Lines" }: { lines: LateLine[]; titl
         <table className="hidden w-full text-row sm:table">
           <caption className="sr-only">{title}, late first</caption>
           <thead>
-            <tr className="h-9 border-b border-border text-left text-label text-muted">
-              <th scope="col" className="px-5">Item</th>
-              <th scope="col" className="text-right">Ordered</th>
-              <th scope="col" className="pl-6">Needed by</th>
-              <th scope="col" className="px-5 text-right">Status</th>
+            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-eyebrow uppercase text-muted">
+              <th scope="col" className="px-3 font-semibold">Item</th>
+              <th scope="col" className="text-right font-semibold">Ordered</th>
+              <th scope="col" className="pl-6 font-semibold">Needed by</th>
+              <th scope="col" className="px-3 text-right font-semibold">Status</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map((l, i) => {
               const st = lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : l.days_late === 0 ? "on_time" : null, l.days_late);
               return (
-                <tr key={i} className="h-11 border-b border-border last:border-0">
-                  <td className="px-5 font-medium">
+                <tr key={i} className="h-10 border-b border-border">
+                  <td className="px-3 font-medium">
                     {name(l, i)} {l.sources && l.sources.length > 0 && <SourceChips sources={l.sources} max={1} />}
                   </td>
                   <td className="whitespace-nowrap text-right tabular-nums">{l.quantity ?? "—"}</td>
                   <td className="whitespace-nowrap pl-6 tabular-nums">{l.due_date ? formatDate(l.due_date) : "—"}</td>
-                  <td className="px-5 text-right">{st ? <StatusBadge shown={st} /> : <span className="text-muted">—</span>}</td>
+                  <td className="px-3 text-right">{st ? <StatusWord shown={st} /> : <span className="text-muted">—</span>}</td>
                 </tr>
               );
             })}
@@ -120,10 +117,10 @@ export function LinesTable({ lines, title = "Lines" }: { lines: LateLine[]; titl
           {sorted.map((l, i) => {
             const st = lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : null, l.days_late);
             return (
-              <li key={i} className="px-4 py-3">
+              <li key={i} className="py-3">
                 <div className="flex items-center justify-between gap-2 text-row font-medium">
                   <span className="min-w-0 truncate">{name(l, i)}</span>
-                  {st && <StatusBadge shown={st} />}
+                  {st && <StatusWord shown={st} />}
                 </div>
                 <p className="text-meta text-muted">{[l.quantity ? `Ordered ${l.quantity}` : null, l.due_date ? `Needed ${formatDate(l.due_date, { short: true })}` : null].filter(Boolean).join(" · ") || "No quantity or date on record"}</p>
               </li>
@@ -155,19 +152,19 @@ function SupplierOrders({ obj }: { obj: ObjectPage }) {
         <span>{rows.length}</span>
       </CardHeader>
       <CardBody className="px-0 sm:px-0">
-        <ul className="divide-y divide-border">
+        <ul className="divide-y divide-border border-t border-border">
           {shown.map(({ p, late }) => (
             <li key={p.object_id}>
-              <Link href={refHref(p)} className="flex min-h-11 items-center gap-3 px-4 py-2 text-row hover:bg-surface-2 sm:px-5">
+              <Link href={refHref(p)} className="group flex min-h-10 items-center gap-3 py-2 text-row hover:text-accent">
                 <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(p.type, p.label)}</span>
-                {late && <StatusBadge status="late" label={days && lateLabels.size === 1 ? `${days} days late` : "Late"} />}
-                <ArrowRight className="size-4 shrink-0 text-muted" aria-hidden />
+                {late && <StatusWord status="late" label={days && lateLabels.size === 1 ? `${days} days late` : "Late"} />}
+                <ArrowRight className="size-3.5 shrink-0 text-faint group-hover:text-accent" aria-hidden />
               </Link>
             </li>
           ))}
         </ul>
         {rows.length > 8 && (
-          <button type="button" onClick={() => setAll((v) => !v)} className="mx-5 mt-2 text-meta font-medium text-accent hover:underline cursor-pointer">
+          <button type="button" onClick={() => setAll((v) => !v)} className="mt-2 text-meta font-medium text-accent hover:underline cursor-pointer">
             {all ? "Show fewer" : `Show all ${rows.length}`}
           </button>
         )}
@@ -180,15 +177,15 @@ function OrderTable({ title, rows, testId }: { title: string; rows: OrderRow[]; 
   if (rows.length === 0) return null;
   return (
     <div data-testid={testId}>
-      <p className="mb-1 px-4 text-label uppercase text-muted sm:px-5">{title}</p>
-      <ul className="divide-y divide-border">
+      <p className="mb-1 text-eyebrow uppercase text-muted">{title}</p>
+      <ul className="divide-y divide-border border-t border-border">
         {rows.map((r) => (
-          <li key={`${r.object_id}-${r.label}`} className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-row sm:px-5">
+          <li key={`${r.object_id}-${r.label}`} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-row">
             <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="font-medium hover:underline">
               {r.label}
             </Link>
             {r.date && <span className="tabular-nums text-muted">{formatDate(r.date)}</span>}
-            {r.status && <StatusBadge status={recordState(r.status)} label={r.status} />}
+            {r.status && <StatusWord status={recordState(r.status)} label={r.status} />}
             {r.amount && <span className="ml-auto tabular-nums">{money(r.amount)}</span>}
           </li>
         ))}
@@ -212,13 +209,13 @@ function CustomerCard({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrder
       </CardHeader>
       <CardBody className="space-y-4 px-0 sm:px-0">
         {(c.revenue ?? []).length > 0 && (
-          <div className="grid grid-cols-1 gap-3 px-4 sm:grid-cols-2 sm:px-5" data-testid="revenue">
+          <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2" data-testid="revenue">
             {c.revenue!.map((r, i) => (
-              <div key={i} className="rounded-lg border border-border p-3">
-                <p className="text-meta text-muted">
+              <div key={i} className="border-l-2 border-border-strong pl-3">
+                <p className="text-eyebrow uppercase text-muted">
                   {r.label} · {readable(r.period)}
                 </p>
-                <p className="text-section tabular-nums">{money(r.money)}</p>
+                <p className="mt-1 font-serif text-[22px] leading-7 tabular-nums">{money(r.money)}</p>
                 <p className="text-meta text-muted">
                   {plural(r.count, "record")} in {SYSTEM_LABEL[r.system] ?? r.system} <SourceChips sources={r.sources} max={1} />
                 </p>
@@ -232,7 +229,7 @@ function CustomerCard({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrder
           <ul className="divide-y divide-border">
             {fallbackOrders.map((o) => (
               <li key={o.object_id}>
-                <Link href={refHref(o)} className="flex min-h-11 items-center px-4 py-2 text-row font-medium hover:bg-surface-2 sm:px-5">
+                <Link href={refHref(o)} className="flex min-h-10 items-center py-2 text-row font-medium hover:text-accent">
                   {o.label}
                 </Link>
               </li>
@@ -240,7 +237,7 @@ function CustomerCard({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrder
           </ul>
         )}
         {(c.not_established ?? []).length > 0 && (
-          <ul className="space-y-0.5 px-4 text-meta text-muted sm:px-5">
+          <ul className="space-y-0.5 text-meta text-muted">
             {c.not_established!.map((n, i) => (
               <li key={i}>{readable(n)}</li>
             ))}
@@ -270,7 +267,7 @@ function Activity({ events }: { events: TimelineEvent[] }) {
           budget -= rows.length;
           return (
             <div key={m.month}>
-              <h3 className="mb-1 text-label uppercase text-muted">{m.month}</h3>
+              <h3 className="mb-1 text-eyebrow uppercase text-muted">{m.month}</h3>
               <ul className="space-y-1">
                 {rows.map(({ event: e, count }, i) => (
                   <ActivityRow key={i} e={e} count={count} />
@@ -328,8 +325,8 @@ function ThreadRow({ t }: { t: Thread }) {
   return (
     <li className="py-2">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
-          <Icon className="size-4" aria-hidden />
+        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center text-faint">
+          <Icon className="size-4" strokeWidth={1.5} aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
           <button type="button" onClick={() => (t.count > 1 ? setExpanded((v) => !v) : setOpen(first))} className="text-left text-row font-medium hover:underline cursor-pointer" aria-expanded={t.count > 1 ? expanded : undefined}>
@@ -387,7 +384,7 @@ function People({ people }: { people: Person[] }) {
         <ul className="space-y-3">
           {people.map((p, i) => (
             <li key={i} className="flex items-center gap-3">
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-label text-accent" aria-hidden>
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border-strong text-[11px] font-semibold tracking-wide text-muted" aria-hidden>
                 {p.name
                   .split(/[\s@.]+/)
                   .map((x) => x[0])
@@ -419,8 +416,8 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
       <CardBody className="space-y-3">
         {groups.map((g) => (
           <div key={g.type}>
-            <p className="text-label uppercase text-muted">
-              {g.label} <span className="tabular-nums">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>
+            <p className="text-eyebrow uppercase text-muted">
+              {g.label} <span className="ml-1 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>
             </p>
             {g.items.length > 0 ? (
               <ul className="-mx-2">
@@ -514,10 +511,10 @@ function WhoToChase({ obj, head }: { obj: ObjectPage; head: RecordHead }) {
   if (!next) return null;
   const who = next.contact?.replace(/\s*<[^>]+>/, "") ?? head.counterpart?.label ?? null;
   return (
-    <section id="chase" className="scroll-mt-20 rounded-xl border border-border bg-surface p-4 sm:p-5" aria-label="Who to chase" data-testid="who-to-chase">
-      <h2 className="text-section">Who to chase</h2>
+    <section id="chase" className="scroll-mt-20 border-t border-rule pb-2" aria-label="Who to chase" data-testid="who-to-chase">
+      <h2 className="flex min-h-11 items-center text-section">Who to chase</h2>
       {who && (
-        <p className="mt-2 text-row font-medium">
+        <p className="text-row font-medium">
           {who}
           {!next.contact && <span className="font-normal text-muted"> · no contact on record</span>}
         </p>
@@ -528,7 +525,7 @@ function WhoToChase({ obj, head }: { obj: ObjectPage; head: RecordHead }) {
       ) : (
         who && <p className="mt-1 text-meta text-muted">Last message from {who}: none found</p>
       )}
-      <p className="mt-2 text-meta text-muted">A suggestion only; nothing is sent.</p>
+      <p className="mt-2 text-meta text-faint">A suggestion only; nothing is sent.</p>
     </section>
   );
 }
@@ -604,17 +601,17 @@ export function sectionWords(names: ReadonlySet<SectionName>): string {
   return words.length < 2 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 }
 
-/** A section's card shape while it is read (its own call after the quick first read). */
-function SectionSkeleton({ name, title, lines }: { name: SectionName; title: string; lines: number }) {
+/**
+ * A section while it is read (its own call after the quick first read): nothing on the page
+ * but its name for screen readers. The one "Checking …" line under the header says what is
+ * still being read, and each section takes its place when it lands, so there is no stack of
+ * placeholder cards.
+ */
+function SectionSkeleton({ name, title }: { name: SectionName; title: string; lines?: number }) {
   return (
-    <Card data-testid={`section-loading-${name}`}>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardBody>
-        <SkeletonLines lines={lines} label={`Checking ${SECTION_WORDS[name]}`} />
-      </CardBody>
-    </Card>
+    <p className="sr-only" data-testid={`section-loading-${name}`}>
+      Checking {title.toLowerCase()}
+    </p>
   );
 }
 
@@ -717,21 +714,24 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const isSaved = saved.some((s) => s.key === key);
 
   if (error && !obj && notFound && missing)
-    return <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">{missing}</div>;
+    return <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">{missing}</div>;
   if (error && !obj)
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
         <LoadProblem message={error} busy={busy} onRetry={load} />
       </div>
     );
   if (!obj)
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
-        <ObjectSkeleton type={type} label={routeLabel} />
+      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
+        {/* a friendly path's reference ("106001", "DIVE11") names the record while it loads */}
+        <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />
       </div>
     );
 
   const head = recordHead(obj);
+  // an order's life drawn as one line (PO, sales order, assembly); none for a customer or supplier
+  const custody = /^(PurchaseOrder|SalesOrder|AssemblyOrder|ManufacturingOrder)$/.test(obj.type) ? custodyOf(obj) : null;
   const isPo = obj.type === "PurchaseOrder";
   const isCustomer = obj.type === "Customer";
   const isSalesOrder = obj.type === "SalesOrder";
@@ -743,14 +743,17 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const otherRelated = (obj.related ?? []).filter((r) => !(isCustomer && r.type === "SalesOrder") && !(isSupplier && r.type === "PurchaseOrder") && r.object_id !== (head.counterpart as ObjectRef | null)?.object_id);
   const counterpart = head.counterpart;
   const lines = isSupplier ? [] : (obj.late_lines ?? []).filter((l) => !/^PO number:/i.test(l.line));
+  // the right rail only when it has something to hold; else the main column takes the width
+  const hasRail =
+    head.keyFacts.some((k) => k.value) || !!src || pending.has("people") || (obj.people ?? []).length > 0 || groupRelated(otherRelated).some((g) => g.items.length > 0);
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
-      <div className="space-y-6 animate-fade-in">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1.5">
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
+      <div className="space-y-8">
+        <header className="flex flex-col gap-4 border-b-2 border-rule pb-5 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 space-y-2">
             <p className="text-eyebrow uppercase text-muted">{typeLabel(obj.type)}</p>
-            <h1 className="break-words text-title" data-testid="object-title">
+            <h1 className="break-words text-display" data-testid="object-title">
               {head.title}
               {counterpart && (
                 <>
@@ -781,7 +784,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
             )}
             {isCustomer && <SameName obj={obj} />}
             {head.lead && !head.badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase()) && (
-              <p className={cn("max-w-[760px] text-answer", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-fg")} data-testid="object-lead">
+              <p className={cn("max-w-[68ch] text-body", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-muted")} data-testid="object-lead">
                 {head.lead}
               </p>
             )}
@@ -799,23 +802,30 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
               type="button"
               aria-pressed={isSaved}
               onClick={() => toggleSaved({ key, kind: "object", label: head.askLabel, href: objectHref(type, id) })}
-              className={cn("inline-flex h-9 items-center gap-1.5 rounded-lg border border-control bg-surface px-3 text-row hover:bg-surface-2 cursor-pointer", isSaved && "text-accent")}
+              className={cn("inline-flex h-8 items-center gap-1.5 rounded border border-control px-3 text-row hover:bg-surface cursor-pointer", isSaved && "text-accent")}
             >
               {isSaved ? <BookmarkCheck className="size-4" aria-hidden /> : <Bookmark className="size-4" aria-hidden />}
               {isSaved ? "Saved" : "Save"}
             </button>
             <Link
               href={`/ask?q=${encodeURIComponent(isAo ? `Why did ${head.askLabel} fall short?` : `What's the latest on ${head.askLabel}?`)}&object=${encodeURIComponent(obj.object_id)}`}
-              className="inline-flex h-9 items-center rounded-lg bg-accent px-3 text-row font-medium text-accent-fg hover:opacity-90"
+              className="inline-flex h-8 items-center rounded bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110"
             >
               {isAo ? "Ask why it fell short" : `Ask about ${head.askLabel}`}
             </Link>
           </div>
         </header>
+        {head.stats.length > 0 && (
+          <StatRow className="-mt-8 border-t-0">
+            {head.stats.slice(0, 4).map((s) => (
+              <StatTile key={s.label} s={s} />
+            ))}
+          </StatRow>
+        )}
 
         {pending.size > 0 && (
           <p className="flex items-center gap-2 text-meta text-muted" role="status" data-testid="checking">
-            <Loader2 className="size-4 animate-spin" aria-hidden /> Checking {sectionWords(pending)}…
+            <span className="size-1.5 shrink-0 bg-accent animate-breathe" aria-hidden /> Checking {sectionWords(pending)}…
           </p>
         )}
         {pending.size === 0 && failed.size > 0 && (
@@ -828,16 +838,11 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         )}
         {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
 
-        {head.stats.length > 0 && (
-          <StatRow>
-            {head.stats.slice(0, 4).map((s) => (
-              <StatTile key={s.label} s={s} />
-            ))}
-          </StatRow>
-        )}
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="min-w-0 space-y-4 lg:col-span-2">
+        {custody && <CustodyRail custody={custody} />}
+
+        <div className={cn("grid grid-cols-1 gap-x-12 gap-y-10", hasRail && "lg:grid-cols-[minmax(0,1fr)_300px]")}>
+          <div className="min-w-0 space-y-10">
             {isPo && (pending.has("trail") ? <SectionSkeleton name="trail" title="ETA confirmed?" lines={2} /> : <EtaCard eta={obj.trail?.trails?.[0]?.eta} />)}
             {(isPo || isAo) && (pending.has("trail") ? <SectionSkeleton name="trail" title="Who to chase" lines={2} /> : <WhoToChase obj={obj} head={head} />)}
             <ProposalCards proposals={obj.proposals} />
@@ -856,7 +861,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
             <Linked items={obj.linked ?? []} />
             <Activity events={obj.timeline ?? []} />
           </div>
-          <div className="min-w-0 space-y-4">
+          <div className={cn("min-w-0 space-y-10", !hasRail && "hidden")}>
             {(head.keyFacts.some((k) => k.value) || src) && <Card data-testid="summary">
               <CardHeader>
                 <CardTitle>Key facts</CardTitle>

@@ -52,9 +52,9 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
           {typeof inPeriod === "number" && inPeriod > 0 && <span className="font-normal text-muted"> · {real.length} of {inPeriod} checked</span>}
           {partial && <span className="mt-0.5 block text-meta font-normal text-muted">{sentence(note!)}</span>}
         </caption>
-        <thead className="text-label text-muted">
-          <tr className="border-b border-border">
-            <th scope="col" className="py-2 text-left">Order</th>
+        <thead className="text-eyebrow uppercase text-muted">
+          <tr className="h-8 border-y border-border-strong bg-bg-subtle">
+            <th scope="col" className="px-2 py-2 text-left">Order</th>
             <th scope="col" className="py-2 text-right">Revenue</th>
             <th scope="col" className="py-2 text-right">Item cost</th>
             <th scope="col" className="py-2 text-right">Margin*</th>
@@ -118,9 +118,9 @@ export function ProductRanking({ products }: { products: ProductMargin[] }) {
   return (
     <table className="w-full text-row" data-testid="product-ranking">
       <caption className="mb-2 text-left text-section">By product, worst margin first</caption>
-      <thead className="text-label text-muted">
-        <tr className="border-b border-border">
-          <th scope="col" className="py-2 text-left">Item</th>
+      <thead className="text-eyebrow uppercase text-muted">
+        <tr className="h-8 border-y border-border-strong bg-bg-subtle">
+          <th scope="col" className="px-2 py-2 text-left">Item</th>
           <th scope="col" className="py-2 text-right">Qty</th>
           <th scope="col" className="py-2 text-right">Unit cost</th>
           <th scope="col" className="py-2 text-right">Margin*</th>
@@ -154,7 +154,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
   const abs = b.margin ? money({ ...b.margin, amount: b.margin.amount.replace(/^-/, "") }) : null;
   const lines = b.lines ?? [];
   return (
-    <section className="space-y-3 rounded-xl border border-border bg-surface p-4" data-testid="cost-breakdown">
+    <section className="space-y-3 border-t border-border pt-3" data-testid="cost-breakdown">
       <h3 className="text-section">
         {loss ? "Why " : "How "}
         <Link href={refHref(b.order)} className="hover:underline">
@@ -163,10 +163,10 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
         {abs ? (loss ? `lost ${abs}` : `made ${abs}`) : loss ? "lost money" : "made money"}
       </h3>
       {lines.length > 0 && (
-        <div className="-mx-1 overflow-x-auto">
+        <div className="overflow-x-auto">
           <table className="w-full text-row" aria-label="Order lines">
-            <thead className="text-label text-muted">
-              <tr className="border-b border-border">
+            <thead className="text-eyebrow uppercase text-muted">
+              <tr className="h-8 border-y border-border-strong bg-bg-subtle">
                 <th scope="col" className="px-1 py-1.5 text-left">Item</th>
                 <th scope="col" className="px-1 py-1.5 text-right">Qty</th>
                 <th scope="col" className="px-1 py-1.5 text-right">Revenue</th>
@@ -295,7 +295,7 @@ export function MarginHeadline({ b, scope }: { b: CostBreakdownView; scope?: str
         {scope && <span className="text-meta text-muted">{scope}</span>}
       </div>
       {why.length > 0 && (
-        <div className="space-y-0.5 text-answer" data-testid="margin-why">
+        <div className="space-y-0.5 text-body" data-testid="margin-why">
           {why.map((w, i) => (
             <p key={i}>{w}</p>
           ))}
@@ -316,7 +316,7 @@ export function NoMargin({ order }: { order: OrderMargin }) {
   return (
     <section className="space-y-1.5" data-testid="margin-none">
       <EtaPill shown={noCost ? { status: "suspect", label: "No valid cost in BC" } : { status: "neutral", label: "No margin yet" }} testId="margin-verdict" />
-      <p className="text-answer">
+      <p className="text-body">
         {noCost
           ? `Business Central holds no valid item cost for ${order.order.label}, so its margin isn't stated. Finance can value the item's cost there.`
           : `No margin is stated for ${order.order.label}: ${order.gap ?? "not stated"}.`}
@@ -332,7 +332,7 @@ export function SageMargin({ amounts }: { amounts: CustomerAmount[] }) {
   return (
     <section className="space-y-1.5" data-testid="margin-sage">
       <EtaPill shown={{ status: "neutral", label: "Sage, before credit notes" }} testId="margin-verdict" />
-      <p className="text-answer">
+      <p className="text-body">
         {sage.map((a) => `${a.label.replace(/ \(.*\)$/, "")} ${money(a.money)}`).join("; ")} in Sage, {sage[0].period}. That is invoiced revenue before credit notes; no margin is stated for it here.
       </p>
       <p className="flex flex-wrap items-center gap-1.5 text-meta text-muted">
@@ -356,7 +356,7 @@ function CustomerVerdict({ p }: { p: Profitability }) {
     <section className="space-y-1.5" data-testid="customer-verdict">
       <EtaPill shown={shown} testId="margin-verdict" />
       {b && (
-        <div className="text-answer" data-testid="margin-why">
+        <div className="space-y-0.5 text-body" data-testid="margin-why">
           <p>
             {isLoss(b.margin) ? "Worst order" : "Lowest margin"}:{" "}
             <Link href={refHref(b.order)} className="font-medium hover:underline">

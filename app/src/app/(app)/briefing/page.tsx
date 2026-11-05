@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { BriefingCard } from "@/components/briefing";
-import { Card, CardBody } from "@/components/ui/card";
+import { PageHeader } from "@/components/ui/page-header";
 import { ErrorNotice } from "@/components/ui/notice";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { getBriefing, getHome } from "@/lib/api";
@@ -28,20 +28,20 @@ export default function BriefingPage() {
   }, []);
   useEffect(() => load(), [load]);
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-6 sm:pt-8 xl:px-8">
-      <h1 className="text-title">Briefing</h1>
-      <p className="mt-1 text-row text-muted">Ranked by customer orders affected, then money, then what is new, then days.</p>
-      <Card className="mt-6">
-        <CardBody className="pt-4 sm:pt-5">
-          {error ? (
-            <ErrorNotice message={error} onRetry={load} />
-          ) : !briefing ? (
-            <SkeletonRows rows={8} label="Loading your briefing" />
-          ) : (
-            <BriefingCard briefing={briefing} latePos={late} />
-          )}
-        </CardBody>
-      </Card>
+    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
+      <PageHeader
+        className="mb-6"
+        eyebrow="Briefing"
+        title="Everything that needs attention"
+        sub="Most urgent first. Open a row for the record, who to chase and how we know."
+      />
+      {error ? (
+        <ErrorNotice message={error} onRetry={load} />
+      ) : !briefing ? (
+        <SkeletonRows label="Ranking what needs attention" />
+      ) : (
+        <BriefingCard briefing={briefing} latePos={late} />
+      )}
     </div>
   );
 }

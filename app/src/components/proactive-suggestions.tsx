@@ -7,7 +7,7 @@ import { actionChip, isPutAway } from "@/lib/actions";
 import { getActionStates, getSuggestions } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { formatDate, formatMoney, objectHref, plural, safeHref } from "@/lib/format";
+import { formatDate, formatMoney, objectHref, plural, readable, safeHref } from "@/lib/format";
 import type { Status } from "@/lib/status";
 import type { ActionResult, ProactiveSuggestion, SuggestionDraft, SuggestionEta, Suggestions } from "@/lib/types";
 import { CardActions } from "./card-actions";
@@ -15,7 +15,7 @@ import { SourceChip } from "./source-chip";
 import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
 import { LoadProblem } from "./ui/notice";
 import { SkeletonRows } from "./ui/skeleton";
-import { StatusBadge } from "./ui/status-badge";
+import { StatusWord } from "./ui/status-badge";
 
 /** "ETA confirmed?" in at most three words and a status. Unknown answers fail closed. */
 export function etaBadge(eta: SuggestionEta | null | undefined): { status: Status; label: string } | null {
@@ -36,7 +36,7 @@ export function etaBadge(eta: SuggestionEta | null | undefined): { status: Statu
   }
 }
 
-const CONFIDENCE: Record<string, Status> = { high: "ok", medium: "risk", low: "neutral" };
+const CONFIDENCE_TEXT: Record<string, string> = { high: "text-ok", medium: "text-risk", low: "text-muted" };
 
 /** Other open findings, counted (no drafted action): "592 batches on quality hold". */
 const COLLAPSED: Record<string, [string, string]> = {
@@ -77,12 +77,12 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
   };
   const title = draft.audience === "vendor" ? "Draft to the vendor" : draft.audience === "customer" ? "Draft to the customer" : "Internal note";
   return (
-    <div className="rounded-lg border border-border bg-surface-2 p-3" data-testid="suggestion-draft">
+    <div className="rounded-lg border border-border bg-surface p-4" data-testid="suggestion-draft">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-label font-medium">
           {title} <span className="font-normal text-muted">· not sent; nothing goes until you review and confirm it</span>
         </p>
-        <button type="button" onClick={copy} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-label hover:border-control cursor-pointer" data-testid="copy-draft">
+        <button type="button" onClick={copy} className="inline-flex items-center gap-1 rounded border border-control px-2 py-1 text-label hover:bg-surface-2 cursor-pointer" data-testid="copy-draft">
           {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
           {copied ? "Copied" : "Copy draft"}
         </button>
@@ -96,19 +96,27 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
         <dt className="text-muted">Subject</dt>
         <dd>{draft.subject}</dd>
       </dl>
-      <pre className="whitespace-pre-wrap break-words font-sans text-row">{draft.body}</pre>
+      <pre className="whitespace-pre-wrap break-words border-t border-border pt-3 font-sans text-row">{draft.body}</pre>
       {draft.review && <p className="mt-2 text-meta text-muted">{draft.review}</p>}
       {(draft.facts ?? []).length > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           <span className="text-meta text-muted">Every fact in it is cited:</span>
           {(draft.facts ?? []).slice(0, 6).map((f, n) => (
-            <SourceChip key={`${f.source.handle}-${n}`} source={f.source} record={f.value} />
+            <SourceChip key={`${f.source.handle}-${n}`} source={f.source} record={readable(f.value)} />
           ))}
         </div>
       )}
     </div>
   );
 }
+
+/** A card's headline as the rest of the app says it: "PO 106001 is 134 days late", never "106001 is…" or "PO100095 is…". */
+export function suggestionHeadline(s: Pick<ProactiveSuggestion, "headline" | "subject">): string {
+  const h = readable(s.headline).replace(/\b(PO|SO)(?=\d{3,}\b)/g, "$1 ");
+  return /^PurchaseOrder$/.test(s.subject.type) && /^\d{4,}\b/.test(h) ? `PO ${h}` : h;
+}
+
+const sentence = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
 export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSuggestion; position: number; state?: ActionResult | null; onDone?: (r: ActionResult) => void }) {
   const [open, setOpen] = useState(position === 1);
@@ -119,23 +127,23 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
   return (
     <li className="py-3" data-testid="suggestion">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 w-5 shrink-0 text-right tabular-nums text-meta text-muted">{position}</span>
+        <span className="w-4 shrink-0 pt-px text-right font-serif text-[15px] leading-5 tabular-nums text-faint">{position}</span>
         <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <Link href={href} className="font-medium hover:underline" data-testid="suggestion-headline">
-              {s.headline}
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <Link href={href} className="text-row font-medium hover:underline" data-testid="suggestion-headline">
+              {suggestionHeadline(s)}
             </Link>
-            {amount && <span className="tabular-nums text-meta text-muted">{amount}</span>}
-            {s.impact.amount_suspect && <StatusBadge status="suspect" label="Total suspect" title={s.impact.amount_suspect} />}
-            {eta && <StatusBadge status={eta.status} label={eta.label} dot data-testid="suggestion-eta" />}
-            <StatusBadge status={CONFIDENCE[s.confidence.level] ?? "neutral"} label={`${s.confidence.level} confidence`} title={s.confidence.why} />
-            {chip && <StatusBadge shown={chip} title={chip.title} data-testid="action-state" />}
+            {eta && <StatusWord status={eta.status} label={eta.label} data-testid="suggestion-eta" />}
+            {s.impact.amount_suspect && <StatusWord status="suspect" label="Total suspect" title={s.impact.amount_suspect} />}
+            <span className="ml-auto flex items-baseline gap-3">
+              {amount && <span className="text-meta tabular-nums text-muted">{amount}</span>}
+              {chip && <StatusWord shown={chip} title={chip.title} data-testid="action-state" />}
+            </span>
           </div>
-          <p className="text-row">
-            <span className="text-muted">Next: </span>
+          <p className="text-row text-muted">
+            <span className="text-faint">Next: </span>
             {s.action.text}
           </p>
-          {onDone && <CardActions card={s} onDone={onDone} state={state} />}
           {(s.impact.orders ?? []).length > 0 && (
             <p className="text-meta text-muted">
               Holds up{" "}
@@ -149,16 +157,17 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
               ))}
             </p>
           )}
-          <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="inline-flex items-center gap-1 text-meta font-medium text-accent hover:underline cursor-pointer" data-testid="suggestion-toggle">
+          <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer" data-testid="suggestion-toggle">
             {open ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-            How we know{s.draft ? " and the draft" : ""}
+            {onDone && (s.actions ?? []).length > 0 ? `Act on it${s.draft ? ", see the draft" : ""} and how we know` : `How we know${s.draft ? " and the draft" : ""}`}
           </button>
           {open && (
-            <div className="space-y-3 pt-1" data-testid="suggestion-detail">
+            <div className="space-y-3 border-l-2 border-border-strong pt-1 pl-4" data-testid="suggestion-detail">
+              {onDone && <CardActions card={s} onDone={onDone} state={state} />}
               {s.eta && (
                 <p className="text-row">
                   <span className="font-medium">ETA confirmed? </span>
-                  {s.eta.text}
+                  {readable(s.eta.text)}
                   {s.eta.source && (
                     <span className="ml-1.5 align-middle">
                       <SourceChip source={s.eta.source} />
@@ -170,7 +179,7 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
                 <ol className="list-decimal space-y-1 pl-5 text-row" data-testid="suggestion-reasoning">
                   {(s.reasoning ?? []).map((r, n) => (
                     <li key={n}>
-                      {r.text}
+                      {readable(r.text)}
                       {r.source && (
                         <span className="ml-1.5 align-middle">
                           <SourceChip source={r.source} />
@@ -180,7 +189,9 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
                   ))}
                 </ol>
               )}
-              <p className="text-meta text-muted">Confidence {s.confidence.level}: {s.confidence.why}</p>
+              <p className="text-meta text-muted">
+                <span className={cn("font-medium", CONFIDENCE_TEXT[s.confidence.level] ?? "text-muted")}>{sentence(s.confidence.level)} confidence.</span> {sentence(readable(s.confidence.why))}
+              </p>
               {(s.missing ?? []).length > 0 && (
                 <div className="text-meta" data-testid="suggestion-missing">
                   <p className="font-medium">What's missing</p>
@@ -242,7 +253,7 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
           <p className="text-row text-muted">Nothing needs a follow-up from you right now.</p>
         ) : (
           <>
-            <ol className="divide-y divide-border">
+            <ol className="divide-y divide-border border-t border-border">
               {shown.map((s, n) => (
                 <SuggestionRow key={s.id} s={s} position={n + 1} state={states[s.id]} onDone={done} />
               ))}
