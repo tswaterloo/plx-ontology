@@ -139,6 +139,7 @@ tests; the live path is the host's reviewed GET-only readers (live-unverified).
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
+import bisect
 import contextlib
 import contextvars
 import datetime as dt
@@ -193,6 +194,14 @@ MAX_SUMMARY_IDENTIFIERS = 20
 MAX_READINGS = 8           # identifier kinds named in a bare query's reading gap
 LINK_SCAN_CAP = 5000       # visible links read per root (identity, documents)
 DOC_SCAN_CAP = 2000        # candidate documents considered per documents call
+# Candidate rows of a word scan whose item-gate reads are read ahead in batches
+# (``_read_ahead``): about the rows a capped scan reads when most rows are visible.
+READ_AHEAD_ROWS = DOC_SCAN_CAP + 1
+# The sources whose item checks a capture host reads ahead (mail and SharePoint files).
+READ_AHEAD_FAMILIES = frozenset({"mail", "sharepoint"})
+# A text search lists the matching chunks of its sources' chunk runs (``_family_chunks``)
+# only when they hold at most this share of all chunks: else most matches are theirs.
+CHUNK_NARROW_SHARE = 0.5
 TWIN_ROOTS = 50            # identifier records whose firm twins a documents call reads
 FIRM_TIERS = ("verified", "reviewed", "corroborated")   # a link that firmly joins records
 CANDIDATE_CAP = 200        # identifier rows read per key (near misses)
@@ -2473,20 +2482,41 @@ class EvidenceTools:
         readable = _audience_first("o", (
             f"{tt._live('v')} AND fd.markings IN (SELECT value FROM json_each(:marks)) "
             f"AND {scope.gate}(v.l1_handle) AND {tt._visible_object('o', scope.gate)}"))
+        # The matching chunks in id order: the index's own match, or (a store holding the
+        # families' chunk runs, ``ontology.chunk_families``) those of its
+        # matches in these families' runs, listed: the same rows in the same order, less
+        # every other source's, which the audience term below drops unread anyway.
+        listed = self._family_chunks(words, families)
+        if listed is None:
+            source, match, order = ("chunk_text f JOIN text_chunks t ON t.chunk_id = f.rowid",
+                                    "chunk_text MATCH :words", "f.rowid")
+        else:
+            source, match, order = ("json_each(:chunks) f JOIN text_chunks t "
+                                    "ON t.chunk_id = f.value", "1", "f.key")
+        params = scope.params(words=words, cap=DOC_SCAN_CAP + 1, aud=json.dumps(keys),
+                              chunks=json.dumps(listed or []))
+        ahead = ("(SELECT rowid AS chunk_id FROM chunk_text WHERE chunk_text MATCH :words "
+                 "ORDER BY rowid LIMIT :ahead)" if listed is None else
+                 "(SELECT value AS chunk_id FROM json_each(:chunks) ORDER BY key LIMIT :ahead)")
+        self._read_ahead(scope, f"""SELECT fd.version_handle
+            FROM {ahead} f JOIN text_chunks t ON t.chunk_id = f.chunk_id
+            JOIN text_fields fd ON fd.field_id = t.field_id
+            JOIN objects o ON o.object_id = fd.object_id
+            WHERE o.audience_key IN (SELECT value FROM json_each(:aud))
+            ORDER BY f.chunk_id""", params)
         try:
             rows = self.store.word_conn.execute(
                 f"""SELECT fd.object_id, fd.citation, fd.field_path, t.body, o.audience_key
-                    FROM chunk_text f JOIN text_chunks t ON t.chunk_id = f.rowid
+                    FROM {source}
                     JOIN text_fields fd ON fd.field_id = t.field_id
                     JOIN objects o ON o.object_id = fd.object_id
                     JOIN object_versions v ON v.l1_handle = fd.version_handle
                     AND v.object_id = fd.object_id
-                    WHERE chunk_text MATCH :words AND {readable}
-                    ORDER BY f.rowid LIMIT :cap""",
+                    WHERE {match} AND {readable}
+                    ORDER BY {order} LIMIT :cap""",
                 # The families' audiences only: another family's chunk never takes a
                 # slot of the cap nor pays for the item gate.
-                scope.params(words=words, cap=DOC_SCAN_CAP + 1, aud=json.dumps(keys))
-            ).fetchall()
+                params).fetchall()
         except sqlite3.OperationalError:
             return set(), True   # an index this store lacks, or a query it cannot read
         cut = len(rows) > DOC_SCAN_CAP
@@ -2500,6 +2530,63 @@ class EvidenceTools:
                     chunk_text(row["body"]), tokens[0], row["citation"],
                     row["field_path"])
         return out, cut
+
+    def _family_chunks(self, words: str, families: Sequence[str]) -> list[int] | None:
+        """The ids, ascending, of the chunks matching ``words`` that lie in the chunk runs
+        of ``families`` (``chunk_families``), or None to read the index's match whole: a
+        store without the runs (built before them, or whose chunks were not in runs),
+        families holding more than ``CHUNK_NARROW_SHARE`` of the chunks (most matches
+        are theirs), or a match the index cannot read (the scan then reports it)."""
+        runs = self.traverse._store_cached(("chunk_runs", ",".join(sorted(set(families)))),
+                                           lambda: self._chunk_runs(families))
+        if runs is None:
+            return None
+        lows, highs = runs
+        try:
+            matched = self.store.word_conn.execute(
+                "SELECT rowid FROM chunk_text WHERE chunk_text MATCH ? ORDER BY rowid",
+                (words,)).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        out: list[int] = []
+        for (chunk,) in matched:
+            at = bisect.bisect_right(lows, chunk) - 1
+            if at >= 0 and chunk <= highs[at]:
+                out.append(chunk)
+        return out
+
+    def _chunk_runs(self, families: Sequence[str]) -> tuple[list[int], list[int]] | None:
+        """(run starts, run ends) of ``families``' chunks, ascending; None when the store
+        holds no runs or they hold more than ``CHUNK_NARROW_SHARE`` of all chunks."""
+        try:
+            rows = self.store.word_conn.execute(
+                "SELECT lo, hi, family FROM chunk_families ORDER BY lo").fetchall()
+        except sqlite3.OperationalError:
+            return None   # a store built before the runs
+        total = sum(hi - lo + 1 for lo, hi, _family_name in rows)
+        mine = [(lo, hi) for lo, hi, family in rows if family in families]
+        if not total or sum(hi - lo + 1 for lo, hi in mine) > CHUNK_NARROW_SHARE * total:
+            return None
+        return [lo for lo, _hi in mine], [hi for _lo, hi in mine]
+
+    def _read_ahead(self, scope: Any, sql: str, params: Mapping[str, Any]) -> None:
+        """Before a word scan whose rows each ask the item gate: the version handles of
+        the candidate rows among its first ``READ_AHEAD_ROWS`` index matches (``sql``: the
+        scan's own match, in its order, with no permission term; a bounded read however
+        few of them are this search's sources'), handed to the gate to read ahead in batches
+        (``OntologyTools.prefetch_items``). Decides nothing: the scan then gates every
+        row itself, exactly as before; a handle not read ahead is read when gated. Only
+        for a gate that reads ahead; an unreadable read-ahead is skipped."""
+        searched = {_family(key) for key in json.loads(params.get("aud") or "[]")}
+        if getattr(self.base.item_gate, "prefetch", None) is None \
+                or not searched & READ_AHEAD_FAMILIES:
+            return   # no gate reading ahead, or no source whose files it reads ahead
+        try:
+            handles = [row[0] for row in self.store.word_conn.execute(
+                sql, {**params, "ahead": READ_AHEAD_ROWS})]
+        except sqlite3.Error:
+            return
+        self.base.prefetch_items(scope.actor, handles)
 
     def _names_identifier(self, query: str) -> bool:
         """Whether the grammar finds an identifier mention in ``query`` (a grammar that
@@ -2617,6 +2704,15 @@ class EvidenceTools:
                 f"f.rowid BETWEEN :lo{i} AND :hi{i}" for i in range(len(spans))) + ")"
             for i, (low, high) in enumerate(spans or ()):
                 params[f"lo{i}"], params[f"hi{i}"] = low, high
+            self._read_ahead(scope, f"""SELECT v.l1_handle
+                FROM (SELECT f.rowid AS row_no FROM value_text f
+                      WHERE value_text MATCH :words{narrowed}
+                      ORDER BY f.rowid LIMIT :ahead) f
+                JOIN object_values_numbered v ON v.row_no = f.row_no
+                JOIN objects o ON o.object_id = v.object_id
+                WHERE v.value_type IN ('text', 'identifier') AND v.value LIKE :pattern
+                ESCAPE '\\' AND o.audience_key IN (SELECT value FROM json_each(:aud))
+                ORDER BY f.row_no""", params)
             try:
                 rows = self.store.word_conn.execute(
                     f"""SELECT v.object_id, v.value, v.l1_handle, v.field_path, o.audience_key

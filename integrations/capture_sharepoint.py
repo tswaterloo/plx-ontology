@@ -832,6 +832,20 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_by_id ON items(drive_id, item_id);
 CREATE INDEX IF NOT EXISTS items_by_handle ON items(l1_handle);
+-- The visibility stamp (``visible_current``): bumped by every write that changes a column
+-- a version's visibility or its listing is decided on, in that write's transaction,
+-- whatever code makes it; a listing that re-reads equal permissions leaves it as it is.
+INSERT OR IGNORE INTO meta VALUES ('visibility_stamp', '0');
+CREATE TRIGGER IF NOT EXISTS items_visibility_insert AFTER INSERT ON items BEGIN
+    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
+END;
+CREATE TRIGGER IF NOT EXISTS items_visibility_delete AFTER DELETE ON items BEGIN
+    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
+END;
+CREATE TRIGGER IF NOT EXISTS items_visibility_update AFTER UPDATE OF version_id, l1_handle, drive_id, item_id, content_sha256, recorded_at, superseded_at, removed_reason, resources, source_acl ON items
+    WHEN OLD.version_id IS NOT NEW.version_id OR OLD.l1_handle IS NOT NEW.l1_handle OR OLD.drive_id IS NOT NEW.drive_id OR OLD.item_id IS NOT NEW.item_id OR OLD.content_sha256 IS NOT NEW.content_sha256 OR OLD.recorded_at IS NOT NEW.recorded_at OR OLD.superseded_at IS NOT NEW.superseded_at OR OLD.removed_reason IS NOT NEW.removed_reason OR OLD.resources IS NOT NEW.resources OR OLD.source_acl IS NOT NEW.source_acl BEGIN
+    UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'visibility_stamp';
+END;
 CREATE TABLE IF NOT EXISTS blobs (
     sha256 TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -1958,7 +1972,8 @@ class SharePointCaptureStore:
                 yield row
 
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,
-                text: bool = True) -> dict[str, Any] | None:
+                text: bool = True, ahead: "ReadAhead | None" = None
+                ) -> dict[str, Any] | None:
         """The captured version a handle names, offline, for a reader who may see the
         item (path keys and item permissions recorded at capture); ``None`` when not
         visible or never captured (indistinguishable). ``#sha256=<hex>`` must name the
@@ -1985,8 +2000,12 @@ class SharePointCaptureStore:
             return None
         if set(extra) - {"sha256", "page"}:
             return None
-        row = self._latest(version_handle(drive_id, item_id, etag))
-        if row is None or not self._row_visible(row, actor, audience):
+        # ``ahead``: the same rows, read for many handles at once (``ReadAhead``).
+        version = version_handle(drive_id, item_id, etag)
+        row = ahead.latest(version) if ahead is not None else self._latest(version)
+        item_latest = (ahead.item_latest(row) if ahead is not None and row is not None
+                       else None)
+        if row is None or not self._row_visible(row, actor, audience, item_latest):
             return None
         if "sha256" in extra and extra["sha256"] != row["content_sha256"]:
             return None
@@ -2005,7 +2024,8 @@ class SharePointCaptureStore:
                     return None
         # The class the scope gave the library now (a reclassification applies to
         # every captured version).
-        security_class = self.drive_class(row["drive_id"])
+        security_class = (ahead.drive_class(row["drive_id"]) if ahead is not None
+                          else self.drive_class(row["drive_id"]))
         library_class = ({} if security_class is None
                          else {"library_security_class": security_class})
         out = {"relation": "sharepoint.driveItems", "l1_handle": row["l1_handle"],
@@ -2013,10 +2033,13 @@ class SharePointCaptureStore:
                "superseded_at": row["superseded_at"], "removed_reason": row["removed_reason"],
                "last_seen_at": row["last_seen_at"], "digest": row["digest"],
                "source_acl": json.loads(row["source_acl"]),
-               "item_source_acl": json.loads(self._item_latest(row)["source_acl"]),
+               "item_source_acl": json.loads((item_latest or self._item_latest(row))
+                                             ["source_acl"]),
                # How old the captured state of the version's root is (module docstring,
                # Refresh walks): stale completeness never reads as fresh.
-               "root_full_walk": self.full_walk_age(row["drive_id"], row["root_path"]),
+               "root_full_walk": (ahead.full_walk_age(row["drive_id"], row["root_path"])
+                                  if ahead is not None
+                                  else self.full_walk_age(row["drive_id"], row["root_path"])),
                "row": {**record, **library_class,
                        "portal_metadata": taxonomy.stated_metadata(record),
                        "content_status": row["content_status"],
@@ -2182,6 +2205,11 @@ class SharePointCaptureStore:
                                     "acls": {}, "list": None, "state": 0}
             while len(memo_all) > 8:   # a few readers per store object
                 memo_all.pop(next(iter(memo_all)))
+        # Read before the rows: a write between the two leaves the list kept under an
+        # older stamp, so the next call reads again.
+        stamp = self.visibility_stamp()
+        if stamp is not None and held["list"] is not None and held.get("stamp") == stamp:
+            return (id(held), held["state"]), held["list"]   # no visibility input changed
         decided: dict[int, tuple] = held["rows"]
         acls: dict[str, Any] = held["acls"]
         # Item permissions are few texts shared by many versions: each kept once.
@@ -2213,9 +2241,31 @@ class SharePointCaptureStore:
         out.sort()
         out = [(drive, item, handle, digest, at) for drive, item, _v, handle, digest, at in out]
         held["rows"] = seen
+        held["stamp"] = stamp
         if held["list"] != out:
             held["list"], held["state"] = out, held["state"] + 1
         return (id(held), held["state"]), held["list"]
+
+    _VISIBILITY_TRIGGERS = ("items_visibility_insert", "items_visibility_delete",
+                            "items_visibility_update")
+
+    def visibility_stamp(self) -> str | None:
+        """The store's visibility stamp (``_DDL``: every insert or delete of a version, and
+        every update changing a column ``visible_current`` decides or lists on, bumps it
+        in its own transaction), or None when this store cannot vouch for it: a store
+        whose writer has not added the three triggers yet, or with no stamp row. Read in
+        one statement (one snapshot)."""
+        try:
+            row = self.db.execute(
+                "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND "
+                "tbl_name = 'items' AND name IN (?, ?, ?)), "
+                "(SELECT value FROM meta WHERE key = 'visibility_stamp')",
+                self._VISIBILITY_TRIGGERS).fetchone()
+        except sqlite3.Error:
+            return None
+        if row is None or row[0] != len(self._VISIBILITY_TRIGGERS) or row[1] is None:
+            return None
+        return str(row[1])
 
     def audience_check(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
         """A ``ReadPolicy`` audience check for the ``sharepoint`` prefix: a captured drive
@@ -4764,3 +4814,65 @@ __all__ = ["ABSENT", "CAPTURE_PRINCIPAL", "CaptureScope", "CaptureTarget", "DISC
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+class ReadAhead:
+    """What :meth:`SharePointCaptureStore.resolve` reads of many version handles, read in
+    a few statements for one tool call: each handle's latest captured row (``_latest``),
+    each item's latest version (``_item_latest``), and per drive and root its class and
+    walk state (``drive_class``, ``full_walk_age``) once. The same rows the per-handle
+    reads take, only fewer statements; a handle not read ahead is read alone. Kept for
+    one call only (the capture changes between calls)."""
+
+    def __init__(self, store: "SharePointCaptureStore") -> None:
+        self.store = store
+        self._latest: dict[str, Any] = {}
+        self._items: dict[tuple[str, str], Any] = {}
+        self._classes: dict[str, str | None] = {}
+        self._walks: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def read(self, handles: Iterable[str]) -> None:
+        """Read the rows of ``handles`` (plain version handles; others are left alone)
+        not read yet, 900 per statement."""
+        todo = [h for h in dict.fromkeys(handles) if isinstance(h, str)
+                and h.startswith(SCHEME + "://") and "#" not in h and h not in self._latest]
+        db = self.store.db
+        for at in range(0, len(todo), 900):
+            chunk = todo[at:at + 900]
+            found = {row["l1_handle"]: row for row in db.execute(
+                "SELECT * FROM items WHERE version_id IN (SELECT MAX(version_id) FROM items "
+                "WHERE l1_handle IN (SELECT value FROM json_each(?)) GROUP BY l1_handle)",
+                (json.dumps(chunk),))}
+            for handle in chunk:
+                self._latest[handle] = found.get(handle)
+            pairs = sorted({(row["drive_id"], row["item_id"]) for row in found.values()}
+                           - set(self._items))
+            if pairs:
+                for row in db.execute(
+                        "SELECT version_id, resources, source_acl, removed_reason, drive_id, "
+                        "item_id FROM items WHERE version_id IN (SELECT MAX(i.version_id) "
+                        "FROM json_each(?) p JOIN items i ON i.drive_id = "
+                        "json_extract(p.value, '$[0]') AND i.item_id = "
+                        "json_extract(p.value, '$[1]') GROUP BY i.drive_id, i.item_id)",
+                        (json.dumps(pairs),)):
+                    self._items[(row["drive_id"], row["item_id"])] = row
+
+    def latest(self, handle: str) -> Any:
+        if handle in self._latest:
+            return self._latest[handle]
+        return self.store._latest(handle)
+
+    def item_latest(self, row: Mapping[str, Any]) -> Any:
+        found = self._items.get((row["drive_id"], row["item_id"]))
+        return found if found is not None else self.store._item_latest(row)
+
+    def drive_class(self, drive_id: str) -> str | None:
+        if drive_id not in self._classes:
+            self._classes[drive_id] = self.store.drive_class(drive_id)
+        return self._classes[drive_id]
+
+    def full_walk_age(self, drive_id: str, root_path: str) -> dict[str, Any]:
+        key = (drive_id, root_path)
+        if key not in self._walks:
+            self._walks[key] = self.store.full_walk_age(drive_id, root_path)
+        return dict(self._walks[key])

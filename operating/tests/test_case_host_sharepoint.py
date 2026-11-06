@@ -218,6 +218,35 @@ class DocumentQuestionTests(SharePointHostCase):
         self.assertNotIn("Assembly packet", page["content"]["untrusted_text"])
         self.assertIn(scan, self.labels(page))
 
+    def test_a_word_search_reads_its_files_gate_rows_ahead_and_answers_the_same(self):
+        # The word scan hands its candidate files to the gate's read-ahead: their capture
+        # rows and projected names are read a few at a time, not one statement per file
+        # per read, and every file is still gated one by one: the same answer, labels and
+        # refusals as without the read-ahead, for a reader and for one without the grant.
+        from operating.ontology_tools import OntologyTools
+        question = {"query": "release", "sources": ["sharepoint"]}
+        latest = mock.patch.object(SharePointCaptureStore, "_latest", autospec=True,
+                                   side_effect=SharePointCaptureStore._latest)
+        for actor in (QUALITY, EMPLOYEE, OUTSIDER):
+            with self.subTest(actor=actor):
+                def ask():
+                    self.server(actor)
+                    return self.tools.call("plx.documents", question, actor)
+                with latest as read:
+                    ahead = ask()
+                    with mock.patch.object(OntologyTools, "prefetch_items"):
+                        before = read.call_count
+                        plain = ask()
+                        alone = read.call_count - before
+                self.assertNotIn("error", ahead)
+                # ``meta`` says when each answer was read; everything else is the same
+                self.assertEqual(json.dumps(dict(ahead, meta=None), sort_keys=True),
+                                 json.dumps(dict(plain, meta=None), sort_keys=True))
+                if actor is QUALITY:
+                    self.assertTrue(ahead["documents"])
+                    # fewer one-file reads: the scan's files were read ahead together
+                    self.assertLess(before, alone)
+
     def test_with_portal_unreadable_the_capture_text_still_answers_by_page(self):
         # The reader holds no Portal grant (as when the Portal API is down): no
         # purchase-order object to link to, so the host searches the captured text.

@@ -1174,6 +1174,28 @@ class CaptureCaseHostTools(CaseHostTools):
             # the status alone decides: a whole attachment's text is never decoded here
             return citations.read(handle, actor, content=False).get("status") in _READ_OK
 
+        def prefetch(actor: Any, handles: Iterable[str]) -> None:
+            """Read ahead, in batches, what a search's mail gate reads of each mail
+            citation of ``handles`` (``_mail_facts``: the rows one gate call reads alone,
+            kept in this call's memo), so the gate's per-candidate calls find them read.
+            Decides nothing and records nothing: every candidate is still gated one by
+            one, exactly as before. Outside a search call, or without a mail capture,
+            nothing is read."""
+            bound = self._call_bound
+            if not bound.search:
+                return
+            handles = [_member_container(str(h)) or str(h) for h in handles]
+            files = [h for h in handles if h.startswith("sharepoint://")]
+            if files and self.sharepoint_capture_dir is not None:
+                self._sharepoint_ahead(files)
+            mail = [h for h in handles if h.startswith("graph-mail://")]
+            if not mail or self.mail_capture_dir is None:
+                return
+            memo = bound.memo.setdefault(("host", id(self)), {"host": self})
+            with _mail_store(self.runtime, Path(self.mail_capture_dir)) as store:
+                self._mail_facts(store, mail, memo)
+
+        gate.prefetch = prefetch   # type: ignore[attr-defined]
         return gate
 
     @staticmethod
@@ -1324,7 +1346,8 @@ class CaptureCaseHostTools(CaseHostTools):
                                      "the employee gate refused this reader")
             return None
         try:
-            view = store.resolve(handle, gated, audience, text=text)
+            view = store.resolve(handle, gated, audience, text=text,
+                                 ahead=self._read_ahead(store))
             if view is None:
                 # Not captured, or not visible to this reader at capture: decided only
                 # when the capture holds this exact version as the item's current one.
@@ -1487,6 +1510,64 @@ class CaptureCaseHostTools(CaseHostTools):
         from operating.captured_originals import FAILED, REFUSED
         return REFUSED if str(handle) in self._decided else FAILED
 
+    def _sharepoint_ahead(self, handles: Sequence[str]) -> None:
+        """Read ahead what :meth:`captured` reads of each SharePoint version of
+        ``handles`` (``ReadAhead`` of the capture, and the projected names), kept for this
+        search call. Decides nothing: each file is still gated one by one."""
+        from integrations.capture_sharepoint import ReadAhead
+        store = self._sharepoint()
+        if store is None:
+            return
+        from ontology.mentions import cited_page
+        plain = [h for h in (cited_page(h)[0] for h in handles) if "#" not in h]
+        memo = self._call_bound.memo
+        ahead = memo.get(("sharepoint_ahead", id(store)))
+        if ahead is None:
+            ahead = memo[("sharepoint_ahead", id(store))] = ReadAhead(store)
+        ahead.read(plain)
+        self._projected_names(plain)
+
+    def _projection_store(self) -> Any:
+        """The generation this request reads: its own tools' when it serves calls, else
+        the projection file as it is now. Never a whole tool table per gate: building one
+        reads every audience key and BC unit of the store (1.3 GB on 2.5M objects), and
+        an originals search makes a gate per original it checks."""
+        return (self._projection() if self._tools is None and self._projection is not None
+                else None) or self.tools.store
+
+    def _read_ahead(self, store: Any) -> Any:
+        """This search call's SharePoint read-ahead (``ReadAhead``), or None outside a
+        search call."""
+        bound = self._call_bound
+        return bound.memo.get(("sharepoint_ahead", id(store))) if bound.search else None
+
+    def _projected_names(self, handles: Sequence[str]) -> None:
+        """What :meth:`_projected_stale` reads of each of ``handles`` (the projected
+        ``row.name`` and ``row.path`` of the version), read in a few statements and kept in
+        this call's memo. The same rows: a value row of a version handle belongs to an
+        object holding that version."""
+        if self.store_path is None:
+            return
+        store = self._projection_store()
+        memo = self._call_bound.memo
+        todo = [h for h in dict.fromkeys(handles)
+                if ("projected_names", id(store), h) not in memo]
+        if not todo:
+            return
+        with store.lock:
+            for at in range(0, len(todo), 900):
+                chunk = todo[at:at + 900]
+                found: dict[str, list[tuple[str, Any]]] = {h: [] for h in chunk}
+                for handle, path, value in store.conn.execute(
+                        "SELECT l1_handle, field_path, value FROM object_values WHERE "
+                        "object_id IN (SELECT object_id FROM object_versions WHERE l1_handle "
+                        "IN (SELECT value FROM json_each(:h))) AND l1_handle IN (SELECT value "
+                        "FROM json_each(:h)) AND field_path IN ('row.name', 'row.path')",
+                        {"h": json.dumps(chunk)}):
+                    found[handle].append((path, value))
+                for handle, rows in found.items():
+                    memo[("projected_names", id(store), handle)] = rows
+
     def _projected_stale(self, view: Mapping[str, Any]) -> bool:
         """Whether the projection shows this version under a name or path the capture
         no longer holds (moved since the projection was built): not served until the
@@ -1498,17 +1579,21 @@ class CaptureCaseHostTools(CaseHostTools):
         # projection file as it is now. Never a whole tool table per gate: building one
         # reads every audience key and BC unit of the store (1.3 GB on 2.5M objects), and
         # an originals search makes a gate per original it checks.
-        store = (self._projection() if self._tools is None and self._projection is not None
-                 else None) or self.tools.store
-        with store.lock:
-            # Through the version index (object_versions by l1_handle, then
-            # value_sources by object and handle): ``object_values`` alone has no index
-            # on l1_handle, and this runs once per file the item gate decides.
-            rows = store.conn.execute(
-                "SELECT field_path, value FROM object_values WHERE object_id IN "
-                "(SELECT object_id FROM object_versions WHERE l1_handle = ?) AND "
-                "l1_handle = ? AND field_path IN ('row.name', 'row.path')",
-                (view["l1_handle"], view["l1_handle"])).fetchall()
+        store = self._projection_store()
+        kept = (self._call_bound.memo.get(("projected_names", id(store), view["l1_handle"]))
+                if self._call_bound.search else None)
+        if kept is not None:
+            rows = kept   # read ahead with this call's other files (``_projected_names``)
+        else:
+            with store.lock:
+                # Through the version index (object_versions by l1_handle, then
+                # value_sources by object and handle): ``object_values`` alone has no
+                # index on l1_handle, and this runs once per file the item gate decides.
+                rows = store.conn.execute(
+                    "SELECT field_path, value FROM object_values WHERE object_id IN "
+                    "(SELECT object_id FROM object_versions WHERE l1_handle = ?) AND "
+                    "l1_handle = ? AND field_path IN ('row.name', 'row.path')",
+                    (view["l1_handle"], view["l1_handle"])).fetchall()
         for path, value in rows:
             if value is not None and value != held[path]:
                 return True

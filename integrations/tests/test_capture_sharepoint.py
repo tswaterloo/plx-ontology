@@ -710,6 +710,56 @@ class CaptureTests(CaptureCase):
         self.assertIsNone(self.store.resolve(self.handle("01FILEC"), QUALITY,
                                              reader_audience()))
 
+    def test_a_readers_visible_list_is_kept_until_a_visibility_input_changes(self):
+        # visible_current keeps a reader's list while the store's visibility stamp (bumped
+        # by the items triggers, whatever code writes) is unchanged; a capture seeing a
+        # file again with equal permissions keeps it, a revoked permission or a new
+        # version is read at once, and a store without the triggers reads every time.
+        self.capture().run(scope())
+        audience = reader_audience()
+        reads = []
+        real = self.store.db
+
+        class Counting:
+            def execute(self, sql, *args):
+                if sql.startswith("SELECT version_id, drive_id, item_id"):
+                    reads.append(sql)
+                return real.execute(sql, *args)
+
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+        def listed(who=EMPLOYEE):
+            return {i["l1_handle"] for i in self.store.index(who, audience)["items"]}
+
+        file_b = self.handle("01FILEB")
+        with mock.patch.object(self.store, "db", Counting()):
+            self.assertEqual(listed(), {file_b})
+            self.assertEqual(listed(), {file_b})
+            self.assertEqual(len(reads), 1)                      # kept
+            stamp = self.store.visibility_stamp()
+            with real:   # a listing that sees the file again with equal permissions
+                real.execute("UPDATE items SET last_seen_at = 'later', source_acl = "
+                             "source_acl, resources = resources WHERE l1_handle = ?",
+                             (file_b,))
+            self.assertEqual(self.store.visibility_stamp(), stamp)
+            self.assertEqual(listed(), {file_b})
+            self.assertEqual(len(reads), 1)
+            # a permission re-read that revokes the employee: hidden on the next read
+            acl = real.execute("SELECT source_acl FROM items WHERE l1_handle = ?",
+                               (self.handle("01FILEC"),)).fetchone()[0]
+            with real:
+                real.execute("UPDATE items SET source_acl = ? WHERE l1_handle = ?",
+                             (acl, file_b))
+            self.assertNotEqual(self.store.visibility_stamp(), stamp)
+            self.assertEqual(listed(), set())
+            self.assertEqual(len(reads), 2)
+            with real:
+                real.execute("DROP TRIGGER items_visibility_update")
+            self.assertIsNone(self.store.visibility_stamp())
+            listed(), listed()
+            self.assertEqual(len(reads), 4)                      # no stamp: read each time
+
     def test_permission_trimming_for_an_employee_without_access(self):
         self.capture().run(scope())
         audience = reader_audience()

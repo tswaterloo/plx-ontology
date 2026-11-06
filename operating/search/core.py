@@ -159,6 +159,10 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
     reranker = _default_reranker() if reranker is _UNSET else reranker
     now = now or dt.datetime.now(dt.timezone.utc)
     target = dsn or default_dsn()
+    # The question is embedded once, from the start, beside the scope read and the
+    # lexical retrievers (none of which needs its vector): only the dense list waits.
+    texts_now = (query.texts() if weights.query_texts == "rewrites" else [query.question])
+    embedding = _start_embed(embedder, texts_now)
 
     conn = connect(target)
     try:
@@ -172,19 +176,12 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         # The rewrites of a rules understanding swap words for the entities they matched
         # ("use" read as a customer named USE ...): measured on the dev cards they cost
         # recall, so by default the retrievers read the question as asked.
-        texts = query.texts() if weights.query_texts == "rewrites" else [query.question]
-        vectors: list[list[float]] = []
+        texts = texts_now
         model = getattr(embedder, "model", None)
-        if embedder is not None:
-            t = time.perf_counter()
-            try:
-                vectors = embedder.embed(texts)
-            except Exception as exc:  # noqa: BLE001 - dense is skipped, stated
-                notes.append("dense_unavailable:" + type(exc).__name__)
-                vectors = []
-            timings["embed"] = _ms(t)
-        else:
+        if embedder is None:
             notes.append("dense_unavailable:no_embedder")
+        # Where the embedding's note goes once it is known: before every retriever's.
+        embed_note_at = len(notes)
 
         resolved = query.resolved_ids()
         candidates = query.candidate_ids()
@@ -195,9 +192,14 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             "bm25": lambda c: rt.bm25(c, scope, texts, n),
             "fuzzy": lambda c: rt.fuzzy(c, scope, query.question, n),
         }
-        if vectors and model:
-            jobs["dense"] = lambda c: rt.dense(c, scope, vectors, model, n,
-                                                ef_search=weights.dense_ef_search)
+        if embedding is not None and model:
+            def dense_job(c: Any) -> Any:
+                vectors = _embedded(embedding)
+                if not vectors:
+                    raise _NoVectors()
+                return rt.dense(c, scope, vectors, model, n,
+                                ef_search=weights.dense_ef_search)
+            jobs["dense"] = dense_job
         if resolved or candidates:
             def graph_job(c: Any) -> Any:
                 linked: list[tuple[str, float]] = []
@@ -214,6 +216,18 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             jobs = {k: v for k, v in jobs.items() if k == "hidden"}
             notes.append("no_granted_unit")
         lists, hidden_lists = _run(jobs, target, timings, notes)
+        if embedding is not None:
+            # As if embedded before the retrievers ran: its failure is a note ahead of
+            # theirs, and without vectors no dense list was asked for.
+            vectors, embed_ms, embed_error = embedding.result()
+            timings["embed"] = embed_ms
+            if embed_error is not None:
+                notes.insert(embed_note_at, "dense_unavailable:" + embed_error)
+            if not vectors:
+                lists.pop("dense", None)
+                timings.pop("dense", None)
+                if "dense_failed:_NoVectors" in notes:
+                    notes.remove("dense_failed:_NoVectors")
 
         t = time.perf_counter()
         fused = fuse(lists, intent, weights.fusion, weights.rrf_k)
@@ -371,6 +385,33 @@ def _default_embedder() -> Any:
 def _default_reranker() -> Any:
     from operating.search.models import default_reranker
     return default_reranker()
+
+
+class _NoVectors(Exception):
+    """The question has no embedding: the dense list is not asked for."""
+
+
+# Embeds a question beside its scope read and lexical retrievers (``_start_embed``).
+_EMBED_POOL = cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="plx-embed")
+
+
+def _start_embed(embedder: Any, texts: Sequence[str]) -> "cf.Future | None":
+    """The question's embedding, started now on its own thread: a future of (vectors,
+    milliseconds, the failure's exception name or None); None without an embedder."""
+    if embedder is None:
+        return None
+
+    def embed() -> tuple[list[list[float]], float, str | None]:
+        t = time.perf_counter()
+        try:
+            return embedder.embed(list(texts)), _ms(t), None
+        except Exception as exc:  # noqa: BLE001 - dense is skipped, stated
+            return [], _ms(t), type(exc).__name__
+    return _EMBED_POOL.submit(embed)
+
+
+def _embedded(embedding: "cf.Future") -> list[list[float]]:
+    return embedding.result()[0]
 
 
 def _run(jobs: Mapping[str, Callable[[Any], Any]], target: str,

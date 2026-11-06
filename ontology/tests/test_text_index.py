@@ -20,6 +20,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 from integrations import graph_read
 from integrations.capture_mail import MailCapture, MailCaptureStore
@@ -36,6 +37,7 @@ from ontology.project import MailCaptures, build_store
 from ontology.store import StoreBuilder
 from ontology.tests.test_document_fields import pdf
 from ontology.tests.test_mail_documents import StaticPortal, po
+from ontology.chunk_families import store_chunk_families
 from ontology.text_index import store_text_index
 from ontology.types import Actor
 from operating import ontology_tools as ot
@@ -341,6 +343,60 @@ class FixtureTextTests(unittest.TestCase):
                         self.assertEqual(cand["reason"], "document_text")
                         self.assertEqual(cand["matched"]["raw"]["origin"]["field_path"],
                                          "row.content_text")
+
+    def test_a_text_search_of_a_few_sources_reads_only_their_chunk_runs_alike(self):
+        # The build writes the chunk id runs of each audience family; a
+        # documents text search of a family holding few chunks lists its matches in its
+        # runs instead of reading every source's: the same documents, snippets and cut,
+        # and the same rows reach the item gate.
+        from operating import ontology_tools_evidence as ev
+        store = fx.build()
+        self.addCleanup(store.conn.close)
+        documents = []
+        for i in range(40):
+            family = "mail" if i % 10 == 3 else "sharepoint"
+            oid, handle = (f"Document:sharepoint.docs:r-{i:03d}",
+                           f"sharepoint://drive-{family}/r-{i}@e1")
+            store.obj(oid, f"{family}:unit-1", handle, "sharepoint")
+            documents.append(doc(handle, f"orchid shipment {i} " + "x " * 3000 + "orchid"))
+        index_documents(store, documents)
+        written = store_chunk_families(store.conn)
+        runs = store.conn.execute("SELECT family FROM chunk_families ORDER BY lo").fetchall()
+        self.assertEqual(written, len(runs))
+        self.assertEqual([r[0] for r in runs][:3], ["sharepoint", "mail", "sharepoint"])
+        tools, _ = fx.tools(store)
+        evidence = ev.EvidenceTools(tools.base, traverse=tools)
+        gated = []
+
+        def text_hits(families):
+            def gate(handle):
+                gated.append(handle)
+                return tools.base._item_allowed(fx.FULL, handle)
+            snippets = {}
+            with mock.patch.object(tools, "_gate_function", lambda actor: gate):
+                found = evidence._with_gate(fx.FULL, lambda name: evidence._document_text_hits(
+                    tools._scope(fx.FULL, {}, name), ["orchid", "shipment"], families,
+                    snippets))
+            return found, snippets
+
+        narrowed, narrowed_gated = text_hits(["mail"]), list(gated)
+        self.assertEqual(len(narrowed[0][0]), 4)
+        self.assertTrue(narrowed_gated)
+        self.assertTrue(all("drive-mail" in h for h in narrowed_gated), narrowed_gated)
+        gated.clear()
+        with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+            whole = text_hits(["mail"])
+        self.assertEqual(narrowed, whole)
+        self.assertEqual(narrowed_gated, gated)
+        self.assertIsNotNone(evidence._chunk_runs(["mail"]))   # the narrowed read ran
+        # Families holding most chunks read the match whole, as before.
+        self.assertIsNone(evidence._chunk_runs(["sharepoint"]))
+        # A field whose chunks are not one run of ids leaves the runs empty: no narrowing.
+        store.conn.execute("UPDATE text_chunks SET chunk_id = chunk_id + 100000 WHERE "
+                           "chunk_id = (SELECT MIN(chunk_id) FROM text_chunks)")
+        self.assertIsNone(store_chunk_families(store.conn))
+        self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM chunk_families"
+                                            ).fetchone()[0], 0)
 
     def test_a_query_the_index_cannot_read_is_truncated_not_absent(self):
         store = fx.build()

@@ -2257,6 +2257,25 @@ class OntologyTools:
                                                   self.store.audience_keys())
         return _Scope(actor, keys, held, sets, granted, at)
 
+    def prefetch_items(self, actor: Actor, handles: Iterable[Any]) -> None:
+        """Let the item gate read ahead, in batches, what it will read to decide each of
+        ``handles`` (a gate offering ``prefetch``; any other reads nothing). Decides
+        nothing: ``_item_allowed`` still decides every handle one by one, as before. A
+        failing read-ahead is ignored (each decision then reads for itself)."""
+        prefetch = getattr(self.item_gate, "prefetch", None)
+        if prefetch is None:
+            return
+        kept = run_memo_for(("item_allowed", id(self), actor))
+        wanted = [h for h in dict.fromkeys(handles) if isinstance(h, str)
+                  and h.split("://", 1)[0] in _ITEM_ACL_SCHEMES
+                  and (kept is None or h not in kept)]
+        if not wanted:
+            return
+        try:
+            prefetch(actor, wanted)
+        except Exception:  # noqa: BLE001 - a read-ahead never decides; the gate reads alone
+            pass
+
     def _item_allowed(self, actor: Actor, handle: str) -> bool:
         scheme = handle.split("://", 1)[0] if isinstance(handle, str) else ""
         if scheme not in _ITEM_ACL_SCHEMES:

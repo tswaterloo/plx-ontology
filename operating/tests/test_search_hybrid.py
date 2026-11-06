@@ -443,6 +443,50 @@ class HybridSearchTests(unittest.TestCase):
         self.assertIsNotNone(result.hits[0]["signals"]["bm25"])
         self.assertIn("dense_unavailable:no_embedder", result.notes)
 
+    def test_the_question_is_embedded_once_beside_the_lexical_retrievers(self):
+        # The lexical lists do not wait for the embedding: BM25 runs while the embedder
+        # still works, and the dense list uses the one embedding. An embedder that fails
+        # is a note ahead of the retrievers' and no dense list, as before.
+        import threading
+        who = reader([PURCHASING, BC, QUALITY, TEAMS])
+        started, calls = threading.Event(), []
+        real_bm25 = rt.bm25
+
+        def bm25(*args, **kwargs):
+            started.set()
+            return real_bm25(*args, **kwargs)
+
+        class Waiting:
+            model = EMB.model
+
+            def embed(self, texts):
+                calls.append((list(texts), started.wait(5)))
+                return EMB.embed(texts)
+
+        with mock.patch.object(rt, "bm25", bm25):
+            result = self.run_search("castile soap pallets", who, embedder=Waiting())
+        # embedded once, and BM25 had started before the embedding was back
+        self.assertEqual(calls, [(["castile soap pallets"], True)])
+        self.assertTrue(any(h["signals"].get("dense") is not None for h in result.hits))
+        same = self.run_search("castile soap pallets", who)
+        self.assertEqual([h["chunk_id"] for h in result.hits],
+                         [h["chunk_id"] for h in same.hits])
+
+        class Failing:
+            model = EMB.model
+
+            def embed(self, texts):
+                raise RuntimeError("model down")
+
+        failed = self.run_search("castile soap pallets", who, embedder=Failing())
+        self.assertEqual(failed.notes[0], "dense_unavailable:RuntimeError")
+        self.assertFalse([n for n in failed.notes if n.startswith("dense_failed")])
+        self.assertNotIn("dense", failed.timings)
+        self.assertTrue(all(h["signals"].get("dense") is None for h in failed.hits))
+        alone = self.run_search("castile soap pallets", who, embedder=None)
+        self.assertEqual([h["chunk_id"] for h in failed.hits],
+                         [h["chunk_id"] for h in alone.hits])
+
     def test_typos_still_find_the_document(self):
         who = reader([PURCHASING, BC, QUALITY, TEAMS])
         result = self.run_search("lable artwrok aproval", who, embedder=None)
