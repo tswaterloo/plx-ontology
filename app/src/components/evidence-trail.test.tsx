@@ -239,7 +239,7 @@ describe("EvidenceTrailCard", () => {
     expect(within(verdict).queryByRole("button", { name: /Rule/ })).toBeNull();
     const steps = within(card).getAllByTestId("trail-step");
     expect(steps.map((s) => s.dataset.kind)).toEqual(["decision", "communication", "record_change", "document"]);
-    expect(steps.map((s) => within(s).getAllByText(/./)[0].textContent)).toEqual(["Decision", "Message", "Record", "Document"]);
+    expect(steps.map((s) => s.querySelector("[data-step-kind]")?.textContent)).toEqual(["Decision", "Message", "Record", "Document"]);
     // each step opens its evidence in the drawer (a button), never a link to a new tab
     for (const step of steps) expect(within(step).getByRole("button")).toBeInTheDocument();
     expect(card.querySelector("a[target]")).toBeNull();

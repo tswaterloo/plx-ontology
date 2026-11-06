@@ -4,6 +4,7 @@ import type { SourceView } from "@/lib/types";
 
 const params = { handle: "", field: [] as string[] };
 vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: () => undefined }),
   useSearchParams: () => ({
     get: (k: string) => (k === "handle" ? params.handle : null),
     getAll: (k: string) => (k === "field" ? params.field : []),

@@ -1,6 +1,6 @@
 {
  "format": "plx-live-ops-cards/v1",
- "note": "Questions as an executive types them, each with 1-2 messy rephrasings (`messy`, asked as paraphrases) (short, messy, no use-case name). Each card names a family of evals/live_ops_keys.py, which picks the records it asks about and computes the key from the system of record on every run (scripts/eval_live_ops.py keys). A card asks about `instances` records; {slot} is the record's identifier. `facts` keeps only those facts of the family (default: all). Never an expected value here: keys are computed, stored outside the repository, and split dev / held out by evals.partition groups. Cards with \"suite\": \"ceo\" are the CEO suite (evals/live_ops_ceo.py and harder phrasings of core families): split on their own after the core (scripts/eval_live_ops.split), run alone with --suite ceo.",
+ "note": "Questions as an executive types them, each with 1-2 messy rephrasings (`messy`, asked as paraphrases) (short, messy, no use-case name). Each card names a family of evals/live_ops_keys.py, which picks the records it asks about and computes the key from the system of record on every run (scripts/eval_live_ops.py keys). A card asks about `instances` records; {slot} is the record's identifier. `facts` keeps only those facts of the family (default: all). Never an expected value here: keys are computed, stored outside the repository, and split dev / held out by evals.partition groups. Cards with \"suite\": \"ceo\" are the CEO suite (evals/live_ops_ceo.py and harder phrasings of core families): split on their own after the core (scripts/eval_live_ops.split), run alone with --suite ceo. Cards with \"suite\": \"wide\" (evals/live_ops_wide.py: answers in free text, harder shapes), \"proactive\" (the briefing's events), \"roles\" (run as the purchasing or quality reader too) and \"open\" (evals/live_ops_open.py: mined, blind and perturbed questions; a \"perturb\" card asks its base card's items with {\"of\", \"ops\"} applied to its words) are dealt per card after the CEO suite; the open suite's held-out half is reported as counts only. Cards with \"suite\": \"inventory\" (evals/live_ops_inventory.py) ask a CFO's reconciliation, costing and bill-and-hold questions, keyed from Sage invoice lines, FileMaker assembly orders and bills of materials.",
  "cards": [
   {
    "id": "LO-01",
@@ -358,6 +358,15 @@
    ]
   },
   {
+   "id": "LO-39",
+   "family": "late_po_truth_count",
+   "instances": 1,
+   "question": "how many POs are actually late - checked against filemaker, portal and sage too, not just bc",
+   "messy": [
+    "real # of late POs once receipts everywhere are counted?"
+   ]
+  },
+  {
    "id": "CEO-01",
    "family": "po_first_mail",
    "instances": 6,
@@ -568,6 +577,710 @@
     "{so} shipped when"
    ],
    "suite": "ceo"
+  },
+  {
+   "id": "W-01",
+   "family": "po_delay_mail",
+   "instances": 4,
+   "question": "what did the supplier say about the delay on {po}",
+   "messy": [
+    "why is {po} pushed out, what did the vendor tell us",
+    "{po} delay - any word from the supplier on why"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-02",
+   "family": "foreign_vendor_mail",
+   "instances": 3,
+   "question": "the supplier wrote us about {po} but not in english - what did they say?",
+   "messy": [
+    "what did the vendor's last note on {po} say? i think it wasnt in english"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-03",
+   "family": "vendor_price_mail",
+   "instances": 4,
+   "question": "what did {vendor} tell us about their price change",
+   "messy": [
+    "did {vendor} send new pricing? whats the latest",
+    "{vendor} price increase email?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-04",
+   "family": "vendor_price_person",
+   "instances": 3,
+   "question": "who agreed the new price with {vendor}? show me the email",
+   "messy": [
+    "who on our side answered {vendor} about the new pricing"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-05",
+   "family": "customer_complaint_mail",
+   "instances": 4,
+   "question": "find the email where {customer} complained",
+   "messy": [
+    "{customer} had an issue with something - dig up that email",
+    "whats {customer} unhappy about? show me the mail"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-06",
+   "family": "so_shipping_mail",
+   "instances": 4,
+   "question": "whats the latest email on the shipment for {so}?",
+   "messy": [
+    "any news on {so} shipping? check the emails"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-07",
+   "family": "lot_hold_text",
+   "instances": 4,
+   "question": "why was lot {lot} {held}?",
+   "messy": [
+    "whats the story on lot {lot} - why is it {held}",
+    "lot {lot} {held}?? why"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-08",
+   "family": "teams_record_discussion",
+   "instances": 4,
+   "question": "what did the team say about {ref} in Teams?",
+   "messy": [
+    "any teams chatter on {ref}"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-09",
+   "family": "meeting_last",
+   "instances": 5,
+   "question": "when did we last meet with {party}?",
+   "messy": [
+    "last meeting w {party}?",
+    "when was our last call with {party}"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-10",
+   "family": "sharepoint_item_doc",
+   "instances": 3,
+   "question": "do we have a spec sheet or SDS for {item} on sharepoint?",
+   "messy": [
+    "wheres the spec for {item}"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-11",
+   "family": "po_attachment_doc",
+   "instances": 4,
+   "question": "find the {doc} the vendor sent for {po}",
+   "messy": [
+    "did we get a {doc} for {po}? where is it"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-12",
+   "family": "po_due_provenance",
+   "instances": 4,
+   "question": "where does the due date on {po} come from - which system, and what is it?",
+   "messy": [
+    "how was the {po} due date pulled? source?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-13",
+   "family": "vendor_compare_open",
+   "instances": 3,
+   "question": "who did we place more POs with in the last 90 days, {vendor_a} or {vendor_b}? list them",
+   "messy": [
+    "{vendor_a} vs {vendor_b} - POs last 90 days?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-14",
+   "family": "vendor_pos_window",
+   "instances": 4,
+   "question": "which POs did we place with {vendor} in the last {days} days?",
+   "messy": [
+    "{vendor} orders last {days} days?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-15",
+   "family": "vendor_not_received",
+   "instances": 3,
+   "question": "which of the POs we placed with {vendor} in the last {days} days havent come in yet?",
+   "messy": [
+    "{vendor} - anything from the last {days} days still not received?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-16",
+   "family": "vendor_open_pos_typo",
+   "instances": 3,
+   "question": "what do we have open with {vendor_typo}?",
+   "messy": [
+    "open pos w {vendor_typo}"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-17",
+   "family": "vendor_pos_partial",
+   "instances": 3,
+   "question": "what did we order from {vendor_partial} in the last {days} days?",
+   "messy": [
+    "{vendor_partial} POs last {days} days?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-18",
+   "family": "customer_open_sos_typo",
+   "instances": 3,
+   "question": "what still needs to ship for {customer_typo}",
+   "messy": [
+    "{customer_typo} open orders?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-19",
+   "family": "po_late_loose",
+   "instances": 3,
+   "question": "is {po_loose} late",
+   "messy": [
+    "{po_loose} status?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-20",
+   "family": "no_such_vendor",
+   "instances": 3,
+   "question": "what do we have open with {vendor}?",
+   "messy": [
+    "any POs out with {vendor}?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-21",
+   "family": "no_such_lot",
+   "instances": 3,
+   "question": "when does lot {lot} expire",
+   "messy": [
+    "lot {lot} expiry?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-22",
+   "family": "refuse_write",
+   "instances": 3,
+   "question": "mark {po} as received in BC",
+   "messy": [
+    "can you cancel {po} in business central for me"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-23",
+   "family": "lot_custody",
+   "instances": 4,
+   "question": "where did lot {lot} come from - which PO and which supplier?",
+   "messy": [
+    "trace lot {lot} back to its PO and vendor"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "W-24",
+   "family": "lot_custody_mail",
+   "instances": 3,
+   "question": "trace lot {lot}: which PO did it come in on, who supplied it, and what was their last email on that PO?",
+   "messy": [
+    "lot {lot} -> po -> vendor -> last email?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "P-01",
+   "family": "briefing_lots_expiring",
+   "instances": 1,
+   "question": "which lots expire in the next {days} days?",
+   "messy": [
+    "anything expiring in the next month i should know about"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "P-02",
+   "family": "briefing_negative_margin",
+   "instances": 1,
+   "question": "any orders losing money in the last {days} days?",
+   "messy": [
+    "negative margin orders lately?"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "P-03",
+   "family": "briefing_unconfirmed_late",
+   "instances": 1,
+   "question": "which late POs has the vendor never gotten back to us on?",
+   "messy": [
+    "late POs with no word from the supplier?"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "P-04",
+   "family": "briefing_eta_slipped",
+   "instances": 1,
+   "question": "which POs got pushed out in the last {days} days?",
+   "messy": [
+    "any PO dates slip in the last two weeks"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "P-05",
+   "family": "batches_on_hold_count",
+   "instances": 1,
+   "question": "how many batches are sitting on QC hold on today's briefing?",
+   "messy": [
+    "qc holds today - how many batches"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "P-06",
+   "family": "late_po_count",
+   "instances": 1,
+   "question": "how many late POs are on my briefing today?",
+   "messy": [
+    "late PO count for the briefing?"
+   ],
+   "suite": "proactive"
+  },
+  {
+   "id": "R-01",
+   "family": "po_late_with_price",
+   "instances": 3,
+   "question": "is {po} late, and what are we paying per unit on it?",
+   "messy": [
+    "{po} - late? unit price?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-02",
+   "family": "customer_orders_and_balance",
+   "instances": 4,
+   "question": "whats open for {customer} and how much do they owe us?",
+   "messy": [
+    "{customer}: open orders + balance"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-03",
+   "family": "order_margin",
+   "instances": 4,
+   "question": "whats our margin on {so}?",
+   "messy": [
+    "{so} margin?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-04",
+   "family": "item_supplier_price",
+   "instances": 4,
+   "question": "who do we buy {item} from and at what price",
+   "messy": [
+    "{item} - vendor and last price?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-05",
+   "family": "batch_on_hold",
+   "instances": 4,
+   "question": "is batch {batch} on QC hold",
+   "messy": [
+    "batch {batch} held?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-06",
+   "family": "lot_expiry",
+   "instances": 3,
+   "question": "when does lot {lot} expire",
+   "messy": [
+    "lot {lot} expiry date?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-07",
+   "family": "open_ar",
+   "instances": 3,
+   "question": "what does {customer} owe us",
+   "messy": [
+    "{customer} balance?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "R-08",
+   "family": "vendor_open_pos",
+   "instances": 3,
+   "question": "whats open with {vendor}",
+   "messy": [
+    "{vendor} open POs?"
+   ],
+   "suite": "roles"
+  },
+  {
+   "id": "O-01",
+   "family": "mined_question",
+   "instances": 20,
+   "question": "{q}",
+   "messy": [
+    "{q_loose}"
+   ],
+   "suite": "open"
+  },
+  {
+   "id": "O-02",
+   "family": "blind_question",
+   "instances": 30,
+   "question": "{q}",
+   "messy": [
+    "{q_loose}"
+   ],
+   "suite": "open",
+   "held_share": 2
+  },
+  {
+   "id": "O-03",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-01",
+    "ops": [
+     "typo",
+     "slang"
+    ]
+   }
+  },
+  {
+   "id": "O-04",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-07",
+    "ops": [
+     "reorder",
+     "lower"
+    ]
+   }
+  },
+  {
+   "id": "O-05",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-15",
+    "ops": [
+     "filler",
+     "typo"
+    ]
+   }
+  },
+  {
+   "id": "O-06",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-20",
+    "ops": [
+     "follow_up",
+     "slang"
+    ]
+   }
+  },
+  {
+   "id": "O-07",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-26",
+    "ops": [
+     "typo",
+     "lower"
+    ]
+   }
+  },
+  {
+   "id": "O-08",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-17",
+    "ops": [
+     "reorder",
+     "slang"
+    ]
+   }
+  },
+  {
+   "id": "O-09",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-34",
+    "ops": [
+     "follow_up",
+     "typo"
+    ]
+   }
+  },
+  {
+   "id": "O-10",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "CEO-03",
+    "ops": [
+     "filler",
+     "lower"
+    ]
+   }
+  },
+  {
+   "id": "O-11",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-16",
+    "ops": [
+     "slang",
+     "typo"
+    ]
+   }
+  },
+  {
+   "id": "O-12",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "LO-05",
+    "ops": [
+     "follow_up",
+     "lower"
+    ]
+   }
+  },
+  {
+   "id": "O-13",
+   "instances": 3,
+   "suite": "open",
+   "perturb": {
+    "of": "W-05",
+    "ops": [
+     "slang",
+     "typo"
+    ]
+   }
+  },
+  {
+   "id": "O-14",
+   "family": "po_late_and_confirmation",
+   "instances": 4,
+   "question": "is {po} late and did the vendor ever confirm it?",
+   "messy": [
+    "{po} - late? confirmed by the supplier?"
+   ],
+   "suite": "open"
+  },
+  {
+   "id": "O-15",
+   "family": "lot_status_and_expiry",
+   "instances": 4,
+   "question": "is lot {lot} released, and when does it expire?",
+   "messy": [
+    "lot {lot} status + expiry"
+   ],
+   "suite": "open"
+  },
+  {
+   "id": "O-16",
+   "family": "receipts_since_weekday",
+   "instances": 1,
+   "question": "how many purchase receipts have we posted in BC since last {weekday}?",
+   "messy": [
+    "receipts since last {weekday}?"
+   ],
+   "suite": "open"
+  },
+  {
+   "id": "O-17",
+   "family": "invoiced_last_month",
+   "instances": 3,
+   "question": "how much did we invoice {customer} last month?",
+   "messy": [
+    "{customer} billing last month?"
+   ],
+   "suite": "open"
+  },
+  {
+   "id": "I-01",
+   "family": "item_reconciliation",
+   "instances": 6,
+   "question": "reconcile {item} for me: how much packaging went into it, how many units were filled, how many were shipped and invoiced, and how many should be on hand now?",
+   "messy": [
+    "where did all the {item} go - packaging vs filled vs shipped vs on hand"
+   ],
+   "suite": "inventory"
+  },
+  {
+   "id": "I-02",
+   "family": "item_costing",
+   "instances": 6,
+   "question": "how is {item} costed? whats the sage unit cost vs the FM bill of materials cost, and how big is the gap per unit?",
+   "messy": [
+    "{item} sage cost vs BOM - whats the difference"
+   ],
+   "suite": "inventory"
+  },
+  {
+   "id": "I-03",
+   "family": "bill_and_hold_item",
+   "instances": 5,
+   "question": "{customer} was billed up front for {item} - how many did we bill, how many have shipped at $0, and how many are we still holding for them?",
+   "messy": [
+    "{item} for {customer}: billed vs released vs still held"
+   ],
+   "suite": "inventory"
+  },
+  {
+   "id": "I-04",
+   "family": "customer_zero_value_items",
+   "instances": 4,
+   "question": "which {customer} products are we holding at zero value because they were billed in advance?",
+   "messy": [
+    "{customer} - what shows $0 in our stock and why"
+   ],
+   "suite": "inventory"
+  },
+  {
+   "id": "I-05",
+   "family": "customer_held_stock",
+   "instances": 1,
+   "question": "what stock are we holding for {customer} right now, item by item, and how many units in all?",
+   "messy": [
+    "how much {customer} inventory is sitting with us"
+   ],
+   "suite": "inventory"
+  },
+  {
+   "id": "O-18",
+   "family": "blind_styled_question",
+   "instances": 140,
+   "question": "{q}",
+   "messy": [
+    "{q_loose}"
+   ],
+   "suite": "open",
+   "held_share": 2
+  },
+  {
+   "id": "W-25",
+   "family": "doc_send_chain",
+   "instances": 6,
+   "question": "did we send {customer} the {doc} for \"{topic}\", and did they approve it?",
+   "messy": [
+    "{customer} {doc} - sent? approved?"
+   ],
+   "suite": "wide",
+   "facts": [
+    "sent",
+    "outcome",
+    "reply"
+   ]
+  },
+  {
+   "id": "W-26",
+   "family": "doc_send_chain",
+   "instances": 4,
+   "question": "who sent {customer} the {doc} on \"{topic}\", and when?",
+   "messy": [
+    "who emailed the {doc} to {customer} re {topic}"
+   ],
+   "suite": "wide",
+   "facts": [
+    "sent",
+    "sent_by",
+    "sent_on"
+   ]
+  },
+  {
+   "id": "W-27",
+   "family": "doc_send_chain",
+   "instances": 4,
+   "question": "what did {customer} say about the {doc} we sent them on \"{topic}\"?",
+   "messy": [
+    "any word back from {customer} on the {doc}?"
+   ],
+   "suite": "wide",
+   "facts": [
+    "outcome",
+    "reply"
+   ]
+  },
+  {
+   "id": "W-28",
+   "family": "doc_open_question",
+   "instances": 4,
+   "question": "is there an open question from {customer} on \"{topic}\" we havent answered?",
+   "messy": [
+    "did we ever answer {customer} on {topic}?"
+   ],
+   "suite": "wide"
+  },
+  {
+   "id": "O-19",
+   "family": "blind_doc_question",
+   "instances": 40,
+   "question": "{q}",
+   "messy": [
+    "{q_loose}"
+   ],
+   "suite": "open",
+   "held_share": 2
   }
  ]
 }

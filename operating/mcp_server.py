@@ -28,7 +28,7 @@ import re
 import sqlite3
 import sys
 from time import monotonic, sleep
-from typing import Any, BinaryIO, Callable, Iterable
+from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
 from urllib.parse import unquote
 
 from integrations.source_mirror import AudienceMap, MirrorError
@@ -41,9 +41,10 @@ from . import case_context_tools, case_verification, confirmation_forms, kind_co
 from . import injection_guard, mcp_portfolio, ontology_tools, status_card
 from . import playbook_tools
 from . import ontology_tools_aggregate, ontology_tools_evidence, ontology_tools_process
-from . import meeting_agenda, ontology_tools_changes, ontology_tools_investigate
+from . import meeting_agenda, ontology_query, ontology_tools_changes, ontology_tools_investigate
 from . import ontology_tools_traverse
-from . import action_tools, agent_definitions, answer_gate, call_limits, tool_results
+from . import action_tools, agent_definitions, answer_gate, call_limits, host_peers
+from . import tool_results
 from .agent_definitions import AgentDefinition, AgentRun
 from . import case_tools_host
 from .case_tools_host import PageNotRead, PagedRead
@@ -728,8 +729,11 @@ PLAYBOOK_TOOLS = frozenset(playbook_tools.TOOL_NAMES)
 # case listing stays within the 22-tool budget.
 # plx.changes (operating/ontology_tools_changes.py) is served and listed the same way: only
 # to a session whose agent definition names it.
-AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL, ontology_tools_changes.TOOL)
-AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES)
+# plx.query (operating/ontology_query.py) too: one composable read over the same table.
+AGENDA_TOOL_SPECS: tuple[dict[str, Any], ...] = (meeting_agenda.TOOL, ontology_tools_changes.TOOL,
+                                                 ontology_query.TOOL)
+AGENDA_TOOLS = frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES) \
+    | frozenset(ontology_query.TOOL_NAMES)
 
 ACTION_TOOLS = frozenset({action_tools.TOOL_NAME})
 # plx.schema / plx.find / plx.object (operating.ontology_tools), plx.around /
@@ -747,7 +751,11 @@ GENERIC_TOOLS = frozenset().union(*(module.TOOL_NAMES for module in (
 # boundary like every other with their own envelopes kept and the strings their contract
 # types left bare (CONTRACT_TYPING), so wrapping never breaks a contract field such as an
 # object id or gap.subject, and any other bare string is still wrapped.
-SELF_ENVELOPING_TOOLS = GENERIC_TOOLS | PLAYBOOK_TOOLS | frozenset(ontology_tools_changes.TOOL_NAMES)
+# The tools whose results return evidence the answer gate binds claims to: the generic
+# ontology tools and plx.query, which returns plx.aggregate's groups and their citations.
+RETURNING_TOOLS = GENERIC_TOOLS | frozenset(ontology_query.TOOL_NAMES)
+SELF_ENVELOPING_TOOLS = GENERIC_TOOLS | PLAYBOOK_TOOLS | frozenset(ontology_tools_changes.TOOL_NAMES) \
+    | frozenset(ontology_query.TOOL_NAMES)
 # Every string their contract types, derived from the contract itself: pattern- or
 # enum-typed strings (object ids, handles, tiers, ...) when they match, and the plain
 # strings it allows (gap subjects, Workbench detail/hint/note, the agent's own queries).
@@ -1760,7 +1768,9 @@ def _case_get_result(view: dict[str, Any], section: str | None, offset: int, lim
 
 def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[str, Any],
                     may_repair: bool, repairs_left: int,
-                    unread: Callable[[str, str], bool] | None
+                    unread: Callable[[str, str], bool] | None,
+                    relevant: Callable[[Sequence[str], Callable[[str], Any]], bool | None]
+                    | None = None
                     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
     """One answer submission through the one final-answer gate
     (``answer_gate.gate_answer``) for ``server``'s session (its actor's re-reads), with the
@@ -1780,7 +1790,8 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     asked = answer.get("question") if isinstance(answer, dict) and isinstance(
         answer.get("question"), str) else ""
     gated = answer_gate.gate_answer(claims_only, server, seen=seen, returned=returned,
-                                    may_repair=may_repair, unread=unread, read_values=True)
+                                    may_repair=may_repair, unread=unread, read_values=True,
+                                    relevant=relevant)
     repairing = gated["outcome"] == "repair"
     text = {"text_check": answer_gate.check_text(answer["text"], gated["claims"], server,
                                                  returned, question=asked)} \
@@ -1815,6 +1826,78 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
               # counts the one it asks for (its next submission is decided as final).
               "repairs_left": max(repairs_left, 0)}
     return result, gated, repairing
+
+
+def _letters_digits(text: str) -> str:
+    """``text`` as letters and digits alone, upper case (the relevance check's form)."""
+    return re.sub(r"[^0-9A-Za-z]", "", text).upper()
+
+
+def _said_values(view: Any) -> list[str] | None:
+    """What a cited record says, as the relevance check reads it: each value of its row
+    (never a column name) and its page text, as letters and digits. A record that moved
+    on since it was read (``changed_since``) is read as the revision cited
+    (``revision``), the row its claim was read from. None: nothing to read (unreadable,
+    or no row and no text)."""
+    if isinstance(view, Mapping) and view.get("changed_since") \
+            and isinstance(view.get("revision"), Mapping):
+        view = view["revision"]
+    if not isinstance(view, Mapping):
+        return None
+    out: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+        elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            said = _letters_digits(str(value))
+            if said:
+                out.append(said)
+    row, text = view.get("row"), view.get("text")
+    if not isinstance(row, Mapping) and not isinstance(text, str):
+        return None
+    walk(row if isinstance(row, Mapping) else {})
+    walk(text if isinstance(text, str) else "")
+    return out
+
+
+# A name or code shorter than this names too much to tie a record to the question.
+MIN_ANCHOR_CHARS = 4
+
+
+def _question_anchors(server: "MCPServer", asked: str) -> frozenset[str]:
+    """The names and codes, as letters and digits, the question ``asked`` names records
+    by: each identifier it writes (the one grammar, ``find_identifiers``) and each entity
+    its reader's ``plx.find`` matches or reads out of a longer reference
+    (``objective_runner.resolve_entities``, one call); a code's number alone too."""
+    from ontology.identifiers import find_identifiers
+    from .objective_runner import resolve_entities
+    if server.ontology is None:
+        return frozenset()
+    mentions = [mention.text for mention in find_identifiers(asked)]
+    try:
+        gated = server.case_runtime.employee_gate(server.actor)
+        host = server._ontology_host()
+        with host.request():
+            entities = resolve_entities(asked, lambda arguments: host.call(
+                "plx.find", arguments, gated))
+    except Exception:  # noqa: BLE001 - the question's own identifiers still stand
+        entities = []
+    mentions += [entity.get("mention") for entity in entities
+                 if entity.get("status") in ("match", "derived")]
+    anchors = set()
+    for mention in mentions:
+        key = _letters_digits(str(mention or ""))
+        if len(key) >= MIN_ANCHOR_CHARS:
+            anchors.add(key)
+        core = re.fullmatch(r"[A-Z]{1,4}(\d{4,})", key)
+        if core:
+            anchors.add(core.group(1))
+    return frozenset(anchors)
 
 
 class MCPServer:
@@ -1948,6 +2031,9 @@ class MCPServer:
         # Repairs this session's final answers had (``plx.case_get`` answer mode): at most
         # ``answer_gate.MAX_REPAIRS`` over the session.
         self._answer_repairs = 0
+        # The question's records as the answer gate's relevance check names them
+        # (``_relevance``), for the question last asked.
+        self._anchors: dict[str, frozenset[str]] = {}
         # The last answer decision plx.case_get gave this session (``_answer``), and
         # whether a later submission the gate could not decide cleared it
         # (``_cleared_note``).
@@ -1970,6 +2056,11 @@ class MCPServer:
                 ontology_tools.load_contracts(), follow_ups=True)}
             self.tools = tuple(writer.get(tool["name"], tool) for tool in self.tools)
         self.tool_names = {tool["name"] for tool in self.tools}
+        # This host's place among the session's hosts (``operating.host_peers``): a helper
+        # hands each read's evidence to the gate, the primary keeps what the gate hands it
+        # with its key; neither (the default) serves as it always has.
+        self.peer_role: str | None = None
+        self.peer_key: Any = None
 
     @property
     def actor(self) -> Actor:
@@ -2002,6 +2093,10 @@ class MCPServer:
         it, bounded and paged by its own size."""
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
             return _error(None, -32600, "Invalid Request")
+        if message.get("method") == host_peers.IMPORT_METHOD:
+            if not host_code and "id" not in message:
+                self._peer_import(message.get("params"))
+            return None   # never answered, never a tool call
         if confirmation_forms.is_response(message):
             # The person's answer to a confirmation form (a steward's playbook adoption or a
             # document-fields confirmation), answered by the principal it asked from any of
@@ -2147,13 +2242,17 @@ class MCPServer:
                     # Keeping the result's evidence may find its item permissions
                     # unreadable (``_bind``): room for that note is left.
                     spare = _UNKEPT_NOTE_BYTES if self._unkept is None \
-                        and name in GENERIC_TOOLS else 0
+                        and name in RETURNING_TOOLS else 0
                     if _envelope_size(payload) + spare <= MAX_RESULT_BYTES:
                         self._note_returned(name, arguments, built,
                                             None if host_code else value)
                         if self._unkept is not None:
                             payload["_meta"][EVIDENCE_META_KEY] = {
                                 "kept": False, "reason": self._unkept}
+                        if self.peer_role == host_peers.HELPER and not host_code:
+                            exported = self._peer_export(name, arguments, built, value)
+                            if exported is not None:
+                                payload["_meta"][host_peers.EXPORT_KEY] = exported
                         return _result(request_id, payload)
                 return _result(request_id, _tool_error(
                     self._cleared_note(name, arguments)
@@ -2187,7 +2286,7 @@ class MCPServer:
         reads them). Evidence read under another projection generation or grant than the
         kept evidence replaces it; kept evidence an item gates whose permissions changed
         since is dropped (``_bind``)."""
-        if name not in GENERIC_TOOLS or self._read_scope is None:
+        if name not in RETURNING_TOOLS or self._read_scope is None:
             return   # only the ontology tools return counts and money values
         self._bind(*self._read_scope)
         returned_evidence(name, arguments, result, self._evidence,
@@ -2345,14 +2444,47 @@ class MCPServer:
         repair over the session. Read-only; its result is never evidence."""
         returned = self._returned()
         seen = set(self._evidence["handles"])
+        asked = answer.get("question") if isinstance(answer, dict) else None
         result, gated, repairing = answer_decision(
             answer, self, seen=seen, returned=returned,
             may_repair=self._answer_repairs < answer_gate.MAX_REPAIRS,
-            repairs_left=answer_gate.MAX_REPAIRS - self._answer_repairs, unread=self.unread)
+            repairs_left=answer_gate.MAX_REPAIRS - self._answer_repairs, unread=self.unread,
+            relevant=self._relevance(asked))
         if repairing:
             self._answer_repairs += 1
         self._last_decision = {"outcome": gated["outcome"], "claims": gated["claims"]}
         return result
+
+    def _relevance(self, asked: Any
+                   ) -> Callable[[Sequence[str], Callable[[str], Any]], bool | None] | None:
+        """The answer gate's relevance check (``answer_gate.gate_answer``'s ``relevant``)
+        for the question ``asked``: a cited record is on the question when its row or text
+        names a record the question names (``_question_anchors``: its identifiers and the
+        entities this reader's ``plx.find`` matches), compared on letters and digits
+        alone, value by value; a code's number alone counts too, the way another system
+        writes it. A record that moved on since it was read is read as the revision its
+        claim cites. None (no check) when the question names none. A cited record that
+        cannot be read now is undecided (its own check decides it)."""
+        if not isinstance(asked, str) or not asked.strip():
+            return None
+        if asked not in self._anchors:
+            self._anchors.clear()   # one question per session: the last one asked
+            self._anchors[asked] = _question_anchors(self, asked)
+        anchors = self._anchors[asked]
+        if not anchors:
+            return None
+
+        def relevant(handles: Sequence[str], read: Callable[[str], Any]) -> bool | None:
+            undecided = False
+            for handle in handles:
+                values = _said_values(read(handle))
+                if values is None:
+                    undecided = True
+                    continue
+                if any(anchor in value for value in values for anchor in anchors):
+                    return True
+            return None if undecided else False
+        return relevant
 
     def _bind(self, scope: str, reads: _ItemPermissions | None) -> None:
         """Bring the kept evidence to ``scope`` and the item permissions ``reads``: another
@@ -2603,15 +2735,7 @@ class MCPServer:
         ``CaseHostTools.call``, so plx.investigate's plans run over the same table
         (plx.process included) the host serves."""
         gated = self.case_runtime.employee_gate(self.actor)
-        if self.ontology is None:
-            # plx.investigate's follow_ups record through this session's action path as the
-            # session actor (the case store gates it); without both the option is refused.
-            recorder = None if self.action_path is None or self.session is None else \
-                ontology_tools_investigate.follow_up_recorder(self.action_path, self.session,
-                                                             self.actor)
-            self.ontology = CaseHostTools(self.case_runtime, self.actor,
-                                          reserve_bytes=META_RESERVE_BYTES, follow_ups=recorder)
-        host = self.ontology
+        host = self._ontology_host()
         self._read_scope = None
         # Before the call: an item re-read during it moves that item, so what the call
         # returned of it is dropped by the next comparison. Undecided: nothing this call
@@ -2637,6 +2761,84 @@ class MCPServer:
             # undecided item permissions (None) keep only what no item gates.
             self._read_scope = (_evidence_scope(host.store_meta(), host.tools.policy), reads)
         return result
+
+    def _ontology_host(self) -> CaseHostTools:
+        """This session's ontology host, built at its first use."""
+        if self.ontology is None:
+            # plx.investigate's follow_ups record through this session's action path as the
+            # session actor (the case store gates it); without both the option is refused.
+            recorder = None if self.action_path is None or self.session is None else \
+                ontology_tools_investigate.follow_up_recorder(self.action_path, self.session,
+                                                             self.actor)
+            self.ontology = CaseHostTools(self.case_runtime, self.actor,
+                                          reserve_bytes=META_RESERVE_BYTES, follow_ups=recorder)
+        return self.ontology
+
+    def _peer_export(self, name: str, arguments: dict[str, Any], built: Any,
+                     shown: Any) -> dict[str, Any] | None:
+        """A helper's read for the session's primary (``operating.host_peers``): the call,
+        its result as built and as shown, the evidence scope it was read under and the
+        item permission digests this host holds (each read before the call that first
+        named its item). None when nothing of it is evidence or it is not plain JSON
+        (then the primary keeps nothing of it: fail closed)."""
+        if name not in RETURNING_TOOLS or self._read_scope is None \
+                or not isinstance(self._read_scope[0], str):
+            return None
+        try:
+            record = json.loads(json.dumps({
+                "name": name, "arguments": arguments, "built": built, "shown": shown,
+                "scope": self._read_scope[0], "kept": self._unkept is None,
+                "items": [[list(key), digest] for key, digest in self._items.items()]},
+                ensure_ascii=False, allow_nan=False))
+        except (TypeError, ValueError):
+            return None
+        return record
+
+    def _peer_import(self, params: Any) -> None:
+        """Keep a helper's read as this session's evidence (``operating.host_peers``), as
+        ``_note_returned`` keeps one of this host's own calls: only with this primary's
+        key, under the evidence scope in force now (a read under another projection
+        generation or grant keeps nothing), bound to the item permissions read now; what
+        an item gates whose permissions the helper read otherwise before its call is
+        dropped, and anything undecidable drops what any item gates (fail closed). The
+        call counts against this session's agent run like one served here."""
+        if self.peer_role != host_peers.PRIMARY or not self.ready \
+                or not host_peers.keyed(params, self.peer_key):
+            return
+        record = params.get("record")
+        if not isinstance(record, dict):
+            return
+        name, arguments = record.get("name"), record.get("arguments")
+        scope, items = record.get("scope"), record.get("items")
+        if name not in RETURNING_TOOLS or name not in self.tool_names \
+                or not isinstance(arguments, dict) or not isinstance(scope, str) \
+                or not isinstance(items, list):
+            return
+        self.agent_run.record(name, error=False, host_code=False)
+        self._unkept = None
+        try:
+            host = self._ontology_host()
+            gated = self.case_runtime.employee_gate(self.actor)
+            reads = self._item_reads(host)
+            with host.request():
+                now = _evidence_scope(host.store_meta(), host.policy_now(gated))
+            if now != scope:
+                return   # read under another generation or grant: not evidence of now
+            theirs = {tuple(key): digest for key, digest in (
+                entry for entry in items if isinstance(entry, list) and len(entry) == 2
+                and isinstance(entry[0], list) and isinstance(entry[1], str))}
+            self._read_scope = (now, reads)
+            self._note_returned(name, arguments, record.get("built"), record.get("shown"))
+            changed = {key for key, digest in theirs.items()
+                       if key in self._items and self._items[key] != digest}
+            if changed or record.get("kept") is not True:
+                _drop_changed(self._evidence, changed or None)
+        except Exception:  # noqa: BLE001 - undecided: nothing an item gates is kept
+            _drop_changed(self._evidence, None)
+        finally:
+            self._read_scope = None
+            self._unkept = None
+            self._close_reads()
 
     @staticmethod
     def _decider(host: Any, gated: Any) -> tuple[Any, Callable[[Any], dict[str, Any]]]:
@@ -3574,6 +3776,20 @@ def local_client(server: MCPServer, client_name: str
 
 def serve_stdio(server: MCPServer, *, input_stream: BinaryIO | None = None,
                 output_stream: BinaryIO | None = None) -> None:
+    # The session's tool gate may start this host as the primary or a helper of one agent
+    # session (``operating.host_peers``); only a stdio host takes either role.
+    server.peer_role, server.peer_key = host_peers.role()
+    if server.peer_role != host_peers.HELPER:
+        # The session's answer gate reads a cited mail attachment's direction against
+        # every captured mailbox (``case_tools_host.prime_attachment_mailboxes``): read in
+        # the background from the start, never inside an answer submission. A helper
+        # never decides an answer; it reads them only if one of its calls needs them.
+        captures = getattr(server.case_runtime, "captures", None)
+        try:
+            case_tools_host.prime_attachment_mailboxes(
+                getattr(captures, "mail_capture_dir", None))
+        except OSError:
+            pass   # read by the first claim that needs it
     try:
         _serve_lines(server, input_stream or sys.stdin.buffer,
                      output_stream or sys.stdout.buffer)
@@ -3582,17 +3798,27 @@ def serve_stdio(server: MCPServer, *, input_stream: BinaryIO | None = None,
 
 
 def _serve_lines(server: MCPServer, reader: BinaryIO, writer: BinaryIO) -> None:
+    # A primary reads its gate's imports (``host_peers``), each larger than any request;
+    # every other message keeps the request bound.
+    most = host_peers.MAX_IMPORT_BYTES if server.peer_role == host_peers.PRIMARY \
+        else MAX_LINE_BYTES
     while True:
-        line = reader.readline(MAX_LINE_BYTES + 1)
+        line = reader.readline(most + 1)
         if not line:
             return
-        if len(line) > MAX_LINE_BYTES:
+        if len(line) > most:
             while line and not line.endswith(b"\n"):
-                line = reader.readline(MAX_LINE_BYTES + 1)
+                line = reader.readline(most + 1)
             response = _error(None, -32600, "Request too large")
         else:
             try:
-                response = server.handle(json.loads(line.decode("utf-8")))
+                message = json.loads(line.decode("utf-8"))
+                if len(line) > MAX_LINE_BYTES and not (
+                        isinstance(message, dict)
+                        and message.get("method") == host_peers.IMPORT_METHOD):
+                    response = _error(None, -32600, "Request too large")
+                else:
+                    response = server.handle(message)
             except (UnicodeDecodeError, json.JSONDecodeError):
                 response = _error(None, -32700, "Parse error")
         # Server-to-client requests made while handling this message (a confirmation form)
@@ -4039,6 +4265,14 @@ def session_server(argv: list[str] | None = None, *,
                        capture_bounds=capture_bounds, clock=clock)
     from operating.search import plug as search_plug
     search_plug.warm_if_enabled()   # PLX_SEARCH=hybrid: models load now, not mid-query
+    # A captured file's text is the one its build extracted (kept by the build and the
+    # delta, read-only here), never extracted again per read.
+    from integrations.kept_members import serve_kept
+    from .host import PROJECTION_DIR
+    state = Path(args.state_dir)
+    serve_kept([state / PROJECTION_DIR / "delta", state / PROJECTION_DIR],
+               [state / store / "blobs" / "sha256"
+                for store in ("mail-capture", "sharepoint-capture")])
     return host, host.server(session)
 
 

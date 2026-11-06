@@ -162,6 +162,28 @@ class FreshnessSource(_Model):
         description="How the last capture of this source ended: failed and "
                     "never_captured are stale whatever their age; partial (a budgeted "
                     "capture continuing next cycle) is judged by age.")
+    searchable_to: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="With hybrid search on: the newest text of this source search can "
+                    "find (ISO). Captured records after it are not searchable yet.")
+
+
+class TruthFlag(_Model):
+    """The latest cross-system truth check (``operating.truth_check``): how many of the
+    open claims the engine makes the other systems' evidence contradicts."""
+    checked_at: str = Field(description="When the truth check ran (ISO).")
+    late_claims: int = Field(0, description="Purchase orders claimed late (past their need "
+                             "date), one per order; unconfirmed orders not yet due are not "
+                             "counted.")
+    late_contradicted: int = Field(0, description="Of those, the orders contradicted by evidence in "
+                                   "another system (received, cancelled, a test record, a "
+                                   "draft twin, or a need date that is a default).")
+    claims: int = Field(0, description="Every open claim checked.")
+    contradicted: int = Field(0, description="Every open claim contradicted by evidence.")
+    detectors_incomplete: int = Field(0, description="Detectors whose latest run did not "
+                                      "complete (their claims are partly checked).")
+    stale: bool = Field(False, description="The check is older than TRUTH_MAX_AGE (2 hours): "
+                        "its counts are not stated in the label.")
 
 
 class Freshness(_Model):
@@ -171,6 +193,9 @@ class Freshness(_Model):
                                  "and keeps its own time in sources.")
     label: Optional[str] = Field(None, description="e.g. 'Data as of 10:42 today'.")
     sources: list[FreshnessSource] = Field(default_factory=list)
+    truth: Optional[TruthFlag] = Field(None, json_schema_extra=_optional,
+                                       description="The latest truth check's counts; the "
+                                       "label names a late list the evidence disputes.")
 
 
 class ObjectRef(_Model):
@@ -411,6 +436,10 @@ class AskRequest(_Model):
     history: list[HistoryTurn] = Field(default_factory=list, max_length=12)
     object_id: Optional[str] = Field(None, max_length=700,
                                      description="Ask about this record (object page).")
+    source: Optional[str] = Field(None, max_length=4096,
+                                  description="Ask about this document: the citation of a "
+                                              "mail, attachment or file the person has open "
+                                              "or picked; read for them as they may read it.")
 
 
 class Candidate(_Model):

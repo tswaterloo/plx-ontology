@@ -158,6 +158,36 @@ LEDGER_SYSTEMS = {"portal": "Portal", "bc": "BC", "mail": "Email", "sharepoint":
 BEHIND_SECONDS = 24 * 3600
 # How bad a capture state is, when two entries name one system.
 CAPTURE_RANK = {"complete": 0, "partial": 1, "failed": 2, "never_captured": 3}
+# The cross-system truth check's status (``operating.truth_check``: run after each publish
+# and delta cycle), which the status line reads: counts only.
+TRUTH_STATUS = Path("truth-check") / "status.json"
+
+
+TRUTH_MAX_AGE = timedelta(hours=2)
+
+
+def truth_flag(state_dir: Optional[Path], now: Optional[datetime] = None
+               ) -> Optional[m.TruthFlag]:
+    """The latest truth check's counts, None when it never ran or cannot be read; ``stale``
+    when it ran more than ``TRUTH_MAX_AGE`` ago (or its time cannot be read)."""
+    if state_dir is None:
+        return None
+    try:
+        raw = json.loads((Path(state_dir) / TRUTH_STATUS).read_text("utf-8"))
+        try:
+            ran = datetime.fromisoformat(str(raw["generated_at"]).replace("Z", "+00:00"))
+            stale = (now or datetime.now(timezone.utc)) - ran > TRUTH_MAX_AGE
+        except (ValueError, TypeError):
+            stale = True
+        return m.TruthFlag(stale=stale,
+            checked_at=str(raw["generated_at"]), late_claims=int(raw.get("late_claims") or 0),
+            late_contradicted=int(raw.get("late_contradicted") or 0),
+            claims=int(raw.get("claims") or 0), contradicted=int(raw.get("contradicted") or 0),
+            detectors_incomplete=len(raw.get("detectors_incomplete") or ()))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 # The served projection's source families (``store_meta.freshness``) as Home names them.
 STORE_SYSTEMS = {"portal_api": "Portal", "bc": "BC", "graph_mail": "Email",
                  "sharepoint": "File", "teams": "Teams", "mission_control": "MC"}
@@ -484,8 +514,11 @@ class WorkspaceBackend(ActionsMixin):
                  today: Callable[[], date] | None = None, agent_ask: Any = None,
                  agent_sessions: int = ASK_WORKERS, store_path: Optional[Path] = None,
                  freshness_bounds: Mapping[str, float] | None = None,
-                 clock: Callable[[], datetime] | None = None) -> None:
-        """``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
+                 clock: Callable[[], datetime] | None = None,
+                 front_door: Any = None) -> None:
+        """``front_door``: the warm model every question is read by first
+        (``operating.front_door.FrontDoor``; None: questions route as typed).
+        ``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
         objective box answers), at most ``agent_sessions`` sessions at once.
         ``store_path`` and ``freshness_bounds``: the served projection and the host's
         capture bounds (``operating.host.freshness_bounds``), so Home states each source's
@@ -496,6 +529,7 @@ class WorkspaceBackend(ActionsMixin):
         self.freshness_bounds = dict(freshness_bounds or {})
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.agent_ask = agent_ask
+        self.front_door = front_door
         self._original_slots: dict[str, threading.BoundedSemaphore] = {}
         self._original_all = threading.BoundedSemaphore(ORIGINAL_READS)
         self._sessions = threading.Semaphore(max(1, agent_sessions))
@@ -777,6 +811,7 @@ class WorkspaceBackend(ActionsMixin):
 
     def me(self, reader: Reader) -> m.Me:
         self.warm(reader)   # every app load asks who is reading: read ahead for them
+        self._prewarm_agent(reader)
         self.remember_reader(reader)
         s = reader.session
         return m.Me(display_name=reader.display_name, email=reader.email,
@@ -830,15 +865,17 @@ class WorkspaceBackend(ActionsMixin):
             try:
                 row = conn.execute("SELECT value FROM store_meta WHERE key = 'freshness'"
                                    ).fetchone()
+                digest = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                      "'content_digest'").fetchone()
             finally:
                 conn.close()
             raw = json.loads(row[0]) if row else None
         except (sqlite3.Error, ValueError, TypeError):
             return None
-        if isinstance(raw, dict):
-            raw = [dict(v, source=k) for k, v in raw.items() if isinstance(v, dict)]
-        return [e for e in raw if isinstance(e, dict) and isinstance(e.get("source"), str)] \
-            if isinstance(raw, list) else None
+        entries = _freshness_entries(raw)
+        if entries is None:
+            return None
+        return with_delta_freshness(entries, path, digest[0] if digest else None)
 
     def freshness(self, base: Mapping[str, Any] | None = None) -> m.Freshness:
         """Each source's age as the data served states it: the served projection's own
@@ -919,6 +956,7 @@ class WorkspaceBackend(ActionsMixin):
                                                      age_seconds=max(0, age),
                                                      stale=bool(stale))
             sources = list(seen.values())
+        sources = with_search_coverage(sources)
         store = (base or {}).get("store") or {}
         built = store.get("built_at") if isinstance(store, Mapping) else None
         cut_off, behind = data_cut_off(sources)
@@ -934,7 +972,16 @@ class WorkspaceBackend(ActionsMixin):
                 label += "; " + ", ".join(
                     f"{s.system} to " + _instant(s.as_of).strftime("%d %b").lstrip("0")
                     for s in behind)
-        return m.Freshness(as_of=as_of, label=label, sources=sources)
+            lagging = search_lagging(sources)
+            if lagging:
+                label += "; searchable text: " + ", ".join(
+                    f"{s.system} to " + _instant(s.searchable_to).strftime("%d %b").lstrip("0")
+                    for s in lagging)
+        truth = truth_flag(self.state_dir, self.clock())
+        if truth is not None and truth.late_contradicted and label and not truth.stale:
+            label += (f"; late list disputed: {truth.late_contradicted} of "
+                      f"{truth.late_claims} late POs contradicted by other systems")
+        return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth)
 
     # ---- sources ------------------------------------------------------------------------
 
@@ -1011,6 +1058,30 @@ class WorkspaceBackend(ActionsMixin):
                             for c in item.get("candidates") or () if c.get("object_id")]))
         return m.UnderstandingEvent(intent=intent, entities=entities)
 
+    def _prewarm_agent(self, reader: Reader) -> None:
+        """Start the reader's agent host ahead of their Ask (``AgentAsk.prewarm``)."""
+        agent = self.agent_ask
+        prewarm = getattr(agent, "prewarm", None)
+        if prewarm is None:
+            return
+        try:
+            if agent.serves(reader.session):
+                prewarm(reader.session)
+        except Exception:  # noqa: BLE001 - a warm-up never fails a request
+            pass
+
+    def _front_read(self, request: m.AskRequest) -> Any:
+        """The front door's reading of the question (``operating.front_door``), or None:
+        none configured, a did-you-mean pick, or no reading in time."""
+        if self.front_door is None or request.object_id:
+            return None
+        earlier = [turn.text.strip() for turn in request.history if turn.role == "user"
+                   and turn.text.strip()]
+        try:
+            return self.front_door.read(request.question, earlier)
+        except Exception:  # noqa: BLE001 - the question then routes as typed
+            return None
+
     @staticmethod
     def _objective(request: m.AskRequest) -> str:
         """The question, with the person's earlier questions when it names no record of its
@@ -1052,10 +1123,23 @@ class WorkspaceBackend(ActionsMixin):
         yield "status", m.StatusEvent(step="understanding", message="Reading your question",
                                       elapsed_ms=ms())
         answer = None
+        asked = request
+        # the agent's host starts while the question is read and its records resolved
+        self._prewarm_agent(reader)
+        reading = self._front_read(request)
+        if reading is not None:
+            # the model's reading of a messy question routes it; the person's own words
+            # stay the answer's question
+            yield "status", m.StatusEvent(step="understanding", message=reading.status,
+                                          elapsed_ms=ms())
+            if reading.changed:
+                request = request.model_copy(update={"question": reading.rewrite})
         # A did-you-mean pick keeps the question it answers (its intent) with the record
         # picked as ``object_id``.
         intent = picked_question(request) or request.question
-        shortcut = ask_shortcut(request)
+        # the model's reading picks a ready answer; the phrase rules only without a reading
+        shortcut = ask_shortcut(request) if reading is None else read_shortcut(request,
+                                                                               reading)
         if shortcut == "late_list":
             answer = yield from self._late_ask(reader, request, conversation, ms)
         elif shortcut == "at_risk":
@@ -1068,7 +1152,8 @@ class WorkspaceBackend(ActionsMixin):
             # goes on to the agent path.
             answer = yield from self._profit_ask(reader, request, conversation, ms,
                                                  question=intent)
-        if answer is None and not request.object_id:
+        if answer is None and not request.object_id and (
+                reading is None or reading.route == "lookup"):
             # The most common questions about one record, answered by code's own reads
             # through the same answer gate (``operating.fast_answer``); anything it does
             # not settle goes on to the agent.
@@ -1076,10 +1161,18 @@ class WorkspaceBackend(ActionsMixin):
         if answer is not None:
             pass
         elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
-            answer = yield from self._agent_ask(reader, request, conversation, ms)
+            answer = yield from self._agent_ask(reader, request, conversation, ms,
+                                                route=reading.route if reading else None)
         else:
             answer = yield from self._box_ask(reader, request, conversation, ms)
         answer = presentation.polished(answer)   # no codes or escapes reach the reader
+        if request is not asked:
+            answer.question = asked.question     # the person's own words
+            request = asked
+        # a question about a period the data does not reach yet says so first
+        notice = presentation.period_notice(intent, answer.freshness, self.clock())
+        if notice and notice not in answer.direct_answer:
+            answer.direct_answer = f"{notice} {answer.direct_answer}".strip()
         # what to ask next: from the answer's own records and gaps, as this reader sees them
         answer.follow_ups = presentation.follow_ups(request.question, answer)
         answer.proposals = proposals.for_answer(answer)   # drafts only: never sent
@@ -1343,7 +1436,8 @@ class WorkspaceBackend(ActionsMixin):
         return job
 
     def _agent_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
-                   ms: Callable[[], int]) -> Iterator[tuple[str, Any]]:
+                   ms: Callable[[], int], route: Optional[str] = None
+                   ) -> Iterator[tuple[str, Any]]:
         """The scoreboard's agent path as this reader (``agent_ask.AgentAsk``): its tool
         calls stream as steps; the answer is what the session's answer gate passed."""
         from operating import objective_runner
@@ -1393,6 +1487,18 @@ class WorkspaceBackend(ActionsMixin):
         session: Future = Future()
         pre: dict[str, Any] = {}
 
+        def source_line() -> str:
+            """The document the question is asked about (``request.source``): the agent
+            reads it first, whole, through its own gates (a document this reader may not
+            read is refused there and said so), whatever the records read before found."""
+            from operating.answer_gate import HANDLE
+            if not request.source or not HANDLE.fullmatch(request.source):
+                return ""
+            return ("\n\nThe question is asked about the document " + request.source
+                    + ": read it first, whole (plx.read, paging with text_offset), resolve "
+                    "the codes and names in it (plx.find; plx.query from codes for many), "
+                    "and answer about it.")
+
         def prepare() -> Optional[str]:
             """Before the session (``operator_api.preread``): which record each identifier
             names, and the evidence the answer's trail shows (a purchase order's trail or
@@ -1425,7 +1531,9 @@ class WorkspaceBackend(ActionsMixin):
                             "PurchaseOrder") for r in roots)
                     if not starts and not names_po:
                         return resolved, [], None, preread.brief(
-                            None, [r for r in roots if r.get("found_by") == "identifier"])
+                            None, [r for r in roots if r.get("found_by") in (
+                                "identifier", "resolver")], call,
+                            entities=resolved.get("entities") or ())
                     status("reading", "Reading the purchase orders behind the order's "
                                       "materials" if starts else
                            "Reading the purchase order's trail: receipts, confirmations "
@@ -1434,7 +1542,9 @@ class WorkspaceBackend(ActionsMixin):
                     if got is None or got.kind not in ("materials", "purchase_order"):
                         return resolved, [], None, ""
                     return resolved, [], got, preread.brief(
-                        got, [r for r in roots if r.get("found_by") == "identifier"], call)
+                        got, [r for r in roots if r.get("found_by") in (
+                            "identifier", "resolver")], call,
+                        entities=resolved.get("entities") or ())
             try:
                 resolved, several, got, told = submit(
                     self.ask_jobs, self.ask_stopped, reader, read, 1).result(
@@ -1454,6 +1564,7 @@ class WorkspaceBackend(ActionsMixin):
                 if brief is None:
                     session.set_result(None)   # the person picks the record first
                     return
+                brief += source_line()
                 if not self._sessions.acquire(blocking=False):
                     status("searching", "Waiting for a free agent; other questions are "
                                         "running")
@@ -1461,8 +1572,9 @@ class WorkspaceBackend(ActionsMixin):
                         raise errors.ASK_BUSY
                 try:
                     status("searching", "Finding the records your question is about")
-                    session.set_result(self.agent_ask.run(reader.session, question,
-                                                          emit, context=brief))
+                    session.set_result(self.agent_ask.run(
+                        reader.session, question, emit, context=brief,
+                        **({"route": route} if route else {})))
                 finally:
                     self._sessions.release()
             except BaseException as error:  # noqa: BLE001 - handed to the route
@@ -2673,6 +2785,75 @@ def _instant(value: Optional[str]) -> Optional[datetime]:
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
+def _freshness_entries(raw: Any) -> Optional[list[dict[str, Any]]]:
+    """A store's ``freshness`` meta as entries with a ``source`` (None when unreadable)."""
+    if isinstance(raw, dict):
+        raw = [dict(v, source=k) for k, v in raw.items() if isinstance(v, dict)]
+    return [e for e in raw if isinstance(e, dict) and isinstance(e.get("source"), str)] \
+        if isinstance(raw, list) else None
+
+
+def with_delta_freshness(entries: list[dict[str, Any]], store: Path,
+                         digest: Optional[str]) -> list[dict[str, Any]]:
+    """``entries`` with the capture time the row-delta overlay serves for the sources it
+    reads (its newest layer's ``delta_families``) when that is newer: answers read those
+    records through the overlay (``operating.delta_overlay``), so the data is that fresh.
+    Only a pointer built over the served generation (``digest``) counts; any other,
+    missing or unreadable one leaves ``entries`` as they are."""
+    try:
+        from operating import delta_overlay
+        pointer = delta_overlay.read_pointer(delta_overlay.pointer_path(store))
+        if not pointer or not digest or pointer.get("base_digest") != digest:
+            return entries
+        conn = sqlite3.connect(f"file:{pointer['store']}?mode=ro", uri=True, timeout=1)
+        try:
+            meta = dict(conn.execute("SELECT key, value FROM store_meta WHERE key IN "
+                                     "('freshness', 'delta_families')").fetchall())
+        finally:
+            conn.close()
+        families = set(json.loads(meta.get("delta_families") or "[]"))
+        layer = {e["source"]: e for e in _freshness_entries(
+            json.loads(meta.get("freshness") or "null")) or [] if e["source"] in families}
+    except (sqlite3.Error, ValueError, TypeError, OSError, KeyError):
+        return entries
+    out = []
+    for entry in entries:
+        newer = layer.get(entry["source"])
+        if newer and isinstance(newer.get("captured_at"), str) and (
+                not isinstance(entry.get("captured_at"), str)
+                or newer["captured_at"] > entry["captured_at"]):
+            entry = dict(entry, captured_at=newer["captured_at"],
+                         completeness=newer.get("completeness", entry.get("completeness")))
+        out.append(entry)
+    return out
+
+
+def with_search_coverage(sources: Sequence[m.FreshnessSource]) -> list[m.FreshnessSource]:
+    """``sources`` with each one's ``searchable_to`` (the newest text hybrid search can
+    find, ``operating.search.coverage``) when hybrid search is on; unchanged otherwise or
+    when the index cannot be read."""
+    try:
+        from operating.search import coverage, plug
+        if not plug.enabled():
+            return list(sources)
+        found = coverage.coverage()
+    except Exception:  # noqa: BLE001 - nothing is claimed about search
+        return list(sources)
+    return [s.model_copy(update={"searchable_to": found[s.system]})
+            if s.system in found else s for s in sources]
+
+
+def search_lagging(sources: Sequence[m.FreshnessSource]) -> list[m.FreshnessSource]:
+    """Sources whose searchable text ends over ``BEHIND_SECONDS`` before their capture,
+    oldest first: captured records after it exist but search cannot find them yet."""
+    out = []
+    for s in sources:
+        captured, searchable = _instant(s.as_of), _instant(s.searchable_to)
+        if captured and searchable and (captured - searchable).total_seconds() > BEHIND_SECONDS:
+            out.append((searchable, s))
+    return [s for _at, s in sorted(out, key=lambda pair: pair[0])]
+
+
 def data_cut_off(sources: Sequence[m.FreshnessSource]
                  ) -> tuple[Optional[str], list[m.FreshnessSource]]:
     """The served data's cut-off (its newest source capture, the moment the build pinned
@@ -2887,6 +3068,19 @@ def ask_shortcut(request: m.AskRequest) -> Optional[str]:
     if (profit_question(intent) or order_margin_question(intent)) and (
             not request.object_id or customer_object(request.object_id)):
         return "profit"
+    return None
+
+
+def read_shortcut(request: m.AskRequest, reading: Any) -> Optional[str]:
+    """The ready answer the front door's model picked for the question (``late_list``,
+    ``at_risk``, ``profit``: ``operating.front_door.RECIPES``), under the same conditions
+    on the record the request is about as ``ask_shortcut``'s; None: the fast path and the
+    agent answer."""
+    recipe = getattr(reading, "recipe", None)
+    if recipe in ("late_list", "at_risk") and not request.object_id:
+        return recipe
+    if recipe == "profit" and (not request.object_id or customer_object(request.object_id)):
+        return recipe
     return None
 
 
@@ -3956,11 +4150,10 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
             direct = without_claim_words(direct, hidden_claims)
         if not direct and facts:
             direct = " ".join(fact.text for fact in facts)
-        direct, removed = presentation.reader_prose(
+        direct, _removed = presentation.reader_prose(
             direct, [c.get("phrase") for c in passed])
-        if removed and not_found and direct and NOT_SETTLED not in direct:
-            direct += ("\n\nWhat I couldn't confirm from a source you can open is listed "
-                       "below.")
+        # What could not be confirmed is shown as its own list below the answer: the
+        # answer itself ends at its last backed sentence, with no sentence about the list.
         if not direct and facts:
             direct = " ".join(fact.text for fact in facts)
         if not direct:
@@ -4452,7 +4645,10 @@ def named_late_pos(backend: "WorkspaceBackend", view: Any, question: str,
         return []
     named = {_po_key(mention.normalized or mention.text)
              for mention in find_identifiers(question) if "po" in str(mention.kind).lower()}
-    roots = {r.get("object_id") for r in found.get("roots") or () if isinstance(r, Mapping)}
+    # only a purchase order root can be a late purchase order (an item or customer root
+    # the resolver found is never looked up in the late list)
+    roots = {r.get("object_id") for r in found.get("roots") or () if isinstance(r, Mapping)
+             and str(r.get("object_type") or r.get("object_id")).startswith("PurchaseOrder")}
     if not named and not roots:
         return []
     inbox = view.gap_inbox()
@@ -5808,8 +6004,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--ask-path", choices=("agent", "objective"), default="agent",
                        help="agent: the scoreboard's agent path where it can run (default); "
                             "objective: always the console's objective box")
-    group.add_argument("--ask-seconds", type=int, default=150,
-                       help="hard cap of one agent Ask's session (seconds)")
+    group.add_argument("--ask-seconds", type=int, default=180,
+                       help="hard cap of one agent Ask's session (seconds); each question "
+                            "gets deep_investigation.question_budget under it")
     group.add_argument("--ask-lookup-model", default=None,
                        help="the model an Ask about one named record runs on "
                             "(agent_ask.LOOKUP_MODEL; empty: the session's model)")
@@ -5893,6 +6090,12 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                        seconds=max(30, args.ask_seconds),
                                        **({} if args.ask_lookup_model is None else
                                           {"lookup_model": args.ask_lookup_model or None}))
+        front_door = None
+        if agent is not None:
+            from operating.front_door import FrontDoor
+            if FrontDoor.enabled():
+                front_door = FrontDoor(binary=agent.claude_bin)
+                front_door.warm()
         backend = WorkspaceBackend(ctx["objects_for"], data_label=str(label),
                                    state_dir=Path(ctx["state_dir"]),
                                    store_path=ctx.get("ontology_path"),
@@ -5900,7 +6103,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
                                    ask_served=bool(args.ask),
-                                   agent_ask=agent, agent_sessions=max(1, args.ask_workers))
+                                   agent_ask=agent, agent_sessions=max(1, args.ask_workers),
+                                   front_door=front_door)
         resolver = ctx.get("resolver")
         if resolver is not None and not args.dev_fixture_principal:
             from operating.session_identity import warm_session

@@ -1,11 +1,13 @@
 "use client";
 
+import { ChevronRight, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { fieldLabel, formatDate, formatDateTime, formatMoney, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
 import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
 import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
 import { mailField } from "./source-view";
+import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
 
 const MONEY_LABEL = /\b(?:total|amount|cost|price|balance|value|revenue|margin|invoice)\b/i;
 const BARE_NUMBER = /^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$/;
@@ -86,9 +88,10 @@ export function SourceLine({ source, record, prefix = "From" }: { source: Source
   const text = [`${prefix} ${sys}`, tail, source.as_of ? `read ${formatDate(source.as_of, { short: true })}` : null].filter(Boolean).join(", ");
   const opens = !!source.handle || !!source.open_url;
   return (
-    <p className="text-meta text-muted" data-testid="source-line">
+    <p className="flex items-center gap-2 text-meta text-muted" data-testid="source-line">
+      <SystemTile system={source.system} size={16} />
       {opens ? (
-        <button type="button" onClick={() => setOpen(true)} className="text-left underline-offset-2 hover:text-fg hover:underline cursor-pointer">
+        <button type="button" onClick={() => setOpen(true)} className="min-w-0 truncate text-left underline-offset-2 hover:text-fg hover:underline cursor-pointer">
           {text}
         </button>
       ) : (
@@ -125,17 +128,17 @@ export function FactList({
   const oneSource = list.length > 1 && handles.size === 1 && list.every((f) => f.sources.length > 0) ? list[0].sources[0] : null;
   const shown = max && !all ? list.slice(0, Math.max(0, max - extra.length)) : list;
   return (
-    <div className="space-y-2">
-      <ul className="space-y-1" aria-label="Supporting facts" data-testid="fact-list">
+    <div className="space-y-3">
+      <ul className="space-y-2" aria-label="Supporting facts" data-testid="fact-list">
         {extra.map((x, i) => (
-          <li key={`x${i}`} className="flex gap-2 text-body">
-            <span className="shrink-0 text-faint" aria-hidden>–</span>
+          <li key={`x${i}`} className="flex gap-3 text-[13px] leading-5">
+            <span className="mt-[9.5px] h-px w-2.5 shrink-0 bg-[color-mix(in_srgb,var(--fg)_35%,transparent)]" aria-hidden />
             <span className="min-w-0 break-words">{x}</span>
           </li>
         ))}
         {shown.map((f, i) => (
-          <li key={i} className="flex gap-2 text-body">
-            <span className="shrink-0 text-faint" aria-hidden>–</span>
+          <li key={i} className="flex gap-3 text-[13px] leading-5">
+            <span className="mt-[9.5px] h-px w-2.5 shrink-0 bg-[color-mix(in_srgb,var(--fg)_35%,transparent)]" aria-hidden />
             <span className="min-w-0 break-words">
               {factText(f, currency)}
               {unconfirmed(f) && <span className="text-muted"> (not confirmed)</span>}{" "}
@@ -145,7 +148,7 @@ export function FactList({
         ))}
       </ul>
       {max && list.length + extra.length > max && (
-        <button type="button" onClick={() => setAll((v) => !v)} className="text-meta text-accent hover:underline cursor-pointer" aria-expanded={all}>
+        <button type="button" onClick={() => setAll((v) => !v)} className="-mx-2 inline-flex h-7 items-center rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer" aria-expanded={all}>
           {all ? "Show fewer" : `Show all ${list.length + extra.length}`}
         </button>
       )}
@@ -201,11 +204,14 @@ const sentenceCase = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) 
 export function NotFoundSection({ items, title = "Not found", bare = false, subject }: { items: NotFoundItem[] | undefined; title?: string; bare?: boolean; subject?: string | null }) {
   if (!items || items.length === 0) return null;
   return (
-    <section className={cn(!bare && "border-t border-rule")} data-testid="not-found">
-      {!bare && <h3 className="flex min-h-10 items-center text-section">{title}</h3>}
-      <ul className="space-y-1 text-row">
+    <section data-testid="not-found">
+      {!bare && <h3 className="mb-3 text-[12px] leading-4 font-medium text-muted">{title}</h3>}
+      <ul className="space-y-2 text-[13px] leading-5">
         {items.map((n, i) => (
-          <li key={i}>{sentenceCase(missingText(n, subject))}</li>
+          <li key={i} className="flex gap-3">
+            <OpenRing size={14} tone="neutral" className="mt-[3px]" />
+            <span className="min-w-0">{sentenceCase(missingText(n, subject))}</span>
+          </li>
         ))}
       </ul>
     </section>
@@ -244,16 +250,17 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
     <section
       role="note"
       aria-label="Items you don't have access to"
-      className="border-t border-border pt-2 text-meta"
+      className="flex gap-3 rounded-xl bg-surface px-4 py-3 text-[13px] leading-5"
       data-testid="hidden-notice"
     >
-      <div className="space-y-0.5">
+      <EyeOff className="mt-[3px] size-[14px] shrink-0 text-muted" strokeWidth={2} aria-hidden />
+      <div className="min-w-0 space-y-0.5">
         <p className="font-medium text-fg">
           {unknown
             ? "Some items may be hidden from you because you don't have access."
             : `${plural(count, "more item")} match${count === 1 ? "es" : ""}, but you don't have access.`}
         </p>
-        <p className="text-muted">
+        <p className="text-[12px] leading-[18px] text-muted">
           {askWho
             ? `Ask ${askWho} if you need ${them}.`
             : privateCount > 0 && privateCount === count
@@ -311,20 +318,29 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
   const what = conflict.subject ? `${field} (${conflict.subject})` : field;
   const used = trusted.length === 1 ? trusted[0] : null;
   return (
-    <section aria-label={`Conflicting values for ${what}`} className="rounded-sm border border-dotted border-suspect-line px-3 py-2" data-testid="conflict-card">
-      <h3 className="mb-1 text-section text-suspect">Systems disagree on {what}</h3>
-      <table className="w-full text-row">
+    <section aria-label={`Conflicting values for ${what}`} className="rounded-xl bg-surface px-4 pt-3 pb-2" data-testid="conflict-card">
+      <h3 className="flex items-center gap-2 text-[13px] leading-5 font-medium text-fg">
+        <StatusGlyph status="suspect" size={14} />
+        Systems disagree on {what}
+      </h3>
+      <table className="mt-1.5 w-full text-[13px] leading-5">
         <caption className="sr-only">Values for {what}, by system</caption>
         <tbody>
           {conflict.values.map((v, i) => (
             <tr key={i} className="border-t border-border align-top first:border-0">
               <th scope="row" className="py-2 pr-3 text-left font-normal text-muted">
-                {valueSystem(v.source)}
+                <span className="flex items-center gap-2">
+                  <SystemTile system={v.source.system} size={16} />
+                  {valueSystem(v.source)}
+                </span>
               </th>
               <td className="py-2 pr-3 font-medium tabular-nums">
                 {conflictValue(conflict, v.value)}
                 {used === v && (
-                  <span className="ml-2 text-meta font-normal text-ok">Used</span>
+                  <span className="ml-2.5 inline-flex items-center gap-1 align-[-2px] text-[12px] font-normal text-fg">
+                    <DoneRing size={12} />
+                    Used
+                  </span>
                 )}
                 {v.why && used === v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
                 {v.why && used !== v && <span className="block text-meta font-normal text-muted">{whyUsed(v.why)}</span>}
@@ -337,7 +353,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
         </tbody>
       </table>
       {!used && (
-        <p className="mt-2 text-row text-muted">
+        <p className="mt-1 mb-1 text-[12px] leading-[18px] text-muted">
           Neither value is confirmed, so neither is used. Ask {owner || "the record's owner"} which is right.
         </p>
       )}
@@ -378,6 +394,20 @@ export function behindCutOff(freshness: Freshness | null | undefined, now?: Date
 }
 
 /**
+ * Sources whose searchable text ends over a day before their capture ("Email text
+ * searchable to 29 Oct"): records captured after it exist, but search cannot find them yet.
+ */
+export function searchLag(freshness: Freshness | null | undefined, now?: Date): string | null {
+  const lagging = (freshness?.sources ?? [])
+    .filter((s) => s.as_of && s.searchable_to && Date.parse(s.as_of) - Date.parse(s.searchable_to) > DAY_MS)
+    .sort((a, b) => Date.parse(a.searchable_to ?? "") - Date.parse(b.searchable_to ?? ""));
+  if (lagging.length === 0) return null;
+  return "searchable text: " + lagging
+    .map((s) => `${SYSTEM_LABEL[s.system] ?? s.system} to ${formatDate(s.searchable_to, { short: true, now })}`)
+    .join(", ");
+}
+
+/**
  * One grey line: "Data as of 1 Nov, 6:40 p.m." (the data cut-off, the same on every
  * screen), then any source read over a day before it ("Email and Teams to 30 Oct").
  * Per-system times are in its tooltip. Amber appears only when a source this view
@@ -400,14 +430,22 @@ export function FreshnessLabel({
     .join(" · ");
   const old = sources.filter((s) => s.stale && (s.age_seconds ?? 0) > WEEK && (used ?? []).includes(s.system));
   const behind = behindCutOff(freshness, now);
+  const lag = searchLag(freshness, now);
   return (
     <div className="space-y-1" data-testid="freshness">
       <p className="text-meta text-muted" title={detail || undefined}>
         {freshness.as_of ? <>Data as of {formatDateTime(freshness.as_of, now)}</> : freshness.label}
         {freshness.as_of && behind ? <span data-testid="freshness-behind">; {behind}</span> : null}
       </p>
+      {lag ? (
+        <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-search-lag">
+          <OpenRing size={12} />
+          Newer records are not searchable yet ({lag}).
+        </p>
+      ) : null}
       {old.length > 0 && (
-        <p className="text-meta text-risk" data-testid="freshness-old">
+        <p className="flex items-center gap-1.5 text-meta text-fg" data-testid="freshness-old">
+          <OpenRing size={12} />
           {old.map((s) => `${SYSTEM_LABEL[s.system] ?? s.system} last read ${formatDate(s.as_of, { short: true, now })}`).join(" · ")}.
         </p>
       )}
@@ -432,23 +470,30 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
     const used = n > 0;
     const old = used && s.stale && (s.age_seconds ?? 0) > WEEK;
     return {
+      code: s.system as string,
       system: SYSTEM_LABEL[s.system] ?? s.system,
-      what: used ? `${plural(n, s.system === "Email" ? "message" : "record")} cited` : "Searched, none cited",
+      what: used ? `${n} cited` : "None cited",
       asOf: s.as_of ? formatDate(s.as_of, { short: true, now }) : "",
       old,
     };
   });
   for (const [sys, set] of bySystem)
     if (!(freshness?.sources ?? []).some((s) => s.system === sys))
-      rows.push({ system: SYSTEM_LABEL[sys as keyof typeof SYSTEM_LABEL] ?? sys, what: `${plural(set.size, "record")} cited`, asOf: "", old: false });
-  if (rows.length === 0) return <p className="text-row text-muted">No source list.</p>;
+      rows.push({ code: sys, system: SYSTEM_LABEL[sys as keyof typeof SYSTEM_LABEL] ?? sys, what: `${set.size} cited`, asOf: "", old: false });
+  if (rows.length === 0) return <p className="text-[13px] text-muted">No source list.</p>;
   return (
-    <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)_auto] gap-x-4 gap-y-1.5 text-row" data-testid="checked-list">
+    <dl className="space-y-1" data-testid="checked-list">
       {rows.map((r) => (
-        <div key={r.system} className="contents">
-          <dt className="font-medium">{r.system}</dt>
-          <dd className="text-muted">{r.what}</dd>
-          <dd className={cn("text-meta tabular-nums", r.old ? "text-risk" : "text-muted")}>{r.asOf}</dd>
+        <div key={r.system} className="grid h-7 grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-x-2.5 text-[13px]">
+          <SystemTile system={r.code} size={18} />
+          <div className="flex min-w-0 items-baseline gap-2">
+            <dt className="truncate">{r.system}</dt>
+            <dd className={cn("shrink-0 text-[12px]", r.what === "None cited" ? "text-faint" : "text-muted")}>{r.what}</dd>
+          </div>
+          <dd className="inline-flex items-center gap-1 text-[12px] tabular-nums text-muted">
+            {r.old && <OpenRing size={11} />}
+            {r.asOf}
+          </dd>
         </div>
       ))}
     </dl>
@@ -458,22 +503,26 @@ export function CheckedList({ freshness, facts, now }: { freshness: Freshness | 
 /** A disclosure in the answer's row: closed by default, a chevron, the count in its label. */
 export function Disclosure({
   label,
+  count,
   children,
   defaultOpen = false,
   testId,
 }: {
   label: string;
+  /** Shown after the label in grey. */
+  count?: number;
   children: React.ReactNode;
   defaultOpen?: boolean;
   testId?: string;
 }) {
   return (
-    <details className="group border-t border-border" open={defaultOpen} data-testid={testId}>
-      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 py-1.5 text-row text-fg hover:underline [&::-webkit-details-marker]:hidden">
-        <span className="inline-block w-3 text-[10px] text-muted transition-transform group-open:rotate-90" aria-hidden>▶</span>
-        <h3 className="font-normal">{label}</h3>
+    <details className="group" open={defaultOpen} data-testid={testId}>
+      <summary className="-mx-2 flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-[13px] text-fg hover:bg-hover [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-3.5 shrink-0 text-muted transition-transform group-open:rotate-90" strokeWidth={2.2} aria-hidden />
+        <h3 className="font-medium">{label}</h3>
+        {count != null && <span className="tabular-nums text-muted">{count}</span>}
       </summary>
-      <div className="space-y-3 pb-3 pl-[18px]">{children}</div>
+      <div className="space-y-3 pt-2 pb-4 pl-5">{children}</div>
     </details>
   );
 }

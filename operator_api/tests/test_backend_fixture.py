@@ -677,6 +677,37 @@ class HomeFreshnessTest(unittest.TestCase):
     ledger's capture of a cycle still running (demo rehearsal 2026-10-31: Home said fresh
     while every answer said stale)."""
 
+    def test_a_source_the_delta_serves_is_as_fresh_as_its_newest_layer(self):
+        import sqlite3
+        tmp = Path(tempfile.mkdtemp(prefix="delta-fresh-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        store = tmp / "projection" / "ontology.sqlite"
+        layer = tmp / "projection" / "delta" / "delta-2.sqlite"
+        layer.parent.mkdir(parents=True)
+        with sqlite3.connect(layer) as conn:
+            conn.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.executemany("INSERT INTO store_meta VALUES (?, ?)", [
+                ("delta_families", json.dumps(["graph_mail"])),
+                ("freshness", json.dumps([
+                    {"source": "graph_mail", "captured_at": "2026-11-05T18:55:00Z",
+                     "completeness": "partial"},
+                    {"source": "teams", "captured_at": "2026-11-05T18:55:00Z"}]))])
+
+        def point(digest):
+            (layer.parent / "CURRENT.json").write_text(json.dumps(
+                {"format": "plx-delta/v1", "base_digest": digest, "store": str(layer),
+                 "layers": [{"store": str(layer)}]}))
+        served = [{"source": "graph_mail", "captured_at": "2026-11-05T06:46:00Z",
+                   "completeness": "complete"},
+                  {"source": "teams", "captured_at": "2026-10-30T02:18:00Z"}]
+        point("sha256:gen11")
+        merged = be.with_delta_freshness(served, store, "sha256:gen11")
+        self.assertEqual([e["captured_at"] for e in merged],
+                         ["2026-11-05T18:55:00Z", "2026-10-30T02:18:00Z"])  # not its family
+        self.assertEqual(merged[0]["completeness"], "partial")
+        point("sha256:gen10")            # a delta over another generation is not served
+        self.assertEqual(be.with_delta_freshness(served, store, "sha256:gen11"), served)
+
     def test_home_and_answers_judge_each_source_alike(self):
         import sqlite3
         from datetime import datetime, timezone
@@ -775,6 +806,18 @@ class HomeFreshnessTest(unittest.TestCase):
         self.assertEqual(backend.freshness().as_of, "2026-10-31T05:00:00Z")
         self.assertEqual(backend.freshness().label,
                          "Data as of 31 Oct 2026 05:00 UTC; Teams to 29 Oct")
+        # with hybrid search on, a source whose searchable text ends over a day before its
+        # capture says so (records after it exist but search cannot find them yet)
+        with mock.patch.dict(os.environ, {"PLX_SEARCH": "hybrid"}), mock.patch(
+                "operating.search.coverage.coverage",
+                return_value={"Teams": "2026-10-27T22:00:00+00:00",
+                              "Portal": "2026-10-30T15:00:00+00:00"}):
+            fresh = backend.freshness()
+        self.assertEqual(fresh.label, "Data as of 31 Oct 2026 05:00 UTC; Teams to 29 Oct; "
+                                      "searchable text: Teams to 27 Oct")
+        self.assertEqual({s.system: s.searchable_to for s in fresh.sources}["Teams"],
+                         "2026-10-27T22:00:00+00:00")
+        self.assertIsNone(backend.freshness().sources[0].searchable_to)   # search off
         # past the bound the same source is stale on Home too (fails closed)
         tight = be.WorkspaceBackend(lambda session: None, data_label="t", state_dir=tmp,
                                     freshness_bounds={"portal_api": 3400.0},

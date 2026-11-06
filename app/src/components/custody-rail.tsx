@@ -84,13 +84,13 @@ export function CustodyRail({ custody, title = "Timeline" }: { custody: Custody;
   const focused = events[Math.min(focus, events.length - 1)];
   const lateDays = custody.gap ? custody.gap[1] - custody.gap[0] : null;
   return (
-    <section className="border-t border-rule" aria-label={title} data-testid="custody">
-      <div className="flex min-h-11 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-2.5">
-        <h2 className="text-section">{title}</h2>
-        <p className="text-meta text-muted">
+    <section aria-label={title} data-testid="custody">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 className="text-[12px] font-medium leading-4 text-muted">{title}</h2>
+        <p className="text-[12px] leading-4 text-muted">
           {events.length} events
           {custody.due !== null && <>, needed by {dayLabel(custody.due, yearOf(custody.today))}</>}
-          {lateDays !== null && lateDays > 0 && <>, <span className="text-late">{lateDays} days late</span></>}
+          {lateDays !== null && lateDays > 0 && <>, <span className="text-fg">{lateDays} days late</span></>}
           {custody.promises.length > 1 && <>, promise moved {custody.promises.length - 1} times</>}
         </p>
       </div>
@@ -102,13 +102,13 @@ export function CustodyRail({ custody, title = "Timeline" }: { custody: Custody;
         )}
       </div>
       {width >= 560 && focused && (
-        <p className="flex min-h-9 flex-wrap items-baseline gap-x-2 border-t border-border py-2 text-meta" aria-live="polite" data-testid="custody-readout">
+        <p className="flex min-h-9 flex-wrap items-baseline gap-x-2 border-t border-border py-2 text-[12px]" aria-live="polite" data-testid="custody-readout">
           <span className="tabular-nums text-muted">{formatDateTime(focused.at)}</span>
-          <span className="text-[11px] font-medium text-faint">{TRACK_TAG[focused.track]}</span>
+          <span className="text-[11px] font-medium text-muted">{TRACK_TAG[focused.track]}</span>
           <span className="font-medium text-fg">{readable(focused.title).replace(/^bc\b/i, "BC")}</span>
-          {focused.detail && <span className="min-w-0 truncate text-meta text-muted">{readable(focused.detail)}</span>}
+          {focused.detail && <span className="min-w-0 truncate text-muted">{readable(focused.detail)}</span>}
           {focused.source && (
-            <button type="button" onClick={() => setOpen(focused)} className="ml-auto inline-flex items-center gap-0.5 font-medium text-accent hover:underline cursor-pointer">
+            <button type="button" onClick={() => setOpen(focused)} className="ml-auto inline-flex items-center gap-0.5 font-medium text-muted underline decoration-border-strong underline-offset-2 hover:text-fg cursor-pointer">
               Open source
             </button>
           )}
@@ -198,16 +198,16 @@ function Chart({
     >
       <defs>
         <pattern id={hatch} width={5} height={5} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <line x1={0} y1={0} x2={0} y2={5} className="stroke-late-line" strokeWidth={1} />
+          <line x1={0} y1={0} x2={0} y2={5} stroke="var(--dot-late)" strokeOpacity={0.55} strokeWidth={1.2} />
         </pattern>
       </defs>
 
       {/* the late gap: needed-by to today (or the late receipt), across every row */}
       {gap && (
         <g>
-          <rect x={x(gap[0])} y={TOP - 4} width={Math.max(1, x(gap[1]) - x(gap[0]))} height={bottom - TOP + 4} className="fill-late-soft" />
-          <rect x={x(gap[0])} y={TOP - 4} width={Math.max(1, x(gap[1]) - x(gap[0]))} height={bottom - TOP + 4} fill={`url(#${hatch})`} opacity={0.6} />
-          <text x={x(gap[1]) - 6} y={bottom - 7} textAnchor="end" className="fill-late text-[12px] font-semibold tabular-nums">
+          <rect x={x(gap[0])} y={TOP - 4} width={Math.max(1, x(gap[1]) - x(gap[0]))} height={bottom - TOP + 4} fill="var(--dot-late)" fillOpacity={0.06} />
+          <rect x={x(gap[0])} y={TOP - 4} width={Math.max(1, x(gap[1]) - x(gap[0]))} height={bottom - TOP + 4} fill={`url(#${hatch})`} opacity={0.5} />
+          <text x={x(gap[1]) - 6} y={bottom - 7} textAnchor="end" className="fill-fg text-[12px] font-medium tabular-nums">
             {gap[1] - gap[0]} days late
           </text>
         </g>
@@ -260,7 +260,7 @@ function Chart({
                   <>
                     <line x1={x(prev.promised)} x2={x(p.promised)} y1={y} y2={y} className={pastDue ? "stroke-late" : "stroke-fg"} strokeDasharray="3 2" />
                     {slip !== 0 && (
-                      <text x={(x(prev.promised) + x(p.promised)) / 2} y={y - 7} textAnchor="middle" className={cn("text-[10px] font-medium tabular-nums", pastDue ? "fill-late" : "fill-muted")}>
+                      <text x={(x(prev.promised) + x(p.promised)) / 2} y={y - 7} textAnchor="middle" className="fill-muted text-[10px] font-medium tabular-nums">
                         {slip > 0 ? "+" : ""}
                         {slip} d
                       </text>
@@ -284,8 +284,8 @@ function Chart({
         </g>
       )}
       <g>
-        <line x1={x(today)} x2={x(today)} y1={TOP - 14} y2={bottom} className="stroke-accent" strokeDasharray="2 2" />
-        <text x={x(today) - 4} y={TOP - 18} textAnchor="end" className="fill-accent text-[11px] font-medium">
+        <line x1={x(today)} x2={x(today)} y1={TOP - 14} y2={bottom} className="stroke-fg" strokeDasharray="2 2" />
+        <text x={x(today) - 4} y={TOP - 18} textAnchor="end" className="fill-fg text-[11px] font-medium">
           {custody.stale ? "As of" : "Today"} {dayLabel(today, thisYear)}
         </text>
       </g>
@@ -343,14 +343,14 @@ function Spine({ custody, onOpen }: { custody: Custody; onOpen: (e: CustodyEvent
         const late = inGap(day) && inGap(prevDay) && i > 0;
         return (
           <li key={i} className="relative grid grid-cols-[56px_20px_minmax(0,1fr)] items-start">
-            <span className={cn("pt-2.5 text-meta tabular-nums", r.kind === "marker" ? (r.tone === "accent" ? "font-semibold text-accent" : "font-semibold text-fg") : "text-muted")}>
+            <span className={cn("pt-2.5 text-[12px] tabular-nums", r.kind === "marker" ? "font-semibold text-fg" : "text-muted")}>
               {dayLabel(day, thisYear)}
             </span>
-            <span className={cn("relative flex h-full justify-center", late ? "bg-late-soft" : "")} aria-hidden>
-              <span className={cn("absolute inset-y-0 w-0.5", late ? "bg-late-line" : "bg-border")} />
+            <span className="relative flex h-full justify-center" aria-hidden>
+              <span className={cn("absolute inset-y-0 w-0.5", late ? "bg-dot-late/60" : "bg-border")} />
               <span className="relative mt-3.5">
                 {r.kind === "marker" ? (
-                  <span className={cn("block h-0.5 w-4", r.tone === "accent" ? "bg-accent" : "bg-fg")} />
+                  <span className={cn("block h-0.5 w-4", r.tone === "accent" ? "bg-dot-late" : "bg-fg")} />
                 ) : (
                   <svg width={12} height={12} viewBox="0 0 12 12" className="block overflow-visible">
                     <Mark kind={r.e.mark} x={6} y={6} focus={false} />
@@ -359,9 +359,9 @@ function Spine({ custody, onOpen }: { custody: Custody; onOpen: (e: CustodyEvent
               </span>
             </span>
             {r.kind === "marker" ? (
-              <p className={cn("min-h-11 pt-2.5 pl-2 text-label", r.tone === "accent" ? "text-accent" : "text-fg")}>
+              <p className="min-h-11 pt-2.5 pl-2 text-[12px] font-medium text-fg">
                 {r.label}
-                {r.tone === "accent" && gap && gap[1] === today && <span className="ml-2 normal-case tracking-normal text-late">{gap[1] - gap[0]} days late</span>}
+                {r.tone === "accent" && gap && gap[1] === today && <span className="ml-2 font-normal text-muted">{gap[1] - gap[0]} days late</span>}
               </p>
             ) : (
               <button
@@ -370,11 +370,11 @@ function Spine({ custody, onOpen }: { custody: Custody; onOpen: (e: CustodyEvent
                 disabled={!r.e.source}
                 className="min-h-11 py-2 pl-2 text-left disabled:cursor-default cursor-pointer"
               >
-                <span className="block text-row">
-                  <span className="mr-1.5 text-[11px] font-medium text-faint">{TRACK_TAG[r.e.track]}</span>
+                <span className="block text-[13px] leading-5">
+                  <span className="mr-1.5 text-[11px] font-medium text-muted">{TRACK_TAG[r.e.track]}</span>
                   {readable(r.e.title)}
                 </span>
-                {r.e.detail && <span className="block text-meta leading-5 text-muted">{readable(r.e.detail)}</span>}
+                {r.e.detail && <span className="block text-[12px] leading-4 text-muted">{readable(r.e.detail)}</span>}
                 <span className="sr-only">{MARK_WORD[r.e.mark]}</span>
               </button>
             )}

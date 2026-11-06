@@ -1,12 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { ChevronRight, Paperclip } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getSource } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { fieldValue, formatDateTime, recordKind, SYSTEM_LABEL } from "@/lib/format";
+import { fieldLabel, fieldValue, formatDateTime, recordKind, SYSTEM_LABEL } from "@/lib/format";
 import type { SourceView } from "@/lib/types";
 import { curatedFields } from "./source-chip";
+import { StatusGlyph, SystemTile } from "./ui/glyphs";
+import { Monogram } from "./ui/monogram";
 import { ErrorNotice } from "./ui/notice";
 import { SkeletonLines } from "./ui/skeleton";
 
@@ -73,13 +76,13 @@ function People({ label, people, fold = 2 }: { label: string; people: string[]; 
   if (people.length === 0) return null;
   const shown = open || people.length <= fold ? people : people.slice(0, fold);
   return (
-    <div className="contents">
-      <dt className="text-meta text-muted">{label}</dt>
-      <dd className="min-w-0 break-words text-row">
+    <div className="flex gap-1.5 text-[12px] leading-[18px]">
+      <dt className="shrink-0 text-muted">{label}:</dt>
+      <dd className="min-w-0 break-words text-fg/85">
         {shown.join(", ")}
         {people.length > fold && (
-          <button type="button" onClick={() => setOpen((v) => !v)} className="ml-1 text-meta text-accent hover:underline cursor-pointer" aria-expanded={open}>
-            {open ? "show less" : `+${people.length - fold} more`}
+          <button type="button" onClick={() => setOpen((v) => !v)} className="ml-1.5 text-muted underline decoration-border-strong underline-offset-2 hover:text-fg cursor-pointer" aria-expanded={open}>
+            {open ? "fewer" : `${people.length - fold} more`}
           </button>
         )}
       </dd>
@@ -87,39 +90,79 @@ function People({ label, people, fold = 2 }: { label: string; people: string[]; 
   );
 }
 
+/** "Ross Smith <ross@x.com>" as its name and address; a bare address is both. */
+function splitSender(from: string): { name: string; address: string } {
+  const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(from);
+  if (m && m[1]) return { name: m[1], address: m[2] };
+  return { name: m?.[2] ?? from, address: "" };
+}
+
+/** A message's header as a mail app draws it: the sender's tile and name, the date on the right, To and Cc under them. */
 export function EmailHeader({ fields, asOf }: { fields: Record<string, string> | null | undefined; asOf?: string | null }) {
   const sentRaw = fields?.["row.sent_at"] ?? fields?.sent_at ?? fields?.["row.received_at"] ?? fields?.received_at ?? asOf ?? "";
   const sent = sentRaw ? formatDateTime(sentRaw) : "";
   const from = mailField(fields, "from");
+  const who = from ? splitSender(from) : null;
+  const attached = mailField(fields, "has_attachments") === "yes";
   return (
-    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 border-y border-border bg-bg-subtle px-4 py-3" data-testid="email-header">
-      <dt className="text-meta text-muted">From</dt>
-      <dd className={cn("min-w-0 break-words text-row font-medium", !from && "font-normal text-muted")}>{from || "Sender not captured"}</dd>
-      <People label="To" people={mailList(fields, "to")} fold={3} />
-      <People label="Cc" people={mailList(fields, "cc")} />
-      {sent && (
-        <>
-          <dt className="text-meta text-muted">Date</dt>
-          <dd className="text-row">{sent}</dd>
-        </>
-      )}
-      {mailField(fields, "has_attachments") === "yes" && (
-        <>
-          <dt className="text-meta text-muted">Attachments</dt>
-          <dd className="text-row text-muted">Yes (open them from the message in Outlook)</dd>
-        </>
-      )}
-    </dl>
+    <div className="flex gap-3" data-testid="email-header">
+      <Monogram name={who ? who.name.replace(/@.*$/, "") : null} size={36} className="rounded-full" />
+      <dl className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-3">
+          <dt className="sr-only">From</dt>
+          <dd className={cn("min-w-0 flex-1 truncate text-[13px] leading-[18px] font-semibold", !who && "font-normal text-muted")} title={from || undefined}>
+            {who ? who.name : "Sender not captured"}
+            {who?.address && <span className="ml-1.5 font-normal text-muted">{who.address}</span>}
+          </dd>
+          {sent && (
+            <>
+              <dt className="sr-only">Date</dt>
+              <dd className="shrink-0 text-[12px] leading-4 tabular-nums text-muted">{sent}</dd>
+            </>
+          )}
+        </div>
+        <div className="mt-1 space-y-0.5">
+          <People label="To" people={mailList(fields, "to")} fold={3} />
+          <People label="Cc" people={mailList(fields, "cc")} />
+          {attached && (
+            <div className="flex items-center gap-1.5 pt-0.5 text-[12px] leading-[18px] text-muted">
+              <dt className="sr-only">Attachments</dt>
+              <Paperclip className="size-3.5" strokeWidth={1.8} aria-hidden />
+              <dd>Attachments are in Outlook</dd>
+            </div>
+          )}
+        </div>
+      </dl>
+    </div>
   );
 }
 
-export function FieldGrid({ pairs, testId, highlight = 0 }: { pairs: [string, string][]; testId?: string; highlight?: number }) {
+/** A record's fields as a properties sheet: label over value, two to a row where there is room; the cited ones marked. */
+export function FieldGrid({ pairs, testId, highlight = 0, compact = false }: { pairs: [string, string][]; testId?: string; highlight?: number; compact?: boolean }) {
+  if (compact)
+    return (
+      <dl className="space-y-px" data-testid={testId}>
+        {pairs.map(([k, v], i) => (
+          <div key={`${k}-${i}`} className="grid grid-cols-[minmax(0,124px)_minmax(0,1fr)] items-baseline gap-3 py-[5px]">
+            <dt className="text-[12px] leading-4 text-muted">{k}</dt>
+            <dd className="min-w-0 break-words text-[12px] leading-4 tabular-nums">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    );
   return (
-    <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2" data-testid={testId}>
+    <dl className="grid grid-cols-1 overflow-hidden rounded-xl bg-bg shadow-lift sm:grid-cols-2" data-testid={testId}>
       {pairs.map(([k, v], i) => (
-        <div key={`${k}-${i}`} className={cn("min-w-0 rounded-md px-2 py-1.5", i < highlight && "bg-accent-soft")}>
-          <dt className="text-meta text-muted">{k}</dt>
-          <dd className="break-words text-row font-medium tabular-nums">{v}</dd>
+        <div
+          key={`${k}-${i}`}
+          className={cn(
+            "relative min-w-0 border-b border-border px-4 py-2.5 sm:odd:border-r",
+            i < highlight && "bg-[color-mix(in_srgb,var(--accent)_7%,transparent)]",
+          )}
+        >
+          {i < highlight && <span className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-accent" aria-hidden />}
+          <dt className="text-[12px] leading-4 text-muted">{k}</dt>
+          <dd className="mt-0.5 break-words text-[13px] leading-5 font-medium tabular-nums">{v}</dd>
         </div>
       ))}
     </dl>
@@ -148,6 +191,14 @@ export function sourceTitle(view: SourceView): string {
   return kind ?? SYSTEM_LABEL[view.system] ?? "Source";
 }
 
+/** What kind of thing a source is, in a word or two: "Mail message", "Purchase order", "File". */
+export function sourceKind(view: SourceView): string {
+  if (view.system === "Email") return "Mail message";
+  if (view.system === "Teams") return "Teams message";
+  const kind = recordKind(view.handle, view.label);
+  return kind && kind !== SYSTEM_LABEL[view.system] ? kind : view.kind === "text" ? "Document" : "Record";
+}
+
 /** Fields with equal incl./excl. tax totals read as one "Total". */
 function mergeTotals(pairs: [string, string][]): [string, string][] {
   const inc = pairs.find(([k]) => /^Total amount including tax$/i.test(k));
@@ -158,7 +209,25 @@ function mergeTotals(pairs: [string, string][]): [string, string][] {
   return pairs;
 }
 
-/** The content of a cited source: header, cited passage first, then the rest. */
+function InspectorTitle({ children }: { children: React.ReactNode }) {
+  return <h2 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h2>;
+}
+
+function Prop({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[72px_minmax(0,1fr)] items-baseline gap-3 py-1">
+      <dt className="text-[12px] text-muted">{label}</dt>
+      <dd className="min-w-0 text-[13px] leading-5 break-words">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * The content of a cited source: its system tile, kind and title, then a message as a mail
+ * app lays it out (or a record as a properties sheet), the cited passage marked. `wide` is
+ * the full page: the text in a readable column and, with room, an inspector on the right
+ * holding the source's details and every other field.
+ */
 export function SourceDocument({
   view,
   text,
@@ -167,6 +236,8 @@ export function SourceDocument({
   headingLevel = 1,
   titleId,
   actions,
+  wide = false,
+  after,
 }: {
   view: SourceView;
   text: string;
@@ -175,76 +246,175 @@ export function SourceDocument({
   headingLevel?: 1 | 2;
   titleId?: string;
   actions?: React.ReactNode;
+  wide?: boolean;
+  after?: React.ReactNode;
 }) {
   const [sig, setSig] = useState(false);
+  const [all, setAll] = useState(false);
   const email = view.system === "Email";
   const curated = curatedFields(view.fields, cited);
   const lead = mergeTotals(curated.lead);
   const more = mergeTotals(curated.more);
   const title = sourceTitle(view);
-  const kind = email ? "Email" : recordKind(view.handle, view.label);
-  const eyebrow = [SYSTEM_LABEL[view.system] ?? view.system, !email && kind && kind !== SYSTEM_LABEL[view.system] ? kind : null]
-    .filter(Boolean)
-    .join(", ");
+  const kind = sourceKind(view);
+  const system = SYSTEM_LABEL[view.system] ?? view.system;
   const body = email ? readableBody(text) : text;
-  const { main, signature } = email ? splitSignature(body) : { main: body, signature: "" };
+  const split = email ? splitSignature(body) : { main: body, signature: "" };
+  // a separator line left just above the signature says nothing once the signature folds away
+  const main = split.signature ? split.main.replace(/\n+—\s*$/, "") : split.main;
+  const signature = split.signature;
   const H = headingLevel === 1 ? "h1" : "h2";
   const citedCount = cited.length > 0 ? lead.filter((_, i) => i < cited.length).length : 0;
-  return (
-    <div className="min-w-0 space-y-5" data-testid="source-document">
-      <header className={cn("min-w-0 space-y-1.5", headingLevel === 1 && "border-b border-border pb-4")}>
-        <p className="text-meta text-muted">
-          {eyebrow}
-          {email && view.as_of ? `, ${formatDateTime(view.as_of)}` : ""}
-        </p>
-        <H id={titleId} className={cn("break-words", headingLevel === 1 ? "text-display" : "text-title")} data-testid="source-title">
-          {title}
-        </H>
-        {!email && view.as_of && <p className="text-meta text-muted">Read {formatDateTime(view.as_of)}</p>}
-        {actions}
+  const shownFields = lead.length > 0 ? lead : more.slice(0, 12);
+  const rest = lead.length > 0 ? more : more.slice(12);
+  const read = view.as_of ? formatDateTime(view.as_of) : "";
+
+  const content = (
+    <>
+      <header className="flex min-w-0 gap-3.5">
+        <SystemTile system={view.system} size={wide ? 40 : 32} className="mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] leading-4 text-muted">
+            {system}
+            {!email && (
+              <>
+                <span className="px-1.5 text-faint" aria-hidden>
+                  ·
+                </span>
+                {kind}
+              </>
+            )}
+          </p>
+          <H
+            id={titleId}
+            className={cn("mt-1 break-words font-semibold", wide ? "text-[22px] leading-7 tracking-[-0.02em]" : "text-[17px] leading-[23px] tracking-[-0.01em]")}
+            data-testid="source-title"
+          >
+            {title}
+          </H>
+          {!email && read && <p className={cn("mt-1 text-[12px] leading-4 text-muted", wide && "@min-[880px]:hidden")}>Read {read}</p>}
+          {actions}
+        </div>
       </header>
+
       {view.changed_since && (
-        <p className="rounded-sm border border-risk-line bg-risk-soft px-3 py-2 text-row">
+        <p className="flex items-center gap-2 text-[13px] leading-5">
+          <StatusGlyph status="risk" size={14} />
           Changed since the answer cited it. Reread before acting.
         </p>
       )}
-      {email && <EmailHeader fields={view.fields} asOf={view.as_of} />}
-      {quote && (
-        <blockquote className="rounded-sm bg-[var(--risk-soft)] px-3 py-2 text-body" data-testid="cited-passage">
-          <span className="mb-0.5 block text-meta text-muted">Cited passage</span>
-          “{quote}”
-        </blockquote>
+
+      {email && (
+        <div className="border-y border-border py-4">
+          <EmailHeader fields={view.fields} asOf={view.as_of} />
+        </div>
       )}
+
+      {quote && (
+        <figure className="relative rounded-lg bg-[color-mix(in_srgb,var(--accent)_6%,transparent)] py-2.5 pr-3.5 pl-4" data-testid="cited-passage">
+          <span className="absolute inset-y-2.5 left-0 w-[3px] rounded-r-full bg-accent" aria-hidden />
+          <figcaption className="mb-0.5 text-[12px] leading-4 text-muted">Cited passage</figcaption>
+          <blockquote className="text-[13px] leading-5">“{quote}”</blockquote>
+        </figure>
+      )}
+
       {text ? (
-        <div className="space-y-3">
-          {quote && <h3 className="text-meta font-semibold text-fg">Full message</h3>}
-          <div className="whitespace-pre-wrap break-words text-body" data-testid="source-text">
+        <div className="space-y-4">
+          {quote && <h3 className="text-[12px] leading-4 font-medium text-muted">{email ? "Full message" : "Full text"}</h3>}
+          <div
+            className={cn("max-w-[68ch] whitespace-pre-wrap break-words text-fg/95", wide ? "text-[14px] leading-[23px]" : "text-[13px] leading-[21px]")}
+            data-testid="source-text"
+          >
             {main}
           </div>
           {signature && (
             <div>
-              <button type="button" onClick={() => setSig((v) => !v)} aria-expanded={sig} className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer">
+              <button type="button" onClick={() => setSig((v) => !v)} aria-expanded={sig} className="inline-flex h-7 items-center rounded-md px-2 -ml-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer">
                 {sig ? "Hide signature" : "Show signature"}
               </button>
-              {sig && <div className="mt-2 whitespace-pre-wrap break-words text-meta text-muted">{signature}</div>}
+              {sig && <div className="mt-1 max-w-[68ch] whitespace-pre-wrap break-words text-[12px] leading-[18px] text-muted">{signature}</div>}
             </div>
           )}
+          {after}
         </div>
-      ) : !email && lead.length + more.length > 0 ? (
+      ) : !email && shownFields.length > 0 ? (
         <>
-          <FieldGrid pairs={lead.length > 0 ? lead : more.slice(0, 12)} testId="source-fields" highlight={citedCount} />
-          {lead.length > 0 && more.length > 0 && (
+          <FieldGrid pairs={shownFields} testId="source-fields" highlight={citedCount} />
+          {!wide && rest.length > 0 && (
             <details className="group" data-testid="source-more-fields">
-              <summary className="cursor-pointer text-row text-muted hover:text-fg">All fields ({more.length} more)</summary>
-              <div className="pt-3">
-                <FieldGrid pairs={more} />
+              <summary className="inline-flex h-7 cursor-pointer list-none items-center gap-1 rounded-md px-2 -ml-2 text-[12px] text-muted hover:bg-hover hover:text-fg [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" aria-hidden />
+                All fields <span className="tabular-nums text-faint">{rest.length}</span>
+              </summary>
+              <div className="pt-2">
+                <FieldGrid pairs={rest} compact />
               </div>
             </details>
           )}
         </>
       ) : (
-        <p className="text-row text-muted">No readable text.</p>
+        <p className="text-[13px] text-muted">No readable text.</p>
       )}
+    </>
+  );
+
+  if (!wide)
+    return (
+      <div className="min-w-0 space-y-5" data-testid="source-document">
+        {content}
+      </div>
+    );
+
+  return (
+    <div className="@container flex min-w-0 flex-1 flex-col" data-testid="source-document">
+      <div className="grid min-w-0 flex-1 @min-[880px]:grid-cols-[minmax(0,1fr)_320px]">
+        <article className="min-w-0 px-5 pt-7 pb-14 sm:px-10 sm:pt-9">
+          <div className="mx-auto max-w-[760px] space-y-6">{content}</div>
+        </article>
+        <aside
+          className="min-w-0 space-y-7 border-t border-border bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] px-5 py-6 sm:px-10 @min-[880px]:border-t-0 @min-[880px]:border-l @min-[880px]:px-6 @min-[880px]:pt-9"
+          aria-label="Details"
+        >
+          <section>
+            <InspectorTitle>Details</InspectorTitle>
+            <dl>
+              <Prop label="Source">
+                <span className="inline-flex items-center gap-2">
+                  <SystemTile system={view.system} size={16} />
+                  {system}
+                </span>
+              </Prop>
+              <Prop label="Kind">{kind}</Prop>
+              {read && <Prop label={email ? "Captured" : "Read"}>{read}</Prop>}
+              {cited.length > 0 && <Prop label="Cited">{cited.map((c) => fieldLabel(c)).join(", ")}</Prop>}
+              {view.changed_since && (
+                <Prop label="Status">
+                  <span className="inline-flex items-center gap-1.5">
+                    <StatusGlyph status="risk" size={12} />
+                    Changed since cited
+                  </span>
+                </Prop>
+              )}
+            </dl>
+          </section>
+          {!email && rest.length > 0 && (
+            <section data-testid="source-more-fields">
+              <button
+                type="button"
+                onClick={() => setAll((v) => !v)}
+                aria-expanded={all}
+                className="mb-2 flex w-full items-center gap-1 text-left text-[12px] leading-4 font-medium text-muted hover:text-fg cursor-pointer @min-[880px]:pointer-events-none"
+              >
+                <ChevronRight className={cn("size-3.5 transition-transform @min-[880px]:hidden", all && "rotate-90")} aria-hidden />
+                All fields <span className="font-normal tabular-nums text-faint">{rest.length}</span>
+              </button>
+              <div className={cn("hidden @min-[880px]:block", all && "block")}>
+                <FieldGrid pairs={rest} compact />
+              </div>
+            </section>
+          )}
+        </aside>
+      </div>
     </div>
   );
 }
@@ -257,6 +427,8 @@ export function SourceLoader({
   headingLevel = 1,
   titleId,
   actions,
+  wide = false,
+  onView,
 }: {
   handle: string;
   cited?: string[];
@@ -264,11 +436,15 @@ export function SourceLoader({
   headingLevel?: 1 | 2;
   titleId?: string;
   actions?: (view: SourceView) => React.ReactNode;
+  wide?: boolean;
+  onView?: (view: SourceView) => void;
 }) {
   const [view, setView] = useState<SourceView | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [more, setMore] = useState(false);
+  const seen = useRef(onView);
+  seen.current = onView;
   const load = useCallback(() => {
     const c = new AbortController();
     setError(null);
@@ -277,6 +453,7 @@ export function SourceLoader({
       .then((v) => {
         setView(v);
         setText(v.text ?? "");
+        seen.current?.(v);
       })
       .catch((e) => !c.signal.aborted && setError(plainError(e)));
     return () => c.abort();
@@ -296,22 +473,51 @@ export function SourceLoader({
       setMore(false);
     }
   }
-  if (error && !view) return <ErrorNotice message={error} onRetry={load} />;
-  if (!view) return <SkeletonLines lines={6} label="Loading the source" />;
+  const pad = wide ? "mx-auto w-full max-w-[760px] px-5 pt-9 sm:px-10" : "";
+  if (error && !view)
+    return (
+      <div className={pad}>
+        <ErrorNotice message={error} onRetry={load} />
+      </div>
+    );
+  if (!view)
+    return (
+      <div className={cn(pad, "space-y-3")}>
+        <SkeletonLines lines={6} label="Loading the source" />
+      </div>
+    );
+  const pager = view.next_offset ? (
+    <div className="flex max-w-[68ch] items-center gap-3 pt-2">
+      <span className="h-px flex-1 bg-border" aria-hidden />
+      <button
+        type="button"
+        onClick={loadMore}
+        disabled={more}
+        className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] disabled:opacity-60 cursor-pointer"
+      >
+        {more ? "Loading…" : "Show more"}
+      </button>
+      <span className="h-px flex-1 bg-border" aria-hidden />
+    </div>
+  ) : null;
   return (
-    <div className="min-w-0">
-      <SourceDocument view={view} text={text} cited={cited} quote={quote} headingLevel={headingLevel} titleId={titleId} actions={actions?.(view)} />
-      {view.next_offset ? (
-        <button
-          type="button"
-          onClick={loadMore}
-          disabled={more}
-          className="mt-4 rounded-sm border border-control px-3 py-1 text-row hover:bg-surface-2 cursor-pointer"
-        >
-          {more ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
-      {error && <ErrorNotice className="mt-3" message={error} />}
+    <div className={cn("min-w-0", wide && "flex flex-1 flex-col")}>
+      <SourceDocument
+        view={view}
+        text={text}
+        cited={cited}
+        quote={quote}
+        headingLevel={headingLevel}
+        titleId={titleId}
+        actions={actions?.(view)}
+        wide={wide}
+        after={
+          <>
+            {pager}
+            {error && <ErrorNotice className="mt-3" message={error} />}
+          </>
+        }
+      />
     </div>
   );
 }

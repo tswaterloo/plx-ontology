@@ -100,11 +100,12 @@ def _review_store_gap(result: Any, error: Any, contract: Mapping[str, Any] | Non
 def table_tool_names() -> frozenset[str]:
     """The tools ``tool_table`` serves (``CaseHostTools.table``): none may be registered
     over them (``CaseHostTools.register_tool``)."""
-    from . import (meeting_agenda, ontology_tools_changes, ontology_tools_investigate,
-                   ontology_tools_process, ontology_tools_traverse)
+    from . import (meeting_agenda, ontology_query, ontology_tools_changes,
+                   ontology_tools_investigate, ontology_tools_process, ontology_tools_traverse)
     return frozenset(TOOL_NAMES) | frozenset(ontology_tools_traverse.TOOL_NAMES) | frozenset(
         ontology_tools_process.TOOL_NAMES) | frozenset(ontology_tools_investigate.TOOL_NAMES) \
-        | frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES)
+        | frozenset(meeting_agenda.TOOL_NAMES) | frozenset(ontology_tools_changes.TOOL_NAMES) \
+        | frozenset(ontology_query.TOOL_NAMES)
 
 
 class _LazyProcess:
@@ -168,6 +169,9 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     # plx.changes: what changed since a time, over this table's store and read policy.
     from . import ontology_tools_changes
     ontology_tools_changes.register(table, tools, prime=True)
+    # plx.query: one composable read (resolve, traverse, filter, aggregate) over this table.
+    from . import ontology_query
+    ontology_query.register(table, tools)
     return table
 
 
@@ -765,6 +769,9 @@ class CaseHostTools:
             tools = self.tools
 
             def store_lineage(handle: str) -> str | None:
+                layered = self._layer_lineage(handle)
+                if layered is not None:
+                    return layered
                 with tools.store.lock:
                     row = tools.store.conn.execute(
                         "SELECT lineage FROM object_versions WHERE l1_handle = ? LIMIT 1",
@@ -833,9 +840,9 @@ class CaseHostTools:
         if name in ANSWER_TOOLS:
             if self._answers is None or self._answers.base is not tools:
                 self._answers = AggregateTools(tools)
-            return self._answers.call(name, arguments, actor)
+            return self._answer_call(name, arguments, actor)
         if name in EVIDENCE_TOOLS:
-            return self.evidence.call(name, arguments, actor)
+            return self._evidence_call(name, arguments, actor)
         if name in self.table:  # plx.around/timeline/process/investigate (and the base)
             return self.table[name]["handler"](arguments, actor)
         return tools.call(name, arguments, actor)
@@ -903,6 +910,9 @@ class CaseHostTools:
                     if code not in ("store_unavailable", "contract_violation"):
                         return result
                 return served(arguments, actor)
+            if name in ("plx.around", "plx.timeline"):
+                layered = self._layer_traverse(overlay, name, arguments, actor)
+                return layered if layered is not None else served(arguments, actor)
         except Exception:  # noqa: BLE001 - the served generation answers alone
             return served(arguments, actor)
         result = served(arguments, actor)
@@ -919,6 +929,157 @@ class CaseHostTools:
         for candidate in (merged, delta_overlay.with_unmerged_gap(result)):
             if candidate is not None and base_tools._checked(name, candidate) is candidate:
                 return candidate
+        return result
+
+    def _layer_traverse(self, overlay: Any, name: str, arguments: Any, actor: Any
+                        ) -> dict[str, Any] | None:
+        """``plx.around``/``plx.timeline`` from an object a delta layer serves, answered
+        by that layer (its own links are whole there: the delta projects an owned object
+        with every link partner) under this call's policy and item gate. A path of more
+        than one hop is answered for its first hop only, with a
+        ``delta_overlay_hops_deferred`` gap: the hops past it may need links the layer
+        holds only in part, read at the next generation. None: the root is no layer's (or
+        the layer could not answer): the served store answers."""
+        from . import delta_overlay
+        root = arguments.get("from") if isinstance(arguments, dict) else None
+        layer = overlay.owner(root)
+        if layer is None:
+            return None
+        path = arguments.get("path")
+        deferred = name == "plx.around" and isinstance(path, list) and len(path) > 1
+        asked = dict(arguments, path=path[:1]) if deferred else arguments
+        result = layer.traverse.call(name, asked, actor)
+        error = result.get("error")
+        code = error.get("code") if isinstance(error, dict) else error
+        if code in ("store_unavailable", "contract_violation"):
+            return None
+        if deferred and "error" not in result:
+            marked = delta_overlay.with_gap(result, {
+                "state": "stale", "reason": delta_overlay.HOPS_DEFERRED,
+                "subject": f"plx.around:{root}"[:700],
+                "detail": f"this record changed since the served projection generation: "
+                          f"its first hop is read as it is now; the {len(path) - 1} further "
+                          f"hop(s) of the path are read at the next generation"})
+            if marked is None or layer.traverse._checked(name, marked) is not marked:
+                return None
+            result = marked
+        return result
+
+    def _owned_readable(self, name: str, arguments: Any, actor: Any) -> int | None:
+        """How many objects a delta layer serves, that ``actor`` may read, are among
+        those a ``plx.aggregate``/``plx.compare`` call reads: its set's or its two sides'
+        objects, or (a filter or type aggregate) a layer's matches of its filters (up to
+        one page each). Only a count, never their content. None: not decidable."""
+        overlay = self._overlay
+        if overlay is None or not isinstance(arguments, dict):
+            return 0
+        tools = self._tools
+        for layer in overlay.layers:
+            layer.tools.policy, layer.tools.clock = tools.policy, tools.clock
+        if name == "plx.compare":
+            ids = [side for side in (arguments.get("left"), arguments.get("right"))
+                   if isinstance(side, str)]
+        elif isinstance(arguments.get("set"), str):
+            ids = list(tools.sets.resolve(arguments["set"], actor) or ())
+        else:
+            if not arguments.get("object_type") and not arguments.get("filters"):
+                return 0
+            asked = {key: arguments[key] for key in ("object_type", "filters")
+                     if key in arguments}
+            count = 0
+            for layer in overlay.layers:
+                found = layer.tools.call("plx.find", dict(asked, limit=50), actor)
+                if "error" in found:
+                    return None
+                count += sum(1 for c in found.get("candidates", ())
+                             if c["object"]["object_id"] in layer.serves)
+            return count
+        return sum(len(layer.readable(actor, ids)) for layer in overlay.layers)
+
+    def _answer_call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
+        """``plx.aggregate``/``plx.compare`` over the served store, saying when objects
+        changed since (read from a delta layer elsewhere) are among those it read
+        (``delta_overlay_not_aggregated``, with their count among those this reader
+        may read): the totals are the served generation's."""
+        result = self._answers.call(name, arguments, actor)
+        if self._overlay is None or "error" in result:
+            return result
+        from . import delta_overlay
+        try:
+            count = self._owned_readable(name, arguments, actor)
+        except Exception:  # noqa: BLE001 - undecidable: said as such
+            count = None
+        if count == 0:
+            return result
+        detail = ("the totals read the served projection generation; "
+                  + (f"{count} record(s) changed since are not in them" if count is not None
+                     else "records changed since may not be in them"))
+        marked = delta_overlay.with_gap(result, {
+            "state": "stale", "reason": delta_overlay.NOT_AGGREGATED, "subject": name,
+            "detail": detail})
+        if marked is not None and self._answers._checked(name, marked) is marked:
+            return marked
+        return result
+
+    def _layer_lineage(self, handle: str) -> str | None:
+        """The lineage the newest delta layer serving ``handle``'s object records for it,
+        else None (the served store's is read)."""
+        overlay = self._overlay
+        if overlay is None:
+            return None
+        try:
+            for layer in overlay.layers:
+                with layer.reader.lock:
+                    rows = layer.reader.conn.execute(
+                        "SELECT object_id, lineage FROM object_versions WHERE l1_handle = ?",
+                        (handle,)).fetchall()
+                for object_id, lineage in rows:
+                    if object_id in layer.serves:
+                        return lineage
+        except Exception:  # noqa: BLE001 - the served store's lineage answers
+            return None
+        return None
+
+    def _evidence_call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
+        """``plx.identity``/``plx.documents``/``plx.read`` with the row-delta overlay:
+        ``plx.identity`` of objects one layer serves and ``plx.documents`` of an object a
+        layer serves are answered by that layer's evidence tools (under this call's policy,
+        item gate and citation reader); ``plx.identity`` mixing served and layered objects
+        answers from the served store with a ``delta_overlay_unmerged`` gap. ``plx.read``
+        reads its citation from the source (a layer's lineage first: ``_layer_lineage``).
+        Any overlay failure serves the served store's answer."""
+        served = self.evidence
+        overlay = self._overlay
+        if overlay is None or name == "plx.read" or not isinstance(arguments, dict):
+            return served.call(name, arguments, actor)
+        from . import delta_overlay
+        if name == "plx.identity":
+            ids = arguments.get("object_ids")
+            owners = ([overlay.owner(i) for i in ids] if isinstance(ids, list) else [None])
+        else:
+            owners = [overlay.owner(arguments.get("object_id"))]
+        if all(owner is None for owner in owners):
+            return served.call(name, arguments, actor)
+        layer = owners[0]
+        if layer is not None and all(owner is layer for owner in owners):
+            try:
+                layer.tools.policy = self._tools.policy
+                layer.tools.clock = self._tools.clock
+                if getattr(layer, "evidence", None) is None:
+                    from .ontology_tools_evidence import EvidenceTools
+                    layer.evidence = EvidenceTools(layer.tools, reader=served.reader)
+                layer.evidence.reader = served.reader
+                result = layer.evidence.call(name, arguments, actor)
+                error = result.get("error")
+                code = error.get("code") if isinstance(error, dict) else error
+                if code not in ("store_unavailable", "contract_violation"):
+                    return result
+            except Exception:  # noqa: BLE001 - the served generation answers alone
+                pass
+        result = served.call(name, arguments, actor)
+        marked = delta_overlay.with_unmerged_gap(result, subject=name)
+        if marked is not None and served._checked(name, marked) is marked:
+            return marked
         return result
 
     @contextmanager
@@ -1015,7 +1176,7 @@ class CaseHostTools:
                                documents=self._document_read)
             # plx.find/plx.object read the row-delta overlay too, whether called by a
             # reader or dispatched by a plan of plx.investigate through this table.
-            for name in ("plx.find", "plx.object"):
+            for name in ("plx.find", "plx.object", "plx.around", "plx.timeline"):
                 spec = table.get(name)
                 if spec is not None:
                     spec["handler"] = (lambda arguments, actor, _n=name, _h=spec["handler"]:

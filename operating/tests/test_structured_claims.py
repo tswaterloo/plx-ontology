@@ -548,5 +548,99 @@ class OneProseScreenTests(unittest.TestCase):
             self.assertNotIn(word, nouns)
 
 
+class OnQuestionTests(unittest.TestCase):
+    """A claim on a record the question's records neither name nor link to stands only
+    with a ``via`` that does (``gate_answer``'s ``relevant``, ``mcp_server._relevance``).
+    Evidence label ``isolated-fixture``: two rows served to the gate in place of a
+    runtime's; the gate and the relevance check over its reads are real."""
+    ORDER = "api://public.app_purchase_order/%7B%22id%22%3A%221%22%7D@0-1"
+    LINE = "api://public.app_receipt_line/%7B%22id%22%3A%222%22%7D@0-1"
+    MOVED = "api://public.app_purchase_order/%7B%22id%22%3A%223%22%7D@0-1"
+    GONE = "api://public.app_purchase_order/%7B%22id%22%3A%224%22%7D@0-1"
+    NAMED = "api://public.app_receipt_line/%7B%22id%22%3A%225%22%7D@0-1"
+    ROWS = {ORDER: {"relation": "public.app_purchase_order",
+                    "row": {"po_number": "PO-0103510", "receipt_id": "77"}},
+            LINE: {"relation": "public.app_receipt_line", "row": {"quantity": "40"}},
+            # a column named like the code, no value saying it
+            NAMED: {"relation": "public.app_receipt_line",
+                    "row": {"po0103510_quantity": "40"}}}
+
+    def view(self, handle):
+        if handle == self.MOVED:
+            # The source moved past the revision cited: the answer gate's re-read keeps
+            # that revision's row only as ``revision`` (``gate_rows`` moved_on).
+            return {"citation": handle, "status": "changed_since", "changed_since": True,
+                    "revision": {"handle": handle, "relation": "public.app_purchase_order",
+                                 "row": {"po_number": "PO-0103510", "quantity": "40"}}}
+        if handle in self.ROWS:
+            return {"handle": handle, "revision": "0-1", **self.ROWS[handle]}
+        return None
+
+    def gate(self, claim):
+        from operating import mcp_server
+        session = mock.Mock(case_runtime=None, actor=None)
+        rows = lambda runtime, actor, **_kw: self.view
+        server = mock.Mock(ontology=object(), _anchors={})
+        with mock.patch.object(mcp_server, "_question_anchors",
+                               lambda _server, _asked: frozenset({"0103510"})):
+            relevant = mcp_server.MCPServer._relevance(server, "Did PO0103510 arrive?")
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
+                mock.patch.object(answer_gate, "gate_rows", rows):
+            return answer_gate.gate_answer({"claims": [claim]}, session,
+                                           seen={self.ORDER, self.LINE, self.MOVED,
+                                                 self.GONE, self.NAMED}, returned={},
+                                           may_repair=True, relevant=relevant)
+
+    def reasons(self, answer):
+        return [u["reason"] for u in answer["unsupported"]]
+
+    def test_a_record_that_moved_on_is_read_as_the_revision_cited(self):
+        # the question's own PO, its source ahead of the projection: never off the
+        # question (its own moved-on check decides its value)
+        moved = {"id": "o", "value": "PO-0103510", "citation": self.MOVED,
+                 "field": "row.po_number"}
+        self.assertNotIn(answer_gate.OFF_QUESTION, self.reasons(self.gate(moved)))
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        self.assertEqual([c["id"] for c in self.gate({**line, "via": self.MOVED})["claims"]],
+                         ["q"])
+
+    def test_a_via_that_cannot_be_read_connects_nothing(self):
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        self.assertEqual(self.reasons(self.gate({**line, "via": self.GONE})),
+                         [answer_gate.OFF_QUESTION])
+
+    def test_a_column_name_names_nothing(self):
+        named = {"id": "n", "value": "40", "citation": self.NAMED,
+                 "field": "row.po0103510_quantity"}
+        self.assertEqual(self.reasons(self.gate(named)), [answer_gate.OFF_QUESTION])
+
+    def test_the_session_sets_the_question_every_submission_is_decided_against(self):
+        from operating import agent_session
+        answer = {"claims": [], "question": "something else"}
+        self.assertEqual(agent_session.asked_as(answer, "Did PO0103510 arrive?")["question"],
+                         "Did PO0103510 arrive?")
+        self.assertEqual(agent_session.asked_as({"claims": []}, "Q?")["question"], "Q?")
+        self.assertEqual(agent_session.asked_as(answer, None), answer)
+        agent = agent_session.ClaudeCodeAgent()
+        self.assertEqual(agent.for_question("Q?").asked, "Q?")
+        self.assertIsNone(agent.asked)
+
+    def test_a_claim_needs_a_via_when_its_record_is_off_the_question(self):
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        refused = self.gate(line)
+        self.assertEqual(refused["claims"], [])
+        self.assertEqual([u["reason"] for u in refused["unsupported"]],
+                         [answer_gate.OFF_QUESTION])
+        self.assertIn(answer_gate.OFF_QUESTION, refused["repair"]["instruction"])
+        passed = self.gate({**line, "via": self.ORDER})
+        self.assertEqual([c["id"] for c in passed["claims"]], ["q"])
+        # the record the question names stands on its own; a via must be evidence
+        order = {"id": "o", "value": "PO-0103510", "citation": self.ORDER,
+                 "field": "row.po_number"}
+        self.assertEqual([c["id"] for c in self.gate(order)["claims"]], ["o"])
+        self.assertEqual(self.gate({**line, "via": "api://elsewhere/x@0-1"})["unsupported"][0][
+            "reason"], "claim_invalid")
+
+
 if __name__ == "__main__":
     unittest.main()

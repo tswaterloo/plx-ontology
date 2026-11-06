@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LatePo } from "@/lib/types";
 import LatePage from "./page";
+
+// jsdom has no matchMedia: the page and its toolbar read the width as a phone's
+beforeEach(() => {
+  vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener: () => undefined, removeEventListener: () => undefined }));
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -27,7 +32,9 @@ function serve(n: number) {
   return f;
 }
 
-const rows = () => within(screen.getByTestId("late-table")).getAllByTestId("late-row") as HTMLTableRowElement[];
+const rows = () => within(screen.getByTestId("late-table")).getAllByTestId("late-row");
+const po = (r: HTMLElement) => within(r).getByTestId("late-po").textContent;
+const value = (r: HTMLElement) => within(r).getByTestId("late-value");
 
 describe("late list", () => {
   it.each([1, 10, 60, 150])("reads every page of %i orders, none lost or repeated", async (n) => {
@@ -38,10 +45,12 @@ describe("late list", () => {
     expect(new Set(rows().map((r) => r.textContent)).size).toBe(n);
     expect(f).toHaveBeenCalledTimes(Math.ceil(n / 100));
     expect(screen.getByTestId("late-all-count")).toHaveTextContent(n === 1 ? "1 PO" : `${n} POs`);
-    // the page leads with the verdict and the why: how many, the oldest, and how long
-    const head = screen.getByTestId("late-header");
-    expect(head).toHaveTextContent(`Late POs${n} past the needed-by date.`);
-    expect(head).toHaveTextContent(`Oldest: PO ${100000 + n} (${n % 3 === 0 ? "DSM" : "Acme"}), ${n === 1 ? "1 day" : `${n} days`}.`);
+    // the page leads with the figures: how many, the oldest, and how long
+    expect(screen.getByTestId("late-header")).toHaveTextContent("Late POs");
+    expect(screen.getByTestId("late-count")).toHaveTextContent(`${n}${n === 1 ? "PO" : "POs"}`);
+    const oldest = screen.getByTestId("late-oldest");
+    expect(oldest).toHaveTextContent(`${n}${n === 1 ? "day" : "days"}`);
+    expect(oldest).toHaveTextContent(`PO ${100000 + n}, ${n % 3 === 0 ? "DSM" : "Acme"}`);
   });
 
   it("a busy server is a calm notice that tries again by itself", async () => {
@@ -65,20 +74,21 @@ describe("late list", () => {
     // longest late first by default
     expect(rows()[0]).toHaveTextContent("PO 100012");
     fireEvent.change(screen.getByLabelText("Supplier"), { target: { value: "DSM" } });
-    expect(rows().map((r) => r.cells[0].textContent)).toEqual(["PO 100012", "PO 100009", "PO 100006", "PO 100003"]);
+    expect(rows().map(po)).toEqual(["PO 100012", "PO 100009", "PO 100006", "PO 100003"]);
     expect(screen.getByTestId("late-all-count")).toHaveTextContent("4 of 12 match");
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "v10k" } });
-    expect(rows().map((r) => r.cells[0].textContent)).toEqual(["PO 100009", "PO 100003"]);
-    expect(rows()[0].cells[4]).toHaveTextContent("$9,000.00 CAD");
+    expect(rows().map(po)).toEqual(["PO 100009", "PO 100003"]);
+    expect(value(rows()[0])).toHaveTextContent("$9,000.00 CAD");
     fireEvent.change(screen.getByLabelText("Supplier"), { target: { value: "\u0000all" } });
     fireEvent.change(screen.getByLabelText("Value"), { target: { value: "all" } });
     fireEvent.click(screen.getByRole("tab", { name: /Up to 30 days 12/ }));
-    fireEvent.click(screen.getByRole("button", { name: /Value/ }));
+    fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "value" } });
     // value within each currency, largest first; orders without a value last
-    expect(rows().slice(0, 6).map((r) => r.cells[4].textContent)).toEqual([
+    expect(rows().slice(0, 6).map((r) => value(r).textContent)).toEqual([
       "$9,000.00 CAD", "$5,000.00 CAD", "$1,000.00 CAD", "$11,000.00 USD", "$7,000.00 USD", "$3,000.00 USD",
     ]);
-    expect(rows()[6].cells[4]).toHaveTextContent("No value");
-    expect(screen.getByRole("columnheader", { name: /Value/ })).toHaveAttribute("aria-sort", "descending");
+    expect(value(rows()[6])).toHaveTextContent("No value");
+    expect(screen.getByLabelText("Sort by")).toHaveValue("value");
+    expect(screen.getByRole("button", { name: "Sorted largest or latest first" })).toBeTruthy();
   });
 });

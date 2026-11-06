@@ -1,5 +1,6 @@
 "use client";
 
+import { Check, ChevronRight, Copy } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { actionChip, isPutAway } from "@/lib/actions";
@@ -11,7 +12,7 @@ import type { Status } from "@/lib/status";
 import type { ActionResult, ProactiveSuggestion, SuggestionDraft, SuggestionEta, Suggestions } from "@/lib/types";
 import { CardActions } from "./card-actions";
 import { SourceChip } from "./source-chip";
-import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
+import { OpenRing, StatusGlyph } from "./ui/glyphs";
 import { LoadProblem } from "./ui/notice";
 import { SkeletonRows } from "./ui/skeleton";
 import { StatusWord } from "./ui/status-badge";
@@ -34,8 +35,6 @@ export function etaBadge(eta: SuggestionEta | null | undefined): { status: Statu
       return { status: "neutral", label: "ETA unknown" };
   }
 }
-
-const CONFIDENCE_TEXT: Record<string, string> = { high: "text-ok", medium: "text-risk", low: "text-muted" };
 
 /** Other open findings, counted (no drafted action): "592 batches on quality hold". */
 const COLLAPSED: Record<string, [string, string]> = {
@@ -63,6 +62,7 @@ export function draftText(d: SuggestionDraft): string {
   return [to ? `To: ${to}` : null, `Subject: ${d.subject}`, "", d.body].filter((l) => l !== null).join("\n");
 }
 
+/** The draft as a lifted mail sheet: who it goes to, its subject and body; copied whole, never sent from here. */
 function Draft({ draft }: { draft: SuggestionDraft }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -75,30 +75,41 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
     );
   };
   const title = draft.audience === "vendor" ? "Draft to the vendor" : draft.audience === "customer" ? "Draft to the customer" : "Internal note";
+  const to = draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : null;
   return (
-    <div className="rounded-lg border border-border bg-surface p-4" data-testid="suggestion-draft">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-label font-medium">
-          {title} <span className="font-normal text-muted">(not sent)</span>
+    <div data-testid="suggestion-draft">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[12px] font-medium text-muted">
+          {title} <span className="font-normal">(not sent)</span>
         </p>
-        <button type="button" onClick={copy} className="rounded-sm border border-control px-2 py-0.5 text-meta hover:bg-surface-2 cursor-pointer" data-testid="copy-draft">
+        <button type="button" onClick={copy} className="-my-1 inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer" data-testid="copy-draft">
+          {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
           {copied ? "Copied" : "Copy draft"}
         </button>
       </div>
-      <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-meta">
-        <dt className="text-muted">To</dt>
-        <dd data-testid="draft-to">
-          {draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : draft.to.name ?? "No address"}
-          {!draft.to.address && <span className="block text-muted">{draft.to.basis}</span>}
-        </dd>
-        <dt className="text-muted">Subject</dt>
-        <dd>{draft.subject}</dd>
-      </dl>
-      <pre className="whitespace-pre-wrap break-words border-t border-border pt-3 font-sans text-row">{draft.body}</pre>
-      {draft.review && <p className="mt-2 text-meta text-muted">{draft.review}</p>}
+      <div className="overflow-hidden rounded-xl bg-bg shadow-lift">
+        <div className="flex items-start gap-3 border-b border-border px-4 py-2.5 text-[13px]">
+          <span className="w-14 shrink-0 text-muted">To</span>
+          <span data-testid="draft-to" className="min-w-0 flex-1 break-words">
+            {to ?? (
+              <span className="inline-flex flex-wrap items-center gap-x-1.5 text-muted">
+                <OpenRing size={12} tone="neutral" />
+                {draft.to.name ?? "No address"}
+                <span className="basis-full text-[12px]">{draft.to.basis}</span>
+              </span>
+            )}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 border-b border-border px-4 py-2.5 text-[13px]">
+          <span className="w-14 shrink-0 text-muted">Subject</span>
+          <span className="min-w-0 truncate font-medium">{draft.subject}</span>
+        </div>
+        <pre className="max-h-[240px] overflow-y-auto px-4 pt-3.5 pb-4 font-sans text-[13px] leading-[21px] break-words whitespace-pre-wrap text-fg/90">{draft.body}</pre>
+      </div>
+      {draft.review && <p className="mt-2 text-[12px] text-muted">{draft.review}</p>}
       {(draft.facts ?? []).length > 0 && (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-meta text-muted">Figures from:</span>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[12px]">
+          <span className="text-muted">Figures from</span>
           {(draft.facts ?? []).slice(0, 6).map((f, n) => (
             <SourceChip key={`${f.source.handle}-${n}`} source={f.source} record={readable(f.value)} />
           ))}
@@ -129,85 +140,89 @@ export function SuggestionRow({ s, position, state, onDone }: { s: ProactiveSugg
   const reasons = (s.reasoning ?? []).filter((r) => !etaWords || !readable(r.text).includes(etaWords));
   const amount = s.impact.amount && !s.impact.amount_suspect ? formatMoney(s.impact.amount.amount, s.impact.amount.currency) : null;
   return (
-    <li className="py-3" data-testid="suggestion">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <Link href={href} className="text-row font-medium hover:underline" data-testid="suggestion-headline">
-              {suggestionHeadline(s)}
-            </Link>
-            {eta && <StatusWord status={eta.status} label={eta.label} data-testid="suggestion-eta" />}
-            {s.impact.amount_suspect && <StatusWord status="suspect" label="Total suspect" title={s.impact.amount_suspect} />}
-            <span className="ml-auto flex items-baseline gap-3">
-              {amount && <span className="text-meta tabular-nums text-muted">{amount}</span>}
-              {chip && <StatusWord shown={chip} title={chip.title} data-testid="action-state" />}
-            </span>
-          </div>
-          <p className="text-row text-fg">{s.action.text}</p>
-          {(s.impact.orders ?? []).length > 0 && (
-            <p className="text-meta text-muted">
-              Holds up{" "}
-              {(s.impact.orders ?? []).map((o, n) => (
-                <span key={o.object_id}>
-                  {n > 0 && ", "}
-                  <Link href={safeHref(o.open_url) ?? objectHref(o.type, o.object_id)} className="text-accent hover:underline">
-                    {o.label}
-                  </Link>
+    <li className="py-3.5" data-testid="suggestion">
+      <div className="min-w-0 space-y-1.5">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <Link href={href} className="text-[13px] font-semibold hover:underline" data-testid="suggestion-headline">
+            {suggestionHeadline(s)}
+          </Link>
+          {eta && <StatusWord status={eta.status} label={eta.label} data-testid="suggestion-eta" />}
+          {s.impact.amount_suspect && <StatusWord status="suspect" label="Total suspect" title={s.impact.amount_suspect} />}
+          <span className="ml-auto flex items-baseline gap-3">
+            {amount && <span className="text-[12px] tabular-nums text-muted">{amount}</span>}
+            {chip && <StatusWord shown={chip} title={chip.title} data-testid="action-state" />}
+          </span>
+        </div>
+        <p className="text-[13px] leading-5">{s.action.text}</p>
+        {(s.impact.orders ?? []).length > 0 && (
+          <p className="text-[12px] text-muted">
+            Holds up{" "}
+            {(s.impact.orders ?? []).map((o, n) => (
+              <span key={o.object_id}>
+                {n > 0 && ", "}
+                <Link href={safeHref(o.open_url) ?? objectHref(o.type, o.object_id)} className="text-fg hover:underline">
+                  {o.label}
+                </Link>
+              </span>
+            ))}
+          </p>
+        )}
+        <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="-ml-0.5 inline-flex h-6 items-center gap-1 text-[12px] text-muted hover:text-fg cursor-pointer" data-testid="suggestion-toggle">
+          <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden />
+          {onDone && (s.actions ?? []).length > 0 ? (s.draft ? "Draft, actions and evidence" : "Actions and evidence") : s.draft ? "Draft and evidence" : "Evidence"}
+        </button>
+        {open && (
+          <div className="space-y-4 pt-1" data-testid="suggestion-detail">
+            {onDone && <CardActions card={s} onDone={onDone} state={state} />}
+            {s.eta && (
+              <p className="text-[13px] leading-5">
+                <span className="text-muted">Supplier date </span>
+                {readable(s.eta.text)}
+                {s.eta.source && (
+                  <span className="ml-1.5 align-middle">
+                    <SourceChip source={s.eta.source} />
+                  </span>
+                )}
+              </p>
+            )}
+            {reasons.length > 0 && (
+              <ul className="space-y-1 text-[13px] leading-5" data-testid="suggestion-reasoning">
+                {reasons.map((r, n) => (
+                  <li key={n}>
+                    {readable(r.text).replace(/^ETA confirmed\? (?:yes|no|possibly|unknown)\.\s*/i, "")}
+                    {r.source && (
+                      <span className="ml-1.5 align-middle">
+                        <SourceChip source={r.source} />
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {s.confidence.level !== "high" && (
+              <p className="flex gap-2 text-[12px] leading-[18px]">
+                <StatusGlyph status={s.confidence.level === "medium" ? "risk" : "neutral"} size={12} className="mt-[3px]" />
+                <span>
+                  <span className="font-medium">{s.confidence.level === "medium" ? "Check before acting." : "Weak evidence."}</span> <span className="text-muted">{sentence(readable(s.confidence.why))}</span>
                 </span>
-              ))}
-            </p>
-          )}
-          <button type="button" onClick={() => setOpen(!open)} aria-expanded={open} className="inline-flex items-center gap-1 text-meta text-muted hover:text-fg cursor-pointer" data-testid="suggestion-toggle">
-            <span aria-hidden>{open ? "▾" : "▸"}</span>
-            {onDone && (s.actions ?? []).length > 0 ? (s.draft ? "Draft, actions and evidence" : "Actions and evidence") : s.draft ? "Draft and evidence" : "Evidence"}
-          </button>
-          {open && (
-            <div className="space-y-3 pt-1" data-testid="suggestion-detail">
-              {onDone && <CardActions card={s} onDone={onDone} state={state} />}
-              {s.eta && (
-                <p className="text-row">
-                  <span className="font-medium">Supplier date: </span>
-                  {readable(s.eta.text)}
-                  {s.eta.source && (
-                    <span className="ml-1.5 align-middle">
-                      <SourceChip source={s.eta.source} />
-                    </span>
-                  )}
-                </p>
-              )}
-              {reasons.length > 0 && (
-                <ul className="space-y-0.5 text-row" data-testid="suggestion-reasoning">
-                  {reasons.map((r, n) => (
-                    <li key={n}>
-                      {readable(r.text).replace(/^ETA confirmed\? (?:yes|no|possibly|unknown)\.\s*/i, "")}
-                      {r.source && (
-                        <span className="ml-1.5 align-middle">
-                          <SourceChip source={r.source} />
-                        </span>
-                      )}
+              </p>
+            )}
+            {(s.missing ?? []).length > 0 && (
+              <div data-testid="suggestion-missing">
+                <p className="mb-1.5 text-[12px] font-medium text-muted">Not on record</p>
+                <ul className="space-y-1.5">
+                  {(s.missing ?? []).map((m, n) => (
+                    <li key={n} className="flex gap-2.5 text-[13px] leading-5">
+                      <OpenRing size={13} tone="neutral" className="mt-[3px]" />
+                      {m}
                     </li>
                   ))}
                 </ul>
-              )}
-              {s.confidence.level !== "high" && (
-                <p className="text-meta text-muted">
-                  <span className={cn("font-medium", CONFIDENCE_TEXT[s.confidence.level] ?? "text-muted")}>{s.confidence.level === "medium" ? "Check before acting." : "Weak evidence."}</span> {sentence(readable(s.confidence.why))}
-                </p>
-              )}
-              {(s.missing ?? []).length > 0 && (
-                <div className="text-meta" data-testid="suggestion-missing">
-                  <p className="font-medium">Not on record</p>
-                  <ul className="list-disc pl-5 text-muted">
-                    {(s.missing ?? []).map((m, n) => (
-                      <li key={n}>{m}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {s.draft && <Draft draft={s.draft} />}
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+            {s.draft && <Draft draft={s.draft} />}
+          </div>
+        )}
       </div>
     </li>
   );
@@ -241,45 +256,49 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
   const shown = all ? items : items.slice(0, limit);
   const extra = collapsedLine(data?.collapsed);
   return (
-    <Card className={cn("mt-6", className)} data-testid="suggestions">
-      <CardHeader>
-        <CardTitle>Follow-ups</CardTitle>
-        {data && data.total > 0 && <span className="text-meta text-muted">{data.total}, biggest impact first</span>}
-      </CardHeader>
-      <CardBody>
-        {error ? (
-          <LoadProblem message={error} onRetry={load} />
-        ) : !data ? (
-          <SkeletonRows rows={3} label="Loading follow-ups" />
-        ) : every.length === 0 ? (
-          <p className="text-row text-muted">No follow-ups.</p>
-        ) : (
-          <>
-            <ol className="divide-y divide-border border-t border-border">
-              {shown.map((s, n) => (
-                <SuggestionRow key={s.id} s={s} position={n + 1} state={states[s.id]} onDone={done} />
-              ))}
-            </ol>
+    <section className={className} data-testid="suggestions">
+      <div className="mb-1 flex items-baseline justify-between gap-3">
+        <h2 className="text-[12px] font-medium text-muted">Follow-ups</h2>
+        {data && data.total > 0 && <span className="text-[12px] tabular-nums text-faint">{data.total}</span>}
+      </div>
+      {error ? (
+        <LoadProblem message={error} onRetry={load} />
+      ) : !data ? (
+        <SkeletonRows rows={3} label="Loading follow-ups" />
+      ) : every.length === 0 ? (
+        <p className="py-2 text-[13px] text-muted">No follow-ups.</p>
+      ) : (
+        <>
+          <ol className="divide-y divide-border">
+            {shown.map((s, n) => (
+              <SuggestionRow key={s.id} s={s} position={n + 1} state={states[s.id]} onDone={done} />
+            ))}
+          </ol>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px]">
             {items.length > shown.length && (
-              <button type="button" onClick={() => setAll(true)} className="mt-1 text-row font-medium text-accent hover:underline cursor-pointer">
+              <button type="button" onClick={() => setAll(true)} className="font-medium text-muted hover:text-fg cursor-pointer">
                 Show {items.length - shown.length} more
               </button>
             )}
             {away.length > 0 && (
-              <button type="button" onClick={() => setPutAway(!putAway)} className="mt-1 block text-meta text-muted hover:text-fg hover:underline cursor-pointer" data-testid="put-away-toggle">
+              <button type="button" onClick={() => setPutAway(!putAway)} className="text-muted hover:text-fg cursor-pointer" data-testid="put-away-toggle">
                 {putAway ? "Hide" : "Show"} {away.length} done, snoozed or dismissed
               </button>
             )}
-            {data.more > 0 && <p className="mt-1 text-meta text-muted">{plural(data.more, "more record")} in the <Link href="/briefing" className="text-accent hover:underline">briefing</Link>.</p>}
-          </>
-        )}
-        {data && (
-          <div className="mt-2 space-y-1 text-meta text-muted">
-            {extra && <p data-testid="suggestions-collapsed">{extra}</p>}
-            <p>{data.note === SERVER_NOTE ? "Nothing is sent until you confirm it. Mail goes from your own mailbox, or is logged as a dry run while sending is off." : data.note}</p>
+            {data.more > 0 && (
+              <Link href="/briefing" className="text-muted hover:text-fg">
+                {plural(data.more, "more record")} in the briefing
+              </Link>
+            )}
           </div>
-        )}
-      </CardBody>
-    </Card>
+        </>
+      )}
+      {data && (
+        <div className="mt-3 space-y-1 text-[12px] text-muted">
+          {extra && <p data-testid="suggestions-collapsed">{extra}</p>}
+          <p>{data.note === SERVER_NOTE ? "Nothing is sent until you confirm it." : data.note}</p>
+        </div>
+      )}
+    </section>
   );
 }

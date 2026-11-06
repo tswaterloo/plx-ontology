@@ -38,7 +38,7 @@ TOOL_EXAMPLES = {
 DECIDED_TOOLS = {f"plx.{name}" for name in (
     "schema", "find", "object", "around", "timeline", "aggregate", "process", "compare", "identity",
     "documents", "read", "investigate", "agenda", "changes", "review", "playbook_propose",
-    "playbook_evaluate", "playbook_adopt")}
+    "playbook_evaluate", "playbook_adopt", "query")}
 WORKBENCH_WRITERS = {"plx.review", "plx.playbook_propose", "plx.playbook_evaluate",
                      "plx.playbook_adopt", "plx.investigate"}
 
@@ -77,7 +77,7 @@ class ContractsAreWellFormed(unittest.TestCase):
     def test_tool_set_and_limits(self):
         self.assertEqual(set(TOOLS["tools"]), DECIDED_TOOLS)
         limits = TOOLS["limits"]
-        self.assertEqual(limits["max_case_host_tools"], 23)
+        self.assertEqual(limits["max_case_host_tools"], 24)
         self.assertEqual(limits["max_hops"], 3)
         for name, tool in TOOLS["tools"].items():
             with self.subTest(tool=name):

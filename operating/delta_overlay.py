@@ -102,6 +102,30 @@ class Layer:
     def __init__(self, reader: Any, tools: Any, owned: frozenset[str]) -> None:
         self.reader, self.tools, self.owned = reader, tools, owned
         self.serves = owned
+        self.evidence: Any = None   # its plx.identity/plx.documents (the host builds them)
+        self._traverse: Any = None
+
+    @property
+    def traverse(self) -> Any:
+        """Its plx.around/plx.timeline (``TraverseTools`` over its tools)."""
+        if self._traverse is None:
+            from .ontology_tools_traverse import TraverseTools
+            self._traverse = TraverseTools(self.tools)
+        return self._traverse
+
+    def readable(self, actor: Any, object_ids: Any) -> set[str]:
+        """Those of ``object_ids`` this layer serves that ``actor`` may read now under
+        its tools' policy (audience, markings, a current version) and item gate."""
+        ids = sorted({oid for oid in object_ids if oid in self.serves})
+        if not ids:
+            return set()
+        tools = self.tools
+        with tools.store.lock:
+            scope = tools._scope(actor, tools._as_known_at({}))
+            versions = tools.store.visible_versions(scope, ids)
+        refused = {row["object_id"] for row in versions
+                   if not tools._item_allowed(actor, row["l1_handle"])}
+        return {row["object_id"] for row in versions} - refused
 
     def close(self) -> None:
         try:
@@ -182,6 +206,8 @@ def _open_layer(store: str, served: Mapping[str, str], base: Any) -> Layer | Non
             sources=None,   # never a live read of its own: the served answer makes it
             aliases=base.aliases, reviews=base.reviews, unconfigured=base.unconfigured,
             freshness_bounds=base.freshness_bounds, freshness_clock=base.freshness_clock)
+        # One set registry: a handle a layer's plx.around makes is a root for the host.
+        tools.sets = base.sets
         reader.audience_keys()   # read now, not on the first reader's call
     except Exception:
         reader.conn.close()
@@ -238,8 +264,14 @@ def merge_find(base: dict[str, Any], answers: list[tuple[Any, frozenset[str]]],
         return None
     result = {key: value for key, value in base.items() if key != "set"}
     completeness = dict(base.get("completeness") or {})
+    # A layer that cut its own answer (a cap, a budget, a next page it holds) leaves the
+    # merged answer incomplete too: its matches past the cut are not in it.
+    layer_cut = [answer.get("completeness") or {} for answer, _ in answers
+                 if (answer.get("completeness") or {}).get("complete") is not True
+                 or (answer.get("completeness") or {}).get("truncated")
+                 or (answer.get("completeness") or {}).get("next_cursor") is not None]
     exact = (completeness.get("complete") is True and not completeness.get("truncated")
-             and completeness.get("next_cursor") is None and first_page)
+             and completeness.get("next_cursor") is None and first_page and not layer_cut)
     if base.get("status") == "not_found" and added:
         # The served answer's gaps say why nothing matched there; the overlay's say how
         # its own (owned) matches were read.
@@ -279,17 +311,42 @@ def merge_find(base: dict[str, Any], answers: list[tuple[Any, frozenset[str]]],
                                          "established"}]
     if cut:
         completeness.update(complete=False, truncated=True, reason="page_cap")
+    elif layer_cut:
+        cutting = layer_cut[0]
+        completeness.update(complete=False, truncated=bool(cutting.get("truncated")) or
+                            completeness.get("truncated", False))
+        if cutting.get("reason") is not None:
+            completeness["reason"] = cutting["reason"]
     result["completeness"] = completeness
     return result
 
 
-def with_unmerged_gap(base: dict[str, Any]) -> dict[str, Any] | None:
+HOPS_DEFERRED = "delta_overlay_hops_deferred"
+NOT_AGGREGATED = "delta_overlay_not_aggregated"
+
+
+def with_gap(result: dict[str, Any], gap: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``result`` with ``gap`` appended and its completeness not complete (reason: the
+    gap's unless it had one); None when it has no room for it or is an error."""
+    gaps = result.get("gaps")
+    if "error" in result or not isinstance(gaps, list) or len(gaps) >= MAX_GAPS:
+        return None
+    out = dict(result, gaps=gaps + [dict(gap)])
+    completeness = result.get("completeness")
+    if isinstance(completeness, Mapping):
+        out["completeness"] = dict(completeness, complete=False,
+                                   reason=completeness.get("reason") or gap["reason"])
+    return out
+
+
+def with_unmerged_gap(base: dict[str, Any], subject: str = "plx.find"
+                      ) -> dict[str, Any] | None:
     """``base`` saying it reads the served generation only (records changed since it could
     not be merged); None when it has no room for the gap (serve ``base`` as it is)."""
     gaps = base.get("gaps")
     if not isinstance(gaps, list) or len(gaps) >= MAX_GAPS or "error" in base:
         return None
-    out = dict(base, gaps=gaps + [dict(_UNMERGED_GAP)])
+    out = dict(base, gaps=gaps + [dict(_UNMERGED_GAP, subject=subject)])
     completeness = base.get("completeness")
     if isinstance(completeness, Mapping):
         out["completeness"] = dict(completeness, complete=False,
@@ -297,5 +354,6 @@ def with_unmerged_gap(base: dict[str, Any]) -> dict[str, Any] | None:
     return out
 
 
-__all__ = ["DIR_ENV", "FORMAT", "Layer", "Overlay", "merge_find", "open_overlay",
+__all__ = ["DIR_ENV", "FORMAT", "HOPS_DEFERRED", "NOT_AGGREGATED", "Layer", "Overlay",
+           "merge_find", "open_overlay", "with_gap",
            "pointer_path", "pointer_stamp", "read_pointer", "with_unmerged_gap"]

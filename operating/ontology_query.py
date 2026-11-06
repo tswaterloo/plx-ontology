@@ -1,0 +1,409 @@
+"""``plx.query``: one composable read over any records and links: start from records, an
+entity's records in every system, or a set; walk any declared links (several hops); filter
+what is reached; count, sum, min or max it, grouped by its own or a linked record's
+property, within a time window; as known at a moment. Every figure stays cited and is
+computed only from what this reader may read.
+
+It composes the host's own generic tools through the host tool table (as ``plx.investigate``
+and ``plx.agenda`` do), so it applies exactly their permission gate, tiers and checks:
+
+* **from**: ``object_id``, ``object_ids``, ``set``, or ``entity`` (a name or code: the
+  ``match`` records of what it names, ``plx.find`` mode ``entities``,
+  ``operating.entity_resolution``);
+* **traverse**: hops of ``plx.around`` (declared link types, or ``link`` navigation names),
+  walked one hop at a time from the set the previous hop returned; a start record whose
+  type does not declare the first hop is left out of it (counted), never refused; ``where``
+  filters the last hop's records; ``tier_floor`` as ``plx.around``'s (``lead`` follows
+  lead links: what they reach is a lead);
+* **measures**: ``plx.aggregate`` on the reached set (``group_by`` its own properties, or a
+  linked record's through ``group_path``), each group with the inputs it summed and their
+  citations, so a value claim is a ``sum`` over those inputs, as the answer gate checks it;
+* **window**: groups whose ``window.property`` key lies in ``[from, to)`` totalled (exact
+  Decimal over the groups' values), the groups outside it named by count.
+
+Backend: the current projection store through the host table (``TableBackend``); a store
+that compiles the same request to SQL with the reader's permissions as predicates can
+serve it behind the same interface (``backend``). Nothing is written.
+Evidence: isolated-fixture (operating/tests/test_ontology_query.py).
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal, InvalidOperation
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from ontology.json_contract import validate
+
+TOOL_NAME = "plx.query"
+TOOL_NAMES = (TOOL_NAME,)
+MAX_HOPS = 6
+MAX_GROUPS_SHOWN = 60
+MAX_CITED = 50
+MAX_CODE_RECORDS = 200   # records a code list starts from
+
+_CONTRACTS = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
+                        .read_text(encoding="utf-8"))
+_CONTRACT = _CONTRACTS["tools"][TOOL_NAME]
+
+TOOL: dict[str, Any] = {
+    "name": TOOL_NAME,
+    "description": _CONTRACT["description"],
+    "inputSchema": _CONTRACT["input"],
+    "annotations": {"readOnlyHint": True},
+}
+
+
+class TableBackend:
+    """The query's reads through a host tool table (``call(name, arguments, actor)``) and
+    the host's set registry (``new_set(actor, ids)``)."""
+
+    def __init__(self, call: Callable[[str, Mapping[str, Any], Any], Mapping[str, Any]],
+                 new_set: Callable[[Any, list[str]], str] | None, schema: Any,
+                 visible: Callable[[Any, list[str]], set[str]] | None = None,
+                 codes: Callable[..., tuple[list[str], list[str]]] | None = None) -> None:
+        self.call, self.new_set, self.schema = call, new_set, schema
+        # (records holding these exact codes, the codes none holds) for a reader
+        self.codes = codes
+        # the ids among these this reader may read now (the store's own gate); None: the
+        # walk's own gate decides (a fixture)
+        self.visible = visible
+
+    def link_from_type(self, hop: Mapping[str, Any]) -> str | None:
+        """The object type a hop starts from (None: a navigation name, decided by the
+        walk itself)."""
+        link = (getattr(self.schema, "link_types", None) or {}).get(hop.get("link_type"))
+        if not link:
+            return None
+        return link["from"] if hop.get("direction") == "forward" else link["to"]
+
+
+def _hop(hop: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: hop[k] for k in ("link_type", "direction", "link") if k in hop}
+
+
+def _error(code: str, message: str, hint: str | None = None) -> dict[str, Any]:
+    out = {"error": {"code": code, "message": message[:600]}}
+    if hint:
+        out["error"]["hint"] = hint[:600]
+    return out
+
+
+def _decimal(value: Any) -> Decimal | None:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _key_text(key: Any) -> str | None:
+    if isinstance(key, Mapping):
+        return key.get("untrusted_text") if isinstance(key.get("untrusted_text"), str) \
+            else None
+    return None if key is None else str(key)
+
+
+class QueryTool:
+    """``plx.query`` over a ``TableBackend`` (module doc)."""
+
+    def __init__(self, backend: TableBackend) -> None:
+        self.backend = backend
+
+    def call(self, arguments: Any, actor: Any) -> dict[str, Any]:
+        if not isinstance(arguments, dict):
+            return _error("invalid_input", "arguments must be an object")
+        problems = validate(arguments, _CONTRACT["input"], root=_CONTRACTS, limit=3)
+        if problems:
+            return _error("invalid_input", "; ".join(problems))
+        try:
+            return self._query(arguments, actor)
+        except _Refused as exc:
+            return exc.result
+
+    # ------------------------------------------------------------------ the query
+
+    def _query(self, arguments: Mapping[str, Any], actor: Any) -> dict[str, Any]:
+        call = lambda name, args: self.backend.call(name, args, actor)  # noqa: E731
+        gaps: list[dict[str, Any]] = []
+        start, records, mention = self._start(arguments["from"], call, actor, gaps)
+        traverse = list(arguments.get("traverse") or ())
+        out: dict[str, Any] = {"from": {"records": (records or [])[:MAX_CITED]}}
+        if mention:
+            out["from"]["entity"] = mention
+        if records is not None and len(records) > 1 and traverse:
+            # One thing held in several systems: each record is walked on its own, so a
+            # system's part is never added to its twin's copy of it (cross_system_twins).
+            wanted = self.backend.link_from_type(traverse[0])
+            starts = [r for r in records if wanted is None or r.split(":", 1)[0] == wanted]
+            if not starts:
+                raise _Refused(_error("undeclared_link", "no start record's type declares "
+                                      f"{traverse[0].get('link_type') or traverse[0].get('link')}",
+                                      "plx.object a start record to see its link types"))
+            by_record, meta = [], None
+            for record in starts:
+                run = self._run(call, record, traverse, arguments, [])
+                meta = run.pop("meta", None) or meta
+                if run["hops"] and all(h.get("count") for h in run["hops"]):
+                    by_record.append({"record": record, **run})
+                else:
+                    gaps.append({"state": "unknown", "reason": "nothing_reached",
+                                 "subject": record[:700],
+                                 "detail": "this record of the thing reaches nothing on the "
+                                           "path"})
+            out.update({"hops": [], "set": None, "results": [], "by_record": by_record})
+            out["gaps"] = _fold(gaps + [g for r in by_record for g in r.pop("gaps", [])])[:20]
+            out["meta"] = meta
+            return _clean(out)
+        root = start if records is None else self._set_of(records, actor)
+        run = self._run(call, root, traverse, arguments, gaps)
+        out.update(run)
+        out["gaps"] = _fold(out.get("gaps") or [])[:20]
+        return _clean(out)
+
+    def _run(self, call, root: Any, traverse: Sequence[Mapping[str, Any]],
+             arguments: Mapping[str, Any], gaps: list[dict[str, Any]]) -> dict[str, Any]:
+        """Walk ``traverse`` from ``root`` hop by hop, then each measure on what it
+        reached: {hops, set, results, gaps, meta}."""
+        common = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
+        hops_out: list[dict[str, Any]] = []
+        current, meta = root, None
+        for index, hop in enumerate(traverse):
+            args = {"from": current, "path": [_hop(hop)], "limit": 50, **common}
+            if arguments.get("tier_floor"):
+                args["tier_floor"] = arguments["tier_floor"]
+            if index == len(traverse) - 1 and arguments.get("where"):
+                args["filters"] = list(arguments["where"])
+            got = call("plx.around", args)
+            if got.get("error"):
+                raise _Refused(_error(got["error"].get("code") or "traverse_refused",
+                                      f"hop {index + 1}: " + str(got["error"].get("message")),
+                                      got["error"].get("hint")))
+            meta = got.get("meta") or meta
+            for item in got.get("hops") or ():
+                hops_out.append({k: item[k] for k in ("link_type", "direction", "count",
+                                                      "tiers") if k in item})
+            gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+            current = got.get("set")
+            if not current or not (got.get("hops") or [{}])[-1].get("count", 1):
+                current = None
+                break
+        result: dict[str, Any] = {"hops": hops_out, "set": current, "results": []}
+        if not current:
+            result["gaps"] = gaps + [{"state": "unknown", "reason": "nothing_reached",
+                                      "subject": "traverse",
+                                      "detail": "no record was reached on the path"}]
+            result["meta"] = meta
+            return result
+        for measure in arguments.get("measures") or [{"op": "count"}]:
+            result["results"].append(self._measure(call, current, measure, arguments,
+                                                   common, gaps))
+        meta = next((r.get("meta") for r in result["results"] if r.get("meta")), meta)
+        for r in result["results"]:
+            r.pop("meta", None)
+        result["gaps"], result["meta"] = gaps, meta
+        return result
+
+    def _start(self, start: Mapping[str, Any], call, actor, gaps
+               ) -> tuple[str | None, list[str] | None, str | None]:
+        """(a set handle to walk from, or the start records, and the entity mention)."""
+        keys = set(start)
+        if keys not in ({"set"}, {"object_id"}, {"object_ids"}, {"entity"}, {"codes"},
+                        {"codes", "object_type"}):
+            raise _Refused(_error("invalid_input", "from names one start: set, object_id, "
+                                  "object_ids, entity, or codes (with an object_type)"))
+        if "codes" in start:
+            # many records at once (the codes of a sheet's rows): their exact codes on the
+            # identifier index in one read, each record through the store's gate
+            if self.backend.codes is None:
+                raise _Refused(_error("invalid_input", "codes need the host's identifier "
+                                      "index"))
+            found, missing = self.backend.codes(actor, list(start["codes"]),
+                                                start.get("object_type"))
+            if missing:
+                gaps.append({"state": "unknown", "reason": "codes_not_found",
+                             "subject": ", ".join(missing)[:700],
+                             "detail": f"{len(missing)} code(s) name no record this reader "
+                                       "may read"})
+            if not found:
+                raise _Refused(_error("object_not_found", "no record holds these codes",
+                                      "plx.find one of them"))
+            # one set walked as a whole (a list's records are many; name object_type so
+            # one system's copies are read, never a record and its twin both)
+            return self._set_of(found, actor), None, None
+        if "set" in start:
+            return start["set"], None, None
+        if "object_id" in start or "object_ids" in start:
+            asked = list(dict.fromkeys(start.get("object_ids") or [start["object_id"]]))
+            if self.backend.visible is not None:
+                readable = self.backend.visible(actor, asked)
+                # a record this reader may not read is answered as one that does not
+                # exist: never told apart (as plx.object answers it)
+                asked = [oid for oid in asked if oid in readable]
+            if not asked:
+                raise _Refused(_error("object_not_found", "no such record",
+                                      "plx.find it first"))
+            return (asked[0] if len(asked) == 1 else None), asked, None
+        got = call("plx.find", {"mode": "entities", "text": start["entity"]})
+        entities = [e for e in got.get("entities") or () if e.get("status") == "match"]
+        gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+        if not entities:
+            raise _Refused(_error("entity_not_resolved",
+                                  "no record this reader may read is what the name or code "
+                                  "names", "plx.find it, then start from object_ids"))
+        best = entities[0]
+        ids = [r["object"]["object_id"] for r in best["records"] if r.get("status") == "match"]
+        return None, ids, best.get("mention")
+
+    def _set_of(self, ids: Sequence[str], actor: Any) -> str | None:
+        if not ids:
+            return None
+        if len(ids) == 1:
+            return ids[0]
+        if self.backend.new_set is None:
+            raise _Refused(_error("invalid_input", "several start records need the host's "
+                                  "set registry"))
+        return self.backend.new_set(actor, list(ids))
+
+    def _measure(self, call, current: str, measure: Mapping[str, Any],
+                 arguments: Mapping[str, Any], common: Mapping[str, Any],
+                 gaps: list[dict[str, Any]]) -> dict[str, Any]:
+        args: dict[str, Any] = {"set": current, "measure": dict(measure), **common}
+        if arguments.get("group_by"):
+            args["group_by"] = list(arguments["group_by"])
+        if arguments.get("group_path"):
+            args["path"] = [_hop(h) for h in arguments["group_path"]]
+        got = call("plx.aggregate", args)
+        if got.get("error"):
+            return {"measure": dict(measure), "error": got["error"]}
+        gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+        groups = list(got.get("groups") or ())
+        out: dict[str, Any] = {"measure": dict(measure), "groups": groups[:MAX_GROUPS_SHOWN],
+                               "meta": got.get("meta")}
+        for key in ("completeness", "total", "withheld"):
+            if key in got:
+                out[key] = got[key]
+        if len(groups) > MAX_GROUPS_SHOWN:
+            out["more_groups"] = len(groups) - MAX_GROUPS_SHOWN
+        window = arguments.get("window")
+        if window:
+            out["window"] = _window(groups, window, measure.get("op", "count"))
+        return out
+
+
+def _window(groups: Sequence[Mapping[str, Any]], window: Mapping[str, Any], op: str
+            ) -> dict[str, Any]:
+    """The groups whose ``window.property`` key lies in [from, to), totalled (count and
+    sum add; min and max take the extreme), with every input they cite."""
+    prop, low, high = window["property"], window.get("from"), window.get("to")
+    inside, outside, unkeyed = [], 0, 0
+    for group in groups:
+        key = _key_text((group.get("key") or {}).get(prop))
+        if key is None:
+            unkeyed += 1
+            continue
+        if (low is None or key[:len(low)] >= low) and (high is None or key[:len(high)] < high):
+            inside.append(group)
+        else:
+            outside += 1
+    values = [_decimal(g.get("value")) for g in inside]
+    total: Decimal | None = None
+    if values and all(v is not None for v in values):
+        if op in ("count", "count_distinct", "sum"):
+            total = sum(values, Decimal(0))
+        elif op == "min":
+            total = min(values)
+        elif op == "max":
+            total = max(values)
+    cited: list[Any] = []
+    for group in inside:
+        cited += list(group.get("inputs_citations") or ())
+    out = {"property": prop, "from": low, "to": high, "groups_inside": len(inside),
+           "groups_outside": outside, "value": None if total is None else str(total),
+           "inputs_citations": cited[:MAX_CITED]}
+    if len(cited) > MAX_CITED:
+        out["more_inputs"] = len(cited) - MAX_CITED
+    if unkeyed:
+        out["groups_without_key"] = unkeyed
+    units = {g.get("unit") for g in inside} - {None}
+    currencies = {g.get("currency") for g in inside} - {None}
+    if len(units) > 1 or len(currencies) > 1:
+        # groups in several units or currencies are never added into one figure
+        out["value"] = None
+        out["mixed"] = sorted(units | currencies)[:10]
+    elif len(units) == 1:
+        out["unit"] = units.pop()
+    return out
+
+
+def _fold(gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    seen, out = set(), []
+    for gap in gaps:
+        key = (gap.get("reason"), gap.get("subject"))
+        if key not in seen:
+            seen.add(key)
+            out.append(dict(gap))
+    return out
+
+
+def _clean(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("meta") is None:
+        result.pop("meta", None)
+    return result
+
+
+class _Refused(Exception):
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__(result.get("error", {}).get("code"))
+        self.result = result
+
+
+def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
+    """Serve ``plx.query`` in a host tool table (``ontology_host.tool_table``): its reads
+    are that table's ``plx.find``/``plx.around``/``plx.aggregate`` handlers, so it runs for
+    the actor the host passes under the policy the host decided for the call."""
+    answers: list[Any] = []
+
+    def call(name: str, arguments: Mapping[str, Any], actor: Any) -> Mapping[str, Any]:
+        if name in table:
+            return table[name]["handler"](dict(arguments), actor)
+        # plx.aggregate is served beside the table (the host's answer tools), over the
+        # same OntologyTools and the policy the host set on it for this call
+        from .ontology_tools_aggregate import TOOL_NAMES as ANSWER_TOOLS, AggregateTools
+        if name not in ANSWER_TOOLS:
+            return _error("tool_not_served", f"{name} is not served to plx.query")
+        if not answers or answers[0].base is not base:
+            answers[:] = [AggregateTools(base)]
+        return answers[0].call(name, dict(arguments), actor)
+
+    def visible(actor: Any, ids: list[str]) -> set[str]:
+        with base.store.lock:
+            return set(base._visible_versions(base._scope(actor, base.clock()), ids))
+
+    def codes(actor: Any, wanted: list[str], object_type: str | None
+              ) -> tuple[list[str], list[str]]:
+        forms = {form: code for code in wanted for form in (
+            code.strip(), code.strip().upper(), re.sub(r"\s+", "", code).upper())}
+        with base.store.lock:
+            scope = base._scope(actor, base.clock())
+            rows = base.store.identifiers_by_value(scope, sorted(forms))
+            ids = sorted({r["object_id"] for r in rows if object_type is None
+                          or r["object_id"].split(":", 1)[0] == object_type})
+            readable = set(base._visible_versions(scope, ids))
+        held = {forms[r["normalized"]] for r in rows if r["object_id"] in readable
+                and r["normalized"] in forms}
+        return ([i for i in ids if i in readable][:MAX_CODE_RECORDS],
+                [c for c in wanted if c not in held])
+
+    backend = TableBackend(call, getattr(base, "_new_set", None), getattr(base, "schema", None),
+                           visible if hasattr(base, "_visible_versions") else None,
+                           codes if hasattr(base, "_visible_versions") else None)
+    tool = QueryTool(backend)
+    if TOOL_NAME in table:
+        raise ValueError(f"tool already registered: {TOOL_NAME}")
+    table[TOOL_NAME] = dict(TOOL, handler=tool.call)
+    return tool
+
+
+__all__ = ["QueryTool", "TOOL", "TOOL_NAME", "TOOL_NAMES", "TableBackend", "register"]

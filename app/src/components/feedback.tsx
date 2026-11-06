@@ -1,5 +1,6 @@
 "use client";
 
+import { Check, ThumbsDown, ThumbsUp } from "lucide-react";
 import { useId, useState } from "react";
 import { sendFeedback } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -39,50 +40,42 @@ export function Feedback({ answerId }: { answerId: string }) {
 
   if (state === "up-sent" || state === "down-sent") {
     return (
-      <p role="status" className="text-meta text-muted" data-testid="feedback-thanks">
-        {state === "up-sent" ? "Marked correct." : "Sent to the Workbench team."}
+      <p role="status" className="inline-flex h-8 items-center gap-1.5 px-2.5 text-[13px] text-muted" data-testid="feedback-thanks">
+        <Check className="size-[15px]" strokeWidth={2} aria-hidden />
+        {state === "up-sent" ? "Marked correct" : "Sent to the Workbench team"}
       </p>
     );
   }
 
+  const quiet = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer [&_svg]:size-[15px]";
   return (
-    <div className="space-y-3" data-testid="feedback">
-      <div className="flex items-center justify-end gap-1">
-        <button
-          type="button"
-          aria-label="Yes, this answer was right"
-          title="Was this right? Yes"
-          onClick={() => submit(1)}
-          disabled={state === "sending"}
-          className="rounded-sm px-2 py-1 text-meta text-accent hover:bg-surface-2 disabled:opacity-50 cursor-pointer"
-        >
-          Correct
-        </button>
-        <button
-          type="button"
-          aria-label="No, something was wrong"
-          aria-expanded={state === "down-open"}
-          title="Was this right? No"
-          onClick={() => setState(state === "down-open" ? "idle" : "down-open")}
-          disabled={state === "sending"}
-          className={cn(
-            "rounded-sm px-2 py-1 text-meta text-accent hover:bg-surface-2 disabled:opacity-50 cursor-pointer",
-            state === "down-open" && "bg-surface-2 text-fg",
-          )}
-        >
-          Wrong
-        </button>
-      </div>
+    <div className="contents" data-testid="feedback">
+      <button type="button" aria-label="Yes, this answer was right" title="Was this right? Yes" onClick={() => submit(1)} disabled={state === "sending"} className={quiet}>
+        <ThumbsUp strokeWidth={2} aria-hidden />
+        <span className="max-sm:hidden">Correct</span>
+      </button>
+      <button
+        type="button"
+        aria-label="No, something was wrong"
+        aria-expanded={state === "down-open"}
+        title="Was this right? No"
+        onClick={() => setState(state === "down-open" ? "idle" : "down-open")}
+        disabled={state === "sending"}
+        className={cn(quiet, state === "down-open" && "bg-hover text-fg")}
+      >
+        <ThumbsDown strokeWidth={2} aria-hidden />
+        <span className="max-sm:hidden">Wrong</span>
+      </button>
       {state === "down-open" && (
         <form
-          className="space-y-3 rounded-sm border border-border-strong p-3"
+          className="order-last mt-1 w-full space-y-4 rounded-xl bg-bg p-4 shadow-lift"
           onSubmit={(e) => {
             e.preventDefault();
             void submit(-1);
           }}
         >
           <fieldset>
-            <legend className="mb-2 text-row font-medium">What was wrong?</legend>
+            <legend className="mb-2.5 text-[13px] font-medium">What was wrong?</legend>
             <div className="flex flex-wrap gap-1.5">
               {REASONS.map((r) => {
                 const on = reasons.includes(r);
@@ -93,10 +86,11 @@ export function Feedback({ answerId }: { answerId: string }) {
                     aria-pressed={on}
                     onClick={() => setReasons(on ? reasons.filter((x) => x !== r) : [...reasons, r])}
                     className={cn(
-                      "rounded-sm border px-2 py-0.5 text-meta cursor-pointer",
-                      on ? "border-fg bg-surface-2 font-medium text-fg" : "border-border-strong text-fg hover:bg-surface-2",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] cursor-pointer",
+                      on ? "bg-accent-soft font-medium text-fg" : "bg-surface-2 text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]",
                     )}
                   >
+                    {on && <Check className="size-3" strokeWidth={2.4} aria-hidden />}
                     {r}
                   </button>
                 );
@@ -114,21 +108,17 @@ export function Feedback({ answerId }: { answerId: string }) {
               rows={2}
               maxLength={2000}
               placeholder="What should it have said? (optional)"
-              className="w-full resize-none rounded-sm border border-control bg-bg px-3 py-2 text-row placeholder:text-faint focus:border-fg"
+              className="w-full resize-none rounded-lg bg-surface px-3 py-2 text-[13px] leading-5 placeholder:text-faint focus:outline-2 focus:outline-ring"
             />
           </div>
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setState("idle")}
-              className="rounded-sm px-3 py-1 text-row text-fg hover:bg-surface-2 cursor-pointer"
-            >
+          <div className="flex items-center justify-end gap-1">
+            <button type="button" onClick={() => setState("idle")} className="inline-flex h-8 items-center rounded-lg px-3 text-[13px] text-muted hover:bg-hover hover:text-fg cursor-pointer">
               Cancel
             </button>
             <button
               type="submit"
               disabled={reasons.length === 0 && note.trim() === ""}
-              className="rounded-sm bg-accent px-3 py-1 text-row font-medium text-accent-fg disabled:opacity-50 cursor-pointer"
+              className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg hover:brightness-110 disabled:opacity-50 cursor-pointer disabled:cursor-default"
             >
               Send feedback
             </button>
@@ -136,7 +126,7 @@ export function Feedback({ answerId }: { answerId: string }) {
         </form>
       )}
       {error && (
-        <p role="alert" className="text-meta text-bad">
+        <p role="alert" className="order-last w-full text-[12px] text-fg">
           {error}
         </p>
       )}

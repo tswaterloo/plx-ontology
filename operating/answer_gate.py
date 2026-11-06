@@ -105,7 +105,11 @@ OUTCOMES = ("answered", "repair", "abstained")
 # A structured claim: one value, the L1 handle it was read from and its field (or a count
 # or sum over cited records), optional role, unit, currency, and whether it is a lead.
 CLAIM_KEYS = frozenset({"id", "value", "citation", "field", "role", "unit", "currency",
-                        "op", "of", "lead", "quote", "expression", "name"})
+                        "op", "of", "lead", "quote", "expression", "name", "via"})
+# A claim whose citations neither name nor link to a record the question names
+# (``gate_answer``'s ``relevant``) and whose ``via`` (a handle this session returned) does
+# not either: refused, so an answer never rests on a record unconnected to its question.
+OFF_QUESTION = "claim_off_question"
 CLAIM_ID = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
 # The answer value name an MCP value claim may carry (``_legacy``): the host renders the
 # reader's answer values from the passed claims under these names.
@@ -192,6 +196,11 @@ REPAIR_ANSWER = (
 # What a repair adds for each refusal reason it lists (``refused_claims``), so a refused
 # claim that a record does support is fixed instead of abandoned.
 REPAIR_HINTS = {
+    OFF_QUESTION: (
+        "claim_off_question: the cited record neither names nor links to a record the "
+        "question names; keep the claim only with \"via\": the handle of a record you read "
+        "that names one of them and leads to this one (the order, message or file that "
+        "connects them)."),
     "claim_states_no_value": (
         "claim_states_no_value: a claim without value_claims states nothing; give what the "
         "record says as a value claim, the passage copied as written from the text you "
@@ -248,6 +257,13 @@ WITHHOLD_REFUSED = (
 
 
 # ------------------------------------------------------------------ what is evidence
+
+# (container key, key) where a tool result lists a handle for reading, not as read: a
+# message's attachments (``plx.read``, ``attachments[].citation``). Their contracts type it
+# a plain string, so ``evidence_handles`` never counts it, and the eval scorer
+# (``evals.score.returned_handles``) skips it too: evidence only once it is read.
+LISTED_HANDLES = frozenset({("attachments", "citation")})
+
 
 def evidence_handles(tool: Any, result: Any, out: set[str] | None = None, *,
                      arguments: Any = None) -> set[str]:
@@ -328,7 +344,9 @@ def _typed_handles(value: Any, schema: Any, out: set[str], given: set[str],
 def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
                 returned: Mapping[str, Any], may_repair: bool,
                 unread: Callable[[str, str], bool] | None = None,
-                read_values: bool = False) -> dict[str, Any]:
+                read_values: bool = False,
+                relevant: Callable[[Sequence[str], Callable[[str], Any]], bool | None]
+                | None = None) -> dict[str, Any]:
     """The gated final answer of ``decision`` (``claims``, ``text``, ``unknowns``) for
     ``server``'s session (module doc): ``{"outcome": "answered" | "repair" | "abstained",
     "reason", "claims", "dropped", "unsupported", "unknowns", "checks", "repair", "text",
@@ -341,7 +359,11 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     was served only part of that text of that record (``UNREAD_PART``).
     ``read_values``: a claim citing one record field may leave its value to the gate
     (``read_value``; an MCP client's submission, ``mcp_server.answer_decision``); else a
-    claim with no value is refused (``claim_states_no_value``)."""
+    claim with no value is refused (``claim_states_no_value``). ``relevant(handles,
+    read)``: whether the records ``handles`` cite name or link to a record the question
+    names (None: undecided, which keeps the claim); a claim that its citations do not
+    connect stands only on a ``via`` that does (an unreadable one does not), else it is
+    refused (``OFF_QUESTION``). None: no such check."""
     reader: list[Callable[[str], Any]] = []
 
     def read(handle: str) -> Any:
@@ -354,6 +376,20 @@ def gate_answer(decision: Mapping[str, Any], server: Any, *, seen: set[str],
     raw = decision.get("unknowns") if isinstance(decision, Mapping) else None
     unknowns = [str(u)[:MAX_UNKNOWN_CHARS] for u in raw
                 if isinstance(u, str)][:MAX_UNKNOWNS] if isinstance(raw, list) else []
+    if relevant is not None and claims:
+        on_question = []
+        for claim in claims:
+            via = claim.get("via")
+            # A via must connect as read now: one that cannot be read connects nothing.
+            if relevant(claim["citations"], read) is False and not (
+                    via and relevant([via], read) is True):
+                dropped += 1
+                unsupported.append({"text": f"{claim['id']}: " + _shown_value(
+                    claim["value_claims"][0].get("value")),
+                    "reason": OFF_QUESTION, "_cited": claim["citations"]})
+            else:
+                on_question.append(claim)
+        claims = on_question
     checks = None
     rows = read if claims else None
     if claims:
@@ -740,7 +776,13 @@ def _claims(decision: Any, seen: set[str], rows: Callable[[str], Any] | None = N
         if "value" not in claim:
             refuse(label, "claim_states_no_value", cited)
             continue
-        value_claim = {key: claim[key] for key in claim if key not in ("id", "lead", "name")}
+        via = claim.get("via")
+        if via is not None and (not isinstance(via, str) or via not in seen):
+            refuse(label, "claim_invalid", cited,
+                   detail="via is a handle this session returned")
+            continue
+        value_claim = {key: claim[key] for key in claim
+                       if key not in ("id", "lead", "name", "via")}
         try:
             parsed = parse_value_claims([value_claim], handles, [])
         except ValueError as error:
@@ -751,6 +793,7 @@ def _claims(decision: Any, seen: set[str], rows: Callable[[str], Any] | None = N
             refuse(label, "value_claims_invalid", cited, detail=problem)
             continue
         kept.append({"id": cid, **({"name": claim["name"]} if "name" in claim else {}),
+                     **({"via": via} if via is not None else {}),
                      "citations": handles, "value_claims": parsed,
                      "lead": claim.get("lead") is True})
     if len(claims) > MAX_CLAIMS:

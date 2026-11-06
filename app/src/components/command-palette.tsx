@@ -1,15 +1,18 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { Bell, Home, ListChecks, MessageSquare, Search, Timer, type LucideIcon } from "lucide-react";
+import { CornerDownLeft, MessageCircle, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useShortcut } from "@/lib/platform";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
 import { recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { stashPending } from "@/lib/pending";
 import { arrange, type Arranged } from "./ask-box";
+import { PlaceTile, SystemTile } from "./ui/glyphs";
+import { Monogram } from "./ui/monogram";
 
 /**
  * The command bar: one field that finds any record by number or name, goes anywhere in the
@@ -19,16 +22,16 @@ import { arrange, type Arranged } from "./ask-box";
 
 type Item =
   | { kind: "ask"; id: string; q: string }
-  | { kind: "go"; id: string; label: string; href: string; icon: LucideIcon; hint: string }
+  | { kind: "go"; id: string; label: string; href: string; hint: string }
   | { kind: "record"; id: string; s: Arranged }
   | { kind: "example"; id: string; q: string };
 
-const PLACES: { label: string; href: string; icon: LucideIcon; hint: string; words: string }[] = [
-  { label: "Today", href: "/", icon: Home, hint: "Late POs and what to chase", words: "today home front page briefing" },
-  { label: "Late POs", href: "/late", icon: Timer, hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
-  { label: "Briefing", href: "/briefing", icon: Bell, hint: "Everything open, ranked", words: "briefing alerts attention" },
-  { label: "Ask", href: "/ask", icon: MessageSquare, hint: "New question", words: "ask question chat" },
-  { label: "Action log", href: "/actions", icon: ListChecks, hint: "Emails sent and tasks logged", words: "actions log journal" },
+const PLACES: { label: string; href: string; hint: string; words: string }[] = [
+  { label: "Today", href: "/", hint: "Late POs and what to chase", words: "today home front page briefing" },
+  { label: "Late POs", href: "/late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },
+  { label: "Briefing", href: "/briefing", hint: "Everything open, ranked", words: "briefing alerts attention" },
+  { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
+  { label: "Action log", href: "/actions", hint: "Emails sent and tasks logged", words: "actions log journal" },
 ];
 
 const PaletteCtx = createContext<{ open: () => void }>({ open: () => undefined });
@@ -61,6 +64,7 @@ export function CommandPaletteProvider({ children }: { children: React.ReactNode
 }
 
 function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const { shortcut } = useShortcut();
   const router = useRouter();
   const [q, setQ] = useState("");
   const [records, setRecords] = useState<Arranged[]>([]);
@@ -101,7 +105,7 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
     const text = q.trim();
     const low = text.toLowerCase();
     const places = PLACES.filter((p) => !low || p.words.includes(low) || p.label.toLowerCase().includes(low)).map(
-      (p): Item => ({ kind: "go", id: `go-${p.href}`, label: p.label, href: p.href, icon: p.icon, hint: p.hint }),
+      (p): Item => ({ kind: "go", id: `go-${p.href}`, label: p.label, href: p.href, hint: p.hint }),
     );
     if (!text)
       return [
@@ -148,18 +152,19 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
   }
 
   let index = -1;
+  const typed = q.trim().length >= 2;
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.25)]" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.14)] animate-fade-in dark:bg-[rgb(0_0_0/0.45)]" />
         <Dialog.Content
-          className="fixed top-[12vh] left-1/2 z-50 flex max-h-[min(560px,76vh)] w-[min(640px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded border border-border-strong bg-raised shadow-pop focus:outline-none"
+          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-[14px] bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
           aria-describedby={undefined}
           data-testid="command-palette"
         >
           <Dialog.Title className="sr-only">Find a record, go somewhere or ask</Dialog.Title>
-          <div className="flex items-center gap-3 border-b border-border px-4">
-            <Search className="size-4 shrink-0 text-faint" strokeWidth={1.75} aria-hidden />
+          <div className="flex items-center gap-3 border-b border-[color-mix(in_srgb,var(--fg)_9%,transparent)] px-5">
+            <Search className="size-[18px] shrink-0 text-muted" strokeWidth={2} aria-hidden />
             <input
               autoFocus
               value={q}
@@ -168,8 +173,8 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 setActive(0);
               }}
               onKeyDown={onKeyDown}
-              placeholder="PO, SO, supplier, customer or lot number, or a question"
-              className="h-13 min-w-0 flex-1 bg-transparent text-[16px] text-fg placeholder:text-faint focus:outline-none"
+              placeholder="Search records or ask a question"
+              className="h-[58px] min-w-0 flex-1 bg-transparent text-[17px] tracking-[-0.01em] text-fg placeholder:text-faint focus:outline-none"
               role="combobox"
               aria-expanded
               aria-controls="palette-list"
@@ -177,41 +182,45 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               aria-label="Find a record, go somewhere or ask"
               data-testid="palette-input"
             />
-            {searching && <span className="text-meta text-faint">Searching…</span>}
-            <kbd className="hidden rounded-sm border border-border px-1 font-mono text-[11px] leading-4 text-faint sm:block">esc</kbd>
+            {searching && <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-border-strong border-t-muted" aria-label="Searching" role="status" />}
+            <kbd className="hidden h-5 items-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1.5 font-sans text-[11px] text-muted sm:flex" aria-hidden>
+              Esc
+            </kbd>
           </div>
-          <ul ref={list} id="palette-list" role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5">
+          <ul ref={list} id="palette-list" role="listbox" aria-label="Results" className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pt-1 pb-2">
             {items.map((g) => (
               <li key={g.group} role="presentation">
-                <p className="px-2.5 pt-2.5 pb-1 text-label text-faint" role="presentation">
+                <p className="px-3 pt-3 pb-1.5 text-[11px] leading-4 font-medium text-faint" role="presentation">
                   {g.group}
                 </p>
                 <ul role="presentation">
                   {g.items.map((it) => {
                     index += 1;
                     const i = index;
+                    const on = i === active;
                     return (
                       <li
                         key={it.id}
                         id={`palette-${it.id}`}
                         role="option"
-                        aria-selected={i === active}
+                        aria-selected={on}
                         data-index={i}
-                        onMouseMove={() => i !== active && setActive(i)}
+                        onMouseMove={() => !on && setActive(i)}
                         onMouseDown={(e) => {
                           e.preventDefault();
                           choose(it);
                         }}
                         className={cn(
-                          "relative flex min-h-10 cursor-pointer items-center gap-3 rounded px-2.5 py-1.5 text-row",
-                          i === active ? "bg-surface-2 text-fg" : "text-muted",
+                          "flex h-10 cursor-pointer items-center gap-3 rounded-lg px-3 text-[13px]",
+                          it.kind === "record" && "h-11",
+                          on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] text-fg" : "text-fg/90",
                         )}
                         data-testid="palette-item"
                       >
-                        {i === active && <span className="absolute inset-y-1.5 left-0 w-0.5 bg-accent" aria-hidden />}
                         <Row it={it} />
-                        <span className={cn("ml-auto shrink-0 text-faint", i === active ? "opacity-100" : "opacity-0")} aria-hidden>
-                          <span className="text-[11px]">Enter</span>
+                        <span className={cn("ml-auto shrink-0 pl-2 text-[12px] text-muted", on ? "flex" : "hidden")} aria-hidden>
+                          {it.kind === "ask" || it.kind === "example" ? "Ask" : "Open"}
+                          <CornerDownLeft className="ml-1.5 size-3.5 self-center" strokeWidth={2} />
                         </span>
                       </li>
                     );
@@ -219,21 +228,25 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 </ul>
               </li>
             ))}
-            {q.trim().length >= 2 && !searching && records.length === 0 && (
-              <li role="presentation" className="px-2.5 py-2 text-meta text-faint">
-                No record by that name or number; ask it as a question.
+            {typed && !searching && records.length === 0 && (
+              <li role="presentation" className="px-3 pt-3 text-[12px] leading-4 text-faint">
+                No record by that name or number.
               </li>
             )}
           </ul>
-          <div className="hidden items-center gap-4 border-t border-border px-4 py-2 text-[11px] text-faint sm:flex" aria-hidden>
-            <span>
-              <kbd className="font-mono">↑↓</kbd> move
+          <div className="hidden h-10 shrink-0 items-center gap-4 border-t border-[color-mix(in_srgb,var(--fg)_9%,transparent)] bg-[color-mix(in_srgb,var(--fg)_2.5%,transparent)] px-4 text-[12px] text-muted sm:flex" aria-hidden>
+            <span className="flex items-center gap-1.5">
+              <Key>↑</Key>
+              <Key>↓</Key>
+              Move
             </span>
-            <span>
-              <kbd className="font-mono">↵</kbd> open
+            <span className="flex items-center gap-1.5">
+              <Key>↵</Key>
+              Open
             </span>
-            <span className="ml-auto">
-              <kbd className="font-mono">⌘K</kbd> anywhere
+            <span className="ml-auto flex items-center gap-1.5">
+              <Key>{shortcut("K")}</Key>
+              Anywhere
             </span>
           </div>
         </Dialog.Content>
@@ -242,31 +255,54 @@ function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (
   );
 }
 
+function Key({ children }: { children: React.ReactNode }) {
+  return <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1 font-sans text-[11px] leading-none text-muted">{children}</kbd>;
+}
+
+const PARTY = /^(?:supplier|vendor|customer|contact|company)$/i;
+
 function Row({ it }: { it: Item }) {
   if (it.kind === "ask" || it.kind === "example")
     return (
       <>
+        {it.kind === "ask" ? (
+          <PlaceTile href="/ask" />
+        ) : (
+          <span className="flex size-5 shrink-0 items-center justify-center rounded-[5.5px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] text-muted" aria-hidden>
+            <MessageCircle className="size-3" strokeWidth={2.2} />
+          </span>
+        )}
         <span className="min-w-0 truncate">
-          {it.kind === "ask" && <span className="text-faint">Ask </span>}
-          <span className="text-fg">{it.q}</span>
+          {it.kind === "ask" && <span className="text-muted">Ask </span>}
+          <span className={it.kind === "ask" ? "font-medium text-fg" : "text-fg"}>{it.q}</span>
         </span>
       </>
     );
   if (it.kind === "go")
     return (
       <>
-        <span className="text-fg">{it.label}</span>
-        <span className="hidden truncate text-meta text-faint sm:inline">{it.hint}</span>
+        <PlaceTile href={it.href} />
+        <span className="shrink-0 font-medium text-fg">{it.label}</span>
+        <span className="hidden min-w-0 truncate text-[12px] text-muted sm:inline">{it.hint}</span>
       </>
     );
   const s = it.s;
+  const party = PARTY.test(s.type);
   const sub = [typeLabel(s.type), s.facts ?? s.sublabel].filter(Boolean).join(" · ");
   return (
     <>
-      <span className="min-w-0 flex-1 truncate">
-        <span className="font-medium text-fg">{recordLabel(s.type, s.label)}</span>
-        <span className="ml-2 text-meta text-faint">{sub}</span>
+      {party ? <Monogram name={s.label} size={24} /> : <SystemTile system={s.systems[0] ?? "BC"} size={24} />}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] leading-[17px] font-medium text-fg">{recordLabel(s.type, s.label)}</span>
+        <span className="block truncate text-[12px] leading-4 text-muted">{sub}</span>
       </span>
+      {s.systems.length > 1 && (
+        <span className="hidden shrink-0 items-center gap-0.5 sm:flex" aria-hidden>
+          {s.systems.slice(1, 4).map((x) => (
+            <SystemTile key={x} system={x} size={14} />
+          ))}
+        </span>
+      )}
     </>
   );
 }

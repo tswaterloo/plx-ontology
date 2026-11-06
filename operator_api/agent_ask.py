@@ -43,10 +43,27 @@ from typing import Any, Callable, Mapping, Optional
 from operating import deep_investigation as deep
 
 AGENT = "plx.agent.investigate"
-ASK_SECONDS = deep.SESSION_SECONDS   # the hard cap of one Ask's session, and its budget
+ASK_SECONDS = deep.DEEP_SECONDS   # the hard cap of one Ask's session; each question's own
+# budget is ``deep.question_budget`` under it (a lookup short, a multi-step question deep)
 MAX_TURNS = deep.MAX_TURNS           # as the scoreboard's sessions
 MAX_STEPS = deep.MAX_STEPS           # tool calls besides the answer gate's
+# Helper hosts per Ask (``operating.host_peers``): its independent reads run at once.
+# ``PLX_ASK_HOST_HELPERS`` sets another number (0: one host serves every call in turn).
+HOST_HELPERS_ENV = "PLX_ASK_HOST_HELPERS"
+
+
+def host_helpers() -> int:
+    from operating.agent_session import HOST_HELPERS
+    try:
+        return max(0, min(4, int(os.environ.get(HOST_HELPERS_ENV, HOST_HELPERS))))
+    except ValueError:
+        return HOST_HELPERS
 CATALOG_SECONDS = 3600     # a reader's tool catalog is listed again after this
+# A reader's spare host is started again at most this often by a warm-up (``prewarm``);
+# a spare is kept agent_session.SPARE_SECONDS, so a warm-up just before it expires renews it.
+PREWARM_SECONDS = 240.0
+_PREWARMED: dict[str, float] = {}
+_PREWARMED_LOCK = threading.Lock()
 # The model an Ask about one named record runs on (``ClaudeCodeAgent.routed``: the
 # questions the short method is asked for); any other question stays on the session's.
 # None: every Ask on the session's model.
@@ -77,11 +94,11 @@ PREREAD_HEADING = ("Tool output already read for you, as this reader, before the
                    "claim the answer gate passes, citing the record it names):\n")
 
 
-def app_prompt(question: str) -> str:
+def app_prompt(question: str, route: str | None = None) -> str:
     """The app's Ask task: the scoreboard's ``ask_prompt`` unchanged, then
     ``APP_READER_RULE``."""
     from operating import agent_session as runner
-    return runner.ask_prompt(question) + "\n\n" + APP_READER_RULE
+    return runner.ask_prompt(question, route) + "\n\n" + APP_READER_RULE
 
 
 class ReaderRefused(LookupError):
@@ -270,17 +287,49 @@ class AgentAsk:
                                         extra_env=extra, agent=AGENT)
         return _Catalogued(host, (str(self.host_config), AGENT, claims["entraObjectId"]))
 
-    def agent_for(self, on_line: Callable[[str], None]) -> Any:
+    def agent_for(self, on_line: Callable[[str], None], seconds: float | None = None) -> Any:
         if self._agent_for is not None:
             return self._agent_for(on_line)
+        seconds = self.seconds if seconds is None else seconds
         from operating import agent_session as runner
         # The deep-investigation budget is the Ask's own cap: research ends before it, so
         # the session submits what it established rather than being stopped mid-search.
         return runner.ClaudeCodeAgent(binary=self.claude_bin, model=self.model,
-                                      timeout=int(self.seconds), max_turns=self.max_turns,
+                                      timeout=int(seconds), max_turns=self.max_turns,
                                       spawn=runner.streaming_spawn(on_line),
-                                      budget_seconds=self.seconds, max_steps=MAX_STEPS,
-                                      lookup_model=self.lookup_model)
+                                      budget_seconds=seconds, max_steps=MAX_STEPS,
+                                      lookup_model=self.lookup_model,
+                                      helpers=host_helpers())
+
+    def prewarm(self, session: Any) -> bool:
+        """Take the reader's first Ask's start-up off its path, in the background: list
+        their tool catalog (``_Catalogued``, kept an hour) and start their spare host
+        (``agent_session.HostSpares``: past its imports, grant and store generation, its
+        search models and file indexes loading), so the session that follows takes it.
+        At most once per reader per ``PREWARM_SECONDS``; False when nothing was started
+        (a reader with no employee identity, or warmed recently). Never raises."""
+        if self._host_for is not None or self._agent_for is not None:
+            return False
+        try:
+            key = ticket_claims(session)["entraObjectId"]
+        except ReaderRefused:
+            return False
+        now = time.monotonic()
+        with _PREWARMED_LOCK:
+            if now - _PREWARMED.get(key, -PREWARM_SECONDS) < PREWARM_SECONDS:
+                return False
+            _PREWARMED[key] = now
+
+        def run() -> None:
+            try:
+                host = self.host_for(session)
+                host.tools()
+                self.agent_for(lambda line: None)._start_spare(host)
+            except Exception:  # noqa: BLE001 - a warm-up never fails an Ask
+                logging.getLogger("operator_api.ask").info(json.dumps(
+                    {"prewarm": "failed"}))
+        threading.Thread(target=run, name="ask-prewarm", daemon=True).start()
+        return True
 
     def read_source(self, session: Any, handle: str, text_offset: int = 0
                     ) -> dict[str, Any]:
@@ -313,7 +362,7 @@ class AgentAsk:
 
     def run(self, session: Any, question: str,
             emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
-            context: str = "") -> AskRun:
+            context: str = "", route: Optional[str] = None) -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
         each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
@@ -373,9 +422,13 @@ class AgentAsk:
             # output, ``operator_api.preread``). It goes into the task, never into the
             # question the final reply is screened against: a number or id in it is
             # stated only through a claim the gate passed, like any other tool output's.
-            prompt = app_prompt(question) + (
+            prompt = app_prompt(question, route) + (
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
-            run = runner.gated_run(self.agent_for(on_line), prompt, host, question)
+            agent = self.agent_for(on_line, deep.question_budget(question, self.seconds, route))
+            # the Ask resolved records the question names (the brief's roots): a text
+            # search waits for the agent's first record read
+            agent.records_named = bool(re.search(r'" names (?:one |the record)', context))
+            run = runner.gated_run(agent, prompt, host, question)
         finally:
             close = getattr(host, "close", None)
             if close is not None:

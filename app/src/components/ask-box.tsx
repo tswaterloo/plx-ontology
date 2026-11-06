@@ -1,12 +1,13 @@
 "use client";
 
-import { Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Truck, User, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, Box, Building2, Factory, FileBox, FlaskConical, Hash, MapPin, Package, Square, Truck, User, X, type LucideIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { suggest as fetchSuggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plural, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
+import { SystemTile } from "./ui/glyphs";
 
 export interface Pin {
   object_id: string;
@@ -348,6 +349,11 @@ export function AskBox({
         return;
       }
     }
+    if (e.key === "Escape" && busy && onStop) {
+      e.preventDefault();
+      onStop();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
@@ -355,6 +361,8 @@ export function AskBox({
   }
 
   const big = size === "lg";
+  const sm = size === "sm";
+  const pop = "absolute inset-x-0 z-40 rounded-xl bg-raised shadow-pop";
   return (
     <div className="relative w-full" ref={boxRef}>
       <form
@@ -363,25 +371,32 @@ export function AskBox({
           submit();
         }}
         className={cn(
-          "group relative flex flex-col rounded border border-control bg-surface transition-colors focus-within:border-fg focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring",
-          big ? "p-3" : size === "sm" ? "p-0.5" : "p-1.5",
+          "group relative flex flex-col bg-bg transition-shadow",
+          sm
+            ? "rounded-lg border border-control focus-within:border-fg"
+            : "rounded-2xl shadow-[var(--lift),0_8px_24px_-12px_rgb(0_0_0/0.12)] focus-within:shadow-[var(--lift),0_0_0_1px_color-mix(in_srgb,var(--accent)_45%,transparent),0_0_0_4px_color-mix(in_srgb,var(--accent)_12%,transparent)]",
+          big ? "p-2.5" : sm ? "p-0.5" : "p-2",
         )}
       >
         {pins.length > 0 && (
-          <div className="flex flex-wrap gap-1 px-2 pt-1" aria-label="Picked items">
-            {pins.map((p) => (
-              <span key={p.object_id} className="inline-flex items-center gap-0.5 rounded-sm border border-border-strong py-0.5 pl-1.5 text-meta text-fg">
-                {p.label}
-                <button
-                  type="button"
-                  aria-label={`Remove ${p.label}`}
-                  onClick={() => setPins(pins.filter((x) => x.object_id !== p.object_id))}
-                  className="flex size-6 items-center justify-center rounded hover:bg-accent/10 cursor-pointer"
-                >
-                  <X className="size-3" aria-hidden />
-                </button>
-              </span>
-            ))}
+          <div className="flex flex-wrap gap-1 px-1.5 pt-0.5 pb-1" aria-label="Picked items">
+            {pins.map((p) => {
+              const Icon = typeIcon(p.type);
+              return (
+                <span key={p.object_id} className="inline-flex h-6 items-center gap-1.5 rounded-md bg-surface-2 pl-2 text-[12px] text-fg">
+                  <Icon className="size-3 text-muted" strokeWidth={2.2} aria-hidden />
+                  {p.label}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${p.label}`}
+                    onClick={() => setPins(pins.filter((x) => x.object_id !== p.object_id))}
+                    className="flex size-6 items-center justify-center rounded-md text-muted hover:text-fg cursor-pointer"
+                  >
+                    <X className="size-3" aria-hidden />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
         <div className="flex items-end gap-2">
@@ -407,8 +422,7 @@ export function AskBox({
             onBlur={() => setTimeout(close, 120)}
             className={cn(
               "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-faint focus:outline-none",
-              size === "sm" ? "min-h-[34px] py-1.5" : "min-h-[44px] py-2.5",
-              big ? "text-answer font-normal" : size === "sm" ? "text-row" : "text-body",
+              sm ? "min-h-[34px] py-1.5 text-[13px]" : big ? "min-h-[48px] py-3 text-[15px] leading-6" : "min-h-[40px] py-2.5 text-[14px] leading-5",
             )}
           />
           {busy && onStop ? (
@@ -416,22 +430,24 @@ export function AskBox({
               type="button"
               onClick={onStop}
               aria-label="Stop answering"
-              className="mb-1 h-8 shrink-0 rounded-sm border border-control px-3 text-row text-fg hover:bg-surface-2 cursor-pointer"
+              title="Stop (Esc)"
+              className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8")}
             >
-              Stop
+              <Square className="size-3 fill-current" aria-hidden />
             </button>
           ) : (
             <button
               type="submit"
               aria-label="Ask"
+              title="Ask (Enter)"
               disabled={!value.trim() || disabled || busy}
               aria-disabled={!value.trim() || disabled || busy}
               className={cn(
-                "shrink-0 rounded-sm bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110 disabled:bg-surface-2 disabled:text-faint cursor-pointer disabled:cursor-default",
-                size === "sm" ? "m-0.5 h-[30px]" : "mb-1 h-8",
+                "flex shrink-0 items-center justify-center rounded-lg bg-accent text-accent-fg shadow-sm hover:brightness-110 disabled:bg-surface-2 disabled:text-faint disabled:shadow-none cursor-pointer disabled:cursor-default",
+                sm ? "m-0.5 size-[30px]" : "mb-0.5 size-8",
               )}
             >
-              Ask
+              <ArrowUp className="size-4" strokeWidth={2.4} aria-hidden />
             </button>
           )}
         </div>
@@ -441,22 +457,20 @@ export function AskBox({
         role="listbox"
         aria-label="Suggestions"
         hidden={!open || items.length === 0}
-        className={cn(
-          "absolute inset-x-0 z-40 max-h-80 overflow-auto rounded border border-border-strong bg-raised p-1 shadow-pop",
-          up ? "bottom-full mb-2" : "top-full mt-2",
-        )}
+        className={cn(pop, "max-h-80 overflow-auto p-1.5", up ? "bottom-full mb-2" : "top-full mt-2")}
         data-testid="suggestions"
         data-placement={up ? "up" : "down"}
       >
-        <li role="presentation" className="px-3 pt-1 pb-1 text-label text-muted">
+        <li role="presentation" className="px-2 pt-1 pb-1.5 text-[12px] font-medium text-muted">
           Records
         </li>
         {items.map((s, i) => {
           const sub = [typeLabel(s.type), s.facts ?? s.sublabel].filter(Boolean).join(" · ");
+          const Icon = typeIcon(s.type);
           return (
             <Fragment key={`${s.object_id}-${i}`}>
             {s.shared && s.shared > 1 ? (
-              <li role="presentation" className="px-3 pt-2 pb-0.5 text-meta text-muted" data-testid="shared-name">
+              <li role="presentation" className="px-2 pt-2 pb-1 text-[12px] text-muted" data-testid="shared-name">
                 {sharedName(s.shared, s.type)}
               </li>
             ) : null}
@@ -470,32 +484,34 @@ export function AskBox({
                 openRecord(s);
               }}
               onMouseEnter={() => setActive(i)}
-              className={cn(
-                "flex cursor-pointer items-center gap-3 rounded-sm px-3 py-1.5 text-row",
-                i === active ? "bg-surface-2" : "",
-              )}
+              className={cn("flex min-h-11 cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 text-[13px]", i === active ? "bg-hover" : "")}
               data-type={s.type}
             >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-surface-2 text-muted" aria-hidden>
+                <Icon className="size-3.5" strokeWidth={2} />
+              </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-fg">{recordLabel(s.type, s.label)}</span>
-                <span className="block truncate text-meta text-muted">{sub}</span>
+                <span className="block truncate text-[12px] leading-4 text-muted">{sub}</span>
               </span>
               {(s.systems ?? []).length > 0 && (
-                <span className="hidden shrink-0 text-meta text-muted sm:inline" aria-label={`Found in ${s.systems!.join(" and ")}`}>
-                  {s.systems!.join(", ")}
+                <span className="hidden shrink-0 items-center gap-1 sm:flex" aria-label={`Found in ${s.systems!.join(" and ")}`}>
+                  {s.systems!.map((x) => (
+                    <SystemTile key={x} system={x} size={16} />
+                  ))}
                 </span>
               )}
               <button
                 type="button"
                 tabIndex={-1}
                 aria-label={`Ask about ${recordLabel(s.type, s.label)}`}
-                title="Ask about this"
+                title="Ask about this (Tab)"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   pick(s);
                 }}
-                className="min-h-7 shrink-0 rounded-sm border border-border-strong px-2 py-0.5 text-meta text-fg hover:bg-surface-2 cursor-pointer"
+                className={cn("inline-flex h-7 shrink-0 items-center rounded-md px-2 text-[12px] text-muted hover:bg-surface-2 hover:text-fg cursor-pointer", i === active ? "opacity-100" : "sm:opacity-0")}
                 data-testid="ask-about"
               >
                 Ask
@@ -506,19 +522,12 @@ export function AskBox({
         })}
       </ul>
       {searching && !open && (
-        <p className={cn("absolute inset-x-0 z-40 rounded border border-border-strong bg-raised px-3 py-2 text-meta text-muted shadow-pop", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
+        <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status">
           Searching…
         </p>
       )}
       {empty && !open && (
-        <p
-          className={cn(
-            "absolute inset-x-0 z-40 rounded border border-border-strong bg-raised px-3 py-2 text-meta text-muted shadow-pop",
-            up ? "bottom-full mb-2" : "top-full mt-2",
-          )}
-          role="status"
-          data-testid="no-record"
-        >
+        <p className={cn(pop, "px-3.5 py-2.5 text-[12px] text-muted", up ? "bottom-full mb-2" : "top-full mt-2")} role="status" data-testid="no-record">
           No record is named “{empty}”. Press Enter to ask anyway.
         </p>
       )}

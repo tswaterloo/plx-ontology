@@ -5,102 +5,121 @@ import { confirmAction, previewAction } from "@/lib/api";
 import { confirmBlocked, confirmLabel, EDITABLE, edits, newIdempotencyKey, outcomeUnknown, sameEdits, splitAddresses } from "@/lib/actions";
 import { plainError } from "@/lib/errors";
 import type { ActionKind, ActionPayload, ActionPreview, ActionResult, CardActionOffer, ProactiveSuggestion } from "@/lib/types";
+import { ChevronRight } from "lucide-react";
+import { cn } from "@/lib/cn";
 import { Button } from "./ui/button";
+import { StatusGlyph, SystemTile } from "./ui/glyphs";
 import { Sheet } from "./ui/sheet";
 
-const field = "w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-row focus:border-control focus:outline-none";
+const bare = "h-10 w-full min-w-0 bg-transparent text-[13px] text-fg placeholder:text-faint focus:outline-none dark:[color-scheme:dark]";
 
-function Label({ children, htmlFor }: { children: React.ReactNode; htmlFor: string }) {
+/** One line of the compose sheet: its label on the left, the field filling the rest, as a mail app sets To and Subject. */
+function Line({ id, label, children }: { id?: string; label: string; children: React.ReactNode }) {
   return (
-    <label htmlFor={htmlFor} className="mb-1 block text-meta font-medium text-muted">
-      {children}
-    </label>
+    <div className="flex min-h-10 items-center gap-3 border-b border-border px-4 focus-within:bg-[color-mix(in_srgb,var(--accent)_4%,transparent)]">
+      {id ? (
+        <label htmlFor={id} className="w-[76px] shrink-0 text-[13px] text-muted">
+          {label}
+        </label>
+      ) : (
+        <span className="w-[76px] shrink-0 text-[13px] text-muted">{label}</span>
+      )}
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
   );
 }
 
-/** The fields one action takes, bound to the form. */
+/** The fields one action takes, bound to the form, as one sheet. */
 function Fields({ kind, form, set, preview }: { kind: ActionKind; form: ActionPayload; set: (p: ActionPayload) => void; preview: ActionPreview }) {
   const text = (key: keyof ActionPayload) => (typeof form[key] === "string" ? (form[key] as string) : "");
   const list = (key: "to" | "cc") => (form[key] ?? []).join(", ");
   const has = (key: keyof ActionPayload) => EDITABLE[kind].includes(key);
   return (
-    <div className="space-y-3">
-      {preview.outbound && (
-        <p className="text-meta">
-          <span className="text-muted">From </span>
-          <span data-testid="action-from">{preview.sender ?? "your mailbox"}</span>
-        </p>
-      )}
-      {has("to") && (
-        <div>
-          <Label htmlFor="action-to">To</Label>
-          <input id="action-to" className={field} value={list("to")} onChange={(e) => set({ ...form, to: splitAddresses(e.target.value) })} data-testid="action-to" />
-        </div>
-      )}
-      {has("cc") && (
-        <div>
-          <Label htmlFor="action-cc">Cc</Label>
-          <input id="action-cc" className={field} value={list("cc")} onChange={(e) => set({ ...form, cc: splitAddresses(e.target.value) })} />
-        </div>
-      )}
-      {has("subject") && (
-        <div>
-          <Label htmlFor="action-subject">Subject</Label>
-          <input id="action-subject" className={field} value={text("subject")} onChange={(e) => set({ ...form, subject: e.target.value })} />
-        </div>
-      )}
-      {preview.payload.in_reply_to && <p className="text-meta text-muted">In reply to the cited message; the thread keeps its own subject.</p>}
+    <div className="space-y-2.5">
+      <div className="overflow-hidden rounded-xl bg-bg shadow-lift [&>*:last-child]:border-b-0">
+        {preview.outbound && (
+          <Line label="From">
+            <span className="block truncate py-2.5 text-[13px]" data-testid="action-from">
+              {preview.sender ?? "your mailbox"}
+            </span>
+          </Line>
+        )}
+        {has("to") && (
+          <Line id="action-to" label="To">
+            <input id="action-to" className={bare} value={list("to")} onChange={(e) => set({ ...form, to: splitAddresses(e.target.value) })} data-testid="action-to" />
+          </Line>
+        )}
+        {has("cc") && (
+          <Line id="action-cc" label="Cc">
+            <input id="action-cc" className={bare} value={list("cc")} onChange={(e) => set({ ...form, cc: splitAddresses(e.target.value) })} />
+          </Line>
+        )}
+        {has("subject") && (
+          <Line id="action-subject" label="Subject">
+            <input id="action-subject" className={`${bare} font-medium`} value={text("subject")} onChange={(e) => set({ ...form, subject: e.target.value })} />
+          </Line>
+        )}
+        {has("chat_id") && (
+          <Line id="action-chat" label="Teams chat">
+            <select id="action-chat" className={`${bare} cursor-pointer`} value={text("chat_id")} onChange={(e) => set({ ...form, chat_id: e.target.value })}>
+              {(preview.teams_chats ?? []).length === 0 && <option value="">No chat is set up for actions</option>}
+              {(preview.teams_chats ?? []).map((c) => (
+                <option key={c.chat_id} value={c.chat_id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </Line>
+        )}
+        {has("due") && (
+          <Line id="action-due" label="Due">
+            <input id="action-due" type="date" className={bare} value={text("due")} onChange={(e) => set({ ...form, due: e.target.value })} />
+          </Line>
+        )}
+        {has("until") && (
+          <Line id="action-until" label="Snooze until">
+            <input id="action-until" type="date" className={bare} value={text("until")} onChange={(e) => set({ ...form, until: e.target.value })} />
+          </Line>
+        )}
+        {has("reason") && (
+          <Line id="action-reason" label="Why dismiss it">
+            <input id="action-reason" className={bare} value={text("reason")} onChange={(e) => set({ ...form, reason: e.target.value })} data-testid="action-reason" />
+          </Line>
+        )}
+        {has("note") && (
+          <Line id="action-note" label="Note">
+            <input id="action-note" className={bare} value={text("note")} onChange={(e) => set({ ...form, note: e.target.value })} />
+          </Line>
+        )}
+        {has("body") && (
+          <div className="border-b border-border">
+            <label htmlFor="action-body" className="sr-only">
+              Message
+            </label>
+            <textarea
+              id="action-body"
+              rows={8}
+              className="block min-h-[168px] w-full resize-y bg-transparent px-4 pt-3.5 pb-4 font-sans text-[13px] leading-[21px] text-fg focus:outline-none"
+              value={text("body")}
+              onChange={(e) => set({ ...form, body: e.target.value })}
+              data-testid="action-body"
+            />
+          </div>
+        )}
+      </div>
+      {preview.payload.in_reply_to && <p className="px-1 text-[12px] leading-[18px] text-muted">In reply to the cited message; the thread keeps its own subject.</p>}
       {(preview.payload.thread_recipients ?? []).length > 0 && (
-        <p className="text-meta" data-testid="action-thread-recipients">
+        <p className="px-1 text-[12px] leading-[18px]" data-testid="action-thread-recipients">
           <span className="text-muted">The reply also reaches the message's Reply-To or sender: </span>
           {(preview.payload.thread_recipients ?? []).join(", ")}
         </p>
       )}
-      {has("chat_id") && (
-        <div>
-          <Label htmlFor="action-chat">Teams chat</Label>
-          <select id="action-chat" className={field} value={text("chat_id")} onChange={(e) => set({ ...form, chat_id: e.target.value })}>
-            {(preview.teams_chats ?? []).length === 0 && <option value="">No chat is set up for actions</option>}
-            {(preview.teams_chats ?? []).map((c) => (
-              <option key={c.chat_id} value={c.chat_id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      {has("body") && (
-        <div>
-          <Label htmlFor="action-body">Message</Label>
-          <textarea id="action-body" rows={12} className={`${field} font-sans`} value={text("body")} onChange={(e) => set({ ...form, body: e.target.value })} data-testid="action-body" />
-        </div>
-      )}
-      {has("due") && (
-        <div>
-          <Label htmlFor="action-due">Due</Label>
-          <input id="action-due" type="date" className={field} value={text("due")} onChange={(e) => set({ ...form, due: e.target.value })} />
-        </div>
-      )}
-      {has("until") && (
-        <div>
-          <Label htmlFor="action-until">Snooze until</Label>
-          <input id="action-until" type="date" className={field} value={text("until")} onChange={(e) => set({ ...form, until: e.target.value })} />
-        </div>
-      )}
-      {has("reason") && (
-        <div>
-          <Label htmlFor="action-reason">Why dismiss it</Label>
-          <input id="action-reason" className={field} value={text("reason")} onChange={(e) => set({ ...form, reason: e.target.value })} data-testid="action-reason" />
-        </div>
-      )}
-      {has("note") && (
-        <div>
-          <Label htmlFor="action-note">Note</Label>
-          <input id="action-note" className={field} value={text("note")} onChange={(e) => set({ ...form, note: e.target.value })} />
-        </div>
-      )}
     </div>
   );
+}
+
+function Heading({ children }: { children: React.ReactNode }) {
+  return <h3 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h3>;
 }
 
 /** What the preview found: cited facts kept or dropped, blocking problems, what a live send lacks. */
@@ -108,51 +127,75 @@ function Checks({ preview }: { preview: ActionPreview }) {
   const [request, setRequest] = useState(false);
   const cites = preview.citations ?? [];
   return (
-    <div className="space-y-3 text-meta">
+    <div className="space-y-6 text-[13px] leading-5">
       {(preview.problems ?? []).length > 0 && (
-        <ul className="space-y-1 rounded-md border border-late-line bg-late-soft p-2.5 text-late" data-testid="action-problems">
+        <ul className="space-y-1.5" data-testid="action-problems">
           {(preview.problems ?? []).map((p, n) => (
-            <li key={n}>{p}</li>
+            <li key={n} className="flex gap-2.5">
+              <StatusGlyph status="late" size={14} className="mt-[3px]" />
+              {p}
+            </li>
           ))}
         </ul>
       )}
       {preview.outbound && (preview.missing ?? []).length > 0 && (
-        <div className="rounded-md border border-suspect-line bg-suspect-soft p-2.5 text-suspect" data-testid="action-missing">
-          <p className="font-medium">Sending is off for you. Confirming logs a dry run and sends nothing. Missing:</p>
-          <ul className="list-disc pl-5">
-            {(preview.missing ?? []).map((m, n) => (
-              <li key={n}>{m}</li>
-            ))}
-          </ul>
+        <div className="flex gap-2.5" data-testid="action-missing">
+          <StatusGlyph status="suspect" size={14} className="mt-[3px]" />
+          <div>
+            <p className="font-medium">Sending is off for you. Confirming logs a dry run and sends nothing. Missing:</p>
+            <ul className="mt-0.5 text-muted">
+              {(preview.missing ?? []).map((m, n) => (
+                <li key={n}>{m}</li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
       {cites.length > 0 && (
-        <div>
-          <p className="font-medium">Figures used</p>
-          <ul className="mt-1 space-y-0.5">
+        <section>
+          <Heading>Figures used</Heading>
+          <dl className="space-y-px">
             {cites.map((c, n) => (
-              <li key={n} className={c.present ? "" : "text-muted line-through"} title={c.handle}>
-                {c.fact.replace(/_/g, " ")}: {c.value}
-                {!c.present && <span className="ml-1 no-underline">(no longer in the text)</span>}
-              </li>
+              <div key={n} className="grid grid-cols-[minmax(0,140px)_minmax(0,1fr)] items-baseline gap-3 py-[3px]" title={c.handle}>
+                <dt className="truncate text-[12px] text-muted first-letter:uppercase">{c.fact.replace(/_/g, " ")}</dt>
+                <dd className={c.present ? "min-w-0 break-words tabular-nums" : "min-w-0 break-words text-muted"}>
+                  <span className={c.present ? "" : "line-through"}>{c.value}</span>
+                  {!c.present && <span className="ml-1.5 text-[12px]">(no longer in the text)</span>}
+                </dd>
+              </div>
             ))}
-          </ul>
-        </div>
+          </dl>
+        </section>
       )}
       {preview.request && (
-        <div>
-          <button type="button" onClick={() => setRequest(!request)} aria-expanded={request} className="inline-flex items-center gap-1 font-medium text-accent hover:underline cursor-pointer">
-            <span aria-hidden>{request ? "▾" : "▸"}</span>
+        <section>
+          <button
+            type="button"
+            onClick={() => setRequest(!request)}
+            aria-expanded={request}
+            className="-ml-1 inline-flex h-7 items-center gap-1 rounded-md px-1 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+          >
+            <ChevronRight className={cn("size-3.5 transition-transform", request && "rotate-90")} aria-hidden />
             Exact request
           </button>
           {request && (
-            <pre className="mt-1 max-h-64 overflow-auto rounded-md border border-border bg-surface-2 p-2 text-label" data-testid="action-request">
+            <pre className="mt-1.5 max-h-64 overflow-auto rounded-lg bg-[color-mix(in_srgb,var(--fg)_5%,transparent)] p-3 font-mono text-[11px] leading-4" data-testid="action-request">
               {`${preview.request.method} ${preview.request.url}\n${JSON.stringify(preview.request.body, null, 2)}`}
             </pre>
           )}
-        </div>
+        </section>
       )}
     </div>
+  );
+}
+
+/** A tick the person must give before the confirm: on a lifted sheet, its glyph, the words in ink. */
+function Attest({ children, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { children: React.ReactNode }) {
+  return (
+    <label className="flex cursor-pointer items-start gap-3 rounded-xl bg-bg px-3.5 py-3 text-[13px] leading-5 shadow-lift">
+      <input type="checkbox" className="mt-[3px] size-3.5 shrink-0 cursor-pointer accent-[var(--accent)]" {...props} />
+      <span>{children}</span>
+    </label>
   );
 }
 
@@ -222,48 +265,72 @@ export function ActionDialog({
     );
   };
 
+  const channel = offer.kind === "teams_message" ? "Teams" : preview?.outbound || /send_email|reply_in_thread|forward/.test(offer.kind) ? "Email" : null;
   return (
-    <Sheet open onOpenChange={(o) => !o && onClose()} title={`${offer.label}: ${card.subject.label}`}>
-      <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4" data-testid="action-dialog">
-        {error && <p className="rounded-md border border-late-line bg-late-soft p-2.5 text-meta text-late">{error}</p>}
+    <Sheet
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={`${offer.label}: ${card.subject.label}`}
+      heading={
+        <>
+          {offer.label}
+          <span className="px-1.5 font-normal text-faint">·</span>
+          <span className="font-normal text-muted">{card.subject.label}</span>
+        </>
+      }
+      icon={channel ? <SystemTile system={channel} size={20} /> : undefined}
+      bodyClassName="bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] pt-4"
+      footer={
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+          <span className="mr-auto min-w-0 text-[12px] leading-4 text-muted">{blocked && preview ? blocked : preview?.outbound ? "Sent as you, from your mailbox." : ""}</span>
+          <div className="flex gap-1.5">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button size="sm" className="min-w-20" onClick={go} disabled={!!blocked} data-testid="action-confirm">
+              {preview ? confirmLabel(preview) : "Confirm"}
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-6" data-testid="action-dialog">
+        {error && (
+          <p className="flex gap-2.5 text-[13px] leading-5">
+            <StatusGlyph status="late" size={14} className="mt-[3px]" />
+            {error}
+          </p>
+        )}
         {!preview ? (
-          !error && <p className="text-row text-muted">Loading preview…</p>
+          !error && (
+            <div className="space-y-2.5" aria-busy="true">
+              <p className="sr-only">Loading preview…</p>
+              <div className="h-[300px] rounded-xl bg-bg shadow-lift" />
+            </div>
+          )
         ) : (
           <>
-            <Fields kind={offer.kind} form={form} set={setForm} preview={preview} />
-            {edited && (
-              <Button variant="outline" size="sm" onClick={() => void review(form)} data-testid="action-review">
-                Review changes
-              </Button>
-            )}
-            <Checks preview={preview} />
+            <div className="space-y-2.5">
+              <Fields kind={offer.kind} form={form} set={setForm} preview={preview} />
+              {edited && (
+                <Button variant="secondary" size="sm" onClick={() => void review(form)} data-testid="action-review">
+                  Review changes
+                </Button>
+              )}
+            </div>
             {preview.outbound && mustCheckSent && (
-              <label className="flex items-start gap-2 rounded-md border border-risk-line bg-risk-soft p-2.5 text-meta text-risk">
-                <input type="checkbox" checked={sentChecked} onChange={(e) => setSentChecked(e.target.checked)} className="mt-0.5" data-testid="action-sent-checked" />
-                <span>An earlier send of this card has an unknown outcome. I checked my Sent Items and it is not there.</span>
-              </label>
+              <Attest checked={sentChecked} onChange={(e) => setSentChecked(e.target.checked)} data-testid="action-sent-checked">
+                An earlier send of this card has an unknown outcome. I checked my Sent Items and it is not there.
+              </Attest>
             )}
             {(preview.unknown_domains ?? []).length > 0 && (
-              <label className="flex items-start gap-2 rounded-md border border-risk-line bg-risk-soft p-2.5 text-meta text-risk">
-                <input type="checkbox" checked={unknownOk} onChange={(e) => setUnknownOk(e.target.checked)} className="mt-0.5" data-testid="action-unknown-ok" />
-                <span>
-                  Outside the known vendor, customer and company domains: {(preview.unknown_domains ?? []).join(", ")}. I checked these recipients.
-                </span>
-              </label>
+              <Attest checked={unknownOk} onChange={(e) => setUnknownOk(e.target.checked)} data-testid="action-unknown-ok">
+                Outside the known vendor, customer and company domains: {(preview.unknown_domains ?? []).join(", ")}. I checked these recipients.
+              </Attest>
             )}
+            <Checks preview={preview} />
           </>
         )}
-      </div>
-      <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <span className="text-meta text-muted">{blocked && preview ? blocked : preview?.outbound ? "Sent as you, from your mailbox." : ""}</span>
-        <div className="flex gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={go} disabled={!!blocked} data-testid="action-confirm">
-            {preview ? confirmLabel(preview) : "Confirm"}
-          </Button>
-        </div>
       </div>
     </Sheet>
   );
@@ -279,9 +346,9 @@ export function CardActions({ card, onDone, state }: { card: ProactiveSuggestion
       {offers.map((o) => (
         <Button
           key={o.kind}
-          variant={o.kind === "send_email" ? "outline" : "ghost"}
+          variant={o.kind === "send_email" ? "secondary" : "ghost"}
           size="sm"
-          className={o.kind === "send_email" ? "h-7 px-2.5 text-meta" : "h-7 px-2 text-meta font-normal text-muted hover:text-fg"}
+          className={o.kind === "send_email" ? "h-7 rounded-md px-2.5 text-[12px]" : "h-7 rounded-md px-2 text-[12px] font-normal text-muted hover:text-fg"}
           onClick={() => setOpen(o)}
           data-testid={`action-${o.kind}`}
         >

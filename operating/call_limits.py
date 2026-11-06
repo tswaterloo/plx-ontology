@@ -64,6 +64,7 @@ LIMITS = {
     "plx.identity": 30.0,
     "plx.aggregate": 45.0,
     "plx.agenda": 30.0,
+    "plx.query": 60.0,
 }
 DEFAULT_LIMIT = 45.0
 EXEMPT = frozenset({"plx.case_get"})       # the answer gate: never limited

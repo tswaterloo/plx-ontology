@@ -86,7 +86,8 @@ KEY_FORMAT = "plx-live-ops-key/v1"
 VERDICT_FORMAT = "plx-live-ops-verdict/v1"
 FAMILY = "F29"
 FACT_KINDS = ("number", "date", "text", "claim", "set", "message", "absent", "document")
-SYSTEMS = ("bc", "api", "graph-mail", "sharepoint", "teams-chat", "teams-channel", "mc")
+SYSTEMS = ("bc", "api", "graph-mail", "sharepoint", "teams-chat", "teams-channel", "mc",
+           "calendar-event")
 MARKINGS = ("finance", "purchasing_prices", "quality_controlled")
 OUTCOMES = ("correct", "false", "incomplete", "abstained", "blocked", "not_applicable",
             "freshness_gap", "no_key", "rule_pending")
@@ -325,36 +326,70 @@ def _labelled_numbers(text: str, fact: Mapping[str, Any]) -> list[tuple[Decimal,
             # nearest it that no other figure's label is nearer to ("margin was 480.96 on
             # 672 of revenue, cost -191.04": the margin is 480.96, never the nearest -191.04
             # to a later "margin" word), at any distance in the clause
-            bound = _bind(words, stemmed, quantities, labels)
+            bound = _bind(words, stemmed, quantities, labels, clause)
             if bound is not None:
                 found.append(bound)
     return found
 
 
+def _segments(words: Sequence[Any], clause: str,
+              quantities: Sequence[tuple[int, int, Decimal, bool]]) -> list[int]:
+    """Each word's part of its clause: a comma between two words (never one inside a
+    figure, "12,345") or an "and" starts a new part ("Revenue $12,345, cost $2,000";
+    "5,001 were issued and 4,995 units filled")."""
+    out, part = [], 0
+    for k, w in enumerate(words):
+        if k:
+            gap = range(words[k - 1].end(), w.start())
+            inside = any(s <= g < e for g in gap if clause[g] == "," for s, e, *_ in quantities)
+            if any(clause[g] == "," for g in gap) and not inside:
+                part += 1
+            elif w.group(0).casefold() == "and":
+                part += 1
+        out.append(part)
+    return out
+
+
 def _bind(words: Sequence[Any], stemmed: Sequence[str],
           quantities: Sequence[tuple[int, int, Decimal, bool]],
-          labels: Sequence[Sequence[str]]) -> tuple[Decimal, bool] | None:
-    """The figure a label in its clause names: the nearest one (in words) to one of its
-    label's occurrences whose own nearest label, of all the figure words
-    (``evals.live_ops_keys.LABELS``), is that label."""
+          labels: Sequence[Sequence[str]], clause: str = "") -> tuple[Decimal, bool] | None:
+    """The figure a label in its clause names. Every figure belongs to its nearest label
+    occurrence, of all the figure words (``evals.live_ops_keys.LABELS``): one in the same
+    part of the clause first (``_segments``), then the fewest words from the nearest word
+    of the figure ("1,200" is "1" and "200"), then the label in front of the figure ("cost
+    1,200 margin 480": the 1,200 is the cost's). Of the figures this fact's label owns,
+    the nearest is its figure (at an equal distance, the one after the label)."""
     from evals.live_ops_keys import LABELS
     own = {tuple(stems) for stems in labels}
     others = {tuple(scoring._stem(w) for w in scoring._WORD.findall(scoring._fold(label)))
               for group in LABELS.values() for label in group} - own - {()}
 
-    def at(stems_set: set[tuple[str, ...]]) -> list[int]:
-        return [i for i in range(len(stemmed)) for stems in stems_set
+    def at(stems_set: set[tuple[str, ...]]) -> list[tuple[int, int]]:
+        return [(i, i + len(stems) - 1) for i in range(len(stemmed)) for stems in stems_set
                 if list(stemmed[i:i + len(stems)]) == list(stems) and not _basis(stemmed, i)]
     mine, theirs = at(own), at(others)
     if not mine:
         return None
+
+    part = _segments(words, clause, quantities) if clause else [0] * len(words)
+
+    def reach(span: Sequence[int], label: tuple[int, int]) -> tuple[int, int, int]:
+        """(another part of the clause, distance, 0 when the label is in front else 1)."""
+        first, last = span[0], span[-1]
+        apart = int(part[min(first, len(part) - 1)] != part[min(label[0], len(part) - 1)])
+        if label[1] < first:
+            return apart, first - label[1], 0
+        if label[0] > last:
+            return apart, label[0] - last, 1
+        return 0, 0, 0
     best = None
     for start, end, number, percent in quantities:
-        index = next((i for i, w in enumerate(words) if w.start() >= start), len(words))
-        near = min(abs(index - i) for i in mine)
-        rival = min((abs(index - i) for i in theirs), default=None)
+        span = [i for i, w in enumerate(words) if start <= w.start() < end] or [
+            next((i for i, w in enumerate(words) if w.start() >= start), len(words))]
+        near = min(reach(span, label) for label in mine)
+        rival = min((reach(span, label) for label in theirs), default=None)
         if rival is not None and rival < near:
-            continue
+            continue   # another figure word owns it (nearer, or as near and in front)
         if best is None or near < best[0]:
             best = (near, (number, percent))
     return best[1] if best else None

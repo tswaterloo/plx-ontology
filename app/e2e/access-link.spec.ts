@@ -49,9 +49,10 @@ test("access link signs in on the first try; Today, a PO and Ask work", async ({
   await page.goto(env.E2E_PO_PATH || "/po/90412");
   await expect(page.getByTestId("object-title")).toBeVisible({ timeout: PAGE_TIMEOUT });
 
-  // 4. Ask, from the app: a POST through the same origin, answered.
+  // 4. Ask, from the app (Today's search-or-ask bar): a POST through the same origin, answered.
   await page.goto("/");
-  const box = page.getByRole("combobox", { name: "Ask a question" });
+  await page.keyboard.press("Control+k");
+  const box = page.getByTestId("palette-input");
   await box.fill(QUESTION);
   await box.press("Enter");
   await expect(page).toHaveURL(/\/ask\?q=/);

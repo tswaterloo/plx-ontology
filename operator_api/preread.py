@@ -191,8 +191,31 @@ def copies(call: Callable[[str, dict], Any], object_id: str) -> list[str]:
     return out[:6]
 
 
+MAX_MAPPED = 6
+
+
+def link_map(call: Callable[[str, dict], Any], object_ids: Sequence[str]) -> list[str]:
+    """Each record's links counted per link type (``plx.object`` ``linked_counts``, as
+    this reader reads it), one line per record: where its quantities, documents and
+    parties are, for the agent to walk (``plx.around``) instead of
+    searching text."""
+    out = []
+    for oid in list(dict.fromkeys(object_ids))[:MAX_MAPPED]:
+        try:
+            card = call("plx.object", {"object_id": oid, "response_format": "concise"}) or {}
+        except Exception:  # noqa: BLE001 - a record not read is not mapped
+            continue
+        counts = [f"{c.get('link_type')} {c.get('direction')} {c.get('count')}"
+                  for c in card.get("linked_counts") or () if isinstance(c, Mapping)
+                  and c.get("count")]
+        if counts:
+            out.append(f"- {oid} ({system_words(oid)}) links: " + "; ".join(counts[:14]) + ".")
+    return out
+
+
 def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
-          call: Optional[Callable[[str, dict], Any]] = None) -> str:
+          call: Optional[Callable[[str, dict], Any]] = None,
+          entities: Sequence[Mapping[str, Any]] = ()) -> str:
     """What the agent is told before it starts: the record each identifier names (and its
     copies in other systems), and the trail's own content (``trail.materials_brief`` for a
     materials walk; for a purchase order its dated steps, each with the source to read and
@@ -203,6 +226,15 @@ def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
         if not root.get("mention") or not root.get("object_id"):
             continue
         same = root.get("same_as") or []
+        if root.get("found_by") == "resolver":
+            # a name or code the entity resolver matched: the same thing in every system
+            lines.append(f"\"{root['mention']}\" names one {root.get('object_type') or 'record'}"
+                         f" held as object ids {', '.join([root['object_id'], *same])} (one "
+                         "thing in several systems, matched by its exact code or name; "
+                         "start from these records and what links to them).")
+            if call is not None:
+                lines += link_map(call, [root["object_id"], *same])
+            continue
         lines.append(f"\"{root['mention']}\" names the record with object id "
                      f"{root['object_id']}" + (" (the same record as " + ", ".join(same)
                                                 + ")" if same else "") + ".")
@@ -212,6 +244,22 @@ def brief(trail: Optional[m.EvidenceTrail], roots: Sequence[Mapping[str, Any]],
                          "the supplier or customer the question names; "
                          + ", ".join(root["others"]) + " share the number but are different "
                          "records (say so in one line, never read them as this one).")
+    for entity in entities or ():
+        # a lead or derived entity, and such records of a matched one, are offered only
+        records = [r for r in entity.get("records") or ()
+                   if entity.get("status") != "match" or r.get("status") != "match"]
+        # each with what it was read out of (its ``why``, the Workbench's own words)
+        derived = [r["object_id"] + "".join(f" ({w})" for w in (r.get("why") or ())[:1])
+                   for r in records if r.get("status") == "derived"][:4]
+        leads = [r["object_id"] for r in records if r.get("status") != "derived"][:4]
+        if derived:
+            lines.append(f"Possible only (\"{entity.get('mention')}\" read out of a longer "
+                         "reference, or as its number without its letters; check each "
+                         f"record's type and context before you rely on it): "
+                         f"{', '.join(derived)}.")
+        if leads:
+            lines.append(f"Leads only (related to \"{entity.get('mention')}\", not the same "
+                         f"thing; read before you rely on them): {', '.join(leads)}.")
     if trail is not None and trail.kind == "materials":
         lines.append(materials_brief(trail))
     elif trail is not None and trail.kind == "purchase_order":

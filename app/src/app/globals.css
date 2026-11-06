@@ -26,14 +26,23 @@
   html {
     -webkit-text-size-adjust: 100%;
     text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background: var(--bg-subtle);
   }
   body {
     background: var(--bg);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 20px;
+    letter-spacing: -0.006em;
     font-variant-numeric: lining-nums tabular-nums;
+  }
+  /* thin, quiet scrollbars inside panes, as a desktop app draws them */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
   }
   :focus-visible {
     outline: 2px solid var(--ring);
@@ -60,10 +69,24 @@
   }
 }
 
-/* A list row reached with j / k clears the sticky top bar. */
+/* Windows draws text with ClearType and no font smoothing: thin greys come out faint, so body
+   text is a touch heavier and the two text greys a touch darker there. */
+:root[data-os="win"] body {
+  font-weight: 430;
+}
+:root[data-os="win"] {
+  --fg-muted: #57575b;
+  --fg-faint: #636367;
+}
+:root[data-os="win"].dark {
+  --fg-muted: #b0b0b5;
+  --fg-faint: #98989e;
+}
+
+/* A list row reached with j / k clears the sticky pane header. */
 [data-row-link] {
-  scroll-margin-top: 64px;
-  scroll-margin-bottom: 24px;
+  scroll-margin-top: 48px;
+  scroll-margin-bottom: 12px;
 }
 
 /* A placeholder bar: still and faint. */

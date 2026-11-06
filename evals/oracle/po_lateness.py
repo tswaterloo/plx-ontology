@@ -324,6 +324,7 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
                                                      qc_received):
             continue
         opened += 1
+        record["open"] = True   # an open order (late or not): the families' "open" PO
         # The governing header date by precedence, with the record it is read from.
         header_date: tuple[date, str] | None = None
         for item, field in ([(i, "datearrive") for i in group["fm"]]

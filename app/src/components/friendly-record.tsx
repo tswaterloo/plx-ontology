@@ -1,15 +1,16 @@
 "use client";
 
+import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { suggest } from "@/lib/api";
-import { recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
 import type { Suggestion } from "@/lib/types";
 import { ObjectView } from "./object-view";
-import { arrange } from "./ask-box";
-import { Card } from "./ui/card";
-import { PageHeader } from "./ui/page-header";
+import { arrange, type Arranged } from "./ask-box";
+import { SystemTile } from "./ui/glyphs";
+import { Monogram } from "./ui/monogram";
 
 /** The record type each friendly path opens: /po/106093, /customer/DIVE11, /supplier/V06110, /ao/AO-26253A. */
 export const FRIENDLY_TYPE = {
@@ -60,6 +61,13 @@ export function startingWith(list: Suggestion[], type: string, ref: string) {
     .filter((s) => ` ${fold(s.label)}`.includes(` ${want}`));
 }
 
+/** Who a suggestion is about, for its tile: a party's own name, else the name its facts give ("DSM (V06110)"). */
+function partyOf(s: Arranged): string | null {
+  if (/^(Customer|Supplier|Vendor)$/.test(s.type)) return s.label;
+  const named = (s.facts ?? "").split(" · ").find((f) => /[A-Za-z]{2,}\s+[A-Za-z(]/.test(f));
+  return named ? named.replace(/\s*\(.*\)\s*$/, "") : null;
+}
+
 /** Shown when a friendly path finds no one record: the records of that name the reader may see, to pick from. */
 function Chooser({ type, refText }: { type: string; refText: string }) {
   const [found, setFound] = useState<ReturnType<typeof namedBy> | null>(null);
@@ -80,36 +88,48 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
   const kind = typeLabel(type).toLowerCase();
   // "PO 100040", "Customer Diversified": how the reader names what they opened
   const said = /^(?:PO|SO)\s/.test(recordLabel(type, refText)) ? recordLabel(type, refText) : `${typeLabel(type)} ${refText}`;
+  const title = found === null ? said : found.length === 0 ? `No ${kind} “${refText}” that you can open` : near ? `${said}: close matches` : found.length > 1 ? `${said}: ${found.length} records` : said;
+  const sub =
+    found === null ? (
+      <span role="status" data-pending="">
+        Looking for {kind} “{refText}”…
+      </span>
+    ) : found.length === 0 ? (
+      "Check the number or name, or search."
+    ) : near ? (
+      `None is named exactly “${refText}”.`
+    ) : null;
   return (
-    <div className="space-y-3" data-testid="friendly-chooser">
-      <PageHeader
-        title={found === null ? said : found.length === 0 ? `No ${kind} “${refText}” that you can open` : near ? `${said}: close matches` : found.length > 1 ? `${said}: ${found.length} records` : said}
-        sub={
-          found === null ? (
-            <span role="status">Looking for {kind} “{refText}”…</span>
-          ) : found.length === 0 ? (
-            "Check the number or name, or search above."
-          ) : near ? (
-            `No ${kind} is named exactly “${refText}”. These names start with it.`
-          ) : found.length > 1 ? (
-            "Pick one. Records that share a name or number are kept apart."
-          ) : null
-        }
-      />
+    <div className="max-w-[880px] space-y-6" data-testid="friendly-chooser">
+      <header>
+        <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em] break-words">{title}</h1>
+        {sub && <p className="mt-1 text-[13px] leading-5 text-muted">{sub}</p>}
+      </header>
       {found && found.length > 0 && (
-        <Card className="border-t-0">
-          <ul className="divide-y divide-border">
-            {found.map((s) => (
-              <li key={s.object_id}>
-                <Link href={safeHref(s.open_url) ?? "/"} className="group flex items-baseline gap-4 py-2 hover:bg-surface">
-                  <span className="w-40 shrink-0 truncate text-row text-accent group-hover:underline">{recordLabel(s.type, s.label)}</span>
-                  {s.facts ? <span className="min-w-0 flex-1 truncate text-row">{s.facts}</span> : <span className="flex-1" />}
-                  {s.systems.length ? <span className="shrink-0 text-meta text-muted">{s.systems.join(", ")}</span> : null}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        <ul className="-mx-3">
+          {found.map((s) => (
+            <li key={s.object_id}>
+              <Link href={safeHref(s.open_url) ?? "/"} className="flex items-center gap-3 rounded-[10px] px-3 py-2.5 hover:bg-hover">
+                <Monogram name={partyOf(s)} size={32} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] leading-[18px] font-semibold">{recordLabel(s.type, s.label)}</span>
+                  <span className="block truncate text-[12px] leading-4 text-muted">{s.facts || typeLabel(s.type)}</span>
+                </span>
+                {s.systems.length ? (
+                  <span className="flex shrink-0 items-center gap-2 text-[12px] text-muted">
+                    {s.systems.map((x) => (
+                      <span key={x} className="inline-flex items-center gap-1.5">
+                        <SystemTile system={x} size={16} />
+                        <span className="max-sm:sr-only">{SYSTEM_LABEL[x as keyof typeof SYSTEM_LABEL] ?? x}</span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
+                <ArrowUpRight className="size-3.5 shrink-0 text-faint" aria-hidden />
+              </Link>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

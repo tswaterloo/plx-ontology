@@ -28,6 +28,10 @@ import datetime as dt
 import hashlib
 import json
 import shutil
+import os
+import threading
+import time
+import types
 from pathlib import Path
 import tempfile
 import unittest
@@ -1213,6 +1217,33 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
                                      if "content_sha256" in c}, attachment)
             self.assertEqual(documents(handles[attachment]) is not None, served(attachment),
                              attachment)
+        # The host's side-by-side read of the mailboxes gives exactly the projection
+        # function's list (MSG-OLD's record names UPN_A under BOX_B's id).
+        from ontology.project import attachment_mailboxes
+        from operating import case_tools_host as cth
+        self.assertCountEqual(cth._mailbox_list(os.path.realpath(store.path)),
+                              attachment_mailboxes(store.db))
+
+    def test_a_claim_waits_for_the_start_read_of_the_mailboxes(self):
+        """A request that needs the attachment mailboxes while the host's start read runs
+        takes that read's list; it never scans the capture a second time."""
+        from operating import case_tools_host as cth
+        key = os.path.realpath("/nonexistent/mail-capture/capture.db")
+        running = threading.Event()
+        listed = [{"mailbox_upn": "orders@example.com"}]
+
+        def finish() -> None:
+            with cth._MAILBOXES_LOCK:
+                cth._MAILBOXES[key] = (time.monotonic(), listed)
+                cth._MAILBOXES_READING.pop(key, None)
+            running.set()
+        with cth._MAILBOXES_LOCK:
+            cth._MAILBOXES_READING[key] = running
+        self.addCleanup(cth._MAILBOXES.pop, key, None)
+        threading.Timer(0.05, finish).start()
+        with mock.patch.object(cth, "_mailbox_list", side_effect=AssertionError("scanned")):
+            self.assertEqual(cth._attachment_mailboxes(
+                types.SimpleNamespace(path="/nonexistent/mail-capture/capture.db")), listed)
 
 
 if __name__ == "__main__":

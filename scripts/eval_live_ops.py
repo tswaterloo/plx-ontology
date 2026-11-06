@@ -28,7 +28,8 @@ reader the host config names (``PLX_WORKBENCH_HOST_CONFIG``, written by
 ``vince`` full read, ``purchasing``, ``quality``), then grades each transcript against its
 key (``evals.live_ops.verdict``). The report: per split and in total, correct, false,
 incomplete, abstained (justified / unjustified), blocked and not applicable, and the per-card
-list (card, item, split, outcome, codes: never a value). **rescore** grades the recorded
+list (card, item, split, outcome, codes: never a value) of the dev items only: a held-out
+run is counted in the split, suite and family totals, never listed (``sealed``). **rescore** grades the recorded
 transcripts again (a changed key rule), with no session.
 
 Evidence label: ``live-captures`` (the reader's own host over the captured sources); the
@@ -59,7 +60,10 @@ from urllib.parse import quote
 from evals import live_ops
 from evals import live_ops_keys as keys
 from evals import live_ops_ceo as ceo
+from evals import live_ops_inventory as inventory
 from evals import live_ops_more as more
+from evals import live_ops_open as open_suite
+from evals import live_ops_wide as wide
 from evals import partition
 from evals import runner
 from evals import score as scoring
@@ -73,7 +77,7 @@ CARDS_FORMAT = "plx-live-ops-cards/v1"
 # ``rule_pending``: the rule its key follows awaits the owner; its runs are reported
 # ``rule_pending`` and kept out of every rate (``evals.live_ops``).
 CARD_FIELDS = frozenset({"id", "family", "instances", "facts", "question", "rule_pending",
-                         "messy", "suite"})
+                         "messy", "suite", "perturb", "held_share"})
 MAX_MESSY = 2
 REPORT_FORMAT = "plx-live-ops-report/v1"
 HELD_OUT_SUBDIR = "live-ops"
@@ -85,9 +89,10 @@ LINE_PARENT = {"salesOrderLines": "salesOrders", "salesInvoiceLines": "salesInvo
                "salesCreditMemoLines": "salesCreditMemos"}
 # The MO line relation is wide and long: only the columns the families join on are read.
 NARROW = {keys.MO: ("id", "mo_code", "status", "custom_fields"),
-          keys.FM_AO: ("id", "nameamo_c", "status"),
-          keys.FM_AO_ITEM: ("id", "idassem", "idpack"),
-          keys.FM_PACK_SUPPLIER: ("id", "idpack"), **more.NARROW, **ceo.NARROW}
+          keys.FM_AO: ("id", "nameamo_c", "status", "idfinprod", "datemanuf"),
+          keys.FM_AO_ITEM: ("id", "idassem", "idpack", "actualamount", "qtybatch"),
+          **inventory.NARROW,
+          **more.NARROW, **ceo.NARROW}
 TEAMS_CAPTURE = Path("teams-capture") / "capture.db"
 MC_CAPTURE = Path("mc-capture") / "capture.sqlite"
 SHAREPOINT_CAPTURE = Path("sharepoint-capture") / "capture.db"
@@ -114,7 +119,19 @@ def load_cards(path: Path = CARDS) -> tuple[list[dict[str, Any]], str]:
     if doc.get("format") != CARDS_FORMAT:
         raise ValueError("cards_format")
     cards = doc["cards"]
+    by_id = {card.get("id"): card for card in cards}
     for card in cards:
+        if card.get("perturb") is not None:
+            # a perturbed card asks its base card's items: it inherits what it does not set
+            base = by_id.get((card["perturb"] or {}).get("of")) if isinstance(
+                card["perturb"], dict) else None
+            if base is None or base.get("perturb") is not None or not set(
+                    card["perturb"].get("ops") or ()) <= set(open_suite.OPS) or not \
+                    card["perturb"].get("ops"):
+                raise ValueError(f"card_perturb:{card.get('id')}")
+            for name in ("family", "question", "messy", "facts"):
+                if name in base and name not in card:
+                    card[name] = base[name]
         if card.get("family") not in keys.FAMILIES:
             raise ValueError(f"card_family_unknown:{card.get('id')}")
         if set(card) - CARD_FIELDS:
@@ -237,35 +254,190 @@ def own_domains(conn: sqlite3.Connection) -> frozenset[str]:
     return own_mail_domains(found)
 
 
-def mail_messages(db: Path) -> tuple[list[dict[str, Any]], str]:
+# Mailboxes never read by the key run (the owner's standing rule), by the local part of
+# their UPN: their messages, attachments and calendars are left out of every family.
+SKIPPED_MAILBOXES = frozenset({"sam", "benjamin"})
+
+
+def skipped(address: Any) -> bool:
+    """Whether an address (or UPN) is a skipped mailbox's (``SKIPPED_MAILBOXES``)."""
+    return str(address or "").strip().casefold().split("@", 1)[0] in SKIPPED_MAILBOXES \
+        and "@" in str(address or "")
+
+
+class MailRefused(ValueError):
+    """The mail capture cannot be read safely (a code): no mailbox list to leave the
+    skipped mailboxes out by, or no people exclusion to clear senders by."""
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def skipped_mailboxes(conn: sqlite3.Connection) -> list[str]:
+    """The mailbox ids of the skipped mailboxes (``SKIPPED_MAILBOXES``). Fail closed: a
+    capture with no mailbox list (or messages not tied to a mailbox) cannot leave them
+    out, so it is not read (``MailRefused``)."""
+    if not {"mailbox_id", "upn"} <= _columns(conn, "mailboxes") \
+            or "mailbox_id" not in _columns(conn, "messages"):
+        raise MailRefused("mail_mailboxes_unknown")
+    return [mailbox for mailbox, upn in conn.execute("SELECT mailbox_id, upn FROM mailboxes")
+            if skipped(upn)]
+
+
+def current_mail(conn: sqlite3.Connection) -> tuple[str, tuple[str, ...]]:
+    """The WHERE clause (and its arguments) of a current captured message outside the
+    skipped mailboxes (``SKIPPED_MAILBOXES``)."""
+    skip = skipped_mailboxes(conn)
+    return ("superseded_at IS NULL AND removed_reason IS NULL AND mailbox_id NOT IN "
+            "(SELECT value FROM json_each(?))", (json.dumps(skip),))
+
+
+class SenderGuard:
+    """Whether a message's sender is cleared by the people exclusion (an excluded
+    person's mail is never read): an address the exclusion decides is cleared unless
+    excluded; one it cannot decide is cleared only outside our own domains (an excluded
+    person is one of us). With no usable exclusion list nothing is cleared."""
+
+    def __init__(self, exclusion: Any) -> None:
+        self.exclusion = exclusion
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str], state: Path) -> "SenderGuard":
+        from integrations.people_exclusion import PeopleExclusion, with_directory
+        return cls(with_directory(PeopleExclusion.from_env(environ), state))
+
+    def cleared(self, sender: Any, own: Iterable[str]) -> bool:
+        from integrations.live_source_guard import NotVisible
+        if self.exclusion.unavailable:
+            return False
+        address = str(sender or "").strip().casefold()
+        if not address:
+            return False
+        try:
+            if self.exclusion.decides(address):
+                return not self.exclusion.is_excluded(address)
+        except NotVisible:
+            return False
+        domain = _domain(address)
+        return bool(domain) and domain not in set(own)
+
+
+def _guarded(senders: Any) -> Any:
+    if senders is None:
+        raise MailRefused("mail_senders_unguarded")
+    return senders
+
+
+def mail_entry(handle: str, message_id: str, row: Mapping[str, Any],
+               internal: frozenset[str]) -> dict[str, Any]:
+    """A captured message as the families read it; ``external``: the sender is not one of
+    us (``own_domains``, ``sent_from_own_domain``)."""
+    sender = str(row.get("from") or "")
+    # The message as a citation names it (``evals.score.record_identity``).
+    identity = scoring.record_identity(handle)
+    return {"system": "graph-mail", "handle": handle,
+            "message_id": identity[1] if identity else message_id, "from": sender,
+            "to": list(row.get("to") or []), "cc": list(row.get("cc") or []),
+            "subject": row.get("subject"), "preview": row.get("body_preview"),
+            "received_at": row.get("received_at"), "at": row.get("received_at"),
+            "sent_at": row.get("sent_at"),
+            "internet_message_id": row.get("internet_message_id"),
+            "conversation_id": row.get("conversation_id"),
+            "external": not sent_from_own_domain(_domain(sender), internal)}
+
+
+def mail_messages(db: Path, scan: "TextScan | None" = None, *, senders: Any = None
+                  ) -> tuple[list[dict[str, Any]], str]:
     """The current captured messages whose subject or preview names a PO-shaped token,
-    read-only; ``external``: the sender is not one of us (``own_domains``,
-    ``sent_from_own_domain``)."""
+    read-only, the skipped mailboxes left out (``SKIPPED_MAILBOXES``) and every sender
+    ``senders`` (a ``SenderGuard``) does not clear; ``scan`` sees every other message too
+    in the same pass (the wide families' text, the mined questions)."""
+    senders = _guarded(senders)
     conn = _ro(db)
     try:
         meta = dict(conn.execute("SELECT key, value FROM meta"))
         internal = own_domains(conn)
+        if scan is not None:
+            scan.own = internal
         out = []
+        where, args = current_mail(conn)
         for handle, message_id, record in conn.execute(
-                "SELECT l1_handle, message_id, record FROM messages WHERE superseded_at IS "
-                "NULL AND removed_reason IS NULL"):
+                "SELECT l1_handle, message_id, record FROM messages WHERE " + where, args):
             row = json.loads(record)
-            text = f"{row.get('subject') or ''}\n{row.get('body_preview') or ''}"
-            if not _PO_SCAN.search(text):
+            if not senders.cleared(row.get("from"), internal):
                 continue
-            sender = str(row.get("from") or "")
-            # The message as a citation names it (``evals.score.record_identity``).
-            identity = scoring.record_identity(handle)
-            out.append({"handle": handle,
-                        "message_id": identity[1] if identity else message_id,
-                        "from": sender,
-                        "subject": row.get("subject"), "preview": row.get("body_preview"),
-                        "received_at": row.get("received_at"), "sent_at": row.get("sent_at"),
-                        "internet_message_id": row.get("internet_message_id"),
-                        "external": not sent_from_own_domain(_domain(sender), internal)})
+            text = f"{row.get('subject') or ''}\n{row.get('body_preview') or ''}"
+            entry = None
+            if _PO_SCAN.search(text):
+                entry = mail_entry(handle, message_id, row, internal)
+                out.append(entry)
+            if scan is not None:
+                scan.mail(text, row, lambda: entry or mail_entry(handle, message_id, row,
+                                                                internal))
         return out, str(meta.get("generation") or "")
     finally:
         conn.close()
+
+
+class TextScan:
+    """What the wide and open families read of the captured text beyond PO-naming mail,
+    gathered in the loaders' own passes: messages naming a lot or a sales order with
+    shipping words, price-change mail, and the questions asked between colleagues
+    (``mined``: a line ending in "?" of an internal message naming a PO, lot or batch).
+    ``own``: our mail domains (set by ``mail_messages``)."""
+
+    def __init__(self, lots: set[str], batches: set[str], orders: set[str] = frozenset()
+                 ) -> None:
+        self.lots, self.batches, self.orders = lots, batches, set(orders)
+        self.own: frozenset[str] = frozenset()
+        self.texts: list[dict[str, Any]] = []
+        self.mined: list[dict[str, Any]] = []
+
+    def names(self, text: str) -> bool:
+        """Whether a text names a PO, lot or batch (an identifier a question is about)."""
+        if _PO_SCAN.search(text):
+            return True
+        tokens = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9-]{3,}", text))
+        return bool(tokens & self.lots) or bool({t.upper() for t in tokens} & self.batches)
+
+    def wanted(self, text: str, teams: bool = False) -> bool:
+        """A text a wide family may key: price-change words, a customer order with shipping
+        words, a lot by its number; in Teams also an order or batch by its number."""
+        if wide.PRICE.search(text):
+            return True
+        orders = {t.upper() for t in wide.ORDER_TOKEN.findall(text)} & self.orders
+        if orders and (teams or wide.SHIPPING.search(text)):
+            return True
+        tokens = set(wide.LOT_TOKEN.findall(text))
+        return bool(tokens & self.lots) or teams and bool(
+            {t.upper() for t in tokens} & self.batches)
+
+    def mail(self, text: str, row: Mapping[str, Any], entry: Callable[[], dict]) -> None:
+        if self.wanted(text):
+            self.texts.append(entry())
+        if "?" in text and self.names(text):
+            people = [str(row.get("from") or ""), *map(str, row.get("to") or []),
+                      *map(str, row.get("cc") or [])]
+            if all(_domain(p) in self.own for p in people if p) and not any(
+                    skipped(p) for p in people):
+                for question in open_suite.question_lines(text):
+                    if self.names(question):
+                        made = entry()
+                        self.mined.append({"question": question, "system": "graph-mail",
+                                           "handle": made["handle"], "at": made["at"],
+                                           "people": people})
+
+    def teams(self, item: Mapping[str, Any]) -> None:
+        text = str(item.get("text") or "")
+        if self.wanted(text, teams=True):
+            self.texts.append(item)
+        if "?" in text and self.names(text):
+            for question in open_suite.question_lines(text):
+                if self.names(question):
+                    self.mined.append({"question": question, "system": item["system"],
+                                       "handle": item["handle"], "at": item["at"],
+                                       "people": list(item.get("people") or [])})
 
 
 def text_index(db: Path) -> tuple[Callable[[str], bool], Callable[[str], bool]]:
@@ -428,12 +600,107 @@ def capture_rows(db: Path, kinds: Sequence[str], scheme: Callable[[str], str],
         conn.close()
 
 
-def teams_messages(state: Path) -> list[dict[str, Any]]:
-    rows = capture_rows(state / TEAMS_CAPTURE, ("teams_chat", "teams_channel"),
-                        lambda kind: kind.replace("_", "-"),
-                        lambda row: bool(_PO_SCAN.search(str(row.get("body_text") or ""))))
-    return [{"handle": r["handle"], "text": r["row"].get("body_text"),
-             "at": r["row"].get("created_at"), "subject": ""} for r in rows]
+def teams_messages(state: Path, scan: TextScan | None = None) -> list[dict[str, Any]]:
+    """Current Teams chat and channel messages naming a PO; ``scan`` sees every message
+    (lots, the questions asked). A chat a skipped mailbox's person is in is left out."""
+    db = state / TEAMS_CAPTURE
+    if not db.is_file():
+        return []
+    conn = _ro(db)
+    out = []
+    try:
+        generation = dict(conn.execute("SELECT key, value FROM meta"))["generation"]
+        for capture, kind, path, payload in conn.execute(
+                "SELECT capture_id, kind, path, payload FROM versions WHERE kind IN "
+                "('teams_chat', 'teams_channel') AND superseded_at IS NULL AND "
+                "missing_from_source_since IS NULL"):
+            doc = json.loads(payload)
+            row = doc.get("row") or {}
+            text = str(row.get("body_text") or "")
+            people = list(((doc.get("meta") or {}).get("source_acl") or {}).get(
+                "identities") or [])
+            if not text or any(skipped(p) for p in people):
+                continue
+            item = {"system": kind.replace("_", "-"),
+                    "handle": f"{kind.replace('_', '-')}://{path}@{generation}-{capture}",
+                    "text": text, "at": row.get("created_at"), "subject": "",
+                    "people": people}
+            if _PO_SCAN.search(text):
+                out.append(item)
+            if scan is not None:
+                scan.teams(item)
+        return out
+    finally:
+        conn.close()
+
+
+MEETINGS_CAPTURE = Path("meetings-capture") / "capture.db"
+
+
+def calendar_events(state: Path) -> list[dict[str, Any]]:
+    """Current captured calendar events (subject, preview, start, attendees and organizer
+    addresses, cancelled, iCal uid); a skipped mailbox's calendar is left out."""
+    db = state / MEETINGS_CAPTURE
+    if not db.is_file():
+        return []
+    conn = _ro(db)
+    out = []
+    try:
+        generation = dict(conn.execute("SELECT key, value FROM meta"))["generation"]
+        for capture, path, payload in conn.execute(
+                "SELECT capture_id, path, payload FROM versions WHERE kind = 'calendar_event' "
+                "AND superseded_at IS NULL AND missing_from_source_since IS NULL"):
+            doc = json.loads(payload)
+            row = doc.get("row") or {}
+            owners = ((doc.get("meta") or {}).get("source_acl") or {}).get("identities") or []
+            if any(skipped(o) for o in owners):
+                continue
+            people = [a.get("address") for a in row.get("attendees") or ()
+                      if isinstance(a, Mapping)]
+            people.append((row.get("organizer") or {}).get("address"))
+            out.append({"system": "calendar-event",
+                        "handle": f"calendar-event://{path}@{generation}-{capture}",
+                        "subject": row.get("subject"), "text": row.get("body_preview"),
+                        "at": row.get("start"), "uid": row.get("ical_uid"),
+                        "cancelled": bool(row.get("is_cancelled")),
+                        "attendees": [str(p).casefold() for p in people if p]})
+        return out
+    finally:
+        conn.close()
+
+
+def attachment_names(db: Path, *, senders: Any = None) -> list[dict[str, Any]]:
+    """Mail attachments whose file name names a PO-shaped token, each with its current
+    message (``mail_entry``) and ``name``; the skipped mailboxes and every sender
+    ``senders`` does not clear left out."""
+    senders = _guarded(senders)
+    if not db.is_file():
+        return []
+    conn = _ro(db)
+    try:
+        internal = own_domains(conn)
+        where, args = current_mail(conn)
+        named = [(message, mailbox, name) for message, mailbox, name in conn.execute(
+            "SELECT message_handle, mailbox_id, json_extract(metadata, '$.name') FROM "
+            "attachments" + (" WHERE mailbox_id NOT IN (SELECT value FROM json_each(?))"
+                             if args else ""), args)
+            if name and _PO_SCAN.search(str(name))]
+        out, seen = [], {}
+        for message, mailbox, name in named:
+            graph_id = message.split("://", 1)[-1].split("/", 1)[-1].split("@", 1)[0]
+            if (mailbox, graph_id) not in seen:
+                seen[(mailbox, graph_id)] = conn.execute(
+                    "SELECT l1_handle, message_id, record FROM messages WHERE mailbox_id = ? "
+                    f"AND message_id = ? AND {where}", (mailbox, graph_id, *args)
+                ).fetchone()
+            current = seen[(mailbox, graph_id)]
+            if current is not None and senders.cleared(
+                    json.loads(current[2]).get("from"), internal):
+                out.append({**mail_entry(current[0], current[1], json.loads(current[2]),
+                                         internal), "name": name})
+        return out
+    finally:
+        conn.close()
 
 
 def mc_tasks(state: Path) -> list[dict[str, Any]]:
@@ -461,7 +728,8 @@ def _domain(address: Any) -> str | None:
     return found.group(1).strip(".").casefold() if found else None
 
 
-def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]], *, senders: Any = None
+                  ) -> list[dict[str, Any]]:
     """Current messages from a customer's own domain (its BC customers.email, a domain no
     other customer and no shared mail provider shares), or from one of us
     (``own_domains``, ``sent_from_own_domain``: never a free-mail sender, whatever
@@ -478,6 +746,7 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
             spellings[name.casefold()].add(name)
     domains = {d: next(iter(n)) for d, n in owners.items()
                if len(n) == 1 and d not in PUBLIC_DOMAINS and not shared_mail_domain(d)}
+    senders = _guarded(senders)
     if not db.is_file() or not domains:
         return []
     conn = _ro(db)
@@ -487,10 +756,12 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
         # sender domain, holding mailbox's domain -> one of us (the holding mailbox's
         # domain is ours too: a capture listing no mailboxes still knows its own)
         us: dict[tuple[Any, Any], bool] = {}
+        where, args = current_mail(conn)
         for handle, message_id, record in conn.execute(
-                "SELECT l1_handle, message_id, record FROM messages WHERE superseded_at IS "
-                "NULL AND removed_reason IS NULL"):
+                "SELECT l1_handle, message_id, record FROM messages WHERE " + where, args):
             row = json.loads(record)
+            if not senders.cleared(row.get("from"), ours):
+                continue
             sender = _domain(row.get("from"))
             box = _domain(row.get("mailbox_upn"))
             if (sender, box) not in us:
@@ -511,6 +782,9 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
             identity = scoring.record_identity(handle)
             out.extend({"handle": handle, "message_id": identity[1] if identity else message_id,
                         "customer": name, "subject": row.get("subject"),
+                        "preview": row.get("body_preview"),
+                        "external": sender in domains,
+                        "conversation_id": row.get("conversation_id"),
                         "from": row.get("from"), "sent_at": row.get("sent_at"),
                         "internet_message_id": row.get("internet_message_id"),
                         "at": row.get("received_at")}
@@ -520,21 +794,161 @@ def customer_mail(db: Path, customers: Sequence[Mapping[str, Any]]) -> list[dict
         conn.close()
 
 
-def load_world(state: Path, now: datetime | None = None) -> tuple[keys.World, dict[str, str]]:
+def load_world(state: Path, now: datetime | None = None,
+               environ: Mapping[str, str] | None = None) -> tuple[keys.World, dict[str, str]]:
     now = now or datetime.now(timezone.utc)
+    environ = os.environ if environ is None else environ
     portal, mirror_gen = mirror_rows(state / MIRROR, keys.PORTAL_RELATIONS)
     bc, bc_gen = bc_records(state / BC_CAPTURE, keys.BC_SETS)
-    mail, mail_gen = (mail_messages(state / MAIL_CAPTURE) if (state / MAIL_CAPTURE).is_file()
-                      else ([], ""))
+    scan = TextScan(
+        {str(i["row"].get("lotnoqc") or "").strip() for i in portal.get(keys.RAW_LOT, ())
+         if wide.lot_token(str(i["row"].get("lotnoqc") or "").strip())},
+        {str(i["row"].get("namebatch_c") or "").strip().upper()
+         for i in portal.get(keys.FM_BATCH, ()) if i["row"].get("namebatch_c")},
+        {str(i["row"].get("erpcode") or "").strip().upper()
+         for i in portal.get(ceo.FM_OE, ())} | {
+            str(r["fields"].get("number") or "").strip().upper()
+            for r in bc if r["entity_set"] == "salesOrders"})
+    senders = SenderGuard.from_env(environ, state)
+    mail, mail_gen = (_refusing(lambda: mail_messages(state / MAIL_CAPTURE, scan,
+                                                      senders=senders), ([], ""))
+                      if (state / MAIL_CAPTURE).is_file() else ([], ""))
     in_text, in_values = text_index(state / PROJECTION)
     clients = [r for r in bc if r["entity_set"] == "customers"]
+    teams = teams_messages(state, scan)
     world = keys.World(as_of=po_lateness.business_today(now), now=now, portal=portal, bc=bc,
                        mail=mail, named_in_text=in_text, named_in_values=in_values,
-                       teams=teams_messages(state), mc=mc_tasks(state),
+                       teams=teams, mc=mc_tasks(state),
                        sharepoint=sharepoint_files(state),
-                       customer_mail=customer_mail(state / MAIL_CAPTURE, clients),
-                       portal_versions=mirror_versions(state / MIRROR, keys.PORTAL_VERSIONED))
+                       customer_mail=_refusing(lambda: customer_mail(
+                           state / MAIL_CAPTURE, clients, senders=senders), []),
+                       portal_versions=mirror_versions(state / MIRROR, keys.PORTAL_VERSIONED),
+                       texts=[*scan.texts, *calendar_events(state)],
+                       attachments=_refusing(lambda: attachment_names(
+                           state / MAIL_CAPTURE, senders=senders), []),
+                       mined=cleared_questions(scan.mined, state, environ),
+                       blind_bank=load_blind_bank(environ))
     return world, {"portal_api": mirror_gen, "bc": bc_gen, "graph_mail": mail_gen}
+
+
+def _refusing(read: Callable[[], Any], empty: Any) -> Any:
+    """``read()``, or ``empty`` with its code on stderr when the mail capture refuses
+    (``MailRefused``): no mail is read rather than mail read unguarded."""
+    try:
+        return read()
+    except MailRefused as refused:
+        print(json.dumps({"mail_refused": str(refused)}), file=sys.stderr)
+        return empty
+
+
+def cleared_questions(mined: Sequence[Mapping[str, Any]], state: Path,
+                      environ: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The mined questions whose people the people exclusion clears (sender, recipients,
+    or a chat's members): every one must be decidable and not excluded. With no usable
+    exclusion list nothing is cleared (fail closed): no mined question is asked."""
+    from integrations.live_source_guard import NotVisible
+    from integrations.people_exclusion import PeopleExclusion, is_object_id, with_directory
+    guard = with_directory(PeopleExclusion.from_env(environ), state)
+    if guard.unavailable:
+        return []
+    out = []
+    for entry in mined:
+        people = [p for p in entry.get("people") or () if p]
+        if entry.get("system") != "graph-mail":
+            # a chat's members: its object ids decide (its addresses may not all be known)
+            people = [p for p in people if is_object_id(p)]
+        if not people:
+            continue
+        try:
+            if guard.excluded(people):
+                continue
+        except NotVisible:
+            continue
+        out.append({k: v for k, v in entry.items() if k != "people"})
+    return out
+
+
+BLIND_BANK = Path("live-ops") / "open-bank" / "blind.json"
+STYLED_BANK = Path("live-ops") / "open-bank" / "blind-styles.json"
+DOCS_BANK = Path("live-ops") / "open-bank" / "blind-docs.json"
+
+
+def blind_bank_path(styled: Any = False) -> Path:
+    """``styled``: False the plain bank, True the styled one, "docs" the documents one."""
+    return runner.held_out_root() / (DOCS_BANK if styled == "docs" else
+                                     STYLED_BANK if styled else BLIND_BANK)
+
+
+DOC_TEXT_KINDS = re.compile(r"\.(?:xlsx?|xlsm|csv|pdf)$", re.I)
+DOC_DAYS = 180
+DOC_POOL = 80
+
+
+def attachment_docs(db: Path, as_of: Any, *, senders: Any = None) -> list[dict[str, Any]]:
+    """Recent mail attachments people work from (a spreadsheet or PDF whose name is a cost,
+    inventory, count, PO or order sheet: ``evals.live_ops_open.DOC_NAME``) with their
+    extracted text and current message, read-only; the skipped mailboxes and uncleared
+    senders left out. At most ``DOC_POOL``, drawn by SHA-256 of the handle."""
+    from integrations.captured_text import read_blob
+    senders = _guarded(senders)
+    if not db.is_file():
+        return []
+    conn = _ro(db)
+    try:
+        internal = own_domains(conn)
+        where, args = current_mail(conn)
+        named = [(message, mailbox, name, digest) for message, mailbox, name, digest in
+                 conn.execute(
+                     "SELECT message_handle, mailbox_id, json_extract(metadata, '$.name'), "
+                     "text_sha256 FROM attachments WHERE text_status LIKE 'extracted%' AND "
+                     "text_sha256 IS NOT NULL AND mailbox_id NOT IN "
+                     "(SELECT value FROM json_each(?))", args)
+                 if name and DOC_TEXT_KINDS.search(str(name))
+                 and open_suite.DOC_NAME.search(str(name))]
+        named.sort(key=lambda r: hashlib.sha256(f"{r[0]}\x1f{r[2]}".encode()).hexdigest())
+        out = []
+        for message, mailbox, name, digest in named:
+            if len(out) >= DOC_POOL:
+                break
+            graph_id = message.split("://", 1)[-1].split("/", 1)[-1].split("@", 1)[0]
+            current = conn.execute(
+                "SELECT l1_handle, message_id, record FROM messages WHERE mailbox_id = ? "
+                f"AND message_id = ? AND {where}", (mailbox, graph_id, *args)).fetchone()
+            if current is None:
+                continue
+            row = json.loads(current[2])
+            day = instant(row.get("received_at"))
+            if day is None or not 0 <= (as_of - day.date()).days <= DOC_DAYS \
+                    or not senders.cleared(row.get("from"), internal):
+                continue
+            text = read_blob(db.parent / "blobs" / "sha256", digest)
+            if not text:
+                continue
+            out.append({**mail_entry(current[0], current[1], row, internal), "name": name,
+                        "text": text.decode("utf-8", "replace")[:6000]})
+        return out
+    finally:
+        conn.close()
+
+
+def load_blind_bank(environ: Mapping[str, str]) -> list[dict[str, Any]]:
+    """The blind generator's question bank (``blind``), kept beside the held-out sets: none
+    when it was never made or no held-out root is set."""
+    out: list[dict[str, Any]] = []
+    for bank in (False, True, "docs"):
+        try:
+            path = blind_bank_path(bank)
+        except runner.RunnerError:
+            return []
+        if not path.is_file():
+            continue
+        doc = json.loads(path.read_text("utf-8"))
+        if doc.get("format") != open_suite.BLIND_FORMAT:
+            continue
+        out += [q for q in doc.get("questions") or ()
+                if (q.get("bank") == "documents") == (bank == "docs")
+                and bool(q.get("style")) == (bank is True)]
+    return out
 
 
 # --------------------------------------------------------------------------- items and keys
@@ -554,14 +968,25 @@ def _question_block(card: Mapping[str, Any], candidate: keys.Candidate) -> dict[
     """The card's question and its messy rephrasings (``messy``: 1-2, the runner's
     paraphrases; phrasing 0 is the question)."""
     block: dict[str, Any] = {"text": _question(card, candidate)}
-    messy = [m.format(**candidate.slots) for m in (card.get("messy") or [])[:MAX_MESSY]]
+    messy = [_asked(card, m, candidate, n + 1)
+             for n, m in enumerate((card.get("messy") or [])[:MAX_MESSY])]
     if messy:
         block["paraphrases"] = messy
     return block
 
 
 def _question(card: Mapping[str, Any], candidate: keys.Candidate) -> str:
-    return card["question"].format(**candidate.slots)
+    return _asked(card, card["question"], candidate, 0)
+
+
+def _asked(card: Mapping[str, Any], template: str, candidate: keys.Candidate,
+           phrasing: int) -> str:
+    """A template asked about ``candidate``: a perturbed card's ops applied to its words
+    first (``evals.live_ops_open.perturb``, seeded by the card, record and phrasing)."""
+    if card.get("perturb"):
+        template = open_suite.perturb(template, card["perturb"]["ops"],
+                                      f"{card['id']}\x1f{candidate.identifier}\x1f{phrasing}")
+    return template.format(**candidate.slots)
 
 
 def build(cards: Sequence[Mapping[str, Any]], cards_sha: str, world: keys.World,
@@ -615,13 +1040,19 @@ def build(cards: Sequence[Mapping[str, Any]], cards_sha: str, world: keys.World,
                 key["rule_pending"] = str(card["rule_pending"])[:300]
             if card.get("suite"):
                 key["suite"] = card["suite"]
+            if card.get("held_share"):
+                key["held_share"] = int(card["held_share"])
             items.append(item)
             out_keys.append(key)
     return items, out_keys, notes
 
 
 CORE_SUITE = "core"
-SUITES = (CORE_SUITE, "ceo")
+# ``open``: question shapes no card or route was written for; its held-out half is
+# reported as counts only (``report``). The suites after the CEO set are dealt per card.
+OPEN_SUITE = "open"
+SUITES = (CORE_SUITE, "ceo", "wide", "proactive", "roles", OPEN_SUITE, "inventory")
+PER_CARD_SUITES = frozenset({"wide", "proactive", "roles", OPEN_SUITE, "inventory"})
 
 
 def _suite(key: Mapping[str, Any]) -> str:
@@ -660,13 +1091,21 @@ def split(items: list[dict], out_keys: list[dict], visible: Sequence[Mapping[str
         must_hold = partition.related(sub, seen_held)
         groups = sorted(partition.groups(sub), key=lambda g: hashlib.sha256(
             "\x1f".join(items[mine[i]]["id"] for i in g).encode()).hexdigest())
-        held = dev = 0
+        # the core and CEO suites deal over the whole suite (their splits stay as they
+        # were); a later suite deals each card on its own, so every card of it with two or
+        # more groups has items on both sides
+        tally: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         for group in groups:
+            first = out_keys[mine[group[0]]]
+            card = _card_of(first) if suite in PER_CARD_SUITES else ""
+            # ``held_share``: a card whose held-out half is larger (n held for each dev item)
+            share = int(first.get("held_share") or 1) if suite in PER_CARD_SUITES else 1
+            held, dev = tally[card]
             to_held = bool(set(group) & must_hold) or (
-                held <= dev and not (set(group) & touching))
+                held <= dev * share and not (set(group) & touching))
             for index in group:
                 items[mine[index]]["split"] = "held_out" if to_held else "dev"
-            held, dev = (held + len(group), dev) if to_held else (held, dev + len(group))
+            tally[card] = [held + len(group), dev] if to_held else [held, dev + len(group)]
         for index in mine:
             (seen_held if items[index]["split"] == "held_out" else seen_dev).update(
                 partition.key_digests(shadows[index]))
@@ -799,7 +1238,7 @@ def grade(pairs: Sequence[tuple[Mapping, Mapping]], out: Path, reader: str,
         key = current_forms(key) if forms == "current" else key
         path = out / item["id"] / "p0-r0.transcript.json"
         base = {"card": _card_of(key), "item_id": item["id"], "split": item["split"],
-                "family": key["family"]}
+                "family": key["family"], "suite": _suite(key)}
         if not path.is_file():
             rows.append({**base, "outcome": "not_run", "codes": []})
             continue
@@ -860,6 +1299,15 @@ def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[An
     scored = [r for r in rows if r["outcome"] != "not_run"]
     ran = [r for r in scored if r["outcome"] != "no_key"]
     totals = live_ops.summary(scored)
+    # Held-out runs are counted, never listed: per split, per suite and per family only
+    # their totals; no card, item or code of one reaches the report, so whoever fixes
+    # failures never sees a held-out question.
+    shown = [r for r in rows if not sealed(r)]
+    suites = sorted({str(r.get("suite") or CORE_SUITE) for r in scored})
+    per_suite = {name: {split_name: live_ops.summary(
+        [r for r in scored if str(r.get("suite") or CORE_SUITE) == name
+         and r["split"] == split_name]) for split_name in ("dev", "held_out")}
+        for name in suites}
     by_split = {name: live_ops.summary([r for r in scored if r["split"] == name])
                 for name in ("dev", "held_out")}
     short = None if skipped is None else sum(
@@ -870,7 +1318,8 @@ def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[An
         return (f"{s['correct']}/{s['graded']} correct ({rate}), {s['false']} false; "
                 f"{s['no_key']} with no key, not in the denominator")
     families = sorted({str(r.get("family") or "") for r in scored})
-    cards = sorted({str(r.get("card") or "") for r in scored})
+    cards = sorted({str(r.get("card") or "") for r in scored if not sealed(r)})
+    open_scored = [r for r in scored if not sealed(r)]
     return {"format": REPORT_FORMAT, "reader": reader, "evidence_label": evidence_label,
             "code_sha": code_sha, "items": len(rows),
             "headline": {"all": line(totals), **{n: line(s) for n, s in by_split.items()}},
@@ -880,15 +1329,22 @@ def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[An
             "skipped_cards": [dict(n) for n in skipped or () if n["made"] < n["wanted"]],
             "scoreboard": {"all": scoreboard(totals),
                            **{n: scoreboard(s) for n, s in by_split.items()}},
-            "totals": totals, "by_split": by_split,
-            "per_family": {f: live_ops.summary([r for r in scored if r.get("family") == f])
-                          for f in families},
-            "per_card": {c: live_ops.summary([r for r in scored if r.get("card") == c])
+            "totals": totals, "by_split": by_split, "per_suite": per_suite,
+            "per_family": {f: live_ops.summary([r for r in scored
+                                                if r.get("family") == f]) for f in families},
+            "per_card": {c: live_ops.summary([r for r in open_scored if r.get("card") == c])
                         for c in cards},
             "routing": routing(ran),
+            "sealed": sum(sealed(r) for r in rows),
             "cards": [{k: r.get(k) for k in ("card", "item_id", "split", "family", "outcome",
-                                             "justified", "codes", "answer_ms", "routed")}
-                      for r in rows], "notes": list(notes)}
+                                             "justified", "codes", "answer_ms", "routed",
+                                             "suite")}
+                      for r in shown], "notes": list(notes)}
+
+
+def sealed(row: Mapping[str, Any]) -> bool:
+    """A held-out run (any suite): counted in the totals, never listed (``report``)."""
+    return row.get("split") == "held_out"
 
 
 class RoutedAgent:
@@ -1201,9 +1657,10 @@ def run_items(pairs: Sequence[tuple[Mapping, Mapping]], agent: Any,
 def main(argv: Sequence[str] | None = None, *, agent: Any = None,
          make_host: Callable[[], Any] | None = None,
          environ: Mapping[str, str] | None = None, world: keys.World | None = None,
-         fast: Any = None, session: Callable[[Any], Any] | None = None) -> int:
-    """``agent``, ``make_host``, ``world``, ``fast``, ``session`` (tests): an injected
-    agent, host, world, fast-answer module and session opener."""
+         fast: Any = None, session: Callable[[Any], Any] | None = None,
+         spawn: Callable[[list[str], str], str] | None = None) -> int:
+    """``agent``, ``make_host``, ``world``, ``fast``, ``session``, ``spawn`` (tests): an
+    injected agent, host, world, fast-answer module, session opener and blind generator."""
     from operating import deep_investigation as deep
     from scripts import eval_real_agent as real
 
@@ -1213,6 +1670,16 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     make = commands.add_parser("keys", help="compute every card's key from the sources")
     make.add_argument("--dev-dir", type=Path, required=True)
     make.add_argument("--state", type=Path, help="host state (default $PLX_WORKBENCH_STATE_DIR)")
+    blind = commands.add_parser("blind", help="write the open suite's blind question bank")
+    blind.add_argument("--state", type=Path, help="host state (default $PLX_WORKBENCH_STATE_DIR)")
+    blind.add_argument("--count", type=int, default=40)
+    blind.add_argument("--model")
+    blind.add_argument("--claude-bin", default="claude")
+    blind.add_argument("--timeout", type=int, default=900)
+    blind.add_argument("--styles", action="store_true",
+                       help="the styled bank: sloppy, dictated, mixed-language phrasings")
+    blind.add_argument("--docs", action="store_true",
+                       help="the documents bank: questions about a file someone attached")
     for name in ("run", "rescore"):
         sub = commands.add_parser(name)
         sub.add_argument("--dev-dir", type=Path, required=True)
@@ -1254,16 +1721,18 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
     environ = os.environ if environ is None else environ
     with contextlib.ExitStack() as cleanup:
         return _main(args, environ, cleanup, agent=agent, make_host=make_host, world=world,
-                     fast=fast, session=session)
+                     fast=fast, session=session, spawn=spawn)
 
 
 def _main(args: argparse.Namespace, environ: Mapping[str, str],
           cleanup: contextlib.ExitStack, *, agent: Any, make_host: Any, world: Any,
-          fast: Any, session: Any) -> int:
+          fast: Any, session: Any, spawn: Any = None) -> int:
     from scripts import eval_case_cards as cards_run
     from scripts import eval_owner_host as owner_host
     from scripts import eval_real_agent as real
     try:
+        if args.command == "blind":
+            return _blind(args, environ, world, spawn=spawn)
         if _inside_git(args.dev_dir):
             raise ValueError("dev_dir_inside_a_git_work_tree")
         if args.command == "keys":
@@ -1370,9 +1839,14 @@ def _keys(args: argparse.Namespace, environ: Mapping[str, str], world: keys.Worl
     suites = {card["id"]: card.get("suite", CORE_SUITE) for card in cards}
     # counts only (no record): what each card wanted and how many records it could key
     _write_json(args.dev_dir / SKIPPED, [{**n, "suite": suites[n["card"]]} for n in notes])
+    per_suite: dict[str, dict[str, int]] = {}
+    for item, key in pairs:
+        counts = per_suite.setdefault(_suite(key), {"dev": 0, "held_out": 0})
+        counts[item["split"]] += 1
     print(json.dumps({"cards": len(cards), "items": len(items),
                       "dev": sum(i["split"] == "dev" for i in items),
                       "held_out": sum(i["split"] == "held_out" for i in items),
+                      "per_suite": per_suite,
                       "as_of": world.as_of.isoformat(),
                       "short_cards": [n for n in notes if n["made"] < n["wanted"]],
                       "generations": generations}, indent=1, sort_keys=True))
@@ -1380,6 +1854,59 @@ def _keys(args: argparse.Namespace, environ: Mapping[str, str], world: keys.Worl
 
 
 SKIPPED = "skipped.json"
+
+
+def _blind(args: argparse.Namespace, environ: Mapping[str, str], world: keys.World | None,
+           spawn: Callable[..., str] | None = None) -> int:
+    """Write the blind question bank (``evals.live_ops_open``): a sample of real records
+    and their linked text, ``BLIND_PROMPT`` and nothing else (no card, family or route)
+    go to one headless Claude Code call; its questions, each with the record fields that
+    answer it, are kept beside the held-out sets (0600). Prints counts only: the bank's
+    questions become dev and held-out items and are never shown."""
+    import subprocess
+    from operating.agent_environment import agent_environment
+    if world is None:
+        named = args.state or environ.get(real_state_env())
+        if not named or not Path(named).is_dir():
+            raise ValueError("state_missing")
+        world, _gens = load_world(Path(named), environ=environ)
+    styled = bool(getattr(args, "styles", False))
+    docs = bool(getattr(args, "docs", False))
+    path = blind_bank_path("docs" if docs else styled)
+    seed = world.as_of.isoformat() + ("/styles" if styled else "/docs" if docs else "")
+    figures = open_suite.aggregates(world) if styled else []
+    documents: list[dict[str, Any]] = []
+    if docs:
+        named = args.state or environ.get(real_state_env())
+        found = attachment_docs(Path(named) / MAIL_CAPTURE, world.as_of,
+                                senders=SenderGuard.from_env(environ, Path(named))) \
+            if named else []
+        documents, sample = open_suite.doc_sample(world, found, seed)
+    else:
+        sample = open_suite.sample_records(world, seed)
+    prompt = open_suite.blind_prompt(sample, args.count, figures, styled=styled,
+                                     documents=documents)
+    argv = [args.claude_bin, "-p", "--output-format", "json", "--setting-sources", "",
+            "--tools", "", "--no-session-persistence"] + (
+        ["--model", args.model] if args.model else [])
+    if spawn is None:
+        out = subprocess.run(argv, env=agent_environment(dict(environ)), input=prompt,
+                             capture_output=True, text=True, timeout=args.timeout,
+                             check=False).stdout
+    else:
+        out = spawn(argv, prompt)
+    try:
+        text = json.loads(out).get("result") or ""
+        reply = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("blind_reply_unreadable") from None
+    bank = open_suite.blind_bank(reply, sample, made_at=world.now.isoformat(),
+                                 model=args.model, figures=figures, documents=documents)
+    _write_json(path, bank)
+    print(json.dumps({"sampled": len(sample), "documents": len(documents),
+                      "questions": len(bank["questions"]), "asked_for": args.count},
+                     sort_keys=True))
+    return 0
 
 
 def _skipped(dev_dir: Path, suite: str = "all") -> list[dict[str, Any]] | None:

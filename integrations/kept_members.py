@@ -360,6 +360,56 @@ class _ChildMembers:
         return self._view.take()
 
 
+class _ServedKept:
+    """A read-only view of kept stores (whole-file readings or member readings, newest
+    first) for a process that serves reads, never builds: a hit is the reading a read now
+    would make (the same code digest), a miss reads as before, and nothing is written
+    (no new entry, no use mark). ``blobs``: a member reading is served only while its
+    container's bytes are in one of these (the server's own capture blobs), as a read
+    would find them. A store that cannot be opened is a miss."""
+
+    def __init__(self, views: Sequence[Any], blobs: Sequence[str] | None = None) -> None:
+        self.views, self.blobs = list(views), blobs
+
+    def get(self, key: Any) -> Any:
+        if self.blobs is not None and not _present(self.blobs, key):
+            return None
+        for view in self.views:
+            found = view.get(key)
+            view.take()   # nothing is recorded by a server
+            if found is not None:
+                return found
+        return None
+
+    def put(self, key: Any, found: Any) -> None:
+        return None
+
+
+def serve_kept(directories: Iterable[str | Path], blobs: Iterable[str | Path]) -> bool:
+    """Serve this process's file and member readings from what the projection's build
+    and its delta kept in ``directories`` (newest first; each holding
+    ``captured_text``'s ``readings.sqlite`` and :data:`MEMBERS_FILE`), read-only, so a
+    document read in a session takes the text its build already extracted instead of
+    extracting the file again (measured: an office file 1-2 s per read and per process).
+    ``blobs``: this server's capture blob directories (a member reading is served while
+    its container is there). Only where no backing is set (a build's own stays); False
+    when no kept file exists. Readings are keyed by the bytes' digest and served only
+    after the read's own gates decided the file may be read: nothing here decides
+    access."""
+    from ontology.project_parallel import _ChildKept
+
+    found = [Path(d) for d in directories]
+    readings = [_ChildKept(ct.KeptReadings, str(d / "readings.sqlite"), readings_code())
+                for d in found if (d / "readings.sqlite").is_file()]
+    members = [_ChildKept(KeptMembers, str(d / MEMBERS_FILE), members_code())
+               for d in found if (d / MEMBERS_FILE).is_file()]
+    if readings and ct._CACHE.backing is None:
+        ct._CACHE.backing = _ServedKept(readings)
+    if members and ct._MEMBER_READINGS.backing is None:
+        ct._MEMBER_READINGS.backing = _ServedKept(members, [str(b) for b in blobs])
+    return bool(readings or members)
+
+
 class MembersBusy(Exception):
     """Another process holds the kept member readings (:func:`kept_members`)."""
 
@@ -398,4 +448,5 @@ def kept_members(path: str | Path, blobs: Iterable[str | Path] = (), *,
 
 
 __all__ = ["KeptMembers", "MEMBERS_FILE", "MEMBER_MODULES", "MembersBusy", "decode_members",
-           "encode_members", "kept_members", "members_code", "resource_failure"]
+           "encode_members", "kept_members", "members_code", "resource_failure",
+           "serve_kept"]

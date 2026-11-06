@@ -86,8 +86,8 @@ class Session:
         (``operating.search.plug``): the employee-gated actor, the read policy decided for
         this call (its audience units and markings filter every retriever in SQL) and the
         tools' item gate on every hit shown, inside one search-bound call (a captured mail
-        or file is decided on the capture, never re-read live). The question is understood
-        by the rules path under the same policy. Arguments ``{question, k}`` only;
+        or file is decided on the capture, never re-read live). The question is searched as
+        asked, as the tools search it. Arguments ``{question, k}`` only;
         anything else is refused. Hits carry their signals; nothing is logged."""
         question, k = arguments.get("question"), arguments.get("k")
         if set(arguments) != {"question", "k"} or not isinstance(question, str) \
@@ -119,15 +119,9 @@ class Session:
                     tools = host.tools
                     policy = tools.policy = host.policy_now(gated)
                     extra: dict[str, Any] = {}
-                    understanding: Any = question
-                    try:
-                        from operating.query_understanding import understand
-                        understanding = understand(question, actor=gated, policy=policy,
-                                                   llm=False)
-                        extra["intent"] = understanding.intent
-                    except Exception as error:  # noqa: BLE001 - the bare question, stated
-                        extra["understanding_failed"] = type(error).__name__
-                    result = search(understanding, gated, k=k, question=question,
+                    # The question as the tools pass it (``plug._ranked_now``): the
+                    # measured ranking is the served one, never a path no tool takes.
+                    result = search(question, gated, k=k, question=question,
                                     policy=policy, item_gate=tools._item_allowed,
                                     log=False, hidden=False)
                 finally:

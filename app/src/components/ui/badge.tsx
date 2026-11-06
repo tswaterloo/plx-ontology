@@ -3,7 +3,7 @@ import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/types";
 
 const TONES: Record<Tone, string> = {
-  neutral: "bg-neutral-soft text-fg border-neutral-line",
+  neutral: "bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] text-fg border-transparent",
   good: "bg-ok-soft text-ok border-ok-line",
   warn: "bg-risk-soft text-risk border-risk-line",
   bad: "bg-late-soft text-late border-late-line",
@@ -19,7 +19,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex min-h-5 items-center gap-1 rounded-sm border px-1.5 text-label",
+        "inline-flex min-h-5 items-center gap-1 rounded-md border px-1.5 text-label",
         TONES[tone] ?? TONES.neutral,
         className,
       )}

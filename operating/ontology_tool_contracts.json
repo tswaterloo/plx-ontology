@@ -5,7 +5,7 @@
   "limits": {
     "max_result_bytes": 48000,
     "max_description_chars": 600,
-    "max_case_host_tools": 23,
+    "max_case_host_tools": 24,
     "max_hops": 3,
     "max_page": 50,
     "max_untrusted_text_chars": 20000
@@ -2699,6 +2699,20 @@
               "concise",
               "detailed"
             ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "records",
+              "entities"
+            ],
+            "description": "entities: resolve text's names and codes only."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "mode entities: text to resolve."
           }
         },
         "anyOf": [
@@ -2710,6 +2724,11 @@
           {
             "required": [
               "object_type"
+            ]
+          },
+          {
+            "required": [
+              "text"
             ]
           }
         ]
@@ -2727,8 +2746,108 @@
                   "ambiguous",
                   "not_found",
                   "home",
-                  "portfolio"
+                  "portfolio",
+                  "resolved"
                 ]
+              },
+              "entities": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mention",
+                    "object_type",
+                    "confidence",
+                    "status",
+                    "systems",
+                    "records"
+                  ],
+                  "description": "One thing a name or code names: every record of it the reader may read, in every system (operating/entity_resolution.py). match: confidence >= 0.85; lead: offered, never stated as the same thing.",
+                  "properties": {
+                    "mention": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000-\\u001f]{1,200}$",
+                      "description": "The asker's own words that named it (never source text)."
+                    },
+                    "object_type": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}$"
+                    },
+                    "confidence": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "match",
+                        "derived",
+                        "lead"
+                      ]
+                    },
+                    "systems": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["Business Central", "FileMaker", "Sage", "Portal", "Mail", "SharePoint", "Teams", "Mission Control", "other"]
+                      },
+                      "maxItems": 10
+                    },
+                    "records": {
+                      "type": "array",
+                      "maxItems": 12,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "object",
+                          "system",
+                          "confidence",
+                          "status",
+                          "why"
+                        ],
+                        "properties": {
+                          "object": {
+                            "$ref": "#/$defs/object_ref"
+                          },
+                          "system": {
+                            "type": "string",
+                            "enum": ["Business Central", "FileMaker", "Sage", "Portal", "Mail", "SharePoint", "Teams", "Mission Control", "other"]
+                          },
+                          "confidence": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 1
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "match",
+                              "derived",
+                              "lead"
+                            ]
+                          },
+                          "why": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9 _.,:()/#&+-]{1,200}$",
+                              "description": "Workbench words: which code, name or link matched."
+                            },
+                            "maxItems": 4
+                          }
+                        }
+                      }
+                    },
+                    "more_records": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
               },
               "candidates": {
                 "type": "array",
@@ -3368,6 +3487,25 @@
                     "required": [
                       "portfolio"
                     ]
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "resolved"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "entities"
+                  ],
+                  "properties": {
+                    "candidates": {
+                      "maxItems": 0
+                    }
                   }
                 }
               }
@@ -5426,7 +5564,7 @@
       }
     },
     "plx.documents": {
-      "description": "Search mail, SharePoint, originals and Teams (if sources names it) the employee may read, newest first, optionally around an object, with identifier mentions resolved at their tier. Titles, snippets and spans are untrusted. States what was searched.",
+      "description": "Text search of mail, SharePoint, originals and Teams (sources) the employee may read, newest first, optionally around an object. Slow (up to a minute): read records and their links first; search for what they lack. Untrusted text. States what was searched.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -5848,6 +5986,38 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
+              "attachments": {
+                "type": "array",
+                "maxItems": 30,
+                "description": "A message's attachments: read each by its citation (plx.read).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "citation",
+                    "name",
+                    "content_type",
+                    "text_read"
+                  ],
+                  "properties": {
+                    "citation": {
+                      "type": "string",
+                      "maxLength": 4096,
+                      "pattern": "^(?:api|bc|graph-mail|sharepoint|original|mc|brain|teams-channel|sharepoint-list|teams-chat|calendar-event|planner-task|meeting-transcript)://[^\\s\\x00-\\x1f\\x7f-\\x9f\\xad\\u061c\\u180e\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff\\ufff9-\\ufffb\\U000e0001\\U000e0020-\\U000e007f]{1,4080}$"
+                    },
+                    "name": {
+                      "$ref": "#/$defs/untrusted_text"
+                    },
+                    "content_type": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9.+/; =_-]{0,100}$"
+                    },
+                    "text_read": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
               "citation": {
                 "$ref": "#/$defs/handle"
               },
@@ -6981,6 +7151,635 @@
                     }
                   }
                 }
+              },
+              "meta": {
+                "$ref": "#/$defs/meta"
+              }
+            }
+          },
+          {
+            "$ref": "#/$defs/error_result"
+          }
+        ]
+      }
+    },
+    "plx.query": {
+      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own) or a set; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them.",
+      "read_only": true,
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "minProperties": 1,
+            "properties": {
+              "object_id": {
+                "type": "string"
+              },
+              "object_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50
+              },
+              "set": {
+                "type": "string"
+              },
+              "entity": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "object_type": {
+                "type": "string"
+              },
+              "codes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "minItems": 1,
+                "maxItems": 300
+              }
+            }
+          },
+          "traverse": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "link_type": {
+                  "type": "string"
+                },
+                "direction": {
+                  "enum": [
+                    "forward",
+                    "reverse"
+                  ]
+                },
+                "link": {
+                  "type": "string"
+                }
+              }
+            },
+            "maxItems": 6
+          },
+          "tier_floor": {
+            "$ref": "#/$defs/tier"
+          },
+          "where": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/filter"
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "measures": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "op"
+              ],
+              "properties": {
+                "op": {
+                  "enum": [
+                    "count",
+                    "count_distinct",
+                    "sum",
+                    "min",
+                    "max"
+                  ]
+                },
+                "property": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "group_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 2
+          },
+          "group_path": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "link_type": {
+                  "type": "string"
+                },
+                "direction": {
+                  "enum": [
+                    "forward",
+                    "reverse"
+                  ]
+                },
+                "link": {
+                  "type": "string"
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 2
+          },
+          "window": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "property"
+            ],
+            "properties": {
+              "property": {
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            }
+          },
+          "as_known_at": {
+            "$ref": "#/$defs/as_known_at"
+          }
+        }
+      },
+      "output": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "from",
+              "hops",
+              "set",
+              "results"
+            ],
+            "description": "operating/ontology_query.py: each result is plx.aggregate's answer for one measure (groups with value, inputs and inputs_citations), and window the in-window total over those groups with their citations.",
+            "properties": {
+              "from": {
+                "type": "object",
+                "properties": {
+                  "records": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/object_id"
+                    },
+                    "maxItems": 50
+                  },
+                  "entity": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000-\\u001f]{1,200}$"
+                  }
+                }
+              },
+              "hops": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "link_type": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "direction": {
+                      "type": "string",
+                      "enum": [
+                        "forward",
+                        "reverse"
+                      ]
+                    },
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "tiers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                }
+              },
+              "set": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/root"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "by_record": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "record": {
+                      "$ref": "#/$defs/object_id"
+                    },
+                    "hops": {
+                      "type": "array",
+                      "maxItems": 12,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "link_type": {
+                            "type": "string",
+                            "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                          },
+                          "direction": {
+                            "type": "string",
+                            "enum": [
+                              "forward",
+                              "reverse"
+                            ]
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "tiers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "set": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/root"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "maxItems": 4,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "measure": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "op": {
+                                "type": "string",
+                                "enum": [
+                                  "count",
+                                  "count_distinct",
+                                  "sum",
+                                  "min",
+                                  "max"
+                                ]
+                              },
+                              "property": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                              }
+                            }
+                          },
+                          "window": {
+                            "type": "object",
+                            "properties": {
+                              "property": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                              },
+                              "from": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "pattern": "^[0-9T:.Z+-]{4,40}$"
+                              },
+                              "to": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "pattern": "^[0-9T:.Z+-]{4,40}$"
+                              },
+                              "value": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                              },
+                              "unit": {
+                                "anyOf": [
+                                  {
+                                    "$ref": "#/$defs/unit"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "inputs_citations": {
+                                "type": "array",
+                                "items": {
+                                  "$ref": "#/$defs/value_citation"
+                                },
+                                "maxItems": 50
+                              },
+                              "mixed": {
+                                "type": "array",
+                                "maxItems": 10,
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z0-9 ._/%-]{1,40}$"
+                                },
+                                "description": "Units or currencies the window's groups are in: no total across them."
+                              }
+                            }
+                          },
+                          "groups": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "key": {
+                                  "type": "object",
+                                  "maxProperties": 2,
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": [
+                                          "integer",
+                                          "boolean",
+                                          "null"
+                                        ]
+                                      },
+                                      {
+                                        "$ref": "#/$defs/untrusted_text"
+                                      }
+                                    ]
+                                  },
+                                  "description": "Group key per group_by property; a string key is source text and is enveloped."
+                                },
+                                "value": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ],
+                                  "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                                },
+                                "unit": {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/unit"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "unit_gap": {
+                                  "$ref": "#/$defs/gap"
+                                },
+                                "currency": {
+                                  "type": "string",
+                                  "pattern": "^[A-Z]{3}$"
+                                },
+                                "quantity_role": {
+                                  "$ref": "#/$defs/quantity_role"
+                                },
+                                "inputs": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "markings": {
+                                  "$ref": "#/$defs/markings"
+                                },
+                                "inputs_citations": {
+                                  "type": "array",
+                                  "items": {
+                                    "$ref": "#/$defs/value_citation"
+                                  },
+                                  "maxItems": 50
+                                }
+                              },
+                              "required": [
+                                "key",
+                                "value",
+                                "inputs",
+                                "markings"
+                              ]
+                            },
+                            "maxItems": 200
+                          },
+                          "completeness": {
+                            "$ref": "#/$defs/completeness"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "description": "One thing held in several systems: each record walked on its own."
+              },
+              "results": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "measure": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "op": {
+                          "type": "string",
+                          "enum": [
+                            "count",
+                            "count_distinct",
+                            "sum",
+                            "min",
+                            "max"
+                          ]
+                        },
+                        "property": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                        }
+                      }
+                    },
+                    "window": {
+                      "type": "object",
+                      "properties": {
+                        "property": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                        },
+                        "from": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[0-9T:.Z+-]{4,40}$"
+                        },
+                        "to": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^[0-9T:.Z+-]{4,40}$"
+                        },
+                        "value": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                        },
+                        "unit": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/unit"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "inputs_citations": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/$defs/value_citation"
+                          },
+                          "maxItems": 50
+                        },
+                        "mixed": {
+                          "type": "array",
+                          "maxItems": 10,
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9 ._/%-]{1,40}$"
+                          },
+                          "description": "Units or currencies the window's groups are in: no total across them."
+                        }
+                      }
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "key": {
+                            "type": "object",
+                            "maxProperties": 2,
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": [
+                                    "integer",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                },
+                                {
+                                  "$ref": "#/$defs/untrusted_text"
+                                }
+                              ]
+                            },
+                            "description": "Group key per group_by property; a string key is source text and is enveloped."
+                          },
+                          "value": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                          },
+                          "unit": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/$defs/unit"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "unit_gap": {
+                            "$ref": "#/$defs/gap"
+                          },
+                          "currency": {
+                            "type": "string",
+                            "pattern": "^[A-Z]{3}$"
+                          },
+                          "quantity_role": {
+                            "$ref": "#/$defs/quantity_role"
+                          },
+                          "inputs": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "markings": {
+                            "$ref": "#/$defs/markings"
+                          },
+                          "inputs_citations": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/value_citation"
+                            },
+                            "maxItems": 50
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "value",
+                          "inputs",
+                          "markings"
+                        ]
+                      },
+                      "maxItems": 200
+                    },
+                    "completeness": {
+                      "$ref": "#/$defs/completeness"
+                    }
+                  }
+                }
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/gap"
+                },
+                "maxItems": 20
               },
               "meta": {
                 "$ref": "#/$defs/meta"

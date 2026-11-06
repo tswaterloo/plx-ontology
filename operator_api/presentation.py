@@ -618,3 +618,67 @@ def follow_ups(question: str, answer: Any) -> list[str]:
             if len(out) >= MAX_FOLLOW_UPS:
                 break
     return out[:MAX_FOLLOW_UPS]
+
+
+# A question's period counts as past the data when it ends this long after the data's
+# cut-off (a delta cycle every few minutes keeps a "today" question under it); a source
+# read this long before the period's end is named.
+PERIOD_AFTER_SECONDS = 3600
+SOURCE_BEHIND_SECONDS = 24 * 3600
+
+
+def _moment(value: Any) -> Optional["datetime"]:
+    from datetime import datetime, timezone
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+def _when_words(at: "datetime", *, time_too: bool) -> str:
+    from zoneinfo import ZoneInfo
+    from operating.time_window import BUSINESS_TZ
+    local = at.astimezone(ZoneInfo(BUSINESS_TZ))
+    day = f"{local.day} {local:%b}"
+    if not time_too:
+        return day
+    hour = local.hour % 12 or 12
+    return f"{day}, {hour}:{local:%M} {'a.m.' if local.hour < 12 else 'p.m.'}"
+
+
+def period_notice(question: str, freshness: Any, now: "datetime") -> Optional[str]:
+    """One sentence when ``question`` names a period (``operating.time_window``: "today",
+    "this week", "since Nov 3", ...) that runs past what the data holds: the data's
+    cut-off (``freshness.as_of``) more than ``PERIOD_AFTER_SECONDS`` before the period's
+    end, or a source read more than ``SOURCE_BEHIND_SECONDS`` before it (named). None for
+    a question naming no period, or one the data covers."""
+    from datetime import datetime, time, timedelta
+    from zoneinfo import ZoneInfo
+    from operating.time_window import BUSINESS_TZ, window
+    asked = window(question.lower(), now) if isinstance(question, str) else None
+    cut_off = _moment(getattr(freshness, "as_of", None))
+    if asked is None or cut_off is None:
+        return None
+    zone = ZoneInfo(BUSINESS_TZ)
+    ends = min(now, datetime.combine(asked.end + timedelta(days=1), time(), zone))
+    behind = sorted(
+        ((at, s.system) for s in getattr(freshness, "sources", None) or ()
+         if (at := _moment(s.as_of)) is not None
+         and (ends - at).total_seconds() > SOURCE_BEHIND_SECONDS),
+        key=lambda pair: pair[0])
+    late = (ends - cut_off).total_seconds() > PERIOD_AFTER_SECONDS
+    if not late and not behind:
+        return None
+    lagging = " and ".join(f"{system}{' only' if i == 0 else ''} to "
+                           f"{_when_words(at, time_too=False)}"
+                           for i, (at, system) in enumerate(behind))
+    lagging = lagging.replace(" only to", " is read only to", 1)
+    if late:
+        out = (f"The data reaches {_when_words(cut_off, time_too=True)}, before the end of "
+               f"the period asked, {asked.said}; anything later is not in this answer.")
+        return out + (f" {lagging}." if lagging else "")
+    return (f"{lagging}, before the end of the period asked, {asked.said}; "
+            f"{'its' if len(behind) == 1 else 'their'} later records are not in this answer.")

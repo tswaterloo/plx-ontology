@@ -72,6 +72,15 @@ FORMS: dict[str, dict[str, list[str]]] = {
                               "could not find", "cannot find", "can't find", "no order"],
                    "contradicts": ["shipped on", "is open", "was invoiced", "is shipped",
                                    "was shipped"]},
+    "no_late_inputs": {"accept": ["no late po", "no late purchase order", "none of its packaging",
+                                  "no packaging ... late", "nothing late", "no late materials",
+                                  "not waiting on any late", "isn't waiting on any",
+                                  "is not waiting on any", "no po is holding",
+                                  "nothing is holding", "no purchase order is holding",
+                                  "none of the late", "not held up by any",
+                                  "no late inputs", "nothing is making it late",
+                                  "no po is making"],
+                       "contradicts": []},
     "none_in_window": {"accept": ["no receipts", "none", "nothing", "no purchase receipts",
                                   "no ... receipts", "found no ... receipt", "zero",
                                   "no invoices", "no ... invoices", "nothing invoiced",
@@ -86,6 +95,7 @@ NONE_STATED = [f for f in FORMS["none_in_window"]["accept"]
                if f not in ("none", "nothing", "zero")]
 # by fact id, as ``lk.FORMS`` (``scripts.eval_live_ops rescore --forms current``)
 FACT_FORMS = {"confirmed": FORMS["confirmed"], "nothing_late": FORMS["nothing_late"],
+              "no_late_inputs": FORMS["no_late_inputs"],
               "no_such_so": FORMS["no_such_so"], "receipts": FORMS["none_in_window"],
               "invoiced": FORMS["none_in_window"]}
 LABELS = {
@@ -209,7 +219,7 @@ def po_vendor_confirmed(world: lk.World) -> list[lk.Candidate]:
 def customer_margin_why(world: lk.World) -> list[lk.Candidate]:
     """A customer's margin (``lk.customer_margin``) and its top cost driver: the item whose
     shipped ledger cost (``itemLedgerEntries.costAmountActual`` of the orders' shipments)
-    is largest, at least ``DRIVER_LEAD`` times the next item's."""
+    is largest, at least ``DRIVER_LEAD`` times the next item's (or the only item shipped)."""
     margins = {c.identifier: c for c in lk.customer_margin(world)}
     if not margins:
         return []
@@ -231,7 +241,9 @@ def customer_margin_why(world: lk.World) -> list[lk.Candidate]:
             cost[item] += abs(amount)
             cites[item].append(handle)
         ranked = sorted(cost.items(), key=lambda kv: kv[1], reverse=True)
-        if len(ranked) < 2 or ranked[0][1] <= 0 or ranked[0][1] < DRIVER_LEAD * ranked[1][1]:
+        # one item carries all the cost, or the top one leads the next by DRIVER_LEAD
+        if not ranked or ranked[0][1] <= 0 or (
+                len(ranked) > 1 and ranked[0][1] < DRIVER_LEAD * ranked[1][1]):
             continue
         top = ranked[0][0]
         name = str((items.get(top) or {}).get("fields", {}).get("displayName") or "").strip()
@@ -360,12 +372,9 @@ def no_such_so(world: lk.World) -> list[lk.Candidate]:
     held |= {re.sub(r"\D", "", str(i["row"].get("order_number") or ""))
              for i in world.rows(lk.PORTAL_SO)}
     out = []
-    for offset in (173, 419, 761):
-        digits = str(series[-1] + offset)
+    for digits in lk.free_numbers(series[-1], held, lambda d: any(
+            world.named_in_text(n) or world.named_in_values(n) for n in (f"S-ORD{d}", d))):
         number = f"S-ORD{digits}"
-        if digits in held or world.named_in_text(number) or world.named_in_values(number) \
-                or world.named_in_text(digits) or world.named_in_values(digits):
-            continue
         out.append(lk.Candidate(number, "SalesOrder", {"so": number}, [
             lk._fact("absent", "no_such_so", [], (), value="find", nothing_exists=True,
                      **FORMS["no_such_so"])],
@@ -495,6 +504,7 @@ def so_late_materials(world: lk.World) -> list[lk.Candidate]:
                if str(i["row"].get("status") or "").strip() == "Open"}
     items = {key_text(i["row"].get("id")): i for i in world.rows(FM_OE_ITEM)}
     hits: dict[str, dict[str, Any]] = {}
+    walked: dict[str, set[str]] = defaultdict(set)   # order -> the records walked to its AOs
     for link in world.rows(FM_OE_ASSEMBLY):
         ao = key_text(link["row"].get("idassembly"))
         item = items.get(key_text(link["row"].get("idoeitem")))
@@ -504,20 +514,30 @@ def so_late_materials(world: lk.World) -> list[lk.Candidate]:
         name = str(entry["row"].get("erpcode") or "").strip()
         if not re.fullmatch(r"[A-Z]{2}\d{6,12}", name):
             continue
+        walked[name] |= {entry["citation"], item["citation"], link["citation"],
+                         chain["aos"][ao]["citation"]}
         for pack in chain["packs"].get(ao, ()):
             for group, cite in late.get(pack, ()):
                 hit = hits.setdefault(name, {"groups": {}, "records": {entry["citation"]}})
                 hit["groups"][lk._asked_number(group)] = group
                 hit["records"] |= {cite, item["citation"], link["citation"],
                                    chain["aos"][ao]["citation"], *chain["rows"][(ao, pack)]}
-    return [lk.Candidate(name, "SalesOrder", {"so": name}, [
+    reads = ["FileMaker order_entry (Open, erpcode) -> order_entry_item -> "
+             "order_entry_item_assembly.idassembly -> open assembly_order -> "
+             "assembly_order_item.idpack -> the packaging late orders' late lines order"]
+    out = [lk.Candidate(name, "SalesOrder", {"so": name}, [
         lk._fact("set", "late_inputs", hit["records"], ("api", "bc"),
                  members=[sorted({f for n in g["numbers"] for f in lk.po_forms(n)})
                           for g in hit["groups"].values()], pattern=lk.PO_TOKEN)],
-        ["FileMaker order_entry (Open, erpcode) -> order_entry_item -> "
-         "order_entry_item_assembly.idassembly -> open assembly_order -> "
-         "assembly_order_item.idpack -> late orders' short packaging items"],
-        lk.MO_RULE) for name, hit in hits.items() if len(hit["groups"]) <= lk.LIST_MAX]
+        reads, lk.MO_RULE) for name, hit in hits.items() if len(hit["groups"]) <= lk.LIST_MAX]
+    # an open customer order whose open assembly orders use no packaging a late line
+    # orders: no late PO feeds it by the rule (the question's premise is false)
+    out += [lk.Candidate(name, "SalesOrder", {"so": name}, [
+        lk._fact("absent", "no_late_inputs", sorted(records), (), value="late",
+                 **FORMS["no_late_inputs"])], reads,
+        lk.MO_RULE + "; none of the order's open assembly orders uses packaging a late "
+        "order's late line orders") for name, records in walked.items() if name not in hits]
+    return out
 
 
 FAMILIES: dict[str, Callable[[lk.World], list[lk.Candidate]]] = {

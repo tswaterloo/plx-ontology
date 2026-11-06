@@ -2073,6 +2073,7 @@ class OntologyTools:
         # Set handles are shared with every tool on this host (plx.around /
         # plx.timeline take and return the same handles).
         self.sets = SetRegistry(monotonic)
+        self.resolver: Any = None   # operating.entity_resolution.Resolver, built on first use
         # False when the store is an empty placeholder (a host started without a built
         # projection): a filter or listing find then enumerates nothing, so it is
         # never complete and says so (gap projection_not_built).
@@ -2782,17 +2783,76 @@ class OntologyTools:
 
     def _find(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         from operating.search import plug
+        if arguments.get("mode") == "entities" or "text" in arguments:
+            return self._find_entities(arguments, actor)
         with plug.call_state():
             query = arguments.get("query")
+            object_type = arguments.get("object_type")
             if (isinstance(query, str) and plug.enabled() and "as_known_at" not in arguments
                     and _text_tokens(query, []) and not _names_identifier(query)
-                    and self._may_hold_document_text(arguments.get("object_type"))):
+                    and self._may_hold_document_text(object_type)):
                 # Hybrid retrieval runs before the store lock is taken; its hits are gated
-                # under the lock (``_hybrid_matches``).
+                # under the lock (``_hybrid_matches``). A record type that holds no
+                # document text is found by its names and codes, never ranked by it.
                 plug.prefetch(self.policy, actor, self._item_allowed, query)
             with self.store.lock:
                 result = self._find_store(arguments, actor)
+            if isinstance(query, str) and "as_known_at" not in arguments \
+                    and result.get("status") in ("found", "ambiguous", "not_found") \
+                    and arguments.get("cursor") is None:
+                entities, gaps = self._entities(actor, query, object_type)
+                if entities:
+                    result["entities"] = entities
+                result["gaps"] = (list(result.get("gaps") or ()) + gaps)[:20]
+                _fit_entities(result, result_limit(self.limits))
             return self._find_after(arguments, actor, result)
+
+    def _entities(self, actor: Actor, text: str, object_type: str | None = None
+                  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Every record of the things ``text`` names, across systems, with confidence
+        and why (``operating.entity_resolution``): the entity index is read without the
+        store lock, each store read under it."""
+        from operating.entity_resolution import Resolver
+        if self.resolver is None:
+            self.resolver = Resolver(self)
+        try:
+            with self.store.lock:
+                scope = self._scope(actor, self.clock())
+            return self.resolver.resolve(scope, actor, text, object_type,
+                                         lock=self.store.lock)
+        except ToolError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - resolution is added value, never the find
+            if isinstance(exc, sqlite3.Error):
+                raise
+            return [], [_gap("unknown", "entity_index_unavailable", "entity index",
+                             f"entity resolution could not run ({type(exc).__name__})")]
+
+    def _find_entities(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+        """``mode: entities``: the mentions of ``text`` (or ``query``) resolved to every
+        record of each thing they name, without the record search (module doc of
+        ``operating.entity_resolution``)."""
+        text = arguments.get("text") or arguments.get("query") or ""
+        entities, gaps = self._entities(actor, text, arguments.get("object_type"))
+        returned = sum(len(e["records"]) for e in entities)
+        completeness = ({"complete": True, "truncated": False, "returned": returned}
+                        if not gaps else {"complete": False, "truncated": False,
+                                          "reason": gaps[0]["reason"], "returned": returned})
+        if not entities and not gaps:
+            gaps = [_gap("unknown", "no_entity_named", "text"[:700],
+                         "no name or code in the text names a record this reader may "
+                         "read; search the records with plx.find query or object_type")]
+            completeness = {"complete": False, "truncated": False,
+                            "reason": "no_entity_named", "returned": 0}
+        result = {"status": "resolved" if entities else "not_found", "candidates": [],
+                  "entities": entities, "gaps": gaps[:20], "completeness": completeness,
+                  "meta": self._meta_locked()}
+        _fit_entities(result, result_limit(self.limits))
+        return result
+
+    def _meta_locked(self) -> dict[str, Any]:
+        with self.store.lock:
+            return self._meta(self._store_meta(), self.clock(), ())
 
     def _find_after(self, arguments: Mapping[str, Any], actor: Actor,
                     result: dict[str, Any]) -> dict[str, Any]:
@@ -5358,6 +5418,29 @@ def tool_specs(contracts: Mapping[str, Any] | None = None) -> list[dict[str, Any
              "inputSchema": _inline_defs(contracts["tools"][name]["input"], contracts),
              "annotations": {"readOnlyHint": True}}
             for name in TOOL_NAMES]
+
+
+def _fit_entities(result: dict[str, Any], limit: int) -> None:
+    """Keep a result's ``entities`` within the response bound: lead entities go first
+    (from the last), then each entity keeps fewer records (``more_records`` counts the
+    rest); the matched things stay named."""
+    entities = result.get("entities")
+    if not entities:
+        return
+    bound = int(limit * 0.9)
+    while _envelope_bytes(result) > bound and len(entities) > 1 \
+            and entities[-1].get("status") == "lead":
+        entities.pop()
+    keep = 8
+    while _envelope_bytes(result) > bound and keep >= 1:
+        for entity in entities:
+            records = entity["records"]
+            if len(records) > keep:
+                entity["more_records"] = entity.get("more_records", 0) + len(records) - keep
+                entity["records"] = records[:keep]
+        keep = keep // 2 if keep > 1 else 0
+    while _envelope_bytes(result) > bound and len(entities) > 1:
+        entities.pop()
 
 
 def register(tool_table: MutableMapping[str, dict[str, Any]], tools: OntologyTools) -> None:

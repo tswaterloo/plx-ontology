@@ -31,6 +31,10 @@ BC_NEW = "PurchaseOrder:bc.purchase_orders:bcpo-9"
 BC_NEW_H = "bc://company_a/purchaseOrders/bcpo-9@cap-9"
 PO_H2 = "api://public.app_purchase_order/%7B%22id%22%3A%22po-1%22%7D@0000000000000002-2"
 PO_H3 = "api://public.app_purchase_order/%7B%22id%22%3A%22po-1%22%7D@0000000000000003-1"
+INV2 = "SalesInvoice:bc.sales_invoices:inv-2"
+INV2_H = "bc://company_a/salesInvoices/inv-2@cap-9"
+SO2 = "SalesOrder:portal.app_sales_order:so-2"
+SO2_H = "api://public.app_sales_order/%7B%22id%22%3A%22so-2%22%7D@0000000000000002-4"
 SO_H3 = "api://public.app_sales_order/%7B%22id%22%3A%22so-1%22%7D@0000000000000002-3"
 
 
@@ -71,7 +75,19 @@ def _delta_store() -> fx.Store:
           "gold_etl_from_fm")
     s.ident(fx.SO, "so_number", "SO-2099-0077", "SO-2099-0077", "order_number", SO_H3,
             "row.order_number", "gold_etl_from_fm")
-    s.conn.executemany("INSERT INTO delta_owned VALUES (?)", [(NEW,), (fx.PO,), (BC_NEW,)])
+    # a new invoice of the served order, and a new order with its required date
+    s.obj(INV2, "bc:company_a/salesInvoices", INV2_H, "bc_company_a")
+    s.link("lnk-inv-2", "SalesInvoice.invoices_order", INV2, fx.SO, "verified", "fk",
+           [INV2_H, SO_H3])
+    s.obj(SO2, "api:public.app_sales_order", SO2_H, "gold_etl_from_fm")
+    s.conn.execute("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("E:so-2-required", "SalesOrder.required", "planned",
+                    "2099-03-01T00:00:00Z", None, None, SO2_H, "row.required_date",
+                    fx._h(SO2_H), "gold_etl_from_fm", "[]", "2099-01-01T00:00:00Z", None))
+    s.conn.execute("INSERT INTO event_objects VALUES (?,?,?)", ("E:so-2-required", SO2,
+                                                              "order"))
+    s.conn.executemany("INSERT INTO delta_owned VALUES (?)",
+                       [(NEW,), (fx.PO,), (BC_NEW,), (INV2,), (SO2,)])
     s.conn.commit()
     return s
 
@@ -214,6 +230,84 @@ class DeltaOverlayTests(unittest.TestCase):
         # a layer of another generation voids the whole pointer
         self.point(DIGEST, layers=[self.newer, self.delta.parent / "missing.sqlite"])
         self.assertEqual(self.ids(self.call("plx.find", {"query": "PO5555"})), [])
+
+    def test_identity_and_documents_read_an_owned_object_from_its_layer_for_its_readers(self):
+        identity = self.call("plx.identity", {"object_ids": [NEW]})
+        self.assertNotIn("error", identity)
+        self.assertNotIn("error", self.call("plx.documents", {"object_id": NEW}))
+        # without the delta the served store has no such object
+        self.point("sha256:" + "cd" * 32)
+        self.assertEqual(self.call("plx.identity", {"object_ids": [NEW]})["error"]["code"],
+                         "object_not_found")
+        self.point(DIGEST)
+        # a reader outside the object's audience learns nothing of it; one inside does
+        for name, arguments in (("plx.identity", {"object_ids": [BC_NEW]}),
+                                ("plx.documents", {"object_id": BC_NEW})):
+            self.assertNotIn("error", self.call(name, arguments), name)
+            self.assertEqual(self.call(name, arguments, actor=fx.SALES)["error"]["code"],
+                             "object_not_found", name)
+        # served and layered objects in one call: the served answer, saying so
+        mixed = self.call("plx.identity", {"object_ids": [NEW, fx.FM]})
+        self.assertEqual(mixed["gaps"][-1]["reason"], "delta_overlay_unmerged")
+
+    def test_around_and_timeline_from_an_owned_root_read_its_layer(self):
+        hop = {"link_type": "SalesInvoice.invoices_order", "direction": "forward"}
+        around = self.call("plx.around", {"from": INV2, "path": [hop]})
+        self.assertIn(fx.SO, [o["object_id"] for o in around["objects"]])
+        self.assertEqual([e["event_id"] for e in
+                          self.call("plx.timeline", {"from": SO2})["events"]],
+                         ["E:so-2-required"])
+        # a deeper path: its first hop, saying the rest is read at the next generation
+        deeper = self.call("plx.around", {"from": INV2, "path": [hop, {
+            "link_type": "SalesOrder.same_record_as", "direction": "forward"}]})
+        self.assertIn(fx.SO, [o["object_id"] for o in deeper["objects"]])
+        self.assertEqual(deeper["gaps"][-1]["reason"], delta_overlay.HOPS_DEFERRED)
+        self.assertFalse(deeper["completeness"]["complete"])
+        # a reader outside the invoice's audience gets nothing through the layer
+        self.assertEqual(self.call("plx.around", {"from": INV2, "path": [hop]},
+                                   actor=fx.SALES)["error"]["code"], "object_not_found")
+
+    def test_aggregate_and_compare_say_how_many_changed_records_they_did_not_read(self):
+        def reasons(result):
+            return [gap["reason"] for gap in result["gaps"]]
+        tools = self.host.tools
+        counted = self.call("plx.aggregate", {
+            "set": tools.sets.new(fx.FULL, [NEW, BC_NEW, fx.PO2]), "measure": {"op": "count"}})
+        gap = counted["gaps"][-1]
+        self.assertEqual(gap["reason"], delta_overlay.NOT_AGGREGATED)
+        self.assertIn("2 record(s)", gap["detail"])
+        compared = self.call("plx.compare", {"left": fx.PO, "right": fx.PO2})
+        self.assertIn(delta_overlay.NOT_AGGREGATED, reasons(compared))
+        # only the changed records this reader may read are counted
+        sales = self.call("plx.aggregate", {
+            "set": tools.sets.new(fx.SALES, [NEW, BC_NEW, fx.PO2]),
+            "measure": {"op": "count"}}, actor=fx.SALES)
+        self.assertIn("1 record(s)", sales["gaps"][-1]["detail"])
+        # nothing changed among them: no gap
+        plain = self.call("plx.aggregate", {"set": tools.sets.new(fx.FULL, [fx.PO2]),
+                                            "measure": {"op": "count"}})
+        self.assertNotIn(delta_overlay.NOT_AGGREGATED, reasons(plain))
+
+
+class MergeFindTests(unittest.TestCase):
+
+    def test_a_layer_that_cut_its_answer_leaves_the_merged_answer_incomplete(self):
+        def candidate(oid):
+            return {"object": {"object_id": oid}, "rank": 1}
+        base = {"status": "found", "candidates": [candidate("served")], "gaps": [],
+                "completeness": {"complete": True, "truncated": False, "returned": 1,
+                                 "total": 1, "next_cursor": None, "reason": None}}
+        layer = {"status": "ambiguous", "candidates": [candidate("new-1"), candidate("new-2")],
+                 "gaps": [], "completeness": {"complete": False, "truncated": True,
+                                              "returned": 2, "total": None,
+                                              "next_cursor": "c", "reason": "budget"}}
+        owned = frozenset({"new-1", "new-2", "new-3"})
+        merged = delta_overlay.merge_find(base, [(layer, owned)], owned, {"query": "x"})
+        self.assertEqual([c["object"]["object_id"] for c in merged["candidates"]],
+                         ["served", "new-1", "new-2"])
+        self.assertIs(merged["completeness"]["complete"], False)
+        self.assertIs(merged["completeness"]["truncated"], True)
+        self.assertIsNone(merged["completeness"]["total"])
 
 
 if __name__ == "__main__":

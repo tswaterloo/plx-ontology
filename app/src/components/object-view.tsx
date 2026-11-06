@@ -1,29 +1,32 @@
 "use client";
 
+import { ArrowUpRight, Bookmark, ChevronDown, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { getObject, getObjectSection, mergeSection, PAGE_SECTIONS } from "@/lib/api";
+import { getActionStates, getObject, getObjectSection, getSuggestions, mergeSection, PAGE_SECTIONS } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
-import { groupLinked, groupRelated, groupTimeline, productionSteps, recordHead, type RecordHead, type StatSpec, type Thread, activityTitle } from "@/lib/record";
-import { lateness, recordState, STATUS_CLASS } from "@/lib/status";
+import { activityTitle, factMap, groupLinked, groupRelated, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
-import type { Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
-import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, NotFoundSection, SourceLine } from "./answer-parts";
+import { lateness, recordState, type Shown } from "@/lib/status";
+import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
-import { custodyOf } from "@/lib/custody";
 import { CustodyRail } from "./custody-rail";
 import { EtaCard } from "./eta-confirmed";
 import { EvidenceTrailCard, trailNextAction } from "./evidence-trail";
 import { ProposalCards } from "./proposal-cards";
-import { EvidenceDrawer, SourceChips } from "./source-chip";
-import { Card, CardBody, CardHeader, CardTitle } from "./ui/card";
-import { KeyFacts } from "./ui/key-facts";
+import { DraftSheet, SuggestionActions } from "./record/next-step";
+import { Bars, dayOf, Fact, Figure, Glyph, LinkRow, MoreButton, OrderLine, Progress, Property, SectionTitle } from "./record/parts";
+import { EvidenceDrawer, SourceChip, SourceChips } from "./source-chip";
+import { stepWords } from "./today-detail";
+import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
+import { Toolbar, ToolbarButton } from "./ui/toolbar";
 import { LoadProblem } from "./ui/notice";
-import { Pending } from "./ui/skeleton";
-import { Stat, StatRow } from "./ui/stat";
+import { Monogram } from "./ui/monogram";
 import { StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** Status words the API uses, mapped to a tone (kept for callers outside the record page). */
@@ -48,29 +51,82 @@ function useElapsed(on: boolean): number {
   return s;
 }
 
+const INSPECTOR = "bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))]";
+
+/** The page's frame: the toolbar over a main column and the inspector beside it (under it below xl). */
+function Frame({ crumb, actions, main, inspector }: { crumb: ReactNode; actions?: ReactNode; main: ReactNode; inspector?: ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="record-page">
+      <Toolbar title={crumb} actions={actions} />
+      <div className={cn("grid flex-1", inspector && "xl:grid-cols-[minmax(0,1fr)_272px]")}>
+        <div className="min-w-0 space-y-9 px-5 pt-6 pb-12 sm:px-8 sm:pt-7">{main}</div>
+        {inspector && (
+          <aside
+            className={cn("grid min-w-0 content-start gap-x-10 gap-y-7 border-t border-border px-5 py-6 sm:grid-cols-2 sm:px-8 xl:grid-cols-1 xl:border-t-0 xl:border-l xl:px-6 xl:pt-7", INSPECTOR)}
+            aria-label="Details"
+          >
+            {inspector}
+          </aside>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** "Purchase order › PO 106001", in the toolbar's quiet size. */
+function Crumb({ type, title }: { type: string; title?: string | null }) {
+  return (
+    <span className="text-[13px] font-normal tracking-normal">
+      <span className={cn("text-muted", title && "max-sm:hidden")}>{typeLabel(type)}</span>
+      {title && (
+        <>
+          <span className="px-1.5 text-faint max-sm:hidden" aria-hidden>
+            ›
+          </span>
+          <span className="font-medium text-fg">{title}</span>
+        </>
+      )}
+    </span>
+  );
+}
+
 /** The page's shape while it gathers: the header from the link's label at once, then a step line. */
 function ObjectSkeleton({ type, label }: { type: string; label?: string | null }) {
   const t = useElapsed(true);
   const step = t < 8 ? "Reading Business Central…" : t < 20 ? "Searching mail and files…" : "Linking receipts and emails…";
   return (
-    <div className="space-y-4" role="status" aria-label="Loading">
-      <div className="space-y-0.5 border-b border-border pb-3">
-        <p className="text-meta text-muted">{typeLabel(type)}</p>
-        {label ? <h1 className="text-display">{label}</h1> : <h1 className="text-display text-faint">Loading</h1>}
-      </div>
-      <Pending label={t < 3 ? "Loading the record" : step} />
-      {t >= 20 && <p className="max-w-[80ch] text-meta text-faint">Records with a lot of mail take up to a minute.</p>}
-    </div>
-  );
-}
-
-function StatTile({ s }: { s: StatSpec }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Stat label={s.label} value={s.value} caption={s.caption} status={s.status} onClick={s.source ? () => setOpen(true) : undefined} />
-      {open && s.source && <EvidenceDrawer source={s.source} open={open} onOpenChange={setOpen} />}
-    </>
+    <Frame
+      crumb={<Crumb type={type} title={label} />}
+      main={
+        <div className="space-y-9" role="status" aria-label="Loading">
+          <header className="flex gap-4">
+            <div className="skeleton size-12 shrink-0 rounded-[13px]" />
+            <div className="min-w-0 space-y-2 pt-0.5">
+              {label ? <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em]">{label}</h1> : <div className="skeleton h-7 w-56" />}
+              <p className="text-[13px] leading-5 text-muted" data-pending="">
+                {t < 3 ? "Loading the record…" : step}
+              </p>
+            </div>
+          </header>
+          <div className="flex gap-10">
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="space-y-2">
+                <div className="skeleton h-3 w-14" />
+                <div className="skeleton h-6 w-28" />
+              </div>
+            ))}
+          </div>
+          <Bars n={4} className="max-w-xl" />
+          {t >= 20 && <p className="text-[12px] text-muted">Records with a lot of mail take up to a minute.</p>}
+        </div>
+      }
+      inspector={
+        <section>
+          <SectionTitle>Details</SectionTitle>
+          <Bars n={4} />
+        </section>
+      }
+    />
   );
 }
 
@@ -79,59 +135,55 @@ export function LinesTable({ lines, title = "Lines" }: { lines: LateLine[]; titl
   if (lines.length === 0) return null;
   const sorted = [...lines].sort((a, b) => (b.days_late ?? -1) - (a.days_late ?? -1));
   const name = (l: LateLine, i: number) => (l.item ? l.item : /^\d+$/.test(l.line.trim()) ? `Line ${l.line.trim()}` : `Line ${i + 1}`);
+  const shownOf = (l: LateLine, phone = false) => lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : !phone && l.days_late === 0 ? "on_time" : null, l.days_late);
   return (
-    <Card data-testid="late-lines">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <span>{plural(lines.length, "line")}</span>
-      </CardHeader>
-      <CardBody className="px-0 sm:px-0">
-        <table className="hidden w-full text-row sm:table">
-          <caption className="sr-only">{title}, late first</caption>
-          <thead>
-            <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
-              <th scope="col" className="px-3 font-medium">Item</th>
-              <th scope="col" className="text-right font-medium">Ordered</th>
-              <th scope="col" className="pl-6 font-medium">Needed by</th>
-              <th scope="col" className="px-3 text-right font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((l, i) => {
-              const st = lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : l.days_late === 0 ? "on_time" : null, l.days_late);
-              return (
-                <tr key={i} className="h-9 border-b border-border">
-                  <td className="px-3 font-medium">
-                    {name(l, i)} {l.sources && l.sources.length > 0 && <SourceChips sources={l.sources} max={1} />}
-                  </td>
-                  <td className="whitespace-nowrap text-right tabular-nums">{l.quantity ?? ""}</td>
-                  <td className="whitespace-nowrap pl-6 tabular-nums">{l.due_date ? formatDate(l.due_date) : ""}</td>
-                  <td className="px-3 text-right">{st ? <StatusWord shown={st} /> : null}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <ul className="divide-y divide-border sm:hidden">
+    <section data-testid="late-lines">
+      <SectionTitle aside={<span className="text-[12px] text-muted">{plural(lines.length, "line")}</span>}>{title}</SectionTitle>
+      <table className="hidden w-full text-[13px] sm:table">
+        <caption className="sr-only">{title}, late first</caption>
+        <thead>
+          <tr className="h-8 border-b border-border text-left text-[12px] text-muted">
+            <th scope="col" className="pr-3 font-normal">Item</th>
+            <th scope="col" className="pr-3 text-right font-normal">Ordered</th>
+            <th scope="col" className="pl-6 font-normal">Needed by</th>
+            <th scope="col" className="text-right font-normal">Status</th>
+          </tr>
+        </thead>
+        <tbody>
           {sorted.map((l, i) => {
-            const st = lateness(typeof l.days_late === "number" && l.days_late > 0 ? "late" : null, l.days_late);
+            const st = shownOf(l);
             return (
-              <li key={i} className="py-3">
-                <div className="flex items-center justify-between gap-2 text-row font-medium">
-                  <span className="min-w-0 truncate">{name(l, i)}</span>
-                  {st && <StatusWord shown={st} />}
-                </div>
-                <p className="text-meta text-muted">{[l.quantity ? `Ordered ${l.quantity}` : null, l.due_date ? `Needed ${formatDate(l.due_date, { short: true })}` : null].filter(Boolean).join(" · ") || "No quantity or date"}</p>
-              </li>
+              <tr key={i} className="h-10 border-b border-border">
+                <td className="pr-3 font-medium">
+                  {name(l, i)} {l.sources && l.sources.length > 0 && <SourceChips sources={l.sources} max={1} />}
+                </td>
+                <td className="whitespace-nowrap pr-3 text-right tabular-nums">{l.quantity ?? ""}</td>
+                <td className="whitespace-nowrap pl-6 tabular-nums">{l.due_date ? formatDate(l.due_date) : ""}</td>
+                <td className="text-right">{st ? <StatusWord shown={st} /> : null}</td>
+              </tr>
             );
           })}
-        </ul>
-      </CardBody>
-    </Card>
+        </tbody>
+      </table>
+      <ul className="divide-y divide-border border-y border-border sm:hidden">
+        {sorted.map((l, i) => {
+          const st = shownOf(l, true);
+          return (
+            <li key={i} className="py-2.5">
+              <div className="flex items-center justify-between gap-2 text-[13px] font-medium">
+                <span className="min-w-0 truncate">{name(l, i)}</span>
+                {st && <StatusWord shown={st} />}
+              </div>
+              <p className="text-[12px] text-muted">{[l.quantity ? `Ordered ${l.quantity}` : null, l.due_date ? `Needed ${formatDate(l.due_date, { short: true })}` : null].filter(Boolean).join(" · ") || "No quantity or date"}</p>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
-/** A supplier's purchase orders: late first (from the late rows), then the rest. */
+/** A supplier's purchase orders: late first (from the late rows), then the rest, two columns on a wide screen. */
 function SupplierOrders({ obj }: { obj: ObjectPage }) {
   const [all, setAll] = useState(false);
   const pos = (obj.related ?? []).filter((r) => r.type === "PurchaseOrder");
@@ -141,50 +193,62 @@ function SupplierOrders({ obj }: { obj: ObjectPage }) {
     if (m) lateLabels.set(m[1], l);
   }
   const days = /Late by (\d+) days/i.exec(obj.status?.text ?? "")?.[1];
-  const rows = pos.map((p) => ({ p, late: lateLabels.has(p.label) })).sort((a, b) => Number(b.late) - Number(a.late));
+  const rows = pos.map((p) => ({ p, late: lateLabels.get(p.label) ?? null })).sort((a, b) => Number(!!b.late) - Number(!!a.late));
   if (rows.length === 0) return null;
-  const shown = all ? rows : rows.slice(0, 8);
+  const cap = rows.length > 18 ? 12 : rows.length;
+  const shown = all ? rows : rows.slice(0, cap);
   return (
-    <Card data-testid="supplier-orders">
-      <CardHeader>
-        <CardTitle>Purchase orders</CardTitle>
-        <span>{rows.length}</span>
-      </CardHeader>
-      <CardBody className="px-0 sm:px-0">
-        <ul className="divide-y divide-border border-t border-border">
-          {shown.map(({ p, late }) => (
+    <section data-testid="supplier-orders">
+      <SectionTitle aside={rows.length > cap && <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${rows.length}`}</MoreButton>}>Purchase orders</SectionTitle>
+      <ul className="-mx-3 grid grid-cols-2 gap-x-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
+        {shown.map(({ p, late }) => {
+          const d = late?.days_late ?? (days && lateLabels.size === 1 ? Number(days) : null);
+          return (
             <li key={p.object_id}>
-              <Link href={refHref(p)} className="group flex min-h-9 items-center gap-3 py-1.5 text-row">
-                <span className="min-w-0 flex-1 truncate text-accent group-hover:underline">{recordLabel(p.type, p.label)}</span>
-                {late && <StatusWord status="late" label={days && lateLabels.size === 1 ? `${days} days late` : "Late"} />}
+              <Link href={refHref(p)} className="group flex h-10 items-center gap-3 rounded-[10px] px-3 text-[13px] hover:bg-hover">
+                <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(p.type, p.label)}</span>
+                {late && (
+                  <span className="flex shrink-0 items-center gap-1.5 text-[12px] tabular-nums">
+                    {d != null ? `${d}d` : "Late"}
+                    <Glyph status="late" days={d ?? 90} size={13} />
+                  </span>
+                )}
+                <ArrowUpRight className="size-3.5 shrink-0 text-faint opacity-0 group-hover:opacity-100" aria-hidden />
               </Link>
             </li>
-          ))}
-        </ul>
-        {rows.length > 8 && (
-          <button type="button" onClick={() => setAll((v) => !v)} className="mt-2 text-meta font-medium text-accent hover:underline cursor-pointer">
-            {all ? "Show fewer" : `Show all ${rows.length}`}
-          </button>
-        )}
-      </CardBody>
-    </Card>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
-function OrderTable({ title, rows, testId }: { title: string; rows: OrderRow[]; testId: string }) {
+/** A customer's orders as rows: number, date, status in ink with its shape, amount at the right. */
+/** An amount as a number, for the rows' bars: "4505.00" -> 4505. */
+const amountOf = (m: OrderRow["amount"]) => (m ? Math.abs(Number(String(m.amount).replace(/[^\d.-]/g, ""))) || 0 : 0);
+
+function OrderTable({ title, rows, testId }: { title: string | null; rows: OrderRow[]; testId: string }) {
   if (rows.length === 0) return null;
+  const top = Math.max(...rows.map((r) => amountOf(r.amount)), 1);
   return (
     <div data-testid={testId}>
-      <p className="mb-1 text-meta font-semibold text-fg">{title}</p>
-      <ul className="divide-y divide-border border-t border-border">
+      {title && <h3 className="mb-1 text-[12px] leading-4 text-muted">{title}</h3>}
+      <ul className="-mx-3">
         {rows.map((r) => (
-          <li key={`${r.object_id}-${r.label}`} className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-row">
-            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="font-medium hover:underline">
-              {r.label}
+          <li key={`${r.object_id}-${r.label}`}>
+            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 rounded-[10px] px-3 text-[13px] hover:bg-hover sm:grid-cols-[132px_72px_minmax(0,1fr)_auto]">
+              <span className="min-w-0 truncate font-semibold">{r.label}</span>
+              <span className="tabular-nums text-muted max-sm:hidden">{r.date ? formatDate(r.date, { short: true }) : ""}</span>
+              <span className="flex min-w-0 items-center gap-4 max-sm:hidden">
+                {r.status && <StatusWord status={recordState(r.status)} label={r.status} />}
+                {r.amount && (
+                  <span className="relative h-1.5 w-full max-w-[220px] overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--fg)_7%,transparent)]" aria-hidden>
+                    <span className="absolute inset-y-0 left-0 rounded-full bg-[color-mix(in_srgb,var(--fg)_38%,transparent)]" style={{ width: `${Math.max(3, (amountOf(r.amount) / top) * 100)}%` }} />
+                  </span>
+                )}
+              </span>
+              <span className="text-right tabular-nums">{r.amount ? money(r.amount) : ""}</span>
             </Link>
-            {r.date && <span className="tabular-nums text-muted">{formatDate(r.date)}</span>}
-            {r.status && <StatusWord status={recordState(r.status)} label={r.status} />}
-            {r.amount && <span className="ml-auto tabular-nums">{money(r.amount)}</span>}
           </li>
         ))}
       </ul>
@@ -192,95 +256,76 @@ function OrderTable({ title, rows, testId }: { title: string; rows: OrderRow[]; 
   );
 }
 
-/** A customer's revenue per period and currency, its open and recent orders, contacts and other records. */
-function CustomerCard({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrders: ObjectRef[] }) {
+/** A customer's open and recent orders, and what is not on record about them. */
+function CustomerOrders({ c, fallbackOrders }: { c: CustomerSummary; fallbackOrders: ObjectRef[] }) {
   const orders = (c.open_list ?? []).length + (c.recent_orders ?? []).length;
+  if (orders === 0 && fallbackOrders.length === 0 && (c.not_established ?? []).length === 0) return null;
   return (
-    <Card data-testid="customer">
-      <CardHeader>
-        <CardTitle>Orders</CardTitle>
-        {typeof c.orders_total === "number" ? (
-          <span data-testid="orders-total">{plural(c.orders_total, "order")}</span>
-        ) : typeof c.orders_at_least === "number" ? (
-          <span data-testid="orders-total">{c.orders_at_least}+ orders</span>
-        ) : null}
-      </CardHeader>
-      <CardBody className="space-y-4 px-0 sm:px-0">
-        {(c.revenue ?? []).length > 0 && (
-          <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2" data-testid="revenue">
-            {c.revenue!.map((r, i) => (
-              <div key={i}>
-                <p className="text-meta text-muted">
-                  {r.label} · {readable(r.period)}
-                </p>
-                <p className="text-stat tabular-nums">{money(r.money)}</p>
-                <p className="text-meta text-muted">
-                  {plural(r.count, "record")} in {SYSTEM_LABEL[r.system] ?? r.system} <SourceChips sources={r.sources} max={1} />
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
-        <OrderTable title="Open orders" rows={c.open_list ?? []} testId="open-orders" />
-        <OrderTable title="Recent orders" rows={c.recent_orders ?? []} testId="recent-orders" />
-        {orders === 0 && fallbackOrders.length > 0 && (
-          <ul className="divide-y divide-border">
-            {fallbackOrders.map((o) => (
-              <li key={o.object_id}>
-                <Link href={refHref(o)} className="flex min-h-10 items-center py-2 text-row font-medium hover:text-accent">
-                  {o.label}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-        {(c.not_established ?? []).length > 0 && (
-          <ul className="space-y-0.5 text-meta text-muted">
-            {c.not_established!.map((n, i) => (
-              <li key={i}>{readable(n)}</li>
-            ))}
-          </ul>
-        )}
-      </CardBody>
-    </Card>
+    <section className="space-y-3" data-testid="customer">
+      <SectionTitle
+        className="mb-0"
+        aside={
+          typeof c.orders_total === "number" ? (
+            <span className="text-[12px] text-muted" data-testid="orders-total">{plural(c.orders_total, "order")}</span>
+          ) : typeof c.orders_at_least === "number" ? (
+            <span className="text-[12px] text-muted" data-testid="orders-total">{c.orders_at_least}+ orders</span>
+          ) : null
+        }
+      >
+        {(c.open_list ?? []).length && !(c.recent_orders ?? []).length ? "Open orders" : !(c.open_list ?? []).length && (c.recent_orders ?? []).length ? "Recent orders" : "Orders"}
+      </SectionTitle>
+      <OrderTable title={(c.recent_orders ?? []).length ? "Open" : null} rows={c.open_list ?? []} testId="open-orders" />
+      <OrderTable title={(c.open_list ?? []).length ? "Recent" : null} rows={c.recent_orders ?? []} testId="recent-orders" />
+      {orders === 0 && fallbackOrders.length > 0 && (
+        <ul className="-mx-2">
+          {fallbackOrders.map((o) => (
+            <li key={o.object_id}>
+              <LinkRow href={refHref(o)}>{o.label}</LinkRow>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(c.not_established ?? []).length > 0 && <Missing items={c.not_established!.map((n) => readable(n))} />}
+    </section>
   );
 }
 
-/** Activity by month, repeats collapsed, ten rows then "Show all". */
+/** Things not on record: an open ring each, the words in ink. */
+function Missing({ items, testId }: { items: string[]; testId?: string }) {
+  return (
+    <ul className="space-y-1.5" data-testid={testId}>
+      {items.map((m, i) => (
+        <li key={i} className="flex gap-2.5 text-[13px] leading-5">
+          <OpenRing size={14} tone="neutral" className="mt-[3px]" />
+          <span className="min-w-0">{m}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Activity in the inspector: newest first, repeats collapsed, eight then "All". */
 function Activity({ events }: { events: TimelineEvent[] }) {
   const [all, setAll] = useState(false);
   if (events.length === 0) return null;
-  const months = groupTimeline(events);
-  let budget = all ? Infinity : 10;
+  // newest first, a run of the same title on one day said once with its count
+  const sorted = [...events].sort((a, b) => (b.at ?? "").localeCompare(a.at ?? ""));
+  const rows: { e: TimelineEvent; count: number }[] = [];
+  for (const e of sorted) {
+    const prev = rows[rows.length - 1];
+    if (prev && prev.e.title === e.title && (prev.e.at ?? "").slice(0, 10) === (e.at ?? "").slice(0, 10)) prev.count += 1;
+    else rows.push({ e, count: 1 });
+  }
+  const shown = all ? rows : rows.slice(0, 8);
   return (
-    <Card data-testid="timeline">
-      <CardHeader>
-        <CardTitle>Activity</CardTitle>
-        <span>{plural(events.length, "event")}</span>
-      </CardHeader>
-      <CardBody className="space-y-4">
-        {months.map((m) => {
-          if (budget <= 0) return null;
-          const rows = m.rows.slice(0, budget);
-          budget -= rows.length;
-          return (
-            <div key={m.month}>
-              <h3 className="mb-1 text-meta font-semibold text-muted">{m.month}</h3>
-              <ul className="space-y-1">
-                {rows.map(({ event: e, count }, i) => (
-                  <ActivityRow key={i} e={e} count={count} />
-                ))}
-              </ul>
-            </div>
-          );
-        })}
-        {months.reduce((n, m) => n + m.rows.length, 0) > 10 && (
-          <button type="button" onClick={() => setAll((v) => !v)} className="text-meta font-medium text-accent hover:underline cursor-pointer">
-            {all ? "Show less" : "Show all activity"}
-          </button>
-        )}
-      </CardBody>
-    </Card>
+    <section data-testid="timeline">
+      <SectionTitle aside={rows.length > 8 && <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${events.length}`}</MoreButton>}>Activity</SectionTitle>
+      <ol className="-mx-2 space-y-px">
+        {shown.map(({ e, count }, i) => (
+          <ActivityRow key={i} e={e} count={count} />
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -289,30 +334,32 @@ function ActivityRow({ e, count }: { e: TimelineEvent; count: number }) {
   const title = activityTitle(e.title, count);
   const body = (
     <>
-      <span className="w-14 shrink-0 text-meta tabular-nums text-muted">{e.at ? formatDate(e.at, { short: true }).replace(/ \d{4}$/, "") : ""}</span>
+      <SystemTile system={e.system} size={16} className="mt-[2px]" />
       <span className="min-w-0 flex-1">
-        <span className="text-row">{title}</span>
-        <span className="ml-2 text-meta text-muted">{SYSTEM_LABEL[e.system] ?? e.system}</span>
-        {e.summary && count === 1 && <span className="block text-meta text-muted">{readable(e.summary)}</span>}
+        <span className="block text-[13px] leading-5">{title}</span>
+        {e.summary && count === 1 && <span className="block truncate text-[12px] leading-4 text-muted">{readable(e.summary)}</span>}
+        <span className="sr-only">{SYSTEM_LABEL[e.system] ?? e.system}</span>
       </span>
+      <span className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">{e.at ? formatDate(e.at, { short: true }).replace(/ \d{4}$/, "") : ""}</span>
     </>
   );
   return (
     <li>
       {e.source && count === 1 ? (
         <>
-          <button type="button" onClick={() => setOpen(true)} className="-mx-2 flex w-[calc(100%+1rem)] items-baseline gap-3 rounded-sm px-2 py-1 text-left hover:bg-surface-2 cursor-pointer">
+          <button type="button" onClick={() => setOpen(true)} className="flex w-full items-start gap-2.5 rounded-lg px-2 py-1 text-left hover:bg-hover cursor-pointer">
             {body}
           </button>
           {open && <EvidenceDrawer source={e.source} open={open} onOpenChange={setOpen} />}
         </>
       ) : (
-        <div className="flex items-baseline gap-3 py-1">{body}</div>
+        <div className="flex items-start gap-2.5 px-2 py-1">{body}</div>
       )}
     </li>
   );
 }
 
+const LINK_SYSTEM = { email: "Email", teams: "Teams", document: "File", record: "BC", task: "Portal" } as const;
 const LINK_TAG = { email: "Email", teams: "Teams", document: "File", record: "Record", task: "Task" } as const;
 
 function ThreadRow({ t }: { t: Thread }) {
@@ -320,75 +367,79 @@ function ThreadRow({ t }: { t: Thread }) {
   const [expanded, setExpanded] = useState(false);
   const tag = LINK_TAG[t.kind] ?? "Message";
   const first = t.items[0];
+  const subject = /^email message$/i.test(t.subject) ? "(no subject)" : t.subject;
   return (
-    <li className="py-2">
-      <div className="flex items-start gap-3">
-        <span className="w-12 shrink-0 pt-px text-meta text-muted">{tag}</span>
-        <div className="min-w-0 flex-1">
-          <button type="button" onClick={() => (t.count > 1 ? setExpanded((v) => !v) : setOpen(first))} className="text-left text-row font-medium hover:underline cursor-pointer" aria-expanded={t.count > 1 ? expanded : undefined}>
-            <span className="line-clamp-2">{/^email message$/i.test(t.subject) ? "(no subject)" : t.subject}</span>
-          </button>
-          <p className="text-meta text-muted">
-            {[t.count > 1 ? `${t.count} messages` : null, t.latest ? `latest ${formatDate(t.latest, { short: true })}` : null].filter(Boolean).join(" · ")}
-          </p>
-          {expanded && (
-            <ul className="mt-1 space-y-0.5 border-l border-border pl-3">
-              {t.items.map((l, i) => (
-                <li key={i}>
-                  <button type="button" onClick={() => setOpen(l)} className="text-left text-meta hover:underline cursor-pointer">
-                    {l.at ? formatDate(l.at, { short: true }) : "Undated"} · {l.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
+    <li>
+      <button
+        type="button"
+        onClick={() => (t.count > 1 ? setExpanded((v) => !v) : setOpen(first))}
+        className="flex w-full items-start gap-3 rounded-[10px] px-3 py-2 text-left hover:bg-hover cursor-pointer"
+        aria-expanded={t.count > 1 ? expanded : undefined}
+      >
+        <SystemTile system={first?.source?.system ?? LINK_SYSTEM[t.kind]} size={20} className="mt-px" />
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 text-[13px] leading-5 font-medium">{subject}</span>
+          <span className="block text-[12px] leading-4 text-muted">
+            {tag}
+            {t.count > 1 ? `, ${t.count} messages` : ""}
+          </span>
+        </span>
+        {t.latest && <span className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">{formatDate(t.latest, { short: true })}</span>}
+        {t.count > 1 && <ChevronDown className={cn("mt-0.5 size-4 shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden />}
+      </button>
+      {expanded && (
+        <ul className="mb-1 ml-[44px] space-y-px border-l border-border pl-2">
+          {t.items.map((l, i) => (
+            <li key={i}>
+              <button type="button" onClick={() => setOpen(l)} className="flex w-full gap-3 rounded-md px-2 py-1 text-left text-[13px] hover:bg-hover cursor-pointer">
+                <span className="w-14 shrink-0 tabular-nums text-muted">{l.at ? formatDate(l.at, { short: true }).replace(/ \d{4}$/, "") : "Undated"}</span>
+                <span className="min-w-0 truncate">{l.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {open && <EvidenceDrawer source={open.source} open={!!open} onOpenChange={(o) => !o && setOpen(null)} />}
     </li>
   );
 }
 
 function Linked({ items }: { items: LinkedItem[] }) {
+  const [all, setAll] = useState(false);
   if (items.length === 0) return null;
   const threads = groupLinked(items);
+  const shown = all ? threads : threads.slice(0, 8);
   return (
-    <Card data-testid="linked">
-      <CardHeader>
-        <CardTitle>Messages and documents</CardTitle>
-        <span>{items.length}</span>
-      </CardHeader>
-      <CardBody>
-        <ul className="divide-y divide-border">
-          {threads.map((t) => (
-            <ThreadRow key={`${t.kind}-${t.subject}`} t={t} />
-          ))}
-        </ul>
-      </CardBody>
-    </Card>
+    <section data-testid="linked">
+      <SectionTitle aside={threads.length > 8 ? <MoreButton onClick={() => setAll((v) => !v)} expanded={all}>{all ? "Fewer" : `All ${threads.length}`}</MoreButton> : <span className="text-[12px] text-muted">{items.length}</span>}>
+        Messages and documents
+      </SectionTitle>
+      <ul className="-mx-3 grid gap-x-4 2xl:grid-cols-2">
+        {shown.map((t) => (
+          <ThreadRow key={`${t.kind}-${t.subject}`} t={t} />
+        ))}
+      </ul>
+    </section>
   );
 }
 
 function People({ people }: { people: Person[] }) {
   if (people.length === 0) return null;
   return (
-    <Card data-testid="people">
-      <CardHeader>
-        <CardTitle>People</CardTitle>
-      </CardHeader>
-      <CardBody>
-        <ul className="space-y-2">
-          {people.map((p, i) => (
-            <li key={i}>
-              <span className="min-w-0">
-                <span className="block truncate text-row font-medium">{p.name}</span>
-                <span className="block truncate text-meta text-muted">{[p.role, p.organisation].filter(Boolean).join(" · ")}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </CardBody>
-    </Card>
+    <section data-testid="people">
+      <SectionTitle>People</SectionTitle>
+      <ul className="space-y-2.5">
+        {people.map((p, i) => (
+          <li key={i} className="flex items-center gap-2.5">
+            <Monogram name={p.name} size={26} className="rounded-full" />
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] leading-[18px] font-medium">{p.name}</span>
+              <span className="block truncate text-[12px] leading-4 text-muted">{[p.role, p.organisation].filter(Boolean).join(" · ")}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -397,147 +448,188 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
   const groups = groupRelated(refs).filter((g) => g.items.length > 0);
   if (groups.length === 0) return null;
   return (
-    <Card data-testid="related">
-      <CardHeader>
-        <CardTitle>Related</CardTitle>
-      </CardHeader>
-      <CardBody className="space-y-3">
+    <section data-testid="related">
+      <SectionTitle>Linked</SectionTitle>
+      <div className="space-y-3">
         {groups.map((g) => (
           <div key={g.type}>
-            <p className="text-meta font-semibold text-fg">
-              {g.label} <span className="ml-1 font-normal tabular-nums text-muted">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>
+            <p className="mb-0.5 text-[12px] text-muted">
+              {g.label}
+              {g.items.reduce((n, x) => n + x.times, 0) + g.unnamed > 1 && <span className="ml-1.5 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>}
             </p>
-            {g.items.length > 0 ? (
-              <ul className="-mx-2">
-                {g.items.slice(0, 6).map((r) => (
-                  <li key={r.object_id}>
-                    <Link href={refHref(r)} className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 text-row hover:bg-surface-2">
-                      <span className="truncate text-accent">{recordLabel(r.type, readable(r.label))}</span>
-                      {r.times > 1 && <span className="shrink-0 text-meta text-muted">×{r.times}</span>}
-                    </Link>
-                  </li>
-                ))}
-                {g.items.length > 6 && <li className="px-2 text-meta text-muted">and {g.items.length - 6} more</li>}
-              </ul>
-            ) : null}
+            <ul className="-mx-2">
+              {g.items.slice(0, 6).map((r) => (
+                <li key={r.object_id}>
+                  <LinkRow href={refHref(r)} aside={r.times > 1 ? <span className="text-[12px] text-muted">×{r.times}</span> : undefined}>
+                    {recordLabel(r.type, readable(r.label))}
+                  </LinkRow>
+                </li>
+              ))}
+              {g.items.length > 6 && <li className="px-2 text-[12px] text-muted">and {g.items.length - 6} more</li>}
+            </ul>
           </div>
         ))}
-      </CardBody>
-    </Card>
+      </div>
+    </section>
   );
 }
 
 function LandedCostCard({ lc }: { lc: LandedCost }) {
   const lines = lc.lines ?? [];
   return (
-    <Card data-testid="landed-cost">
-      <CardHeader>
-        <CardTitle>Landed cost</CardTitle>
-        <StatusBadge status={lc.status === "computed" ? "ok" : "risk"} label={lc.status === "computed" ? "Complete" : "Partial"} />
-      </CardHeader>
-      <CardBody>
-        <dl className="space-y-2 text-row">
-          {lines.map((l, i) => (
-            <div key={i} className="flex items-start justify-between gap-3">
-              <dt className="min-w-0 text-muted">{l.label}</dt>
-              <dd className="shrink-0 tabular-nums">{money(l.amount)}</dd>
-            </div>
-          ))}
-          {lc.total ? (
-            <div className="flex items-center justify-between gap-3 border-t border-border pt-2 font-semibold">
-              <dt>Total</dt>
-              <dd className="tabular-nums">{money(lc.total)}</dd>
-            </div>
-          ) : (
-            <p className="border-t border-border pt-2 text-muted">Landed cost isn&apos;t known yet{(lc.missing ?? []).length ? `: ${lc.missing!.join("; ")}` : "."}</p>
-          )}
-          {lc.per_unit && (
-            <div className="flex items-center justify-between gap-3 text-muted">
-              <dt>Per unit</dt>
-              <dd className="tabular-nums">{money(lc.per_unit)}</dd>
-            </div>
-          )}
-        </dl>
-      </CardBody>
-    </Card>
+    <section data-testid="landed-cost">
+      <SectionTitle aside={<StatusBadge status={lc.status === "computed" ? "ok" : "risk"} label={lc.status === "computed" ? "Complete" : "Partial"} />}>Landed cost</SectionTitle>
+      <dl className="max-w-xl text-[13px]">
+        {lines.map((l, i) => (
+          <div key={i} className="flex h-9 items-center justify-between gap-3 border-b border-border">
+            <dt className="min-w-0 truncate text-muted">{l.label}</dt>
+            <dd className="shrink-0 tabular-nums">{money(l.amount)}</dd>
+          </div>
+        ))}
+        {lc.total ? (
+          <div className="flex h-10 items-center justify-between gap-3 font-semibold">
+            <dt>Total</dt>
+            <dd className="tabular-nums">{money(lc.total)}</dd>
+          </div>
+        ) : (
+          <p className="flex items-start gap-2.5 pt-2.5 leading-5">
+            <OpenRing size={14} tone="neutral" className="mt-[3px]" />
+            <span>Landed cost isn&apos;t known yet{(lc.missing ?? []).length ? `: ${lc.missing!.join("; ")}` : "."}</span>
+          </p>
+        )}
+        {lc.per_unit && (
+          <div className="flex items-center justify-between gap-3 text-muted">
+            <dt>Per unit</dt>
+            <dd className="tabular-nums">{money(lc.per_unit)}</dd>
+          </div>
+        )}
+      </dl>
+    </section>
   );
 }
 
-/** Conflicts collapsed into one violet badge; opened, one plain row each. */
-function ConflictsBadge({ conflicts, open, onToggle }: { conflicts: Conflict[]; open: boolean; onToggle: () => void }) {
+/** Conflicts said in the header with their shape; opened, one plain row each. */
+function ConflictsToggle({ conflicts, open, onToggle }: { conflicts: Conflict[]; open: boolean; onToggle: () => void }) {
   if (conflicts.length === 0) return null;
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className={cn("inline-flex h-5 items-center rounded-sm border border-dotted px-1.5 text-label font-normal cursor-pointer", STATUS_CLASS.suspect.soft, STATUS_CLASS.suspect.fg, STATUS_CLASS.suspect.line)}
-      data-testid="conflicts-badge"
-    >
-      {plural(conflicts.length, "data conflict")} {open ? "▴" : "▾"}
+    <button type="button" onClick={onToggle} aria-expanded={open} className="inline-flex items-center gap-1.5 rounded-md hover:underline cursor-pointer" data-testid="conflicts-badge">
+      <StatusGlyph status="suspect" size={14} />
+      {plural(conflicts.length, "data conflict")}
+      <ChevronDown className={cn("size-3.5 text-muted transition-transform", open && "rotate-180")} aria-hidden />
     </button>
   );
 }
 
 function ConflictRows({ conflicts }: { conflicts: Conflict[] }) {
   return (
-    <ul className="space-y-1.5 rounded-sm border border-dotted border-suspect-line bg-suspect-soft px-3 py-2 text-row" data-testid="conflict-rows">
+    <ul className="space-y-2 rounded-xl bg-surface px-4 py-3 text-[13px] leading-5" data-testid="conflict-rows">
       {conflicts.map((c, i) => (
         <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <StatusGlyph status="suspect" size={13} />
           <span>{conflictSentence(c)}</span>
           <SourceChips sources={c.values.map((v) => v.source)} />
-          {c.values.some((v) => v.trusted) && <span className="text-meta text-muted">Using the {c.values.find((v) => v.trusted)!.source.system === "BC" ? "Business Central" : "AR"} value.</span>}
+          {c.values.some((v) => v.trusted) && <span className="text-[12px] text-muted">Using the {c.values.find((v) => v.trusted)!.source.system === "BC" ? "Business Central" : "AR"} value.</span>}
         </li>
       ))}
     </ul>
   );
 }
 
-/** "Who to chase": the next step from the trail, with who, what, the last message and that nothing is sent. */
-function WhoToChase({ obj, head }: { obj: ObjectPage; head: RecordHead }) {
+/**
+ * The next step: the instruction as one line that names who, the drafted message as a mail sheet
+ * with the card's actions when the proactive engine drafted one, else who to ask and their last
+ * message. The record's own drafts sit under it, to edit and open in Outlook.
+ */
+function NextStep({
+  obj,
+  head,
+  card,
+  cardState,
+  onDone,
+  pending,
+}: {
+  obj: ObjectPage;
+  head: RecordHead;
+  card: ProactiveSuggestion | null;
+  cardState?: ActionResult | null;
+  onDone: (r: ActionResult) => void;
+  pending: boolean;
+}) {
+  const [formOpen, setFormOpen] = useState(false);
   const next = trailNextAction(obj.trail);
-  if (!next) return null;
-  const who = next.contact?.replace(/\s*<[^>]+>/, "") ?? head.counterpart?.label ?? null;
+  const proposals = obj.proposals ?? [];
+  const contact = next?.contact?.replace(/\s*<[^>]+>/, "") ?? null;
+  const who = card?.draft?.to.name ?? contact ?? head.counterpart?.label ?? null;
+  const rule = card?.action?.rule ?? next?.rule;
+  const text = card?.action?.text ?? next?.text;
+  if (!text && !card?.draft && proposals.length === 0) return pending ? <Bars n={2} className="max-w-md" /> : null;
+  const action = text ? stepWords(rule, text, head.counterpart?.label ?? who) : null;
+  const drafts = <ProposalCards proposals={proposals} />;
   return (
-    <section id="chase" className="scroll-mt-20 border-t border-rule pb-2" aria-label="Who to chase" data-testid="who-to-chase">
-      <h2 className="flex min-h-10 items-center text-section">Who to chase</h2>
-      {who && (
-        <p className="text-row font-medium">
-          {who}
-          {!next.contact && <span className="font-normal text-muted"> · no contact on record</span>}
+    <section id="chase" className="scroll-mt-20" aria-label="Next step" data-testid="who-to-chase">
+      <SectionTitle>Next step</SectionTitle>
+      {action && <p className="max-w-[72ch] text-[16px] leading-[22px] font-medium tracking-[-0.01em]">{action}</p>}
+      {!card?.draft && next && (
+        <p className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] leading-5">
+          {who && (
+            <span className="inline-flex items-center gap-1.5">
+              {contact ? <Monogram name={contact} size={16} className="rounded-full" /> : <OpenRing size={13} />}
+              {contact ?? <span className="text-muted">No contact on record for {who}</span>}
+            </span>
+          )}
+          {next.contact_source ? (
+            <span className="text-muted">
+              <SourceLine source={next.contact_source} prefix="Last message from" />
+            </span>
+          ) : (
+            who && <span className="text-muted">No message from {who} on record</span>
+          )}
         </p>
       )}
-      <p className="mt-1 text-row">{readable(next.text)}</p>
-      {next.contact_source ? (
-        <SourceLine source={next.contact_source} prefix="Last message from" />
-      ) : (
-        who && <p className="mt-1 text-meta text-muted">Last message from {who}: none found</p>
+      {card?.draft && (
+        <div className="mt-4">
+          <DraftSheet draft={card.draft} who={who} />
+          <SuggestionActions card={card} state={cardState} onDone={onDone} />
+        </div>
       )}
-      <p className="mt-1 text-meta text-faint">Nothing is sent from here.</p>
+      {proposals.length > 0 &&
+        (card?.draft ? (
+          <div className="mt-4">
+            <button type="button" onClick={() => setFormOpen((v) => !v)} aria-expanded={formOpen} className="inline-flex items-center gap-1 text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
+              Edit and open in Outlook
+              <ChevronDown className={cn("size-3.5 transition-transform", formOpen && "rotate-180")} aria-hidden />
+            </button>
+            <div className={cn("mt-3", !formOpen && "hidden")}>{drafts}</div>
+          </div>
+        ) : (
+          <div className={cn(action && "mt-4")}>{drafts}</div>
+        ))}
     </section>
   );
 }
 
+/** An assembly's production steps on one line: done steps closed with a tick, missing ones left open. */
 function AoSteps({ obj }: { obj: ObjectPage }) {
   const steps = productionSteps(obj);
   if (steps.length === 0) return null;
   return (
-    <Card data-testid="production-steps">
-      <CardHeader>
-        <CardTitle>Production steps</CardTitle>
-      </CardHeader>
-      <CardBody>
-        <ol className="flex flex-col gap-2 lg:flex-row lg:flex-wrap lg:gap-x-5">
-          {steps.map((s) => (
-            <li key={s.label} className="flex items-center gap-2 text-row">
-              <span className={cn(!s.done && "text-risk")}>{s.label}</span>
-              <span className={cn("text-meta", s.done ? "text-ok" : "text-risk")}>{s.done ? "done" : "not on record"}</span>
-              {s.at && <span className="text-meta tabular-nums text-muted">{formatDate(s.at, { short: true })}</span>}
-            </li>
-          ))}
-        </ol>
-      </CardBody>
-    </Card>
+    <section data-testid="production-steps">
+      <SectionTitle>Production steps</SectionTitle>
+      <ol className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:gap-0">
+        {steps.map((s, i) => (
+          <li key={s.label} className="flex items-center gap-3 sm:min-w-[132px]">
+            <span className="flex items-start gap-2.5">
+              {s.done ? <DoneRing size={16} className="mt-px" /> : <OpenRing size={16} className="mt-px" />}
+              <span>
+                <span className="block text-[13px] leading-5 font-medium">{s.label}</span>
+                <span className="block text-[12px] leading-4 tabular-nums text-muted">{s.done ? (s.at ? formatDate(s.at, { short: true }) : "Done") : "Not on record"}</span>
+              </span>
+            </span>
+            {i < steps.length - 1 && <span className="hidden h-px w-6 bg-border-strong sm:block" aria-hidden />}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -549,19 +641,16 @@ function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null |
   const ownRow = order && !own ? (p?.orders ?? []).find((o) => o.order.object_id === objectId && !o.margin) : undefined;
   if (!p && !revenue.some((r) => r.system === "Sage")) return null;
   return (
-    <Card data-testid="margin">
-      <CardHeader>
-        <CardTitle>{order ? "Margin" : "Profitability"}</CardTitle>
-        {p && <span>{p.margin_basis ?? "on item cost only"}</span>}
-      </CardHeader>
-      <CardBody className="space-y-4">
+    <section data-testid="margin">
+      <SectionTitle aside={p && <span className="text-[12px] text-muted">{p.margin_basis ?? "on item cost only"}</span>}>{order ? "Margin" : "Profitability"}</SectionTitle>
+      <div className="space-y-6">
         {!p ? (
           <SageMargin amounts={revenue} />
         ) : own ? (
           <>
             <MarginHeadline b={own} />
             <CostBreakdown breakdown={own} />
-            <p className="text-meta text-muted">
+            <p className="text-[12px] leading-4 text-muted">
               Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
             </p>
           </>
@@ -570,8 +659,8 @@ function MarginCard({ p, order, objectId, revenue }: { p: Profitability | null |
         ) : (
           <ProfitabilityView p={p} />
         )}
-      </CardBody>
-    </Card>
+      </div>
+    </section>
   );
 }
 
@@ -584,22 +673,34 @@ export function sectionWords(names: ReadonlySet<SectionName>): string {
 }
 
 /**
- * A section while it is read (its own call after the quick first read): nothing on the page
- * but its name for screen readers. The one "Checking …" line under the header says what is
- * still being read, and each section takes its place when it lands, so there is no stack of
- * placeholder cards.
+ * A section while it is read (its own call after the quick first read): a few quiet bars in
+ * its place, named for screen readers, until it lands.
  */
-function SectionSkeleton({ name, title }: { name: SectionName; title: string; lines?: number }) {
+function SectionSkeleton({ name, title, lines = 0 }: { name: SectionName; title: string; lines?: number }) {
   return (
-    <p className="sr-only" data-testid={`section-loading-${name}`}>
-      Checking {title.toLowerCase()}
-    </p>
+    <div data-testid={`section-loading-${name}`}>
+      <p className="sr-only">Checking {title.toLowerCase()}</p>
+      {lines > 0 && (
+        <>
+          <SectionTitle>{title}</SectionTitle>
+          <Bars n={lines} className="max-w-lg" />
+        </>
+      )}
+    </div>
   );
 }
 
-/** The page's own source for the key-facts line: the first fact's. */
-function pageSource(obj: ObjectPage): Source | undefined {
-  return (obj.facts ?? []).find((f) => f.sources.length)?.sources[0];
+/** Every source the record's facts cite, once each. */
+function factSources(obj: ObjectPage): Source[] {
+  const seen = new Set<string>();
+  const out: Source[] = [];
+  for (const s of (obj.facts ?? []).flatMap((f) => f.sources ?? [])) {
+    const key = s.handle ?? s.open_url ?? `${s.system}${s.label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
 }
 
 /** "2 customers share this name. Showing the Portal record." with a link to each other one. */
@@ -610,18 +711,31 @@ function SameName({ obj }: { obj: ObjectPage }) {
   const binding = obj.object_id.split(":")[1] ?? "";
   const system = binding.startsWith("bc.") ? SYSTEM_LABEL.BC : binding.startsWith("portal.") ? SYSTEM_LABEL.Portal : null;
   return (
-    <p className="text-meta text-muted" data-testid="same-name">
+    <p className="mt-1.5 text-[12px] leading-4 text-muted" data-testid="same-name">
       {others.length + 1} customers share this name.{system ? ` Showing the ${system} record.` : ""}{" "}
       {others.map((r, i) => (
         <span key={r.object_id}>
           {i > 0 ? " · " : ""}
-          <Link href={refHref(r)} className="text-accent hover:underline">
+          <Link href={refHref(r)} className="text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg">
             {r.label}
           </Link>
         </span>
       ))}
     </p>
   );
+}
+
+/** A sales order's own figures, read from its facts: total, ordered, requested. */
+function salesFigures(obj: ObjectPage) {
+  const f = factMap(obj.facts);
+  const get = (...keys: string[]) => keys.map((k) => f.get(k)?.value).find((v) => v && v.trim());
+  const currency = get("currency", "currency_code");
+  const total = moneyText(get("total_amount_including_tax", "total_amount_excluding_tax", "total_amount", "amount_including_vat", "amount", "total"), currency);
+  return {
+    total,
+    ordered: dayOf(get("order_date", "document_date")),
+    needed: dayOf(get("requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date")),
+  };
 }
 
 /**
@@ -639,6 +753,9 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   // The sections still being read, and those that could not be read.
   const [pending, setPending] = useState<ReadonlySet<SectionName>>(new Set());
   const [failed, setFailed] = useState<ReadonlySet<SectionName>>(new Set());
+  // the proactive engine's card for this record, when it drafted one, and its action's state
+  const [card, setCard] = useState<ProactiveSuggestion | null>(null);
+  const [cardState, setCardState] = useState<ActionResult | null>(null);
   const saved = useSaved();
   const load = useCallback(() => {
     // The quick first read (the record, its timeline and links) shows at once; each slow
@@ -687,6 +804,28 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   }, [type, id]);
   useEffect(() => load(), [load]);
 
+  // the card for this record (an order or a customer), read beside the record
+  const objectId = obj?.object_id;
+  const objType = obj?.type;
+  useEffect(() => {
+    setCard(null);
+    setCardState(null);
+    if (!objectId || !/^(PurchaseOrder|SalesOrder|Customer)$/.test(objType ?? "")) return;
+    const c = new AbortController();
+    getSuggestions(c.signal)
+      .then((s) => {
+        if (c.signal.aborted || s?.status !== "read") return;
+        const mine = (s.items ?? []).find((x) => x.subject?.object_id === objectId) ?? null;
+        setCard(mine);
+        if (mine)
+          getActionStates(c.signal)
+            .then((r) => !c.signal.aborted && setCardState(r.cards?.[mine.id] ?? null))
+            .catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => c.abort();
+  }, [objectId, objType]);
+
   // "Chase →" lands on the card
   useEffect(() => {
     if (obj && params?.get("focus") === "chase") document.getElementById("chase")?.scrollIntoView({ block: "start" });
@@ -696,20 +835,24 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const isSaved = saved.some((s) => s.key === key);
 
   if (error && !obj && notFound && missing)
-    return <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">{missing}</div>;
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Toolbar title={<Crumb type={type} />} />
+        <div className="px-5 pt-6 pb-12 sm:px-8 sm:pt-7">{missing}</div>
+      </div>
+    );
   if (error && !obj)
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
-        <LoadProblem message={error} busy={busy} onRetry={load} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Toolbar title={<Crumb type={type} title={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />} />
+        <div className="max-w-2xl px-5 pt-6 pb-12 sm:px-8 sm:pt-7">
+          <LoadProblem message={error} busy={busy} onRetry={load} />
+        </div>
       </div>
     );
   if (!obj)
-    return (
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
-        {/* a friendly path's reference ("106001", "DIVE11") names the record while it loads */}
-        <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />
-      </div>
-    );
+    // a friendly path's reference ("106001", "DIVE11") names the record while it loads
+    return <ObjectSkeleton type={type} label={routeLabel ?? (id.includes(":") ? null : recordLabel(type, id))} />;
 
   const head = recordHead(obj);
   // an order's life drawn as one line (PO, sales order, assembly); none for a customer or supplier
@@ -719,156 +862,300 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const isSalesOrder = obj.type === "SalesOrder";
   const isSupplier = obj.type === "Supplier" || obj.type === "Vendor";
   const isAo = obj.type === "AssemblyOrder" || obj.type === "ManufacturingOrder";
+  const isParty = isCustomer || isSupplier;
   const conflicts = obj.conflicts ?? [];
-  const src = pageSource(obj);
   const salesOrders = (obj.related ?? []).filter((r) => r.type === "SalesOrder");
-  const otherRelated = (obj.related ?? []).filter((r) => !(isCustomer && r.type === "SalesOrder") && !(isSupplier && r.type === "PurchaseOrder") && r.object_id !== (head.counterpart as ObjectRef | null)?.object_id);
-  const counterpart = head.counterpart;
+  const customerRef = isSalesOrder ? ((obj.related ?? []).find((r) => r.type === "Customer") ?? null) : null;
+  const counterpart = head.counterpart ?? customerRef;
+  const otherRelated = (obj.related ?? []).filter(
+    (r) => !(isCustomer && r.type === "SalesOrder") && !(isSupplier && r.type === "PurchaseOrder") && r.object_id !== (counterpart as ObjectRef | null)?.object_id,
+  );
   const lines = isSupplier ? [] : (obj.late_lines ?? []).filter((l) => !/^PO number:/i.test(l.line));
-  // the right rail only when it has something to hold; else the main column takes the width
-  const hasRail =
-    head.keyFacts.some((k) => k.value) || !!src || pending.has("people") || (obj.people ?? []).length > 0 || groupRelated(otherRelated).some((g) => g.items.length > 0);
+  const sources = factSources(obj);
+  const generic = !isPo && !isParty && !isAo && !isSalesOrder;
+  // a minor record (an order line, a product) shows its numbers as figures, the rest as details
+  const numeric = (v: string) => /^-?\$?[\d,]+(?:\.\d+)?(?:\s[A-Z]{3})?$/.test(v.trim());
+  const factFigures = generic ? head.keyFacts.filter((k) => k.value && numeric(k.value)).slice(0, 5) : [];
+  const facts = head.keyFacts.filter((k) => k.value && !factFigures.includes(k));
+  const trail = obj.trail?.trails?.[0];
+  const trailPending = pending.has("trail");
 
-  // a minor record (an order line, a product) often has only its details: they take the main column
-  const mainEmpty =
-    !custody && !isPo && !isAo && !isSupplier && !isCustomer && !isSalesOrder && !obj.customer && !obj.trail && conflicts.length === 0 &&
-    (obj.proposals ?? []).length === 0 && (obj.linked ?? []).length === 0 && (obj.timeline ?? []).length === 0 && lines.length === 0 && !obj.landed_cost;
-  return (
-    <div className="mx-auto w-full max-w-[1200px] px-4 pt-6 pb-16 sm:px-8 sm:pt-8">
-      <div className="space-y-6">
-        <header className="flex flex-col gap-3 border-b border-border pb-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 space-y-1">
-            <p className="text-meta text-muted">{typeLabel(obj.type)}</p>
-            <h1 className="break-words text-display" data-testid="object-title">
-              {head.title}
-              {counterpart && (
-                <>
-                  <span className="text-muted"> · </span>
-                  {"open_url" in counterpart && counterpart.open_url ? (
-                    <Link href={refHref(counterpart as ObjectRef)} className="hover:underline">
-                      {counterpart.label}
-                    </Link>
-                  ) : (
-                    counterpart.label
-                  )}
-                </>
+  // the header's status line: each status its shape and words in ink
+  const badges: Shown[] = head.badges.slice(0, 2);
+  // a record with one status and a sentence says the sentence beside the status's shape
+  const merged = !isPo && !isParty && !isAo && !!head.lead && badges.length === 1 && !head.leadStatus ? { status: badges[0].status, label: head.lead } : null;
+  const leadShown = !merged && head.lead && (head.leadStatus === "suspect" || (badges.length === 0 && head.stats.length === 0)) && !badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase());
+
+  // the figures: a purchase order's total and receipt over its order line; a sales order's
+  // total and dates; every other record its head's figures
+  const f = factMap(obj.facts);
+  const got = isPo ? receivedOf(trail) : null;
+  const total = head.stats.find((s) => s.label === "Total");
+  const so = isSalesOrder ? salesFigures(obj) : null;
+  const ordered = isPo ? dayOf(f.get("order_date")?.value ?? f.get("document_date")?.value) : (so?.ordered ?? null);
+  const neededIso = isPo ? neededOf(obj) : null;
+  const needed = isPo ? dayOf(neededIso) : (so?.needed ?? null);
+  // a supplier whose lateness was not established is not said to have none late
+  const unknownLate = isSupplier && obj.status?.state === "not_established" && !(obj.late_lines ?? []).length;
+  const otherStats = isPo ? head.stats.filter((s) => !/^(Total|Received|Needed by|Ordered)$/.test(s.label)) : head.stats.filter((s) => !(unknownLate && s.label === "Late"));
+  const revenue = isCustomer ? (obj.customer?.revenue ?? []) : [];
+
+  // a supplier is known by its code under its name
+  const subline = head.subline ?? (isSupplier ? (head.keyFacts.find((k) => k.label === "Code")?.value || null) : null);
+  const askQ = isAo ? `Why did ${head.askLabel} fall short?` : `What's the latest on ${head.askLabel}?`;
+  const actions = (
+    <>
+      <ToolbarButton aria-pressed={isSaved} onClick={() => toggleSaved({ key, kind: "object", label: head.askLabel, href: objectHref(type, id) })} className={cn(isSaved && "text-fg")} title={isSaved ? "Saved" : "Save"}>
+        <Bookmark className={cn(isSaved && "fill-current")} strokeWidth={2} aria-hidden />
+        <span className="max-sm:sr-only">{isSaved ? "Saved" : "Save"}</span>
+      </ToolbarButton>
+      <Link
+        href={`/ask?q=${encodeURIComponent(askQ)}&object=${encodeURIComponent(obj.object_id)}`}
+        className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
+        title={isAo ? "Ask why it fell short" : `Ask about ${head.askLabel}`}
+      >
+        <MessageCircle strokeWidth={2} aria-hidden />
+        <span className="max-sm:sr-only">{isAo ? "Ask why" : "Ask"}</span>
+      </Link>
+    </>
+  );
+
+  const header = (
+    <header className="flex gap-4 sm:gap-5">
+      <Monogram name={isParty ? obj.label : (counterpart?.label ?? null)} size={isParty ? 56 : 48} />
+      <div className="min-w-0 flex-1">
+        <h1 className="flex flex-wrap items-baseline gap-x-2.5 break-words" data-testid="object-title">
+          <span className={cn("font-semibold tracking-[-0.025em]", isParty ? "text-[26px] leading-[32px]" : "text-[24px] leading-[30px]")}>{head.title}</span>
+          {counterpart && (
+            <span className="text-[17px] leading-[22px] font-normal tracking-[-0.01em] text-muted">
+              <span className="sr-only">· </span>
+              {"object_id" in counterpart && counterpart.object_id ? (
+                <Link href={refHref(counterpart as ObjectRef)} className="hover:text-fg">
+                  {counterpart.label}
+                </Link>
+              ) : (
+                counterpart.label
               )}
-            </h1>
-            {(head.subline || (isCustomer && (obj.customer?.also_in ?? []).length > 0)) && (
-              <p className="text-meta text-muted">
-                {head.subline}
-                {isCustomer &&
-                  (obj.customer?.also_in ?? []).map((r) => (
-                    <span key={r.object_id}>
-                      {head.subline ? " · " : ""}also recorded as{" "}
-                      <Link href={refHref(r)} className="text-accent hover:underline">
-                        {r.label}
-                      </Link>
-                    </span>
-                  ))}
-              </p>
-            )}
-            {isCustomer && <SameName obj={obj} />}
-            {head.lead && !head.badges.some((b) => b.label.trim().toLowerCase() === head.lead!.trim().toLowerCase()) && (
-              <p className={cn("max-w-[80ch] text-row", head.leadStatus ? STATUS_CLASS[head.leadStatus].fg : "text-muted")} data-testid="object-lead">
-                {head.lead}
-              </p>
-            )}
-            {(head.badges.length > 0 || (isCustomer && conflicts.length > 0)) && (
-              <div className="flex flex-wrap items-center gap-2" data-testid="object-status">
-                {head.badges.slice(0, 2).map((b) => (
-                  <StatusBadge key={b.label} shown={b} />
-                ))}
-                {isCustomer && <ConflictsBadge conflicts={conflicts} open={conflictsOpen} onToggle={() => setConflictsOpen((v) => !v)} />}
-              </div>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              aria-pressed={isSaved}
-              onClick={() => toggleSaved({ key, kind: "object", label: head.askLabel, href: objectHref(type, id) })}
-              className={cn("inline-flex h-8 items-center rounded-sm border border-control px-3 text-row hover:bg-surface cursor-pointer", isSaved && "font-medium")}
-            >
-              {isSaved ? "Saved" : "Save"}
-            </button>
-            <Link
-              href={`/ask?q=${encodeURIComponent(isAo ? `Why did ${head.askLabel} fall short?` : `What's the latest on ${head.askLabel}?`)}&object=${encodeURIComponent(obj.object_id)}`}
-              className="inline-flex h-8 items-center rounded-sm bg-accent px-3 text-row font-medium text-accent-fg hover:brightness-110"
-            >
-              {isAo ? "Ask why it fell short" : `Ask about ${head.askLabel}`}
-            </Link>
-          </div>
-        </header>
-        {head.stats.length > 0 && (
-          <StatRow className="-mt-6 border-b border-border">
-            {head.stats.slice(0, 4).map((s) => (
-              <StatTile key={s.label} s={s} />
-            ))}
-          </StatRow>
+            </span>
+          )}
+        </h1>
+        {(subline || (isCustomer && (obj.customer?.also_in ?? []).length > 0)) && (
+          <p className="mt-0.5 text-[13px] leading-5 text-muted">
+            {subline}
+            {isCustomer &&
+              (obj.customer?.also_in ?? []).map((r) => (
+                <span key={r.object_id}>
+                  {subline ? " · " : ""}also recorded as{" "}
+                  <Link href={refHref(r)} className="text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg">
+                    {r.label}
+                  </Link>
+                </span>
+              ))}
+          </p>
         )}
-
+        {merged ? (
+          <p className="mt-2 flex max-w-[72ch] items-start gap-2 text-[13px] leading-5" data-testid="object-status">
+            <Glyph status={merged.status} days={null} size={14} />
+            <span className="-mt-[3px]">{merged.label}</span>
+          </p>
+        ) : (badges.length > 0 || (isCustomer && conflicts.length > 0)) && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[13px] leading-5" data-testid="object-status">
+            {badges.map((b) => (
+              <Fact key={b.label} shown={b} />
+            ))}
+            {isCustomer && <ConflictsToggle conflicts={conflicts} open={conflictsOpen} onToggle={() => setConflictsOpen((v) => !v)} />}
+          </div>
+        )}
+        {leadShown && (
+          <p className="mt-2 flex max-w-[72ch] items-start gap-2 text-[13px] leading-5" data-testid="object-lead">
+            {head.leadStatus && <StatusGlyph status={head.leadStatus} size={14} className="mt-[3px]" />}
+            <span className={cn(!head.leadStatus && "text-muted")}>{head.lead}</span>
+          </p>
+        )}
+        {isCustomer && <SameName obj={obj} />}
         {pending.size > 0 && (
-          <p className="text-meta text-muted" role="status" data-testid="checking" data-pending="">
+          <p className="mt-2 inline-flex items-center gap-1.5 text-[12px] leading-4 text-muted" role="status" data-testid="checking" data-pending="">
+            <span className="size-1.5 animate-breathe rounded-full bg-[var(--dot-neutral)]" aria-hidden />
             Loading {sectionWords(pending)}…
           </p>
         )}
         {pending.size === 0 && failed.size > 0 && (
-          <p className="text-meta text-muted" role="status" data-testid="checks-failed">
+          <p className="mt-2 text-[12px] leading-4 text-muted" role="status" data-testid="checks-failed">
             Couldn&apos;t load {sectionWords(failed)}.{" "}
-            <button type="button" onClick={load} className="text-accent hover:underline cursor-pointer">
+            <button type="button" onClick={load} className="font-medium text-fg underline decoration-border-strong underline-offset-2 cursor-pointer">
               Try again
             </button>
           </p>
         )}
-        {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
+      </div>
+    </header>
+  );
 
-
-        {custody && <CustodyRail custody={custody} />}
-
-        <div className={cn("grid grid-cols-1 gap-x-10 gap-y-8", hasRail && !mainEmpty && "lg:grid-cols-[minmax(0,1fr)_280px]")}>
-          <div className={cn("min-w-0 space-y-8", mainEmpty && "hidden")}>
-            {isPo && (pending.has("trail") ? <SectionSkeleton name="trail" title="ETA confirmed?" lines={2} /> : <EtaCard eta={obj.trail?.trails?.[0]?.eta} />)}
-            {(isPo || isAo) && (pending.has("trail") ? <SectionSkeleton name="trail" title="Who to chase" lines={2} /> : <WhoToChase obj={obj} head={head} />)}
-            <ProposalCards proposals={obj.proposals} />
-            {!isCustomer && conflicts.map((c, i) => <ConflictCard key={i} conflict={c} />)}
-            {isAo && <AoSteps obj={obj} />}
-            {isSupplier && <SupplierOrders obj={obj} />}
-            {obj.customer && <CustomerCard c={obj.customer} fallbackOrders={salesOrders} />}
-            {(isCustomer || isSalesOrder) && (pending.has("margin") ? <SectionSkeleton name="margin" title="Margin" lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
-            {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Late lines" lines={3} /> : <LinesTable lines={lines} />}
-            {isPo && pending.has("trail") ? <SectionSkeleton name="trail" title="How we know" lines={4} /> : <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />}
-            {pending.has("landed_cost") ? (
-              isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={3} />
-            ) : (
-              obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
-            )}
-            <Linked items={obj.linked ?? []} />
-            <Activity events={obj.timeline ?? []} />
+  const hasFigures = factFigures.length > 0 || !!total || !!got || ordered != null || needed != null || !!so?.total || otherStats.length > 0 || revenue.length > 0;
+  const figures = hasFigures && (
+    <section className="space-y-6" data-testid="detail-stats">
+      <div className="flex flex-wrap gap-x-12 gap-y-5">
+        {(isPo ? total : null) && <Figure label="Total" value={total!.value} unit={total!.caption} />}
+        {so?.total && <Figure label="Total" value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} />}
+        {so && so.needed == null && so.ordered != null && <Figure label="Ordered" value={formatDate(new Date(so.ordered).toISOString().slice(0, 10))} />}
+        {got && (
+          <Figure label="Received" value={got.lines ? got.got : `${got.got} of ${got.of}`} unit={got.lines ? `${got.lines} lines short` : got.uom}>
+            {got.pct != null && <Progress pct={got.pct} />}
+          </Figure>
+        )}
+        {isPo && trailPending && !got && (
+          <div className="space-y-2">
+            <div className="skeleton h-3 w-14" />
+            <div className="skeleton h-6 w-24" />
           </div>
-          <div className={cn("min-w-0 space-y-8", !hasRail && "hidden", mainEmpty && "max-w-[560px]")}>
-            {(head.keyFacts.some((k) => k.value) || src) && <Card data-testid="summary">
-              <CardHeader>
-                <CardTitle>Details</CardTitle>
-              </CardHeader>
-              <CardBody>
-                <KeyFacts
-                  facts={head.keyFacts.map((k) => ({
-                    label: k.label,
-                    value: k.value ? k.status ? <span className={STATUS_CLASS[k.status].fg}>{k.value}</span> : k.value : "",
-                  }))}
-                  source={src ? <SourceLine source={src} record={head.title} /> : undefined}
-                />
-              </CardBody>
-            </Card>}
-            {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={3} /> : <People people={obj.people ?? []} />}
-            <RelatedCard refs={otherRelated} />
+        )}
+        {factFigures.map((k) => (
+          <Figure key={k.label} label={k.label} value={grouped(k.value.replace(/\s+[A-Z]{3}$/, ""))} unit={/\s([A-Z]{3})$/.exec(k.value)?.[1]} />
+        ))}
+        {otherStats.map((s) => {
+          const m = /^(.*?)\s+([A-Z]{3})$/.exec(s.value);
+          return <Figure key={s.label} label={s.label} value={m ? m[1] : s.value} unit={m ? m[2] : undefined} status={s.status} days={s.status === "late" ? 90 : null} source={s.source}>{s.caption && <p className="mt-0.5 max-w-[220px] truncate text-[12px] leading-4 text-muted">{s.caption}</p>}</Figure>;
+        })}
+        {revenue.map((r, i) => (
+          <div key={i} data-testid={i === 0 ? "revenue" : undefined}>
+            <Figure label={r.label} value={money(r.money).replace(/\s+[A-Z]{3}$/, "")} unit={r.money?.currency}>
+              <p className="mt-0.5 max-w-[280px] truncate text-[12px] leading-4 text-muted">{readable(r.period)}</p>
+            </Figure>
           </div>
+        ))}
+      </div>
+      {((isPo && (ordered != null || needed != null) && !trailPending) || (isSalesOrder && needed != null)) && (
+        <div>
+          <OrderLine ordered={ordered} needed={needed} daysLate={isPo && trail?.state === "late" ? trail.days_late : null} />
         </div>
-        <NotFoundSection items={obj.not_found} subject={obj.label} />
-        <HiddenNotice hidden={obj.hidden} />
+      )}
+      {isPo && trailPending && <div className="skeleton h-[6px] rounded-full" />}
+    </section>
+  );
+
+  const notOnRecord = (obj.not_found ?? []).map((n) => {
+    const t = missingText(n, obj.label);
+    return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+  });
+
+  const main = (
+    <>
+      {header}
+      {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
+      {figures}
+      {(isPo || isAo || isSalesOrder || isCustomer || (obj.proposals ?? []).length > 0) && (
+        <NextStep obj={obj} head={head} card={card} cardState={cardState} onDone={setCardState} pending={trailPending && (isPo || isAo)} />
+      )}
+      {!isCustomer && conflicts.length > 0 && (
+        <div className="space-y-3">
+          {conflicts.map((c, i) => (
+            <ConflictCard key={i} conflict={c} />
+          ))}
+        </div>
+      )}
+      {isPo && (trailPending ? <SectionSkeleton name="trail" title="Supplier confirmation" lines={0} /> : <EtaCard eta={trail?.eta} />)}
+      {isAo && <AoSteps obj={obj} />}
+      {isSupplier && <SupplierOrders obj={obj} />}
+      {obj.customer && <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />}
+      {(isCustomer || isSalesOrder) &&
+        (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
+      {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
+      {isPo && trailPending ? (
+        <SectionSkeleton name="trail" title="How we know" lines={3} />
+      ) : (
+        <div>
+          <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />
+        </div>
+      )}
+      {custody && (
+        <div>
+          <CustodyRail custody={custody} />
+        </div>
+      )}
+      {pending.has("landed_cost") ? (
+        isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={0} />
+      ) : (
+        obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
+      )}
+      <Linked items={obj.linked ?? []} />
+      {notOnRecord.length > 0 && (
+        <section data-testid="not-found">
+          <SectionTitle>Not on record</SectionTitle>
+          <Missing items={notOnRecord} />
+        </section>
+      )}
+      <HiddenNotice hidden={obj.hidden} />
+    </>
+  );
+
+  const inspector = (
+    <>
+      {facts.length > 0 && (
+      <section data-testid="summary">
+        <SectionTitle>Details</SectionTitle>
+          <dl>
+            {facts.map((k) => (
+              <Property key={k.label} label={k.label}>
+                {k.status && k.status !== "neutral" ? (
+                  <span>
+                    <StatusGlyph status={k.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
+                    {k.value.replace(/\s*⚠$/, "")}
+                  </span>
+                ) : k.label === "Supplier" && counterpart && "object_id" in counterpart && counterpart.object_id ? (
+                  <Link href={refHref(counterpart as ObjectRef)} className="hover:underline">
+                    {k.value}
+                  </Link>
+                ) : (
+                  k.value
+                )}
+              </Property>
+            ))}
+          </dl>
+      </section>
+      )}
+      {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}
+      <RelatedCard refs={otherRelated} />
+      {sources.length > 0 && (
+        <section>
+          <SectionTitle>Sources</SectionTitle>
+          <ul className="space-y-2">
+            {sources.slice(0, 5).map((src, i) => (
+              <li key={i} className="flex items-center gap-2.5 text-[13px]">
+                <SystemTile system={src.system} size={18} />
+                <span className="min-w-0 truncate">
+                  <SourceChip source={src} record={head.title} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <Activity events={obj.timeline ?? []} />
+      <div className="text-[12px]">
         <FreshnessLabel freshness={obj.freshness} />
       </div>
-    </div>
+    </>
   );
+
+  return <Frame crumb={<Crumb type={obj.type} title={head.title} />} actions={actions} main={main} inspector={inspector} />;
+}
+
+/** "2505" -> "2,505"; anything that is not a bare number as given. */
+function grouped(v: string): string {
+  const t = v.trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(t)) return v;
+  return Number(t).toLocaleString("en-CA", { maximumFractionDigits: 4 });
+}
+
+/** The needed-by date as the trail states it (its due-date step's, else its verdict's). */
+function neededOf(obj: ObjectPage): string | null {
+  const t = obj.trail?.trails?.[0];
+  for (const s of t?.steps ?? []) {
+    if (s.kind === "due_date") {
+      const m = /(\d{4}-\d{2}-\d{2})/.exec(s.title);
+      if (m) return m[1];
+    }
+  }
+  const m = /needed-by date (\d{4}-\d{2}-\d{2})|requested-by date (\d{4}-\d{2}-\d{2})/.exec(t?.verdict ?? "");
+  return m ? (m[1] ?? m[2]) : null;
 }

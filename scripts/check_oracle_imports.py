@@ -8,7 +8,8 @@ A deny list of import forms is trivially bypassed (path loading, aliases, ``geta
 this check is an **allowlist** by construction. It is a tripwire, like ``http-egress``: it
 stops accidental and casual coupling, not a determined author (string concatenation still
 defeats ``path-string``); the audit-hook test below is the second layer. Every ``*.py``
-under ``evals/oracle/`` (tests included) fails when it:
+under ``evals/oracle/`` (tests included), and each answer-key file in ``KEY_FILES``,
+fails when it:
 
   import        imports anything other than the stdlib modules in ``STDLIB`` or
                 ``evals.oracle`` itself (absolute or relative; a relative import must
@@ -41,6 +42,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SCANNED = "evals/oracle"
 PACKAGE = "evals.oracle"
+# Eval files outside the package that compute an answer key with the oracle and must stay
+# as independent of the Workbench as the oracle itself (the same allowlist applies).
+KEY_FILES = ("evals/live_ops_truth.py",)
 STDLIB = frozenset({
     "__future__", "collections", "dataclasses", "datetime", "decimal", "functools",
     "hashlib", "itertools", "json", "math", "pathlib", "random", "re", "string", "typing",
@@ -152,6 +156,10 @@ def scan(root: Path) -> list[tuple[str, int, str, str]]:
             findings.append((path.relative_to(root).as_posix(), 0, "file", "not a .py source"))
             continue
         findings.extend(scan_file(path, root))
+    for relative in KEY_FILES:
+        path = root / relative
+        if path.is_file():   # a key file not there imports nothing
+            findings.extend(scan_file(path, root))
     return findings
 
 

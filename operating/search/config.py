@@ -58,6 +58,12 @@ class Weights:
     authority: Any = None
     # The longest passage (characters) the cross-encoder reads per candidate.
     rerank_passage_chars: int = 1200
+    # The HNSW candidate list a dense query walks (pgvector ``hnsw.ef_search``): wider
+    # finds more of the true nearest chunks at a few ms more.
+    dense_ef_search: int = 100
+    # What the word and meaning retrievers read: ``question`` (the question as asked) or
+    # ``rewrites`` (the question and its understanding's rewrites, at most 6).
+    query_texts: str = "rewrites"
 
     def for_intent(self, intent: str | None) -> IntentWeights:
         """An unknown or missing intent reads the ``default`` weights."""
@@ -76,6 +82,7 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
         raise WeightsError("weights_invalid:schema")
     allowed = {"schema", "notes", "fusion", "rrf_k", "candidates_per_retriever",
                "rerank_top", "rerank_timeout_s", "rerank_passage_chars", "intents", "tuned",
+               "dense_ef_search", "query_texts",
                "authority"}
     unknown = set(raw) - allowed
     if unknown:
@@ -109,7 +116,15 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
         _number(raw.get("rerank_timeout_s"), "rerank_timeout_s", 0, 60),
         intents, authority.parse(raw["authority"]),
         int(_number(raw.get("rerank_passage_chars", 1200), "rerank_passage_chars",
-                    100, 4000)))
+                    100, 4000)),
+        int(_number(raw.get("dense_ef_search", 100), "dense_ef_search", 10, 1000)),
+        _choice(raw.get("query_texts", "rewrites"), "query_texts", ("question", "rewrites")))
+
+
+def _choice(value: Any, where: str, allowed: tuple[str, ...]) -> str:
+    if value not in allowed:
+        raise WeightsError(f"weights_invalid:{where}")
+    return value
 
 
 _CACHE: dict[str, tuple[float, Weights]] = {}

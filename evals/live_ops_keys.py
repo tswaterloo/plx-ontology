@@ -41,7 +41,7 @@ PORTAL_SO = "public.app_sales_order"
 MO = "public.app_manufacturing_order"
 FM_AO = "public.assembly_order"
 FM_AO_ITEM = "public.assembly_order_item"
-FM_PACK_SUPPLIER = "public.packaging_supplier"
+PRODUCT = "public.app_product"
 FM_RECEIPT_PACK = "public.receipt_packaging"
 # FileMaker assembly order statuses still to run (Realized and Cancelled are done).
 OPEN_AO = frozenset({"Allocated", "Generated", "Committed"})
@@ -171,6 +171,15 @@ class World:
     mc: Sequence[Mapping[str, Any]] = ()
     sharepoint: Sequence[Mapping[str, Any]] = ()
     customer_mail: Sequence[Mapping[str, Any]] = ()
+    # the free text the wide and open families read (``evals.live_ops_wide``,
+    # ``evals.live_ops_open``): mail beyond PO-naming mail, Teams messages and calendar
+    # events (``{"system", "handle", "subject", "preview" | "text", "at", ...}``), mail
+    # attachments' file names with their message, the questions mined from internal mail
+    # and Teams (people exclusion applied) and the blind generator's question bank
+    texts: Sequence[Mapping[str, Any]] = ()
+    attachments: Sequence[Mapping[str, Any]] = ()
+    mined: Sequence[Mapping[str, Any]] = ()
+    blind_bank: Sequence[Mapping[str, Any]] = ()
     # Every captured version of the rows of a relation a change key compares
     # (``PORTAL_VERSIONED``): relation -> the row's citation without its ``@`` capture ->
     # ``[(held_from, row)]``, ``held_from`` the UTC instant the capture holding that version
@@ -389,11 +398,14 @@ def _named_in_mail(world: World) -> dict[str, list[Mapping[str, Any]]]:
 
 
 def po_no_vendor_mail(world: World) -> list[Candidate]:
-    """Late orders no captured text names (no mail, document or record but the order's own
-    rows): the honest answer to "did the vendor confirm" is that nothing is on record."""
+    """Open orders (late or not: ``po_lateness`` judges them open) no captured text names
+    (no mail, document or record but the order's own rows): the honest answer to "did the
+    vendor confirm" is that nothing is on record."""
     out = []
     by_number = _named_in_mail(world)
-    for group in world.lateness()["late"]:
+    for group in world.lateness()["groups"]:
+        if not group.get("open"):
+            continue
         digits = {re.sub(r"\D", "", n) for n in group.get("numbers") or []} - {""}
         if not digits or any(by_number.get(d) for d in digits) or any(
                 _mail_naming(world, n) or world.named_in_text(n)
@@ -406,7 +418,7 @@ def po_no_vendor_mail(world: World) -> list[Candidate]:
             ["mail capture: messages (subject, body_preview) naming the order's numbers",
              "projection text index (chunk_text) for every captured body, attachment and "
              "document: no chunk names the number's digits"],
-            "a late order (po_lateness) whose numbers no captured message or text names"))
+            "an open order (po_lateness) whose numbers no captured message or text names"))
     return out
 
 
@@ -590,13 +602,10 @@ def no_such_po(world: World) -> list[Candidate]:
     series = sorted(int(d) for d in held if d and 3 <= len(d) <= 4)
     if not series:
         return []
-    top = series[-1]
     out = []
-    for offset in (137, 311, 529, 877):
-        digits = str(top + offset)
+    for digits in free_numbers(series[-1], held, lambda d: world.named_in_text(f"PO#{d}")
+                               or world.named_in_values(f"PO#{d}")):
         number = f"PO#{digits}"
-        if digits in held or world.named_in_text(number) or world.named_in_values(number):
-            continue
         out.append(Candidate(number, "PurchaseOrder", {"po": number}, [
             _fact("absent", "no_such_po", [], (), value="find", nothing_exists=True,
                   **FORMS["no_such_po"])],
@@ -604,6 +613,30 @@ def no_such_po(world: World) -> list[Candidate]:
              "generated_purchase_order.ponumber; BC purchaseOrders.number; mail subjects; "
              "projection text and value indexes"],
             "a number above the Portal series' top that no system or text holds"))
+    return out
+
+
+# Steps above a series' top a made-up number is tried at (``free_numbers``): the first few
+# near the top, then wider, so a number every system and text is clear of is always found
+# even where the near ones collide with a value (an amount, another system's id).
+FREE_STEPS = (137, 311, 529, 877, *range(1009, 9000, 211), 20011, 40009, 60013, 98017,
+              150001, 250003)
+FREE_WANT = 6
+
+
+def free_numbers(top: int, held: set[str], named: Callable[[str], bool],
+                 want: int = FREE_WANT) -> list[str]:
+    """Up to ``want`` numbers above ``top`` (``FREE_STEPS``) that no system holds
+    (``held``: digit strings) and nothing names (``named(digits)``): the "no such record"
+    questions' numbers, never one a record or text may mean."""
+    out = []
+    for step in FREE_STEPS:
+        digits = str(top + step)
+        if digits in held or named(digits):
+            continue
+        out.append(digits)
+        if len(out) >= want:
+            break
     return out
 
 
@@ -635,29 +668,57 @@ def _mo_chain(world: World) -> dict[str, Any]:
     return world._cache["mo"]
 
 
+FM_PACK_PRODUCT = re.compile(r"fm-pack-(\d+)")
+
+
+def _line_packs(world: World) -> dict[str, list[str]]:
+    """Each late order group's late (open) lines -> the FileMaker packaging id of the item
+    the line orders, or "" where the item is no FileMaker packaging (a raw material, an
+    unmapped item): a Portal line by its product (``product_id``), a BC line by its item
+    number as the Portal product code; the Portal product is FileMaker's packaging when its
+    ``external_id`` is ``fm-pack-<id>`` (the FileMaker-to-Portal ETL's own key). One list
+    per group (its asked number), one entry per late line."""
+    if "line_packs" in world._cache:
+        return world._cache["line_packs"]
+    by_id: dict[str, str] = {}
+    by_code: dict[str, set[str]] = defaultdict(set)
+    for item in world.rows(PRODUCT):
+        found = FM_PACK_PRODUCT.fullmatch(str(item["row"].get("external_id") or "").strip())
+        if found:
+            by_id[key_text(item["row"].get("id")) or ""] = found.group(1)
+            code = str(item["row"].get("code") or "").strip()
+            if code:
+                by_code[code].add(found.group(1))
+    lines = {i["citation"]: i["row"] for i in world.rows(PO_LINE)}
+    out: dict[str, list[str]] = {}
+    for group in world.lateness()["late"]:
+        packs = []
+        for unit in group["late_lines"]:
+            cite = unit["citation"]
+            if cite in lines:
+                packs.append(by_id.get(key_text(lines[cite].get("product_id")) or "", ""))
+                continue
+            record = world.record(cite)
+            fields = (record or {}).get("fields") or {}
+            code = str(fields.get("lineObjectNumber") or "").strip()
+            found = by_code.get(code, set()) if fields.get("lineType") == "Item" else set()
+            packs.append(next(iter(found)) if len(found) == 1 else "")
+        out[_asked_number(group)] = packs
+    world._cache["line_packs"] = out
+    return out
+
+
 def _late_packaging(world: World) -> dict[str, list[tuple[Mapping[str, Any], str]]]:
-    """FileMaker packaging id -> (late order group, FileMaker PO item citation) of every
-    packaging item still short on a late order (FileMaker items, QC receiving log)."""
-    fm_items: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for item in world.rows(FM_PO_ITEM):
-        if str(item["row"].get("rawpack") or "").casefold() == "pack":
-            fm_items[key_text(item["row"].get("idpogen")) or ""].append(item)
-    supplier_pack = {key_text(i["row"].get("id")): key_text(i["row"].get("idpack"))
-                     for i in world.rows(FM_PACK_SUPPLIER)}
-    received: dict[str, Decimal] = defaultdict(Decimal)
-    for relation in (RAW_LOT, FM_RECEIPT_PACK):
-        for item in world.rows(relation):
-            received[key_text(item["row"].get("idpogenitem")) or ""] += (
-                decimal_of(item["row"].get("sumqty")) or Decimal(0))
-    fm_ids = {i["citation"]: key_text(i["row"].get("id")) for i in world.rows(FM_PO)}
+    """FileMaker packaging id -> (late order group, late line citation) of every packaging
+    item a late order's late (open) line still orders (``_line_packs``). FileMaker's QC
+    receiving log is not read for what is short: its ``sumqty`` is a running total across
+    the log, never a receipt's own quantity."""
+    packs = _line_packs(world)
     out: dict[str, list[tuple[Mapping[str, Any], str]]] = defaultdict(list)
     for group in world.lateness()["late"]:
-        for head in group["headers"]:
-            for item in fm_items.get(fm_ids.get(head["citation"]) or "", ()):
-                pack = supplier_pack.get(key_text(item["row"].get("idproductsupp")))
-                ordered = decimal_of(item["row"].get("qty")) or Decimal(0)
-                if pack and received[key_text(item["row"].get("id")) or ""] < ordered:
-                    out[pack].append((group, item["citation"]))
+        for unit, pack in zip(group["late_lines"], packs[_asked_number(group)]):
+            if pack:
+                out[pack].append((group, unit["citation"]))
     return out
 
 
@@ -669,14 +730,29 @@ def _ao_forms(chain: Mapping[str, Any], ao: str) -> list[str]:
 MO_RULE = ("open FileMaker assembly orders (assembly_order.status Allocated, Generated or "
            "Committed: FileMaker's status, never the MO-FM copy's) and their packaging "
            "components (assembly_order_item.idpack: FileMaker's components, never the Portal "
-           "MO lines, whose product links are unreliable), against the packaging items of "
-           "late orders still short in FileMaker's QC log (generated_purchase_order_item, "
-           "packaging_supplier.idpack); raw materials reach an AO through its bulk batch and "
+           "MO lines, whose product links are unreliable), against the packaging the late "
+           "(open) lines of late orders still order (a Portal line's product, a BC line's "
+           "item number as the Portal product code; FileMaker packaging by the product's "
+           "external_id fm-pack-<id>); raw materials reach an AO through its bulk batch and "
            "are not followed")
+# The honest answer for a late order whose late lines are all packaging no open assembly
+# order uses: nothing on the floor waits on it.
+NOTHING_HELD_UP = {
+    "accept": ["no open assembly order", "no assembly order", "no open ao", "no open mo",
+               "no open manufacturing order", "nothing on the floor", "nothing is waiting",
+               "nothing waiting", "nothing held up", "nothing is held up", "not holding up",
+               "isn't holding up", "is not holding up", "doesn't hold up", "does not hold up",
+               "not holding anything up", "no production", "none of the open assembly orders",
+               "no open orders use", "not used by any open"],
+    "contradicts": ["is holding up", "is waiting on", "are waiting on", "is blocking",
+                    "are blocked by", "is held up by", "are held up by"]}
 
 
 def late_po_hits(world: World) -> list[Candidate]:
-    """A late order's short packaging feeds open FileMaker assembly orders: those AOs."""
+    """A late order's packaging feeds open FileMaker assembly orders: those AOs. A late
+    order whose late lines are all packaging that no open assembly order uses holds up
+    nothing (the honest none); one with a raw or unmapped late line and no packaging hit
+    is not keyed (raw materials are not followed: ``MO_RULE``)."""
     chain, late = _mo_chain(world), _late_packaging(world)
     hits: dict[str, dict[str, Any]] = {}
     for ao, packs in chain["packs"].items():
@@ -688,13 +764,25 @@ def late_po_hits(world: World) -> list[Candidate]:
                 entry["aos"].add(ao)
                 entry["records"] |= {cite, chain["aos"][ao]["citation"],
                                      *chain["rows"][(ao, pack)]}
-    return [Candidate(number, "PurchaseOrder", {"po": number}, [
+    reads = ["late order (po_lateness) -> its late lines' items -> FileMaker packaging "
+             "(Portal product external_id fm-pack-<id>) -> FileMaker "
+             "assembly_order_item.idpack -> open assembly_order"]
+    out = [Candidate(number, "PurchaseOrder", {"po": number}, [
         _fact("set", "held_up", entry["records"], ("api",),
               members=[_ao_forms(chain, ao) for ao in sorted(entry["aos"])],
-              pattern=AO_TOKEN)],
-        ["late order (po_lateness) -> FileMaker PO items (Pack) -> packaging -> FileMaker "
-         "assembly_order_item.idpack -> open assembly_order"], MO_RULE)
+              pattern=AO_TOKEN)], reads, MO_RULE)
         for number, entry in hits.items() if len(entry["aos"]) <= LIST_MAX]
+    packs = _line_packs(world)
+    for group in world.lateness()["late"]:
+        number = _asked_number(group)
+        mine = packs.get(number) or []
+        if number in hits or not mine or not all(mine):
+            continue
+        out.append(Candidate(number, "PurchaseOrder", {"po": number}, [
+            _fact("absent", "nothing_held_up", [h["citation"] for h in group["headers"]], (),
+                  value="assembly order", **NOTHING_HELD_UP)], reads,
+            MO_RULE + "; every late line is packaging and no open assembly order uses it"))
+    return out
 
 
 def mo_late_materials(world: World) -> list[Candidate]:
@@ -716,8 +804,8 @@ def mo_late_materials(world: World) -> list[Candidate]:
                   members=[sorted({f for n in g["numbers"] for f in po_forms(n)})
                            for g in groups.values()], pattern=PO_TOKEN,
                   known=_ao_forms(chain, ao))],
-            ["open FileMaker assembly_order -> assembly_order_item.idpack -> late orders' "
-             "short packaging items"], MO_RULE))
+            ["open FileMaker assembly_order -> assembly_order_item.idpack -> the packaging "
+             "late orders' late lines still order"], MO_RULE))
     return out
 
 
@@ -1203,7 +1291,7 @@ FAMILIES: dict[str, Callable[[World], list[Candidate]]] = {
 PORTAL_RELATIONS = (PO, PO_LINE, FM_PO, po_lateness.ENTITY_MAP, "public.app_receipt", BATCH,
                     FM_BATCH,
                     RAW_LOT, PORTAL_SO, MO, FM_PO_ITEM, FM_RECEIPT_PACK, FM_AO,
-                    FM_AO_ITEM, FM_PACK_SUPPLIER)
+                    FM_AO_ITEM, PRODUCT)
 BC_SETS = ("purchaseOrders", "purchaseOrderLines", "purchaseReceipts", "purchaseInvoices",
            "purchaseInvoiceLines",
            "purchaseOrderReferences", "salesOrders", "salesOrderLines", "salesInvoices",
@@ -1220,8 +1308,40 @@ BC_SETS = BC_SETS + tuple(s for s in _more.BC_SETS if s not in BC_SETS)
 
 # The CEO suite's families (``evals.live_ops_ceo``: how do we know, vendor confirmed,
 # profit with the why, next step, multi-hop, ambiguity, honest none, time windows).
+# The proactive-truth family (``evals.live_ops_truth``): the late count once every
+# system's evidence is read, so a late list one system's migrated records inflate scores wrong.
+from evals import live_ops_truth as _truth  # noqa: E402 - stdlib and evals.oracle only
+
+
+def late_po_truth_count(world: World) -> list[Candidate]:
+    key = _truth.truth_key(world)
+    if key is None:
+        return []
+    return [Candidate("live-ops:late-po-truth-count", "PurchaseOrder", {}, [
+        _fact("number", "late_count", key["records"], ("bc", "api"), value=str(key["value"]),
+              label=LABELS["late_count"], tolerance="0")], _truth.READS, _truth.RULE)]
+
+
+FAMILIES["late_po_truth_count"] = late_po_truth_count
+PORTAL_RELATIONS = PORTAL_RELATIONS + tuple(r for r in _truth.PORTAL_RELATIONS
+                                            if r not in PORTAL_RELATIONS)
+BC_SETS = BC_SETS + tuple(s for s in _truth.BC_SETS if s not in BC_SETS)
+
 from evals import live_ops_ceo as _ceo  # noqa: E402 - it builds on the helpers above
 FAMILIES.update(_ceo.FAMILIES)
 FORMS.update({k: v for k, v in _ceo.FACT_FORMS.items() if k not in FORMS})
 PORTAL_RELATIONS = PORTAL_RELATIONS + tuple(r for r in _ceo.PORTAL_RELATIONS
                                             if r not in PORTAL_RELATIONS)
+
+# The wide suites' families (``evals.live_ops_wide``: free text, harder shapes, the
+# briefing's events, the readers' suite) and the open suite's (``evals.live_ops_open``).
+from evals import live_ops_wide as _wide  # noqa: E402 - it builds on the helpers above
+from evals import live_ops_open as _open  # noqa: E402
+from evals import live_ops_inventory as _inventory  # noqa: E402
+FAMILIES.update(_wide.FAMILIES)
+FAMILIES.update(_open.FAMILIES)
+FAMILIES.update(_inventory.FAMILIES)
+LABELS.update({k: v for k, v in _inventory.RIVALS.items() if k not in LABELS})
+PORTAL_RELATIONS = PORTAL_RELATIONS + tuple(r for r in _inventory.PORTAL_RELATIONS
+                                            if r not in PORTAL_RELATIONS)
+BC_SETS = BC_SETS + tuple(s for s in (*_wide.BC_SETS, *_open.BC_SETS) if s not in BC_SETS)

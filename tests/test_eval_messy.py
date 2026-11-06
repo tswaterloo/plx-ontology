@@ -419,7 +419,10 @@ class GatedBackendTest(unittest.TestCase):
         server = type("S", (), {"case_runtime": Runtime(), "actor": "reader",
                                 "ontology": Ontology()})()
 
+        searched = []
+
         def search(understanding, actor, **kw):
+            searched.append(understanding)
             calls.append((actor, kw["policy"], kw["item_gate"](actor, "api://x"),
                           kw["item_gate"](actor, "sharepoint://d/i"), kw["log"],
                           server.ontology._call_bound.search))
@@ -428,9 +431,7 @@ class GatedBackendTest(unittest.TestCase):
 
         session = harness_reads.Session(server)
         with mock.patch("operating.search.core.search", search), \
-                mock.patch("operating.search.models.warm") as warm, \
-                mock.patch("operating.query_understanding.understand",
-                           side_effect=RuntimeError("no index")):
+                mock.patch("operating.search.models.warm") as warm:
             got = session.read("plx.search_ranked", {"question": "late orders", "k": 30})
             for bad in ({"question": "q"}, {"question": "", "k": 3}, {"question": "q", "k": 0},
                         {"question": "q", "k": 101}, {"question": "q", "k": True},
@@ -444,7 +445,7 @@ class GatedBackendTest(unittest.TestCase):
         self.assertEqual(calls[1], (gated, ("policy-of", gated), True, False, False, True))
         self.assertFalse(server.ontology._call_bound.search)   # restored after the call
         self.assertEqual(got["hits"][0]["signals"], {"dense": 0.5, "score": 0.5})
-        self.assertEqual(got["extra"]["understanding_failed"], "RuntimeError")
+        self.assertEqual(searched, ["late orders"])          # the question as the tools pass it
         self.assertEqual(len(calls), 2)                        # invalid reads search nothing
 
     def test_a_host_that_does_not_start_stops_the_run_and_gets_the_directory_keys(self):

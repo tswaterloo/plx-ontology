@@ -1,14 +1,17 @@
 "use client";
 
+import { ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useListKeys } from "@/lib/list-keys";
 import { EvidenceTrailCard } from "@/components/evidence-trail";
 import { getBriefing, getBriefingItems } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
-import { briefingKind, STATUS_CLASS } from "@/lib/status";
+import { briefingKind } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
+import { AgeRing, StatusGlyph } from "./ui/glyphs";
+import { Monogram } from "./ui/monogram";
 import { StatusWord } from "./ui/status-badge";
 
 type LoadView = (view: BriefingView) => Promise<Briefing>;
@@ -56,15 +59,6 @@ export function shortSummary(summary: string): string {
   return readable(summary);
 }
 
-function Marks({ item }: { item: BriefingItem }) {
-  return (
-    <>
-      {item.new_since_visit && <span className="text-label font-medium text-new">New</span>}
-      {item.acknowledged && <span className="text-label text-muted">Acknowledged</span>}
-    </>
-  );
-}
-
 /** "Chase DSM" when there is someone on record to chase (the supplier's name, else the contact's); else null ("Open"). */
 function chaseWho(item: BriefingItem, supplier?: string | null): string | null {
   const c = item.next_action?.contact?.replace(/\s*<[^>]+>/, "").trim();
@@ -73,161 +67,194 @@ function chaseWho(item: BriefingItem, supplier?: string | null): string | null {
 }
 
 /**
- * One row of "Needs you today": rank, a status badge, the record and its counterpart, the
- * numbers (days, money) right-aligned, and the action. The trail opens inline on demand;
- * the next step lives on the record page, never repeated per row.
+ * One row: the counterpart's tile, the record and its counterpart, then the summary; the
+ * money and days on the right with the kind drawn as a glyph. The whole row opens the record;
+ * the chase link and the evidence sit on top of it. The next step lives on the record page.
  */
-export function BriefingRow({ item, latePo, dense = false, position }: { item: BriefingItem; latePo?: LatePo; dense?: boolean; position?: number }) {
+function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo?: LatePo; grouped: boolean; testId: string }) {
   const [open, setOpen] = useState(false);
   const href = safeHref(item.open_url) ?? objectHref(item.object_type, item.object_id);
   const kind = briefingKind(item.event_type, { amountSuspect: !!(item.amount && item.amount_suspect), fallbackLabel: item.label });
   const supplier = latePo?.supplier ?? item.counterpart ?? null;
-  const subject = [recordLabel(item.object_type, item.subject_label), supplier].filter(Boolean).join(" · ");
   const days = typeof item.days === "number" ? item.days : latePo?.days_late;
   const amount = item.amount && !item.amount_suspect ? money(item.amount) : null;
-  const numbers = [typeof days === "number" ? plural(days, "day") : null, amount].filter(Boolean).join(" · ");
   const who = chaseWho(item, supplier);
+  const suspect = kind.status === "suspect";
   return (
-    <li className="-mx-2 px-2 py-3 has-[a[data-row-link]:focus-visible]:bg-accent-soft" data-testid="briefing-item">
-      <div className="flex items-start gap-3">
+    <li className="group relative" data-testid={testId}>
+      <div
+        className={cn(
+          "flex gap-3 rounded-[10px] px-3 py-2.5 transition-colors duration-100 hover:bg-hover",
+          "has-[a[data-row-link]:focus-visible]:ring-2 has-[a[data-row-link]:focus-visible]:ring-ring/50",
+          item.acknowledged && "opacity-70",
+        )}
+      >
+        <Monogram name={supplier} size={32} />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <Link href={href} className="min-w-0 truncate text-row font-medium hover:underline focus-visible:outline-offset-4" data-row-link>
-              {subject}
+          <div className="flex items-baseline gap-2">
+            <Link href={href} className="shrink-0 text-[13px] leading-[18px] font-semibold outline-none after:absolute after:inset-0 after:rounded-[10px]" data-row-link>
+              {recordLabel(item.object_type, item.subject_label)}
             </Link>
-            <StatusWord shown={kind} />
-            <Marks item={item} />
-            <span className="ml-auto flex items-baseline gap-4">
-              {numbers && <span className="text-meta tabular-nums text-muted">{numbers}</span>}
-              <Link href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`} className="whitespace-nowrap text-meta text-accent hover:underline">
-                {who ? `Chase ${who}` : "Open"}
-              </Link>
+            {supplier && <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{supplier}</span>}
+            {/* under its type's header the kind goes without saying; a data problem is said */}
+            {suspect || !grouped ? (
+              <StatusWord shown={kind} className="shrink-0" title={suspect ? itemFacts(item)[0] : undefined} />
+            ) : (
+              <span data-status={kind.status} className="sr-only">
+                {kind.label}
+              </span>
+            )}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium tabular-nums">
+              {typeof days === "number" && `${days}d`}
+              {kind.status === "late" && typeof days === "number" ? <AgeRing days={days} size={13} /> : <StatusGlyph status={kind.status} size={13} />}
             </span>
           </div>
-          <div className={cn("mt-0.5 flex flex-wrap items-baseline gap-x-3 text-meta text-muted", dense && "mt-0.5")}>
-            <span className="min-w-0 basis-full sm:basis-0 sm:flex-1 sm:truncate">{shortSummary(item.summary)}</span>
+          <div className="mt-0.5 flex items-baseline gap-2.5 text-[12px] leading-4 text-muted">
+            {item.new_since_visit && (
+              <span className="inline-flex shrink-0 items-center gap-1 self-center text-fg">
+                <StatusGlyph status="new" size={11} />
+                New
+              </span>
+            )}
+            {item.acknowledged && <span className="shrink-0 text-fg/80">Acknowledged</span>}
+            <span className="min-w-0 flex-1 truncate">{[amount ? shortSummary(item.summary).replace(/\.$/, "") : shortSummary(item.summary), amount].filter(Boolean).join(" · ")}</span>
             {item.trail && (
               <button
                 type="button"
                 onClick={() => setOpen((v) => !v)}
                 aria-expanded={open}
-                className="shrink-0 hover:text-fg hover:underline cursor-pointer"
+                className={cn("relative z-10 shrink-0 hover:text-fg cursor-pointer", !open && "lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100")}
               >
                 {open ? "Hide evidence" : "Evidence"}
               </button>
             )}
-          </div>
-          {item.amount && item.amount_suspect && <p className="mt-0.5 text-meta text-suspect">{itemFacts(item)[0]}</p>}
-          {open && item.trail && (
-            <div className="mt-2">
-              <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
-            </div>
-          )}
-        </div>
-      </div>
-    </li>
-  );
-}
-
-/** One line of a group's opened list: compact, with its facts and "Open". */
-function Row({ item }: { item: BriefingItem }) {
-  const href = safeHref(item.open_url) ?? objectHref(item.object_type, item.object_id);
-  const facts = itemFacts(item);
-  return (
-    <li className="flex items-start gap-3 py-2 text-row" data-testid="briefing-row">
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{recordLabel(item.object_type, item.subject_label)}</span>
-          <Marks item={item} />
-        </div>
-        <p className="text-meta text-muted">{[shortSummary(item.summary), ...facts].join(" · ")}</p>
-      </div>
-      <Link href={href} className="shrink-0 text-meta text-accent hover:underline">
-        Open
-      </Link>
-    </li>
-  );
-}
-
-/** A type's count, and its "+N more" that opens every item of it, a page at a time. */
-function Group({ group, view, loadItems }: { group: BriefingGroup; view: BriefingView; loadItems: LoadItems }) {
-  const [rows, setRows] = useState<BriefingItem[] | null>(null);
-  const [more, setMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const rest = group.count - group.in_top;
-  async function page(offset: number) {
-    setBusy(true);
-    setError(null);
-    try {
-      const got = await loadItems(group.event_type, offset, view);
-      setRows((prev) => [...(offset === 0 ? [] : (prev ?? [])), ...(got.items ?? [])]);
-      setMore(got.more);
-    } catch {
-      setError("Couldn't load this list. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
-  const shown = rows ?? [];
-  const kind = briefingKind(group.event_type, { fallbackLabel: group.label });
-  return (
-    <li className="py-2.5" data-testid="briefing-group">
-      <div className="flex flex-wrap items-center gap-2 text-row">
-        <span className={cn("font-medium", kind.status !== "neutral" && STATUS_CLASS[kind.status].fg)}>{group.label}</span>
-        <span className="tabular-nums text-muted">{group.count}</span>
-        {group.new_since_visit > 0 && <span className="text-label font-medium text-new">{group.new_since_visit} new</span>}
-        {group.acknowledged > 0 && <span className="text-meta text-muted">{group.acknowledged} acknowledged</span>}
-        {rest > 0 && rows === null && (
-          <button
-            type="button"
-            onClick={() => page(0)}
-            disabled={busy}
-            className="ml-auto text-row text-accent hover:underline cursor-pointer"
-          >
-            +{rest} more
-          </button>
-        )}
-      </div>
-      {error && <p className="text-meta text-late">{error}</p>}
-      {rows !== null && (
-        <>
-          <ol className="mt-1 divide-y divide-border">
-            {shown.map((r) => (
-              <Row key={r.id} item={r} />
-            ))}
-          </ol>
-          {more && (
-            <button
-              type="button"
-              onClick={() => page(rows.length)}
-              disabled={busy}
-              className="mt-1 text-meta font-medium text-accent hover:underline cursor-pointer"
+            <Link
+              href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`}
+              className="relative z-10 max-w-[40%] shrink-0 truncate font-medium text-fg hover:underline max-sm:hidden lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
             >
-              Show more ({rest - rows.length} left)
-            </button>
-          )}
-        </>
+              {who ? `Chase ${who}` : "Open"}
+            </Link>
+          </div>
+        </div>
+      </div>
+      {open && item.trail && (
+        <div className="relative z-10 pr-3 pb-3 pl-[56px]">
+          <EvidenceTrailCard trail={item.trail} bare inPage showNext={false} />
+        </div>
       )}
     </li>
   );
 }
 
+/** One of the briefing's ranked items, as a row (also used on its own). */
+export function BriefingRow({ item, latePo, grouped = false }: { item: BriefingItem; latePo?: LatePo; dense?: boolean; position?: number; grouped?: boolean }) {
+  return <ItemRow item={item} latePo={latePo} grouped={grouped} testId="briefing-item" />;
+}
+
+/** A type: its header, its ranked items, then the rest of it a page at a time. */
+function Group({ group, top, view, loadItems, byId }: { group: BriefingGroup; top: BriefingItem[]; view: BriefingView; loadItems: LoadItems; byId: Map<string, LatePo> }) {
+  const [rows, setRows] = useState<BriefingItem[]>([]);
+  const [more, setMore] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function page(offset: number) {
+    setBusy(true);
+    setError(null);
+    try {
+      const got = await loadItems(group.event_type, offset, view);
+      setRows((prev) => [...(offset === 0 ? [] : prev), ...(got.items ?? [])]);
+      setMore(got.more);
+    } catch {
+      setError("Couldn't load the rest. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const topIds = new Set(top.map((i) => i.id));
+  const rest = rows.filter((r) => !topIds.has(r.id));
+  const left = Math.max(0, group.count - top.length - rest.length);
+  const canMore = more === null ? left > 0 : more && left > 0;
+  const kind = briefingKind(group.event_type, { fallbackLabel: group.label });
+  // nothing of this type read yet: one line that opens it
+  if (top.length === 0 && rows.length === 0)
+    return (
+      <section data-testid="briefing-group" aria-label={group.label} className="px-2">
+        <div className="flex h-10 items-center gap-3 rounded-[10px] px-3 hover:bg-hover">
+          <StatusGlyph status={kind.status} size={13} />
+          <span className="min-w-0 truncate text-[13px]">
+            {group.label} <span className="text-[12px] tabular-nums text-faint">{group.count}</span>
+          </span>
+          {group.new_since_visit > 0 && (
+            <span className="inline-flex shrink-0 items-center gap-1 text-[12px] text-muted">
+              <StatusGlyph status="new" size={11} />
+              {group.new_since_visit} new
+            </span>
+          )}
+          {group.acknowledged > 0 && <span className="shrink-0 text-[12px] text-muted">{group.acknowledged} acknowledged</span>}
+          {error && <span className="shrink-0 text-[12px] text-muted">{error}</span>}
+          {canMore && (
+            <button type="button" onClick={() => page(0)} disabled={busy} className="ml-auto shrink-0 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-60 cursor-pointer">
+              {busy ? "Loading…" : `Show ${left} more`}
+            </button>
+          )}
+        </div>
+      </section>
+    );
+  return (
+    <section data-testid="briefing-group" aria-label={group.label}>
+      <div className="sticky top-[92px] z-10 flex h-9 items-end gap-3 bg-list px-5 pb-1.5 lg:top-[92px]">
+        <h2 className="min-w-0 truncate text-[12px] font-medium text-muted">
+          {group.label} <span className="font-normal tabular-nums text-faint">{group.count}</span>
+        </h2>
+        <span className="ml-auto flex shrink-0 items-center gap-3 text-[12px] text-muted">
+          {group.new_since_visit > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <StatusGlyph status="new" size={11} />
+              {group.new_since_visit} new
+            </span>
+          )}
+          {group.acknowledged > 0 && <span>{group.acknowledged} acknowledged</span>}
+        </span>
+      </div>
+      <ol className="px-2">
+        {top.map((i) => (
+          <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} grouped />
+        ))}
+        {rest.map((r) => (
+          <ItemRow key={r.id} item={r} latePo={byId.get(r.object_id)} grouped testId="briefing-row" />
+        ))}
+      </ol>
+      {error && <p className="px-5 pt-1 text-[12px] text-muted">{error}</p>}
+      {canMore && (
+        <button
+          type="button"
+          onClick={() => page(rows.length)}
+          disabled={busy}
+          className="mx-5 mt-1 mb-3 inline-flex h-7 items-center gap-1 text-[12px] font-medium text-muted hover:text-fg disabled:opacity-60 cursor-pointer"
+        >
+          {busy ? "Loading…" : `Show ${left} more`}
+        </button>
+      )}
+    </section>
+  );
+}
+
 /** Why the briefing has fewer items than it might: unchecked kinds, other teams, places you can't open. */
-export function BriefingCounts({ briefing, compact = false }: { briefing: Briefing; compact?: boolean }) {
+export function BriefingCounts({ briefing, compact: _compact = false }: { briefing: Briefing; compact?: boolean }) {
   const groups = briefing.groups ?? [];
   const unchecked = (briefing.checks ?? []).filter((c) => c.status !== "complete");
-  const lines = unchecked.map((c) => (
-    <p key={c.check}>{c.words[0].toUpperCase() + c.words.slice(1)}.</p>
-  ));
+  const lines = unchecked.map((c) => <p key={c.check}>{c.words[0].toUpperCase() + c.words.slice(1)}.</p>);
+  const hidden = Object.entries(briefing.hidden_by_type ?? {});
+  if (!unchecked.length && !briefing.other_teams && !hidden.length && briefing.routing_basis !== "no_department_on_record") return null;
   return (
-    <div className="space-y-1 text-meta text-muted" data-testid="briefing-counts">
+    <div className="space-y-1.5 text-[12px] leading-[18px] text-muted" data-testid="briefing-counts">
       {unchecked.length > 1 ? (
-        <details>
-          <summary className="cursor-pointer hover:text-fg">
-            {unchecked.length} checks didn&apos;t finish this run{compact ? "" : "; the list may be incomplete"}
+        <details className="group/checks">
+          <summary className="flex cursor-pointer list-none items-center gap-1 hover:text-fg [&::-webkit-details-marker]:hidden">
+            <ChevronRight className="size-3.5 shrink-0 transition-transform group-open/checks:rotate-90" aria-hidden />
+            {unchecked.length} checks didn&apos;t finish this run
           </summary>
-          <div className="mt-1 space-y-1">{lines}</div>
+          <div className="mt-1 space-y-1 pl-[18px]">{lines}</div>
         </details>
       ) : (
         lines
@@ -238,23 +265,42 @@ export function BriefingCounts({ briefing, compact = false }: { briefing: Briefi
           other teams.
         </p>
       )}
-      {Object.entries(briefing.hidden_by_type ?? {}).map(([type, n]) => (
+      {hidden.map(([type, n]) => (
         <p key={type}>
           {(groups.find((g) => g.event_type === type)?.label ?? labelOf(type)) + ": "}
           {n} more for your team {n === 1 ? "is" : "are"} in places you can&apos;t open.
         </p>
       ))}
-      {briefing.routing_basis === "no_department_on_record" && (
-        <p>No department on record for you, so nothing is routed to you.</p>
-      )}
+      {briefing.routing_basis === "no_department_on_record" && <p>No department on record for you, so nothing is routed to you.</p>}
     </div>
   );
 }
 
+function SideTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="mb-2 text-[12px] leading-4 font-medium text-muted">{children}</h3>;
+}
+
+/** A folded section of the side panel: its title is the toggle. */
+function Fold({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <details className="group/fold">
+      <summary className="-mx-2 flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2 text-[13px] hover:bg-hover [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-3.5 shrink-0 text-muted transition-transform group-open/fold:rotate-90" aria-hidden />
+        {title}
+      </summary>
+      <div className="pt-2 pb-1">{children}</div>
+    </details>
+  );
+}
+
+const TAB_LABEL: Record<string, string> = { po_late: "Late", po_undated: "No due date", po_due: "Due soon", eta_slipped: "Date slipped", vendor_no_reply: "No reply" };
+const TAB = "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer";
+const TAB_ON = "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:rounded-full after:bg-fg";
+
 /**
- * The full briefing (/briefing): tabs for all, new since the last visit and each group; the
- * ranked items as compact rows; how it's ranked behind a button; what was checked and the
- * digest preview folded at the foot.
+ * The full briefing (/briefing): tabs for all, new since the last visit and each type; every
+ * type's ranked items under its own header, the rest of it a page at a time; beside the list,
+ * the count, how it's ranked, what wasn't covered, what was checked and the digest preview.
  */
 export function BriefingCard({
   briefing: first,
@@ -274,6 +320,7 @@ export function BriefingCard({
   useEffect(() => setBriefing(first), [first]);
   const listRef = useRef<HTMLDivElement>(null);
   useListKeys(listRef);
+  const byId = useMemo(() => new Map(latePos.map((p) => [p.object_id, p])), [latePos]);
   async function choose(next: BriefingView) {
     if (next === view) return;
     setView(next);
@@ -285,96 +332,136 @@ export function BriefingCard({
   }
   if (briefing.status !== "read") {
     return (
-      <p className="text-row text-muted" data-testid="briefing-unavailable">
-        {briefing.status === "not_configured"
-          ? "The briefing hasn't run on this server."
-          : "Couldn't load the briefing. Try again in a few minutes."}
+      <p className="px-5 py-10 text-[13px] text-muted" data-testid="briefing-unavailable">
+        {briefing.status === "not_configured" ? "The briefing hasn't run on this server." : "Couldn't load the briefing. Try again in a few minutes."}
       </p>
     );
   }
   const items = briefing.items ?? [];
   const groups = briefing.groups ?? [];
   const types = briefing.types ?? [];
-  const atLeast = briefing.counts_exact === false ? "at least " : "";
   const sinceVisit = view === "since_visit";
-  const byId = new Map(latePos.map((p) => [p.object_id, p]));
-  const shownItems = tab === "all" ? items : items.filter((i) => i.event_type === tab);
-  const shownGroups = tab === "all" ? groups : groups.filter((g) => g.event_type === tab);
-  const tabCls = (on: boolean) =>
-    cn("-mb-px inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-row cursor-pointer", on ? "border-fg font-semibold text-fg" : "border-transparent text-muted hover:text-fg");
+  // each type in the order of its best-ranked item; a type with none in the top list after
+  const best = (t: string) => Math.min(...items.filter((i) => i.event_type === t).map((i) => i.rank), Infinity);
+  const ordered = groups.map((g, n) => [g, n] as const).sort(([a, i], [b, j]) => best(a.event_type) - best(b.event_type) || i - j).map(([g]) => g);
+  const shownGroups = tab === "all" ? ordered : ordered.filter((g) => g.event_type === tab);
+  const hasTop = (g: BriefingGroup) => items.some((i) => i.event_type === g.event_type);
+  const quiet = shownGroups.filter((g) => !hasTop(g) && g.count > 0);
+  // top items whose type has no group still show, under their own kind
+  const orphans = items.filter((i) => !groups.some((g) => g.event_type === i.event_type) && (tab === "all" || i.event_type === tab));
+
   return (
-    <div className="space-y-4" ref={listRef}>
-      {briefing.today && (
-        <p className="text-row text-fg" data-testid="briefing-today">
-          <span className="text-muted">Today: </span>
-          {briefing.today}
+    <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[auto_1fr] xl:grid-cols-[minmax(0,1fr)_320px]">
+      {/* the count and today's line: above the list on a phone, atop the side panel on a desktop */}
+      <div className="space-y-3 px-5 pt-5 pb-4 lg:col-start-2 lg:row-start-1 lg:border-l lg:border-border lg:bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] lg:px-6 lg:pt-6 lg:pb-0">
+        <p className="flex flex-wrap items-baseline gap-x-1.5" data-testid="briefing-heading">
+          {briefing.counts_exact === false && <span className="text-[13px] text-muted">at least </span>}
+          <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{briefing.count}</span>{" "}
+          <span className="text-[13px] text-muted">
+            {briefing.count === 1 ? "item needs" : "items need"} attention{sinceVisit ? " since your last visit" : ""}
+          </span>
         </p>
-      )}
-      <p className="text-row text-muted" data-testid="briefing-heading">
-        {atLeast}
-        {plural(briefing.count, "item")} {briefing.count === 1 ? "needs" : "need"} attention{sinceVisit ? " since your last visit" : ""}
-        <button type="button" onClick={() => setRankOpen((v) => !v)} aria-expanded={rankOpen} className="ml-2 text-meta text-accent hover:underline cursor-pointer">
-          How this is ranked
-        </button>
-      </p>
-      {rankOpen && <p className="text-meta text-muted">{readable(briefing.rank_basis)}</p>}
-      <div className="flex flex-wrap items-center gap-x-5 border-b border-border" role="tablist" aria-label="Show">
-        <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={tabCls(!sinceVisit && tab === "all")}>
-          All <span className="tabular-nums text-muted">{briefing.count}</span>
-        </button>
-        <button type="button" role="tab" aria-selected={sinceVisit} onClick={() => (setTab("all"), choose("since_visit"))} className={tabCls(sinceVisit)}>
-          New since your last visit <span className="tabular-nums text-muted">{briefing.new_since_visit}</span>
-        </button>
-        {groups.map((g) => (
-          <button key={g.event_type} type="button" role="tab" aria-selected={tab === g.event_type} onClick={() => setTab(g.event_type)} className={tabCls(tab === g.event_type)}>
-            {g.label} <span className="tabular-nums text-muted">{g.count}</span>
+        {briefing.today && (
+          <p className="text-[13px] leading-5" data-testid="briefing-today">
+            <span className="text-muted">Today: </span>
+            {briefing.today}
+          </p>
+        )}
+        <div>
+          <button type="button" onClick={() => setRankOpen((v) => !v)} aria-expanded={rankOpen} className="text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
+            How this is ranked
           </button>
-        ))}
+          {rankOpen && <p className="mt-1 text-[12px] leading-[18px] text-muted">{readable(briefing.rank_basis)}</p>}
+        </div>
       </div>
-      {shownItems.length === 0 ? (
-        <p className="text-row text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing open for you."}</p>
-      ) : (
-        <ol className="divide-y divide-border">
-          {shownItems.map((i, n) => (
-            <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} position={n + 1} />
-          ))}
-        </ol>
-      )}
-      {shownGroups.length > 0 && briefing.count > items.length && (
-        <div data-testid="briefing-groups">
-          <h2 className="mt-2 text-section">The rest, by type</h2>
-          <ul className="divide-y divide-border">
-            {shownGroups.map((g) => (
-              <Group key={`${view}-${g.event_type}`} group={g} view={view} loadItems={loadItems} />
+
+      <section className="min-w-0 bg-list pb-8 lg:col-start-1 lg:row-span-2 lg:row-start-1" aria-label="Open items" ref={listRef}>
+        <div className="sticky top-[52px] z-20 border-b border-border bg-list">
+          <div className="flex h-10 gap-4 overflow-x-auto px-5 [mask-image:linear-gradient(to_right,#000_calc(100%-40px),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Show">
+            <button type="button" role="tab" aria-selected={!sinceVisit && tab === "all"} onClick={() => (setTab("all"), choose("all"))} className={cn(TAB, !sinceVisit && tab === "all" ? TAB_ON : "text-muted hover:text-fg")}>
+              All <span className="text-[12px] font-normal tabular-nums text-faint">{briefing.count}</span>
+            </button>
+            <button type="button" role="tab" aria-selected={sinceVisit} title="New since your last visit" onClick={() => (setTab("all"), choose("since_visit"))} className={cn(TAB, sinceVisit ? TAB_ON : "text-muted hover:text-fg")}>
+              New{" "}<span className="sr-only">since your last visit</span> <span className="text-[12px] font-normal tabular-nums text-faint">{briefing.new_since_visit}</span>
+            </button>
+            {ordered.map((g) => (
+              <button key={g.event_type} type="button" role="tab" aria-selected={tab === g.event_type} onClick={() => setTab(g.event_type)} className={cn(TAB, tab === g.event_type ? TAB_ON : "text-muted hover:text-fg")}>
+                {TAB_LABEL[g.event_type] ?? g.label} <span className="text-[12px] font-normal tabular-nums text-faint">{g.count}</span>
+              </button>
             ))}
-          </ul>
+          </div>
         </div>
-      )}
-      <BriefingCounts briefing={briefing} />
-      {types.length > 0 && (
-        <details className="group">
-          <summary className="cursor-pointer text-row text-muted hover:text-fg">What was checked</summary>
-          <ul className="mt-1 space-y-0.5 text-meta" data-testid="briefing-checks">
-            {types.map((t) => (
-              <li key={t.event_type}>
-                {t.words}
-                {t.found_live === false && " · none found in the live data yet (tested on sample data only)"}
-                {t.found_live && t.first_found && ` · first found ${t.first_found}`}
-              </li>
+        {items.length === 0 && shownGroups.every((g) => g.count === 0) ? (
+          <p className="px-5 py-10 text-[13px] text-muted">{sinceVisit ? "Nothing new since your last visit." : "Nothing open for you."}</p>
+        ) : (
+          <div data-testid="briefing-groups">
+            {shownGroups.filter(hasTop).map((g) => (
+              <Group key={`${view}-${g.event_type}`} group={g} top={items.filter((i) => i.event_type === g.event_type)} view={view} loadItems={loadItems} byId={byId} />
             ))}
-          </ul>
-        </details>
-      )}
-      <details className="group">
-        <summary className="cursor-pointer text-row text-muted hover:text-fg">Daily digest preview</summary>
-        <div className="mt-2 space-y-1">
-          <p className="text-meta text-muted">Preview only: this digest is not sent.</p>
-          <pre className="whitespace-pre-wrap rounded border border-border bg-surface p-3 font-mono text-[12px] leading-[18px]" data-testid="digest-preview">
-            {briefing.digest_preview}
-          </pre>
-        </div>
-      </details>
+            {quiet.length > 0 && (
+              <div className="pt-3">
+                {shownGroups.some(hasTop) && (
+                  <div className="flex h-9 items-end px-5 pb-1.5">
+                    <h2 className="text-[12px] font-medium text-muted">Also open</h2>
+                  </div>
+                )}
+                {quiet.map((g) => (
+                  <Group key={`${view}-${g.event_type}`} group={g} top={[]} view={view} loadItems={loadItems} byId={byId} />
+                ))}
+              </div>
+            )}
+            {orphans.length > 0 && (
+              <ol className="px-2 pt-3">
+                {orphans.map((i) => (
+                  <BriefingRow key={i.id} item={i} latePo={byId.get(i.object_id)} />
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+      </section>
+
+      <aside className="space-y-7 border-t border-border px-5 pt-6 pb-10 lg:col-start-2 lg:row-start-2 lg:border-t-0 lg:border-l lg:bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] lg:px-6" aria-label="About this briefing">
+        <BriefingCountsSection briefing={briefing} />
+        <section className="-mt-2">
+          {types.length > 0 && (
+            <Fold title="What was checked">
+              <ul className="space-y-1.5 text-[12px] leading-[18px]" data-testid="briefing-checks">
+                {types.map((t) => (
+                  <li key={t.event_type} className="flex gap-2">
+                    <StatusGlyph status={t.status === "complete" ? "ok" : t.status === "failed" ? "late" : "risk"} size={12} className="mt-[3px]" />
+                    <span className="min-w-0">
+                      {t.words}
+                      <span className="text-muted">
+                        {t.found_live === false && " · none found in the live data yet (tested on sample data only)"}
+                        {t.found_live && t.first_found && ` · first found ${t.first_found}`}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Fold>
+          )}
+          <Fold title="Daily digest preview">
+            <p className="mb-2 text-[12px] text-muted">Preview only: this digest is not sent.</p>
+            <pre className="max-h-[360px] overflow-auto rounded-xl bg-bg px-4 py-3.5 font-sans text-[12px] leading-[18px] whitespace-pre-wrap shadow-lift" data-testid="digest-preview">
+              {briefing.digest_preview}
+            </pre>
+          </Fold>
+        </section>
+      </aside>
     </div>
+  );
+}
+
+function BriefingCountsSection({ briefing }: { briefing: Briefing }) {
+  const body = BriefingCounts({ briefing });
+  if (!body) return null;
+  return (
+    <section>
+      <SideTitle>Not in this list</SideTitle>
+      {body}
+    </section>
   );
 }
 

@@ -159,6 +159,9 @@ def target_date(objective: str, deadline: date | None, as_of: date
     return (min(found)[1], "objective_text") if found else (None, "none")
 
 
+MAX_ENTITIES = 8
+
+
 def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any]]
                ) -> dict[str, list[dict[str, Any]]]:
     """The records the objective's identifiers name for the reader (module doc)."""
@@ -202,7 +205,53 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
             unfound.append({**named, "state": "unknown",
                             "reason": error.get("code") or "not_found",
                             "gaps": gaps[:5]})
-    return {"roots": roots, "ambiguous": ambiguous, "unfound": unfound}
+    entities = resolve_entities(objective, find)
+    named = {r["object_id"] for r in roots} | {c["object_id"] for a in ambiguous
+                                               for c in a["candidates"]}
+    for entity in entities:
+        # only the records matched as the same thing are one root; a lead record (a
+        # text-join identity link, a related name) stays a lead (``brief``'s leads line)
+        ids = [r["object_id"] for r in entity["records"] if r.get("status") == "match"]
+        if entity["status"] != "match" or not ids or set(ids) & named:
+            continue
+        unfound[:] = [u for u in unfound
+                      if entity["mention"].upper() != str(u.get("mention", "")).upper()]
+        roots.append({"mention": entity["mention"], "kind": "entity",
+                      "object_id": ids[0], "object_type": entity["object_type"],
+                      "found_by": "resolver", "same_as": ids[1:],
+                      "confidence": entity["confidence"]})
+        named |= set(ids)
+    return {"roots": roots, "ambiguous": ambiguous, "unfound": unfound,
+            "entities": entities}
+
+
+def resolve_entities(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any]]
+                     ) -> list[dict[str, Any]]:
+    """The things the objective names (its names and codes), each with every record of
+    it across systems, its confidence and status (``plx.find`` mode ``entities``,
+    ``operating.entity_resolution``): ``[{mention, object_type, confidence, status,
+    records: [{object_id, system, confidence, status, why}]}]``. Empty when the reader's find
+    resolves none or does not serve the mode."""
+    try:
+        result = find({"mode": "entities", "text": objective[:2000]})
+    except Exception:  # noqa: BLE001 - resolution is a hint; the identifiers still stand
+        return []
+    out = []
+    for entity in (result or {}).get("entities") or ():
+        if not isinstance(entity, Mapping):
+            continue
+        records = [{"object_id": (r.get("object") or {}).get("object_id"),
+                    "system": r.get("system"), "confidence": r.get("confidence"),
+                    "status": r.get("status"), "why": list(r.get("why") or ())[:1]}
+                   for r in entity.get("records") or () if isinstance(r, Mapping)
+                   and (r.get("object") or {}).get("object_id")]
+        if records:
+            out.append({"mention": str(entity.get("mention") or "")[:200],
+                        "object_type": entity.get("object_type"),
+                        "confidence": entity.get("confidence"),
+                        "status": entity.get("status"), "systems": entity.get("systems"),
+                        "records": records})
+    return out[:MAX_ENTITIES]
 
 
 def frame(objective: str, mode: str, found: Mapping[str, Sequence[Mapping[str, Any]]],

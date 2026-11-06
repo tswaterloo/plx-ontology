@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { cn } from "@/lib/cn";
 import { money, objectHref, plural, safeHref } from "@/lib/format";
 import type { CostBreakdownView, CostSource, CustomerAmount, ObjectRef, OrderMargin, ProductMargin, Profitability, Source } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
@@ -29,7 +28,7 @@ const isLoss = (m: { amount: string } | null | undefined) => !!m && m.amount.tri
 
 function Signed({ m }: { m: { amount: string; currency: string } | null | undefined }) {
   if (!m) return <span className="text-muted">not stated</span>;
-  return <span className={cn("font-medium tabular-nums", isLoss(m) ? "text-late" : "text-ok")}>{money(m)}</span>;
+  return <span className="font-medium tabular-nums">{money(m).replace(/^-/, "−")}</span>;
 }
 
 /** "partial: worst of the 3 most recent orders; …" -> "Partial: worst of …" */
@@ -46,15 +45,15 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
   const partial = !!note && note.startsWith("partial");
   return (
     <div className="space-y-2">
-      <table className="w-full text-row" data-testid="order-ranking">
-        <caption className="mb-2 text-left text-section">
+      <table className="w-full text-[13px]" data-testid="order-ranking">
+        <caption className="mb-2 text-left text-[12px] font-medium leading-4 text-muted">
           Orders, worst margin first
-          {typeof inPeriod === "number" && inPeriod > 0 && <span className="font-normal text-muted"> · {real.length} of {inPeriod} checked</span>}
-          {partial && <span className="mt-0.5 block text-meta font-normal text-muted">{sentence(note!)}</span>}
+          {typeof inPeriod === "number" && inPeriod > 0 && <span className="font-normal"> · {real.length} of {inPeriod} checked</span>}
+          {partial && <span className="mt-0.5 block font-normal">{sentence(note!)}</span>}
         </caption>
-        <thead className="text-label text-muted">
-          <tr className="h-8 border-y border-border-strong bg-bg-subtle">
-            <th scope="col" className="px-2 py-2 text-left">Order</th>
+        <thead className="text-[12px] text-muted [&_th]:font-normal">
+          <tr className="h-8 border-b border-border">
+            <th scope="col" className="py-2 pr-3 text-left">Order</th>
             <th scope="col" className="py-2 text-right">Revenue</th>
             <th scope="col" className="py-2 text-right">Item cost</th>
             <th scope="col" className="py-2 text-right">Margin*</th>
@@ -62,7 +61,7 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
         </thead>
         <tbody>
           {withMargin.map((o) => (
-            <tr key={o.order.object_id} className="border-b border-border last:border-0">
+            <tr key={o.order.object_id} className="h-9 border-b border-border">
               <td className="py-2">
                 <Link href={refHref(o.order)} className="font-medium hover:underline">
                   {o.order.label}
@@ -79,10 +78,10 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
             <tr>
               <td colSpan={4} className="py-2">
                 <details>
-                  <summary className="cursor-pointer text-meta text-muted hover:text-fg">
+                  <summary className="cursor-pointer text-[12px] text-muted hover:text-fg">
                     {plural(without.length, "order")} {without.length === 1 ? "has" : "have"} no margin yet
                   </summary>
-                  <ul className="mt-1 space-y-0.5 text-meta" data-testid="no-margin">
+                  <ul className="mt-1.5 space-y-1 text-[13px]" data-testid="no-margin">
                     {without.map((o) => (
                       <li key={o.order.object_id}>
                         <Link href={refHref(o.order)} className="font-medium hover:underline">
@@ -100,14 +99,14 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
         {more > 0 && (
           <tfoot>
             <tr>
-              <td colSpan={4} className="pt-1 text-meta text-muted" data-testid="orders-more">
+              <td colSpan={4} className="pt-2 text-[12px] text-muted" data-testid="orders-more">
                 and {more} more
               </td>
             </tr>
           </tfoot>
         )}
       </table>
-      <p className="text-meta text-muted">*Item cost only. Freight, labour and overhead aren&apos;t included.</p>
+      <p className="text-[12px] leading-4 text-muted">*Item cost only. Freight, labour and overhead aren&apos;t included.</p>
     </div>
   );
 }
@@ -116,11 +115,11 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
 export function ProductRanking({ products }: { products: ProductMargin[] }) {
   if (products.length < 2) return null;
   return (
-    <table className="w-full text-row" data-testid="product-ranking">
-      <caption className="mb-2 text-left text-section">By product, worst margin first</caption>
-      <thead className="text-label text-muted">
-        <tr className="h-8 border-y border-border-strong bg-bg-subtle">
-          <th scope="col" className="px-2 py-2 text-left">Item</th>
+    <table className="w-full text-[13px]" data-testid="product-ranking">
+      <caption className="mb-2 text-left text-[12px] font-medium leading-4 text-muted">By product, worst margin first</caption>
+      <thead className="text-[12px] text-muted [&_th]:font-normal">
+        <tr className="h-8 border-b border-border">
+          <th scope="col" className="py-2 pr-3 text-left">Item</th>
           <th scope="col" className="py-2 text-right">Qty</th>
           <th scope="col" className="py-2 text-right">Unit cost</th>
           <th scope="col" className="py-2 text-right">Margin*</th>
@@ -128,17 +127,17 @@ export function ProductRanking({ products }: { products: ProductMargin[] }) {
       </thead>
       <tbody>
         {products.map((p, i) => (
-          <tr key={i} className="border-b border-border last:border-0">
+          <tr key={i} className="h-9 border-b border-border last:border-0">
             <td className="py-2">
               {p.item}
-              <span className="text-meta text-muted"> · {plural(p.orders, "order")}{p.complete ? "" : " · checked orders only"}</span>
+              <span className="text-[12px] text-muted"> · {plural(p.orders, "order")}{p.complete ? "" : " · checked orders only"}</span>
               <SourceChips sources={p.sources} />
             </td>
             <td className="py-2 text-right tabular-nums">{p.quantity}{p.unit ? ` ${p.unit}` : ""}</td>
             <td className="py-2 text-right tabular-nums text-muted">{p.unit_cost_range ?? "–"}</td>
             <td className="py-2 text-right">
               <Signed m={p.margin} />
-              {p.margin_pct && <span className="block text-meta text-muted">{p.margin_pct}%</span>}
+              {p.margin_pct && <span className="block text-[12px] text-muted">{p.margin_pct}%</span>}
             </td>
           </tr>
         ))}
@@ -154,40 +153,40 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
   const abs = b.margin ? money({ ...b.margin, amount: b.margin.amount.replace(/^-/, "") }) : null;
   const lines = b.lines ?? [];
   return (
-    <section className="space-y-3 border-t border-border pt-3" data-testid="cost-breakdown">
-      <h3 className="text-section">
-        {loss ? "Why " : "How "}
+    <section className="space-y-3" data-testid="cost-breakdown">
+      <h3 className="text-[13px] leading-5 font-semibold">
+        {!b.margin ? "" : loss ? "Why " : "How "}
         <Link href={refHref(b.order)} className="hover:underline">
           {b.order.label}
         </Link>{" "}
-        {abs ? (loss ? `lost ${abs}` : `made ${abs}`) : loss ? "lost money" : "made money"}
+        {abs ? (loss ? `lost ${abs}` : `made ${abs}`) : "by line"}
       </h3>
       {lines.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full text-row" aria-label="Order lines">
-            <thead className="text-label text-muted">
-              <tr className="h-8 border-y border-border-strong bg-bg-subtle">
-                <th scope="col" className="px-1 py-1.5 text-left">Item</th>
-                <th scope="col" className="px-1 py-1.5 text-right">Qty</th>
-                <th scope="col" className="px-1 py-1.5 text-right">Revenue</th>
-                <th scope="col" className="px-1 py-1.5 text-right">Cost</th>
-                <th scope="col" className="px-1 py-1.5 text-right">Margin*</th>
-                {lines.length > 1 && <th scope="col" className="px-1 py-1.5 text-right">Share of cost</th>}
+          <table className="w-full text-[13px]" aria-label="Order lines">
+            <thead className="text-[12px] text-muted [&_th]:font-normal">
+              <tr className="h-8 border-b border-border">
+                <th scope="col" className="py-1.5 pr-3 text-left">Item</th>
+                <th scope="col" className="py-1.5 pl-3 text-right">Qty</th>
+                <th scope="col" className="py-1.5 pl-3 text-right max-sm:hidden">Revenue</th>
+                <th scope="col" className="py-1.5 pl-3 text-right max-sm:hidden">Cost</th>
+                <th scope="col" className="py-1.5 pl-3 text-right">Margin*</th>
+                {lines.length > 1 && <th scope="col" className="py-1.5 pl-3 text-right whitespace-nowrap max-sm:hidden">Share of cost</th>}
               </tr>
             </thead>
             <tbody>
               {lines.map((l, i) => (
                 <tr key={i} className="border-b border-border align-top last:border-0">
-                  <td className="px-1 py-1.5">
+                  <td className="py-2 pr-3">
                     <span className="font-medium">{l.label}</span> <SourceChips sources={l.sources} max={1} />
                   </td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "–"}</td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.revenue) || "–"}</td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right tabular-nums">{money(l.booked_cost) || "–"}</td>
-                  <td className="whitespace-nowrap px-1 py-1.5 text-right">
+                  <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{l.quantity ? `${l.quantity} ${l.unit ?? ""}`.trim() : "–"}</td>
+                  <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums max-sm:hidden">{money(l.revenue) || "–"}</td>
+                  <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums max-sm:hidden">{money(l.booked_cost) || "–"}</td>
+                  <td className="whitespace-nowrap py-2 pl-3 text-right">
                     <Signed m={l.margin} />
                   </td>
-                  {lines.length > 1 && <td className="px-1 py-1.5 text-right tabular-nums text-muted">{l.share_of_cost_pct ? `${l.share_of_cost_pct}%` : "–"}</td>}
+                  {lines.length > 1 && <td className="py-2 pl-3 text-right tabular-nums text-muted max-sm:hidden">{l.share_of_cost_pct ? `${l.share_of_cost_pct}%` : "–"}</td>}
                 </tr>
               ))}
             </tbody>
@@ -195,7 +194,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
         </div>
       )}
       {(b.cost_sources ?? []).length > 0 && (
-        <ul className="space-y-1 border-t border-border pt-2 text-row" aria-label="Where the cost came from">
+        <ul className="space-y-1.5 text-[13px] leading-5" aria-label="Where the cost came from">
           {(b.cost_sources ?? []).map((c, i) => (
             <li key={i} className="flex flex-wrap items-baseline gap-x-1.5">
               <span className="font-medium">{KIND[c.kind] ?? c.kind}</span>
@@ -215,8 +214,8 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
         </ul>
       )}
       {(b.drivers ?? []).length > 0 && (
-        <details className="border-t border-border pt-2 text-row">
-          <summary className="cursor-pointer text-meta text-muted hover:text-fg">All margin drivers</summary>
+        <details className="text-[13px] leading-5">
+          <summary className="cursor-pointer text-[12px] text-muted hover:text-fg">All margin drivers</summary>
           <ul className="mt-1 space-y-1" aria-label="What drove the margin">
             {(b.drivers ?? []).map((d, i) => (
               <li key={i}>{d}</li>
@@ -234,7 +233,7 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
   const counted = p.orders_counted;
   const inPeriod = p.orders_in_period;
   return (
-    <div className="space-y-4" data-testid="profitability">
+    <div className="space-y-6" data-testid="profitability">
       <CustomerVerdict p={p} />
       <StatRow>
         <Stat label="Revenue" value={money(p.revenue) || "Not stated"} caption={p.period} />
@@ -249,12 +248,12 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
       </StatRow>
       <OrderRanking orders={p.orders ?? []} note={p.ranking} more={p.orders_more ?? 0} inPeriod={inPeriod} />
       {p.test_records_hidden && (
-        <p className="text-meta text-muted" data-testid="tests-hidden">
+        <p className="text-[12px] leading-4 text-muted" data-testid="tests-hidden">
           {p.test_records_hidden} (test and staging orders are not counted)
         </p>
       )}
       {p.margin_note && (
-        <p className="text-meta text-muted" data-testid="margin-basis">
+        <p className="text-[12px] leading-4 text-muted" data-testid="margin-basis">
           Margins are {p.margin_basis ?? "on item cost only"}. {p.margin_note}
         </p>
       )}
@@ -288,21 +287,21 @@ export function MarginHeadline({ b, scope }: { b: CostBreakdownView; scope?: str
   const sources = breakdownSources(b);
   return (
     <section className="space-y-2" data-testid="margin-headline">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className={cn("text-stat tabular-nums", b.margin ? (loss ? "text-late" : "text-ok") : "text-muted")}>{b.margin ? money(b.margin) : "Not stated"}</span>
-        {b.margin_pct && <span className="text-row tabular-nums text-muted">{b.margin_pct}% of revenue</span>}
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        {b.margin && <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{money(b.margin).replace(/^-/, "−")}</span>}
+        {b.margin_pct && <span className="text-[13px] tabular-nums text-muted">{b.margin_pct}% of revenue</span>}
         <EtaPill shown={b.margin ? (loss ? { status: "late", label: "Losing money" } : { status: "ok", label: "Profitable" }) : { status: "neutral", label: "No margin stated" }} testId="margin-verdict" />
-        {scope && <span className="text-meta text-muted">{scope}</span>}
+        {scope && <span className="text-[12px] text-muted">{scope}</span>}
       </div>
       {why.length > 0 && (
-        <div className="space-y-0.5 text-body" data-testid="margin-why">
+        <div className="max-w-[72ch] space-y-0.5 text-[13px] leading-5" data-testid="margin-why">
           {why.map((w, i) => (
             <p key={i}>{w}</p>
           ))}
         </div>
       )}
       {sources.length > 0 && (
-        <p className="flex flex-wrap items-center gap-1.5 text-meta text-muted" data-testid="margin-sources">
+        <p className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted" data-testid="margin-sources">
           Sources <SourceChips sources={sources} max={4} />
         </p>
       )}
@@ -316,7 +315,7 @@ export function NoMargin({ order }: { order: OrderMargin }) {
   return (
     <section className="space-y-1.5" data-testid="margin-none">
       <EtaPill shown={noCost ? { status: "suspect", label: "No valid cost in BC" } : { status: "neutral", label: "No margin yet" }} testId="margin-verdict" />
-      <p className="text-body">
+      <p className="max-w-[72ch] text-[13px] leading-5">
         {noCost
           ? `Business Central holds no valid item cost for ${order.order.label}, so its margin isn't stated. Finance can value the item's cost there.`
           : `No margin is stated for ${order.order.label}: ${order.gap ?? "not stated"}.`}
@@ -332,10 +331,10 @@ export function SageMargin({ amounts }: { amounts: CustomerAmount[] }) {
   return (
     <section className="space-y-1.5" data-testid="margin-sage">
       <EtaPill shown={{ status: "neutral", label: "Sage, before credit notes" }} testId="margin-verdict" />
-      <p className="text-body">
+      <p className="max-w-[72ch] text-[13px] leading-5">
         {sage.map((a) => `${a.label.replace(/ \(.*\)$/, "")} ${money(a.money)}`).join("; ")} in Sage, {sage[0].period}. That is invoiced revenue before credit notes; no margin is stated for it here.
       </p>
-      <p className="flex flex-wrap items-center gap-1.5 text-meta text-muted">
+      <p className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
         Sources <SourceChips sources={sage.flatMap((a) => a.sources ?? [])} max={3} />
       </p>
     </section>
@@ -356,7 +355,7 @@ function CustomerVerdict({ p }: { p: Profitability }) {
     <section className="space-y-1.5" data-testid="customer-verdict">
       <EtaPill shown={shown} testId="margin-verdict" />
       {b && (
-        <div className="space-y-0.5 text-body" data-testid="margin-why">
+        <div className="max-w-[72ch] space-y-0.5 text-[13px] leading-5" data-testid="margin-why">
           <p>
             {isLoss(b.margin) ? "Worst order" : "Lowest margin"}:{" "}
             <Link href={refHref(b.order)} className="font-medium hover:underline">

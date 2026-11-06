@@ -5,10 +5,11 @@ import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { formatDate, objectHref, readable, recordLabel, safeHref, SYSTEM_LABEL } from "@/lib/format";
 import { etaShown, promiseLate } from "@/lib/eta";
-import { lateness, STATUS_CLASS, type Status } from "@/lib/status";
+import { lateness, type Status } from "@/lib/status";
 import type { EtaCheck, EvidenceTrail, MaterialRow, NextAction, PoTrail, Source, TrailStep } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
 import { EvidenceDrawer } from "./source-chip";
+import { OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
 import { StatusBadge, StatusWord } from "./ui/status-badge";
 
 /** What each step kind is, in words, and its dot's status colour. */
@@ -56,30 +57,46 @@ export function stateWords(state: string, daysLate?: number | null, short = fals
   return short && state === "late" && daysLate != null ? `${daysLate} d late` : s.label;
 }
 
-function StepSource({ source, children, label }: { source: Source | null | undefined; children: React.ReactNode; label: string }) {
+function StepSource({ source, children, label, aside }: { source: Source | null | undefined; children: React.ReactNode; label: string; aside?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const opens = !!source && (!!source.handle || !!safeHref(source.open_url));
-  if (!opens || !source) return <div className="-mx-2 px-2 py-1">{children}</div>;
+  if (!opens || !source)
+    return (
+      <div className="-mx-2 flex items-start gap-3 px-2 py-0.5">
+        <span className="min-w-0 flex-1">{children}</span>
+        {aside}
+      </div>
+    );
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group -mx-2 flex w-[calc(100%+1rem)] items-start gap-2 rounded-sm px-2 py-1 text-left hover:bg-surface-2 cursor-pointer"
+        className="-mx-2 flex w-[calc(100%+1rem)] items-start gap-3 rounded-lg px-2 py-0.5 text-left hover:bg-hover cursor-pointer"
         aria-label={label}
+        title="Open the evidence"
       >
         <span className="min-w-0 flex-1">{children}</span>
-        <span className="shrink-0 text-meta text-accent group-hover:underline" aria-hidden>Source</span>
+        {aside}
       </button>
       {open && <EvidenceDrawer source={source} open={open} onOpenChange={setOpen} />}
     </>
   );
 }
 
-function Step({ step, group }: { step: TrailStep; group?: TrailStep[] }) {
+/** A check that is not a confirmation: the open ring, the words in grey. */
+function Unconfirmed({ words }: { words: string }) {
+  return (
+    <span className="mt-0.5 flex items-center gap-1.5 text-[12px] leading-4 text-muted">
+      <OpenRing size={12} />
+      {words}
+    </span>
+  );
+}
+
+function Step({ step, group, last }: { step: TrailStep; group?: TrailStep[]; last?: boolean }) {
   const [open, setOpen] = useState(false);
   const kind = KIND[step.kind] ?? { label: "Step", status: "neutral" as Status };
-  const sys = step.source ? (SYSTEM_LABEL[step.source.system] ?? step.source.system) : null;
   const unconfirmed = UNCONFIRMED_WORDS[step.check];
   const many = group && group.length > 1;
   const dates = many ? group.map((g) => g.at).filter(Boolean) as string[] : [];
@@ -93,57 +110,56 @@ function Step({ step, group }: { step: TrailStep; group?: TrailStep[] }) {
   const title = many
     ? `${group.length} messages: ${stepWords(group[group.length - 1].title).replace(/^Email(?: from [^:]+)?:\s*/i, "").replace(/^(?:(?:RE|FW|FWD|AW)\s*:\s*)+/i, "")}`
     : stepWords(step.title);
+  const sys = step.source ? (SYSTEM_LABEL[step.source.system] ?? step.source.system) : null;
+  const from = !many && step.sender ? ` from ${step.sender.replace(/\s*<[^>]+>/, "")}` : "";
   const body = (
     <>
-      <span className="flex flex-wrap items-center gap-x-1.5 text-meta text-muted">
-        <span>{kind.label}</span>
-        {span && (
-          <>
-            <span aria-hidden className="-ml-1.5">,</span>
-            <time dateTime={step.at ?? undefined}>{span}</time>
-          </>
-        )}
-        {sys && (
-          <>
-            <span aria-hidden className="-ml-1.5">,</span>
-            <span>{sys}</span>
-          </>
-        )}
+      <span className="block break-words text-[13px] leading-5 text-fg">{title}</span>
+      <span className="block text-[12px] leading-4 text-muted">
+        <span data-step-kind="">{kind.label}</span>
+        {from}
+        {sys && <span className="sr-only">, {sys}</span>}
       </span>
-      <span className="block break-words text-row font-medium text-fg">{title}</span>
-      {(step.detail || step.sender) && !many && (
-        <span className="block break-words text-row text-muted">
-          {stepWords([step.sender ? `From ${step.sender.replace(/\s*<[^>]+>/, "")}` : null, step.detail].filter(Boolean).join(" · "))}
-        </span>
-      )}
-      {unconfirmed && <span className="mt-0.5 block text-meta text-risk">{unconfirmed}</span>}
+      {step.detail && !many && <span className="mt-0.5 block break-words text-[12px] leading-4 text-muted">{stepWords(step.detail)}</span>}
+      {unconfirmed && <Unconfirmed words={unconfirmed} />}
     </>
   );
+  const date = span ? (
+    <time dateTime={step.at ?? undefined} className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">
+      {span}
+    </time>
+  ) : null;
   return (
-    <li className="relative" data-testid="trail-step" data-kind={step.kind}>
-      <span className="absolute -left-[23.5px] top-[8px] size-[7px] rounded-full border border-control bg-bg" aria-hidden />
-      <StepSource source={step.source} label={`${kind.label}: ${title}. Open the evidence`}>
-        {body}
-      </StepSource>
-      {many && (
-        <>
-          <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="mt-0.5 text-meta text-accent hover:underline cursor-pointer">
-            {open ? "Hide them" : `Show all ${group.length}`}
-          </button>
-          {open && (
-            <ol className="mt-1 space-y-1 border-l border-border pl-3">
-              {group.map((g, i) => (
-                <li key={i} data-testid="trail-step-grouped">
-                  <StepSource source={g.source} label={`${stepWords(g.title)}. Open the evidence`}>
-                    <span className="block text-meta text-muted">{g.at ? formatDate(g.at, { short: true }) : ""}</span>
-                    <span className="block text-row">{stepWords(g.title)}</span>
-                  </StepSource>
-                </li>
-              ))}
-            </ol>
-          )}
-        </>
-      )}
+    <li className={cn("relative grid grid-cols-[18px_minmax(0,1fr)] gap-x-3", !last && "pb-3.5")} data-testid="trail-step" data-kind={step.kind}>
+      {!last && <span className="absolute top-[24px] bottom-[3px] left-[8.5px] w-px bg-border-strong" aria-hidden />}
+      <SystemTile system={step.source?.system} size={18} className="mt-[2px]" />
+      <div className="min-w-0">
+        <StepSource source={step.source} label={`${kind.label}: ${title}. Open the evidence`} aside={date}>
+          {body}
+        </StepSource>
+        {many && (
+          <>
+            <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="mt-0.5 text-[12px] font-medium text-muted hover:text-fg cursor-pointer">
+              {open ? "Hide them" : `Show all ${group.length}`}
+            </button>
+            {open && (
+              <ol className="mt-1 space-y-0.5 border-l border-border pl-3">
+                {group.map((g, i) => (
+                  <li key={i} data-testid="trail-step-grouped">
+                    <StepSource
+                      source={g.source}
+                      label={`${stepWords(g.title)}. Open the evidence`}
+                      aside={<span className="shrink-0 pt-0.5 text-[12px] leading-4 tabular-nums text-muted">{g.at ? formatDate(g.at, { short: true }) : ""}</span>}
+                    >
+                      <span className="block text-[13px] leading-5">{stepWords(g.title)}</span>
+                    </StepSource>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </>
+        )}
+      </div>
     </li>
   );
 }
@@ -193,27 +209,30 @@ export function shapeSteps(steps: TrailStep[]): { step: TrailStep; group?: Trail
   return out;
 }
 
-/** The verdict first, its rule (when it has one) behind "Rule ⓘ". */
+/** The verdict first (its shape, the words in ink), its rule (when it has one) behind "Rule". */
 function Verdict({ text, rule, check, status = "neutral", beside = [] }: { text: string; rule?: string | null; check?: string; status?: Status; beside?: TrailStep[] }) {
   const [open, setOpen] = useState(false);
   const words = rule ? (/^rule: an open purchase order|^late means/i.test(rule) ? LATE_RULE : stepWords(rule.replace(/^Rule:\s*/, ""))) : null;
   return (
     <div data-testid="trail-verdict">
-      <p className="flex flex-wrap items-baseline gap-x-2 text-row font-semibold">
-        <span className={status !== "neutral" ? STATUS_CLASS[status].fg : undefined}>{stepWords(text)}</span>
-        {words && (
-          <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="text-meta font-normal text-accent hover:underline cursor-pointer">
-            Rule
-          </button>
-        )}
+      <p className="flex items-start gap-2 text-[13px] leading-5 font-medium">
+        {status !== "neutral" && <StatusGlyph status={status} size={14} className="mt-[3px]" />}
+        <span className="min-w-0">
+          <span>{stepWords(text)}</span>
+          {words && (
+            <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="ml-2 text-[12px] font-normal text-muted underline decoration-border-strong underline-offset-2 hover:text-fg cursor-pointer">
+              Rule
+            </button>
+          )}
+        </span>
       </p>
-      {check && UNCONFIRMED_WORDS[check] && <p className="mt-0.5 text-meta text-risk">{UNCONFIRMED_WORDS[check]}</p>}
-      {open && words && <p className="mt-1 text-meta text-muted">{words}</p>}
+      {check && UNCONFIRMED_WORDS[check] && <Unconfirmed words={UNCONFIRMED_WORDS[check]} />}
+      {open && words && <p className="mt-1 text-[12px] leading-4 text-muted">{words}</p>}
       {beside.map((b, i) => (
         <div key={i} className="mt-2 border-t border-border pt-2" data-testid="trail-verdict-beside">
           <StepSource source={b.source} label={`${stepWords(b.title)} Open the evidence`}>
-            <span className="block text-row text-fg">{stepWords(b.title)}</span>
-            {b.detail && <span className="block text-meta text-muted">{stepWords(b.detail)}</span>}
+            <span className="block text-[13px] leading-5 text-fg">{stepWords(b.title)}</span>
+            {b.detail && <span className="block text-[12px] leading-4 text-muted">{stepWords(b.detail)}</span>}
           </StepSource>
         </div>
       ))}
@@ -228,14 +247,14 @@ function Steps({ steps, label }: { steps: TrailStep[]; label: string }) {
   const shown = all ? shaped : shaped.slice(0, 4);
   return (
     <div>
-      <ol className="relative ml-1 space-y-2 border-l border-border pl-5" aria-label={label}>
+      <ol className="relative" aria-label={label}>
         {shown.map((s, i) => (
-          <Step key={i} step={s.step} group={s.group} />
+          <Step key={i} step={s.step} group={s.group} last={i === shown.length - 1} />
         ))}
       </ol>
       {shaped.length > 4 && (
-        <button type="button" onClick={() => setAll((v) => !v)} aria-expanded={all} className="mt-2 text-meta font-medium text-accent hover:underline cursor-pointer" data-testid="trail-show-all">
-          {all ? "Show fewer steps" : `Show all ${shaped.length} steps`}
+        <button type="button" onClick={() => setAll((v) => !v)} aria-expanded={all} className="mt-3 ml-[30px] text-[12px] font-medium text-muted hover:text-fg cursor-pointer" data-testid="trail-show-all">
+          {all ? "Fewer steps" : `Show all ${shaped.length} steps`}
         </button>
       )}
     </div>
@@ -255,7 +274,7 @@ export function EtaBadge({ eta }: { eta: EtaCheck }) {
       {!eta.promise && <span className="text-muted">{stepWords(eta.text)}</span>}
       {src && (src.handle || safeHref(src.open_url)) && (
         <>
-          <button type="button" onClick={() => setOpen(true)} className="text-meta text-accent hover:underline cursor-pointer">
+          <button type="button" onClick={() => setOpen(true)} className="text-[12px] font-medium text-muted underline decoration-border-strong underline-offset-2 hover:text-fg cursor-pointer">
             Open confirmation
           </button>
           {open && <EvidenceDrawer source={src} open={open} onOpenChange={setOpen} />}
@@ -273,21 +292,21 @@ export function NextActionCard({ action, title = "Who to chase" }: { action: Nex
   const [open, setOpen] = useState(false);
   const src = action.contact_source;
   return (
-    <section className="border-t border-border pt-3 text-row" aria-label={title} data-testid="next-action">
-      <p className="text-meta text-muted">{title}</p>
-      {action.contact ? (
-        <p className="mt-1 font-medium">{action.contact.replace(/\s*<[^>]+>/, "")}</p>
-      ) : null}
-      <p className="mt-1 text-fg">{stepWords(action.text)}</p>
-      {src && (src.handle || safeHref(src.open_url)) && (
-        <>
-          <button type="button" onClick={() => setOpen(true)} className="mt-1 text-meta text-accent hover:underline cursor-pointer">
-            Open their last message
-          </button>
-          {open && <EvidenceDrawer source={src} open={open} onOpenChange={setOpen} />}
-        </>
-      )}
-      <p className="mt-1 text-meta text-muted">Nothing is sent or changed from here.</p>
+    <section className="text-[13px] leading-5" aria-label={title} data-testid="next-action">
+      <p className="mb-1.5 text-[12px] font-medium leading-4 text-muted">{title}</p>
+      {action.contact ? <p className="font-medium">{action.contact.replace(/\s*<[^>]+>/, "")}</p> : null}
+      <p className="text-fg">{stepWords(action.text)}</p>
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-3 text-[12px] leading-4 text-muted">
+        {src && (src.handle || safeHref(src.open_url)) && (
+          <>
+            <button type="button" onClick={() => setOpen(true)} className="font-medium underline decoration-border-strong underline-offset-2 hover:text-fg cursor-pointer">
+              Open their last message
+            </button>
+            {open && <EvidenceDrawer source={src} open={open} onOpenChange={setOpen} />}
+          </>
+        )}
+        <span>Nothing is sent or changed from here.</span>
+      </p>
     </section>
   );
 }
@@ -302,7 +321,7 @@ export function hiddenText(count: number, mayBeMore: boolean): string | null {
 function Hidden({ text }: { text: string | null }) {
   if (!text) return null;
   return (
-    <p className="text-meta text-muted" data-testid="trail-hidden">
+    <p className="text-[12px] leading-4 text-muted" data-testid="trail-hidden">
       {text}
     </p>
   );
@@ -324,7 +343,7 @@ export function PoTrailView({ trail, showSubject = true, showNext = true, showEt
     <div className="space-y-3" data-testid="po-trail">
       {showSubject && (
         <div className="flex flex-wrap items-center gap-2">
-          <Link href={href} className="text-row font-semibold hover:underline">
+          <Link href={href} className="text-[13px] font-semibold hover:underline">
             {recordLabel(trail.subject.type, trail.subject.label)}
           </Link>
           {late && trail.state !== "not_applicable" && <StatusBadge shown={late} />}
@@ -335,8 +354,11 @@ export function PoTrailView({ trail, showSubject = true, showNext = true, showEt
       <Steps steps={trail.steps ?? []} label={`Evidence: ${trail.subject.label}`} />
       <Hidden text={hiddenText(trail.hidden_steps ?? 0, !!trail.may_hide_more)} />
       {(trail.not_found ?? []).filter((n) => !verdict || !reasonKey(verdict).includes(reasonKey(n.where_it_would_live)) || !reasonKey(n.where_it_would_live)).map((n, i) => (
-        <p key={i} className="text-meta text-muted">
-          <span className="text-fg">{readable(n.what)}:</span> {readable(n.where_it_would_live)}
+        <p key={i} className="flex items-start gap-2 text-[13px] leading-5">
+          <OpenRing size={14} tone="neutral" className="mt-[3px]" />
+          <span>
+            {readable(n.what)}: <span className="text-muted">{readable(n.where_it_would_live)}</span>
+          </span>
         </p>
       ))}
       {showNext && trail.next_action && <NextActionCard action={trail.next_action} />}
@@ -348,27 +370,27 @@ function Materials({ rows }: { rows: MaterialRow[] }) {
   if (rows.length === 0) return null;
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-row" data-testid="materials">
+      <table className="w-full text-[13px]" data-testid="materials">
         <caption className="sr-only">Purchase orders of the order's materials, late first</caption>
         <thead>
-          <tr className="h-8 border-y border-border-strong bg-bg-subtle text-left text-meta text-muted">
-            <th scope="col" className="px-2 font-medium">Material</th>
-            <th scope="col" className="font-medium">Assembly order</th>
-            <th scope="col" className="font-medium">PO</th>
-            <th scope="col" className="px-2 text-right font-medium">Status</th>
+          <tr className="h-8 border-b border-border text-left text-[12px] text-muted">
+            <th scope="col" className="pr-3 font-normal">Material</th>
+            <th scope="col" className="pr-3 font-normal">Assembly order</th>
+            <th scope="col" className="pr-3 font-normal">PO</th>
+            <th scope="col" className="text-right font-normal">Status</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i} className="border-b border-border align-top last:border-0">
-              <td className="px-2 py-2">{r.item.label}</td>
-              <td className="py-2 text-muted">{r.assembly.label}</td>
-              <td className="py-2">
-                <Link href={safeHref(r.po.open_url) ?? objectHref(r.po.type, r.po.object_id)} className="font-medium hover:text-accent hover:underline">
+            <tr key={i} className="h-9 border-b border-border align-middle last:border-0">
+              <td className="py-2 pr-3">{r.item.label}</td>
+              <td className="py-2 pr-3 text-muted">{r.assembly.label}</td>
+              <td className="py-2 pr-3 whitespace-nowrap">
+                <Link href={safeHref(r.po.open_url) ?? objectHref(r.po.type, r.po.object_id)} className="font-medium hover:underline">
                   {recordLabel(r.po.type, r.po.label)}
                 </Link>
               </td>
-              <td className="px-2 py-2 text-right" title={r.verdict ?? undefined}>
+              <td className="py-2 text-right" title={r.verdict ?? undefined}>
                 {r.state ? <StatusWord shown={{ ...lateness(r.state, r.days_late)!, label: stateWords(r.state, r.days_late, true) }} /> : <StatusWord status="neutral" label="Not checked" />}
               </td>
             </tr>
@@ -422,18 +444,15 @@ export function EvidenceTrailCard({
   if (trails.length === 0 && steps.length === 0 && rows.length === 0 && gaps.length === 0) return null;
   const whyVerdict = steps.find((s) => s.kind === "verdict");
   return (
-    <section
-      className={cn("space-y-4", !bare && "border-t border-rule pb-2")}
-      aria-label="Evidence"
-      data-testid="evidence-trail"
-    >
-      {!bare && <h2 className="-mb-1 flex min-h-10 items-center text-section">Evidence</h2>}
-      {/^how we know/i.test(trail.title) ? <p className="sr-only">{trail.title}</p> : <p className="text-meta text-muted">{readable(trail.title)}</p>}
+    <section className="space-y-4" aria-label="Evidence" data-testid="evidence-trail">
+      {!bare && <h2 className="text-[12px] font-medium leading-4 text-muted">How we know</h2>}
+      {/^how we know/i.test(trail.title) ? <p className="sr-only">{trail.title}</p> : <p className="text-[12px] leading-4 text-muted">{readable(trail.title)}</p>}
       <Materials rows={rows} />
       {gaps.length > 0 && (
-        <ul className="space-y-1 text-meta text-muted" data-testid="trail-gaps">
+        <ul className="space-y-1.5 text-[13px] leading-5 text-muted" data-testid="trail-gaps">
           {gaps.map((g, i) => (
-            <li key={i}>
+            <li key={i} className="flex items-start gap-2">
+              <OpenRing size={14} tone="neutral" className="mt-[3px]" />
               <span>
                 <span className="text-fg">{readable(g.what)}</span>
                 {g.state === "note"
@@ -454,7 +473,7 @@ export function EvidenceTrailCard({
       {trail.kind === "why" ? (
         <>
           {trail.complete === false && (
-            <p className="text-meta text-muted" data-testid="trail-incomplete">
+            <p className="text-[12px] leading-4 text-muted" data-testid="trail-incomplete">
               Latest steps only; the record has more.
             </p>
           )}

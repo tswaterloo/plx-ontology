@@ -61,6 +61,37 @@ def _calls(calls):
                    for n, (name, arguments) in enumerate(calls))
 
 
+class GateQuestion(Temp):
+    def test_every_answer_submission_carries_the_sessions_own_question(self):
+        """The agent's question (another one, or none) never decides what the answer is
+        about: the gate sets the session's own on each submission it forwards."""
+        echo = self.root / "echo.py"
+        echo.write_text(textwrap.dedent("""
+            import json, sys
+            for line in sys.stdin:
+                m = json.loads(line)
+                if "id" not in m:
+                    continue
+                answer = (m["params"].get("arguments") or {}).get("answer") or {}
+                body = {"question": answer.get("question")}
+                r = {"content": [{"type": "text", "text": json.dumps(body)}],
+                     "structuredContent": body, "isError": False}
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"],
+                                             "result": r}) + "\\n")
+                sys.stdout.flush()
+        """), encoding="utf-8")
+        out = io.StringIO()
+        calls = [("plx.case_get", {"answer": {"claims": [], "question": "another"}}),
+                 ("plx.case_get", {"answer": {"claims": []}})]
+        agent_session.serve_gate(["plx.case_get"], [sys.executable, str(echo)],
+                                 self.root / "refused.jsonl",
+                                 stdin=io.StringIO(_calls(calls)), stdout=out,
+                                 question="Did PO0103510 arrive?")
+        said = [json.loads(m["result"]["content"][0]["text"])["question"]
+                for m in map(json.loads, out.getvalue().splitlines())]
+        self.assertEqual(said, ["Did PO0103510 arrive?"] * 2)
+
+
 class GateBudget(Temp):
     def gate(self, calls, budget, clock=None):
         out = io.StringIO()
@@ -250,13 +281,36 @@ class AgentBudget(Temp):
         from scripts import eval_case_cards
         made = agent_ask.AgentAsk(state_dir=Path("."), host_config=Path("x"), secret="s" * 40
                                   ).agent_for(lambda line: None)
+        # the app's cap is the deep budget; each question runs its own under it
         self.assertEqual((made.budget_seconds, made.max_steps, made.max_turns),
-                         (deep.SESSION_SECONDS, deep.MAX_STEPS, deep.MAX_TURNS))
+                         (deep.DEEP_SECONDS, deep.MAX_STEPS, deep.MAX_TURNS))
+        # the front door's reading sets it, never the question's wording
+        self.assertEqual(deep.question_budget("q", deep.DEEP_SECONDS, "lookup"),
+                         deep.LOOKUP_SECONDS)
+        self.assertEqual(deep.question_budget("q", None, "investigate"), deep.DEEP_SECONDS)
+        self.assertEqual(deep.question_budget("q"), deep.DEEP_SECONDS)
         source = Path(eval_case_cards.__file__).read_text(encoding="utf-8")
         self.assertIn("default=deep.SESSION_SECONDS", source)
         self.assertIn("default=deep.MAX_STEPS", source)
         self.assertIn('"--timeout", type=int, default=deep.SESSION_SECONDS', source)
-        self.assertEqual(made.timeout, deep.SESSION_SECONDS)
+        self.assertEqual(made.timeout, deep.DEEP_SECONDS)
+
+
+class RecordsFirst(unittest.TestCase):
+    def test_a_text_search_waits_for_a_record_read_and_costs_no_step(self):
+        """The host serves one call at a time: a text search before any record read is
+        refused (no step spent) with what to read first; after one it is served."""
+        free = deep.Budget(deadline=1000.0, max_steps=10)   # no records named: served
+        self.assertIsNone(free.decide("plx.documents", {"query": "x"}, 1.0))
+        budget = deep.Budget(deadline=1000.0, max_steps=10, records_first=True)
+        refused = budget.decide("plx.documents", {"query": "x"}, 1.0)
+        self.assertEqual(refused["error"], deep.RECORDS_FIRST_REFUSAL)
+        self.assertIn("plx.find", refused["message"])
+        self.assertEqual(budget.steps, 0)
+        self.assertIsNone(budget.decide("plx.find", {"query": "x"}, 2.0))
+        self.assertIsNone(budget.decide("plx.documents", {"query": "x"}, 3.0))
+        self.assertEqual((budget.steps, budget.waited), (2, 1))
+        self.assertFalse(budget.cut_short)
 
 
 class Task(unittest.TestCase):
@@ -264,8 +318,9 @@ class Task(unittest.TestCase):
         question = "why was so 61873 late last week"
         prompt = agent_session.task_prompt(question, agent_session.UNPINNED,
                                            today=dt.date(2026, 10, 31))
-        self.assertIn(deep.method_rule(), prompt)
-        self.assertNotIn(deep.lookup_rule(), prompt)
+        self.assertIn(deep.method_for(question), prompt)
+        self.assertIn(deep.RECORDS_FIRST, prompt)
+        self.assertIn("about 180 seconds", prompt)   # no reading: the deep budget
         self.assertIn(agent_session.REPLY_RULE, prompt)
         for said in ("Plan first", "expected-answer query", "at least one more targeted "
                      "search", "system of record", "Critique your draft", "what you searched",
@@ -290,8 +345,8 @@ class Task(unittest.TestCase):
                          "who set up PO#5241?", "when does lot 25A0165 expire"):
             self.assertTrue(deep.is_lookup(question), question)
             prompt = agent_session.ask_prompt(question)
-            self.assertIn(deep.lookup_rule(), prompt)
-            self.assertNotIn(deep.method_rule(), prompt)
+            self.assertIn(deep.method_for(question), prompt)
+            self.assertIn("No written plan", deep.method_for(question))
             for said in ("No written plan", "in one turn", deep.BUDGET_REFUSAL,
                          "where it would live", agent_session.REPLY_RULE):
                 self.assertIn(said, prompt)
@@ -300,7 +355,8 @@ class Task(unittest.TestCase):
                          "how many POs are late rn", "open AR for Dandylion Pet INC?",
                          "", None, 12, "\x00\x01"):
             self.assertFalse(deep.is_lookup(question), question)
-        self.assertIn(deep.method_rule(), agent_session.ask_prompt("how many POs are late"))
+        self.assertIn(deep.method_for("how many POs are late"),
+                      agent_session.ask_prompt("how many POs are late"))
 
     def test_only_a_lookup_runs_on_the_lookup_model(self):
         """``lookup_model``: a lookup's session starts on it, every other question on the
@@ -351,56 +407,20 @@ class Task(unittest.TestCase):
         with self.assertRaises(ucc.CatalogError):
             ucc.load(Path(tempfile.gettempdir()) / "no-such-catalog.json")
 
-    def test_a_count_a_partys_open_orders_or_received_vs_ordered_leads_with_the_answer(self):
-        """Live-ops gaps: counts, a vendor's open POs and received against ordered were
-        answered around the figure. The task names each shape's exact route and that the
-        answer leads with it (the number, the list and its size, ordered/received/
-        shortfall), from the question's words alone; any other question gets none."""
-        for question, hints in (
-                ("how many POs are late", [deep.COUNT_HINT]),
-                ("which batches are on QC hold", [deep.COUNT_HINT]),
-                ("quarantined lots?", [deep.COUNT_HINT]),
-                ("lots expiring before 2026-12-01", [deep.COUNT_HINT]),
-                ("what POs are open for this vendor", [deep.OPEN_ORDERS_HINT]),
-                ("received vs ordered on the PO", [deep.RECEIVED_HINT]),
-                ("what did we get vs what we ordered", [deep.RECEIVED_HINT]),
-                ("when does this lot expire", []),
-                ("status on the PO?", []),
-                ("", []), (None, []), (7, [])):
-            with self.subTest(question=question):
-                self.assertEqual(deep.answer_shape_hints(question), hints)
-        prompt = agent_session.task_prompt("how many POs are late", agent_session.UNPINNED,
-                                           today=dt.date(2026, 10, 31))
-        analysis = prompt[prompt.index("Question analysis"):].split("\n")[0]
-        self.assertIn(deep.COUNT_HINT, analysis)
-        self.assertIn("the answer itself first", deep.method_rule())
-        self.assertIn("in words:", deep.method_rule())
-
-    def test_a_price_move_or_a_message_question_is_routed_by_its_own_words(self):
-        """A price trend question goes to the price_history plan (a price paid, never an
-        item card's cost); a message, reply or confirmation question to a mail search by
-        the record's numbers and the party's domain and contacts, citing the message, and
-        absence only after that search. Any other question gets neither."""
-        from operating import ontology_tools as ot
-        from operating import ontology_tools_investigate as oi
-        self.assertIn("price_history", oi.load_plans(schema=ot.default_schema()))
-        for question in ("is the price of X going up or down", "X cost trend? last price",
-                         "are we paying more or less for X now", "price trend on X"):
-            hint = deep.question_analysis(question, "pin")
-            self.assertIn("family price_history", hint, question)
-            self.assertNotIn("graph-mail handle", hint, question)
-        for question in ("did the vendor ever confirm a date on X",
-                         "whats the last thing the supplier said about X",
-                         "last email from supplier re X?", "last msg w/ X?"):
-            hint = deep.question_analysis(question, "pin")
-            for said in ("graph-mail handle", "mail domain", "only after those searches"):
-                self.assertIn(said, hint, question)
-            self.assertNotIn("price_history", hint, question)
-        for question in ("what does the map say about screening", "is the order confirmed",
-                         "how much freight", "wheres X at? is it late", None, 12):
-            self.assertEqual(deep.question_kind_hints(question), [], question)
-        for hint in (deep.PRICE_HINT, deep.CORRESPONDENCE_HINT):
-            self.assertNotRegex(hint, r"\d")   # a route, never a case's number
+    def test_the_task_names_no_kind_of_question_and_says_how_to_state_figures(self):
+        """No wording of the question picks a route or a hint (the model reads it): the
+        analysis carries the day, the identifiers' forms and the time frame only, and the
+        method says how any figure is stated (a count over the records a tool listed, a
+        total as a sum over its inputs' citations), whatever the question."""
+        for question in ("how many POs are late", "what POs are open for this vendor",
+                         "received vs ordered on the PO", "is the price of X going up",
+                         "last email from supplier re X?"):
+            analysis = deep.question_analysis(question, "pin")
+            for said in ("reads as a", "usually settled", "It asks", "family price_history",
+                         "graph-mail handle"):
+                self.assertNotIn(said, analysis, question)
+        for said in ('"op": "count"', '"op": "sum"', "at least N", "the answer itself first"):
+            self.assertIn(said, deep.method_rule())
 
     def test_an_unreadable_question_adds_no_analysis(self):
         none = deep.question_analysis("", "no pin")

@@ -147,6 +147,33 @@ class RerankTimeBoxTests(unittest.TestCase):
             never.assert_not_called()
 
 
+    def test_an_onnx_folder_switches_the_reranker_and_scores_in_batches(self):
+        import tempfile
+        import numpy as np
+        from operating.search import models
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "model.onnx").write_bytes(b"")
+            with mock.patch.dict(os.environ, {"PLX_RERANK_ONNX": folder,
+                                              "PLX_SEARCH_MODELS": "local"}), \
+                    mock.patch.dict(models._DEFAULTS, clear=True):
+                boxed = models.local_reranker()
+            self.assertIsInstance(boxed.reranker, models.OnnxReranker)
+        calls = []
+
+        class Session:
+            def run(self, _out, feed):
+                calls.append(feed["input_ids"].shape[0])
+                return [np.zeros((feed["input_ids"].shape[0], 1))]
+
+        def tokenizer(queries, passages, **_kw):
+            return {"input_ids": np.ones((len(passages), 3)),
+                    "attention_mask": np.ones((len(passages), 3))}
+        onnx = models.OnnxReranker("unused")
+        onnx._session, onnx._tokenizer = Session(), tokenizer
+        self.assertEqual(onnx.score("q", ["p"] * 23), [0.5] * 23)
+        self.assertEqual(calls, [10, 10, 3])
+
+
 class SharedModelTests(unittest.TestCase):
     """One model process per host user (operating/search/model_server.py): every search
     process asks it instead of loading its own copy (about 3.4 GB each), only this user
@@ -380,6 +407,33 @@ class HybridSearchTests(unittest.TestCase):
         result = self.run_search(understanding, reader([PURCHASING, BC, QUALITY, TEAMS]))
         self.assertEqual(result.hits[0]["object_id"], "PurchaseOrder:bc:9001")
         self.assertEqual(result.hits[0]["signals"]["exact_id"], 1.0)
+
+    def test_retrievers_read_the_question_unless_rewrites_are_asked_for(self):
+        import dataclasses
+        from unittest import mock
+        understanding = {"question": "where is the maple soap", "intent": "status",
+                         "entities": [], "rewrites": ["customer USE CODY12 soap"]}
+        for mode, expected in (("question", ["where is the maple soap"]),
+                               ("rewrites", ["where is the maple soap",
+                                             "customer USE CODY12 soap"])):
+            seen, embedded = [], []
+
+            class Spy:
+                model = EMB.model
+
+                def embed(self, texts):
+                    embedded.append(list(texts))
+                    return EMB.embed(texts)
+
+            def bm25(conn, scope, texts, limit, _real=rt.bm25):
+                seen.append(list(texts))
+                return _real(conn, scope, texts, limit)
+            weights = dataclasses.replace(load_weights(), query_texts=mode,
+                                          dense_ef_search=400)
+            with self.subTest(mode=mode), mock.patch.object(rt, "bm25", bm25):
+                self.run_search(understanding, reader([PURCHASING]), weights=weights,
+                                embedder=Spy())
+                self.assertEqual((seen, embedded), ([expected], [expected]))
 
     def test_a_narrower_query_vector_is_padded_to_the_column(self):
         class Narrow:

@@ -436,12 +436,12 @@ class HomeModeTest(Base):
         names = {tool["name"] for tool in TOOLS}
         self.assertIn("plx.find", names)
         self.assertNotIn("plx.home", names)
-        self.assertEqual(CONTRACTS["limits"]["max_case_host_tools"], 23)
+        self.assertEqual(CONTRACTS["limits"]["max_case_host_tools"], 24)
         from operating import agent_definitions
         definitions = agent_definitions.load()
         for agent in ("plx.agent.act", "plx.agent.investigate"):
             self.assertIn("plx.find", definitions.get(agent).tools)
-            self.assertLessEqual(len(definitions.get(agent).tools), 23)
+            self.assertLessEqual(len(definitions.get(agent).tools), 24)
 
 
 class PrimerTest(Base):
@@ -515,7 +515,7 @@ class LiveCheckTest(unittest.TestCase):
         self.assertTrue(summary["primer"])
         self.assertIn("plx.find", summary["tools"])
         self.assertNotIn("plx.home", summary["tools"])
-        self.assertLessEqual(summary["tool_count"], 23)
+        self.assertLessEqual(summary["tool_count"], 24)
         self.assertGreaterEqual(summary["gaps_cited"], 1)
         self.assertLessEqual(len(summary["top"]), 3)
         self.assertLessEqual({row["kind"] for row in summary["top"]}, set(mcp_server.HOME_KINDS))

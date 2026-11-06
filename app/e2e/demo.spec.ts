@@ -67,18 +67,19 @@ test("demo walkthrough", async ({ page }, info) => {
   await expect(page.getByTestId("headline")).toContainText(/late|Nothing/);
   await expect(page.getByTestId("dev-banner")).toContainText("FIXTURE");
   await expect(page.getByTestId("stat-late")).toBeVisible();
-  // the oldest late PO is a tile; the list never repeats a "Suggested next step" per row
-  await expect(page.getByTestId("stat-oldest")).toContainText("days");
+  // the oldest late PO leads the list with its days late; the list never repeats a "Suggested next step" per row
+  await expect(page.getByTestId("stat-oldest")).toContainText(/\d+d/);
   await expect(page.getByTestId("briefing").getByTestId("next-action")).toHaveCount(0);
   await shot(page, "2-home", project);
 
-  // 3. Typo-tolerant autocomplete: "mapel" finds Maple Leaf Soapworks.
-  const box = page.getByRole("combobox", { name: "Ask a question" });
+  // 3. Typo-tolerant autocomplete: "mapel" finds Maple Leaf Soapworks. Today asks through
+  //    the search-or-ask bar (Ctrl K / ⌘K).
+  await page.keyboard.press("Control+k");
+  const box = page.getByTestId("palette-input");
   await box.click();
   await box.pressSequentially("status of mapel", { delay: 25 });
-  await expect(page.getByTestId("suggestions").getByRole("option", { name: /Maple Leaf Soapworks/ })).toBeVisible();
+  await expect(page.getByTestId("command-palette").getByRole("option", { name: /Maple Leaf Soapworks/ })).toBeVisible();
   await shot(page, "3-autocomplete", project);
-  await box.press("Escape");
   await box.fill("");
 
   // 4. A messy question; the answer streams in. An observer records every

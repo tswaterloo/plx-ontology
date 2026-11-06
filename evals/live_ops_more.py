@@ -213,26 +213,33 @@ def bc_receipt_vs_po(world: lk.World) -> list[lk.Candidate]:
                 got[str(line["fields"].get("lineObjectNumber") or "")] += (
                     decimal_of(line["fields"].get("quantity")) or Decimal(0))
         off = sorted(i for i in set(ordered) | set(got) if i and ordered[i] != got[i])
-        if len(off) != 1 or not ordered.get(off[0]):
-            continue   # one item differing: one figure pair to ask about
-        item = off[0]
         cites = [order["citation"], *(l["citation"] for l in lines[
             str(order["fields"].get("id")).lower()]), *(r["citation"] for r in rows)]
-        way = "short" if got[item] < ordered[item] else "over"
-        out.append(lk.Candidate(number, "PurchaseOrder", {"po": number, "item": item}, [
-            lk._fact("number", "ordered", cites, ("bc",), value=_plain(ordered[item]),
-                     label=["ordered", "order", "ordering"], tolerance="0"),
-            lk._fact("number", "received", cites, ("bc",), value=_plain(got[item]),
-                     label=["received", "receiving", "got", "came", "receipt", "receipts"],
-                     tolerance="0"),
-            lk._fact("claim", way, cites, ("bc",), value=way,
-                     accept=(["less than ordered", "under", "shortfall", "not all"]
-                             if way == "short" else ["more than ordered", "overage"]),
-                     contradicts=["received in full", "matches the order", "all received"])],
-            ["BC purchaseReceipts.orderNumber -> purchaseReceiptLines.quantity by "
-             "lineObjectNumber, against the BC order's purchaseOrderLines.quantity"],
-            "the one item whose posted receipt total differs from its ordered quantity"))
+        for item in off:
+            if not ordered.get(item):
+                continue   # received with nothing ordered: no figure pair to ask about
+            out.append(_receipt_vs_po(number, item, ordered[item], got[item], cites))
     return out
+
+
+def _receipt_vs_po(number: str, item: str, ordered: Decimal, got: Decimal,
+                   cites: list[str]) -> lk.Candidate:
+    """One item of an order whose posted receipt total differs from its ordered quantity:
+    the question names the item, so an order with several such items asks about each."""
+    way = "short" if got < ordered else "over"
+    return lk.Candidate(f"{number}/{item}", "PurchaseOrder", {"po": number, "item": item}, [
+        lk._fact("number", "ordered", cites, ("bc",), value=_plain(ordered),
+                 label=["ordered", "order", "ordering"], tolerance="0"),
+        lk._fact("number", "received", cites, ("bc",), value=_plain(got),
+                 label=["received", "receiving", "got", "came", "receipt", "receipts"],
+                 tolerance="0"),
+        lk._fact("claim", way, cites, ("bc",), value=way,
+                 accept=(["less than ordered", "under", "shortfall", "not all"]
+                         if way == "short" else ["more than ordered", "overage"]),
+                 contradicts=["received in full", "matches the order", "all received"])],
+        ["BC purchaseReceipts.orderNumber -> purchaseReceiptLines.quantity by "
+         "lineObjectNumber, against the BC order's purchaseOrderLines.quantity"],
+        "an item whose posted receipt total differs from its ordered quantity")
 
 
 def po_eta_vs_due(world: lk.World) -> list[lk.Candidate]:
@@ -554,7 +561,7 @@ PORTAL_RELATIONS = (CUSTOMER, PRODUCT, QUOTE, FM_PO_ITEM, FM_RECEIPT_PACK, SAGE_
                     SAGE_ORDER, SAGE_SHIPMENT)
 BC_SETS = ("purchaseReceiptLines", "salesQuotes")
 # Only these columns of these wide relations are read (``scripts.eval_live_ops.NARROW``).
-NARROW = {CUSTOMER: ("id", "company_name"), PRODUCT: ("id", "code", "name"),
+NARROW = {CUSTOMER: ("id", "company_name"), PRODUCT: ("id", "code", "name", "external_id"),
           SAGE_CUSTOMER: ("idcust", "namecust", "amtbaldueh", "amtbalduet"),
           SAGE_ORDER: ("orduniq", "ordnumber", "customer", "complete"),
           SAGE_SHIPMENT: ("shiuniq", "ordnumber", "shidate")}

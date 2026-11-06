@@ -241,7 +241,7 @@ class MailStoreTests(unittest.TestCase):
         self.assertNotIn("supplier@", chunk.header)          # a role, never the address
         self.assertIn("Date: 2026-", chunk.header)
         packing = [c for c in chunks if c.kind == "mail" and "Packing list" in c.body][0]
-        self.assertIn("PO PO100234", packing.header)
+        self.assertIn("Ids: PO100234", packing.header)
         self.assertIn("petra_po:PO100234", packing.linked_ids)
         self.assertIn("500 kg", packing.body)                # normalised spelling
         pages = [c for c in chunks if c.kind == "attachment"]
@@ -366,6 +366,34 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(counts.skipped["people_exclusion:sender"], 1)
         self.assertIn(f"teams:chat:{other}", counts.withheld)
 
+    def test_shards_partition_the_documents_and_teams_stay_in_shard_zero(self):
+        for n in range(6):
+            self.fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
+                        handle=f"mc://live/tasks/T-{n}@1",
+                        text={"row.description": (f"mc://live/tasks/T-{n}@1",
+                                                  f"Task {n} about the lavender soap order.")})
+        chat = "19:c@thread.v2"
+        self.teams_message(chat, "t1", "2026-10-01T10:00:00Z", "Teams note about cartons",
+                           STAFF)
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        excl = exclusion(chats={chat: (STAFF,)})
+        whole = {c.chunk_id for c in ProjectionChunker(conn, excl, Counts()).chunks()}
+        parts = [{c.chunk_id for c in ProjectionChunker(conn, excl, Counts()).chunks(
+            shard=(i, 3))} for i in range(3)]
+        self.assertEqual(len(whole), 7)
+        self.assertEqual(set().union(*parts), whole)
+        self.assertEqual(sum(len(p) for p in parts), len(whole))
+        self.assertTrue(any(c.startswith("teams:") for c in parts[0]))
+        self.assertFalse(any(c.startswith("teams:") for p in parts[1:] for c in p))
+        # A mail window never leaves out a Teams message or a task, however old.
+        counts = Counts()
+        windowed = {c.chunk_id for c in ProjectionChunker(conn, excl, counts).chunks(
+            since="2026-06-01")}
+        self.assertEqual(windowed, whole)
+        self.assertEqual(counts.skipped["before_window"], 0)
+
     def test_mc_task_and_unknown_or_missing_keys(self):
         self.fx.obj("MCTask:T-1", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
                     handle="mc://live/tasks/T-1@1",
@@ -387,7 +415,7 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         task = chunks[0]
         self.assertEqual((task.kind, task.audience_key), ("mc_task", "mc:live/tasks/PRJ-X"))
-        self.assertIn("AO AO-26197B", task.header)
+        self.assertIn("Ids: AO-26197B", task.header)
         self.assertIn("stage doing", task.header)
         self.assertNotIn("Somebody Named", task.header)      # a pii value never in a header
         self.assertEqual(counts.skipped["audience_key_unknown"], 2)
@@ -461,6 +489,46 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertIn("Customer C0012", chunk.header)
         self.assertEqual(chunk.authority, 4)
 
+    def test_mail_and_teams_participants_become_people_and_the_exclusion_holds(self):
+        from operating.chunking.entities import participants
+        box = "12345678-aaaa-bbbb-cccc-0000000000ee"
+        staff = "staff@example-plx.com"
+        self.fx.obj("Customer:9", "Customer", "api:public.app_customer",
+                    values={"name": ("Maple Suds Inc", "[]"),
+                            "bc_email": ("orders@maplesuds.example", "[]")})
+        for oid, sender, to, when in (
+                ("Email:1", "jane.roe@maplesuds.example", f"['{staff}']", "2026-10-15"),
+                ("Email:2", staff, "['jane.roe@maplesuds.example', 'gone@example-plx.com']",
+                 "2026-10-28"),
+                ("Email:3", "gone@example-plx.com", "['kim@maplesuds.example']",
+                 "2026-10-29")):
+            self.fx.obj(oid, "Email", f"mail:{box}", kind="email",
+                        values={"sender": (sender, "[]"), "to_addresses": (to, "[]"),
+                                "received_at": (when + "T10:00:00Z", "[]")})
+        chat = "19:c@thread.v2"
+        self.teams_message(chat, "t1", "2026-10-28T09:00:00Z", "the INCI is different", STAFF)
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        excl = exclusion(directory={staff: STAFF, "gone@example-plx.com": EXCLUDED},
+                         chats={chat: (STAFF,)})
+        found = {(e.audience_key, e.alias[0] if e.alias else e.name): e
+                 for e in participants(conn, Counts(), excl)}
+        jane = found[(f"mail:{box}", "jane.roe@maplesuds.example")]
+        self.assertEqual(jane.type, "person")
+        self.assertEqual(jane.name, "Jane Roe")
+        self.assertIn("Maple Suds Inc", jane.alias)
+        self.assertEqual(jane.object_id, "Email:2")        # its newest message there
+        self.assertEqual(jane.markings, ("pii",))
+        self.assertIn((f"mail:{box}", staff), found)
+        text = json.dumps([e.__dict__ for e in found.values()])
+        self.assertNotIn("gone@", text)                     # never the excluded person
+        self.assertNotIn("kim@", text)                   # nor what their mail names
+        self.assertNotIn("Email:3", text)
+        teams = [e for e in found.values() if e.audience_key == f"teams:chat:{chat}"]
+        self.assertEqual([e.object_id for e in teams], [f"TeamsChatMessage:{chat}/t1"])
+        self.assertEqual(list(participants(conn, Counts(), None)), [])   # no guard: none
+
     def test_entities_name_alias_fold_and_marked_identifiers_left_out(self):
         self.fx.obj("Customer:1", "Customer", "api:public.app_customer",
                     values={"name": ("Savon Québec Inc.", "[]")},
@@ -500,7 +568,7 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertNotIn("FIN-77", " ".join(customer.alias))
         self.assertEqual(customer.markings, ())
         self.assertEqual(found["Contact:1"].markings, ("pii",))
-        self.assertEqual(found["PurchaseOrder:1"].name, "PO PO5280")
+        self.assertEqual(found["PurchaseOrder:1"].name, "PO5280")
         self.assertNotIn("Customer:bad", found)
         self.assertEqual(fold("G2  Beauty & Co."), "g2 beauty and co")
         # Attribute words from the record's own values; a pii value never an alias.
@@ -518,6 +586,35 @@ class FixtureChunkerTests(unittest.TestCase):
         self.fx.obj(oid, "Email", f"mail:{box}", handle=handle, kind="email", marks=marks,
                     text={"row.body_text": (handle, text)}, values=values)
         return oid
+
+    def test_a_mail_window_reads_only_the_mail_recorded_inside_it(self):
+        box = "12345678-aaaa-bbbb-cccc-0000000000dd"
+        self.email("Email:old", box, "An old message about the lavender soap order.")
+        self.email("Email:new", box, "A new message about the castile soap order.")
+        self.fx.conn.execute("UPDATE object_versions SET recorded_at = '2026-11-02T00:00:00Z' "
+                             "WHERE object_id = 'Email:new'")
+        # captured in the same recent sweep, but sent in May: left out by its date, and
+        # its attachment with it
+        self.email("Email:may", box, "A May message about the glycerin soap order.")
+        self.fx.conn.execute("UPDATE object_versions SET recorded_at = '2026-11-02T00:00:00Z' "
+                             "WHERE object_id = 'Email:may'")
+        self.fx.conn.execute("INSERT INTO object_values VALUES ('Email:may', 'received_at', "
+                             "'2026-05-04T10:00:00Z', '[]', NULL, 'h', 'row.received_at', "
+                             "'text')")
+        handle = f"graph-mail://{box}/Email:may@1#attachment=A9"
+        self.fx.obj("Attachment:A9", "Attachment", f"mail:{box}", handle=handle,
+                    kind="attachment", text={"row.content_text": (
+                        handle + "&page=1", "Attachment text of the May message, long.")},
+                    values={"name": ("may.pdf", "[]")})
+        self.fx.conn.execute("UPDATE object_versions SET recorded_at = '2026-11-02T00:00:00Z' "
+                             "WHERE object_id = 'Attachment:A9'")
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        counts = Counts()
+        chunks = list(ProjectionChunker(conn, exclusion(), counts).chunks(since="2026-10-06"))
+        self.assertEqual({c.object_id for c in chunks}, {"Email:new"})
+        self.assertEqual(counts.skipped["before_window"], 3)
 
     def test_cross_unit_links_state_only_ids_the_text_names_and_never_labels(self):
         box = "12345678-aaaa-bbbb-cccc-0000000000aa"
@@ -545,7 +642,7 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertNotIn("A1TEXT11", first.header + " ".join(first.linked_ids))
         self.assertNotIn("Hidden Customer", first.header)
         self.assertNotIn("PO7777", first.header + " ".join(first.linked_ids))
-        self.assertIn("PO PO5555", first.header)
+        self.assertIn("PO5555", first.header)
         self.assertIn("Cartons thread", first.header)
 
     def test_ids_match_on_token_boundaries_and_attachments_follow_their_sender(self):
@@ -844,6 +941,46 @@ class PostgresTests(unittest.TestCase):
         writer.write(chunks[:6])
         self.assertEqual(writer.delete_stale(["mail"]), {"mail": {"deleted": 1}})
 
+    def test_rows_a_parallel_shard_wrote_are_kept_by_the_full_pass(self):
+        chunks = [self.chunk(i, f"Distinct body {i} about lavender soap.") for i in range(6)]
+        self.st.ChunkWriter(self.conn).write(chunks)
+        other = self.st.connect(f"postgresql:///{self.db}")
+        self.addCleanup(other.close)
+        self.st.ChunkWriter(other).write(chunks[3:])     # a shard on its own connection
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write(chunks[:2])
+        writer.mark_seen([c.chunk_id for c in chunks[3:]])
+        self.assertEqual(writer.delete_stale(["mail"]), {"mail": {"deleted": 1}})
+
+    def test_window_keeps_old_mail_unwritten_but_never_deletes_it(self):
+        from operating.embed.shards import _Tally
+        old, new = self.chunk(1, "An old message about soap."), self.chunk(2, "A new one.")
+        old = old.__class__(**{**old.__dict__, "source_handle": "graph-mail://box-a/1@1",
+                               "occurred_at": "2026-01-02T00:00:00Z"})
+        new = new.__class__(**{**new.__dict__, "source_handle": "graph-mail://box-a/2@1",
+                               "occurred_at": "2026-11-02T00:00:00Z"})
+        doc = self.chunk(3, "A SharePoint file of January.", kind="sharepoint")
+        doc = doc.__class__(**{**doc.__dict__, "occurred_at": "2026-01-02T00:00:00Z"})
+        self.st.ChunkWriter(self.conn).write([old])          # stored by an earlier run
+        writer = self.st.ChunkWriter(self.conn)
+        tally = _Tally("2026-10-01")
+        tally.take([old, new, doc], writer)
+        writer.mark_seen(tally.outside)
+        self.assertEqual(tally.outside, [old.chunk_id])
+        self.assertEqual((writer.inserted, writer.unchanged), (2, 0))
+        writer.delete_stale(["mail", "sharepoint"])
+        stored = {r[0] for r in self.conn.execute("SELECT chunk_id FROM search.chunks")}
+        self.assertEqual(stored, {old.chunk_id, new.chunk_id, doc.chunk_id})
+        # A windowed pass that never read the old message (recorded before the window)
+        # keeps its row, and still deletes a message of the window that is gone.
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write([doc])
+        self.assertEqual(writer.delete_stale(["mail", "sharepoint"], allow_shrink=True,
+                                             keep_before="2026-10-01"),
+                         {"mail": {"deleted": 1}, "sharepoint": {"deleted": 0}})
+        stored = {r[0] for r in self.conn.execute("SELECT chunk_id FROM search.chunks")}
+        self.assertEqual(stored, {old.chunk_id, doc.chunk_id})
+
     def test_units_record_who_a_unit_belongs_to_before_its_chunks(self):
         from operating.chunking.permissions import unit_row
         excl = exclusion(directory={"a@example-plx.com": STAFF},
@@ -929,6 +1066,58 @@ class PostgresTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "encoder_failed")
         self.conn.rollback()
         self.assertTrue(bulk.vector_index_present(self.conn))
+
+    def test_follow_indexes_a_generation_once_and_each_delta_layer_once(self):
+        from operating.chunking import make_chunk
+        from operating.embed import follow as fl
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        projection = state / "projection"
+        (projection / "generations" / "g1").mkdir(parents=True)
+        (projection / "generations" / "g1" / "store.sqlite").write_bytes(b"")
+        (projection / "CURRENT").write_text(json.dumps(
+            {"generation": "g1", "content_digest": "sha256:aaa"}))
+        layer = projection / "delta" / "delta-1.sqlite"
+        layer.parent.mkdir()
+        fx = Fixture(layer)
+        for n in (1, 2):
+            fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
+                   handle=f"mc://live/tasks/T-{n}@2",
+                   text={"row.description": (f"mc://live/tasks/T-{n}@2",
+                                             f"Task {n} now waits on the carton supplier.")})
+        fx.conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+        fx.conn.execute("INSERT INTO delta_owned VALUES ('MCTask:T-1')")   # T-2: context
+        fx.done()
+        (projection / "delta" / "CURRENT.json").write_text(json.dumps(
+            {"format": "plx-delta/v1", "base_digest": "sha256:aaa", "store": str(layer),
+             "layers": [{"store": str(layer), "owned": 1}]}))
+        earlier = make_chunk(kind="mc_task", parts=("mc:live/tasks/PRJ-X", "old", "0"),
+                             source_handle="mc://live/tasks/T-1@1", object_id="MCTask:T-1",
+                             title="T-1", author_role=None, occurred_at=None,
+                             header="Source: x", body="Task 1 was on time.", linked_ids=[],
+                             audience_key="mc:live/tasks/PRJ-X", markings=())
+        self.st.ChunkWriter(self.conn).write([earlier])
+        passes = []
+        args = fl.parser().parse_args(["--state", str(state), "--embed-seconds", "0"])
+        with mock.patch.object(fl, "_exclusion", return_value=exclusion()), \
+                mock.patch.object(fl.config, "settings",
+                                  return_value={"PLX_PG_DSN": f"postgresql:///{self.db}"}), \
+                mock.patch.object(fl, "generation_pass",
+                                  side_effect=lambda a, store: passes.append(store) or {}):
+            first = fl.follow(args)
+            rows = self.conn.execute("SELECT object_id, body FROM search.chunks").fetchall()
+            self.assertEqual(rows, [("MCTask:T-1", "Task 1 now waits on the carton supplier.")])
+            self.assertEqual(first["layers"]["delta-1.sqlite"]["replaced_deleted"], 1)
+            self.assertEqual(len(passes), 1)
+            # nothing new: no pass, no layer read again
+            self.assertEqual(fl.follow(args)["layers"], {})
+            self.assertEqual(len(passes), 1)
+            cursor = json.loads((state / "search" / "follow.json").read_text())
+            self.assertEqual((cursor["digest"], cursor["layers"]), ("sha256:aaa", [str(layer)]))
+            # one run at a time
+            with fl.held(state / "search" / "follow.json.lock"):
+                self.assertEqual(fl.follow(args)["skipped"], "another_follow_running")
 
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)

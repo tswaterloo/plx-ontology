@@ -38,14 +38,14 @@ CALL_WORDS = {"plx.find": "Looking up records", "plx.object": "Reading a record"
               "plx.around": "Following links between records",
               "plx.timeline": "Reading the history", "plx.documents": "Searching documents "
               "and email", "plx.read": "Reading a document", "plx.investigate":
-              "Running a checked analysis", "plx.aggregate": "Adding up figures",
+              "Running a checked analysis", "plx.aggregate": "Adding up figures", "plx.query": "Following and adding up records",
               "plx.process": "Checking the process steps", "plx.compare": "Comparing records",
               "plx.identity": "Checking which records are the same",
               ANSWER_GATE_TOOL: GATE_STEP}
 # The verb a tool's source-named step starts with.
 VERBS = {"plx.find": "Looking up", "plx.object": "Reading", "plx.around": "Reading",
          "plx.timeline": "Reading the history of", "plx.read": "Reading",
-         "plx.aggregate": "Adding up", "plx.process": "Checking", "plx.compare": "Comparing",
+         "plx.aggregate": "Adding up", "plx.query": "Adding up", "plx.process": "Checking", "plx.compare": "Comparing",
          "plx.investigate": "Checking"}
 # An object id's source token (``Type:<source>.<table>:<key>``) as its system's name.
 SYSTEMS = {"bc": "Business Central", "portal": "Portal", "sharepoint": "SharePoint",

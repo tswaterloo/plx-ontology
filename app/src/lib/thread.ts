@@ -92,9 +92,10 @@ export function useThread() {
     setTurns((ts) => ts.map((t) => (t.id === id ? fn(t) : t)));
   }, []);
 
-  /** Ask; `objectId` scopes the question to one record (a pick, or an object page). */
+  /** Ask; `objectId` scopes the question to one record (a pick, or an object page),
+   *  `source` to one document (a mail, attachment or file the reader has open). */
   const run = useCallback(
-    async (question: string, objectId?: string) => {
+    async (question: string, objectId?: string, source?: string) => {
       ctrl.current?.abort();
       const c = new AbortController();
       ctrl.current = c;
@@ -111,6 +112,7 @@ export function useThread() {
             history: historyOf(prior),
             ...(conversation_id ? { conversation_id } : {}),
             ...(objectId ? { object_id: objectId } : {}),
+            ...(source ? { source: source.slice(0, 4096) } : {}),
           },
           c.signal,
         )) {

@@ -3270,37 +3270,80 @@ class CaseCaptures:
 # The captured mailboxes holding an attachment (the own party's mailboxes a document's
 # direction is read against), per capture file: read once, then read again in the
 # background every ATTACHMENT_MAILBOXES_SECONDS (the list grows only when a new mailbox is
-# captured, and reading it scans every attachment); a request never waits for that read
-# once it has been made (``prime_attachment_mailboxes`` makes it at start).
+# captured, and reading it scans every attachment: 12-60 s on the live capture). A host
+# reads it at its start (``prime_attachment_mailboxes``); a request that needs it while that
+# read runs waits for it instead of scanning again (2026-11-05: a host's first claim on a
+# mail attachment scanned for 51-77 s inside one answer submission), and never waits for a
+# refresh once a list is held.
 ATTACHMENT_MAILBOXES_SECONDS = 300.0
 _MAILBOXES: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _MAILBOXES_LOCK = threading.Lock()
-_MAILBOXES_READING: set[str] = set()
+# path -> set once its running read ends (kept or failed)
+_MAILBOXES_READING: dict[str, threading.Event] = {}
 
 
-def _read_mailboxes(path: str) -> None:
-    from ontology.project import attachment_mailboxes
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def _mailbox_list(path: str) -> list[dict[str, Any]]:
+    """``ontology.project.attachment_mailboxes`` of the capture file ``path``, read side by
+    side: one read-only reader per core, each over a range of attachment handles (cut at
+    mailbox ids, so ranges of the handle index; the ranges cover every handle, the first
+    and last unbounded), each attachment's message found through its own handle
+    (``MailCaptures._ONE_ATTACHED``: the same latest-interval rows). The same list, about
+    a sixth of the time on the live capture's 2.3M attachments (2026-11-05: 3 s, not 19)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from ontology.project import MailCaptures
+
+    select = (f"SELECT DISTINCT json_extract(m.record, '$.mailbox_upn') "
+              f"{MailCaptures._ONE_ATTACHED}")
+
+    def connect() -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+
+    def part(bounds: tuple[str | None, str | None]) -> set[Any]:
+        sql, args = select, []
+        for op, bound in ((">=", bounds[0]), ("<", bounds[1])):
+            if bound is not None:
+                sql += f" AND a.l1_handle {op} ?"
+                args.append(f"graph-mail://{bound}/")
+        conn = connect()
         try:
-            found = attachment_mailboxes(conn)
+            return {row[0] for row in conn.execute(sql, args)}
         finally:
             conn.close()
+
+    conn = connect()
+    try:
+        ids = [row[0] for row in conn.execute("SELECT mailbox_id FROM mailboxes "
+                                              "ORDER BY mailbox_id")]
+    finally:
+        conn.close()
+    readers = max(1, min(os.cpu_count() or 1, len(ids)))
+    cuts = list(dict.fromkeys(ids[len(ids) * i // readers] for i in range(1, readers)))
+    ranges = list(zip([None, *cuts], [*cuts, None]))
+    with ThreadPoolExecutor(len(ranges), thread_name_prefix="attachment-mailboxes") as pool:
+        found = set().union(*pool.map(part, ranges))
+    return [{"mailbox_upn": upn} for upn in sorted(found, key=lambda upn: (upn is None,
+                                                                          str(upn)))]
+
+
+def _read_mailboxes(path: str, done: threading.Event) -> None:
+    try:
+        found = _mailbox_list(path)
         with _MAILBOXES_LOCK:
             _MAILBOXES[path] = (time.monotonic(), found)
     except sqlite3.Error:
         pass   # read again by the next request that needs it
     finally:
         with _MAILBOXES_LOCK:
-            _MAILBOXES_READING.discard(path)
+            _MAILBOXES_READING.pop(path, None)
+        done.set()
 
 
 def _refresh_mailboxes(path: str) -> None:
     with _MAILBOXES_LOCK:
         if path in _MAILBOXES_READING:
             return
-        _MAILBOXES_READING.add(path)
-    threading.Thread(target=_read_mailboxes, args=(path,), name="attachment-mailboxes",
+        done = _MAILBOXES_READING[path] = threading.Event()
+    threading.Thread(target=_read_mailboxes, args=(path, done), name="attachment-mailboxes",
                      daemon=True).start()
 
 
@@ -3314,13 +3357,17 @@ def prime_attachment_mailboxes(mail_capture_dir: Any) -> None:
 
 
 def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
-    from ontology.project import attachment_mailboxes
-
     key = os.path.realpath(str(store.path))
     with _MAILBOXES_LOCK:
         held = _MAILBOXES.get(key)
+        running = _MAILBOXES_READING.get(key)
+    if held is None and running is not None:
+        # The start's read is running: its list, once it ends (a failed one: read now).
+        running.wait()
+        with _MAILBOXES_LOCK:
+            held = _MAILBOXES.get(key)
     if held is None:   # never read in this process: read now
-        found = attachment_mailboxes(store.db)
+        found = _mailbox_list(key)
         with _MAILBOXES_LOCK:
             _MAILBOXES[key] = (time.monotonic(), found)
         return found

@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth";
-import { DevBanner, Logo } from "@/components/shell";
+import { AppIcon, DevBanner } from "@/components/shell";
 import { ThemeToggle } from "@/components/theme";
 import { ErrorNotice } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -82,21 +82,24 @@ function SignIn() {
   const note = plainServerNote(config?.message);
   const accessNote = state.status === "signed-out" ? state.message : undefined;
 
+  const field = "h-9 w-full rounded-lg bg-surface px-3 text-[13px] ring-1 ring-border-strong ring-inset placeholder:text-faint focus:ring-2 focus:ring-ring focus:outline-none";
+
   return (
-    <div className="flex min-h-dvh flex-col bg-bg">
-      <DevBanner />
-      <div className="flex items-center justify-between px-4 py-3 sm:px-8">
-        <Logo />
-        <ThemeToggle />
+    <div className="relative flex min-h-dvh flex-col bg-sidebar">
+      <div className="absolute top-3 right-3 sm:top-4 sm:right-4">
+        <ThemeToggle className="rounded-lg border-0 bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] p-0.5 text-[12px] [&>button]:rounded-md [&>button]:border-0 [&>button]:px-2.5 [&>button]:py-1 [&>button[aria-checked=true]]:bg-bg [&>button[aria-checked=true]]:shadow-sm" />
       </div>
-      <main id="main" className="mx-auto w-full max-w-[1200px] flex-1 px-4 pt-8 pb-16 sm:px-8 sm:pt-16">
-        <div className="w-full max-w-[380px]">
-          <div className="border-b border-border pb-3">
-            <h1 className="text-display">Sign in</h1>
+      <main id="main" className="flex flex-1 flex-col items-center justify-center px-4 pt-16 pb-12">
+        <div className="w-full max-w-[360px]">
+          <div className="flex flex-col items-center text-center">
+            <AppIcon className="size-14 rounded-[15px] shadow-[inset_0_-1.5px_0_rgb(0_0_0/0.18),0_6px_16px_-6px_rgb(27_94_64/0.55)] [&>svg]:size-[38px]" />
+            <h1 className="mt-5 text-[20px] leading-[26px] font-semibold tracking-[-0.02em]">
+              Sign in to <span className="whitespace-nowrap">PLX Workbench</span>
+            </h1>
           </div>
-          <div className="space-y-4 pt-4">
+          <div className="mt-7 space-y-4 rounded-xl bg-bg p-5 shadow-lift dark:bg-surface">
             {state.status === "loading" || state.status === "signed-in" ? (
-              <Pending label="Checking your session" />
+              <Pending label="Checking your session" className="py-6 text-center" />
             ) : state.status === "error" ? (
               <ErrorNotice message={state.message} onRetry={refresh} />
             ) : accessNote ? (
@@ -105,31 +108,35 @@ function SignIn() {
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="h-9 w-full rounded-sm border border-control text-row hover:bg-surface cursor-pointer"
+                  className="h-9 w-full rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer"
                 >
                   Sign out and use another account
                 </button>
               </div>
             ) : (
               <>
-                <button
-                  type="button"
-                  onClick={microsoft}
-                  disabled={!entra || busy}
-                  className="flex h-9 w-full items-center justify-center gap-2.5 rounded-sm border border-control bg-bg text-row font-medium text-fg hover:bg-surface disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
-                >
-                  <MicrosoftMark />
-                  {busy && entra ? "Signing in…" : "Sign in with Microsoft"}
-                </button>
-                <p className="text-meta text-muted">
-                  {entra
-                    ? "Use your PLX work account. You see only what your role allows."
-                    : "Microsoft sign-in is off on this demo server."}
-                </p>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={microsoft}
+                    disabled={!entra || busy}
+                    className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg bg-bg dark:bg-surface-2 text-[13px] font-medium text-fg shadow-sm ring-1 ring-border-strong hover:bg-surface disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
+                  >
+                    <MicrosoftMark />
+                    {busy && entra ? "Signing in…" : "Sign in with Microsoft"}
+                  </button>
+                  <p className="text-center text-[12px] leading-4 text-muted">
+                    {entra ? "Your PLX work account. You see only what your role allows." : "Microsoft sign-in is off on this demo server."}
+                  </p>
+                </div>
                 {devAvailable && (
-                  <div className="space-y-3 border-t border-border pt-4">
-                    <p className="text-meta font-semibold text-risk">Demo server</p>
-                    {note && <p className="text-row text-muted">{note}</p>}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3 pt-1 text-[11px] leading-4 text-faint">
+                      <span className="h-px flex-1 bg-border" aria-hidden />
+                      or
+                      <span className="h-px flex-1 bg-border" aria-hidden />
+                    </div>
+                    {note && <p className="text-center text-[12px] leading-[18px] text-muted">{note}</p>}
                     <form
                       className="space-y-3"
                       onSubmit={(e) => {
@@ -137,9 +144,9 @@ function SignIn() {
                         void demo(showTicket ? ticket : undefined);
                       }}
                     >
-                      {showTicket ? (
+                      {showTicket && (
                         <div>
-                          <label htmlFor="ticket" className="mb-1 block text-meta text-muted">
+                          <label htmlFor="ticket" className="mb-1.5 block text-[12px] leading-4 font-medium text-muted">
                             Access link or code
                           </label>
                           <input
@@ -148,25 +155,26 @@ function SignIn() {
                             autoComplete="off"
                             value={ticket}
                             onChange={(e) => setTicket(e.target.value.replace(/^.*#(?:ticket|access)=/, ""))}
-                            className="h-9 w-full rounded-sm border border-control bg-bg px-3 text-row focus:border-fg"
+                            className={field}
                           />
                         </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => setShowTicket(true)}
-                          className="text-meta text-accent hover:underline cursor-pointer"
-                        >
-                          Use an access link
-                        </button>
                       )}
                       <button
                         type="submit"
                         disabled={busy || (showTicket && !ticket.trim())}
-                        className="h-9 w-full rounded-sm bg-accent text-row font-medium text-accent-fg hover:brightness-110 disabled:opacity-50 cursor-pointer"
+                        className="h-10 w-full rounded-lg bg-accent text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 disabled:opacity-50 cursor-pointer"
                       >
                         Continue with demo sign-in
                       </button>
+                      {!showTicket && (
+                        <button
+                          type="button"
+                          onClick={() => setShowTicket(true)}
+                          className="mx-auto block h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                        >
+                          Use an access link
+                        </button>
+                      )}
                     </form>
                   </div>
                 )}
@@ -174,6 +182,7 @@ function SignIn() {
               </>
             )}
           </div>
+          <DevBanner className="mt-5 text-center text-[12px] text-faint [&>span:first-child]:font-normal [&>span:first-child]:text-faint" />
         </div>
       </main>
     </div>

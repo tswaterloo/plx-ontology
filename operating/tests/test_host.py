@@ -1840,7 +1840,7 @@ class McpStartupTests(HostCase):
         self.assertEqual(code, 0, err)
         self.assertNotIn("plx.act", {tool["name"] for tool in replies[2]["result"]["tools"]})
         stamp = replies[3]["result"]["_meta"]["plx/agent"]
-        self.assertEqual((stamp["id"], stamp["version"]), ("plx.agent.investigate", 3))
+        self.assertEqual((stamp["id"], stamp["version"]), ("plx.agent.investigate", 4))
         self.assertEqual(replies[4]["result"]["content"][0]["text"],
                          "tool_not_allowed_for_agent:plx.agent.investigate")
         with self.assertRaises(host_module.HostError):

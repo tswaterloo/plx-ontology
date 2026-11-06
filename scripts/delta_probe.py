@@ -35,7 +35,9 @@ def _sample(store: Path, base: Path, sample: int) -> dict[str, list[tuple[str, s
     conn.execute("ATTACH DATABASE ? AS base", (f"file:{base}?mode=ro",))
     out: dict[str, list[tuple[str, str | None, str | None]]] = {}
     try:
-        for family, prefix in (("mail", "Email:%"), ("portal", "%:portal.%")):
+        for family, prefix in (("mail", "Email:%"), ("portal", "%:portal.%"),
+                               ("sharepoint", "%:sharepoint.%"),
+                               ("mission_control", "%:mission_control.%")):
             for state, test in (("new", "NOT EXISTS"), ("changed", "EXISTS")):
                 rows = conn.execute(
                     f"SELECT d.object_id, (SELECT identifier_kind || char(31) || normalized "

@@ -874,7 +874,9 @@ def identifier_leads(question: str) -> list[_Lead]:
         leads.append(_Lead(match.group(0), match.span(), forms, False, None,
                            f"{letters} {digits} (typed apart)"))
         taken.append(match.span())
-    for match in re.finditer(r"(?<![\w#$])([A-Za-z]{0,6}-?\d[\w\-]{1,24})(?![\w%])", question):
+    # a code of several lettered parts (``BZ-DEO-21F``) is one token, never its tail
+    for match in re.finditer(r"(?<![\w#$-])((?:[A-Za-z]{1,6}-){0,3}[A-Za-z]{0,6}-?\d[\w\-]{1,24})"
+                             r"(?![\w%])", question):
         token = match.group(1).rstrip("-")
         digits = sum(c.isdigit() for c in token)
         letters = sum(c.isalpha() for c in token)

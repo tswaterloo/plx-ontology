@@ -56,6 +56,10 @@ _META = ("id", "subject", "sender", "sent_at", "received_at", "conversation_id",
 _NAME_PROPS = ("name", "vendor_name", "display_name", "title", "topic")
 _MAP_TITLE = re.compile(r"process[ _-]?map|\bmap\b|workflow|\bSOP\b|procedure", re.I)
 TEAMS_WINDOW = 4            # replies a Teams message carries with it
+# Citation schemes a refresh may limit to a recent window: mail only (about 3.2M captured
+# messages). Teams chats and channels are always read whole: a chat's decisions sit in
+# messages of any age and the whole capture is a few hundred thousand short messages.
+WINDOW_SCHEMES = ("graph-mail://",)
 BATCH = 400                 # documents whose metadata one query batch reads
 
 
@@ -70,6 +74,15 @@ class Counts:
 
     def skip(self, reason: str, n: int = 1) -> None:
         self.skipped[reason] += n
+
+    def merge(self, other: "Counts | None") -> None:
+        """Add another pass's totals (a parallel shard's) to these."""
+        if other is None:
+            return
+        self.documents.update(other.documents)
+        self.chunks.update(other.chunks)
+        self.skipped.update(other.skipped)
+        self.withheld |= other.withheld
 
     def as_dict(self) -> dict[str, Any]:
         return {"documents": dict(self.documents), "chunks": dict(self.chunks),
@@ -155,8 +168,16 @@ class ProjectionChunker:
 
     # ------------------------------------------------------------ documents
 
-    def documents(self, kinds: Sequence[str] | None = None) -> list[_Doc]:
-        """The current captured versions holding text, grouped and keyed."""
+    def documents(self, kinds: Sequence[str] | None = None,
+                  shard: tuple[int, int] | None = None,
+                  since: str | None = None,
+                  objects: frozenset[str] | None = None) -> list[_Doc]:
+        """The current captured versions holding text, grouped and keyed. ``shard`` (i,
+        n): only the versions whose handle hashes to i of n (each process holds only its
+        share in memory), every Teams message in shard 0. ``since`` (ISO date): mail
+        versions recorded before it are left out (a message is recorded after it was
+        sent, so none sent since is lost; counted ``before_window``). ``objects``: only
+        the documents holding one of these objects (a row-delta layer's own)."""
         wanted = None
         if kinds is not None:
             asked = set(kinds) | ({"sharepoint", "attachment"}
@@ -166,7 +187,8 @@ class ProjectionChunker:
             "SELECT f.field_id, f.object_id, f.version_handle, f.citation, f.field_path, "
             "f.document_kind, f.sender_class, f.markings, o.object_type, o.audience_key, "
             "o.missing_from_source_since AS missing, v.markings AS version_markings, "
-            "v.superseded_at FROM text_fields f JOIN objects o ON o.object_id = f.object_id "
+            "v.superseded_at, v.recorded_at FROM text_fields f "
+            "JOIN objects o ON o.object_id = f.object_id "
             "LEFT JOIN object_versions v ON v.object_id = f.object_id "
             "AND v.l1_handle = f.version_handle")
         groups: dict[tuple[str, str], list[_Field]] = defaultdict(list)
@@ -174,10 +196,20 @@ class ProjectionChunker:
             if wanted is not None and row["document_kind"] not in wanted:
                 continue
             if row["document_kind"] not in DOCUMENT_KINDS:
-                self.counts.skip("document_kind_unknown")
+                if shard is None or shard[0] == 0:
+                    self.counts.skip("document_kind_unknown")
+                continue
+            if shard is not None and (
+                    shard[0] != 0 if row["document_kind"] == "teams_message"
+                    else zlib.crc32(str(row["version_handle"] or "").encode("utf-8")) % shard[1]
+                    != shard[0]):
                 continue
             if row["version_markings"] is None or row["superseded_at"] is not None:
                 continue   # an older version: only the current one is searchable
+            if since and str(row["version_handle"] or "").startswith(WINDOW_SCHEMES) \
+                    and row["recorded_at"] and str(row["recorded_at"])[:10] < since[:10]:
+                self.counts.skip("before_window")
+                continue
             if row["missing"] is not None:
                 self.counts.skip("missing_from_source")
                 continue
@@ -185,6 +217,11 @@ class ProjectionChunker:
                 row["field_id"], row["object_id"], row["citation"], row["field_path"],
                 row["document_kind"], row["sender_class"], row["markings"],
                 row["object_type"], row["audience_key"], row["version_markings"]))
+        if since:
+            groups = self._inside_window(groups, since)
+        if objects is not None:
+            groups = {key: fields for key, fields in groups.items()
+                      if any(f.object_id in objects for f in fields)}
         out: list[_Doc] = []
         for (handle, audience), fields in groups.items():
             objects = sorted({f.object_id: f.object_type for f in fields}.items(),
@@ -192,6 +229,38 @@ class ProjectionChunker:
                                                else len(_PRIMARY), item[0]))
             out.append(_Doc(handle, audience, fields, [oid for oid, _ in objects]))
         out.sort(key=lambda d: (d.fields[0].document_kind, d.handle))
+        return out
+
+    def _inside_window(self, groups: Mapping[tuple[str, str], list[_Field]], since: str
+                       ) -> dict[tuple[str, str], list[_Field]]:
+        """The mail of ``groups`` sent or received on or after ``since`` (a message without
+        a readable date is kept) and the attachments of the messages kept; every other
+        document as given. A mailbox captured in one sweep records old mail recently, so
+        the recorded time alone cannot leave it out."""
+        mail = {key for key, fields in groups.items()
+                if fields[0].document_kind == "email" and key[0].startswith(WINDOW_SCHEMES)}
+        objects = sorted({f.object_id for key in mail for f in groups[key]})
+        dated: dict[str, str] = {}
+        for start in range(0, len(objects), 500):
+            for row in self.conn.execute(
+                    "SELECT object_id, value FROM object_values WHERE object_id IN (SELECT "
+                    "value FROM json_each(?)) AND property IN ('received_at', 'sent_at') "
+                    "AND superseded_at IS NULL", (_json_ids(objects[start:start + 500]),)):
+                value = str(row["value"] or "")
+                if value and value > dated.get(row["object_id"], ""):
+                    dated[row["object_id"]] = value
+        old = set()
+        for key in mail:
+            dates = [dated[f.object_id] for f in groups[key] if f.object_id in dated]
+            if dates and max(dates)[:10] < since[:10]:
+                old.add(key[0])
+        out: dict[tuple[str, str], list[_Field]] = {}
+        for key, fields in groups.items():
+            if key[0] in old or (key[0].startswith(WINDOW_SCHEMES)
+                                 and key[0].split("#", 1)[0] in old):
+                self.counts.skip("before_window")
+                continue
+            out[key] = fields
         return out
 
     def _keyed(self, doc: _Doc, latest: Mapping[str, str]) -> bool:
@@ -283,9 +352,11 @@ class ProjectionChunker:
 
     # ------------------------------------------------------------ chunks
 
-    def chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None
-               ) -> Iterator[Chunk]:
-        docs = self.documents(kinds)
+    def chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None,
+               shard: tuple[int, int] | None = None, since: str | None = None,
+               objects: frozenset[str] | None = None) -> Iterator[Chunk]:
+        """``shard``, ``since`` and ``objects``: as ``documents``."""
+        docs = self.documents(kinds, shard, since, objects)
         teams = [d for d in docs if d.fields[0].document_kind == "teams_message"]
         other = [d for d in docs if d.fields[0].document_kind != "teams_message"]
         produced = 0

@@ -167,6 +167,32 @@ def _ocr_image(name: str, mime: str) -> bool:
                         "image/webp"})
 
 
+# A mail image worth reading: a pasted table or screenshot, never a logo, icon or
+# signature banner. Decided by the image's own size (bytes and pixels), never by name.
+MAIL_IMAGE_MIN_BYTES = 8_000
+MAIL_IMAGE_MIN_WIDTH = 300
+MAIL_IMAGE_MIN_HEIGHT = 120
+MAIL_IMAGE_MIN_PIXELS = 90_000
+
+
+def image_worth_reading(content: bytes, record: Mapping[str, Any]) -> bool:
+    """Whether raster image bytes are big enough to hold text a person pasted (a table,
+    a screenshot, a scanned page): at least ``MAIL_IMAGE_MIN_BYTES``, and at least
+    ``MAIL_IMAGE_MIN_WIDTH`` x ``MAIL_IMAGE_MIN_HEIGHT`` pixels with
+    ``MAIL_IMAGE_MIN_PIXELS`` in all. Images whose size cannot be read are not read."""
+    if not _ocr_image(_name(record), _mime(record)) or len(content) < MAIL_IMAGE_MIN_BYTES:
+        return False
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(content)) as image:
+            width, height = image.size
+    except Exception:  # noqa: BLE001 - an unreadable image is not read
+        return False
+    return (width >= MAIL_IMAGE_MIN_WIDTH and height >= MAIL_IMAGE_MIN_HEIGHT
+            and width * height >= MAIL_IMAGE_MIN_PIXELS)
+
+
 def capture_text(content: bytes, record: Mapping[str, Any], *,
                  max_chars: int | None = None, defer_ocr: bool = False,
                  image_ocr: bool = False) -> tuple[str, str | None]:

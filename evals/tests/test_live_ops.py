@@ -413,6 +413,26 @@ def bc(entity_set: str, fields: dict, n: int) -> dict:
             "citation": f"bc://production/{CO}/{entity_set}/{fields['id']}@{'e' * 16}-{n}"}
 
 
+class Cleared:
+    """A sender guard clearing every sender (the fixtures hold no excluded person)."""
+
+    def cleared(self, sender, own) -> bool:
+        return True
+
+
+CLEARED = Cleared()
+
+
+def mail_tables(conn) -> None:
+    """A fixture mail capture's mailbox list and messages' mailbox column (the loaders read
+    no capture without them: fail closed)."""
+    conn.execute("ALTER TABLE messages ADD COLUMN mailbox_id TEXT DEFAULT 'mb'")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(mailboxes)")}
+    if not columns:
+        conn.execute("CREATE TABLE mailboxes (upn TEXT, identities TEXT)")
+    conn.execute("ALTER TABLE mailboxes ADD COLUMN mailbox_id TEXT DEFAULT 'mb'")
+
+
 def mirror(relation: str, row: dict, n: int = 3) -> dict:
     return {"row": row, "citation": fx.handle(relation, {"id": row["id"]}, n)}
 
@@ -478,9 +498,10 @@ class KeyTests(unittest.TestCase):
                     f"graph-mail://mb/{mid}@ck", mid, json.dumps(
                         {"from": sender, "to": to, "subject": subject, "received_at": at,
                          "mailbox_upn": "box@petra.example"})))
+            mail_tables(conn)
             conn.commit()
             conn.close()
-            found = script.customer_mail(db, customers)
+            found = script.customer_mail(db, customers, senders=CLEARED)
         by = {}
         for m in found:
             by.setdefault(m["customer"], set()).add(m["message_id"])
@@ -780,8 +801,14 @@ class KeyTests(unittest.TestCase):
                      "--workers", "2"], agent=runner.ScriptedAgent(agent),
                     make_host=lambda: fx.FakeHost(rows)), 0)
             doc = json.loads(out.getvalue()[out.getvalue().index('{\n "by_split"'):])
+        # a held-out run is counted (its split, suite and family totals), never listed
         outcomes = {row["card"]: row["outcome"] for row in doc["cards"]}
-        self.assertEqual(outcomes, {"LO-15": "incomplete", "LO-20": "correct"})
+        self.assertEqual(outcomes, {"LO-15": "incomplete"})
+        self.assertEqual({row["split"] for row in doc["cards"]}, {"dev"})
+        self.assertEqual(doc["sealed"], 1)
+        self.assertEqual((doc["per_family"]["open_ar"]["incomplete"],
+                          doc["per_family"]["lot_expiry"]["correct"]), (1, 1))
+        self.assertNotIn("LO-20", doc["per_card"])
         self.assertEqual(doc["totals"]["graded"], 2)
         self.assertEqual(sum(doc["by_split"][s]["runs"] for s in ("dev", "held_out")), 2)
         for value in ("4821.75", "2026-12-03", "LOT-55", "Fixture Soap"):
@@ -890,7 +917,7 @@ class KeyTests(unittest.TestCase):
                 return json.loads(out.getvalue()[out.getvalue().index('{\n "by_split"'):])
         doc = go()
         routed = {r["card"]: r["routed"] for r in doc["cards"]}
-        self.assertEqual(routed, {"LO-15": "agent", "LO-20": "fast_path"})
+        self.assertEqual(routed, {"LO-15": "agent"})   # the held-out LO-20 is not listed
         self.assertEqual(doc["routing"]["share_without_claude"], 0.5)
         self.assertEqual(doc["routing"]["fast_path"]["outcomes"], {"correct": 1})
         self.assertEqual(len(agent_calls), 1)
@@ -1396,9 +1423,10 @@ class KeyTests(unittest.TestCase):
                         {"from": "Ap@Acme.example", "to": ["us@petra.example"],
                          "subject": subject, "sent_at": at, "received_at": received,
                          "internet_message_id": imid})))
+            mail_tables(conn)
             conn.commit()
             conn.close()
-            found = script.customer_mail(db, customers)
+            found = script.customer_mail(db, customers, senders=CLEARED)
         from evals import live_ops_more as more
         [candidate] = more.customer_last_mail(world(customer_mail=found))
         fact = candidate.facts[0]
@@ -1451,9 +1479,10 @@ class KeyTests(unittest.TestCase):
                         {"from": sender, "to": to, "subject": subject, "received_at": at,
                          "sent_at": at, "internet_message_id": f"<{mid[:2]}@x>",
                          "mailbox_upn": "us@petra.example"})))
+            mail_tables(conn)
             conn.commit()
             conn.close()
-            found = script.customer_mail(db, customers)
+            found = script.customer_mail(db, customers, senders=CLEARED)
         self.assertEqual(sorted(m["message_id"] for m in found), ["d1", "d1b", "u1"])
         from evals import live_ops_more as more
         [candidate] = more.customer_last_mail(world(customer_mail=found))

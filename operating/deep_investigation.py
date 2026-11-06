@@ -36,6 +36,11 @@ from typing import Any, Mapping, Sequence
 # most one repair, the final message: 25-45 s measured), and the tool calls it may make
 # besides the answer gate's.
 SESSION_SECONDS = 60     # the Ask's whole wall budget (ANSWER_SECONDS); was 150
+# Tiered (``question_budget``): a lookup of one named record keeps a short session; a
+# question that needs several records walked, summed or compared (``is_multi_step``) gets
+# the deep one, so a reconciliation is not cut off before its records are read.
+LOOKUP_SECONDS = 45
+DEEP_SECONDS = 180
 # Measured (12 of 240 sessions at 105 s / 120 s): the gate had passed the answer and the
 # session was cut while the agent wrote its final message. Research now ends 60 s before
 # the session, every call 50 s before it: composing the claims (p90 28 s), the gate's
@@ -98,20 +103,6 @@ BUDGET_KEY = "workbench_budget"
 BUDGET_REFUSAL = "budget_spent"
 ANSWER_TOOL = "plx.case_get"
 
-INTENT_SOURCES = {
-    "status": "the record's current state in its system of record (Business Central or "
-              "the Portal), then the latest mail, Teams messages and tasks naming it",
-    "why": "the record's timeline and the mail, Teams messages, tasks and notes around it "
-           "that give a reason; a reason is stated only where a source states it",
-    "who": "the owner, buyer, contact or assignee fields on the records and the senders "
-           "and recipients of the messages about them",
-    "how_much": "the amounts on the records (order and invoice lines, receipts) and the "
-                "prices quoted in mail or documents",
-    "compare": "each side from its own source, then the two compared",
-    "find_document": "the document itself, read whole",
-    "policy": "the use-case, process or policy documents, read whole",
-    "timeline": "the record's dated events (plx.timeline) and dated messages",
-}
 
 
 # Question intents an open question has (``query_understanding.classify_intent``): a
@@ -136,6 +127,76 @@ def is_lookup(question: Any) -> bool:
     return len(leads) == 1 and intent not in OPEN_INTENTS
 
 
+def question_budget(question: Any, cap: float | None = None, route: str | None = None
+                    ) -> float:
+    """The agent session's seconds for ``question``: ``LOOKUP_SECONDS`` when the front
+    door read it as a lookup (``operating.front_door``: ``route``), else
+    ``DEEP_SECONDS``; never above ``cap`` (the app's hard cap of one Ask, when given). No
+    wording of the question decides it: the model's reading does, and without one the
+    question gets the deep budget."""
+    seconds = float(LOOKUP_SECONDS if route == "lookup" else DEEP_SECONDS)
+    return min(seconds, float(cap)) if cap else seconds
+
+
+# Records before documents (both methods): the figures of a business question live in
+# the records and their links; mail and files say why, promise or reply.
+RECORDS_FIRST = (
+    "Records first, then text. Figures, dates, owners and statuses live in the records "
+    "of Sage, FileMaker, Business Central and the Portal and in their links; mail, Teams "
+    "and files hold what people wrote. "
+    "(a) Resolve: plx.find on each name or code returns entities: every record of that "
+    "thing in every system (status match), and related records offered as leads (never "
+    "state a lead as the same thing). Work from all of an entity's records: each system "
+    "holds a different part of it, so read every record of the entity with plx.object in "
+    "one turn before you choose where to walk. "
+    "(b) Walk: plx.object on a record lists its links counted per link type; follow the "
+    "ones the question needs with plx.around (up to 3 hops per call, filters on the "
+    "objects reached, e.g. a date or status; call it again from the set it returns to go "
+    "further). When firm links run out, follow lead links with tier_floor \"lead\" and "
+    "call what they reach leads. "
+    "(c) Total: plx.query does resolve, walk and total in one call (from an entity, its "
+    "records walked one by one; traverse several hops; where; measures; group_by with "
+    "group_path for a linked record's date; window for a period): each group lists the "
+    "citations of its inputs, so claim a total as {\"op\": \"sum\", \"of\": [each "
+    "input's l1_handle as citation and field_path as field]} with its unit and the "
+    "claim's name saying what it totals (no role). plx.aggregate sums, "
+    "counts, mins or maxes a set (group_by a property, or "
+    "a property of a linked record through path, e.g. each invoice line by its invoice's "
+    "date for a time window); plx.case_compute does the arithmetic between cited figures "
+    "(a difference, a balance, a ratio). A count is plx.aggregate's count over a set (or "
+    "object_type with filters: no scan cap), claimed as {\"op\": \"count\", \"of\": the "
+    "records it listed}; one it marks incomplete is said as at least N. "
+    "(d) Search mail and documents (plx.documents) only for what the records cannot hold, "
+    "after the records, or when a figure the question quotes is in no record (then say "
+    "where it was found); never in your first turn when the question names a record, a "
+    "code or a party (a document search takes far longer than a record read). Run "
+    "independent reads in the same turn. A message's attachments are part of what it "
+    "says: plx.read of a message lists them, and you read the ones that may bear on the "
+    "question by their citations. Prefer the latest record or message on the subject, "
+    "say what it supersedes, and say how recent the newest one you read is. What was "
+    "sent rests on the sent copy (or the recipient's), never on a draft. A question "
+    "that points at a document without naming it (this, these, the attached) means the "
+    "person's most recent one on its subject: find it among their newest mail "
+    "attachments and files (plx.documents, newest first), say which one you used (its "
+    "name, sender and date), read it whole, and check its rows against the records "
+    "(plx.query from codes takes a sheet's item codes at once). "
+    "(e) Do not stop early: before you submit, check each part of the question; while one "
+    "is unsettled and the budget note shows time left, take the next link or record that "
+    "could settle it. A partial answer is for what no record or document you can open "
+    "holds, never for what you did not read."
+)
+
+
+def method_for(question: Any, route: str | None = None) -> str:
+    """The method a question is asked with: the short one for a lookup (the front door's
+    reading, else one named record by the identifier grammar, ``is_lookup``), the deep one
+    otherwise, each stating the question's own budget (``question_budget``: research
+    ends at 60 % of it)."""
+    seconds = question_budget(question, route=route)
+    lookup = route == "lookup" if route else is_lookup(question)
+    return method_rule(int(seconds), reserve=round(seconds * 0.4), lookup=lookup)
+
+
 def lookup_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
                 reserve: int = RESERVE_SECONDS) -> str:
     """The method for a lookup of one named record (``is_lookup``): the record first, its
@@ -146,6 +207,7 @@ def lookup_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "How to answer: the question asks about one named record. Answer it from that "
         "record and what links to it; never guess, and do not give up while a source you "
         "can open may hold the answer.",
+        RECORDS_FIRST,
         "(1) No written plan: start with your tool calls. Make independent calls together "
         "in one turn: in your first turn, plx.find on the identifier (its forms in the "
         "question analysis) and, when a plan family fits the question (plx.investigate; "
@@ -181,6 +243,7 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
     return " ".join([
         "How to investigate: work as a careful analyst who answers from the sources, never "
         "guesses, and does not give up while a source you can open may hold the answer.",
+        RECORDS_FIRST,
         "(1) Plan first, in a few lines before your first tool call: the question restated "
         "cleanly; its sub-questions (each fact or value the answer needs); for each, the "
         "records, documents and messages that would settle it and the system that owns it "
@@ -192,32 +255,41 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "synonyms of the key words (late: overdue, delayed, ETA, expected receipt; "
         "pricing: price, quote, cost), and one expected-answer query written as the "
         "sentence a source holding the answer would contain.",
-        "(2) Search broadly, several independent calls in one turn: plx.find for records "
-        "(an identifier or a name; object_type with filters), plx.documents for mail, "
-        "SharePoint files and originals (a query naming a use case lists its documents; "
-        "sources [\"graph_mail\"] searches mail alone; for the last email with, from or to "
-        "a party, plx.documents participant (an address, @domain, or the customer's or "
-        "supplier's object_id from plx.find; add query or object_id for one order) lists "
-        "the mail they sent and the mail we sent them newest first with its direction: for "
-        "the last email with them cite the newest of either direction, never "
-        "an older message a word search found), and for each record that matters "
-        "plx.object (its links counted per link type), plx.around along those links "
-        "(receipts, invoices, and the mail, Teams messages and Mission Control tasks that "
-        "mention it) and plx.timeline (its dated events). Before you settle on one source, "
-        "search at least two ways (different words, identifier forms or sources): several "
-        "copies of a document or several records may match, and the first is not always "
-        "the one that answers. Read the documents and threads the question is about whole "
-        "(the paging rule above): find locates a passage but shows none of its context, "
-        "and a table row read alone loses its column headings and notes. A "
-        "plan (plx.investigate) that fits the question runs its standard chain in one "
-        "call.",
+        "(2) Your first turn reads records only: plx.find on the names and codes "
+        "(an identifier or a name; object_type with filters), plx.object on every record "
+        "of what they name (its links counted per link type), plx.query or plx.around "
+        "along the links the question needs, plx.timeline for dated events; a plan "
+        "(plx.investigate) that fits runs its standard chain in one call. In later turns, "
+        "search text for what the records leave open, several independent calls at once: "
+        "plx.documents for mail, SharePoint files and originals (a query naming a use case "
+        "lists its documents; sources [\"graph_mail\"] searches mail alone; for the last "
+        "email with, from or to a party, plx.documents participant (an address, @domain, "
+        "or the customer's or supplier's object_id from plx.find; add query or object_id "
+        "for one order) lists the mail they sent and the mail we sent them newest first "
+        "with its direction: for the last email with them cite the newest of either "
+        "direction, never an older message a word search found), and plx.around to the "
+        "mail, Teams messages and Mission Control tasks that mention a record. Before you "
+        "settle on one source, search at least two ways (different words, identifier "
+        "forms or sources): several copies of a document or several records may match, "
+        "and the first is not always the one that answers. Read the documents and threads "
+        "the question is about whole (the paging rule above): find locates a passage but "
+        "shows none of its context, and a table row read alone loses its column headings "
+        "and notes.",
         "(3) Keep a checklist: for each sub-question, the evidence found (its handle) or "
         "the searches that found nothing. A search that finds nothing proves no absence: "
         "before you call a sub-question missing, run at least one more targeted search "
         "for it (another wording or identifier form, another source, or a link from a "
         "record you found). Before you settle a sub-question on a document, read the top "
         "document for it whole at least once (page with text_offset until next_offset is "
-        "null, or to the read cap): a find hit or a search snippet is not a read.",
+        "null, or to the read cap): a find hit or a search snippet is not a read. "
+        "A sub-question stays open until it is answered or proven unavailable: its "
+        "records read, every link type of those records that could hold it followed "
+        "(plx.object lists them; a figure a record lacks often sits one or two links "
+        "away, on its lines or on the records that made, used, received or billed it), "
+        "and two searches made. A total that comes back null or from no inputs answers "
+        "nothing: read one of its records to see which property holds the figure or "
+        "which link leads to it, then total that. Submit when every sub-question is "
+        "answered or proven unavailable, or when research time is up; never earlier.",
         "(4) Cross-check: where two sources state the same fact (a record and a message, "
         "the same order in two systems, a map and the record it describes), compare them "
         "(plx.compare, or the two values side by side). The system of record decides a "
@@ -245,7 +317,8 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "When research was cut short (the time limit, a refused or timed-out call), begin "
         "your reply with \"I stopped researching at the time limit; not yet checked: <the "
         "open sub-questions>\". Spend the budget: a question answered in three calls was "
-        "rarely searched broadly enough.",
+        "rarely searched broadly enough, and research time left is for the open "
+        "sub-questions.",
         "(7) Answer what is established, the answer itself first: the number a how-many "
         "question asks (then what it counts), the list a which or what question asks "
         "(each item and how many), the figures a comparison asks (each side and the "
@@ -314,6 +387,13 @@ def answer_shape_rule() -> str:
         "No headings, no bold labels, no closing summary, no suggestions of your own: "
         "the app adds the follow-up questions. Every number in the verdict and the "
         "bullets follows the number rule (a cited or calculated value, else left out).",
+        "Write plainly and stop at the answer. Use ordinary words in whole sentences, each "
+        "one able to stand alone, because a sentence the gate cannot back is removed. "
+        "Never coin a shorthand of your own, such as a figure glued to a word or an "
+        "abbreviation the records do not use. Say what each number counts. Do not set a "
+        "point against something nobody said (\"not X but Y\"). Do not group things in "
+        "threes for rhythm, and do not put two short sentences in a row. Add nothing "
+        "after the point: no sentence that explains, sums up or reassures.",
     ])
 
 
@@ -364,14 +444,6 @@ def question_analysis(question: str, pinned: str = "",
         end = frame.get("end")
         lines.append(f"\"{frame.get('text')}\" is the time frame from {frame['start']}"
                      + (f" up to (not including) {end}" if end else "") + ".")
-    try:
-        intent = qu.classify_intent(question)
-    except Exception:  # noqa: BLE001
-        intent = "other"
-    if intent in INTENT_SOURCES:
-        lines.append(f"It reads as a {intent.replace('_', ' ')} question: usually settled "
-                     f"by {INTENT_SOURCES[intent]}.")
-    lines += question_kind_hints(question)
     # The catalog hint only for a question that names no identifier: on questions naming
     # an order, PO or document number it sent the agent to maps over the records
     # (measured, 20 cards' messy variants, hint alone: 27/60 correct without, 19/60 with).
@@ -379,112 +451,13 @@ def question_analysis(question: str, pinned: str = "",
         else use_case_hint(question)
     if hint:
         lines.append(hint)
-    lines += answer_shape_hints(question)
     if not lines:
         return ""
     return ("Question analysis (the Workbench's query understanding; hints for your plan, "
             "never facts): " + " ".join(lines))
 
 
-# Answer shapes the method names (``answer_shape_hints``): the words a question of that
-# shape uses, never a record, party or case.
-HOW_MANY = re.compile(r"\b(how many|number of|count of|count the|how much stock is on)\b", re.I)
-LATE_WORDS = re.compile(r"\b(late|overdue|past due|behind)\b", re.I)
-PO_WORDS = re.compile(r"\b(pos?|p\.o\.?s?|purchase orders?)\b", re.I)
-OPEN_ORDERS = re.compile(r"\b(open|outstanding|unreceived|not (?:yet )?received)\b", re.I)
-ORDER_WORDS = re.compile(r"\b(pos?|purchase orders?|orders?|sales orders?|sos?)\b", re.I)
-RECEIVED_VS_ORDERED = re.compile(
-    r"\b(received|receiv\w*|get|got|came in)\b.*\b(ordered|order(?:ed)? qty)\b"
-    r"|\b(ordered)\b.*\b(received|get|got|came in)\b|\bshort(?:fall|ed|age)?\b", re.I)
-# A set of records in a state, asked in the plural (quarantined lots, batches on hold):
-# its size is part of the answer.
-STATE_SET = re.compile(r"\b(quarantin\w*|on (?:qc )?hold|held up|blocked|expir\w*|late|"
-                       r"overdue|past due)\b", re.I)
-PLURAL_RECORDS = re.compile(r"\b(lots|batches|pos|purchase orders|orders|receipts|"
-                            r"invoices|shipments|items)\b", re.I)
-COUNT_HINT = (
-    "It asks how many (or which, a set whose size is part of the answer): state the "
-    "number first, then what it counts. Count with an exact "
-    "count of what you may read, never by paging a list: late purchase orders are Home's "
-    "late list (plx.find query \"which POs are late\": its late-order count, every late "
-    "order, cite the listed ones); anything else is plx.aggregate with object_type and "
-    "filters (plx.find's) and measure {\"op\": \"count\", \"property\": a property "
-    "every member carries} (no scan cap). Submit it as a count claim {\"op\": \"count\", "
-    "\"of\": records the tool listed}; a count the tool marks incomplete is \"at least N\".")
-OPEN_ORDERS_HINT = (
-    "It asks for a party's open orders: list each open order's number first and say how "
-    "many (plx.find object_type with filters on the party and the status: its candidates "
-    "and completeness.total, or plx.aggregate's count over the same filters), each order "
-    "cited.")
-RECEIVED_HINT = (
-    "It compares received with ordered: run plx.investigate three_way_match (or "
-    "plx.process purchase_to_invoice with include_groups) and state per item first the "
-    "ordered and received quantities and the shortfall (its quantity check's sums and "
-    "difference, in its unit), each figure cited; the shortfall an expression claim over "
-    "the cited ordered and received values.")
-
-
-def answer_shape_hints(question: str) -> list[str]:
-    """What the answer leads with for the shape the question reads as (a count, a party's
-    open orders, received against ordered), from its own words only: hints, never facts.
-    Empty for any other question and for anything that is not text."""
-    if not isinstance(question, str) or not question.strip():
-        return []
-    out = []
-    if HOW_MANY.search(question) or (STATE_SET.search(question)
-                                      and PLURAL_RECORDS.search(question)):
-        out.append(COUNT_HINT)
-    if OPEN_ORDERS.search(question) and ORDER_WORDS.search(question) \
-            and not HOW_MANY.search(question):
-        out.append(OPEN_ORDERS_HINT)
-    if RECEIVED_VS_ORDERED.search(question):
-        out.append(RECEIVED_HINT)
-    return out
-
-
-# Question kinds whose standard route the method names (``question_kind_hints``): the words
-# a question of that kind uses, never a record, party or case.
-PRICE_MOVE = re.compile(
-    r"\b(trend\w*|up or down|going (up|down)|went (up|down)|gone (up|down)|paying (more|less)"
-    r"|more or less|increas\w*|decreas\w*|rising|falling|dropp\w*|cheaper|pricier)\b", re.I)
-PRICE_WORD = re.compile(r"\b(price\w*|cost\w*|paying|paid|pay)\b", re.I)
-CORRESPONDENCE = re.compile(
-    r"\b(e-?mails?|mails?|msgs?|messages?|replied|reply|replies|heard|correspondence)\b", re.I)
-# what a party said or confirmed: only with the party named as a kind of party
-PARTY_SAID = re.compile(r"\b(said|wrote|confirm\w*)\b", re.I)
-PARTY = re.compile(r"\b(vendors?|suppliers?|customers?|clients?)\b", re.I)
-PRICE_HINT = (
-    "It asks how a purchase price moves: run plx.investigate family price_history on the "
-    "item (its posted receipt, invoice and order prices, each dated and cited, and the trend "
-    "of each). State the direction in words (went up, went down, unchanged) beside the last "
-    "and previous prices it cites, each a value with its citation, unit and currency; an "
-    "item card's or a supplier list's cost is no price paid and no trend.")
-CORRESPONDENCE_HINT = (
-    "It asks what a message said or whether one exists: search mail (plx.documents, sources "
-    "[\"graph_mail\"]) by each form of the record's number (with and without # or a space, "
-    "and its numbers in the other systems) and by the party's name, its mail domain and its "
-    "contacts' addresses, then read the latest message from or to the party. State a "
-    "message by citing it: a value on its graph-mail handle (row.subject with its quote, or "
-    "a quote of row.body_text) and its date. Say that no message or no confirmation is on "
-    "record only after those searches found none, naming what you searched.")
-
-
-def question_kind_hints(question: str) -> list[str]:
-    """The standard route of a question kind the question reads as (a purchase price's
-    movement; a message, reply or confirmation), from its own words only: hints, never
-    facts. Empty for any other question, and for anything that is not text."""
-    if not isinstance(question, str) or not question.strip():
-        return []
-    out = []
-    if PRICE_MOVE.search(question) and (PRICE_WORD.search(question)
-                                        or re.search(r"\btrend", question, re.I)):
-        out.append(PRICE_HINT)
-    if CORRESPONDENCE.search(question) or (PARTY_SAID.search(question)
-                                           and PARTY.search(question)):
-        out.append(CORRESPONDENCE_HINT)
-    return out
-
-
+# Use cases a catalog hint lists at most.
 MAX_CATALOG_HINT = 20
 
 
@@ -519,6 +492,15 @@ def _words(object_type: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", " ", str(object_type)).lower()
 
 
+# The record reads a session makes before any text search (``Budget.decide``), and the
+# text search that waits for one: a refusal the agent gets, never a step.
+RECORD_TOOLS = frozenset({"plx.find", "plx.object", "plx.around", "plx.query",
+                          "plx.aggregate", "plx.timeline", "plx.investigate", "plx.process",
+                          "plx.compare", "plx.identity", "plx.read"})
+TEXT_SEARCH_TOOLS = frozenset({"plx.documents"})
+RECORDS_FIRST_REFUSAL = "records_first"
+
+
 class Budget:
     """One session's step and time budget, as the tool gate decides it. ``deadline``:
     the wall-clock second research ends (None: no time limit); ``max_steps``: tool calls
@@ -527,12 +509,16 @@ class Budget:
 
     def __init__(self, deadline: float | None = None, max_steps: int | None = None,
                  ends_at: float | None = None, repair_reads: int = REPAIR_READS,
-                 grace_calls: int = GRACE_CALLS) -> None:
+                 grace_calls: int = GRACE_CALLS, records_first: bool = False) -> None:
         self.deadline, self.max_steps = deadline, max_steps
         self.ends_at = ends_at if ends_at is not None else deadline
         self.repair_reads, self.grace_calls = repair_reads, grace_calls
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
         self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
+        self.records_read = 0   # record reads forwarded (``RECORD_TOOLS``)
+        # the question named records: a text search waits for the first record read
+        self.records_first = records_first
+        self.waited = 0         # text searches asked to wait for a record read
 
     @property
     def active(self) -> bool:
@@ -561,8 +547,21 @@ class Budget:
             self.submissions += 1
             return None
         why = self.spent(now)
+        if why is None and self.records_first and name in TEXT_SEARCH_TOOLS \
+                and not self.records_read:
+            # the host serves one call at a time: a text search (up to a minute) ahead of
+            # the records would hold every read behind it
+            self.waited += 1
+            return {"ok": False, "error": RECORDS_FIRST_REFUSAL,
+                    "message": ("A text search is served once this session has read a "
+                                "record: call plx.find on the names and codes (or "
+                                "plx.object, plx.query or plx.around on the records named) "
+                                "first, then search text for what the records leave "
+                                "open.")}
         if why is None:
             self.steps += 1
+            if name in RECORD_TOOLS:
+                self.records_read += 1
             return None
         if why == "time" and not self.submissions and self.grace < self.grace_calls \
                 and name in GRACE_TOOLS and self._grace_fits(now):

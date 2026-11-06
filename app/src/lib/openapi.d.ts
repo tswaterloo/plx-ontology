@@ -741,6 +741,11 @@ export type components = {
             object_id?: string | null;
             /** Question */
             question: string;
+            /**
+             * Source
+             * @description Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.
+             */
+            source?: string | null;
         };
         /** AtRisk */
         AtRisk: {
@@ -1499,6 +1504,11 @@ export type components = {
             age_seconds?: number | null;
             /** As Of */
             as_of?: string | null;
+            /**
+             * Searchable To
+             * @description With hybrid search on: the newest text of this source search can find (ISO). Captured records after it are not searchable yet.
+             */
+            searchable_to?: string | null;
             /**
              * Capture
              * @description How the last capture of this source ended: failed and never_captured are stale whatever their age; partial (a budgeted capture continuing next cycle) is judged by age.

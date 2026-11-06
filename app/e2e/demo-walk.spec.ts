@@ -107,10 +107,11 @@ async function signIn(page: Page) {
   expect(page.url()).not.toContain("ticket");
 }
 
-/** Asks from the Today box (a fresh conversation each time); the finished card and its time. */
+/** Asks from Today's search-or-ask bar (a fresh conversation each time); the finished card and its time. */
 async function ask(page: Page, question: string): Promise<{ card: Locator; ms: number }> {
   await page.goto("/");
-  const box = page.getByRole("combobox", { name: "Ask a question" });
+  await page.keyboard.press("Control+k");
+  const box = page.getByTestId("palette-input");
   await box.fill(question);
   const started = Date.now();
   await box.press("Enter");
@@ -167,7 +168,9 @@ test("demo walk: briefing, late PO, order at risk, margin, Ask", async ({ page }
   await shot(page, "late-list");
 
   // 4. One late PO: ETA confirmed?, how we know, who to chase and the follow-up draft.
-  await row.getByRole("link", { name: poName }).click();
+  // the row opens the PO beside the list; its page is one step on
+  await row.click();
+  await page.getByTestId("open-record").click();
   await expect(page).toHaveURL(/\/(po|object\/PurchaseOrder)\//);
   await expect(page.getByTestId("object-title")).toContainText(poName, { timeout: PAGE_TIMEOUT });
   await expectClean(page, "PO page");

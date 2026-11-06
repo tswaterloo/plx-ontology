@@ -47,8 +47,9 @@ test("a purchase order draws its chain of custody", async ({ page }, info) => {
   }
 });
 
-test("Today draws the late list; an answer's claims cite numbered sources", async ({ page }) => {
-  await page.goto("/");
+test("Late POs draws the late list; an answer's claims cite numbered sources", async ({ page }) => {
+  // the drawing of every late PO sits on Late POs (Today lists them)
+  await page.goto("/late");
   await expect(page.getByTestId("late-shape")).toBeVisible();
   expect(await page.getByTestId("late-dot").count()).toBe(2);
   await expect(page.getByTestId("late-readout")).toContainText("days late");

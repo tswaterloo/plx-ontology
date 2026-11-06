@@ -206,7 +206,8 @@ from . import live_source_grammar as grammar
 from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR_PENDING,
                             OCR_UNAVAILABLE,
                             TEXT_OCR, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
-                            capture_text, captured_text, file_type, inflate, member_view,
+                            capture_text, captured_text, file_type, image_worth_reading, inflate,
+                            member_view,
                             ocr_digest, read_dropped, reading_key, readings_of,
                             split_member, write_dropped)
 from .capture_store import (SourceKind, register_source_kind, sqlite_bytes,
@@ -3180,7 +3181,10 @@ def extract_attachment(content: bytes, attachment: Mapping[str, Any], defer_ocr:
     """(text status, text, readings) of attachment bytes: the reader side's text work, in
     an extraction process (``integrations.extract_worker``) or inline. ``readings``
     False: the text only (an OCR reading, settled by the store afterwards)."""
-    status, text = capture_text(content, attachment, defer_ocr=defer_ocr)
+    # A pasted image (an inline table or screenshot, or an attached one) is OCR-read like
+    # a scanned page; logos and signature images are left by their size alone.
+    extra = {"image_ocr": True} if image_worth_reading(content, attachment) else {}
+    status, text = capture_text(content, attachment, defer_ocr=defer_ocr, **extra)
     return status, text, (_readings(content, attachment, status, text, defer_ocr=defer_all)
                           if readings else None)
 
@@ -3493,6 +3497,123 @@ def ocr_deferred_pass(store: MailCaptureStore, reader: Any, actor: Actor,
                                                content=content) == "dropped"
     counts["left"] = store.ocr_deferred_count()
     return counts
+
+
+def _ocr_one(task: tuple[bytes, dict[str, Any]]) -> tuple[str, str | None]:
+    content, metadata = task
+    if not image_worth_reading(content, metadata):
+        return "too_small", None
+    return capture_text(content, metadata, image_ocr=True)
+
+
+def image_ocr_pass(store: MailCaptureStore, *, budget_seconds: float, workers: int = 1,
+                   since: str | None = None, excluded: Callable[[str], bool] | None = None,
+                   monotonic: Callable[[], float] = time.monotonic) -> dict[str, int]:
+    """OCR the images captured before mail images were read (inline pasted tables and
+    screenshots, and attached images; ``text_status`` ``unsupported``), newest message
+    first, within ``budget_seconds``, from their stored bytes (never the source): each
+    distinct image once (by its digest), its reading stored on every attachment carrying
+    it as a new text version (``fill_text``; OCR text is ``extracted_ocr``, machine-read
+    and untrusted like a scanned page). Logos, icons and signature images are left by
+    their size (``image_worth_reading``: ``too_small``, kept ``unsupported``). ``since``:
+    only messages received on or after this ISO date. ``excluded(mailbox_id)``: a
+    mailbox the people exclusion withholds is never read. Counts only."""
+    from concurrent.futures import ProcessPoolExecutor
+    counts = {"images": 0, "distinct": 0, "read": 0, "texts_ocr": 0, "no_text": 0,
+              "too_small": 0, "failed": 0, "attachments_filled": 0, "excluded": 0,
+              "budget_spent": 0}
+    rows = store.db.execute(
+        "SELECT a.l1_handle, a.content_sha256, a.metadata, a.mailbox_id, m.record "
+        "FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle AND "
+        "m.superseded_at IS NULL WHERE a.content_status='captured' AND "
+        "a.text_status='unsupported' ORDER BY json_extract(m.record,'$.received_at') "
+        "DESC, a.l1_handle").fetchall()
+    by_digest: dict[str, list[str]] = {}
+    meta: dict[str, dict[str, Any]] = {}
+    from .captured_text import _ocr_image
+    for row in rows:
+        metadata = json.loads(row["metadata"])
+        mime, name = file_type(metadata)
+        if not _ocr_image(name or "", mime or ""):
+            continue
+        received = str(json.loads(row["record"]).get("received_at") or "")
+        if since and received and received[:10] < since[:10]:
+            continue
+        if excluded is not None and excluded(row["mailbox_id"]):
+            counts["excluded"] += 1
+            continue
+        counts["images"] += 1
+        by_digest.setdefault(row["content_sha256"], []).append(row["l1_handle"])
+        meta.setdefault(row["content_sha256"], metadata)
+    counts["distinct"] = len(by_digest)
+    deadline = monotonic() + budget_seconds
+    digests = list(by_digest)
+    import contextlib
+    with (ProcessPoolExecutor(workers) if workers > 1 else contextlib.nullcontext()) as pool:
+        run = pool.map if pool is not None else map
+        for start in range(0, len(digests), 8 * max(1, workers)):
+            if monotonic() >= deadline:
+                counts["budget_spent"] = 1
+                break
+            part = []
+            for digest in digests[start:start + 8 * max(1, workers)]:
+                try:
+                    part.append((digest, store.blob(digest)))
+                except (OSError, CaptureError):
+                    counts["failed"] += 1
+            for (digest, _content), (status, text) in zip(part, run(
+                    _ocr_one, [(content, meta[digest]) for digest, content in part])):
+                if status == "too_small":
+                    counts["too_small"] += 1
+                    continue
+                if status not in (TEXT_OCR, "ocr_no_text"):
+                    counts["failed"] += 1
+                    continue
+                counts["read"] += 1
+                counts["texts_ocr"] += status == TEXT_OCR
+                counts["no_text"] += status != TEXT_OCR
+                pinned = store.put_text(text)
+                for handle in by_digest[digest]:
+                    store.fill_text(handle, status, pinned)
+                    counts["attachments_filled"] += 1
+    return counts
+
+
+def image_ocr_cli(argv: Sequence[str] | None = None, *,
+                  environ: Mapping[str, str] | None = None) -> int:
+    """``python3 -m integrations.capture_mail image-ocr --state-dir D --budget-seconds N
+    [--workers K] [--since YYYY-MM-DD]``: OCR the mail images captured before images were
+    read (:func:`image_ocr_pass`), from the stored bytes, under the host's cycle lock.
+    Needs a local OCR engine and the people exclusion. Prints counts only."""
+    from integrations.people_exclusion import PeopleExclusion
+    from .document_understanding import local_image_ocr_available
+
+    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail image-ocr",
+                                     description=image_ocr_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--budget-seconds", type=float, required=True)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--since")
+    args = parser.parse_args(argv)
+    if not args.budget_seconds > 0:
+        print(json.dumps({"ok": False, "error": "budget_seconds_invalid"}))
+        return 2
+    if not local_image_ocr_available():
+        print(json.dumps({"ok": False, "error": "ocr_engine_unavailable"}))
+        return 2
+    guard = PeopleExclusion.from_env(os.environ if environ is None else environ)
+    if guard.unavailable:
+        print(json.dumps({"ok": False, "error": "people_exclusion_unavailable"}))
+        return 2
+
+    def excluded(mailbox_id: str) -> bool:
+        try:
+            return bool(guard.is_excluded(str(mailbox_id).lower()))
+        except Exception:  # noqa: BLE001 - an undecidable mailbox is never read
+            return True
+    return _locked(args.state_dir, lambda store: image_ocr_pass(
+        store, budget_seconds=args.budget_seconds, workers=args.workers, since=args.since,
+        excluded=excluded))
 
 
 def _settle(store: MailCaptureStore, digest: str, **given: Any) -> str:
@@ -5205,6 +5326,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return compact_cli(argv[1:])
     if argv[:1] == ["ocr-deferred"]:
         return ocr_deferred_cli(argv[1:])
+    if argv[:1] == ["image-ocr"]:
+        return image_ocr_cli(argv[1:])
     print("usage: python3 -m integrations.capture_mail compact --state-dir D [--no-vacuum] "
           "[--defer-ocr]\n       python3 -m integrations.capture_mail ocr-deferred "
           "--state-dir D --live-audience F --budget-seconds N"

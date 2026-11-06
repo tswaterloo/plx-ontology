@@ -169,7 +169,10 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
                  "kinds": list(kinds) if kinds is not None else None}
         timings["scope"] = _ms(t)
 
-        texts = query.texts()
+        # The rewrites of a rules understanding swap words for the entities they matched
+        # ("use" read as a customer named USE ...): measured on the dev cards they cost
+        # recall, so by default the retrievers read the question as asked.
+        texts = query.texts() if weights.query_texts == "rewrites" else [query.question]
         vectors: list[list[float]] = []
         model = getattr(embedder, "model", None)
         if embedder is not None:
@@ -193,7 +196,8 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             "fuzzy": lambda c: rt.fuzzy(c, scope, query.question, n),
         }
         if vectors and model:
-            jobs["dense"] = lambda c: rt.dense(c, scope, vectors, model, n)
+            jobs["dense"] = lambda c: rt.dense(c, scope, vectors, model, n,
+                                                ef_search=weights.dense_ef_search)
         if resolved or candidates:
             def graph_job(c: Any) -> Any:
                 linked: list[tuple[str, float]] = []

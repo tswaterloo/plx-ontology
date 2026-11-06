@@ -83,3 +83,81 @@ class ImageOcrTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def image(width: int, height: int) -> bytes:
+    import random
+    from PIL import Image
+    rng = random.Random(width * height)
+    picture = Image.new("L", (width, height))
+    picture.putdata([rng.randrange(256) for _ in range(width * height)])   # incompressible
+    out = io.BytesIO()
+    picture.save(out, "PNG")
+    return out.getvalue()
+
+
+class MailImageTests(unittest.TestCase):
+    """Mail images (inline pasted tables and screenshots, attached images): OCR-read when
+    their own size says they can hold text; logos and signature banners are left."""
+
+    def test_size_decides_never_the_name(self):
+        record = {"name": "image001.png", "content_type": "image/png"}
+        self.assertTrue(ct.image_worth_reading(image(900, 300), record))
+        self.assertFalse(ct.image_worth_reading(image(160, 60), record))     # a logo
+        self.assertFalse(ct.image_worth_reading(image(700, 90), record))     # a banner
+        self.assertFalse(ct.image_worth_reading(image(900, 300),
+                                                {"name": "x.pdf", "content_type": "application/pdf"}))
+
+    def test_capture_reads_a_pasted_table_and_leaves_a_logo(self):
+        from integrations import capture_mail as cm
+        record = {"name": "image002.png", "content_type": "image/png", "is_inline": True}
+        with mock.patch.object(du, "local_image_ocr_available", return_value=True), \
+                mock.patch.object(du, "local_image_text", return_value="PO 1234 Glycerin"):
+            status, text, _ = cm.extract_attachment(image(900, 300), record, False, False,
+                                                    readings=False)
+            self.assertEqual((status, text), (ct.TEXT_OCR, "PO 1234 Glycerin"))
+            status, _, _ = cm.extract_attachment(image(160, 60), record, False, False,
+                                                 readings=False)
+            self.assertEqual(status, "unsupported")
+
+    def test_stored_images_are_read_once_per_digest_newest_first(self):
+        import hashlib
+        import json
+        import sqlite3
+        from integrations import capture_mail as cm
+
+        table, logo = image(900, 300), image(160, 60)
+        blobs = {hashlib.sha256(b).hexdigest(): b for b in (table, logo)}
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.executescript("""CREATE TABLE messages (l1_handle TEXT, superseded_at TEXT,
+                                record TEXT);
+            CREATE TABLE attachments (l1_handle TEXT, content_sha256 TEXT, metadata TEXT,
+                mailbox_id TEXT, message_handle TEXT, content_status TEXT, text_status TEXT);""")
+        meta = json.dumps({"name": "image001.png", "content_type": "image/png"})
+        for n, (box, when, content) in enumerate((("ok", "2026-11-03", table),
+                                                  ("ok", "2026-11-04", table),
+                                                  ("ok", "2026-11-04", logo),
+                                                  ("gone", "2026-11-04", table),
+                                                  ("ok", "2026-01-04", table))):
+            db.execute("INSERT INTO messages VALUES (?,NULL,?)",
+                       (f"m{n}", json.dumps({"received_at": when + "T10:00:00Z"})))
+            db.execute("INSERT INTO attachments VALUES (?,?,?,?,?,'captured','unsupported')",
+                       (f"a{n}", hashlib.sha256(content).hexdigest(), meta, box, f"m{n}"))
+        filled = []
+
+        class Store:
+            pass
+        store = Store()
+        store.db = db
+        store.blob = blobs.__getitem__
+        store.put_text = lambda text: "t:" + text
+        store.fill_text = lambda handle, status, pinned: filled.append((handle, status, pinned))
+        with mock.patch.object(du, "local_image_ocr_available", return_value=True), \
+                mock.patch.object(du, "local_image_text", return_value="Open POs") as ocr:
+            counts = cm.image_ocr_pass(store, budget_seconds=60, since="2026-10-01",
+                                       excluded=lambda box: box == "gone")
+        self.assertEqual(ocr.call_count, 1)                       # one distinct table
+        self.assertEqual(sorted(filled), [("a0", ct.TEXT_OCR, "t:Open POs"),
+                                          ("a1", ct.TEXT_OCR, "t:Open POs")])
+        self.assertEqual((counts["too_small"], counts["excluded"], counts["images"]), (1, 1, 3))

@@ -898,6 +898,19 @@
             "minLength": 1,
             "title": "Question",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.",
+            "title": "Source"
           }
         },
         "required": [
@@ -2781,6 +2794,17 @@
             },
             "title": "Sources",
             "type": "array"
+          },
+          "truth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TruthFlag"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest truth check's counts; the label names a late list the evidence disputes."
           }
         },
         "title": "Freshness",
@@ -2828,6 +2852,18 @@
             ],
             "description": "How the last capture of this source ended: failed and never_captured are stale whatever their age; partial (a budgeted capture continuing next cycle) is judged by age.",
             "title": "Capture"
+          },
+          "searchable_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With hybrid search on: the newest text of this source search can find (ISO). Captured records after it are not searchable yet.",
+            "title": "Searchable To"
           },
           "stale": {
             "default": false,
@@ -6028,6 +6064,58 @@
           "check"
         ],
         "title": "TrailStep",
+        "type": "object"
+      },
+      "TruthFlag": {
+        "additionalProperties": false,
+        "description": "The latest cross-system truth check (``operating.truth_check``): how many of the\nopen claims the engine makes the other systems' evidence contradicts.",
+        "properties": {
+          "checked_at": {
+            "description": "When the truth check ran (ISO).",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "claims": {
+            "default": 0,
+            "description": "Every open claim checked.",
+            "title": "Claims",
+            "type": "integer"
+          },
+          "contradicted": {
+            "default": 0,
+            "description": "Every open claim contradicted by evidence.",
+            "title": "Contradicted",
+            "type": "integer"
+          },
+          "detectors_incomplete": {
+            "default": 0,
+            "description": "Detectors whose latest run did not complete (their claims are partly checked).",
+            "title": "Detectors Incomplete",
+            "type": "integer"
+          },
+          "late_claims": {
+            "default": 0,
+            "description": "Purchase orders claimed late (past their need date), one per order; unconfirmed orders not yet due are not counted.",
+            "title": "Late Claims",
+            "type": "integer"
+          },
+          "late_contradicted": {
+            "default": 0,
+            "description": "Of those, the orders contradicted by evidence in another system (received, cancelled, a test record, a draft twin, or a need date that is a default).",
+            "title": "Late Contradicted",
+            "type": "integer"
+          },
+          "stale": {
+            "default": false,
+            "description": "The check is older than TRUTH_MAX_AGE (2 hours): its counts are not stated in the label.",
+            "title": "Stale",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "checked_at"
+        ],
+        "title": "TruthFlag",
         "type": "object"
       },
       "UnderstandingEvent": {

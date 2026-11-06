@@ -82,7 +82,7 @@ describe("BriefingCard", () => {
     const po = { object_id: "PurchaseOrder:x:1", label: "100001", supplier: "Acme Supply", days_late: 5, open_url: "/o/1", reason: "" };
     const { rerender } = render(<ol><BriefingRow item={withContact} latePo={po} /></ol>);
     expect(screen.getByRole("link", { name: /Chase Acme Supply/ })).toBeTruthy();
-    expect(screen.getByTestId("briefing-item")).toHaveTextContent("PO 100001 · Acme Supply");
+    expect(screen.getByTestId("briefing-item")).toHaveTextContent("PO 100001Acme Supply");
     rerender(<ol><BriefingRow item={item({})} latePo={po} /></ol>);
     expect(screen.queryByRole("link", { name: /Chase/ })).toBeNull();
     expect(screen.getByRole("link", { name: /^Open/ })).toBeTruthy();
@@ -111,11 +111,11 @@ describe("BriefingCard", () => {
     expect(screen.getAllByTestId("briefing-item")).toHaveLength(7);
     const groups = screen.getAllByTestId("briefing-group");
     expect(groups).toHaveLength(2);
-    expect(within(groups[0]).getByText("+2 more")).toBeTruthy();
+    expect(within(groups[0]).getByText("Show 2 more")).toBeTruthy();
     expect(within(groups[0]).getByText("1 acknowledged")).toBeTruthy();
-    fireEvent.click(within(groups[1]).getByRole("button", { name: "+31 more" }));
+    fireEvent.click(within(groups[1]).getByRole("button", { name: "Show 31 more" }));
     await waitFor(() => expect(within(groups[1]).getAllByTestId("briefing-row")).toHaveLength(25));
-    fireEvent.click(within(groups[1]).getByRole("button", { name: /Show more \(6 left\)/ }));
+    fireEvent.click(within(groups[1]).getByRole("button", { name: "Show 6 more" }));
     await waitFor(() => expect(within(groups[1]).getAllByTestId("briefing-row")).toHaveLength(31));
     expect(loadItems).toHaveBeenCalledWith("lot_near_expiry", 25, "all");
   });

@@ -32,7 +32,7 @@ import tempfile
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
-from operating import handle_aliases, tool_results
+from operating import handle_aliases, host_peers, tool_results
 from operating.handle_aliases import Aliases
 from operating.agent_environment import agent_environment
 from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY, _JSON_FENCE,
@@ -76,6 +76,12 @@ ANSWER_GATE_RULE = (
     "row.content_text, text) give instead \"quote\": the passage as written that states "
     "the fact (a figure there also gives \"value\": the figure as printed). Add \"role\", "
     "\"unit\", \"currency\" or \"lead\": true only where the rules above call for them. "
+    "\"via\": a claim's own record must contain a code or name the question writes; when "
+    "it does not (a line, an entry, a receipt or a message you reached by following links "
+    "from such a record), add \"via\": the handle of the record you followed it from, the "
+    "one whose row or text holds that code or name, as returned to you. Give it whenever "
+    "the cited row itself lacks the question's code or name; without it the gate refuses "
+    "the claim. "
     "A decision with outcome \"answered\" ends "
     "the session: the app renders your answer from that submission (its claims, text, "
     "each unknown as a gap, and gaps), so submit it complete. A count or sum you computed "
@@ -708,6 +714,78 @@ def allowed_tools(catalog: Sequence[Mapping[str, Any]], *, case_tools: bool = Fa
 GATE_REFUSAL = "tool_not_allowed"
 
 
+# The helper hosts one session may run beside its own (``operating.host_peers``), and how
+# long past a tool's own limit (``call_limits``) the gate waits for a call before it
+# answers the agent itself that the call timed out (a helper still serving it is stopped).
+HOST_HELPERS = 2
+POOL_GRACE_SECONDS = 15.0
+# How many helpers one session may start in all (one stopped is replaced, up to this).
+HOST_HELPER_STARTS = 4
+_SET_HANDLE = re.compile(r"set:[A-Za-z0-9_-]{16,}")
+HELPER_INIT_ID = "plx-helper-init"
+PEER_GONE = "tool_host_stopped"
+
+
+class _Peer:
+    """One host process of a session as the gate writes to it: in a pooled session every
+    line goes through one writer thread (a host busy in a long call never blocks the gate
+    on a full pipe), else straight to its stdin as before; ``open``: its requests not yet
+    answered (request key -> started (monotonic), tool name)."""
+
+    def __init__(self, child: "subprocess.Popen", role: str, *, queued: bool) -> None:
+        import queue
+        import threading
+        self.child, self.role = child, role
+        self.lock = threading.Lock()
+        self.open: dict[str, tuple[float, Any]] = {}
+        self.dead = False
+        self._queue: "queue.Queue[str | None] | None" = queue.Queue() if queued else None
+        if self._queue is not None:
+            threading.Thread(target=self._write, daemon=True).start()
+
+    def _write(self) -> None:
+        while True:
+            line = self._queue.get()
+            if line is None:
+                return
+            try:
+                self.child.stdin.write(line)
+                self.child.stdin.flush()
+            except (OSError, ValueError):
+                self.dead = True
+
+    def send(self, message: Mapping[str, Any]) -> None:
+        line = json.dumps(message) + "\n"
+        if self._queue is not None:
+            if self.dead:
+                raise OSError("host_stopped")
+            self._queue.put(line)
+            return
+        with self.lock:
+            self.child.stdin.write(line)
+            self.child.stdin.flush()
+
+    def close(self) -> None:
+        """End its input once every line sent before is written."""
+        if self._queue is not None:
+            self._queue.put(None)
+
+    def alive(self) -> bool:
+        return not self.dead and self.child.poll() is None
+
+
+@dataclass
+class HostPool:
+    """The helper hosts a session's gate may start (``operating.host_peers``): ``start``
+    starts one (the session's server command, a fresh ticket of the same reader, the
+    helper role); ``pooled``: the read-only evidence tools a helper may serve; ``key``:
+    the primary's import key; ``most``: helpers running at once."""
+    start: Callable[[], "subprocess.Popen"]
+    pooled: frozenset
+    key: str
+    most: int = HOST_HELPERS
+
+
 def _host_process(server: Sequence[str], env: Mapping[str, str] | None, cwd: str | None, *,
                   own_group: bool) -> subprocess.Popen:
     """The host's MCP server for one gate (stdio pipes; ``own_group``: its own process
@@ -716,6 +794,17 @@ def _host_process(server: Sequence[str], env: Mapping[str, str] | None, cwd: str
                             text=True, bufsize=1, cwd=cwd,
                             env=None if env is None else dict(env),
                             start_new_session=own_group)
+
+
+# The longest question an answer submission carries (``mcp_server``'s answer input).
+ASKED_QUESTION_CHARS = 4000
+
+
+def asked_as(answer: Mapping[str, Any], question: str | None) -> dict[str, Any]:
+    """An answer submission with ``question`` as its question (None: as submitted)."""
+    if not isinstance(question, str) or not question.strip():
+        return dict(answer)
+    return {**answer, "question": question.strip()[:ASKED_QUESTION_CHARS]}
 
 
 def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
@@ -728,7 +817,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                aliases: "Aliases | None" = None,
                child: "subprocess.Popen | None" = None,
                prelude: Callable[[Callable[..., Any]], None] | None = None,
-               early: "EarlyStart | None" = None) -> int:
+               early: "EarlyStart | None" = None,
+               pool: "HostPool | None" = None, question: str | None = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
@@ -749,7 +839,10 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     ``aliases`` (``operating.handle_aliases``): the session's short handle aliases: each
     forwarded call's result reaches the client with its handles aliased, and each call's
     arguments reach the host with the aliases expanded; a call naming an alias this
-    session never minted is refused (``UNKNOWN_ALIAS``), never forwarded. A client
+    session never minted is refused (``UNKNOWN_ALIAS``), never forwarded. ``question``: the
+    session's own question, set as the question of every answer submission forwarded
+    (``asked_as``), so the agent can neither change nor drop what the answer is decided
+    against. A client
     that went away is never written to again; ``client_end`` is called once the client's
     requests still open are answered (at most ``HOST_SUBMIT_SECONDS``), before
     ``at_end``, so the client can end. The host is stopped (its stdin closed, its
@@ -762,8 +855,18 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     prefetch). ``early`` (``EarlyStart``): the host was initialized and read from before
     the client connected; once it is done, its lines not yet read go to the client, the
     client's ``initialize`` is answered with the host's own answer to it and its
-    ``notifications/initialized`` is not forwarded (the host is initialized once)."""
+    ``notifications/initialized`` is not forwarded (the host is initialized once).
+    ``pool`` (``HostPool``): independent calls run at once (``operating.host_peers``):
+    a call of a pooled tool arriving while the host serves another goes to an idle helper
+    host (started on demand, at most ``pool.most`` at once), a call naming a result set
+    goes to the host that made it, and everything else (the answer gate, the host's own
+    calls) to the host itself. A helper's evidence reaches the host before its result
+    reaches the client; a message of the import method from the client is dropped. A
+    call unanswered ``POOL_GRACE_SECONDS`` past its tool's limit is answered timed out
+    by the gate (its late answer dropped) and a helper still serving it stopped, so no
+    slow call holds the calls behind it."""
     import threading
+    from operating import call_limits, host_peers
     allowed, inbound = frozenset(allowed), stdin or sys.stdin
     # The host's output is read where the early start reads it (its one reader), even
     # when the host answered no early initialize and the client's goes to it.
@@ -775,6 +878,12 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     outbound = stdout or sys.stdout
     if child is None:
         child = _host_process(server, env, cwd, own_group=at_end is not None)
+    primary = _Peer(child, host_peers.PRIMARY, queued=pool is not None)
+    helpers: list[_Peer] = []
+    owners: dict[str, _Peer] = {}      # result set handle -> the host holding it
+    abandoned: set[str] = set()        # calls the gate answered timed out itself
+    started = [0]                      # helpers started (``HOST_HELPER_STARTS``)
+    finished = threading.Event()
     lock, listing, calls = threading.Lock(), set(), set()
     noted: dict[str, Any] = {}   # forwarded call -> the budget note its result carries
     asked: dict[str, list[Any]] = {}   # the host's own call -> [event, its reply]
@@ -804,48 +913,89 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             calls.discard(key)
             note({"event": "end", "id": message.get("id")})
 
-    def pump() -> None:
-        for line in (reader.lines() if reader is not None else child.stdout):
-            try:
-                message = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(message, dict):
-                continue
-            result = message.get("result")
-            if message.get("id") in listing and isinstance(result, dict):
-                listing.discard(message["id"])
-                result["tools"] = [tool for tool in result.get("tools") or []
-                                   if isinstance(tool, Mapping) and tool.get("name") in allowed]
-            key = json.dumps(message.get("id"))
-            if reader is not None and key in reader.ids and "method" not in message:
-                continue    # a late answer to the host's own early request
-            if key in asked and "method" not in message:
-                asked[key][1] = message
-                asked[key][0].set()
-                note({"event": "end", "id": message.get("id")})
-                continue
-            if aliases is not None and key in aliased and "method" not in message:
-                aliased.discard(key)
-                result = handle_aliases.shorten_result(aliases, result)
-                message = {**message, "result": result}
-            if budget is not None and "id" in message and key in noted:
-                if _timed_out(result):
-                    # the host stopped the call at its limit (``call_limits``)
-                    with lock:
-                        budget.timed_out += 1
-                        summary = budget.summary()
-                    if budget_log is not None:
-                        with lock, budget_log.open("a", encoding="utf-8") as out:
-                            out.write(json.dumps(summary) + "\n")
-                message = {**message, "result": deep.with_note(result, noted.pop(key))}
-            emit(message)
-    writing = threading.Lock()   # one line at a time to the host (the client's, ``ask``'s)
+    def answer_error(ident: Any, error: str, message_text: str) -> None:
+        emit({"jsonrpc": "2.0", "id": ident, "result": {
+            "content": [{"type": "text", "text": json.dumps(
+                {"ok": False, "error": error, "message": message_text})}],
+            "isError": True}})
+
+    def pump(peer: _Peer, lines: Iterable[str]) -> None:
+        try:
+            for line in lines:
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict):
+                    deliver(peer, message)
+        finally:
+            if peer is not primary:
+                peer.dead = True
+                # its calls still open are answered, never left waiting
+                for key in list(peer.open):
+                    peer.open.pop(key, None)
+                    if key in calls and key not in abandoned:
+                        answer_error(json.loads(key), PEER_GONE,
+                                     "The host serving this call stopped; make the call "
+                                     "again.")
+
+    def deliver(peer: _Peer, message: dict[str, Any]) -> None:
+        key = json.dumps(message.get("id"))
+        if "id" in message and "method" not in message:
+            peer.open.pop(key, None)
+            if peer is not primary and key == json.dumps(HELPER_INIT_ID):
+                return
+        result = message.get("result")
+        meta = result.get("_meta") if isinstance(result, dict) else None
+        if isinstance(meta, dict) and host_peers.EXPORT_KEY in meta:
+            # A helper's evidence goes to the session's own host, never to the client,
+            # and reaches it before this result reaches the client.
+            meta = dict(meta)
+            exported = meta.pop(host_peers.EXPORT_KEY)
+            result = {**result, "_meta": meta}
+            message = {**message, "result": result}
+            if pool is not None and peer is not primary and isinstance(exported, dict) \
+                    and primary.alive():
+                try:
+                    primary.send({"jsonrpc": "2.0", "method": host_peers.IMPORT_METHOD,
+                                  "params": {"key": pool.key, "record": exported}})
+                except (OSError, ValueError):
+                    pass
+        if pool is not None and key in calls and isinstance(result, dict):
+            for handle in _SET_HANDLE.findall(json.dumps(result)):
+                owners[handle] = peer
+        if key in abandoned and "method" not in message:
+            abandoned.discard(key)
+            return   # answered timed out by the gate already
+        if message.get("id") in listing and isinstance(result, dict):
+            listing.discard(message["id"])
+            result["tools"] = [tool for tool in result.get("tools") or []
+                               if isinstance(tool, Mapping) and tool.get("name") in allowed]
+        if reader is not None and key in reader.ids and "method" not in message:
+            return    # a late answer to the host's own early request
+        if key in asked and "method" not in message:
+            asked[key][1] = message
+            asked[key][0].set()
+            note({"event": "end", "id": message.get("id")})
+            return
+        if aliases is not None and key in aliased and "method" not in message:
+            aliased.discard(key)
+            result = handle_aliases.shorten_result(aliases, result)
+            message = {**message, "result": result}
+        if budget is not None and "id" in message and key in noted:
+            if _timed_out(result):
+                # the host stopped the call at its limit (``call_limits``)
+                with lock:
+                    budget.timed_out += 1
+                    summary = budget.summary()
+                if budget_log is not None:
+                    with lock, budget_log.open("a", encoding="utf-8") as out:
+                        out.write(json.dumps(summary) + "\n")
+            message = {**message, "result": deep.with_note(result, noted.pop(key))}
+        emit(message)
 
     def send(message: Mapping[str, Any]) -> None:
-        with writing:
-            child.stdin.write(json.dumps(message) + "\n")
-            child.stdin.flush()
+        primary.send(message)   # one line at a time to the host (the client's, ``ask``'s)
 
     def ask(name: str, arguments: Mapping[str, Any], seconds: float) -> Any:
         if name not in allowed or child.poll() is not None:
@@ -854,6 +1004,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             ident = f"plx-host-{len(asked) + 1}"
             key = json.dumps(ident)
             asked[key] = [threading.Event(), None]
+            primary.open[key] = (time.monotonic(), name)
         note({"event": "start", "id": ident, "name": name, "arguments": dict(arguments)})
         try:
             send({"jsonrpc": "2.0", "id": ident, "method": "tools/call",
@@ -862,8 +1013,84 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             return None
         return asked[key][1] if asked[key][0].wait(seconds) else None
 
-    relay = threading.Thread(target=pump, daemon=True)
+    def start_helper() -> _Peer | None:
+        # A helper of the same reader, initialized before its first call (lines are
+        # served in order, so the call waits for nothing but the helper's start-up).
+        from operating.mcp_server import PROTOCOL_VERSION
+        if started[0] >= HOST_HELPER_STARTS or finished.is_set():
+            return None
+        started[0] += 1
+        try:
+            helper = _Peer(pool.start(), host_peers.HELPER, queued=True)
+            helper.send({"jsonrpc": "2.0", "id": HELPER_INIT_ID, "method": "initialize",
+                         "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                    "clientInfo": {"name": "plx-host-helper",
+                                                   "version": "1"}}})
+            helper.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        except (OSError, ValueError):
+            return None
+        helper.open[json.dumps(HELPER_INIT_ID)] = (time.monotonic(), None)
+        helpers.append(helper)
+        threading.Thread(target=pump, args=(helper, helper.child.stdout),
+                         daemon=True).start()
+        return helper
+
+    def route(params: Mapping[str, Any]) -> _Peer:
+        """The host to serve one client tools/call (``pool``)."""
+        if pool is None or params.get("name") not in pool.pooled:
+            return primary
+        with lock:
+            for handle in _SET_HANDLE.findall(json.dumps(params.get("arguments"),
+                                                         default=str)):
+                owner = owners.get(handle)
+                if owner is not None:
+                    return owner if owner.alive() else primary
+            live = [helper for helper in helpers if helper.alive()]
+            if not primary.open:
+                return primary
+            idle = next((helper for helper in live
+                         if not set(helper.open) - {json.dumps(HELPER_INIT_ID)}), None)
+            if idle is not None:
+                return idle
+            if len(live) < pool.most:
+                helper = start_helper()
+                if helper is not None:
+                    return helper
+            return min([primary, *live], key=lambda peer: len(peer.open))
+
+    def watch() -> None:
+        # A call past its tool's limit and the grace is answered timed out here, so the
+        # agent goes on; a helper still serving it is stopped (a new one may start).
+        while not finished.wait(1.0):
+            now = time.monotonic()
+            for peer in [primary, *helpers]:
+                for key, (at, name) in list(peer.open.items()):
+                    if name is None or name == ANSWER_GATE_TOOL or key not in calls \
+                            or key in abandoned:
+                        continue
+                    limit = call_limits.LIMITS.get(str(name), call_limits.DEFAULT_LIMIT)
+                    if now - at <= limit + POOL_GRACE_SECONDS:
+                        continue
+                    abandoned.add(key)
+                    with lock:
+                        noted.pop(key, None)
+                        if budget is not None:
+                            budget.timed_out += 1
+                    emit({"jsonrpc": "2.0", "id": json.loads(key), "result": {
+                        "content": [{"type": "text",
+                                     "text": call_limits.timed_out_text(name, limit)}],
+                        "isError": True}})
+                    if peer is not primary:
+                        peer.dead = True
+                        _kill_group(peer.child)
+
+    relay = threading.Thread(target=pump, args=(
+        primary, reader.lines() if reader is not None else child.stdout), daemon=True)
     relay.start()
+    if pool is not None:
+        threading.Thread(target=watch, daemon=True).start()
+        with lock:
+            start_helper()   # the first one starts with the session
     for line in inbound:
         try:
             message = json.loads(line)
@@ -871,6 +1098,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             continue
         if not isinstance(message, dict):
             continue
+        if message.get("method") == host_peers.IMPORT_METHOD:
+            continue   # only the gate hands the host a helper's evidence
         if early is not None and message.get("method") == "initialize" and "id" in message:
             emit({"jsonrpc": "2.0", "id": message["id"], "result": early.init_result})
             continue
@@ -884,6 +1113,15 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             # the call (the timing line, the budget, the host).
             params = {**params, "arguments": aliases.expand(params["arguments"],
                                                             unknown_aliases)}
+            message = {**message, "params": params}
+        if question is not None and message.get("method") == "tools/call" \
+                and params.get("name") == ANSWER_GATE_TOOL \
+                and isinstance(params.get("arguments"), Mapping) \
+                and isinstance(params["arguments"].get("answer"), Mapping):
+            # The answer is decided against the session's own question, whatever question
+            # the agent wrote (or left out): it sets which records the answer is about.
+            params = {**params, "arguments": {**params["arguments"], "answer": asked_as(
+                params["arguments"]["answer"], question)}}
             message = {**message, "params": params}
         if message.get("method") == "tools/call" and "id" in message:
             calls.add(json.dumps(message["id"]))
@@ -931,7 +1169,21 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 waiting.add(json.dumps(message["id"]))
                 if aliases is not None and message.get("method") == "tools/call":
                     aliased.add(json.dumps(message["id"]))
-        send(message)
+        target = route(params) if message.get("method") == "tools/call" else primary
+        if "id" in message and "method" in message:
+            target.open[json.dumps(message["id"])] = (
+                time.monotonic(), params.get("name")
+                if message.get("method") == "tools/call" else None)
+        try:
+            target.send(message)
+        except (OSError, ValueError):
+            if target is primary:
+                raise
+            target.dead = True
+            target.open.pop(json.dumps(message.get("id")), None)
+            primary.open[json.dumps(message.get("id"))] = (time.monotonic(),
+                                                           params.get("name"))
+            send(message)
         if prelude is not None and message.get("method") == "notifications/initialized":
             threading.Thread(target=prelude, args=(ask,), daemon=True).start()
             prelude = None
@@ -948,11 +1200,23 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 client_end()
             except OSError:
                 pass
+    finished.set()
+    for helper in helpers:
+        helper.close()
+        helper.dead = True
+        _kill_group(helper.child)
     if at_end is not None:
         try:
             at_end(ask)
         except Exception:  # noqa: BLE001 - the host's own submission never stops the gate
             pass
+    primary.close()
+    if pool is not None:
+        # the lines queued before (the host's own submission) are written first
+        ends = time.monotonic() + HOST_EXIT_SECONDS
+        while primary._queue is not None and not primary._queue.empty() \
+                and time.monotonic() < ends and child.poll() is None:
+            time.sleep(0.02)
     try:
         child.stdin.close()
     except OSError:
@@ -1108,6 +1372,15 @@ class Spare:
         tmp.write_text(f"{at:.3f}", encoding="utf-8")
         os.replace(tmp, self.deadline)
 
+    def set_peer_key(self, key: str) -> None:
+        """The import key of the session taking it (``operating.host_peers``)."""
+        path = self.directory / "peer-key"
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(key)
+        os.replace(tmp, path)
+
     def stop(self) -> None:
         if self.child.poll() is None:
             try:
@@ -1175,8 +1448,10 @@ class HostSpares:
                 env = {name: value for name, value in env.items()
                        if name != call_limits.DEADLINE_ENV}
                 try:
-                    child = _host_process(command, {**env, call_limits.DEADLINE_FILE_ENV:
-                                                    str(deadline)}, cwd, own_group=True)
+                    child = _host_process(command, {
+                        **env, call_limits.DEADLINE_FILE_ENV: str(deadline),
+                        host_peers.KEY_FILE_ENV: str(directory / "peer-key")},
+                        cwd, own_group=True)
                 except OSError:
                     directory.rmdir()
                     child = None
@@ -1229,7 +1504,8 @@ def spare_key(host: Any, command: Sequence[str], cwd: Any, env: Mapping[str, str
         return None
     ticket = getattr(host, "ticket_env", None)
     kept = {name: value for name, value in env.items() if name not in (
-        ticket, call_limits.DEADLINE_ENV, call_limits.DEADLINE_FILE_ENV)}
+        ticket, call_limits.DEADLINE_ENV, call_limits.DEADLINE_FILE_ENV,
+        host_peers.KEY_ENV, host_peers.KEY_FILE_ENV)}
     return json.dumps([named, list(command), None if cwd is None else str(cwd),
                        sorted(kept.items())], sort_keys=True, default=str)
 
@@ -1259,8 +1535,11 @@ class HostGate:
                  prefetch: Sequence[tuple[str, Mapping[str, Any]]] = (),
                  follow: Callable[[list[tuple[str, Mapping[str, Any], Any]]],
                                   Sequence[tuple[str, Mapping[str, Any]]]] | None = None,
-                 child: "subprocess.Popen | None" = None) -> None:
+                 child: "subprocess.Popen | None" = None,
+                 pool: "HostPool | None" = None, question: str | None = None) -> None:
         import queue
+        self.pool = pool   # the session's helper hosts (``serve_gate``), or None
+        self.question = question   # the session's question (``serve_gate``), or None
         import threading
         # ``child``: the host's server already started for this session (``HostSpares``),
         # of the same command and environment; None: started here.
@@ -1360,8 +1639,8 @@ class HostGate:
             except queue.Empty:
                 return
             if submission is not None:
-                self.result = ask(ANSWER_GATE_TOOL, {"answer": submission},
-                                  HOST_SUBMIT_SECONDS)
+                self.result = ask(ANSWER_GATE_TOOL, {"answer": asked_as(
+                    submission, self.question)}, HOST_SUBMIT_SECONDS)
 
         def client_end() -> None:
             outbound.close()   # the client reads its end: it stops
@@ -1377,7 +1656,7 @@ class HostGate:
                        # not started early: the reads follow the client's start
                        prelude=self._prelude if self.prefetch and (
                            early is None or early.init_result is None) else None,
-                       early=early)
+                       early=early, pool=self.pool, question=self.question)
         finally:
             for stream in (inbound, outbound):
                 try:
@@ -1784,7 +2063,7 @@ class ClaudeCodeAgent:
                  budget_seconds: float | None = None, max_steps: int | None = None,
                  lookup_model: str | None = None,
                  aliases: bool = True, end_at_gate: bool = True,
-                 prefetch: bool = True) -> None:
+                 prefetch: bool = True, helpers: int = 0) -> None:
         """``case_tools``, ``proposals``: the gate's options (``allowed_tools``).
         ``budget_seconds``, ``max_steps``: the session's deep-investigation budget, which
         the tool gate enforces (``deep_investigation.Budget``: research ends
@@ -1801,8 +2080,12 @@ class ClaudeCodeAgent:
         ``prefetch``: for a question it is told (``for_question``), the host makes the
         question's first reads (``fast_answer.first_reads``) in the session while Claude
         Code starts, and the task reaches the session (on stdin) with their results, so
-        its first turn needs no call for them."""
+        its first turn needs no call for them.
+        ``helpers``: the helper hosts the session may run beside its own, so its
+        independent reads run at once (``HostPool``, ``operating.host_peers``); 0: one
+        host serves every call, one at a time."""
         self.binary, self.model, self.timeout = binary, model, timeout
+        self.helpers = helpers
         self.lookup_model = lookup_model
         self.extra_args, self.spawn, self.case_tools = list(extra_args), spawn, case_tools
         self.max_turns, self.proposals = max_turns, proposals
@@ -1810,16 +2093,23 @@ class ClaudeCodeAgent:
         self.aliases = aliases
         self.end_at_gate = end_at_gate
         self.prefetch = prefetch
+        # the question names records the Ask resolved: a text search waits for a record
+        # read (``deep_investigation.Budget``); else text search is served at once
+        self.records_named = False
         self.first_reads: list[tuple[str, dict[str, Any]]] = []
         self.follow_reads: Callable[..., Any] | None = None
+        # The question the session answers (``for_question``): every answer submission is
+        # decided against it, never against one the agent writes (``serve_gate``).
+        self.asked: str | None = None
 
     def for_question(self, question: str) -> "ClaudeCodeAgent":
-        """This agent with the reads ``question`` starts with (``prefetch``); a copy, never
-        changed in place."""
-        if not self.prefetch:
-            return self
-        from operating import fast_answer
+        """This agent told ``question`` (its answer gate decides against it) with the reads
+        it starts with (``prefetch``); a copy, never changed in place."""
         told = copy.copy(self)
+        told.asked = question
+        if not self.prefetch:
+            return told
+        from operating import fast_answer
         told.first_reads = fast_answer.first_reads(question)
         told.follow_reads = (lambda done: fast_answer.follow_reads(question, done)) \
             if told.first_reads else None
@@ -1876,7 +2166,8 @@ class ClaudeCodeAgent:
             if self.budget_seconds is not None or self.max_steps is not None:
                 budget = deep.Budget(started + research if self.budget_seconds is not None
                                      else None, self.max_steps,
-                                     ends if self.budget_seconds is not None else None)
+                                     ends if self.budget_seconds is not None else None,
+                                     records_first=self.records_named)
             deadline = None if self.budget_seconds is None else started + calls_end
             # Every call's end is read from a file (``call_limits.DEADLINE_FILE_ENV``), so
             # it moves with the session's clock when the task waits for its first reads.
@@ -1884,6 +2175,7 @@ class ClaudeCodeAgent:
             if calls_file is not None:
                 calls_file.write_text(f"{deadline:.3f}", encoding="utf-8")
             server_env = self._server_env(server, calls_file)
+            pool = self._pool(host, tools, allowed, server_env)
             # The reader's host started after their last session (``HostSpares``) is
             # taken when this session is its exact key; else it starts now, as before.
             key = spare_key(host, [server["command"], *server.get("args", [])],
@@ -1892,6 +2184,11 @@ class ClaudeCodeAgent:
             spare = SPARES.take(key) if key is not None else None
             if spare is not None and deadline is not None:
                 spare.set_deadline(deadline)
+            if pool is not None:
+                if spare is not None:
+                    spare.set_peer_key(pool.key)
+                else:
+                    server_env[host_peers.KEY_ENV] = pool.key
             # The gate and the host's server run in this process (``HostGate``): Claude
             # Code reaches them through ``connect``, and the session outlives it, so the
             # host can still submit the reply to the session's own answer gate.
@@ -1903,7 +2200,8 @@ class ClaudeCodeAgent:
                     aliases=Aliases() if self.aliases else None,
                     prefetch=self.first_reads if feeds else (),
                     follow=self.follow_reads if feeds else None,
-                    child=None if spare is None else spare.child)
+                    child=None if spare is None else spare.child, pool=pool,
+                    question=self.asked)
             except BaseException:
                 if spare is not None:
                     spare.stop()
@@ -2017,12 +2315,42 @@ class ClaudeCodeAgent:
         room = float(self.timeout) - float(self.budget_seconds) - SHIFT_MARGIN_SECONDS
         return max(0.0, min(waited, room))
 
+    def _pool(self, host: Host, tools: Sequence[Mapping[str, Any]], allowed: Sequence[str],
+              server_env: Mapping[str, str]) -> "HostPool | None":
+        """The session's helper hosts (``HostPool``), or None: none asked for, a host
+        that cannot start another server of its reader, or no tool a helper may serve
+        (the read-only tools whose results are evidence, ``mcp_server.RETURNING_TOOLS``)."""
+        import secrets
+        from operating.mcp_server import RETURNING_TOOLS
+        if self.helpers <= 0 or not callable(getattr(host, "mcp_server", None)):
+            return None
+        pooled = frozenset(tool["name"] for tool in tools
+                           if tool.get("read_only") and tool["name"] in allowed
+                           and tool["name"] in RETURNING_TOOLS)
+        if not pooled:
+            return None
+        helper_env = {**server_env, host_peers.ROLE_ENV: host_peers.HELPER}
+        helper_env.pop(host_peers.KEY_ENV, None)
+
+        def start() -> "subprocess.Popen":
+            # a fresh server of the same reader: its own single-use ticket
+            server = host.mcp_server()
+            env = {**agent_environment(os.environ), **(server.get("env") or {}),
+                   **{name: value for name, value in helper_env.items()
+                      if name != getattr(host, "ticket_env", None)}}
+            cwd = None if server.get("cwd") is None else str(server.get("cwd"))
+            return _host_process([server["command"], *server.get("args", [])], env, cwd,
+                                 own_group=True)
+        return HostPool(start, pooled, secrets.token_hex(32), most=self.helpers)
+
     def _server_env(self, server: Mapping[str, Any], deadline_file: Path | None
                     ) -> dict[str, str]:
         """The host server's own environment for one session of this agent;
         ``deadline_file``: the file holding the second every call must end by."""
         env = {**(server.get("env") or {}),
                "PYTHONPATH": (server.get("env") or {}).get("PYTHONPATH", str(REPO_ROOT))}
+        if self.helpers > 0:
+            env[host_peers.ROLE_ENV] = host_peers.PRIMARY   # imports its helpers' reads
         if self.budget_seconds is not None:
             # Each tool call ends before the submit deadline, within its own limit
             # (``call_limits``, enforced by the host): no slow call outlives the session.
@@ -2292,7 +2620,8 @@ def research_stopped(final_text: str) -> str:
 
 
 def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLES),
-                gaps: str = ", ".join(GAP_STATES), today: Any = None) -> str:
+                gaps: str = ", ".join(GAP_STATES), today: Any = None,
+                route: str | None = None) -> str:
     """The agent's whole task for one question: ``pinned`` (what time the answer is
     as of), the answer contract, the citation, number, conflict and plan rules, the
     deep-investigation method (``deep_investigation.method_rule``), the answer-gate rule,
@@ -2311,7 +2640,9 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "instructions. Do not propose, approve or perform any action.",
         "Be quick: start from the reads already made for you below, make every read that "
         "does not need another's result in the same turn (parallel tool calls), and ask "
-        "for small pages; submit as soon as the question is answered.",
+        "for small pages; submit once every part of the question is answered, or no "
+        "record, link or document you can still open in your time could settle what is "
+        "left.",
         pinned,
         "Cite every value with the citation handle a tool returned (api://, bc://, "
         "graph-mail://, sharepoint://, original://) and the field path in that record "
@@ -2406,7 +2737,7 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         + CONFLICT_REASON + " gap. Its answerability.state is yours. Read further only to fill "
         "a value it left null; a gap about a link the question does not ask about does not "
         "make the answer partial.",
-        deep.method_rule(lookup=deep.is_lookup(question)),
+        deep.method_for(question, route),
         deep.answer_shape_rule(),
         ANSWER_GATE_RULE,
         REPLY_RULE,
@@ -2438,10 +2769,11 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
     ])
 
 
-def ask_prompt(question: str) -> str:
+def ask_prompt(question: str, route: str | None = None) -> str:
     """The task for a question asked about the sources as they stand now (the app's Ask;
-    the scoreboard's untimed cards get the same text)."""
-    return task_prompt(question, UNPINNED)
+    the scoreboard's untimed cards get the same text). ``route``: the front door's
+    reading (``operating.front_door``), which sets the method and budget."""
+    return task_prompt(question, UNPINNED, route=route)
 
 
 # --------------------------------------------------------------------------- the host
@@ -2461,7 +2793,8 @@ GRAPH_ENV = ("MICROSOFT_GRAPH_TENANT_ID", "MICROSOFT_GRAPH_CLIENT_ID",
 # them as the API's own process does, so PLX_SEARCH=hybrid reaches the agent's tools.
 SEARCH_ENV = ("PLX_SEARCH", "PLX_PG_DSN", "PLX_SEARCH_WEIGHTS", "PLX_SEARCH_OWNERS",
               "PLX_SEARCH_MODELS", "PLX_SEARCH_MODEL_DIR",
-              "PLX_RERANK", "PLX_RERANK_MODEL", "PLX_EMBED_MODEL", "PLX_EMBED_ALLOW_REMOTE",
+              "PLX_RERANK", "PLX_RERANK_MODEL", "PLX_RERANK_ONNX", "PLX_RERANK_THREADS",
+              "PLX_EMBED_MODEL", "PLX_EMBED_ALLOW_REMOTE",
               "ORT_DISABLE_TELEMETRY")
 LIST_SECONDS = 180.0   # the host's start-up and its tool list
 

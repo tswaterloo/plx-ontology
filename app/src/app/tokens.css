@@ -1,102 +1,138 @@
-/* Design tokens. Plain office software: white paper, black text, one blue for links and
-   buttons, colour only where it means a status. One sans face (Public Sans) with tabular
-   figures. Components read these through Tailwind's @theme names below. Every
-   text/background pair meets WCAG AA in its theme. */
+/* Design tokens. A desktop app's palette: a light grey sidebar, white panes split by
+   hairlines, ink text in three greys, one blue for selection, focus and the primary
+   button, and status colours that mean something (late, at risk, confirmed, suspect).
+   The oak of the bench icon is the brand, used for the mark only. Host Grotesk with
+   tabular figures. Every text/background pair meets WCAG AA in its theme. */
 
 :root {
-  --bg: #ffffff;
-  --bg-subtle: #f5f5f4; /* sidebar, table header */
-  --surface: #fafafa; /* inputs, hovered rows */
-  --surface-2: #efefee; /* sunken fills, active nav */
+  --bg: #ffffff; /* panes */
+  --bg-subtle: #f6f6f5; /* sidebar, window chrome */
+  --sidebar: #f6f6f5;
+  --surface: #f7f7f6; /* inputs, wells, inspector */
+  --surface-2: #eeeeec; /* hover, sunken fills */
   --raised: #ffffff; /* popovers, menus, drawer */
-  --fg: #1b1b1b;
-  --fg-muted: #545454; /* 7.5:1 */
-  --fg-faint: #6a6a6a; /* 5.4:1 */
-  --border: #e3e3e1;
-  --border-strong: #c9c9c6;
-  --rule-ink: #c9c9c6;
-  --control-border: #8a8a86; /* 3.4:1 */
-  --accent: #1d5ea8; /* links, buttons, focus: 6.6:1 */
+  --hover: rgb(0 0 0 / 0.04);
+  --list: #f8f8f7; /* the list pane, so its selected row can sit on it as a sheet */
+  --row-on: #ffffff;
+  --lift: 0 0 0 0.5px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.08), 0 4px 12px -6px rgb(0 0 0 / 0.1);
+  --selected: #e4edfd; /* the selected row of a list */
+  --selected-strong: #0a64d8; /* the selected row while its list has focus */
+  --fg: #1d1d1f; /* 16:1 */
+  --fg-muted: #636366; /* 6:1 */
+  --fg-faint: #6e6e72; /* 4.6:1 on the sidebar */
+  --border: #e6e6e3;
+  --border-strong: #d4d4d0;
+  --rule-ink: #d4d4d0;
+  --control-border: #c9c9c5;
+  --accent: #0a64d8; /* 5.5:1 */
   --accent-fg: #ffffff;
-  --accent-soft: #e7eef8;
-  --ring: #1d5ea8;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 4px 12px rgb(0 0 0 / 0.08); /* popovers, menus, drawer only */
+  --accent-soft: #e4edfd;
+  --ring: #0a64d8;
+  --oak: #a8642c;
+  --shadow: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 8px 24px -4px rgb(0 0 0 / 0.14);
+  --shadow-sm: 0 0 0 0.5px rgb(0 0 0 / 0.1), 0 1px 2px rgb(0 0 0 / 0.06);
 
   /* Status: fg (text), soft (fill), line (border). */
-  --late: #b42318;
-  --late-soft: #fbeae8;
-  --late-line: #eeb3ac;
-  --risk: #8a5100;
-  --risk-soft: #fbf1dd;
-  --risk-line: #e2c07c;
-  --ok: #1d6a35;
-  --ok-soft: #e7f2e9;
-  --ok-line: #a3cbad;
-  --suspect: #6a3a87; /* a data problem must not look like a business problem */
-  --suspect-soft: #f3ebf7;
-  --suspect-line: #c9b1d9;
-  --new: #1d5ea8;
-  --new-soft: #e7eef8;
-  --new-line: #aac3e3;
-  --neutral: #545454;
-  --neutral-soft: #f0f0ef;
-  --neutral-line: #d1d1ce;
+  --late: #c4281c;
+  --late-soft: #fdecea;
+  --late-line: #f2b8b2;
+  --risk: #9a5b00;
+  --risk-soft: #fdf3e0;
+  --risk-line: #ecc98a;
+  --ok: #1f7a3d;
+  --ok-soft: #e6f4ea;
+  --ok-line: #a6d4b3;
+  --suspect: #7a3fa0; /* a data problem must not look like a business problem */
+  --suspect-soft: #f4ecfa;
+  --suspect-line: #d3b8e6;
+  --new: #0a64d8;
+  --new-soft: #e4edfd;
+  --new-line: #a9c6f5;
+  --neutral: #636366;
+  --neutral-soft: #f0f0ee;
+  --neutral-line: #d4d4d0;
 
-  --fs-display: 20px;
-  --lh-display: 26px;
-  --fs-title: 16px;
-  --lh-title: 22px;
-  --fs-answer: 15px;
-  --lh-answer: 23px;
-  --fs-stat: 20px;
-  --lh-stat: 26px;
+  /* dots: the brighter tone of each status, for 6 px marks */
+  --dot-late: #e5484d;
+  --dot-risk: #f0a020;
+  --dot-ok: #30a46c;
+  --dot-neutral: #b4b4b0;
+
+  --fs-display: 22px;
+  --lh-display: 28px;
+  --fs-title: 15px;
+  --lh-title: 20px;
+  --fs-answer: 14px;
+  --lh-answer: 22px;
+  --fs-stat: 17px;
+  --lh-stat: 22px;
 }
 
 .dark {
-  --bg: #161616;
-  --bg-subtle: #1c1c1c;
-  --surface: #1f1f1f;
-  --surface-2: #272727;
-  --raised: #222222;
-  --fg: #ebebeb; /* 15:1 */
-  --fg-muted: #ababab; /* 8.3:1 */
-  --fg-faint: #8f8f8f; /* 5.9:1 */
-  --border: #2d2d2d;
-  --border-strong: #444444;
-  --rule-ink: #444444;
-  --control-border: #767676;
-  --accent: #8ab4e8;
-  --accent-fg: #0f1722;
-  --accent-soft: #1b2738;
-  --ring: #8ab4e8;
-  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.4);
+  --bg: #19191b;
+  --bg-subtle: #1f1f22;
+  --sidebar: #1f1f22;
+  --surface: #222225;
+  --surface-2: #2a2a2e;
+  --raised: #2a2a2d;
+  --hover: rgb(255 255 255 / 0.05);
+  --list: #1c1c1f;
+  --row-on: #2c2c31;
+  --lift: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 1px 3px rgb(0 0 0 / 0.5);
+  --selected: #1d3354;
+  --selected-strong: #0a6fe8;
+  --fg: #f2f2f4; /* 16:1 */
+  --fg-muted: #a1a1a6; /* 7.4:1 */
+  --fg-faint: #8b8b91; /* 4.8:1 on the sidebar */
+  --border: #2c2c30;
+  --border-strong: #3a3a3f;
+  --rule-ink: #3a3a3f;
+  --control-border: #48484e;
+  --accent: #4b9bff;
+  --accent-fg: #ffffff;
+  --accent-soft: #1d3354;
+  --ring: #4b9bff;
+  --oak: #d9965a;
+  --shadow: 0 0 0 0.5px rgb(255 255 255 / 0.1), 0 10px 30px -4px rgb(0 0 0 / 0.6);
+  --shadow-sm: 0 0 0 0.5px rgb(255 255 255 / 0.08), 0 1px 2px rgb(0 0 0 / 0.4);
 
-  --late: #f19a8f;
-  --late-soft: #3a1c18;
-  --late-line: #6e332c;
-  --risk: #e2b660;
-  --risk-soft: #33280f;
+  --late: #ff7b72;
+  --late-soft: #3b1d1b;
+  --late-line: #6e2f2a;
+  --risk: #f0b45c;
+  --risk-soft: #35290f;
   --risk-line: #6a5221;
-  --ok: #8fc79c;
-  --ok-soft: #1a2a1e;
-  --ok-line: #3e5e45;
-  --suspect: #cfa9e0;
-  --suspect-soft: #2c1f33;
+  --ok: #6fcf8f;
+  --ok-soft: #1a2d20;
+  --ok-line: #33573f;
+  --suspect: #cfa9e8;
+  --suspect-soft: #2d2036;
   --suspect-line: #5a4166;
-  --new: #8ab4e8;
-  --new-soft: #1b2738;
-  --new-line: #34507a;
-  --neutral: #ababab;
-  --neutral-soft: #242424;
-  --neutral-line: #444444;
+  --new: #4b9bff;
+  --new-soft: #1d3354;
+  --new-line: #2f5590;
+  --neutral: #a1a1a6;
+  --neutral-soft: #26262a;
+  --neutral-line: #3a3a3f;
+
+  --dot-late: #ff6369;
+  --dot-risk: #f5b142;
+  --dot-ok: #46c27f;
+  --dot-neutral: #5d5d63;
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-bg-subtle: var(--bg-subtle);
+  --color-sidebar: var(--sidebar);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-list: var(--list);
+  --color-row-on: var(--row-on);
+  --color-selected: var(--selected);
+  --color-selected-strong: var(--selected-strong);
   --color-fg: var(--fg);
   --color-muted: var(--fg-muted);
   --color-faint: var(--fg-faint);
@@ -108,6 +144,7 @@
   --color-accent-fg: var(--accent-fg);
   --color-accent-soft: var(--accent-soft);
   --color-ring: var(--ring);
+  --color-oak: var(--oak);
 
   --color-late: var(--late);
   --color-late-soft: var(--late-soft);
@@ -127,6 +164,10 @@
   --color-neutral: var(--neutral);
   --color-neutral-soft: var(--neutral-soft);
   --color-neutral-line: var(--neutral-line);
+  --color-dot-late: var(--dot-late);
+  --color-dot-risk: var(--dot-risk);
+  --color-dot-ok: var(--dot-ok);
+  --color-dot-neutral: var(--dot-neutral);
 
   /* Older tone names, kept as aliases of the status palette. */
   --color-good: var(--ok);
@@ -138,47 +179,50 @@
   --color-info: var(--new);
   --color-info-soft: var(--new-soft);
 
-  --font-sans: var(--font-public-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+  --font-sans: var(--font-host), -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --font-serif: var(--font-sans);
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --shadow-card: none;
   --shadow-pop: var(--shadow);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-lift: var(--lift);
 
-  /* Small radii only: 3 for everything, 4 for popovers. */
-  --radius-xs: 2px;
-  --radius-sm: 3px;
-  --radius-md: 3px;
-  --radius-lg: 3px;
-  --radius-xl: 4px;
-  --radius-2xl: 4px;
-  --radius-3xl: 4px;
+  /* App radii: 6 for rows and controls, 8 for wells and cards, 12 for popovers. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 12px;
+  --radius-3xl: 16px;
 
-  /* Type: one sans family; weight and size carry the hierarchy. Nothing below 12 px. */
+  /* Type: 13 px is the app's body, as in a desktop app; weight and grey carry the rest. */
   --text-display: var(--fs-display);
   --text-display--line-height: var(--lh-display);
   --text-display--font-weight: 600;
+  --text-display--letter-spacing: -0.015em;
   --text-title: var(--fs-title);
   --text-title--line-height: var(--lh-title);
   --text-title--font-weight: 600;
   --text-answer: var(--fs-answer);
   --text-answer--line-height: var(--lh-answer);
   --text-answer--font-weight: 400;
-  --text-section: 14px;
-  --text-section--line-height: 20px;
+  --text-section: 13px;
+  --text-section--line-height: 18px;
   --text-section--font-weight: 600;
-  --text-body: 14px;
-  --text-body--line-height: 21px;
-  --text-row: 14px;
-  --text-row--line-height: 20px;
+  --text-body: 13px;
+  --text-body--line-height: 20px;
+  --text-row: 13px;
+  --text-row--line-height: 18px;
   --text-meta: 12px;
-  --text-meta--line-height: 17px;
+  --text-meta--line-height: 16px;
   --text-label: 12px;
   --text-label--line-height: 16px;
   --text-label--font-weight: 500;
   --text-stat: var(--fs-stat);
   --text-stat--line-height: var(--lh-stat);
   --text-stat--font-weight: 600;
-  --text-eyebrow: 12px;
-  --text-eyebrow--line-height: 16px;
+  --text-eyebrow: 11px;
+  --text-eyebrow--line-height: 14px;
   --text-eyebrow--font-weight: 500;
 }

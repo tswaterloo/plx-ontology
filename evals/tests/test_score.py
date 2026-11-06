@@ -2570,5 +2570,16 @@ class ServedHandleContractTests(unittest.TestCase):
             with self.subTest(result=result):
                 self.assertEqual(self.served("plx.read", result, arguments), set())
 
+    def test_a_listed_attachment_is_evidence_only_once_read(self):
+        from operating import answer_gate
+        listing = {"citation": "graph-mail://m/AAA", "status": "resolved",
+                   "attachments": [{"citation": BC_A, "name": "po.pdf",
+                                    "content_type": "application/pdf", "text_read": True}]}
+        self.assertEqual(self.served("plx.read", listing), {"graph-mail://m/AAA"})
+        self.assertNotIn(BC_A, answer_gate.evidence_handles("plx.read", listing))
+        # read by its citation, it is evidence like any read row
+        self.assertEqual(self.served("plx.read", {"citation": BC_A, "status": "resolved"},
+                                     {"citation": "@A1"}), {BC_A})
+
 if __name__ == "__main__":
     unittest.main()

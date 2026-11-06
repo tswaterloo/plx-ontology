@@ -243,3 +243,29 @@ class FloatNoise(unittest.TestCase):
         self.assertEqual((shown.text, shown.sources[0].fields["directUnitCost"],
                           shown.sources[0].handle),
                          ("Unit cost: 116.25", "116.25000000000001", "bc://x/1"))
+
+
+class PeriodNoticeTest(unittest.TestCase):
+    """An answer to a question about a period the data does not reach says so first."""
+
+    def test_period_past_the_data_or_a_lagging_source_is_said(self):
+        from datetime import datetime, timezone
+        from operator_api import models as m
+        from operator_api.presentation import period_notice
+        now = datetime(2026, 11, 5, 22, 0, tzinfo=timezone.utc)
+        fresh = m.Freshness(as_of="2026-11-05T20:34:00Z", sources=[
+            m.FreshnessSource(system="Email", as_of="2026-11-05T20:34:00Z"),
+            m.FreshnessSource(system="Teams", as_of="2026-10-30T02:18:00Z")])
+        self.assertEqual(
+            period_notice("What did the supplier send today?", fresh, now),
+            "The data reaches 5 Nov, 3:34 p.m., before the end of the period asked, today "
+            "(Nov 5); anything later is not in this answer. Teams is read only to 29 Oct.")
+        self.assertEqual(
+            period_notice("What was invoiced last month?", fresh, now),
+            "Teams is read only to 29 Oct, before the end of the period asked, last month "
+            "(Oct 1 through Oct 31); its later records are not in this answer.")
+        self.assertIsNone(period_notice("Who buys for the customer?", fresh, now))
+        self.assertIsNone(period_notice("What is due next week?", fresh, now))  # not read
+        current = m.Freshness(as_of="2026-11-05T21:55:00Z", sources=[
+            m.FreshnessSource(system="Email", as_of="2026-11-05T21:55:00Z")])
+        self.assertIsNone(period_notice("What came in today?", current, now))

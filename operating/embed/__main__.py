@@ -7,7 +7,8 @@ counts per kind, chunk size distribution, unknown-key and withheld counts, dupli
 and a cost/time estimate; nothing is written. Prints one JSON report (counts and timings
 only: never text, never an id of an excluded person, never a key).
 
-Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster).
+Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster),
+``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``).
 Exit codes: 0 done, 2 refused (people exclusion unavailable, remote embedding not
 allowed, schema missing), 1 failed.
 """
@@ -15,31 +16,29 @@ allowed, schema missing), 1 failed.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import itertools
 import json
-import math
 import os
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Sequence
 
-from operating.chunking import KINDS, Chunk
+from operating.chunking import KINDS
 from operating.chunking import dedup as dd
-from operating.chunking.entities import ENTITY_TYPES, entities
-from operating.chunking.originals import OriginalsChunker
-from operating.chunking.permissions import load_exclusion, unit_row
-from operating.chunking.projection import (Counts, ProjectionChunker, open_ro,
+from operating.chunking.entities import ENTITY_TYPES, entities, participants
+from operating.chunking.permissions import unit_row
+from operating.chunking.projection import (Counts, open_ro,
                                            withheld_messages)
-from operating.chunking.records import RecordChunker
 
 from . import config
 from . import models as md
 from . import store as st
+from .shards import (PERSON_KINDS, WRITE_BATCH, _exclusion, _Tally, chunk_shard,
+                     produce)
 
-PERSON_KINDS = frozenset({"mail", "attachment", "sharepoint", "sheet_row", "map_stage",
-                          "original", "teams"})
-WRITE_BATCH = 2000
 BULK_MIN = 20_000      # pending texts above which the HNSW index is rebuilt once after
 EMBED_BATCH = 256
 ENTITY_TYPES_ALL = sorted({etype for etype, _ in ENTITY_TYPES.values()})
@@ -47,27 +46,6 @@ ENTITY_TYPES_ALL = sorted({etype for etype, _ in ENTITY_TYPES.values()})
 
 def _projection_path(state: Path, given: str | None) -> Path:
     return Path(given) if given else state / "projection" / "ontology.sqlite"
-
-
-def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
-            kinds: Sequence[str], limit: int | None) -> Iterator[Chunk]:
-    """Every chunk of ``kinds`` (a limit is spread evenly over the kinds asked)."""
-    conn = open_ro(projection)
-    per_kind = None if limit is None else max(1, math.ceil(limit / len(kinds)))
-    projection_kinds = [k for k in kinds if k in {"mail", "attachment", "sharepoint", "sheet_row",
-                                                  "map_stage", "teams", "mc_task"}]
-    chunker = ProjectionChunker(conn, exclusion, counts)
-    for kind in projection_kinds if per_kind is not None else [None]:
-        asked = [kind] if kind else projection_kinds
-        if asked:
-            yield from chunker.chunks(asked, per_kind)
-    records = RecordChunker(conn, exclusion, counts)
-    record_kinds = [k for k in kinds if k in {"portal_text", "bc_text", "record_text", "mc_task"}]
-    if record_kinds:
-        yield from records.record_chunks(record_kinds, per_kind)
-    original_kinds = [k for k in kinds if k in {"original", "map_stage", "sheet_row"}]
-    if original_kinds:
-        yield from OriginalsChunker(state, exclusion, counts).chunks(original_kinds, per_kind)
 
 
 def _quantiles(values: Sequence[int]) -> dict[str, int]:
@@ -84,14 +62,6 @@ def _settings(args: argparse.Namespace) -> dict[str, str]:
     if args.model:
         values["PLX_EMBED_MODEL"] = args.model
     return values
-
-
-def _exclusion(state: Path, values: dict[str, str]) -> Any:
-    env = dict(os.environ)
-    for name in ("PLX_EXCLUDED_PEOPLE_OIDS", "PLX_EXCLUDED_PEOPLE_FILE"):
-        if values.get(name) and name not in env:
-            env[name] = values[name]
-    return load_exclusion(state, env)
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -128,22 +98,48 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             report["purged"]["sender_withheld_objects"] = len(withheld)
             report["purged"]["sender_rows"] = st.purge_objects(conn, withheld)
         writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
-    batch: list[Chunk] = []
-    for chunk in produce(state, _projection_path(state, args.projection), exclusion, counts,
-                         kinds, args.limit):
-        sizes.setdefault(chunk.kind, []).append(len(chunk.body))
-        headers.append(len(chunk.header))
-        dup_keys[chunk.dup_key] += 1
-        units.add(chunk.audience_key)
-        total_chars += len(chunk.header) + len(chunk.body) + 2
+    projection = _projection_path(state, args.projection)
+    shards = max(1, int(getattr(args, "chunk_workers", 1) or 1))
+    window = getattr(args, "window_days", None)
+    since = ((dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=window)).date().isoformat()
+             if window else None)
+    if shards == 1:
+        tally = _Tally(since)
+        tally.take(produce(state, projection, exclusion, counts, kinds, args.limit,
+                           since=since), writer)
+        parts = [tally]
         if writer is not None:
-            batch.append(chunk)
-            if len(batch) >= WRITE_BATCH:
-                writer.write(batch)
-                batch = []
-    if writer is not None and batch:
-        writer.write(batch)
+            writer.mark_seen(tally.outside)
+    else:
+        # Each process chunks every n-th document and writes its own rows; the run then
+        # knows every row produced (``seen``), so a full pass still deletes what is gone.
+        from concurrent.futures import ProcessPoolExecutor
+        import multiprocessing as mp
+        job = {"state": str(state), "projection": str(projection), "kinds": kinds,
+               "limit": args.limit, "values": values, "dry": bool(args.dry),
+               "dsn": values.get("PLX_PG_DSN") or config.DEFAULT_DSN, "window_since": since}
+        with ProcessPoolExecutor(shards, mp_context=mp.get_context("spawn")) as pool:
+            parts = list(pool.map(chunk_shard, [(job, i, shards) for i in range(shards)]))
+        for part in parts:
+            counts.merge(part.counts)
+        if writer is not None:
+            writer.mark_seen(sorted({cid for part in parts for cid in part.seen}))
+    for part in parts:
+        for kind, values_ in part.sizes.items():
+            sizes.setdefault(kind, []).extend(values_)
+        headers.extend(part.headers)
+        dup_keys.update(part.dup_keys)
+        units.update(part.units)
+        total_chars += part.total_chars
+    if writer is not None and shards > 1:
+        for part in parts:
+            writer.inserted += part.written[0]
+            writer.updated += part.written[1]
+            writer.unchanged += part.written[2]
+            writer.units_recorded += part.written[3]
     produced = sum(len(v) for v in sizes.values())
+    if since:
+        report["window"] = {"since": since, "not_written": sum(len(p.outside) for p in parts)}
     report["chunking"] = {
         **counts.as_dict(), "seconds": round(time.monotonic() - started, 1),
         "chunks_total": produced,
@@ -170,20 +166,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                        "withheld_units_deleted": writer.delete_units(counts.withheld)}
     full = args.limit is None
     if full:
-        report["stale"] = writer.delete_stale(kinds, allow_shrink=args.allow_shrink)
+        report["stale"] = writer.delete_stale(kinds, allow_shrink=args.allow_shrink,
+                                              keep_before=since)
     if not args.no_entities:
         ecounts = Counts()
         ebatch: list[Any] = []
         n = 0
-        for entity in entities(open_ro(_projection_path(state, args.projection)), ecounts,
-                               limit=args.limit, exclusion=exclusion):
+        entities_started = time.monotonic()
+        source = open_ro(_projection_path(state, args.projection))
+        # the projection's own records, then every mail and Teams participant
+        for entity in itertools.chain(
+                entities(source, ecounts, limit=args.limit, exclusion=exclusion),
+                participants(source, ecounts, exclusion=exclusion, limit=args.limit)):
             ebatch.append(entity)
             n += 1
             if len(ebatch) >= WRITE_BATCH:
                 writer.write_entities(ebatch)
                 ebatch = []
         writer.write_entities(ebatch)
-        report["entities"] = {"total": n, **ecounts.as_dict()}
+        report["entities"] = {"total": n, **ecounts.as_dict(),
+                              "seconds": round(time.monotonic() - entities_started, 1)}
         report["write"]["units_recorded"] = writer.units_recorded
         if full:
             report["entities"]["stale"] = writer.delete_stale_entities(
@@ -192,7 +194,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         report["dedup"] = dedup(writer.conn, None if full else kinds)
     if not args.no_embed:
         report["embed"] = embed(writer.conn, values, kinds=None if full else kinds,
-                                limit=args.limit, order=args.order, workers=args.workers)
+                                limit=args.limit, order=args.order, workers=args.workers,
+                                bulk=False if args.keep_index else None)
+    report["seconds"] = round(time.monotonic() - started, 1)
     return report
 
 
@@ -211,12 +215,15 @@ def _dsn_of(conn: Any) -> str:
 
 def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
           limit: int | None, embedder: md.Embedder | None = None, order: str = "recent",
-          workers: int = 1, bulk: bool | None = None) -> dict[str, Any]:
+          workers: int = 1, bulk: bool | None = None,
+          budget_seconds: float | None = None) -> dict[str, Any]:
     """Embed every pending content hash (``limit``: the first that many in ``order``),
     reusing a vector another row of the same content already has. ``workers`` > 1: that
     many processes, each with ``PLX_EMBED_THREADS`` threads (default: physical cores /
     workers). ``bulk`` (default: more than ``BULK_MIN`` pending): the HNSW index is dropped
-    for the load and rebuilt after (``operating.pg.bulk``), also when the load fails."""
+    for the load and rebuilt after (``operating.pg.bulk``), also when the load fails.
+    ``budget_seconds``: no batch is started after that long (each stored batch stays; the
+    next run continues with what is still pending)."""
     from concurrent.futures import ProcessPoolExecutor
     import multiprocessing as mp
     dim = st.column_dim(conn)
@@ -267,7 +274,10 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
                 chars += sum(len(t) for _, t in found)
 
         for shas in batches:
+            if budget_seconds is not None and time.monotonic() - started > budget_seconds:
+                break
             found = st.texts_for(conn, shas)
+            conn.commit()     # never hold a read transaction while the batch encodes
             texts = [t for _, t in found]
             inflight.append((found, pool.submit(md.worker_encode, texts) if pool is not None
                              else embedder.encode(texts)))
@@ -300,6 +310,10 @@ def embed(conn: Any, values: dict[str, str], *, kinds: Sequence[str] | None,
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["follow"]:
+        from .follow import main as follow_main
+        return follow_main(argv[1:])
     parser = argparse.ArgumentParser(prog="python3 -m operating.embed")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("reindex", help="rebuild the chunks' HNSW index (after a bulk load)")
@@ -311,7 +325,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         p.add_argument("--limit", type=int)
         p.add_argument("--state")
         p.add_argument("--model")
+        # A store that serves searches meanwhile keeps its vector index: rows are added
+        # to it as they are embedded instead of the index being dropped and rebuilt.
+        p.add_argument("--keep-index", action="store_true")
         if name == "run":
+            p.add_argument("--chunk-workers", type=int, default=1,
+                           help="processes chunking the projection side by side")
+            p.add_argument("--window-days", type=int,
+                           help="read and write mail of the last N days only (older mail "
+                                "already stored is kept); Teams and documents in full")
             p.add_argument("--projection")
             p.add_argument("--dry", action="store_true")
             p.add_argument("--no-embed", action="store_true")
@@ -332,7 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)
             st.require_schema(conn)
             report = (embed(conn, values, kinds=args.kind, limit=args.limit, order=args.order,
-                            workers=args.workers)
+                            workers=args.workers, bulk=False if args.keep_index else None)
                       if args.command == "embed" else dedup(conn, args.kind))
     except st.SchemaMissing as missing:
         print(json.dumps({"refused": str(missing)}))

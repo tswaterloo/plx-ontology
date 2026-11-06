@@ -21,6 +21,7 @@ from typing import Any, Iterable, Iterator, Sequence
 import numpy as np
 
 from operating.chunking import Chunk
+from operating.chunking.projection import WINDOW_SCHEMES
 from operating.chunking.entities import Entity
 
 SHRINK_GUARD = 0.5
@@ -159,7 +160,9 @@ class ChunkWriter:
             out += f", name_embed_model = CASE WHEN {same} THEN t.name_embed_model END"
         return out
 
-    def write_entities(self, entities: Sequence[Entity]) -> None:
+    def write_entities(self, entities: Sequence[Entity], *, new_only: bool = False) -> None:
+        """Upsert ``entities``; ``new_only``: rows not stored yet are added, stored ones
+        are left as they are (a row-delta layer sees only part of what names them)."""
         if not entities:
             return
         self._units(e.audience_key for e in entities)
@@ -173,14 +176,24 @@ class ChunkWriter:
         cols = ", ".join(_ENTITY_COLUMNS)
         changed = " OR ".join(f"t.{col} IS DISTINCT FROM EXCLUDED.{col}"
                               for col in _ENTITY_COLUMNS if col != "entity_id")
+        conflict = "DO NOTHING" if new_only else (
+            "DO UPDATE SET " + ", ".join(f"{col} = EXCLUDED.{col}" for col in _ENTITY_COLUMNS
+                                         if col != "entity_id")
+            + self._name_vector_reset + " WHERE " + changed)
         cur.execute(
             f"INSERT INTO search.entities AS t ({cols}) SELECT DISTINCT ON (entity_id) {cols} "
-            f"FROM stage_entities ORDER BY entity_id ON CONFLICT (entity_id) DO UPDATE SET "
-            + ", ".join(f"{col} = EXCLUDED.{col}" for col in _ENTITY_COLUMNS
-                        if col != "entity_id")
-            + self._name_vector_reset + " WHERE " + changed)
+            f"FROM stage_entities ORDER BY entity_id ON CONFLICT (entity_id) {conflict}")
         cur.execute("INSERT INTO seen_entities SELECT entity_id FROM stage_entities "
                     "ON CONFLICT DO NOTHING")
+        self.conn.commit()
+
+    def mark_seen(self, chunk_ids: Sequence[str]) -> None:
+        """Record rows other connections wrote this run (parallel chunking shards), so a
+        full pass's ``delete_stale`` keeps them."""
+        cur = self.conn.cursor()
+        with cur.copy("COPY seen_chunks (chunk_id) FROM STDIN") as copy:
+            for chunk_id in dict.fromkeys(chunk_ids):
+                copy.write_row((chunk_id,))
         self.conn.commit()
 
     def delete_units(self, audience_keys: Iterable[str]) -> int:
@@ -195,21 +208,28 @@ class ChunkWriter:
         self.conn.commit()
         return n
 
-    def delete_stale(self, kinds: Sequence[str], *, allow_shrink: bool = False
-                     ) -> dict[str, Any]:
-        """Delete rows of ``kinds`` this full pass did not produce (module docstring)."""
+    def delete_stale(self, kinds: Sequence[str], *, allow_shrink: bool = False,
+                     keep_before: str | None = None) -> dict[str, Any]:
+        """Delete rows of ``kinds`` this full pass did not produce (module docstring).
+        ``keep_before`` (ISO date, a windowed pass): mail rows dated before it, or
+        undated, were not read and are kept."""
         out: dict[str, Any] = {}
+        kept = ("" if not keep_before else
+                " AND NOT (c.source_handle LIKE ANY(%(windowed)s) AND (c.occurred_at IS NULL "
+                "OR c.occurred_at < %(before)s::date))")
+        params = {"windowed": [f"{s}%" for s in WINDOW_SCHEMES], "before": keep_before}
         for kind in kinds:
             total, stale = self.conn.execute(
                 "SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM seen_chunks "
-                "s WHERE s.chunk_id = c.chunk_id)) FROM search.chunks c WHERE kind = %s",
-                (kind,)).fetchone()
+                f"s WHERE s.chunk_id = c.chunk_id)) FROM search.chunks c WHERE kind = %(kind)s"
+                f"{kept}", dict(params, kind=kind)).fetchone()
             if total and stale / total > SHRINK_GUARD and not allow_shrink:
                 out[kind] = {"refused": "shrink_guard", "stale": stale, "total": total}
                 continue
             deleted = self.conn.execute(
-                "DELETE FROM search.chunks c WHERE kind = %s AND NOT EXISTS "
-                "(SELECT 1 FROM seen_chunks s WHERE s.chunk_id = c.chunk_id)", (kind,)).rowcount
+                "DELETE FROM search.chunks c WHERE kind = %(kind)s AND NOT EXISTS "
+                f"(SELECT 1 FROM seen_chunks s WHERE s.chunk_id = c.chunk_id){kept}",
+                dict(params, kind=kind)).rowcount
             out[kind] = {"deleted": deleted}
         self.conn.commit()
         return out
@@ -230,6 +250,22 @@ class ChunkWriter:
                 "seen_entities s WHERE s.entity_id = e.entity_id)", (etype,)).rowcount}
         self.conn.commit()
         return out
+
+
+def delete_replaced(conn: Any, produced: Iterable[tuple[str, str]], keep: Iterable[str]
+                    ) -> int:
+    """Rows of each (object, kind) a row-delta layer chunked again that it did not produce:
+    the chunks of that object's earlier version. An object the layer holds no text for
+    keeps its rows (the next generation pass decides)."""
+    pairs = sorted(set(produced))
+    if not pairs:
+        return 0
+    n = conn.execute(
+        "DELETE FROM search.chunks c USING unnest(%s::text[], %s::text[]) AS p(oid, kind) "
+        "WHERE c.object_id = p.oid AND c.kind = p.kind AND NOT (c.chunk_id = ANY(%s))",
+        ([o for o, _ in pairs], [k for _, k in pairs], sorted(set(keep)))).rowcount
+    conn.commit()
+    return n
 
 
 def purge_excluded(conn: Any, exclusion: Any) -> dict[str, int]:
@@ -278,9 +314,11 @@ def reuse_embeddings(conn: Any, model: str) -> int:
     n = conn.execute(
         "UPDATE search.chunks c SET embedding = d.embedding, embed_model = d.embed_model "
         "FROM (SELECT DISTINCT ON (content_sha) content_sha, embedding, embed_model FROM "
-        "search.chunks WHERE embed_model = %s AND embedding IS NOT NULL) d "
+        "search.chunks WHERE embed_model = %s AND embedding IS NOT NULL AND content_sha IN "
+        "(SELECT content_sha FROM search.chunks WHERE embedding IS NULL OR embed_model IS "
+        "DISTINCT FROM %s)) d "
         "WHERE c.content_sha = d.content_sha AND (c.embedding IS NULL OR "
-        "c.embed_model IS DISTINCT FROM %s)", (model, model)).rowcount
+        "c.embed_model IS DISTINCT FROM %s)", (model, model, model)).rowcount
     conn.commit()
     return n
 

@@ -213,6 +213,21 @@ describe("AnswerCard", () => {
     expect(screen.getByTestId("freshness-behind")).not.toHaveTextContent("Portal");
   });
 
+  it("warns when search cannot find records captured after its index", () => {
+    const lagging = {
+      as_of: "2026-11-05T06:51:00Z",
+      sources: [
+        { system: "Email" as const, as_of: "2026-11-05T06:51:00Z", searchable_to: "2026-10-29T15:16:00Z", stale: false },
+        { system: "Teams" as const, as_of: "2026-11-04T22:00:00Z", searchable_to: "2026-10-28T15:00:00Z", stale: false },
+        { system: "File" as const, as_of: "2026-11-04T10:00:00Z", searchable_to: "2026-11-04T09:00:00Z", stale: false },
+      ],
+    };
+    render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: { ...answer, freshness: lagging } }} />);
+    const lag = screen.getByTestId("freshness-search-lag");
+    expect(lag).toHaveTextContent("searchable text: Teams to 28 Oct, Email to 29 Oct");
+    expect(lag).not.toHaveTextContent("File");
+  });
+
   it("never repeats the full-read label on a card: the page says it once", () => {
     const full = { ...answer, access_label: "Viewing with full-read access" };
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer: full }} />);

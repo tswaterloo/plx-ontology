@@ -2411,19 +2411,23 @@ def handle_keys() -> tuple[re.Pattern[str], frozenset[str]]:
 def returned_handles(result: Any) -> set[str]:
     """The handles ``result`` (one tool result) returns as records: each whole string in the
     contracts' handle grammar whose nearest key (lists pass through) may carry one
-    (``handle_keys``), outside every mapping ``_refused``."""
+    (``handle_keys``), never one a result only lists for reading
+    (``answer_gate.LISTED_HANDLES``: a message's attachments before they are read),
+    outside every mapping ``_refused``."""
+    from operating.answer_gate import LISTED_HANDLES
     grammar, never = handle_keys()
+    listed = LISTED_HANDLES
     out: set[str] = set()
-    stack: list[tuple[Any, Any]] = [(result, None)]
+    stack: list[tuple[Any, Any, Any]] = [(result, None, None)]
     while stack:
-        node, key = stack.pop()
+        node, key, owner = stack.pop()
         if isinstance(node, Mapping):
             if not _refused(node):
-                stack.extend((value, name) for name, value in node.items())
+                stack.extend((value, name, key) for name, value in node.items())
         elif isinstance(node, list):
-            stack.extend((value, key) for value in node)
+            stack.extend((value, key, owner) for value in node)
         elif isinstance(node, str) and isinstance(key, str) and key not in never \
-                and grammar.fullmatch(node):
+                and (owner, key) not in listed and grammar.fullmatch(node):
             out.add(node)
     return out
 

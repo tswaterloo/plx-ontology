@@ -29,7 +29,7 @@ export function ErrorNotice({
       data-testid={tone === "notice" ? "server-notice" : undefined}
       className={cn(
         "flex items-start gap-3 text-row text-fg",
-        tone === "notice" ? "rounded-sm border border-risk-line bg-risk-soft px-3 py-2" : tone === "info" ? "py-1 text-muted" : "rounded-sm border border-late-line bg-late-soft px-3 py-2",
+        tone === "notice" ? "rounded-lg bg-risk-soft px-3.5 py-2.5" : tone === "info" ? "py-1 text-muted" : "rounded-lg bg-late-soft px-3.5 py-2.5",
         className,
       )}
     >
@@ -38,7 +38,7 @@ export function ErrorNotice({
         {reference && <p className="mt-0.5 text-meta text-muted">Reference {reference}</p>}
       </div>
       {onRetry && (
-        <button type="button" onClick={onRetry} className="shrink-0 font-medium text-accent underline-offset-2 hover:underline cursor-pointer">
+        <button type="button" onClick={onRetry} className="shrink-0 font-medium text-fg underline underline-offset-2 hover:no-underline cursor-pointer">
           Try again
         </button>
       )}

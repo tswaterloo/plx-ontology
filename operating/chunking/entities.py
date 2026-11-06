@@ -14,6 +14,7 @@ stay two entities.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
@@ -248,4 +249,166 @@ def _entity(row: Any, etype: str, latest: str, names: list[tuple[str, str]],
                   markings=tuple(sorted(marks)))
 
 
-__all__ = ["ATTRIBUTE_PROPS", "ENTITY_TYPES", "Entity", "attribute_words", "entities", "fold"]
+# ---------------------------------------------------------------- participants
+
+_ADDRESS = re.compile(r"[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Mail participants' values on Email objects, and the date that orders them.
+_MAIL_PEOPLE = ("sender", "to_addresses", "cc_addresses")
+_ORG_PROPS = {"Customer": ("bc_email",), "Supplier": ("bc_email",),
+              "RelSageApVendor": ("website",)}
+
+
+def _addresses(value: Any) -> list[str]:
+    return [a.lower().strip(".'") for a in _ADDRESS.findall(str(value or ""))]
+
+
+def _domain(value: str) -> str | None:
+    text = value.strip().lower()
+    if "@" in text:
+        text = text.rsplit("@", 1)[1]
+    text = re.sub(r"^[a-z]+://", "", text).split("/", 1)[0]
+    text = text[4:] if text.startswith("www.") else text
+    return text if "." in text else None
+
+
+def organisations(conn: Any) -> dict[str, str]:
+    """Email domain -> the one customer or supplier whose own address or website is on
+    it (a domain two organisations share names neither)."""
+    found: dict[str, set[str]] = {}
+    for object_type, props in _ORG_PROPS.items():
+        name_prop = "vendname" if object_type == "RelSageApVendor" else "name"
+        rows = conn.execute(
+            "SELECT o.object_id, v.property, v.value FROM objects o JOIN object_values v "
+            "ON v.object_id = o.object_id AND v.superseded_at IS NULL WHERE "
+            "o.object_type = ? AND v.property IN (SELECT value FROM json_each(?))",
+            (object_type, json.dumps([*props, name_prop]))).fetchall()
+        names = {r["object_id"]: str(r["value"]).strip() for r in rows
+                 if r["property"] == name_prop and r["value"]}
+        for r in rows:
+            if r["property"] in props and r["object_id"] in names:
+                for value in str(r["value"] or "").replace(";", " ").split():
+                    domain = _domain(value)
+                    if domain:
+                        found.setdefault(domain, set()).add(names[r["object_id"]])
+    return {d: next(iter(n)) for d, n in found.items() if len(n) == 1}
+
+
+def _person_name(address: str) -> str:
+    local = address.split("@", 1)[0]
+    words = [w for w in re.split(r"[._+-]+", local) if w and not w.isdigit()]
+    return " ".join(w.capitalize() for w in words) or local
+
+
+def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
+                 limit: int | None = None) -> Iterator[Entity]:
+    """Every mail and Teams participant as a ``person`` entity, one per audience unit (a
+    mailbox, a chat or channel) and address or Teams user: its name (a Teams display
+    name, else the address's own words), its address, domain and organisation (the
+    customer or supplier on that domain, ``organisations``) as aliases. ``object_id`` is
+    the newest message of the unit it appears in, so a question naming the person leads
+    to a message its reader may open. Keyed as those messages (their unit and markings)
+    plus ``pii``: only a reader holding it sees a person, as with contacts. The people
+    exclusion holds: no row in a unit it withholds, none for an address or user it does
+    not clear, none from a message whose sender it does not clear; nothing without a
+    guard."""
+    counts = counts or Counts()
+    if exclusion is None or exclusion.unavailable:
+        counts.skip("people_exclusion:participants_undecided")
+        return
+    orgs = organisations(conn)
+    internal = getattr(exclusion, "internal", frozenset())
+    # (unit, who) -> [newest time, message id, markings, name]
+    seen: dict[tuple[str, str], list[Any]] = {}
+    for object_type, props, when in (("Email", _MAIL_PEOPLE, "received_at"),
+                                     ("TeamsChatMessage", ("from",), "created_at"),
+                                     ("TeamsChannelMessage", ("from",), "created_at")):
+        after = ""
+        while True:
+            rows = conn.execute(
+                "SELECT o.object_id, o.audience_key, v.markings FROM objects o "
+                "JOIN object_versions v ON v.object_id = o.object_id AND v.superseded_at IS NULL "
+                "WHERE o.object_type = ? AND o.object_id > ? AND o.missing_from_source_since "
+                "IS NULL ORDER BY o.object_id LIMIT ?", (object_type, after, BATCH)).fetchall()
+            if not rows:
+                break
+            after = rows[-1]["object_id"]
+            values: dict[str, dict[str, Any]] = {}
+            for r in conn.execute(
+                    "SELECT object_id, property, value, markings FROM object_values WHERE "
+                    "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
+                    "AND property IN (SELECT value FROM json_each(?))",
+                    (json.dumps([r["object_id"] for r in rows]), json.dumps([*props, when]))):
+                values.setdefault(r["object_id"], {})[r["property"]] = (r["value"],
+                                                                        r["markings"])
+            for row in rows:
+                unit = row["audience_key"]
+                if not valid_key(unit) or not exclusion.unit_clear(unit):
+                    counts.skip("people_exclusion:participant_unit")
+                    continue
+                got = values.get(row["object_id"], {})
+                stamp = str((got.get(when) or ("", ""))[0] or "")
+                people: list[tuple[str, str | None, str]] = []   # (who, name, value marks)
+                if object_type == "Email":
+                    sender = _addresses((got.get("sender") or ("", ""))[0])
+                    if not sender or not all(exclusion.identity_clear(a) for a in sender):
+                        counts.skip("people_exclusion:participant_message")
+                        continue
+                    for prop in _MAIL_PEOPLE:
+                        value, marks = got.get(prop) or ("", "[]")
+                        people += [(a, None, marks) for a in _addresses(value)]
+                else:
+                    value, marks = got.get("from") or ("", "[]")
+                    try:
+                        who = json.loads(value) if isinstance(value, str) else {}
+                    except ValueError:
+                        who = {}
+                    if not isinstance(who, dict) or not who.get("id"):
+                        continue
+                    if not exclusion.identity_clear(who["id"]):
+                        counts.skip("people_exclusion:participant_message")
+                        continue
+                    people.append((str(who["id"]).lower(), who.get("display_name"), marks))
+                for who, name, marks in people:
+                    if not exclusion.identity_clear(who):
+                        counts.skip("people_exclusion:participant")
+                        continue
+                    base = parse_markings(row["markings"], marks, '["pii"]')
+                    if base is None:
+                        continue
+                    key = (unit, who)
+                    held = seen.get(key)
+                    if held is None:
+                        seen[key] = [stamp, row["object_id"], set(base), name]
+                        continue
+                    if name and not held[3]:
+                        held[3] = name
+                    # the row is keyed as one real message: the least marked one seen
+                    # (newest among equals), so its reader may open the message it names
+                    if set(base) < held[2] or (set(base) == held[2] and stamp > held[0]):
+                        held[0], held[1], held[2] = stamp, row["object_id"], set(base)
+    produced = 0
+    for (unit, who), (_stamp, oid, marks, name) in sorted(seen.items()):
+        if "@" in who:
+            domain = who.rsplit("@", 1)[1]
+            org = None if domain in internal else orgs.get(domain)
+            shown = name or _person_name(who)
+            alias = [who, domain, *([org] if org else []), who.split("@", 1)[0]]
+        else:
+            if not name:
+                continue
+            shown, alias = name, []
+        folded = fold(shown)
+        digest = hashlib.sha256(f"{unit}\x1f{who}".encode()).hexdigest()[:24]
+        counts.chunks["entity:participant"] += 1
+        yield Entity(entity_id=f"p:{digest}", object_id=oid, type="person",
+                     name=clean(shown), alias=tuple(clean(a) for a in dict.fromkeys(alias)
+                                                    if a and a != shown),
+                     normalized=folded, audience_key=unit,
+                     markings=tuple(sorted(marks | {"pii"})))
+        produced += 1
+        if limit is not None and produced >= limit:
+            return
+
+
+__all__ = ["ATTRIBUTE_PROPS", "ENTITY_TYPES", "Entity", "attribute_words", "entities", "fold",
+           "organisations", "participants"]

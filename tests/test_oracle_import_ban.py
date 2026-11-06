@@ -93,6 +93,18 @@ class OracleImportBanTest(unittest.TestCase):
                    for line in done.stdout.splitlines() if line.startswith("evals/")}
         self.assertEqual(flagged, set(BYPASSES))
 
+    def test_answer_key_files_are_held_to_the_same_ban(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "evals"
+            (base / "oracle").mkdir(parents=True)
+            (base / "oracle" / "ok.py").write_text(CLEAN, encoding="utf-8")
+            (base / "live_ops_truth.py").write_text(
+                "from evals.oracle import keys\nfrom operating import truth_check\n",
+                encoding="utf-8")
+            done = _scan(Path(tmp))
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("evals/live_ops_truth.py:2: import: operating", done.stdout)
+
     def test_missing_package_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(_scan(Path(tmp)).returncode, 1)

@@ -890,6 +890,12 @@ class RuntimeCitations(CitationReader):
                         gaps=[])
         if isinstance(body, str):
             out["content"] = body
+        if content and page is None and resolved["relation"] == "graph-mail.message":
+            # what travels with the message is part of what it says: its attachments,
+            # each read by its own citation (plx.read), the same reader gate deciding
+            listed = self._mail_attachments(handle)
+            if listed:
+                out["attachments"] = listed
         if content and page is None and resolved["relation"] in _MAIL_FILES:
             # An attachment (or a member of one) read whole: its text, as a page read
             # gives one page of it; its text status says why there is none.
@@ -916,6 +922,36 @@ class RuntimeCitations(CitationReader):
             out["gaps"].append(_gap("stale", "superseded_in_capture", handle[:700],
                                     "the capture no longer holds this version as current"))
         return out
+
+    def _mail_attachments(self, message_handle: str) -> list[dict[str, Any]]:
+        """The attachments of a captured message (``MAX_ATTACHMENTS_LISTED``, files
+        first, inline images last): each one's citation, name, type and whether its text
+        was read. Only for a message this reader was just allowed to read; reading an
+        attachment is a plx.read of its citation, gated again."""
+        limit = (getattr(self, "limits", None) or {}).get("max_untrusted_text_chars", 20000)
+        try:
+            with self._mail_store() as store:
+                rows = store.db.execute(
+                    "SELECT l1_handle, metadata, text_status FROM attachments "
+                    "WHERE message_handle=? AND l1_handle IS NOT NULL",
+                    (message_handle,)).fetchall()
+        except Exception:  # noqa: BLE001 - the message reads without its list
+            return []
+        out = []
+        for row in rows:
+            try:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+            except ValueError:
+                meta = {}
+            name = meta.get("name") if isinstance(meta.get("name"), str) else ""
+            out.append(((bool(meta.get("is_inline")), name), {
+                "citation": row["l1_handle"],
+                "name": {"untrusted_text": name[:limit],
+                         "origin": {"citation": row["l1_handle"], "field_path": "row.name"}},
+                "content_type": str(meta.get("content_type") or "")[:100],
+                "text_read": row["text_status"] in _TEXT_READ}))
+        out.sort(key=lambda item: item[0])
+        return [entry for _key, entry in out[:MAX_ATTACHMENTS_LISTED]]
 
     def _mail_page_unread(self, base: str, page: int, gated: Actor, audience: Any
                           ) -> dict[str, Any] | None:
@@ -2926,6 +2962,8 @@ class EvidenceTools:
             fields, truncated = dict(list(fields.items())[:400]), True
         if fields or "content" not in result:
             result["fields"] = fields
+        if read.get("attachments") and wanted is None and page is None:
+            result["attachments"] = list(read["attachments"])
         result["gaps"] = gaps[:MAX_GAPS]
         result["completeness"] = _completeness(len(fields) + ("content" in result), None,
                                                truncated, "max_chars" if truncated else None,
@@ -2962,6 +3000,9 @@ TEXT_NOT_EXTRACTED = "text_not_extracted"
 LIVE_METADATA_ONLY = "live_metadata_only"
 # The mail capture relations of a file (whose text is extracted), not of a message body.
 _MAIL_FILES = ("graph-mail.attachment", "graph-mail.containerMember")
+MAX_ATTACHMENTS_LISTED = 30
+# Text statuses of an attachment whose text a plx.read gives (integrations.capture_mail).
+_TEXT_READ = frozenset({"extracted", "extracted_ocr"})
 
 
 def _extraction_status(extraction: Mapping[str, Any]) -> str:

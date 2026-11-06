@@ -1,0 +1,90 @@
+{
+  "tool": "plx.query",
+  "examples": [
+    {
+      "name": "an_items_invoiced_units_by_invoice_date_in_a_window",
+      "input": {
+        "from": {
+          "object_id": "Product:portal.sage_ic_item:{\"itemno\":\"AB-1\"}"
+        },
+        "traverse": [
+          {
+            "link_type": "SalesInvoiceLine.for_item",
+            "direction": "reverse"
+          }
+        ],
+        "measures": [
+          {
+            "op": "sum",
+            "property": "invoiced_quantity"
+          }
+        ],
+        "group_by": [
+          "invoice_date"
+        ],
+        "group_path": [
+          {
+            "link_type": "SalesInvoiceLine.line_of",
+            "direction": "forward"
+          }
+        ],
+        "window": {
+          "property": "invoice_date",
+          "from": "2099-08-01",
+          "to": "2099-10-06"
+        }
+      },
+      "output": {
+        "from": {
+          "records": [
+            "Product:portal.sage_ic_item:{\"itemno\":\"AB-1\"}"
+          ]
+        },
+        "hops": [
+          {
+            "link_type": "SalesInvoiceLine.for_item",
+            "direction": "reverse",
+            "count": 2,
+            "tiers": {
+              "verified": 2
+            }
+          }
+        ],
+        "set": "set:example0001",
+        "results": [
+          {
+            "measure": {
+              "op": "sum",
+              "property": "invoiced_quantity"
+            },
+            "groups": [
+              {
+                "key": {
+                  "invoice_date": {
+                    "untrusted_text": "2099-08-31",
+                    "origin": {
+                      "citation": "api://sage.oe_invoice_header/1@fx-1",
+                      "field_path": "row.invdate"
+                    }
+                  }
+                },
+                "value": "1200",
+                "inputs": 2,
+                "unit": "EA",
+                "markings": []
+              }
+            ],
+            "window": {
+              "property": "invoice_date",
+              "from": "2099-08-01",
+              "to": "2099-10-06",
+              "value": "1200",
+              "unit": "EA"
+            }
+          }
+        ],
+        "gaps": []
+      }
+    }
+  ]
+}

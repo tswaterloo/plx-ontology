@@ -126,7 +126,8 @@ class MCPServerStdioTests(unittest.TestCase):
         tools = listing["result"]["tools"]
         names = [tool["name"] for tool in tools]
         self.assertEqual(len(names), len(set(names)))
-        # the default agent also lists plx.changes
+        # the default agent also lists plx.changes;
+        # plx.query is the investigate agent's only
         self.assertEqual(set(names), set(CASE_RUNTIME_TOOLS) | {"plx.changes"})
         self.assertEqual(names, [tool["name"] for tool in TOOLS] + ["plx.changes"])
         for tool in tools:
