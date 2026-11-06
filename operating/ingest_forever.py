@@ -1133,7 +1133,12 @@ class Continuous:
 
     ``background`` (``ingest.build_inputs`` ``snapshot``): a refresh runs on its own
     thread while this one goes on starting and reaping captures; one refresh at a time
-    (the sources finishing meanwhile go into the next), and a stop waits for it."""
+    (the sources finishing meanwhile go into the next), and a stop waits for it.
+
+    ``build_due()`` (the host's ``build_due``): asked while no outcome waits and no
+    refresh runs; True starts a refresh with no outcomes (under the same build exclusion),
+    so a build that waited for disk space starts once it is free, not at the next
+    source's end."""
 
     def __init__(self, table: Mapping[str, SourceSpec],
                  sections: Mapping[str, Mapping[str, Any]], state: Path,
@@ -1145,7 +1150,8 @@ class Continuous:
                  monotonic: Callable[[], float] = time.monotonic,
                  wait_idle: Callable[[float], Any] = time.sleep,
                  build_reads: Callable[[], Sequence[Path]] = tuple,
-                 background: bool = False) -> None:
+                 background: bool = False,
+                 build_due: Callable[[], bool] = lambda: False) -> None:
         self.table, self.state, self.environ = table, state, environ
         self.sections = {name: sections[name] for name in table if name in sections}
         self.grace, self.children, self.cwd = grace, children, cwd
@@ -1155,6 +1161,7 @@ class Continuous:
                                                               wait_idle)
         self.build_reads = build_reads
         self.background = background
+        self.build_due = build_due
 
     def _interval(self, name: str, failures: int) -> float:
         base = self.sections[name].get("min_interval_seconds", DEFAULT_MIN_INTERVAL_SECONDS)
@@ -1182,6 +1189,7 @@ class Continuous:
         stopped: list[str] = []
         cancel = threading.Event()
         reason, refreshes = None, 0
+        due_build = False   # a refresh with no outcomes: ``build_due``
         waited_since: float | None = None
         waited_for: set[str] = set()
         held_back: set[str] = set()
@@ -1212,15 +1220,18 @@ class Continuous:
         try:
             while True:
                 reason = reason or self.should_stop()
+                if not due_build and not pending and reason is None and not building():
+                    due_build = bool(self.build_due())
+                wants = bool(pending) or (due_build and reason is None)
                 # A build waits (outcomes to refresh): no exclusive capture starts.
-                exclusive = self.exclusive() if pending else set()
+                exclusive = self.exclusive() if wants else set()
                 if reason is not None:
                     cancel.set()
                 else:
                     now = self.monotonic()
                     for name in sorted((n for n in self.sections if n not in running
                                         and due[n] <= now), key=lambda n: due[n]):
-                        if pending and name in exclusive:
+                        if wants and name in exclusive:
                             held_back.add(name)
                             continue
                         if len(running) >= self.parallel:
@@ -1240,18 +1251,19 @@ class Continuous:
                          return_when=FIRST_COMPLETED)
                 elif building():
                     build.join(POLL_SECONDS)
-                elif reason is None and not pending:
+                elif reason is None and not wants:
                     nearest = min(due.values()) - self.monotonic()
                     self.wait_idle(max(0.01, min(POLL_SECONDS, nearest)))
                 for name in [n for n, f in running.items() if f.done()]:
                     finished(name, running.pop(name).result())
-                blocking = sorted(set(running) & self.exclusive()) if pending else []
+                wants = bool(pending) or (due_build and reason is None)
+                blocking = sorted(set(running) & self.exclusive()) if wants else []
                 if blocking:
                     if waited_since is None:
                         waited_since = self.monotonic()
                     waited_for.update(blocking)
-                elif pending and not building():
-                    batch, pending = pending, {}
+                elif wants and not building():
+                    batch, pending, due_build = pending, {}, False
                     exclusion = {
                         "exclusive": sorted(set(batch) & self.exclusive()),
                         "waited_for": sorted(waited_for),

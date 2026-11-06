@@ -10,12 +10,63 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
                            "0008_ontology_read.sql")]
+
+
+class ReloadRoomTests(unittest.TestCase):
+    """Live 2026-11-06: the Postgres copy (a fixed 150 GB floor) left a cold build too
+    little room. A load keeps the next build's room (``build_reserve``) and a new
+    generation's reload starts only when it fits beside it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name)
+        generations = self.state / "projection" / "generations"
+        for name, size in (("00000001", 300), ("00000002", 400)):
+            (generations / name).mkdir(parents=True)
+            (generations / name / "store.sqlite").write_bytes(b"\0" * size)
+        self.source = generations / "00000002" / "store.sqlite"
+        reserve = mock.patch("operating.host.build_reserve",
+                             return_value={"reserve_bytes": 1000})
+        reserve.start()
+        self.addCleanup(reserve.stop)
+
+    def room(self, free, *, in_place=True, min_free=0):
+        from operating.pg import ontology_delta, ontology_load
+        with mock.patch.object(ontology_load, "_free_bytes", return_value=free):
+            return ontology_delta.reload_room(self.state, self.source, held_bytes=500,
+                                              in_place=in_place, min_free=min_free)
+
+    def test_a_reload_waits_until_it_fits_beside_the_builds_room(self):
+        # in place: the held copy (500) is emptied first, the load writes 500, 1000 kept
+        self.assertEqual((self.room(999)["state"], self.room(999)["previous_bytes"]),
+                         ("waiting_for_prune", 300))
+        self.assertTrue(self.room(1000)["fits"])
+        # beside the held copy: room for both
+        self.assertEqual(self.room(1499, in_place=False)["state"], "waiting_for_prune")
+        self.assertTrue(self.room(1500, in_place=False)["fits"])
+        # a higher fixed floor still counts
+        self.assertEqual(self.room(1000, min_free=2000)["floor_bytes"], 2000)
+        # the previous generation pruned: what is short is space
+        (self.state / "projection" / "generations" / "00000001" / "store.sqlite").unlink()
+        self.assertEqual(self.room(999)["state"], "waiting_for_space")
+
+    def test_the_load_floor_is_the_builds_room_on_its_file_system(self):
+        from operating.pg import ontology_load
+        self.assertEqual(ontology_load.build_floor(None, 0, self.state)[1:],
+                         (1000, {"reserve_bytes": 1000}))
+        self.assertEqual(ontology_load.build_floor(str(self.state), 5000, self.state)[1], 5000)
+        self.assertEqual(ontology_load.build_floor("/x", 7, None), ("/x", 7, None))
+        (self.state / "projection" / "CURRENT").write_text("{}")
+        self.assertEqual(ontology_load.state_of(self.source), self.state.resolve())
+        self.assertIsNone(ontology_load.state_of(self.state / "elsewhere.sqlite"))
 
 
 class DeltaToPostgresTests(unittest.TestCase):

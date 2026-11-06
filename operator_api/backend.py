@@ -976,11 +976,33 @@ class WorkspaceBackend(ActionsMixin):
             return None
         return with_delta_freshness(entries, path, digest[0] if digest else None)
 
-    def freshness(self, base: Mapping[str, Any] | None = None) -> m.Freshness:
+    def _served_store(self) -> tuple[Optional[Path], Optional[str]]:
+        """The served projection's path and content digest (None when unreadable)."""
+        path = self.store_path or (self.state_dir / "projection" / "ontology.sqlite"
+                                   if self.state_dir else None)
+        if path is None or not path.is_file():
+            return None, None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                   "'content_digest'").fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return path, None
+        return path, row[0] if row and isinstance(row[0], str) else None
+
+    def freshness(self, base: Mapping[str, Any] | None = None, *,
+                  handles: Iterable[str] = ()) -> m.Freshness:
         """Each source's age as the data served states it: the served projection's own
         per-source capture time, judged by the host's capture bound with the one rule
         answers apply (``ontology_tools.aged``), so Home never says fresh where an answer
         says stale. Without a readable projection, the host ledger's capture times.
+
+        ``build_wait``: the next build waits for disk space (the label says how much);
+        ``documents``: the files the latest delta cycle left pending, counted, and with
+        ``handles`` (a record page's own sources) whether that record's are among them.
 
         ``as_of`` is the data cut-off, one moment for every screen: the newest capture the
         served data holds (when the build pinned its sources). A source read more than
@@ -1080,7 +1102,19 @@ class WorkspaceBackend(ActionsMixin):
         if truth is not None and truth.late_contradicted and label and not truth.stale:
             label += (f"; late list disputed: {truth.late_contradicted} of "
                       f"{truth.late_claims} late POs contradicted by other systems")
-        return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth)
+        waits = build_wait_status(self.state_dir)
+        served, digest = self._served_store()
+        documents = documents_pending(served, digest, handles) if served else None
+        if label and documents is not None:
+            label += (f"; {documents.files} document{'s' if documents.files != 1 else ''} "
+                      "not read yet" + ("; this record's document fields are pending"
+                                        if documents.this_record else ""))
+        if label and waits is not None:
+            label += f"; next build waits for {_gigabytes(waits.needed_bytes)} free" + (
+                f" ({_gigabytes(waits.free_bytes)} now)" if waits.free_bytes is not None
+                else "")
+        return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth,
+                           build_wait=waits, documents=documents)
 
     # ---- sources ------------------------------------------------------------------------
 
@@ -3011,6 +3045,86 @@ def with_delta_freshness(entries: list[dict[str, Any]], store: Path,
                          completeness=newer.get("completeness", entry.get("completeness")))
         out.append(entry)
     return out
+
+
+def _gigabytes(count: int) -> str:
+    return f"{count / 1e9:,.0f} GB"
+
+
+def build_wait_status(state_dir: Optional[Path]) -> Optional[m.BuildWait]:
+    """The next projection build's wait for disk space (``operating.host.build_wait``),
+    None when none waits or the space it waits for is free now (it builds at the host's
+    next check)."""
+    if state_dir is None:
+        return None
+    try:
+        from operating.host import build_wait
+        wait = build_wait(state_dir)
+    except Exception:  # noqa: BLE001 - nothing is said about the build
+        return None
+    if not wait:
+        return None
+    try:
+        import shutil
+        free: Optional[int] = shutil.disk_usage(state_dir).free
+    except OSError:
+        free = wait.get("free_bytes") if isinstance(wait.get("free_bytes"), int) else None
+    if free is not None and free >= wait["needed_bytes"]:
+        return None
+    mode = wait.get("mode") if wait.get("mode") in ("cold", "incremental") else None
+    return m.BuildWait(needed_bytes=wait["needed_bytes"], free_bytes=free,
+                       checked_at=wait.get("checked_at"), mode=mode)
+
+
+def _record_key(key: Any) -> str:
+    return json.dumps(list(key) if isinstance(key, (list, tuple)) else key, sort_keys=True)
+
+
+def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str] = ()
+                      ) -> Optional[m.DocumentsPending]:
+    """The files the newest delta layer over the served generation (``digest``) left
+    pending (its pointer's ``documents``, counts) and, for ``handles`` (a record page's own
+    sources, which its reader sees), whether a record they cite is one holding them (the
+    layer's ``documents_pending`` meta). Never a record key: a reader learns only about
+    the record in front of them. None when nothing is pending or the delta cannot say."""
+    try:
+        from operating import delta_overlay
+        pointer = delta_overlay.read_pointer(delta_overlay.pointer_path(store))
+    except Exception:  # noqa: BLE001 - nothing is said about documents
+        return None
+    if not pointer or not digest or pointer.get("base_digest") != digest:
+        return None
+    counts = pointer.get("documents")
+    if not isinstance(counts, Mapping) or not isinstance(counts.get("pending"), int) \
+            or counts["pending"] <= 0:
+        return None
+    held = counts.get("held_open") if isinstance(counts.get("held_open"), Mapping) else {}
+    this = None
+    handles = [h for h in handles if isinstance(h, str)]
+    if handles:
+        this = False
+        try:
+            from ontology.delta import record_of_handle
+            conn = sqlite3.connect(f"file:{pointer['store']}?mode=ro", uri=True, timeout=1)
+            try:
+                row = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                   "'documents_pending'").fetchone()
+            finally:
+                conn.close()
+            records = (json.loads(row[0]) or {}).get("records") if row else None
+            pending = {(source, _record_key(key)) for source, keys in (records or {}).items()
+                       for key in keys or ()}
+            for handle in handles:
+                hit = record_of_handle(handle)
+                if hit is not None and (hit[0], _record_key(hit[1])) in pending:
+                    this = True
+                    break
+        except (sqlite3.Error, ValueError, TypeError, AttributeError, KeyError):
+            this = None
+    return m.DocumentsPending(
+        files=counts["pending"],
+        timed_out=counts.get("timed_out") if isinstance(counts.get("timed_out"), int) else 0,
+        records=sum(v for v in held.values() if isinstance(v, int)), this_record=this)
 
 
 def with_search_coverage(sources: Sequence[m.FreshnessSource]) -> list[m.FreshnessSource]:
@@ -6147,7 +6261,7 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
                         people=None, landed_cost=None, late_lines=[], related=related,
                         not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
                         hidden=None,
-                        freshness=backend.freshness(page))
+                        freshness=backend.freshness(page, handles=page_handles(facts)))
 
 
 # A receipt event of an order (its goods received or posted).

@@ -44,7 +44,7 @@ class Backend:
         return []
 
     @staticmethod
-    def freshness(page):
+    def freshness(page, **_):
         return m.Freshness()
 
 

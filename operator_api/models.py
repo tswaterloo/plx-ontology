@@ -186,6 +186,33 @@ class TruthFlag(_Model):
                         "its counts are not stated in the label.")
 
 
+class BuildWait(_Model):
+    """The next projection build waits for disk space (``operating.host.build_wait``):
+    the last one was skipped because its estimate did not fit, and the host builds again
+    once this much is free; captures go on meanwhile."""
+    needed_bytes: int = Field(description="Free bytes the next build waits for: its "
+                              "estimate, margin and input copies.")
+    free_bytes: Optional[int] = Field(None, description="Free bytes now (the latest check's "
+                                      "when the disk cannot be measured here).")
+    checked_at: Optional[str] = Field(None, description="When the host last checked (ISO).")
+    mode: Optional[Literal["cold", "incremental"]] = Field(
+        None, description="The build the estimate is for.")
+
+
+class DocumentsPending(_Model):
+    """Documents the latest delta cycle has not read yet (its reading budget ran out or a
+    file timed out): the records holding them are current, their document fields pending;
+    the served generation's document objects stay served until a later cycle reads them.
+    Counts only."""
+    files: int = Field(0, description="Files not read yet.")
+    timed_out: int = Field(0, description="Of those, files whose read timed out.")
+    records: int = Field(0, description="Records whose document fields are pending.")
+    this_record: Optional[bool] = Field(
+        None, json_schema_extra=_optional,
+        description="On a record's page: whether this record's document fields are "
+                    "pending.")
+
+
 class Freshness(_Model):
     as_of: Optional[str] = Field(None, description="The data cut-off (ISO): the newest "
                                  "capture the served data holds, the same on every screen. "
@@ -196,6 +223,14 @@ class Freshness(_Model):
     truth: Optional[TruthFlag] = Field(None, json_schema_extra=_optional,
                                        description="The latest truth check's counts; the "
                                        "label names a late list the evidence disputes.")
+    build_wait: Optional[BuildWait] = Field(
+        None, json_schema_extra=_optional,
+        description="The next projection build waits for disk space; the label says how "
+                    "much ('next build waits for 374 GB free').")
+    documents: Optional[DocumentsPending] = Field(
+        None, json_schema_extra=_optional,
+        description="Documents the latest delta cycle has not read yet; the label names "
+                    "them, and on a record's page whether its document fields are pending.")
 
 
 class ObjectRef(_Model):

@@ -1154,6 +1154,65 @@ def space_need(state_dir: str | Path, base: Generation | None = _CURRENT_GENERAT
             "needed_bytes": (store + work) if store else UNKNOWN}
 
 
+def build_context(normalizer: Normalizer | None, as_known_at: Any = None) -> str:
+    """What every unit's key shares (``_build``): the format, the keys' scheme, the rows
+    code's version, the cut and the normalizer's code."""
+    return _sha(canonical({
+        "format": FORMAT, "scheme": build_keys.KEY_SCHEME,
+        "rows": build_keys.PROJECTION_ROWS_VERSION,
+        "as_known_at": known_at(as_known_at) if as_known_at is not None else None,
+        "normalizer": None if normalizer is None else
+        f"{getattr(normalizer, '__module__', '')}.{getattr(normalizer, '__qualname__', '')}",
+        "normalizer_code": build_keys.normalizer_digest(
+            normalizer if normalizer is not None else _default_normalizer())}))
+
+
+def planned_need(state_dir: str | Path, *, schema_digest: str | None = None,
+                 normalizer: Normalizer | None = None, as_known_at: Any = None,
+                 changed_share: float | None = None) -> dict[str, Any]:
+    """The space estimate of the next build of ``state_dir`` before its captures are
+    fingerprinted (hours on a large store): the cold estimate (:func:`space_need`) when the
+    build is known to be cold or to change most units, else the least it writes (an
+    incremental build with no unit changed: its seed). Known when no generation is
+    committed, the base's keys are of another scheme (and name no commit to adopt), the
+    keys' shared context (:func:`build_context` of ``normalizer``, by default the build's,
+    and ``as_known_at``) or the schema (``schema_digest``, the store's ``schema_digest``
+    meta) differ from the base's, or a measured ``changed_share`` over the same base
+    exceeds ``COLD_SHARE``. ``predicted`` names the reason (None: the least)."""
+    state = Path(state_dir)
+    context = build_context(normalizer if normalizer is not None else _default_normalizer(),
+                            as_known_at)
+    base = current_generation(state)
+    units = _units_of(base) if base is not None else None
+    reason = None
+    if base is None:
+        reason = "no_generation"
+    elif not units or (units.get("scheme") != build_keys.KEY_SCHEME
+                       and not build_adopt.code_sha(units)):
+        reason = "key_scheme"
+    elif units.get("scheme") == build_keys.KEY_SCHEME and units.get("context") != context:
+        reason = "build_code"
+    elif schema_digest is not None and _schema_digest(base) not in (None, schema_digest):
+        reason = "schema_changed"
+    elif changed_share is not None and changed_share > COLD_SHARE:
+        reason = "changed_share"
+    if reason is None:
+        return {**space_need(state, base, dirty=(), units=units), "predicted": None}
+    return {**space_need(state, base, units=units), "predicted": reason}
+
+
+def _schema_digest(generation: Generation) -> str | None:
+    """The schema digest a generation's store was built under, None when unreadable."""
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{generation.store}?mode=ro",
+                                                uri=True, timeout=5)) as conn:
+            row = conn.execute("SELECT value FROM store_meta WHERE key = 'schema_digest'"
+                               ).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row and isinstance(row[0], str) else None
+
+
 def _choose_mode(state: Path, base: Generation | None, dirty: set[str] | None,
                  units: Mapping[str, Any] | None,
                  space: Callable[[Mapping[str, Any]], None] | None,
@@ -1337,14 +1396,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     # What every unit's rows share: the scheme and version of the rows code
     # (``ontology.build_keys``), the cut and the normalizer's code. The schema and the
     # captures enter each unit's key by its own slice and fingerprints only.
-    context = _sha(canonical({
-        "format": FORMAT, "scheme": build_keys.KEY_SCHEME,
-        "rows": build_keys.PROJECTION_ROWS_VERSION,
-        "as_known_at": known_at(as_known_at) if as_known_at is not None else None,
-        "normalizer": None if normalizer is None else
-        f"{getattr(normalizer, '__module__', '')}.{getattr(normalizer, '__qualname__', '')}",
-        "normalizer_code": build_keys.normalizer_digest(
-            normalizer if normalizer is not None else _default_normalizer())}))
+    context = build_context(normalizer, as_known_at)
     units = _units_of(base) if base is not None else None
     # A base of the earlier keys whose commit the operator names is adopted when every
     # part is proven (``ontology.build_adopt``), else the build is cold as before.
@@ -2522,5 +2574,6 @@ def _delete_shards(conn: sqlite3.Connection, the_plan: Plan, binding: str, count
 
 
 __all__ = ["CURRENT", "FORMAT", "Generation", "KEEP", "Plan", "UNKNOWN", "build_generation",
-           "can_clone", "current_generation", "kept_bytes", "plan", "prune_to_current",
+           "build_context", "can_clone", "current_generation", "kept_bytes", "plan",
+           "planned_need", "prune_to_current",
            "space_need"]

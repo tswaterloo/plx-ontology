@@ -183,7 +183,7 @@ Evidence: injected-transport tests (``operating/tests/test_host.py``); live-unve
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import copy
 from datetime import datetime, timezone
 import fcntl
@@ -199,7 +199,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from integrations import child_process
@@ -239,10 +239,17 @@ MIN_FREE_BYTES = 4 * 1024 ** 3   # ... and when its file system has less free th
 # margin. Once the changed units are known the build takes the mode it prefers (cold when
 # most units changed or that needs less), else the other mode where that fits; only when
 # neither fits is it skipped (``disk_low``) and the previous generation stays served.
-# Checked before the build (the least any mode writes), once the changed units are known
-# (``disk.estimate``: the mode checked, ``estimates``: both) and while it runs (free space
-# below the margin stops it, its files removed).
+# Checked before the build, before its captures are fingerprinted (hours on a large store)
+# and before its input copies are taken: the cold estimate when the build is known to be
+# cold or to change most units (``project_incremental.planned_need``: no generation, other
+# keys, other build code, another schema, or a changed share measured over the same base),
+# else the least any mode writes; then once the changed units are known (``disk.estimate``:
+# the mode checked, ``estimates``: both) and while it runs (free space below the margin
+# stops it, its files removed). A skip records ``waits_for_bytes``: the continuous ingest
+# builds again only once that much is free (``DISK_WAIT_POLL_SECONDS``), its captures going
+# on meanwhile; the operator API states it (``build_wait``).
 BUILD_DISK_MARGIN_BYTES = 1024 ** 3
+DISK_WAIT_POLL_SECONDS = 300
 # How long the host's checkpoint between refreshes waits for each store's other
 # connections (a capture child's write, a short reader) before it reports ``busy``.
 CHECKPOINT_WAIT_MS = 2000
@@ -972,6 +979,10 @@ class Host:
         self.disk_free: Callable[[Path], int] = (
             disk_free or (lambda path: shutil.disk_usage(path).free))
         self.min_free_bytes = MIN_FREE_BYTES
+        # After a build skipped for disk space: the bytes free it waits for (None: none
+        # waits) and when the free space was last measured for it (``build_due``).
+        self.disk_wait: int | None = None
+        self._disk_polled: float | None = None
         (self.state_dir / HOST_DIR).mkdir(parents=True, exist_ok=True)
         with self._ledger() as db:
             for statement in _LEDGER_DDL:
@@ -1341,13 +1352,16 @@ class Host:
         with self._ledger() as db:
             for name, outcome in outcomes.items():
                 self._record(db, name, outcome, now)
-        if skip_build is not None:
+        waiting = self._waiting() if skip_build is None else None
+        if skip_build is not None or waiting is not None:
             with self._ledger() as db:
                 previous = db.execute("SELECT MAX(generation) FROM projection").fetchone()[0]
             projection = {"state": "skipped", "generation": previous,
-                          "reasons": [skip_build]}
+                          "reasons": [skip_build or "disk_low"], **(waiting or {})}
         else:
             projection = self._project(cycle_id)
+        if projection["state"] != "skipped" or "disk_low" in projection["reasons"]:
+            self.disk_wait = projection.get("waits_for_bytes")
         # Between refreshes, while no build runs (its snapshot is closed): every store's
         # WAL moves into its file and is cut back (``checkpoint_stores``).
         if projection["state"] == "built":
@@ -1481,7 +1495,7 @@ class Host:
                 refresh=refresh, should_stop=lambda: self.stop_reason(stop_file),
                 children=self.children(), max_refreshes=max_refreshes,
                 wait_idle=self.stop.wait, build_reads=self.build_reads,
-                background=self.snapshot_builds).run()
+                background=self.snapshot_builds, build_due=self.build_due).run()
         return {"schema": CONTINUOUS_SCHEMA, **summary}
 
     def _record(self, db: sqlite3.Connection, name: str, outcome: Mapping[str, Any],
@@ -1521,10 +1535,12 @@ class Host:
             served = {r["source"]: r for r in db.execute("SELECT * FROM source_state")}
             previous = db.execute("SELECT MAX(generation) FROM projection").fetchone()[0]
         portal = served.get("portal")
-        disk = self.build_disk()
+        # Before the captures are fingerprinted and copied: a build known to be cold
+        # checks the cold estimate here, not hours later (``build_plan``).
+        disk = self.build_plan(previous)
         if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
             return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
-                    "disk": disk}
+                    "disk": disk, "waits_for_bytes": disk["needed_bytes"]}
         snapshot: dict[str, Any] | None = None
         with ExitStack() as stack:
             sources: dict[str, Any] = {}
@@ -1547,7 +1563,7 @@ class Host:
                                          on_timings=self._timings_sink(cycle_id))
             except DiskLow as low:   # the guard stopped it: nothing of it is left on disk
                 return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
-                        "disk": low.disk}
+                        "disk": low.disk, "waits_for_bytes": low.disk.get("needed_bytes")}
             except Exception as exc:  # noqa: BLE001 - the previous generation stays served
                 return {"state": "failed", "generation": previous, "reasons": [_reason(exc)]}
         inputs = {name: served[name]["generation"] for name in served}
@@ -1557,7 +1573,8 @@ class Host:
                        (cycle_id, _iso(self.clock()), previous, built["content_digest"],
                         objects, json.dumps(inputs, sort_keys=True)))
         report = {"state": "built", "generation": cycle_id, "previous_generation": previous,
-                  "objects": objects, "sources": sorted(sources), **built["build"]}
+                  "objects": objects, "sources": sorted(sources), **built["build"],
+                  "disk": disk}
         if snapshot is not None:
             report["inputs"] = {"kind": "snapshot", "stores": snapshot["stores"],
                                 "kept": snapshot["kept"], "bytes": snapshot["bytes"],
@@ -1583,6 +1600,71 @@ class Host:
             except (sqlite3.Error, ValueError, OSError):
                 pass
         return sink
+
+    def build_plan(self, previous: int | None = None) -> dict[str, Any]:
+        """The disk check before a build (``build_disk``) with the estimate
+        ``project_incremental.planned_need`` makes before the captures are fingerprinted:
+        the cold one when the build is known to be cold or to change most units (another
+        schema, other keys or build code, or the changed share the last attempt over the
+        served generation ``previous`` measured), else the least any mode writes."""
+        from ontology.project_incremental import planned_need
+        from ontology.schema import load_schema
+
+        try:
+            need: dict[str, Any] | None = planned_need(
+                self.state_dir / PROJECTION_DIR, schema_digest=load_schema().digest,
+                changed_share=self._measured_share(previous))
+        except Exception:  # noqa: BLE001 - unpredicted: the least, checked again later
+            need = None
+        return self.build_disk(need)
+
+    def _measured_share(self, previous: int | None) -> float | None:
+        """The changed share the latest build attempt over generation ``previous`` measured
+        (a ``disk_low`` skip once the changed units were known), None when none since it
+        was built did."""
+        with self._ledger() as db:
+            return _measured(db.execute(
+                "SELECT json_extract(report, '$.projection') FROM cycle WHERE finished_at "
+                "IS NOT NULL ORDER BY cycle_id DESC LIMIT 200"), previous)
+
+    def _free_for_build(self) -> int | None:
+        """Free bytes as the build's check counts them (a build kept to resume is free)."""
+        from ontology.project_incremental import kept_bytes
+
+        try:
+            free = int(self.disk_free(self.state_dir))
+        except OSError:
+            return None
+        try:
+            return free + kept_bytes(self.state_dir / PROJECTION_DIR)
+        except OSError:
+            return free
+
+    def _waiting(self) -> dict[str, Any] | None:
+        """While a build waits for disk space (``disk_wait``) that is not free yet: the
+        skip's facts (free and waited-for bytes); None to build. Measures free space only:
+        nothing is fingerprinted or copied."""
+        if self.disk_wait is None:
+            return None
+        free = self._free_for_build()
+        if free is not None and free >= self.disk_wait:
+            return None
+        return {"disk": {"free_bytes": free, "needed_bytes": self.disk_wait,
+                         "estimate": {"mode": "waiting"}},
+                "waits_for_bytes": self.disk_wait}
+
+    def build_due(self) -> bool:
+        """The continuous ingest's question while no source has finished: is the space a
+        skipped build waits for (``disk_wait``) free now? Measured at most every
+        ``DISK_WAIT_POLL_SECONDS``; False while none waits."""
+        if self.disk_wait is None:
+            return False
+        now = self.monotonic()
+        if self._disk_polled is not None and now - self._disk_polled < DISK_WAIT_POLL_SECONDS:
+            return False
+        self._disk_polled = now
+        free = self._free_for_build()
+        return free is not None and free >= self.disk_wait
 
     def build_disk(self, need: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The free bytes of the state directory's file system (None: it cannot say,
@@ -2055,7 +2137,8 @@ class Host:
                     "generation": built["generation"], "built_at": built["built_at"],
                     "age_seconds": _age(now, built["built_at"]), "objects": built["objects"],
                     "inputs": json.loads(built["inputs"])},
-                "last_cycle": None if last is None else dict(last)}
+                "last_cycle": None if last is None else dict(last),
+                "build_wait": build_wait(self.state_dir)}
 
     def serve_cycle(self) -> dict[str, Any]:
         """``cycle``, or, while another process holds this directory's cycle (a ``run``,
@@ -2108,6 +2191,110 @@ class Host:
                 break
             self.stop.wait(interval_seconds)
         return done
+
+
+def _measured(rows: Iterable[tuple[Any]], previous: int | None) -> float | None:
+    """``Host._measured_share`` over the ledger's finished cycles, newest first."""
+    for (raw,) in rows:
+        try:
+            projection = json.loads(raw) if raw else None
+        except ValueError:
+            continue
+        if not isinstance(projection, dict) or projection.get("generation") != previous:
+            return None
+        if projection.get("state") == "built":
+            return None
+        if "disk_low" not in (projection.get("reasons") or ()):
+            continue
+        estimate = (projection.get("disk") or {}).get("estimate") or {}
+        share = ((estimate.get("estimates") or {}).get("incremental") or {}).get(
+            "changed_share")
+        if isinstance(share, (int, float)):
+            return float(share)
+    return None
+
+
+def build_wait(state_dir: str | Path) -> dict[str, Any] | None:
+    """What the next projection build waits for, read from the host ledger (read-only):
+    after a ``disk_low`` skip with no build since, ``needed_bytes`` (the estimate plus the
+    margin and input copies), ``free_bytes`` and ``checked_at`` (the latest check), and
+    the estimate's ``mode`` and ``predicted`` reason; None while no build waits or the
+    ledger cannot say."""
+    ledger = Path(state_dir) / HOST_DIR / LEDGER_FILE
+    if not ledger.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(f"file:{ledger}?mode=ro", uri=True,
+                                     timeout=1)) as db:
+            return _waited(db.execute(
+                "SELECT finished_at, json_extract(report, '$.projection') FROM cycle "
+                "WHERE finished_at IS NOT NULL ORDER BY cycle_id DESC LIMIT 200"))
+    except sqlite3.Error:
+        return None
+
+
+def _waited(rows: Iterable[tuple[Any, Any]]) -> dict[str, Any] | None:
+    """``build_wait`` over the ledger's finished cycles, newest first (read as needed)."""
+    found: dict[str, Any] | None = None
+    for finished_at, raw in rows:
+        try:
+            projection = json.loads(raw) if raw else None
+        except ValueError:
+            continue
+        if not isinstance(projection, dict):
+            continue
+        if projection.get("state") != "skipped":
+            break   # built, failed or no captures: no build waits for space
+        if "disk_low" not in (projection.get("reasons") or ()):
+            continue
+        disk = projection.get("disk") or {}
+        needed = projection.get("waits_for_bytes", disk.get("needed_bytes"))
+        if not isinstance(needed, int):
+            break
+        estimate = disk.get("estimate") or {}
+        if found is None:
+            found = {"needed_bytes": needed, "free_bytes": disk.get("free_bytes"),
+                     "checked_at": finished_at, "mode": None, "predicted": None}
+        if estimate.get("mode") not in (None, "waiting"):   # the estimate the wait began on
+            found.update(mode=estimate.get("mode"), predicted=estimate.get("predicted"))
+            break
+    return found
+
+
+def build_reserve(state_dir: str | Path) -> dict[str, Any]:
+    """The free space other writers on the state directory's file system (the Postgres
+    ontology load and its follower, ``operating.pg``) keep for the next projection build:
+    the next cold build's estimate (``space_need`` over the committed generation's measured
+    sizes) plus ``BUILD_DISK_MARGIN_BYTES`` and the input copies the latest check counted
+    (``snapshot_bytes``), or what a waiting build waits for (``build_wait``) when more.
+    ``reserve_bytes`` is the total; the parts beside it."""
+    from ontology.project_incremental import space_need
+
+    state = Path(state_dir)
+    try:
+        cold = space_need(state / PROJECTION_DIR)
+    except (OSError, ValueError, sqlite3.Error):
+        cold = {}
+    copies = 0
+    ledger = state / HOST_DIR / LEDGER_FILE
+    if ledger.is_file():
+        try:
+            with closing(sqlite3.connect(f"file:{ledger}?mode=ro", uri=True,
+                                         timeout=1)) as db:
+                row = db.execute(
+                    "SELECT json_extract(report, '$.projection.disk.estimate.snapshot_bytes') "
+                    "FROM cycle WHERE json_extract(report, '$.projection.disk.estimate.mode') "
+                    "NOT IN ('waiting') ORDER BY cycle_id DESC LIMIT 1").fetchone()
+            copies = int(row[0]) if row and isinstance(row[0], int) else 0
+        except sqlite3.Error:
+            copies = 0
+    cold_bytes = int(cold.get("needed_bytes") or 0)
+    reserve = cold_bytes + BUILD_DISK_MARGIN_BYTES + copies
+    wait = build_wait(state)
+    waits = wait["needed_bytes"] if wait else None
+    return {"reserve_bytes": max(reserve, waits or 0), "cold_bytes": cold_bytes,
+            "margin_bytes": BUILD_DISK_MARGIN_BYTES, "snapshot_bytes": copies,
+            "waits_for_bytes": waits}
 
 
 def _with_refusals(outcome: dict[str, Any], parts: Sequence[Mapping[str, Any]]

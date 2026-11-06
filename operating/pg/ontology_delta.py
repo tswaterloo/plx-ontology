@@ -324,7 +324,14 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     layer the delta pointer (``<state>/projection/delta/CURRENT.json``) lists over that
     generation and Postgres has not applied, oldest first, each with the layers above it
     as ``newer``. Layers no longer listed were folded into a listed one, so nothing is
-    missed whatever the interval between runs."""
+    missed whatever the interval between runs.
+
+    Disk: every load keeps ``min_free`` and the next projection build's room free
+    (``ontology_load.build_floor``: the next cold build's estimate, not a fixed floor). A
+    load of a new generation starts only when it fits beside that room (``reload_room``):
+    the bytes it writes (the held copy's size, else the store's), less the held copy an
+    in-place reload empties first; the previous SQLite generation's files count as used
+    until they are pruned (``waiting_for_prune``; else ``waiting_for_space``)."""
     import psycopg
     from operating.pg import ontology_load
 
@@ -340,6 +347,10 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
                          "WHERE name = 'generation'").fetchone()
         done = {r[0] for r in pg.execute("SELECT substr(name, 7) FROM ontology.load_state "
                                          "WHERE name LIKE 'table:%%'")}
+        held_bytes = int(pg.execute(
+            "SELECT coalesce(sum(pg_total_relation_size(c.oid)), 0) FROM pg_class c JOIN "
+            "pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'ontology' "
+            "AND c.relkind IN ('r', 'm')").fetchone()[0])
     report: dict[str, Any] = {"served": digest, "held": row[0] if row else None}
     if report["held"] != digest or not needed <= done:
         if not reload:
@@ -361,12 +372,19 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
             # a request that began on Postgres before the publish finishes on it first
             return {**report, "state": "waiting_for_readers",
                     "seconds_left": round(RELOAD_GRACE_SECONDS - (time.time() - published))}
+        if report["held"] is not None and report["held"] != digest:
+            room = reload_room(Path(state_dir), source, held_bytes=held_bytes,
+                               in_place=not beside, min_free=min_free,
+                               folder=ontology_load.free_path(dsn))
+            report["room"] = room
+            if not room["fits"]:
+                return {**report, "state": room["state"]}
         if beside and report["held"] is not None \
                 and report["held"] != digest and needed <= done:
             from operating.pg import ontology_swap
             ontology_swap.prepare_next(dsn, digest)
             import subprocess
-            done = subprocess.run(
+            done = subprocess.run(   # the loader keeps the build's room too (state_of)
                 [sys.executable, "-m", "operating.pg.ontology_load", str(source), "--dsn", dsn,
                  "--workers", str(workers), "--min-free-gb", str(min_free / 1024 ** 3),
                  *(["--defer", *deferred] if deferred else [])],
@@ -379,7 +397,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
             replace = report["held"] != digest
             report["loaded"] = ontology_load.load(source, dsn, workers=workers,
                                                   replace=replace, min_free=min_free, log=log,
-                                                  deferred=deferred)
+                                                  deferred=deferred, state_dir=state_dir)
         report["held"] = digest
     pointer = projection / "delta" / "CURRENT.json"
     try:
@@ -394,6 +412,47 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
     return report
 
 
+def reload_room(state_dir: Path, source: Path, *, held_bytes: int, in_place: bool,
+                min_free: int = 0, folder: str | None = None) -> dict[str, Any]:
+    """Whether a load of the generation at ``source`` fits now: the free space of the
+    database's file system (``folder``; the state directory's when None), plus the held
+    copy an ``in_place`` reload empties first, must hold the bytes the load writes (the
+    held copy's ``held_bytes``, else the store's size) and the floor every load keeps
+    (``ontology_load.build_floor``: ``min_free`` or the next projection build's room). The
+    files of SQLite generations other than ``source``'s (the previous one, kept until a
+    later build prunes it) are named: while they are on disk and the load does not fit it
+    is ``waiting_for_prune``, else ``waiting_for_space``."""
+    from operating.pg import ontology_load
+    folder, floor, reserve = ontology_load.build_floor(folder, min_free, state_dir)
+    measured = folder or str(state_dir)
+    try:
+        free: int | None = ontology_load._free_bytes(measured)
+    except OSError:
+        free = None
+    try:
+        ino = source.stat().st_ino
+        size = source.stat().st_size
+    except OSError:
+        ino, size = None, 0
+    previous = 0
+    for store in (state_dir / "projection" / "generations").glob("*/store.sqlite"):
+        try:
+            if store.stat().st_ino != ino:
+                previous += sum(f.stat().st_size for f in store.parent.iterdir()
+                                if f.is_file())
+        except OSError:
+            continue
+    load_bytes = held_bytes or size
+    freed = held_bytes if in_place else 0
+    needed = load_bytes + floor
+    fits = free is not None and free + freed >= needed
+    return {"fits": fits, "free_bytes": free, "freed_bytes": freed, "load_bytes": load_bytes,
+            "floor_bytes": floor, "needed_bytes": needed, "previous_bytes": previous,
+            "build_reserve": reserve,
+            "state": "fits" if fits else
+            "waiting_for_prune" if previous else "waiting_for_space"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from operating.pg import config
 
@@ -404,7 +463,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="apply what the state directory serves (``follow``)")
     parser.add_argument("--no-reload", action="store_true",
                         help="with --follow: never load a whole generation")
-    parser.add_argument("--min-free-gb", type=float, default=150.0)
+    parser.add_argument("--min-free-gb", type=float, default=0.0,
+                        help="a floor below the next projection build's room, which every "
+                             "load keeps free (ontology_load.build_floor)")
     parser.add_argument("--workers", type=int, default=12)
     args = parser.parse_args(argv)
     dsn = args.dsn or config.dsn()

@@ -1714,6 +1714,62 @@
         "title": "BriefingSeen",
         "type": "object"
       },
+      "BuildWait": {
+        "additionalProperties": false,
+        "description": "The next projection build waits for disk space (``operating.host.build_wait``):\nthe last one was skipped because its estimate did not fit, and the host builds again\nonce this much is free; captures go on meanwhile.",
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the host last checked (ISO).",
+            "title": "Checked At"
+          },
+          "free_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free bytes now (the latest check's when the disk cannot be measured here).",
+            "title": "Free Bytes"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cold",
+                  "incremental"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The build the estimate is for.",
+            "title": "Mode"
+          },
+          "needed_bytes": {
+            "description": "Free bytes the next build waits for: its estimate, margin and input copies.",
+            "title": "Needed Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "needed_bytes"
+        ],
+        "title": "BuildWait",
+        "type": "object"
+      },
       "Candidate": {
         "additionalProperties": false,
         "properties": {
@@ -2329,6 +2385,44 @@
         "title": "DevLoginResponse",
         "type": "object"
       },
+      "DocumentsPending": {
+        "additionalProperties": false,
+        "description": "Documents the latest delta cycle has not read yet (its reading budget ran out or a\nfile timed out): the records holding them are current, their document fields pending;\nthe served generation's document objects stay served until a later cycle reads them.\nCounts only.",
+        "properties": {
+          "files": {
+            "default": 0,
+            "description": "Files not read yet.",
+            "title": "Files",
+            "type": "integer"
+          },
+          "records": {
+            "default": 0,
+            "description": "Records whose document fields are pending.",
+            "title": "Records",
+            "type": "integer"
+          },
+          "this_record": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a record's page: whether this record's document fields are pending.",
+            "title": "This Record"
+          },
+          "timed_out": {
+            "default": 0,
+            "description": "Of those, files whose read timed out.",
+            "title": "Timed Out",
+            "type": "integer"
+          }
+        },
+        "title": "DocumentsPending",
+        "type": "object"
+      },
       "DraftFact": {
         "additionalProperties": false,
         "properties": {
@@ -2833,6 +2927,28 @@
             ],
             "description": "The data cut-off (ISO): the newest capture the served data holds, the same on every screen. A source read over a day before it is named in the label and keeps its own time in sources.",
             "title": "As Of"
+          },
+          "build_wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuildWait"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The next projection build waits for disk space; the label says how much ('next build waits for 374 GB free')."
+          },
+          "documents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentsPending"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Documents the latest delta cycle has not read yet; the label names them, and on a record's page whether its document fields are pending."
           },
           "label": {
             "anyOf": [

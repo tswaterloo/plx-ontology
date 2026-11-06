@@ -902,6 +902,103 @@ class ConcurrentIngestTest(unittest.TestCase):
             self.assertNotEqual(report["content_digest"], first["content_digest"])
             self.assertNotEqual(served.stat().st_ino, inode)
 
+    def test_a_build_known_cold_that_cannot_fit_skips_before_fingerprinting(self) -> None:
+        """Live 2026-11-06: a cold build fingerprinted for 4.4 hours, then skipped
+        (``disk_low``): the check before it used the least any mode writes, and the cold
+        estimate came only once the changed units were known. A build known to be cold (the
+        served generation was built under another schema) is checked against the cold
+        estimate first: skipped at once, nothing fingerprinted or copied, the wait recorded;
+        the next cycles only measure free space until it is there."""
+        from integrations import bc_read
+        from integrations.live_source_guard import BoundedBackoff
+        from integrations.tests.test_bc_capture import BOOKS, ENV, Clock, FakeBc
+        from ontology import project_incremental as inc
+
+        store = host_module.state_capture_paths(self.state)["bc"]
+        store.parent.mkdir(parents=True)
+        bc_read.capture_probe(ENV, sender=FakeBc({"purchaseReceipts": 3}), db=store,
+                              page_size=2, passes=1, books=BOOKS, monotonic=Clock().monotonic,
+                              retry=BoundedBackoff(sleep=lambda s: None),
+                              entity_sets=("purchaseReceipts",))
+        host = self.host(self.config({"bc": {}}),
+                         fake_table(self.script, "bc", projected={"bc": "bc"}))
+        no_clone = mock.patch("ontology.project_incremental.can_clone", return_value=False)
+        no_clone.start()
+        self.addCleanup(no_clone.stop)
+        first = host.cycle()
+        self.assertEqual(first["projection"]["state"], "built", first)
+        state = self.state / host_module.PROJECTION_DIR
+        cold = inc.space_need(state)["needed_bytes"]
+        least = inc.space_need(state, dirty=())["needed_bytes"]
+        margin = host_module.BUILD_DISK_MARGIN_BYTES
+        self.assertGreater(cold, least)
+        # Room for the least an incremental build writes, not for a cold one.
+        host.disk_free = lambda path: cold + margin - 1
+        other = mock.patch("ontology.project_incremental._schema_digest",
+                           return_value="sha256:" + "0" * 64)
+        with other, mock.patch.object(host_module, "build_projection") as build, \
+                mock.patch.object(host_module.Host, "snapshot_inputs") as copies:
+            skipped = host.cycle()
+        build.assert_not_called()   # nothing fingerprinted
+        copies.assert_not_called()  # no input copies taken
+        projection = skipped["projection"]
+        self.assertEqual((projection["state"], projection["reasons"],
+                          projection["generation"]),
+                         ("skipped", ["disk_low"], first["cycle"]), projection)
+        self.assertEqual((projection["disk"]["estimate"]["mode"],
+                          projection["disk"]["estimate"]["predicted"]),
+                         ("cold", "schema_changed"))
+        self.assertEqual(projection["waits_for_bytes"], cold + margin)
+        self.assertEqual(host.disk_wait, cold + margin)
+        wait = host_module.build_wait(self.state)
+        self.assertEqual((wait["needed_bytes"], wait["free_bytes"], wait["mode"],
+                          wait["predicted"]), (cold + margin, cold + margin - 1, "cold",
+                                               "schema_changed"))
+        self.assertEqual(host.status()["build_wait"]["needed_bytes"], cold + margin)
+        # The Postgres load keeps that room free (the next cold build's estimate).
+        self.assertGreaterEqual(host_module.build_reserve(self.state)["reserve_bytes"],
+                                cold + margin)
+        # Waiting: the next cycle records its sources and only measures free space.
+        with mock.patch.object(host_module.Host, "build_plan") as plan:
+            waited = host.cycle()
+        plan.assert_not_called()
+        self.assertEqual((waited["projection"]["reasons"],
+                          waited["projection"]["waits_for_bytes"]),
+                         (["disk_low"], cold + margin))
+        self.assertEqual(host_module.build_wait(self.state)["mode"], "cold")
+        # The continuous ingest asks every DISK_WAIT_POLL_SECONDS, not every poll.
+        clock = [1000.0]
+        host.monotonic = lambda: clock[0]
+        self.assertFalse(host.build_due())   # not free yet
+        host.disk_free = lambda path: cold + margin
+        self.assertFalse(host.build_due())   # asked again too soon
+        clock[0] += host_module.DISK_WAIT_POLL_SECONDS
+        self.assertTrue(host.build_due())
+        # The served schema again: the build goes on, and nothing waits after it.
+        built = host.cycle()
+        self.assertEqual(built["projection"]["state"], "built", built)
+        self.assertIsNone(host.disk_wait)
+        self.assertIsNone(host_module.build_wait(self.state))
+
+    def test_continuous_ingest_builds_when_the_waited_space_is_free(self) -> None:
+        """After a build skipped for space, the continuous ingest builds once the host
+        says the space is free (``build_due``), with no source finishing first."""
+        table = fake_table(self.script, "fast")
+        batches: list[list[str]] = []
+        asked = []
+
+        def due() -> bool:
+            asked.append(len(batches))
+            return len(batches) == 1
+
+        forever.Continuous(
+            table, {"fast": {"min_interval_seconds": 3600}}, self.state, self.env,
+            grace=1, parallel=1, refresh=lambda batch, reason, ex: batches.append(
+                sorted(batch)), should_stop=lambda: None, max_refreshes=2,
+            build_due=due).run()
+        self.assertEqual(batches, [["fast"], []])   # the source ran once; then the build
+        self.assertIn(1, asked)
+
     def test_continuous_sources_at_cardinality(self) -> None:
         """1, 10 and 60 sources, 7 at a time: each run once and refreshed exactly once."""
         for n in (1, 10, 60):

@@ -25,7 +25,10 @@ over a different generation is refused unless ``--replace``, and every range che
 the store file still holds the recorded generation (a generation published or pruned
 mid-load stops it: ``GenerationChanged``). ``--min-free-gb``: free space
 the file system of the database must keep; a range is not started below it
-(``DiskFloor``; the load stops, resumable). The loader's own sessions set
+(``DiskFloor``; the load stops, resumable). A generation of a state directory's
+projection (``<state>/projection/...``) on the database's file system also keeps the next
+projection build's room free (``operating.host.build_reserve``: the next cold build's
+estimate), whichever floor is higher. The loader's own sessions set
 ``maintenance_work_mem`` and ``work_mem`` (``SESSION_SETTINGS``).
 
 Stdlib and psycopg.
@@ -241,6 +244,34 @@ def free_path(dsn: str) -> str | None:
     return None
 
 
+def state_of(store: str | Path) -> Path | None:
+    """The state directory whose projection holds ``store`` (``<state>/projection/...``),
+    None for a store of no state directory."""
+    for parent in Path(store).resolve().parents:
+        if parent.name == "projection" and (parent / "CURRENT").is_file():
+            return parent.parent
+    return None
+
+
+def build_floor(folder: str | None, min_free: int, state_dir: str | Path | None
+                ) -> tuple[str | None, int, dict[str, Any] | None]:
+    """(the folder measured, the floor, the reserve): ``min_free``, raised to the next
+    projection build's room of ``state_dir`` (``operating.host.build_reserve``) when the
+    database's file system is the state directory's, or cannot be told (``folder`` None:
+    the state directory's is measured)."""
+    if state_dir is None:
+        return folder, min_free, None
+    try:
+        shared = folder is None or os.stat(folder).st_dev == os.stat(state_dir).st_dev
+    except OSError:
+        shared = True
+    if not shared:
+        return folder, min_free, None
+    from operating.host import build_reserve
+    reserve = build_reserve(state_dir)
+    return folder or str(state_dir), max(min_free, reserve["reserve_bytes"]), reserve
+
+
 def _free_bytes(folder: str | None) -> int | None:
     return shutil.disk_usage(folder).free if folder else None
 
@@ -389,11 +420,13 @@ def _settings(cur: Any) -> None:
 
 def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: int = 4,
          replace: bool = False, log: Any = sys.stderr, min_free: int = 0,
-         deferred: Sequence[str] = ()) -> dict[str, Any]:
+         deferred: Sequence[str] = (), state_dir: str | Path | None = None
+         ) -> dict[str, Any]:
     """Load ``tables`` of the generation store at ``path`` into ``ontology.*`` (module
     docstring); returns rows and seconds per table. ``deferred``: tables left out for now
     (recorded in ``generation``; readers read them from the SQLite generation until a
-    later load fills them, ``operating.pg.ontology_reader``)."""
+    later load fills them, ``operating.pg.ontology_reader``). ``state_dir``: the state
+    directory whose next build's room the load keeps free (``build_floor``)."""
     import psycopg
 
     path = str(path)
@@ -404,7 +437,12 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
     if unknown:
         raise ValueError(f"tables that cannot be deferred: {unknown}")
     tables = [t for t in ORDER if t in tables and t not in deferred]
-    floor = (free_path(dsn) if min_free else None, min_free)
+    folder, min_free, reserve = build_floor(
+        free_path(dsn) if min_free or state_dir is not None else None, min_free, state_dir)
+    floor = (folder if min_free else None, min_free)
+    if reserve is not None and log is not None:
+        print(json.dumps({"floor_bytes": min_free, "build_reserve": reserve},
+                         sort_keys=True), file=log, flush=True)
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
         meta = dict(conn.execute("SELECT key, value FROM store_meta "
                                  "WHERE key NOT IN ('content_digest_parts')"))
@@ -524,6 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--tables", nargs="*", default=list(ORDER))
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--min-free-gb", type=float, default=0.0)
+    parser.add_argument("--no-build-reserve", action="store_true",
+                        help="keep only --min-free-gb, not the next projection build's room")
     parser.add_argument("--defer", nargs="*", default=[], choices=DEFERRABLE)
     args = parser.parse_args(argv)
     dsn = args.dsn or config.dsn()
@@ -536,7 +576,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         load(args.store, dsn, tables=args.tables, workers=args.workers,
              replace=args.replace, min_free=int(args.min_free_gb * 1024 ** 3),
-             deferred=args.defer)
+             deferred=args.defer,
+             state_dir=None if args.no_build_reserve else state_of(args.store))
     except DiskFloor as low:
         print(f"ontology_load stopped at the disk floor: {low}; run again to resume",
               file=sys.stderr, flush=True)
