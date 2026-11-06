@@ -2459,6 +2459,17 @@ class TextFigureTests(unittest.TestCase):
                     self.assertTrue(out["passed"], out["failures"])
             out = self.check("LCY = USD", event, field="row.payload", rows=rows)
             self.assertEqual(codes(out), ["claim_value_mismatch"], out["failures"])
+        # The cell stated whole, as stored (a mail's recipient list, a payload), is that
+        # cell's value, as before structured cells were read as text; another list is not.
+        recipients = "mail://box/MSG-1@CK-1"
+        for cell in (["purchase-order@example-plx.com"],
+                     json.dumps(["purchase-order@example-plx.com"])):
+            rows = {recipients: {"relation": "graph_mail.messages", "row": {"to": cell}}}
+            for value, passed in ((json.dumps(["purchase-order@example-plx.com"]), True),
+                                  (json.dumps(["someone-else@example-plx.com"]), False)):
+                with self.subTest(whole=value, cell=type(cell).__name__):
+                    out = self.check(value, recipients, field="row.to", rows=rows)
+                    self.assertEqual(out["passed"], passed, out["failures"])
         # a quote alone states the passage: the gate reads it as the claim's value
         stated = answer_gate.read_value(
             {"citation": event, "field": "row.payload", "quote": "LCY = CAD"}, {event},

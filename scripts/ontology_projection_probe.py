@@ -924,7 +924,8 @@ def served_rows(served: Any, actor: Any) -> Callable[[str], Mapping[str, Any] | 
     ``plx.read`` reads it (``served_reads``; ``served_citations`` reports both)."""
     from operating.ontology_tools_investigate import citation_rows
 
-    claim_rows = citation_rows(served.runtime)
+    claim_rows = citation_rows(served.runtime, held_markings=lambda reader: (
+        served.policy_now(reader).held_markings(reader)))
     return lambda handle: claim_rows(handle, actor)
 
 
@@ -1095,6 +1096,11 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
     whose object's audience unit it withholds from ``actor`` is no claim
     (``claim_values_withheld``); its citation (one no granted value shares) must resolve
     for nobody: each that ``rows`` resolves is a leak (``withheld_citations_resolved``).
+    A sampled value the reader's value markings withhold (its raw row's marking, or its
+    column's: ``ontology.raw_markings``, as the claim gate reads the row) is no claim
+    either (``claim_values_marking_withheld``): its row must not resolve for the claim
+    gate (``marking_withheld_citations_resolved``, a leak; ``plx.read`` names a row's
+    withheld columns rather than refusing it, so only the gate is probed).
     The quantity-role contracts are read from the values it lets ``actor`` read.
     ``claims_timing`` splits the seconds: ``scan_seconds`` reading the sample from the
     store (``sample_values``), ``gate_seconds`` the served reads and the claim gate.
@@ -1115,9 +1121,23 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
     finally:
         conn.close()
     scanned = monotonic()
-    granted = [v for v in sample if policy.may_read(actor, v["audience_key"])]
+    from ontology.raw_markings import handle_relation, relation_markings
+    held_of = getattr(policy, "held_markings", None)
+    found_held = held_of(actor) if callable(held_of) else ()
+    held = frozenset(found_held) if isinstance(found_held, (set, frozenset, list, tuple)) \
+        else frozenset()
+
+    def row_held(handle: str) -> bool:
+        """Whether the reader's markings let the claim gate read the cited raw row."""
+        if not handle.startswith(("api://", "bc://")):
+            return True
+        found = handle_relation(handle)
+        return found is not None and relation_markings(*found).row <= held
+    audience = [v for v in sample if policy.may_read(actor, v["audience_key"])]
+    granted = [v for v in audience if row_held(v["l1_handle"])]
+    marked = sorted({v["l1_handle"] for v in audience} - {v["l1_handle"] for v in granted})
     handles = sorted({v["l1_handle"] for v in granted})
-    withheld = sorted({v["l1_handle"] for v in sample} - set(handles))
+    withheld = sorted({v["l1_handle"] for v in sample} - {v["l1_handle"] for v in audience})
     # A value the projection holds as superseded is history, checked as of its own moment:
     # its revision being superseded since is expected. A current value's is not (the
     # projection is behind its source), so that claim fails claim_changed_since.
@@ -1136,11 +1156,21 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
         tick()
         leaked += rows(handle) is not None or (reads is not None
                                                and reads(handle) is not None)
+    marked_leaked = 0
+    for handle in marked:
+        tick()
+        marked_leaked += rows(handle) is not None
     citations = citation_counts(handles, resolved, None if reads is None else read)
-    items, problems, nulls = [], {}, 0
+    items, problems, nulls, column_withheld = [], {}, 0, 0
     for index, value in enumerate(granted):
         tick()
-        claim, problem = _claim(value, resolved.get(value["l1_handle"]), normalizer, kinds)
+        view = resolved.get(value["l1_handle"])
+        hidden = (view or {}).get("withheld_fields") or ()
+        if any(value["field_path"] == f or value["field_path"].startswith(f + ".")
+               for f in hidden):
+            column_withheld += 1   # a column the reader's markings withhold: no claim
+            continue
+        claim, problem = _claim(value, view, normalizer, kinds)
         if problem is not None:
             problems[problem] = problems.get(problem, 0) + 1
             continue
@@ -1167,7 +1197,9 @@ def check_store(store_path: str, rows: Callable[[str], Mapping[str, Any] | None]
     checked = result["counts"]["claims"]
     passed = result["counts"]["passed"]
     return {"values_total": total, "claim_sample": len(sample), "claims_checked": checked,
-            "claim_values_withheld": len(sample) - len(granted),
+            "claim_values_withheld": len(sample) - len(audience),
+            "claim_values_marking_withheld": len(audience) - len(granted) + column_withheld,
+            "marking_withheld_citations_resolved": marked_leaked,
             "withheld_citations_probed": len(withheld), "withheld_citations_resolved": leaked,
             "claims_passed": passed, "claim_null_values": nulls,
             "claim_problems": problems, "claim_failures": failures,

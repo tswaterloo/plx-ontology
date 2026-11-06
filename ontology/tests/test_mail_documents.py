@@ -1120,6 +1120,10 @@ class ProbeWithMailTests(unittest.TestCase):
         self.assertFalse(result["mail_capture_complete"])   # mailbox B not visible
         text = json.dumps(result)
         self.assertEqual(result["citations"]["unresolved"], 0)
+        # Rows and columns the reader's value markings withhold (BC accounts, bank
+        # accounts, contacts) are no claim, and the claim gate serves none of those rows.
+        self.assertGreater(result["claim_values_marking_withheld"], 0)
+        self.assertEqual(result["marking_withheld_citations_resolved"], 0)
         self.assertGreater(result["citations"]["by_scheme"]["graph-mail"], 0)
         for secret in ("PO-1001", "graph-mail://", BOX_A, "MSG-1", address):
             self.assertNotIn(secret, text)

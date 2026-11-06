@@ -247,6 +247,36 @@ class DocumentQuestionTests(SharePointHostCase):
                     # fewer one-file reads: the scan's files were read ahead together
                     self.assertLess(before, alone)
 
+    def test_the_sharepoint_lookup_is_read_beside_the_projected_search_alike(self):
+        # A documents question starts the reader's SharePoint capture search on its own
+        # thread and store connection while the projected search runs; the answer is the
+        # one the search read after it gives, for a reader and for one without the grant.
+        import threading
+        question = {"query": SCAN_PO, "sources": ["sharepoint"]}
+        real = CaptureCaseHostTools._captured_search
+        threads = []
+
+        def noted(self_, *args, **kwargs):
+            threads.append(threading.current_thread().name)
+            return real(self_, *args, **kwargs)
+        for actor in (EMPLOYEE, OUTSIDER):
+            with self.subTest(actor=actor):
+                def ask():
+                    self.server(actor, mail_capture_dir=self.root / "no-mail")
+                    return self.tools.call("plx.documents", question, actor)
+                with mock.patch.object(CaptureCaseHostTools, "_captured_search", noted):
+                    beside = ask()
+                with mock.patch.object(CaptureCaseHostTools, "_search_ahead",
+                                       return_value=None):
+                    after = ask()
+                self.assertEqual(json.dumps(dict(beside, meta=None), sort_keys=True),
+                                 json.dumps(dict(after, meta=None), sort_keys=True))
+                if actor is EMPLOYEE:
+                    self.assertEqual([d["citation"] for d in beside["documents"]],
+                                     [self.handle(SCAN)])
+        self.assertTrue(threads)
+        self.assertTrue(all(name.startswith("plx-sp-lookup") for name in threads), threads)
+
     def test_with_portal_unreadable_the_capture_text_still_answers_by_page(self):
         # The reader holds no Portal grant (as when the Portal API is down): no
         # purchase-order object to link to, so the host searches the captured text.
@@ -2407,7 +2437,7 @@ class LiveCheckModuleTests(unittest.TestCase):
         # The daily run of 2026-10-04: the projection listed the packet by the identifier
         # in its name, and plx.documents served that mention, not the captured page.
         unpaged = mock.patch.object(CaptureCaseHostTools, "_captured_documents",
-                                    lambda host, arguments, actor, result: result)
+                                    lambda host, arguments, actor, result, *read: result)
         # A live re-read that refuses every captured file.
         refused = mock.patch.object(CaptureCaseHostTools, "_live_check",
                                     lambda host, gated, view: None)

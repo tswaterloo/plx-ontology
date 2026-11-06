@@ -110,6 +110,25 @@ class UseCaseCase(CapturedOriginalsCase):
         return {gap["reason"]: gap for gap in answer["gaps"]}
 
 
+def sent_bytes(result):
+    """A host-built result's size as the host fits it: as sent to a client, every text
+    wrapped by the output boundary, with the freshness meta's reserve
+    (``mcp_server._envelope_bytes``)."""
+    from operating.mcp_server import _envelope_bytes
+    return _envelope_bytes(result)
+
+
+def received_bytes(answer):
+    """The same size of an answer as a client received it: its texts are already
+    wrapped, so it is measured as it stands."""
+    from operating import mcp_server
+    token = mcp_server._TO_CLIENT.set(False)
+    try:
+        return mcp_server._envelope_bytes(answer)
+    finally:
+        mcp_server._TO_CLIENT.reset(token)
+
+
 UC_GAPS = {"use_case_documents_withheld", "use_case_document_not_held", "unknown_use_case",
            "use_case_catalog_unreadable", "use_case_documents_not_searched"}
 
@@ -456,7 +475,7 @@ class OversizeAnswerTests(UseCaseCase):
                                                           max_result_bytes=limit))
 
     def test_an_oversize_document_list_is_trimmed_to_fit_and_says_what_was_cut(self):
-        from operating.ontology_tools import _envelope_bytes
+        _envelope_bytes = received_bytes
         from operating.tests.test_case_host_sharepoint import _client
 
         _runtime, server = self.runtime_server(QUALITY)
@@ -468,7 +487,7 @@ class OversizeAnswerTests(UseCaseCase):
         self.assertNotIn("result_trimmed", self.reasons(full))   # fits: untouched
         counts = set()
         # (Just under the full size the capture labels' own summary is enough.)
-        for limit in (int(size * 0.75), int(size * 0.7), int(size * 0.5)):
+        for limit in (int(size * 0.8), int(size * 0.75), int(size * 0.6)):
             with self.subTest(limit=limit):
                 self.bound(limit)
                 answer = self.ask(server, "plx.documents", self.QUERY)   # contract-checked
@@ -502,7 +521,7 @@ class OversizeAnswerTests(UseCaseCase):
     def block_only_size(self, answer, key):
         """The envelope of ``answer`` with no hits and only its use-case gaps (plus a
         trimming note's worth): what must still fit."""
-        from operating.ontology_tools import _envelope_bytes
+        _envelope_bytes = received_bytes
         bare = dict(answer, **{key: []},
                     gaps=[g for g in answer["gaps"] if g["reason"] in UC_GAPS])
         return _envelope_bytes(bare) + 2400
@@ -512,7 +531,7 @@ class OversizeAnswerTests(UseCaseCase):
         result_too_large with no use-case block: the block was dropped from a candidate
         list over the bound, and the capture labels then failed the whole answer. A
         found answer keeps its one candidate (its contract); the block stays."""
-        from operating.ontology_tools import _envelope_bytes
+        _envelope_bytes = received_bytes
         _runtime, server = self.runtime_server(QUALITY)
         full = self.ask(server, "plx.find", self.QUERY)
         self.assertEqual((full["status"], len(full["candidates"])), ("found", 1))
@@ -520,8 +539,8 @@ class OversizeAnswerTests(UseCaseCase):
         # Down to the room the candidate, the block with no titles and a trimming
         # note take: every step keeps the block.
         least = _envelope_bytes(dict(full, gaps=[], use_case=dict(block, documents=[
-            dict(d, title=None) for d in block["documents"]]))) + 700
-        limits = range(_envelope_bytes(full) - 1, least, -100)
+            dict(d, title=None) for d in block["documents"]]))) + 1200
+        limits = range(_envelope_bytes(full) - 1, least, -50)
         self.assertGreaterEqual(len(limits), 3)
         for limit in limits:
             with self.subTest(limit=limit):
@@ -601,7 +620,7 @@ class OversizeAnswerTests(UseCaseCase):
         """Trimming never names a withheld document: at every bound the outsider's
         block lists nothing, counts all three, and no answer carries their ids or the
         brief's name."""
-        from operating.ontology_tools import _envelope_bytes
+        _envelope_bytes = received_bytes
         _runtime, server = self.runtime_server(OUTSIDER)
         for tool in ("plx.find", "plx.documents"):
             full = self.ask(server, tool, "asset-brief use case")
@@ -636,7 +655,7 @@ class OversizeAnswerTests(UseCaseCase):
         bare["use_case"]["also"][0]["documents"] = []
         for d in bare["use_case"]["documents"]:
             d["title"] = None
-        self.bound(ot._envelope_bytes(bare) + 900)
+        self.bound(sent_bytes(bare) + 1500)   # the trimming note, as sent
         out = self.host_tools._trimmed("plx.documents", page)
         also = out["use_case"]["also"][0]
         self.assertEqual((also["id"], also["withheld"], also["documents"]), ("triage", 2, []))
@@ -669,14 +688,15 @@ class OversizeAnswerTests(UseCaseCase):
                 "gaps": [], "meta": {},
                 "completeness": {"complete": False, "truncated": True, "returned": 9,
                                  "total": 60, "next_cursor": cursor, "reason": "result_size"}}
-        size = ot._envelope_bytes(page)
+        size = sent_bytes(page)
         cases = ((500, 3, 3, "more captured SharePoint file(s)"),       # captured only
-                 (size - 2600, 1, 1, "the last 2 of 3 documents"))     # all captured, 2 hits
+                 (size - sent_bytes(dict(page, documents=docs[:1])) - 1500, 1, 1,
+                  "the last 2 of 3 documents"))     # all captured, 2 hits
         for under, kept_hits, at, said in cases:
             with self.subTest(under=under):
                 self.bound(size - under)
                 out = host._trimmed("plx.documents", page, 3)
-                self.assertLessEqual(ot._envelope_bytes(out), size - under)
+                self.assertLessEqual(sent_bytes(out), size - under)
                 listed = [d["citation"] for d in out["documents"]]
                 self.assertEqual(listed[:3], [f"sharepoint://proj{i}" for i in range(3)
                                               ][:len(listed[:3])])

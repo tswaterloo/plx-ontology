@@ -389,6 +389,26 @@ class FixtureTextTests(unittest.TestCase):
         self.assertEqual(narrowed, whole)
         self.assertEqual(narrowed_gated, gated)
         self.assertIsNotNone(evidence._chunk_runs(["mail"]))   # the narrowed read ran
+        # The listed chunks are read in batches only as far as the capped scan goes: a
+        # cap the first rows reach leaves the rest of the match unread, the same rows kept.
+        listed = []
+        family_chunks = ev.EvidenceTools._family_chunks
+
+        def counted(self_, words, families):
+            for batch in family_chunks(self_, words, families):
+                listed.append(len(batch))
+                yield batch
+        with mock.patch.object(ev, "DOC_SCAN_CAP", 2), mock.patch.object(ev, "CHUNK_BATCH", 1):
+            with mock.patch.object(ev.EvidenceTools, "_family_chunks", counted):
+                capped = text_hits(["mail"])
+            whole_capped = None
+            with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+                whole_capped = text_hits(["mail"])
+            matches = [chunk for batch in family_chunks(evidence, '"orchid"* AND "shipment"*',
+                                                         ["mail"]) for chunk in batch]
+        self.assertEqual(capped, whole_capped)
+        self.assertEqual(len(capped[0][0]), 2)   # the cap cut the scan (said as scan_cap)
+        self.assertLess(sum(listed), len(matches))
         # Families holding most chunks read the match whole, as before.
         self.assertIsNone(evidence._chunk_runs(["sharepoint"]))
         # A field whose chunks are not one run of ids leaves the runs empty: no narrowing.
@@ -397,6 +417,66 @@ class FixtureTextTests(unittest.TestCase):
         self.assertIsNone(store_chunk_families(store.conn))
         self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM chunk_families"
                                             ).fetchone()[0], 0)
+
+    def test_chunk_runs_are_dropped_by_any_later_write_that_could_move_a_chunk(self):
+        # The runs are written by the text index step; a later step (or any writer) that
+        # moves an object to another family, deletes one, adds a chunk or moves a field
+        # empties them, so the search reads every match and still finds the document in
+        # its new family (fails closed). A store without the guards reads every match.
+        from operating import ontology_tools_evidence as ev
+
+        def fresh():
+            store = fx.build()
+            self.addCleanup(store.conn.close)
+            documents = []
+            for i in range(20):
+                family = "mail" if i % 10 == 3 else "sharepoint"
+                oid, handle = (f"Document:sharepoint.docs:g-{i:03d}",
+                               f"sharepoint://drive-g/g-{i}@e1")
+                store.obj(oid, f"{family}:unit-1", handle, "sharepoint")
+                documents.append(doc(handle, f"orchid shipment {i} " + "x " * 3000))
+            index_documents(store, documents)
+            self.assertTrue(store_chunk_families(store.conn))
+            tools, _ = fx.tools(store)
+            return store, tools, ev.EvidenceTools(tools.base, traverse=tools)
+
+        def mail_hits(tools, evidence):
+            return evidence._with_gate(fx.FULL, lambda name: evidence._document_text_hits(
+                tools._scope(fx.FULL, {}, name), ["orchid"], ["mail"], {}))[0]
+
+        moved = "Document:sharepoint.docs:g-005"
+        writes = {
+            "audience": ("UPDATE objects SET audience_key = 'mail:unit-1' WHERE object_id = ?",
+                         (moved,)),
+            "chunk": ("INSERT INTO text_chunks (field_id, start, body) SELECT field_id, "
+                      "999999, body FROM text_chunks WHERE chunk_id = 1", ()),
+            "unchanged": ("UPDATE objects SET audience_key = audience_key", ()),
+            "field": ("UPDATE text_fields SET object_id = 'Document:sharepoint.docs:g-003' "
+                      "WHERE object_id = 'Document:sharepoint.docs:g-000'", ()),
+            "deleted": ("DELETE FROM objects WHERE object_id = 'Document:sharepoint.docs:bare'",
+                        ())}
+        for what, (sql, args) in writes.items():
+            with self.subTest(write=what):
+                store, tools, evidence = fresh()
+                self.assertIsNotNone(evidence._chunk_runs(["mail"]))
+                if what == "deleted":   # an object no version or value holds yet
+                    store.conn.execute(
+                        "INSERT INTO objects VALUES (?, 'Document', 'sharepoint.docs', ?, "
+                        "'sharepoint:unit-1', ?, NULL)",
+                        ("Document:sharepoint.docs:bare", '["bare"]', fx.T0))
+                    self.assertIsNotNone(evidence._chunk_runs(["mail"]))
+                store.conn.execute(sql, args)
+                if what == "unchanged":   # an update that moves nothing fires no guard
+                    self.assertIsNotNone(evidence._chunk_runs(["mail"]))
+                    continue
+                self.assertEqual(store.conn.execute(
+                    "SELECT COUNT(*) FROM chunk_families").fetchone()[0], 0)
+                self.assertIsNone(evidence._chunk_runs(["mail"]))
+                if what == "audience":
+                    self.assertIn(moved, mail_hits(tools, evidence))
+        store, tools, evidence = fresh()
+        store.conn.execute("DROP TRIGGER chunk_families_object_moved")
+        self.assertIsNone(evidence._chunk_runs(["mail"]))   # unguarded: every match read
 
     def test_a_query_the_index_cannot_read_is_truncated_not_absent(self):
         store = fx.build()

@@ -1010,11 +1010,13 @@ class SharePointCaptureStore:
         wal_journal(self.db)
 
     @classmethod
-    def open_read_only(cls, state_dir: str | Path, *, timeout: float = 5.0
-                       ) -> "SharePointCaptureStore":
+    def open_read_only(cls, state_dir: str | Path, *, timeout: float = 5.0,
+                       any_thread: bool = False) -> "SharePointCaptureStore":
         """The store opened only to read it (a host serving captured files): nothing is
         created or written; a missing store or another schema version raises. ``timeout``:
-        seconds a read waits for a writer's lock (SQLite's busy timeout)."""
+        seconds a read waits for a writer's lock (SQLite's busy timeout). ``any_thread``:
+        the connection may be used from another thread than the one opening it (one
+        thread at a time: the caller hands it over)."""
         store = cls.__new__(cls)
         store.root = Path(state_dir).expanduser().resolve() / STORE_DIR
         store.blobs = store.root / "blobs" / "sha256"
@@ -1022,7 +1024,8 @@ class SharePointCaptureStore:
         store._clock, store.max_store_bytes = _now, None
         if not store.path.is_file():
             raise CaptureError("store_missing")
-        store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True, timeout=timeout)
+        store.db = sqlite3.connect(store.path.as_uri() + "?mode=ro", uri=True, timeout=timeout,
+                                   check_same_thread=not any_thread)
         store._read_only = True
         store.db.row_factory = sqlite3.Row
         try:

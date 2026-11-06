@@ -1697,7 +1697,7 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
             return _check_text_figure(claim, out, cell, f"the cited {field}")
         return _check_quote(claim, out, cell, field)
     structured = structured_text(cell)
-    if structured is not None:
+    if structured is not None and not _states_whole_cell(claim, cell):
         # A structured cell (a task event's payload, a list item's fields) is served as
         # its text: a value it holds whole passes as that value; anything else it says is
         # quoted or figured from that text, as prose is.
@@ -2574,6 +2574,21 @@ def _check_quote(claim: Mapping[str, Any], out: dict[str, Any], cell: Any,
                      f"role contract, so the claimed {claim['role']} cannot be verified")
     return {**out, "status": "passed", "role_basis": "untyped", "quantity_type": None,
             "value_basis": "text_span"}
+
+
+def _states_whole_cell(claim: Mapping[str, Any], cell: Any) -> bool:
+    """Whether a text claim states a structured cell whole, as stored (the same JSON
+    object or array): it is checked as any cell's value is, not as a quote of the
+    cell's text, which never holds the JSON itself."""
+    value = claim.get("value")
+    if claim.get("kind") != "text" or not isinstance(value, str):
+        return False
+    try:
+        stated = json.loads(value)
+        held = json.loads(cell) if isinstance(cell, str) else cell
+    except ValueError:
+        return False
+    return isinstance(stated, (Mapping, list)) and stated == held
 
 
 def structured_values(cell: Any) -> list[tuple[str | None, str]] | None:

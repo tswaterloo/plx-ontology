@@ -152,7 +152,7 @@ import re
 import secrets
 import sqlite3
 import threading
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
 from ontology import identifiers
 from ontology.json_contract import validate
@@ -202,6 +202,8 @@ READ_AHEAD_FAMILIES = frozenset({"mail", "sharepoint"})
 # A text search lists the matching chunks of its sources' chunk runs (``_family_chunks``)
 # only when they hold at most this share of all chunks: else most matches are theirs.
 CHUNK_NARROW_SHARE = 0.5
+# The listed chunks are handed to the scan this many at a time (``_family_chunks``).
+CHUNK_BATCH = 4 * (DOC_SCAN_CAP + 1)
 TWIN_ROOTS = 50            # identifier records whose firm twins a documents call reads
 FIRM_TIERS = ("verified", "reviewed", "corroborated")   # a link that firmly joins records
 CANDIDATE_CAP = 200        # identifier rows read per key (near misses)
@@ -2486,7 +2488,8 @@ class EvidenceTools:
         # families' chunk runs, ``ontology.chunk_families``) those of its
         # matches in these families' runs, listed: the same rows in the same order, less
         # every other source's, which the audience term below drops unread anyway.
-        listed = self._family_chunks(words, families)
+        batches = self._family_chunks(words, families)
+        listed = None if batches is None else next(batches, [])
         if listed is None:
             source, match, order = ("chunk_text f JOIN text_chunks t ON t.chunk_id = f.rowid",
                                     "chunk_text MATCH :words", "f.rowid")
@@ -2504,19 +2507,27 @@ class EvidenceTools:
             JOIN objects o ON o.object_id = fd.object_id
             WHERE o.audience_key IN (SELECT value FROM json_each(:aud))
             ORDER BY f.chunk_id""", params)
-        try:
-            rows = self.store.word_conn.execute(
-                f"""SELECT fd.object_id, fd.citation, fd.field_path, t.body, o.audience_key
+        scan = f"""SELECT fd.object_id, fd.citation, fd.field_path, t.body, o.audience_key
                     FROM {source}
                     JOIN text_fields fd ON fd.field_id = t.field_id
                     JOIN objects o ON o.object_id = fd.object_id
                     JOIN object_versions v ON v.l1_handle = fd.version_handle
                     AND v.object_id = fd.object_id
                     WHERE {match} AND {readable}
-                    ORDER BY {order} LIMIT :cap""",
-                # The families' audiences only: another family's chunk never takes a
-                # slot of the cap nor pays for the item gate.
-                params).fetchall()
+                    ORDER BY {order} LIMIT :cap"""
+        try:
+            # The families' audiences only: another family's chunk never takes a slot of
+            # the cap nor pays for the item gate.
+            rows = self.store.word_conn.execute(scan, params).fetchall()
+            while batches is not None and len(rows) <= DOC_SCAN_CAP:
+                # The listed chunks come in id-ordered batches (``_family_chunks``): the
+                # next batch continues the same scan where this one ended, until the cap.
+                listed = next(batches, None)
+                if listed is None:
+                    break
+                rows += self.store.word_conn.execute(scan, {
+                    **params, "chunks": json.dumps(listed),
+                    "cap": DOC_SCAN_CAP + 1 - len(rows)}).fetchall()
         except sqlite3.OperationalError:
             return set(), True   # an index this store lacks, or a query it cannot read
         cut = len(rows) > DOC_SCAN_CAP
@@ -2531,12 +2542,15 @@ class EvidenceTools:
                     row["field_path"])
         return out, cut
 
-    def _family_chunks(self, words: str, families: Sequence[str]) -> list[int] | None:
+    def _family_chunks(self, words: str, families: Sequence[str]
+                       ) -> Iterator[list[int]] | None:
         """The ids, ascending, of the chunks matching ``words`` that lie in the chunk runs
-        of ``families`` (``chunk_families``), or None to read the index's match whole: a
-        store without the runs (built before them, or whose chunks were not in runs),
-        families holding more than ``CHUNK_NARROW_SHARE`` of the chunks (most matches
-        are theirs), or a match the index cannot read (the scan then reports it)."""
+        of ``families`` (``chunk_families``), in batches of ``CHUNK_BATCH`` read as the
+        scan asks for them (a common word on a big store is read only as far as the
+        capped scan goes); or None to read the index's match whole: a store without the
+        runs (built before them, unguarded, or whose chunks were not in runs), families
+        holding more than ``CHUNK_NARROW_SHARE`` of the chunks (most matches are theirs),
+        or a match the index cannot read (the scan then reports it)."""
         runs = self.traverse._store_cached(("chunk_runs", ",".join(sorted(set(families)))),
                                            lambda: self._chunk_runs(families))
         if runs is None:
@@ -2545,26 +2559,41 @@ class EvidenceTools:
         try:
             matched = self.store.word_conn.execute(
                 "SELECT rowid FROM chunk_text WHERE chunk_text MATCH ? ORDER BY rowid",
-                (words,)).fetchall()
+                (words,))
+            first = matched.fetchmany(CHUNK_BATCH)
         except sqlite3.OperationalError:
             return None
-        out: list[int] = []
-        for (chunk,) in matched:
-            at = bisect.bisect_right(lows, chunk) - 1
-            if at >= 0 and chunk <= highs[at]:
-                out.append(chunk)
-        return out
+
+        def batches() -> Iterator[list[int]]:
+            page = first
+            while page:
+                out: list[int] = []
+                while page and len(out) < CHUNK_BATCH:
+                    for (chunk,) in page:
+                        at = bisect.bisect_right(lows, chunk) - 1
+                        if at >= 0 and chunk <= highs[at]:
+                            out.append(chunk)
+                    page = matched.fetchmany(CHUNK_BATCH)
+                yield out
+        return batches()
 
     def _chunk_runs(self, families: Sequence[str]) -> tuple[list[int], list[int]] | None:
-        """(run starts, run ends) of ``families``' chunks, ascending; None when the store
-        holds no runs or they hold more than ``CHUNK_NARROW_SHARE`` of all chunks."""
+        """(run starts, run ends) of ``families``' chunks (and of chunks of no known
+        family), ascending; None when the store holds no runs, its runs are unguarded (a
+        later write could have moved a chunk's object to another family unseen:
+        ``ontology.chunk_families.runs_guarded``) or they hold more than
+        ``CHUNK_NARROW_SHARE`` of all chunks."""
+        from ontology.chunk_families import ANY_FAMILY, runs_guarded
         try:
+            if not runs_guarded(self.store.word_conn):
+                return None
             rows = self.store.word_conn.execute(
                 "SELECT lo, hi, family FROM chunk_families ORDER BY lo").fetchall()
         except sqlite3.OperationalError:
             return None   # a store built before the runs
         total = sum(hi - lo + 1 for lo, hi, _family_name in rows)
-        mine = [(lo, hi) for lo, hi, family in rows if family in families]
+        mine = [(lo, hi) for lo, hi, family in rows
+                if family in families or family == ANY_FAMILY]
         if not total or sum(hi - lo + 1 for lo, hi in mine) > CHUNK_NARROW_SHARE * total:
             return None
         return [lo for lo, _hi in mine], [hi for _lo, hi in mine]
