@@ -25,6 +25,10 @@ exact late list a reader was shown) and asks the other systems whether it holds:
   people exclusion (``PeopleExclusion.from_env`` with the mail capture's directory) decides
   every hit by mailbox, chat members and addresses; when it cannot load or decide, search is
   skipped entirely (fail closed).
+* **The raw money profile** (``ontology.money_profile.health``): whether the profile
+  readers use profiles the served mirror generation and is at most a week old, and how
+  many visible columns of a sample trip its tripwire (a stale profile). Reported in
+  ``status.json``, never the check's exit status.
 * **Lots, batches, quantities, customer orders, margins** (the other claim kinds), and
   **engine health**: each of the 16 detectors' last run, whether it completed, and what
   it left unjudged; a claim type whose detector did not finish is reported, not trusted.
@@ -1189,7 +1193,22 @@ def status_of(out: Mapping[str, Any]) -> dict[str, Any]:
             "claims": len(out["results"]),
             "missed": dict(sum((Counter({p["rule"]: p["count"]}) for p in out.get(
                 "probes", [])), Counter())),
-            "detectors_incomplete": [d["detector"] for d in out["detectors"] if d["flags"]]}
+            "detectors_incomplete": [d["detector"] for d in out["detectors"] if d["flags"]],
+            "money_profile_ok": bool((out.get("money_profile") or {}).get("ok")),
+            "money_profile_problems": list((out.get("money_profile") or {}).get("problems")
+                                           or ()),
+            "money_tripwire_columns": ((out.get("money_profile") or {}).get("tripwire")
+                                       or {}).get("columns")}
+
+
+def _money_profile(state_dir: Path) -> dict[str, Any]:
+    """The raw money profile's health (``ontology.money_profile.health``): whether the
+    profile readers use is current and how many visible columns of a sample trip."""
+    try:
+        from ontology import money_profile
+        return money_profile.health(state_dir)
+    except Exception as error:  # noqa: BLE001 - reported, never the check's failure
+        return {"ok": False, "problems": [f"unavailable:{type(error).__name__}"]}
 
 
 def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = None,
@@ -1213,7 +1232,8 @@ def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = No
     out = {"generated_at": now.isoformat(), "as_of": as_of.isoformat(),
            "search": "used" if src.search is not None else f"skipped: {skipped}",
            **check(src, claims, late), "probes": probes(src, claims),
-           "detectors": detector_health(state_dir / INBOX, now)}
+           "detectors": detector_health(state_dir / INBOX, now),
+           "money_profile": _money_profile(state_dir)}
     target = out_dir or state_dir / OUT_DIR
     target.mkdir(parents=True, exist_ok=True)
     for name, body in (("report.json", json.dumps(out, indent=1, default=str)),

@@ -190,6 +190,15 @@ class _Recording(CitationReader):
         self.mark = mark
         self.last: dict[str, Any] | None = None
 
+    @property
+    def runtime(self) -> Any:
+        """The wrapped reader's case runtime (its ``state_dir`` names its money profile)."""
+        return getattr(self.reader, "runtime", None)
+
+    def state_dirs(self) -> tuple[str, ...]:
+        from operating.ontology_tools_evidence import reader_state_dirs
+        return reader_state_dirs(self.reader)
+
     def read(self, handle: str, actor: Any, *, page: int | None = None) -> dict[str, Any]:
         """The reader's read; ``last`` keeps it as the reader may open it (``mark``: the
         value markings of a raw row, ``EvidenceTools._marked``), so no page, window,

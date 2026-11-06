@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from integrations.capture_store import BC_KIND, make_handle
 from ontology import identifiers
@@ -269,7 +270,7 @@ class RelationMarkingTests(unittest.TestCase):
 
     def test_the_profile_reads_a_column_by_its_figures_across_the_relation(self):
         from ontology.money_profile import classify
-        rows = [{"total": "2210.400", "flag": "1.0", "invoice": str(1000 + n), "note": "x",
+        rows = [{"total": "2210.400", "flag": "1.0", "invoice": str(1000 + n), "note": "Rush, call first",
                  "empty": None} for n in range(300)]
         rows[0].update(total="2225", invoice="1012.5")   # one stray fraction in 300 ids
         self.assertEqual(classify(rows), {"total": "money", "flag": "whole",
@@ -285,6 +286,52 @@ class RelationMarkingTests(unittest.TestCase):
         self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.receipt_raw_material",
                                              {"id": "r1", "coadata": "-9.51901913080919e+18",
                                               "costitem": "12.5"}, ()), {"costitem"})
+
+    def test_a_placeholder_never_turns_an_amount_column_into_a_visible_one(self):
+        """A 1e14 "no limit" in some rows of an amount column leaves it money; "no limit"
+        text in most rows leaves it text, and each amount in it trips at read time."""
+        from ontology.money_profile import classify
+        capped = [{"cap": "99999999999999.000" if n % 10 == 0 else f"{1000 + n}.250"}
+                  for n in range(200)]
+        self.assertEqual(classify(capped), {"cap": "money"})
+        worded = [{"cap": "no limit" if n % 10 else f"{1000 + n}.250"} for n in range(200)]
+        self.assertEqual(classify(worded), {"cap": "text"})
+        found = rm.RelationMarkings(frozenset(), {"id": frozenset()}, frozenset(),
+                                    frozenset({"id"}), True,
+                                    {"cap": "text", "ref": "code", "flag": "whole"})
+        with mock.patch.object(rm, "relation_markings", lambda *a, **k: found):
+            for row, hidden in (({"id": "1", "cap": "no limit"}, set()),
+                                ({"id": "1", "cap": "1010.250"}, {"cap"}),
+                                ({"id": "1", "ref": "-4567.123456789012"}, set()),
+                                ({"id": "1", "ref": "-9.51901913080919e+18"}, set()),
+                                ({"id": "1", "ref": "12.50"}, {"ref"}),
+                                ({"id": "1", "flag": "1.0"}, set()),
+                                ({"id": "1", "flag": "0.5"}, {"flag"})):
+                with self.subTest(row=row):
+                    self.assertEqual(rm.withheld_columns(rm.PORTAL, "x.y", row, ()), hidden)
+                    self.assertEqual(rm.withheld_columns(rm.PORTAL, "x.y", row, {"finance"}),
+                                     set())
+
+    def test_a_customer_po_number_written_like_a_decimal_is_an_identifier(self):
+        """sage.ar_stobl.idcustpo holds PO numbers, a few written "4501.2": the column is an
+        identifier column, its "4501.2" visible; a figure written as an amount (two places
+        or more) still trips, and a column with more amounts than that stays text."""
+        from ontology.money_profile import classify
+        numbers = [{"po": "4501.2" if n == 0 else f"PO {4500 + n}"} for n in range(300)]
+        self.assertEqual(classify(numbers), {"po": "ident"})
+        amounts = [{"po": f"{1000 + n}.25" if n % 20 == 0 else f"PO {n}"} for n in range(300)]
+        self.assertEqual(classify(amounts), {"po": "text"})
+        found = rm.RelationMarkings(frozenset(), {"id": frozenset()}, frozenset(),
+                                    frozenset({"id"}), True, {"po": "ident"})
+        with mock.patch.object(rm, "relation_markings", lambda *a, **k: found):
+            for value, hidden in (("4501.2", set()), ("PO 4501", set()),
+                                  ("1250.50", {"po"})):
+                with self.subTest(value):
+                    self.assertEqual(rm.withheld_columns(rm.PORTAL, "x.y",
+                                                         {"id": "1", "po": value}, ()),
+                                     hidden)
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "sage.ar_stobl",
+                                             {"idcustpo": "4501.2"}, ()), set())
 
     def test_a_sage_optional_field_is_withheld_where_its_row_declares_decimals(self):
         row = {"_sage_pk": "C1-SHPMINDOL", "idcust": "C1", "optfield": "SHPMINDOL",
@@ -307,7 +354,7 @@ class RelationMarkingTests(unittest.TestCase):
                          set())
         self.assertIn(("public.receipt", "acceptdamages"), rm.stale())
 
-    def test_a_state_profile_newer_than_the_committed_one_decides(self):
+    def test_a_state_profile_newer_than_the_committed_one_decides_for_its_readers(self):
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as state:
@@ -317,15 +364,11 @@ class RelationMarkingTests(unittest.TestCase):
             Path(state, rm.STATE_PROFILE).write_text(json.dumps({
                 "profiled_at": "2999-01-01T00:00:00Z",
                 "relations": {relation: {"money": ["oecust_c"], "whole": ["id"]}}}))
-            saved = list(rm._state_dirs)
-            try:
-                rm.use_state_dir(state)
-                rm._profile_seen_at[0] = None   # re-read the profiles now
-                self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, ()),
-                                 {"oecust_c"})
-            finally:
-                rm._state_dirs[:] = saved
-                rm._profile_seen_at[0] = None
+            self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, (), None,
+                                                 [state]), {"oecust_c"})
+            # Per reader, never process-wide: a reader of no state, or of another, keeps
+            # the committed profile.
+            self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, ()), set())
 
     def test_the_profile_check_fails_when_old_or_of_another_mirror(self):
         import datetime
@@ -353,6 +396,70 @@ class RelationMarkingTests(unittest.TestCase):
                 "mirror_generation": "g1", "profiled_at": "2026-11-01T00:00:00Z"}))
             self.assertEqual(mp.check(Path(state), now=now)["problems"],
                              ["mirror_generation_not_profiled"])
+
+    def test_a_build_skips_profiling_a_mirror_that_did_not_change(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from ontology import money_profile as mp
+        with tempfile.TemporaryDirectory() as state:
+            mirror = Path(state) / mp.MIRROR
+            mirror.parent.mkdir(parents=True)
+            db = sqlite3.connect(mirror)
+            db.executescript("""
+                CREATE TABLE mirror_meta (key TEXT PRIMARY KEY, value TEXT);
+                INSERT INTO mirror_meta VALUES ('generation', 'g1'), ('change_epoch', 'e1');
+                CREATE TABLE relation_state (relation TEXT PRIMARY KEY, last_capture_id INT,
+                    row_count INT, last_refresh_at TEXT);
+                INSERT INTO relation_state VALUES ('sage.oe_shipment_header', 5, 1, 't1');
+                CREATE TABLE relation_change (relation TEXT PRIMARY KEY, n INTEGER);
+                INSERT INTO relation_change VALUES ('sage.oe_shipment_header', 7);
+                CREATE TABLE row_current (relation TEXT, key_json TEXT, run_index INT,
+                    run_length INT, row_json TEXT, absent_since_capture INT);
+                INSERT INTO row_current VALUES ('sage.oe_shipment_header', '{}', 0, 1,
+                    '{"shiuniq": "1", "shitotal": "2210.400"}', NULL);""")
+            db.commit()
+            first = mp.profile_state(Path(state), workers=1)
+            self.assertNotIn("skipped", first)
+            kept = json.loads((Path(state) / rm.STATE_PROFILE).read_text())
+            kept["profiled_at"] = "2020-01-01T00:00:00Z"   # profiled long ago
+            (Path(state) / rm.STATE_PROFILE).write_text(json.dumps(kept))
+            self.assertEqual(mp.profile_state(Path(state), workers=1)["skipped"],
+                             "mirror_unchanged")
+            # A skip finds the profile current: it is not too old.
+            self.assertNotIn("profile_too_old", mp.check(Path(state))["problems"])
+            for change in ("UPDATE relation_change SET n = n + 1",   # a swap, same count
+                           "UPDATE relation_state SET last_capture_id = 6"):
+                db.execute(change)
+                db.commit()
+                self.assertNotIn("skipped", mp.profile_state(Path(state), workers=1), change)
+            db.close()
+
+    def test_the_truth_check_reports_the_profile_and_counts_tripwire_hits(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from operating import truth_check
+        with tempfile.TemporaryDirectory() as state:
+            mirror = Path(state) / "case-runtime" / "source-mirror.sqlite"
+            mirror.parent.mkdir(parents=True)
+            db = sqlite3.connect(mirror)
+            db.executescript("""
+                CREATE TABLE mirror_meta (key TEXT PRIMARY KEY, value TEXT);
+                INSERT INTO mirror_meta VALUES ('generation', 'g1');
+                CREATE TABLE row_current (relation TEXT, key_json TEXT, run_index INT,
+                    run_length INT, row_json TEXT, absent_since_capture INT);
+                INSERT INTO row_current VALUES ('public.receipt', '{}', 0, 1,
+                    '{"id": "r1", "acceptdamages": "0.5"}', NULL),
+                    ('public.receipt', '{}', 1, 1, '{"id": "r2", "acceptdamages": "1.0"}',
+                     NULL);""")
+            db.commit()
+            db.close()
+            health = truth_check._money_profile(Path(state))
+            self.assertEqual(health["problems"], ["mirror_generation_not_profiled"])
+            self.assertEqual((health["tripwire"]["columns"], health["tripwire"]["cells"]),
+                             (1, 1))
+            self.assertEqual(health["tripwire"]["top"], ["public.receipt.acceptdamages"])
 
     def test_a_purchasing_reader_keeps_the_line_amount_a_finance_twin_repeats(self):
         line = {"id": "l1", "description": "resin", "quantity": 10, "directUnitCost": 91.205,
@@ -483,6 +590,60 @@ class SourceViewTests(unittest.TestCase):
             self.workspace("public.app_user", {"id": "u"}, {"id": "u", "email": "e@x.test"},
                            FINANCE).source(api("public.app_user", {"id": "u"}))
 
+
+
+class StateProfileOnEveryPathTests(unittest.TestCase):
+    """Every read path marks a raw row with the money profile of its reader's state, never
+    the committed one alone: plx.read, the case host's paged read (its recording wrapper),
+    the claim gate's rows and the source view. The state profile here makes a column money
+    that the committed profile finds whole."""
+
+    RELATION, KEY = "public.order_entry", {"id": "o1"}
+    ROW = {"id": "o1", "oecust_c": "1234.0", "description": "Order"}
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        Path(self.state.name, rm.STATE_PROFILE).write_text(json.dumps({
+            "profiled_at": "2999-01-01T00:00:00Z",
+            "relations": {self.RELATION: {"money": ["oecust_c"], "whole": ["id"],
+                                          "text": ["description"]}}}))
+        self.handle = api(self.RELATION, self.KEY)
+        # The committed profile alone shows the column.
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, self.RELATION, self.ROW, ()), set())
+
+    def runtime(self):
+        runtime = mirror_runtime(self.RELATION, self.KEY, dict(self.ROW), "gold_etl_from_fm")
+        runtime.state_dir = self.state.name
+        view = {"citation": self.handle, "relation": self.RELATION, "key": self.KEY,
+                "capture_id": 1, "row": dict(self.ROW)}
+        runtime.claim_row = lambda handle, actor: dict(view)
+        runtime.citation_status = lambda handle, actor: {"ok": True, "status": "current"}
+        runtime.resolve_citation = lambda handle, actor: dict(view)
+        return runtime
+
+    def test_no_read_path_shows_what_the_state_profile_withholds(self):
+        from operating import ontology_tools_investigate as oi
+        from operating.case_tools_host import PagedRead
+        from operator_ui.case_workspace import CaseWorkspace
+        shown = {}
+        read = tools(self.runtime()).call("plx.read", {"citation": self.handle}, QUALITY)
+        shown["plx.read"] = read
+        paged = PagedRead(tools(self.runtime()), runtime=None)
+        for name, arguments in (("paged", {}), ("column page", {"column_offset": 0}),
+                                ("field window", {"field_path": "row.oecust_c",
+                                                  "text_offset": 0})):
+            shown[name] = paged.call({"citation": self.handle, **arguments}, QUALITY)
+        shown["claim gate"] = oi.citation_rows(self.runtime())(self.handle, QUALITY)
+        shown["source view"] = CaseWorkspace(self.runtime(), QUALITY).citation(
+            self.handle, markings=())
+        for name, out in shown.items():
+            with self.subTest(name):
+                self.assertNotIn("1234", json.dumps(out, default=str))
+        self.assertEqual(read["status"], "resolved")
+        self.assertIn("Order", json.dumps(read))
 
 
 class AnswerGateTests(unittest.TestCase):

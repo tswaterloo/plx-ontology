@@ -4038,14 +4038,15 @@ def citation_rows(runtime: Any, held_markings: Callable[[Actor], Any] | None = N
 
     stated: dict[tuple[str, Any], Any] = {}
 
-    from ontology.raw_markings import mark_view
+    from ontology.raw_markings import mark_view, state_dirs_of
+    dirs = state_dirs_of(runtime)
 
     def rows(handle: str, actor: Actor) -> Mapping[str, Any] | None:
         try:
             view = _with_captured_row(runtime, runtime.claim_row(handle, actor), handle,
                                        actor)
             view = mark_view(handle, view, held_markings(actor)
-                             if held_markings is not None else ())
+                             if held_markings is not None else (), dirs)
         except Exception:  # noqa: BLE001 - unreadable for this reader through the runtime
             return None
         if view is None:

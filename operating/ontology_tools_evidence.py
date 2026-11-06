@@ -376,6 +376,14 @@ class CitationReader:
         the decisions inside it are those made outside it."""
         return contextlib.nullcontext()
 
+    def state_dirs(self) -> tuple[str, ...]:
+        """The state directories whose money profiles mark this reader's raw rows
+        (``ontology.raw_markings``): its case runtime's (``runtime.state_dir``). A wrapper
+        of another reader returns that reader's, so no read path marks with the committed
+        profile alone while its state keeps a newer one."""
+        from ontology import raw_markings
+        return raw_markings.state_dirs_of(getattr(self, "runtime", None))
+
 
 class RuntimeCitations(CitationReader):
     """``CitationReader`` over a ``CaseRuntime`` (``operating/case_runtime.py``) and,
@@ -2895,8 +2903,10 @@ class EvidenceTools:
 
     def _marked(self, handle: str, read: Mapping[str, Any], actor: Actor
                 ) -> dict[str, Any]:
-        """``marked_read`` for the session reader's markings now."""
-        return marked_read(handle, read, self.base.policy.held_markings(actor))
+        """``marked_read`` for the session reader's markings now, with the money profile
+        of its reader's state (``CitationReader.state_dirs``, through any wrapper)."""
+        state_dirs = reader_state_dirs(self.reader)
+        return marked_read(handle, read, self.base.policy.held_markings(actor), state_dirs)
 
     def _read(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         handle = arguments["citation"]
@@ -3056,8 +3066,20 @@ LIVE_BC_ENVELOPE = frozenset({"source", "environment", "company_id", "entity_set
                               "etag", "last_modified", "source_acl", "citation"})
 
 
-def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str]
-                ) -> dict[str, Any]:
+def reader_state_dirs(reader: Any) -> tuple[str, ...]:
+    """A reader's ``CitationReader.state_dirs``; for a reader that does not say, its
+    ``runtime``'s state directory (``raw_markings.state_dirs_of``); none for no reader."""
+    from ontology import raw_markings
+    if reader is None:
+        return ()
+    said = getattr(reader, "state_dirs", None)
+    if callable(said):
+        return tuple(said())
+    return raw_markings.state_dirs_of(getattr(reader, "runtime", None))
+
+
+def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str],
+                state_dirs: Iterable[Any] = ()) -> dict[str, Any]:
     """A reader's read (``CitationReader.read``) of a raw source row (a Portal mirror row,
     a live or captured BC record: ``RAW_ROW_SCHEMES``) as a reader holding ``held`` may
     open it, by the value markings ``plx.object`` applies to what is projected from it
@@ -3078,7 +3100,7 @@ def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str]
         return withheld_read
     source, relation = found
     held = frozenset(held)
-    if not raw_markings.relation_markings(source, relation).row <= held:
+    if not raw_markings.relation_markings(source, relation, None, state_dirs).row <= held:
         return withheld_read
     values = dict(read.get("fields") or {})
     hidden = set(read.get("withheld_fields") or ())
@@ -3086,7 +3108,8 @@ def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str]
         and "row.entity_set" in values
     if live:
         columns = dict(values["row.fields"])
-        withheld = raw_markings.withheld_columns(source, relation, columns, held)
+        withheld = raw_markings.withheld_columns(source, relation, columns, held, None,
+                                                 state_dirs)
         if withheld is None:
             return withheld_read
         if withheld:
@@ -3110,7 +3133,8 @@ def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str]
         row = rows.setdefault(prefix, {})
         row[column] = value if len(parts) == cut else [row.get(column), value]
     for prefix, row in rows.items():
-        withheld = raw_markings.withheld_columns(source, relation, row, held)
+        withheld = raw_markings.withheld_columns(source, relation, row, held, None,
+                                                 state_dirs)
         if withheld is None:
             return withheld_read
         hidden |= {f"{prefix}.{column}" for column in withheld}

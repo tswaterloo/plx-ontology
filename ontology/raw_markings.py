@@ -22,7 +22,8 @@ keeps its figures behind ``finance`` whatever their names. There a column no cur
 property reads, that no marking covers and that is no key is finance when it holds
 amounts: on the Portal, when the relation's value profile (``ontology.money_profile``:
 the committed ``raw_money_profile.json`` and the one every projection build writes into
-its state directory, ``use_state_dir``; per relation the newer decides) finds it mostly
+its state directory, read by a reader of that state, ``state_dirs``; per relation the
+newer decides) finds it mostly
 numeric with fractional figures (at least 0.5 % of them: Sage's ``2210.400`` makes its
 ``2225`` money too; FileMaker's ``1.0`` is whole, and so is an invoice number column with
 a stray ``12.5``); in BC, when $metadata types it decimal. A column the profile finds
@@ -36,8 +37,9 @@ scoped marking replaces ``finance`` on its listed columns, as it does for the na
 The decision is cached per relation (``relation_markings``).
 
 Two guards follow the data between profiles. A column profiled whole that serves a
-fractional figure is withheld for that read and the profile is stale (``stale``; the
-next build profiles again; ``money_profile.check`` fails on an old profile). A Sage
+fractional figure, or profiled code or text that serves a figure written as an amount, is
+withheld for that read and the profile is stale (``stale``; the next build profiles
+again; ``money_profile.check`` fails on an old profile; the truth check counts both). A Sage
 optional field (``value``, ``defval``) is withheld on each row whose own ``decimals``
 declare an amount (a free-shipping minimum in dollars, ``SHPMINDOL``).
 
@@ -112,9 +114,9 @@ class RelationMarkings:
     gets no row. ``columns``: every column whose status is known, with its markings
     (empty: unmarked). ``unknown``: the markings of a column not in ``columns``.
     ``keys``: the relation's key columns (never twins). ``sensitive``: a
-    finance-sensitive relation (module doc). ``tripwire``: columns the profile found whole
-    (no curated property reads them): one serving a fractional figure is withheld for that
-    read and the profile is stale (``stale``). ``typed_by_row``: a value column -> the
+    finance-sensitive relation (module doc). ``tripwire``: column -> the kind the profile
+    found it (whole, code, text): a cell that looks like money there is withheld for that
+    read and the profile is stale (``stale``, ``_trips``). ``typed_by_row``: a value column -> the
     column of its row declaring its decimals (Sage optional fields): withheld where that
     declares decimals."""
 
@@ -123,7 +125,7 @@ class RelationMarkings:
     unknown: frozenset[str]
     keys: frozenset[str] = field(default_factory=frozenset)
     sensitive: bool = False
-    tripwire: frozenset[str] = field(default_factory=frozenset)
+    tripwire: Mapping[str, str] = field(default_factory=dict)
     typed_by_row: Mapping[str, str] = field(default_factory=dict)
 
     def of(self, column: str) -> frozenset[str]:
@@ -197,19 +199,22 @@ def _catalog_domains(meta: str) -> Mapping[str, str]:
         return {}
 
 
-PROFILE_KINDS = ("money", "whole", "code", "text", "empty")
+PROFILE_KINDS = ("money", "whole", "code", "ident", "text", "empty")
 # A state directory's own profile (``STATE_PROFILE`` in it), written by every projection
-# build (``operating.host.build_projection``); ``use_state_dir`` names it for this process.
+# build (``operating.host.build_projection``). A reader passes its own state directories
+# (``state_dirs``: its case runtime's) to every call; none: the committed profile only.
 STATE_PROFILE = "raw-money-profile.json"
-_state_dirs: list[Path] = []
 
 
-def use_state_dir(state_dir: str | Path) -> None:
-    """Read the money profile a state directory's builds keep (``STATE_PROFILE``) besides
-    the committed one: per relation, the newer one decides. Called by each case runtime."""
-    path = Path(state_dir)
-    if path not in _state_dirs:
-        _state_dirs.append(path)
+def _dirs(state_dirs: Iterable[str | Path] | None) -> tuple[str, ...]:
+    return tuple(sorted({str(Path(d)) for d in state_dirs or () if d}))
+
+
+def state_dirs_of(runtime: Any) -> tuple[str, ...]:
+    """The state directory a case runtime reads (``CaseRuntime.state_dir``), as the
+    ``state_dirs`` of the marking calls made for it; none when it names none."""
+    state_dir = getattr(runtime, "state_dir", None)
+    return _dirs([state_dir]) if isinstance(state_dir, (str, Path)) else ()
 
 
 @functools.lru_cache(maxsize=8)
@@ -236,21 +241,25 @@ def _stamp(path: Path) -> tuple:
         return ()
 
 
-def _profiles() -> list[tuple[str, Mapping[str, Mapping[str, str]]]]:
-    files = [PROFILE] + [d / STATE_PROFILE for d in _state_dirs]
-    return [_profile_file(str(f), _stamp(f)) for f in files if _stamp(f)]
+def _files(state_dirs: tuple[str, ...]) -> list[Path]:
+    return [PROFILE] + [Path(d) / STATE_PROFILE for d in state_dirs]
 
 
-def profile_stamp() -> tuple:
-    """What the profiles read now are (paths and stamps): part of the cache key."""
-    files = [PROFILE] + [d / STATE_PROFILE for d in _state_dirs]
-    return tuple((str(f), _stamp(f)) for f in files)
+def _profiles(state_dirs: tuple[str, ...]) -> list[tuple[str, Mapping[str, Mapping[str, str]]]]:
+    return [_profile_file(str(f), _stamp(f)) for f in _files(state_dirs) if _stamp(f)]
 
 
-def _profile(relation: str) -> Mapping[str, str]:
-    """{column: kind} of ``relation`` in the newest profile that profiles it."""
+def profile_stamp(state_dirs: Iterable[str | Path] | None = None) -> tuple:
+    """What the profiles a reader of ``state_dirs`` reads now are (paths and stamps): part
+    of the cache key."""
+    return tuple((str(f), _stamp(f)) for f in _files(_dirs(state_dirs)))
+
+
+def _profile(relation: str, state_dirs: tuple[str, ...] = ()) -> Mapping[str, str]:
+    """{column: kind} of ``relation`` in the newest profile that profiles it, of the
+    committed one and those of ``state_dirs``."""
     best: tuple[str, Mapping[str, str]] | None = None
-    for profiled_at, relations in _profiles():
+    for profiled_at, relations in _profiles(state_dirs):
         if relation in relations and (best is None or profiled_at > best[0]):
             best = (profiled_at, relations[relation])
     return best[1] if best else {}
@@ -297,16 +306,16 @@ def _types_bound(compiled: Any, source: str, relation: str, generated: Iterable[
 
 
 @functools.lru_cache(maxsize=4096)
-def _markings_for(digest: str, profiles: tuple, source: str, relation: str
-                  ) -> RelationMarkings:
+def _markings_for(digest: str, profiles: tuple, source: str, relation: str,
+                  state_dirs: tuple[str, ...]) -> RelationMarkings:
     from ontology import schema as ontology_schema
     compiled = ontology_schema.load_schema()
     return _compute(compiled, source, relation, str(ontology_schema.GENERATED_DIR),
-                    str(ontology_schema.META_DIR))
+                    str(ontology_schema.META_DIR), state_dirs)
 
 
-def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta_dir: str
-             ) -> RelationMarkings:
+def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta_dir: str,
+             state_dirs: tuple[str, ...] = ()) -> RelationMarkings:
     row: set[str] = set()
     described: dict[str, set[str]] = {}
     curated: set[str] = set()          # columns a curated property reads
@@ -344,7 +353,7 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
     money = bool((row | frozenset().union(*columns.values())) & MONEY_MARKINGS)
     sensitive = (_catalog_domains(meta_dir).get(relation) in SENSITIVE_DOMAINS
                  if source == PORTAL else money)
-    tripwire: set[str] = set()
+    tripwire: dict[str, str] = {}
     typed_by_row: dict[str, str] = {}
     if sensitive:
         overrides = _overrides()
@@ -355,16 +364,15 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
         if decimals is not None:
             typed_by_row = {c: decimals for c in ("value", "defval")
                             if c in set(columns) | set(catalog) and not columns.get(c)}
-        profiled = _profile(relation) if source == PORTAL else {}
+        profiled = _profile(relation, state_dirs) if source == PORTAL else {}
         for column in sorted(set(columns) | set(catalog) | set(profiled)):
             if columns.get(column) or column in curated or column in keys \
                     or _not_money(column):
                 continue
             if source == PORTAL:
                 kind = profiled.get(column)
-                if kind in ("whole", "code", "text"):
-                    if kind == "whole" and column not in curated:
-                        tripwire.add(column)
+                if kind in ("whole", "code", "ident", "text"):
+                    tripwire[column] = kind   # visible: unless a cell looks like money
                     continue   # an identifier, a date, a flag, a count, a code, a word
                 if kind != "money" and types.get(column) and not (
                         types[column] & {"decimal", "money", "integer"}):
@@ -375,7 +383,8 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
                 "finance", source, relation, column)})
     return RelationMarkings(frozenset(row), columns,
                             UNKNOWN_MONEY if money or sensitive else frozenset(),
-                            frozenset(keys), sensitive, frozenset(tripwire - keys),
+                            frozenset(keys), sensitive,
+                            {c: k for c, k in tripwire.items() if c not in keys},
                             dict(typed_by_row))
 
 
@@ -386,16 +395,18 @@ _DIGEST_SECONDS = 60.0
 _digest_seen: list[Any] = [None, 0.0]
 
 
-_profile_seen_at: list[Any] = [None, 0.0]
+# state_dirs -> (``profile_stamp``, when read): re-read at most every ``_DIGEST_SECONDS``.
+_profile_seen_at: dict[tuple[str, ...], tuple[tuple, float]] = {}
 
 
-def _profile_seen() -> tuple:
-    """``profile_stamp`` re-read at most every ``_DIGEST_SECONDS``."""
+def _profile_seen(state_dirs: tuple[str, ...]) -> tuple:
     import time
     now = time.monotonic()
-    if _profile_seen_at[0] is None or now - _profile_seen_at[1] > _DIGEST_SECONDS:
-        _profile_seen_at[:] = [profile_stamp(), now]
-    return _profile_seen_at[0]
+    seen = _profile_seen_at.get(state_dirs)
+    if seen is None or now - seen[1] > _DIGEST_SECONDS:
+        seen = (profile_stamp(state_dirs), now)
+        _profile_seen_at[state_dirs] = seen
+    return seen[0]
 
 
 def _committed_digest() -> str:
@@ -407,14 +418,17 @@ def _committed_digest() -> str:
     return _digest_seen[0]
 
 
-def relation_markings(source: str, relation: str, schema: Any = None) -> RelationMarkings:
+def relation_markings(source: str, relation: str, schema: Any = None,
+                      state_dirs: Iterable[str | Path] | None = None) -> RelationMarkings:
     """The markings of ``relation``'s raw rows in ``source`` (module doc). ``schema``: a
-    compiled schema (default the committed one, cached per schema digest)."""
+    compiled schema (default the committed one, cached per schema digest and profiles).
+    ``state_dirs``: the reader's state directories, whose own profiles count too."""
+    dirs = _dirs(state_dirs)
     if schema is None:
-        return _markings_for(_committed_digest(), _profile_seen(), source, relation)
+        return _markings_for(_committed_digest(), _profile_seen(dirs), source, relation, dirs)
     from ontology import schema as ontology_schema
     return _compute(schema, source, relation, str(ontology_schema.GENERATED_DIR),
-                    str(ontology_schema.META_DIR))
+                    str(ontology_schema.META_DIR), dirs)
 
 
 def _column_of(found: RelationMarkings, source: str, relation: str, column: str
@@ -429,11 +443,12 @@ def _undescribed(source: str, relation: str, column: str) -> frozenset[str]:
     return _rule_markings(source, relation, column, None)
 
 
-def column_markings(source: str, relation: str, column: str, schema: Any = None
-                    ) -> frozenset[str]:
+def column_markings(source: str, relation: str, column: str, schema: Any = None,
+                    state_dirs: Iterable[str | Path] | None = None) -> frozenset[str]:
     """One column's markings, an undescribed column read by the name rules first (its
     value type unknown) and then the relation's fail-closed default."""
-    return _column_of(relation_markings(source, relation, schema), source, relation, column)
+    return _column_of(relation_markings(source, relation, schema, state_dirs), source,
+                      relation, column)
 
 
 # --------------------------------------------------------------------------- a row
@@ -499,6 +514,23 @@ def _positive(value: Any) -> bool:
     return number is not None and number > 0
 
 
+def _trips(kind: str, value: Any) -> bool:
+    """Whether a cell of a column the profile found ``kind`` looks like money: a whole
+    column's any fraction; a code's or a text's a fractional figure written as an amount
+    (``money_profile.money_shaped``: under 1e12, at most six places), an identifier
+    column's such a figure with two places or more; never encodings or words."""
+    if kind == "whole":
+        return _fractional(value)
+    if isinstance(value, bool) or isinstance(value, (dict, list)):
+        return False
+    from ontology.money_profile import decimals, money_shaped
+    number = _number(value)
+    if number is None or not number.is_finite() or not money_shaped(number):
+        return False
+    # An identifier column's "4501.2" is a PO number; "12.50" is written as an amount.
+    return kind != "ident" or decimals(number) >= 2
+
+
 def _fractional(value: Any) -> bool:
     """A figure that is not whole (``12.5``; FileMaker's ``1.0`` and ``2225`` are whole)."""
     number = _number(value)
@@ -529,11 +561,14 @@ def stale() -> list[tuple[str, str]]:
 
 
 def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
-                     held: Iterable[str], schema: Any = None) -> frozenset[str] | None:
+                     held: Iterable[str], schema: Any = None,
+                     state_dirs: Iterable[str | Path] | None = None
+                     ) -> frozenset[str] | None:
     """The columns of ``row`` a reader holding ``held`` may not see (marked ones and
-    their twins), or None when the reader may not see the row at all."""
+    their twins), or None when the reader may not see the row at all. ``state_dirs``: the
+    reader's (``relation_markings``)."""
     held = frozenset(held)
-    found = relation_markings(source, relation, schema)
+    found = relation_markings(source, relation, schema, state_dirs)
     if not found.row <= held:
         return None
     hidden = {c for c in row if not _column_of(found, source, relation, str(c)) <= held}
@@ -541,8 +576,8 @@ def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
         for column, declares in found.typed_by_row.items():
             if column in row and _positive(row.get(declares)):
                 hidden.add(column)
-        for column in found.tripwire & set(row):
-            if column not in hidden and _fractional(row[column]):
+        for column, kind in found.tripwire.items():
+            if column in row and column not in hidden and _trips(kind, row[column]):
                 hidden.add(column)
                 _mark_stale(relation, column)
     if not hidden:
@@ -565,16 +600,18 @@ def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
 
 
 def mark_row(source: str, relation: str, row: Mapping[str, Any], held: Iterable[str],
-             schema: Any = None) -> tuple[dict[str, Any] | None, frozenset[str]]:
+             schema: Any = None, state_dirs: Iterable[str | Path] | None = None
+             ) -> tuple[dict[str, Any] | None, frozenset[str]]:
     """(``row`` as a reader holding ``held`` may see it, the columns withheld); (None,
     empty) when a row marking is lacked."""
-    hidden = withheld_columns(source, relation, row, held, schema)
+    hidden = withheld_columns(source, relation, row, held, schema, state_dirs)
     if hidden is None:
         return None, frozenset()
     return {c: v for c, v in row.items() if c not in hidden}, hidden
 
 
-def mark_view(handle: str, view: Any, held: Iterable[str]) -> Any:
+def mark_view(handle: str, view: Any, held: Iterable[str],
+              state_dirs: Iterable[str | Path] | None = None) -> Any:
     """A cited record's view as the case runtime gives it (``CaseRuntime.resolve_citation``
     and ``claim_row``: a mirror or BC capture ``row`` or ``rows``, a live BC ``record``
     whose BC columns are its ``fields``, a moved revision under ``revision``) as a reader
@@ -591,12 +628,12 @@ def mark_view(handle: str, view: Any, held: Iterable[str]) -> Any:
         return None
     source, relation = found
     held = frozenset(held)
-    if not relation_markings(source, relation).row <= held:
+    if not relation_markings(source, relation, None, state_dirs).row <= held:
         return None
     out = dict(view)
     hidden: list[str] = []
     if isinstance(view.get("revision"), Mapping):
-        revision = mark_view(handle, view["revision"], held)
+        revision = mark_view(handle, view["revision"], held, state_dirs)
         if revision is None:
             return None
         out["revision"] = revision
@@ -608,7 +645,7 @@ def mark_view(handle: str, view: Any, held: Iterable[str]) -> Any:
             if not isinstance(row, Mapping):
                 shown.append(row)
                 continue
-            got, withheld = mark_row(source, relation, row, held)
+            got, withheld = mark_row(source, relation, row, held, None, state_dirs)
             if got is None:
                 return None
             prefix = "row" if key == "row" else f"rows.{index}"
@@ -618,7 +655,7 @@ def mark_view(handle: str, view: Any, held: Iterable[str]) -> Any:
     record = view.get("record")
     if source == BC and isinstance(record, Mapping) and isinstance(record.get("fields"),
                                                                     Mapping):
-        got, withheld = mark_row(source, relation, record["fields"], held)
+        got, withheld = mark_row(source, relation, record["fields"], held, None, state_dirs)
         if got is None:
             return None
         if withheld:

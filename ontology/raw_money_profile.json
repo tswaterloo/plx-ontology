@@ -1,8 +1,9 @@
 {
  "format": "plx-raw-money-profile/v1",
+ "mirror_fingerprint": "sha256:0310d6b40c9cb91d562d55b1243dcdc00749d330b9fb7543fd552e20be447646",
  "mirror_generation": "5a1c29f59e06162d",
  "note": "Per column of each finance-sensitive Portal relation (reporting-catalog domains purchasing, orders, customers): money (mostly numeric, at least 0.5 % of its non-zero figures fractional; N.0 is whole), whole, code (encoded references, figures of 1e12 and more), text or empty, read from the source mirror by ontology/money_profile.py. Column names only. Read by ontology/raw_markings.py; a column it does not list is finance.",
- "profiled_at": "2026-11-06T08:47:26Z",
+ "profiled_at": "2026-11-06T12:57:12Z",
  "relations": {
   "public.app_customer": {
    "code": [],
@@ -22,18 +23,14 @@
     "tax_group",
     "three_pl_rate_card_id"
    ],
-   "money": [],
-   "rows": 6215,
-   "text": [
+   "ident": [
     "bill_to_erp_code",
     "business_line",
     "city",
     "code",
     "company_name",
     "country",
-    "created_at",
     "currency",
-    "deleted_at",
     "erp_code",
     "external_id",
     "id",
@@ -42,10 +39,16 @@
     "onboarding_state",
     "onboarding_status",
     "state_province",
-    "three_pl_enabled",
-    "updated_at",
     "user_id",
     "website"
+   ],
+   "money": [],
+   "rows": 6215,
+   "text": [
+    "created_at",
+    "deleted_at",
+    "three_pl_enabled",
+    "updated_at"
    ],
    "whole": [
     "notes"
@@ -56,23 +59,25 @@
    "empty": [
     "shipping_agent_code"
    ],
-   "money": [],
-   "rows": 4125,
-   "text": [
+   "ident": [
     "bc_ship_to_code",
     "city",
     "country",
-    "created_at",
     "customer_id",
     "id",
-    "is_default",
     "label",
     "legacy_sage_idcust",
     "legacy_sage_ship_to_code",
     "location_type",
     "salesperson_code",
     "state_province",
-    "tax_area_code",
+    "tax_area_code"
+   ],
+   "money": [],
+   "rows": 4125,
+   "text": [
+    "created_at",
+    "is_default",
     "updated_at"
    ],
    "whole": []
@@ -80,18 +85,20 @@
   "public.app_manufacturer": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 22330,
-   "text": [
+   "ident": [
     "city",
     "contact",
     "country",
-    "created_at",
     "gmp_compliance",
     "id",
     "name",
     "state",
-    "supplier_id",
+    "supplier_id"
+   ],
+   "money": [],
+   "rows": 22330,
+   "text": [
+    "created_at",
     "updated_at"
    ],
    "whole": []
@@ -99,6 +106,7 @@
   "public.app_pr_line_item": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -119,6 +127,14 @@
     "shipping_method",
     "tracking_number"
    ],
+   "ident": [
+    "fulfillment_mode",
+    "id",
+    "po_number",
+    "status",
+    "supplier_id",
+    "warehouse_id"
+   ],
    "money": [
     "shipping_cost",
     "subtotal",
@@ -130,14 +146,8 @@
     "created_at",
     "currency",
     "date_generated",
-    "fulfillment_mode",
-    "id",
     "notes",
-    "po_number",
-    "status",
-    "supplier_id",
-    "updated_at",
-    "warehouse_id"
+    "updated_at"
    ],
    "whole": [
     "discount",
@@ -154,6 +164,13 @@
     "artwork_version",
     "notes"
    ],
+   "ident": [
+    "description",
+    "id",
+    "product_id",
+    "purchase_order_id",
+    "uom"
+   ],
    "money": [
     "quantity",
     "quantity_received",
@@ -164,12 +181,7 @@
    "text": [
     "artwork_to_follow",
     "created_at",
-    "description",
-    "id",
-    "product_id",
-    "purchase_order_id",
     "requires_inspection",
-    "uom",
     "updated_at"
    ],
    "whole": []
@@ -177,6 +189,7 @@
   "public.app_purchase_requisition": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -194,17 +207,19 @@
     "terms",
     "valid_until"
    ],
+   "ident": [
+    "currency",
+    "customer_id",
+    "id",
+    "notes",
+    "quote_number",
+    "status"
+   ],
    "money": [],
    "rows": 5,
    "text": [
     "created_at",
-    "currency",
-    "customer_id",
-    "id",
     "issue_date",
-    "notes",
-    "quote_number",
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -224,14 +239,16 @@
     "product_name",
     "quote_volume_id"
    ],
+   "ident": [
+    "description",
+    "id",
+    "quote_id",
+    "uom"
+   ],
    "money": [],
    "rows": 9,
    "text": [
     "created_at",
-    "description",
-    "id",
-    "quote_id",
-    "uom",
     "updated_at"
    ],
    "whole": [
@@ -244,6 +261,7 @@
   "public.app_receipt": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -252,6 +270,7 @@
   "public.app_receipt_line": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -265,28 +284,30 @@
     "ownership_location_confirmed_at",
     "ship_to_snapshot"
    ],
-   "money": [
-    "subtotal",
-    "total_amount"
-   ],
-   "rows": 1120,
-   "text": [
-    "created_at",
+   "ident": [
     "currency",
     "customer_id",
     "fulfillment_mode",
     "fulfillment_ownership",
     "id",
-    "notes",
-    "order_date",
     "order_number",
     "payment_status",
     "po_reference",
+    "status",
+    "warehouse_id"
+   ],
+   "money": [
+    "subtotal",
+    "total_amount"
+   ],
+   "rows": 1127,
+   "text": [
+    "created_at",
+    "notes",
+    "order_date",
     "release_required",
     "required_date",
-    "status",
-    "updated_at",
-    "warehouse_id"
+    "updated_at"
    ],
    "whole": [
     "accounting_location_code",
@@ -298,21 +319,23 @@
    "empty": [
     "notes"
    ],
-   "money": [
-    "total_price",
-    "unit_price"
-   ],
-   "rows": 19239,
-   "text": [
-    "created_at",
-    "description",
+   "ident": [
     "id",
     "line_source",
     "product_id",
     "sales_order_id",
     "uom",
-    "updated_at",
     "warehouse_id"
+   ],
+   "money": [
+    "total_price",
+    "unit_price"
+   ],
+   "rows": 20043,
+   "text": [
+    "created_at",
+    "description",
+    "updated_at"
    ],
    "whole": [
     "quantity"
@@ -321,6 +344,7 @@
   "public.app_ship_release": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -339,22 +363,24 @@
     "shipment_group_id",
     "tracking_number"
    ],
-   "money": [],
-   "rows": 380,
-   "text": [
+   "ident": [
     "carrier",
     "city",
     "country",
-    "created_at",
     "customer_id",
     "id",
-    "notes",
-    "ship_date",
     "shipment_code",
     "state",
     "status",
-    "updated_at",
     "warehouse_id"
+   ],
+   "money": [],
+   "rows": 380,
+   "text": [
+    "created_at",
+    "notes",
+    "ship_date",
+    "updated_at"
    ],
    "whole": [
     "item_count",
@@ -364,6 +390,7 @@
   "public.app_shipment_line": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -383,17 +410,11 @@
     "supplier_type",
     "surcharge_percent"
    ],
-   "money": [
-    "min_order_qty",
-    "tax_rate"
-   ],
-   "rows": 1319,
-   "text": [
+   "ident": [
     "business_line",
     "city",
     "code",
     "country",
-    "created_at",
     "currency",
     "external_id",
     "fob_point",
@@ -402,8 +423,16 @@
     "ship_via",
     "state_province",
     "status",
-    "updated_at",
     "website"
+   ],
+   "money": [
+    "min_order_qty",
+    "tax_rate"
+   ],
+   "rows": 1319,
+   "text": [
+    "created_at",
+    "updated_at"
    ],
    "whole": [
     "lead_time_days",
@@ -414,6 +443,7 @@
   "public.bc_invoice_snapshot": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -422,6 +452,7 @@
   "public.bc_purchase_invoice_snapshot": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -434,25 +465,16 @@
     "documentdata",
     "type"
    ],
-   "money": [],
-   "rows": 146,
-   "text": [
+   "ident": [
     "address",
     "auditcreator",
     "auditeditor",
-    "audittimestampcreated",
-    "audittimestampmodified",
     "city",
     "code",
     "contcperson",
     "contcperson_2",
     "contcperson_3",
     "country",
-    "email",
-    "email_2",
-    "email_3",
-    "emailsrec",
-    "emailsreq",
     "fax",
     "mobilephone",
     "name",
@@ -460,11 +482,22 @@
     "phone_2",
     "phone_3",
     "postalcode",
-    "repemail",
     "state",
     "status",
     "tollfree",
     "website"
+   ],
+   "money": [],
+   "rows": 146,
+   "text": [
+    "audittimestampcreated",
+    "audittimestampmodified",
+    "email",
+    "email_2",
+    "email_3",
+    "emailsrec",
+    "emailsreq",
+    "repemail"
    ],
    "whole": [
     "certcleanbeauty",
@@ -480,7 +513,9 @@
    ]
   },
   "public.generated_purchase_order": {
-   "code": [],
+   "code": [
+    "costaddedperuom_c"
+   ],
    "empty": [
     "cost",
     "datearrive",
@@ -495,9 +530,23 @@
     "shiptofax",
     "zct_audit_log"
    ],
+   "ident": [
+    "address",
+    "auditcreator",
+    "auditeditor",
+    "contactrep",
+    "dategenerated_c",
+    "ponumber",
+    "postacode",
+    "requisitioner_c",
+    "shipto",
+    "shiptoattn",
+    "shiptophone",
+    "status",
+    "terms"
+   ],
    "money": [
     "costadded_c",
-    "costaddedperuom_c",
     "costshipping",
     "costshippingsystem_c",
     "costshow",
@@ -509,31 +558,18 @@
    ],
    "rows": 5570,
    "text": [
-    "address",
-    "auditcreator",
-    "auditeditor",
     "auditlog",
     "auditlogitems_c",
     "audittimestampcreated",
     "audittimestampmodified",
     "comment",
-    "contactrep",
     "currency",
-    "dategenerated_c",
     "emailcsr",
     "emailrep",
     "fax",
     "phonerep",
-    "ponumber",
-    "postacode",
-    "requisitioner_c",
-    "shipto",
     "shiptoaddress",
-    "shiptoattn",
     "shiptoemail",
-    "shiptophone",
-    "status",
-    "terms",
     "tollfeephone",
     "zct_audit_fielddata"
    ],
@@ -554,6 +590,13 @@
    "empty": [
     "costperkg",
     "zct_audit_log"
+   ],
+   "ident": [
+    "auditcreator",
+    "auditeditor",
+    "rawpack",
+    "status",
+    "type_c"
    ],
    "money": [
     "costcustoms_c",
@@ -576,15 +619,10 @@
    ],
    "rows": 10031,
    "text": [
-    "auditcreator",
-    "auditeditor",
     "auditlog",
     "auditlogallitems0_c",
     "audittimestampmodified",
     "description",
-    "rawpack",
-    "status",
-    "type_c",
     "zct_audit_fielddata"
    ],
    "whole": [
@@ -604,22 +642,24 @@
     "document",
     "documentdata"
    ],
-   "money": [],
-   "rows": 52,
-   "text": [
+   "ident": [
     "address",
     "auditcreator",
     "auditeditor",
-    "audittimestampcreated",
-    "audittimestampmodified",
     "city",
     "contcrep",
     "country",
-    "emailrep",
     "gmpcompliance",
     "name",
     "phonerep",
     "state"
+   ],
+   "money": [],
+   "rows": 52,
+   "text": [
+    "audittimestampcreated",
+    "audittimestampmodified",
+    "emailrep"
    ],
    "whole": [
     "id",
@@ -628,31 +668,32 @@
    ]
   },
   "public.order_entry": {
-   "code": [
-    "oecust_c"
-   ],
+   "code": [],
    "empty": [
     "documentdata",
     "reference",
     "shiptoaddress"
    ],
-   "money": [],
-   "rows": 522,
-   "text": [
+   "ident": [
     "auditcreator",
     "auditeditor",
-    "audittimestampcreated",
-    "audittimestampmodified",
     "custpocode",
     "datepo",
     "datereq",
-    "description",
     "erpcode",
     "status"
    ],
+   "money": [],
+   "rows": 522,
+   "text": [
+    "audittimestampcreated",
+    "audittimestampmodified",
+    "description"
+   ],
    "whole": [
     "id",
-    "idcust"
+    "idcust",
+    "oecust_c"
    ]
   },
   "public.order_entry_item": {
@@ -662,13 +703,15 @@
     "documentdata",
     "shiptoadress"
    ],
+   "ident": [
+    "auditcreator",
+    "auditeditor",
+    "status_c"
+   ],
    "money": [],
    "rows": 1693,
    "text": [
-    "auditcreator",
-    "auditeditor",
-    "audittimestampmodified",
-    "status_c"
+    "audittimestampmodified"
    ],
    "whole": [
     "id",
@@ -683,13 +726,15 @@
    "empty": [
     "notes"
    ],
+   "ident": [
+    "createdby",
+    "modifiedby"
+   ],
    "money": [],
    "rows": 1917,
    "text": [
-    "createdby",
     "creationtimestamp",
-    "modificationtimestamp",
-    "modifiedby"
+    "modificationtimestamp"
    ],
    "whole": [
     "id",
@@ -705,6 +750,10 @@
   "public.order_entry_item_batch": {
    "code": [],
    "empty": [],
+   "ident": [
+    "createdby",
+    "modifiedby"
+   ],
    "money": [
     "qtymfg",
     "qtymfg_c",
@@ -713,10 +762,8 @@
    ],
    "rows": 1930,
    "text": [
-    "createdby",
     "creationtimestamp",
-    "modificationtimestamp",
-    "modifiedby"
+    "modificationtimestamp"
    ],
    "whole": [
     "id",
@@ -741,13 +788,9 @@
     "initial",
     "name"
    ],
-   "money": [],
-   "rows": 3438,
-   "text": [
+   "ident": [
     "auditcreator",
     "auditeditor",
-    "audittimestampcreated",
-    "audittimestampmodified",
     "carrier",
     "comments",
     "datereceived",
@@ -757,6 +800,12 @@
     "status",
     "suppmanual",
     "uom"
+   ],
+   "money": [],
+   "rows": 3438,
+   "text": [
+    "audittimestampcreated",
+    "audittimestampmodified"
    ],
    "whole": [
     "acceptdamages",
@@ -783,19 +832,21 @@
     "releasedby",
     "status_c"
    ],
-   "money": [
-    "costitem"
-   ],
-   "rows": 8258,
-   "text": [
+   "ident": [
     "auditcreator",
     "auditeditor",
-    "audittimestampmodified",
     "barcode_pic",
     "idlab",
     "lotnoqc",
     "notes",
     "packaging"
+   ],
+   "money": [
+    "costitem"
+   ],
+   "rows": 8258,
+   "text": [
+    "audittimestampmodified"
    ],
    "whole": [
     "id",
@@ -818,21 +869,23 @@
     "logrejected",
     "releasedby"
    ],
+   "ident": [
+    "auditcreator",
+    "auditeditor",
+    "expirydate",
+    "idlabid",
+    "lotnoqc",
+    "rejectedby",
+    "status_c"
+   ],
    "money": [
     "costitem",
     "sumqty"
    ],
    "rows": 9333,
    "text": [
-    "auditcreator",
-    "auditeditor",
     "audittimestampmodified",
-    "expirydate",
-    "idlabid",
-    "lotnoqc",
-    "notes",
-    "rejectedby",
-    "status_c"
+    "notes"
    ],
    "whole": [
     "id",
@@ -842,40 +895,27 @@
    ]
   },
   "public.supplier": {
-   "code": [],
+   "code": [
+    "documentdata",
+    "documentdata2",
+    "documentdata3"
+   ],
    "empty": [
     "businessterms",
     "doc_assessmentform",
     "doc_questionnaireform"
    ],
-   "money": [
-    "documentdata",
-    "documentdata2",
-    "documentdata3",
-    "minorder",
-    "surchargeperc",
-    "taxrate"
-   ],
-   "rows": 327,
-   "text": [
+   "ident": [
     "address",
     "auditcreator",
     "auditeditor",
-    "audittimestampcreated",
-    "audittimestampmodified",
     "city",
     "contactcsr",
     "contactreg",
     "contactrep",
     "country",
-    "currency",
     "doc_qualityauditchecklist",
-    "emailcsr",
-    "emailrep",
-    "emaireg",
-    "fax",
     "name",
-    "phonecsr",
     "phonemobilerep",
     "phonereg",
     "phonerep",
@@ -884,6 +924,22 @@
     "status",
     "terms",
     "tollfeephone"
+   ],
+   "money": [
+    "minorder",
+    "surchargeperc",
+    "taxrate"
+   ],
+   "rows": 327,
+   "text": [
+    "audittimestampcreated",
+    "audittimestampmodified",
+    "currency",
+    "emailcsr",
+    "emailrep",
+    "emaireg",
+    "fax",
+    "phonecsr"
    ],
    "whole": [
     "costdelivery",
@@ -898,6 +954,10 @@
   "sage.ap_aged": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idvend"
+   ],
    "money": [
     "amtbaldueh",
     "amtbalduet",
@@ -925,10 +985,8 @@
    "rows": 3908,
    "text": [
     "_sage_pk",
-    "audtorg",
     "idmemoxref",
     "idrmit",
-    "idvend",
     "sortvalue1",
     "sortvalue2",
     "sortvalue3",
@@ -967,21 +1025,22 @@
   "sage.ap_bta": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "batchdesc",
+    "codecurn",
+    "paymtype",
+    "ratetype",
+    "srceappl"
+   ],
    "money": [
     "amtenter",
-    "funcamount",
-    "rateexchhc"
+    "funcamount"
    ],
    "rows": 9034,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "batchdesc",
-    "codecurn",
-    "paymform",
-    "paymtype",
-    "ratetype",
-    "srceappl"
+    "paymform"
    ],
    "whole": [
     "audtdate",
@@ -1001,6 +1060,7 @@
     "daterate",
     "nbrerrors",
     "postseqnbr",
+    "rateexchhc",
     "rateop",
     "swbtchedit",
     "swprechkrg",
@@ -1012,11 +1072,13 @@
   "sage.ap_clx": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "classdesc"
+   ],
    "money": [],
    "rows": 15,
    "text": [
-    "audtorg",
-    "classdesc",
     "taxgroup",
     "withholdg"
    ],
@@ -1041,14 +1103,15 @@
   "sage.ap_dpo": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [
     "amtbal",
     "amtinvc"
    ],
    "rows": 3518,
-   "text": [
-    "audtorg"
-   ],
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -1058,14 +1121,16 @@
   "sage.ap_dsd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "distset",
+    "idglacct"
+   ],
    "money": [],
    "rows": 73,
    "text": [
     "_sage_pk",
-    "audtorg",
     "distid",
-    "distset",
-    "idglacct",
     "textdesc"
    ],
    "whole": [
@@ -1080,14 +1145,15 @@
   "sage.ap_dsh": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 12,
-   "text": [
+   "ident": [
     "audtorg",
     "curncode",
     "distset",
     "textdesc"
    ],
+   "money": [],
+   "rows": 12,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -1102,11 +1168,13 @@
   "sage.ap_glref": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [],
    "rows": 70,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -1124,15 +1192,16 @@
   "sage.ap_ibc": {
    "code": [],
    "empty": [],
-   "money": [
-    "amtentr"
-   ],
-   "rows": 7777,
-   "text": [
+   "ident": [
     "audtorg",
     "btchdesc",
     "srceappl"
    ],
+   "money": [
+    "amtentr"
+   ],
+   "rows": 7777,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -1153,6 +1222,10 @@
   "sage.ap_ibd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idglacct"
+   ],
    "money": [
     "amtdist",
     "amtdisthc",
@@ -1179,14 +1252,12 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "billcurn",
     "category",
     "contract",
     "descomp",
     "id1099clas",
     "iddist",
-    "idglacct",
     "iditem",
     "project",
     "resource",
@@ -1331,13 +1402,15 @@
   "sage.ap_ibdo": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 36,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "optfield",
     "value"
+   ],
+   "money": [],
+   "rows": 36,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -1356,6 +1429,24 @@
   "sage.ap_ibh": {
    "code": [],
    "empty": [],
+   "ident": [
+    "apversion",
+    "audtorg",
+    "codectry",
+    "codecurn",
+    "codecurnrc",
+    "codestte",
+    "codetaxgrp",
+    "codevndgrp",
+    "enteredby",
+    "idacctset",
+    "idvend",
+    "invcdesc",
+    "namecity",
+    "ratetype",
+    "srceappl",
+    "textven"
+   ],
    "money": [
     "amtalloctx",
     "amtaxtobe",
@@ -1380,9 +1471,6 @@
     "amttaxtot",
     "amttotdist",
     "basetax1",
-    "exchratehc",
-    "origratehc",
-    "raterc",
     "txallrc",
     "txamt1hc",
     "txamt1rc",
@@ -1403,41 +1491,25 @@
     "acctrec3",
     "acctrec4",
     "acctrec5",
-    "apversion",
-    "audtorg",
-    "codectry",
-    "codecurn",
-    "codecurnrc",
-    "codestte",
     "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
-    "codetaxgrp",
-    "codevndgrp",
     "drillapp",
-    "enteredby",
     "id1099clas",
-    "idacctset",
     "iddistset",
     "idn",
     "idppd",
     "idrmitto",
     "idstdinvc",
-    "idvend",
     "invcapplto",
-    "invcdesc",
-    "namecity",
     "ordrnbr",
     "origcomp",
     "ponbr",
-    "ratetype",
     "ratetyperc",
     "rtgapplyto",
-    "srceappl",
-    "textrmit",
-    "textven"
+    "textrmit"
    ],
    "whole": [
     "amt1099",
@@ -1486,15 +1558,18 @@
     "drilltype",
     "errbatch",
     "errentry",
+    "exchratehc",
     "fiscper",
     "fiscyr",
     "idinvc",
     "idtrx",
     "invcstts",
     "lastline",
+    "origratehc",
     "pctdisc",
     "ratedaterc",
     "rateoprc",
+    "raterc",
     "rtgamt",
     "rtgamthc",
     "rtgdatedue",
@@ -1558,12 +1633,14 @@
   "sage.ap_ibho": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "optfield"
+   ],
    "money": [],
    "rows": 30000,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "optfield"
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -1582,6 +1659,9 @@
   "sage.ap_ibs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [
     "amtdisc",
     "amtdischc",
@@ -1590,8 +1670,7 @@
    ],
    "rows": 30000,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -1606,11 +1685,13 @@
   "sage.ap_ibt": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [],
    "rows": 607,
    "text": [
     "_sage_pk",
-    "audtorg",
     "textline"
    ],
    "whole": [
@@ -1625,12 +1706,13 @@
   "sage.ap_intck": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "tovendoc"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -1651,11 +1733,14 @@
   "sage.ap_msg": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "msgid"
+   ],
    "money": [],
    "rows": 1,
    "text": [
     "_sage_pk",
-    "audtorg",
     "body1",
     "body10",
     "body2",
@@ -1666,7 +1751,6 @@
     "body7",
     "body8",
     "body9",
-    "msgid",
     "subject",
     "textdesc"
    ],
@@ -1682,6 +1766,12 @@
   "sage.ap_oblj": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idglacct",
+    "idvend",
+    "txallacct"
+   ],
    "money": [
     "amtduehc",
     "amtduetc",
@@ -1692,17 +1782,13 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "billcurn",
     "category",
     "contract",
     "iddist",
-    "idglacct",
     "iditem",
-    "idvend",
     "project",
     "resource",
-    "txallacct",
     "unitmeas"
    ],
    "whole": [
@@ -1768,15 +1854,17 @@
   "sage.ap_obljo": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 36,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idinvc",
     "idvend",
     "optfield",
     "value"
+   ],
+   "money": [],
+   "rows": 36,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -1792,13 +1880,15 @@
   "sage.ap_oblo": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idvend",
     "optfield"
+   ],
+   "money": [],
+   "rows": 30000,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -1815,25 +1905,26 @@
   "sage.ap_obp": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecurn",
+    "idinvc",
+    "idmemoxref",
+    "idratetype",
+    "idrmitvend",
+    "idvend"
+   ],
    "money": [
     "amtpaymhc",
-    "amtpaymtc",
-    "rateexchhc"
+    "amtpaymtc"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "code1099",
-    "codecurn",
     "codetax",
-    "idinvc",
-    "idmemoxref",
     "idprepaid",
-    "idratetype",
-    "idrmit",
-    "idrmitvend",
-    "idvend"
+    "idrmit"
    ],
    "whole": [
     "amt1099",
@@ -1850,6 +1941,7 @@
     "fiscyr",
     "longserial",
     "ratedate",
+    "rateexchhc",
     "rateop",
     "swovrdrate",
     "transtype",
@@ -1859,6 +1951,12 @@
   "sage.ap_obs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idgrp",
+    "idinvc",
+    "idvend"
+   ],
    "money": [
     "amtdcsrmhc",
     "amtdischc",
@@ -1872,14 +1970,10 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "idgrp",
-    "idinvc",
     "idordrnbr",
     "idponbr",
     "idprepaid",
     "idrmit",
-    "idvend",
     "rtgapplyto"
    ],
    "whole": [
@@ -1901,12 +1995,14 @@
   "sage.ap_ofd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "optfield"
+   ],
    "money": [],
    "rows": 5,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "optfield"
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -1943,11 +2039,12 @@
   "sage.ap_ofh": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 3,
-   "text": [
+   "ident": [
     "audtorg"
    ],
+   "money": [],
+   "rows": 3,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -1958,6 +2055,21 @@
   "sage.ap_open_document": {
    "code": [],
    "empty": [],
+   "ident": [
+    "apversion",
+    "audtorg",
+    "codecurn",
+    "codecurnrc",
+    "codetaxgrp",
+    "idacctset",
+    "idinvc",
+    "idratetype",
+    "idvend",
+    "idvendgrp",
+    "oratetype",
+    "srceappl",
+    "typebtch"
+   ],
    "money": [
     "amtbase1hc",
     "amtbase1tc",
@@ -1972,41 +2084,25 @@
     "amttax1hc",
     "amttax1tc",
     "amttaxhc",
-    "amttaxtc",
-    "exchratehc",
-    "orate",
-    "raterc"
+    "amttaxtc"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "apversion",
-    "audtorg",
-    "codecurn",
-    "codecurnrc",
     "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
-    "codetaxgrp",
     "descinvc",
     "id1099clas",
-    "idacctset",
-    "idinvc",
     "idordernbr",
     "idponbr",
     "idprepay",
-    "idratetype",
     "idrmit",
     "idrmitto",
-    "idvend",
-    "idvendgrp",
-    "oratetype",
     "ratetyperc",
-    "rtgapplyto",
-    "srceappl",
-    "typebtch"
+    "rtgapplyto"
    ],
    "whole": [
     "amt1099org",
@@ -2051,6 +2147,7 @@
     "datelststm",
     "datepaid",
     "datepystts",
+    "exchratehc",
     "fiscper",
     "fiscyr",
     "idtrxtype",
@@ -2060,6 +2157,7 @@
     "oamtwht3tc",
     "oamtwht4tc",
     "oamtwht5tc",
+    "orate",
     "oratedate",
     "orateop",
     "oswrate",
@@ -2068,6 +2166,7 @@
     "ratedaterc",
     "rateop",
     "rateoprc",
+    "raterc",
     "rtgamthc",
     "rtgamttc",
     "rtgdatedue",
@@ -2115,12 +2214,13 @@
   "sage.ap_p01": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "idp01"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -2148,12 +2248,14 @@
   "sage.ap_p02": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "recid02"
+   ],
    "money": [],
    "rows": 1,
    "text": [
-    "audtorg",
-    "claslabel",
-    "recid02"
+    "claslabel"
    ],
    "whole": [
     "audtdate",
@@ -2175,9 +2277,7 @@
   "sage.ap_p03": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "adpfx",
     "audtorg",
     "dfltrate",
@@ -2188,7 +2288,11 @@
     "rdpfx",
     "recid03",
     "ripfx",
-    "rppfx",
+    "rppfx"
+   ],
+   "money": [],
+   "rows": 1,
+   "text": [
     "rtgschdkey"
    ],
    "whole": [
@@ -2252,9 +2356,7 @@
   "sage.ap_p04": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "recid04",
     "srctypead",
@@ -2270,6 +2372,9 @@
     "srctypepyr",
     "srctyperd"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -2289,12 +2394,14 @@
   "sage.ap_p05": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "recid05"
+   ],
    "money": [],
    "rows": 1,
    "text": [
-    "audtorg",
-    "cmnttype",
-    "recid05"
+    "cmnttype"
    ],
    "whole": [
     "audtdate",
@@ -2308,32 +2415,32 @@
   "sage.ap_pjd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecurn",
+    "gldesc",
+    "glref",
+    "idacct",
+    "idratetype",
+    "idvend",
+    "srcetype",
+    "typebtch"
+   ],
    "money": [
     "amtextndhc",
     "amtextndtc",
     "amttaxhc",
     "amttaxtc",
     "basetaxhc",
-    "basetaxtc",
-    "ratedoc",
-    "rateexchhc"
+    "basetaxtc"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codecurn",
     "descomp",
     "glcomment",
-    "gldesc",
-    "glref",
-    "idacct",
     "iddist",
-    "idratetype",
-    "idrmit",
-    "idvend",
-    "srcetype",
-    "typebtch"
+    "idrmit"
    ],
    "whole": [
     "accttype",
@@ -2362,6 +2469,8 @@
     "longserial",
     "postseqnce",
     "ratedate",
+    "ratedoc",
+    "rateexchhc",
     "route",
     "rtgamthc",
     "rtgamttc",
@@ -2375,13 +2484,15 @@
   "sage.ap_pjdo": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "optfield",
     "typebtch"
+   ],
+   "money": [],
+   "rows": 30000,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -2401,36 +2512,36 @@
   "sage.ap_pjh": {
    "code": [],
    "empty": [],
-   "money": [
-    "amtinvctc",
-    "rateexchbc",
-    "rateexchtc"
-   ],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
-    "codecurnbc",
     "codecurntc",
     "codetaxgrp",
     "desc",
     "enteredby",
     "idacctset",
-    "iddistset",
     "idgrp",
+    "idvend",
+    "ratetypetc",
+    "typebtch"
+   ],
+   "money": [
+    "amtinvctc"
+   ],
+   "rows": 30000,
+   "text": [
+    "_sage_pk",
+    "codecurnbc",
+    "iddistset",
     "idinvcappl",
     "idn",
     "idrmit",
     "idrmitto",
-    "idvend",
     "miscrmitto",
     "origcomp",
     "paymcode",
     "ratetypebc",
-    "ratetypetc",
     "rtgapplyto",
-    "textref",
-    "typebtch"
+    "textref"
    ],
    "whole": [
     "amtbc",
@@ -2458,6 +2569,8 @@
     "postseqnce",
     "ratedatebc",
     "ratedatetc",
+    "rateexchbc",
+    "rateexchtc",
     "rateopbc",
     "rateoptc",
     "revinvc",
@@ -2479,13 +2592,15 @@
   "sage.ap_pjho": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "optfield",
     "typebtch"
+   ],
+   "money": [],
+   "rows": 30000,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -2504,13 +2619,15 @@
   "sage.ap_pjs": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 15556,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "pgmver",
     "typebtch"
+   ],
+   "money": [],
+   "rows": 15556,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -2527,14 +2644,16 @@
   "sage.ap_pter": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codebatch",
+    "errcodepym"
+   ],
    "money": [],
    "rows": 176,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codebatch",
     "codemsg",
-    "errcodepym",
     "errdesc"
    ],
    "whole": [
@@ -2555,13 +2674,14 @@
   "sage.ap_ptp": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 9,
-   "text": [
+   "ident": [
     "audtorg",
     "paymcode",
     "textdesc"
    ],
+   "money": [],
+   "rows": 9,
+   "text": [],
    "whole": [
     "actvsw",
     "audtdate",
@@ -2574,11 +2694,8 @@
   "sage.ap_ras": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2,
-   "text": [
+   "ident": [
     "acctset",
-    "adjstact",
     "audtorg",
     "currcode",
     "discacct",
@@ -2587,11 +2704,16 @@
     "rlzgnact",
     "rlzlsact",
     "rndacct",
-    "rtgacct",
-    "suspacct",
     "textdesc",
     "urlzgnact",
     "urlzlsact"
+   ],
+   "money": [],
+   "rows": 2,
+   "text": [
+    "adjstact",
+    "rtgacct",
+    "suspacct"
    ],
    "whole": [
     "audtdate",
@@ -2604,14 +2726,15 @@
   "sage.ap_rdc": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 4,
-   "text": [
+   "ident": [
     "audtorg",
     "distid",
     "idglacct",
     "textdesc"
    ],
+   "money": [],
+   "rows": 4,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -2624,6 +2747,13 @@
   "sage.ap_rpd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "desc",
+    "idglacct",
+    "idrecurr",
+    "idvend"
+   ],
    "money": [
     "amtdist",
     "amtdistnet",
@@ -2635,17 +2765,12 @@
    "rows": 18,
    "text": [
     "_sage_pk",
-    "audtorg",
     "billcurn",
     "category",
     "comment",
     "contract",
-    "desc",
     "iddistcode",
-    "idglacct",
     "iditem",
-    "idrecurr",
-    "idvend",
     "project",
     "resource",
     "unitmeas"
@@ -2694,6 +2819,19 @@
   "sage.ap_rph": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecurn",
+    "desc",
+    "idacctset",
+    "idrecurr",
+    "idvend",
+    "invcdesc",
+    "lstidinvc",
+    "ratetype",
+    "schedkey",
+    "taxgrp"
+   ],
    "money": [
     "amtdist",
     "amtdistnet",
@@ -2709,27 +2847,16 @@
    "rows": 12,
    "text": [
     "_sage_pk",
-    "audtorg",
     "code1099",
-    "codecurn",
-    "desc",
-    "idacctset",
     "iddistset",
-    "idrecurr",
     "idrmitto",
-    "idvend",
-    "invcdesc",
-    "lstidinvc",
     "ordernbr",
     "ponbr",
-    "ratetype",
-    "schedkey",
     "taxauth1",
     "taxauth2",
     "taxauth3",
     "taxauth4",
-    "taxauth5",
-    "taxgrp"
+    "taxauth5"
    ],
    "whole": [
     "amt1099",
@@ -2801,14 +2928,16 @@
   "sage.ap_rpho": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 22,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idrecurr",
     "idvend",
     "optfield"
+   ],
+   "money": [],
+   "rows": 22,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -2827,12 +2956,13 @@
    "empty": [
     "data1"
    ],
-   "money": [],
-   "rows": 12,
-   "text": [
+   "ident": [
     "audtorg",
     "key"
    ],
+   "money": [],
+   "rows": 12,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime"
@@ -2840,34 +2970,36 @@
   },
   "sage.ap_slh": {
    "code": [
-    "amtmaxchk"
-   ],
-   "empty": [],
-   "money": [
-    "amtminchk",
+    "amtmaxchk",
     "exchratebc",
     "exchratetc"
    ],
-   "rows": 2,
-   "text": [
-    "acctsetfr",
+   "empty": [],
+   "ident": [
     "acctsetthr",
     "audtorg",
     "codecurnpy",
     "codecurntc",
     "coderatebc",
     "coderatetc",
-    "csvfile",
     "idgrpfrom",
     "idgrpthru",
     "idselect",
     "idselected",
-    "idvendfrom",
     "idvendthru",
+    "pmcodethru",
+    "textdesc"
+   ],
+   "money": [
+    "amtminchk"
+   ],
+   "rows": 2,
+   "text": [
+    "acctsetfr",
+    "csvfile",
+    "idvendfrom",
     "optfield",
     "pmcodefrom",
-    "pmcodethru",
-    "textdesc",
     "valuefrom",
     "valuethru"
    ],
@@ -2901,12 +3033,14 @@
   "sage.ap_slven": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idvend"
+   ],
    "money": [],
    "rows": 114,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "idvend",
     "sortvalue1",
     "sortvalue2",
     "sortvalue3",
@@ -2927,6 +3061,11 @@
   "sage.ap_tcn": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "batchtype",
+    "idacct"
+   ],
    "money": [
     "amtdisthc",
     "amtdisttc",
@@ -2948,14 +3087,11 @@
    "rows": 2392,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "batchtype",
     "billcurn",
     "category",
     "contract",
     "gldesc",
     "glref",
-    "idacct",
     "iddistcode",
     "iditem",
     "project",
@@ -3062,6 +3198,11 @@
   "sage.ap_tcp": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "batchtype",
+    "idvend"
+   ],
    "money": [
     "adjtotcrtc",
     "adjtotdbtc",
@@ -3075,12 +3216,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "batchtype",
     "glref",
     "iddocmtch",
     "idppd",
-    "idvend",
     "textadj"
    ],
    "whole": [
@@ -3128,6 +3266,27 @@
   "sage.ap_tcr": {
    "code": [],
    "empty": [],
+   "ident": [
+    "apversion",
+    "audtorg",
+    "btchtype",
+    "checklang",
+    "codectry",
+    "codecurn",
+    "codecurnbc",
+    "codestte",
+    "docnbr",
+    "enteredby",
+    "idacctset",
+    "idvend",
+    "namecity",
+    "namermit",
+    "paymcode",
+    "ratetypehc",
+    "ratetypetc",
+    "srceappl",
+    "textrmit"
+   ],
    "money": [
     "adjtotcrhc",
     "adjtotcrtc",
@@ -3145,8 +3304,6 @@
     "amtrmit",
     "amtrmithc",
     "amtrmittc",
-    "rateexchhc",
-    "rateexchtc",
     "txamt1hc",
     "txamt1rc",
     "txamt1tc",
@@ -3162,39 +3319,20 @@
    "rows": 23513,
    "text": [
     "_sage_pk",
-    "apversion",
-    "audtorg",
-    "btchtype",
     "cashacct",
-    "checklang",
     "code1099",
-    "codectry",
-    "codecurn",
-    "codecurnbc",
     "codecurnrc",
-    "codestte",
     "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
     "codetaxgrp",
-    "docnbr",
     "drillapp",
-    "enteredby",
-    "idacctset",
     "idinvcmtch",
     "idrmit",
     "idrmitto",
-    "idvend",
-    "namecity",
-    "namermit",
-    "paymcode",
-    "ratetypehc",
     "ratetyperc",
-    "ratetypetc",
-    "srceappl",
-    "textrmit",
     "txtrmitref"
    ],
    "whole": [
@@ -3241,6 +3379,8 @@
     "paymstts",
     "paymtype",
     "ratedaterc",
+    "rateexchhc",
+    "rateexchtc",
     "rateoprc",
     "raterc",
     "remreaplhc",
@@ -3298,6 +3438,11 @@
   "sage.ap_tcu": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "batchtype",
+    "idacct"
+   ],
    "money": [
     "amtdist",
     "amtdisthc"
@@ -3305,12 +3450,9 @@
    "rows": 67,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "batchtype",
     "billcurn",
     "category",
     "contract",
-    "idacct",
     "iddistcode",
     "iditem",
     "project",
@@ -3356,12 +3498,13 @@
   "sage.ap_term": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 13,
-   "text": [
+   "ident": [
     "audtorg",
     "codedesc"
    ],
+   "money": [],
+   "rows": 13,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -3412,11 +3555,14 @@
   "sage.ap_vcm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "vendorid"
+   ],
    "money": [],
    "rows": 42,
    "text": [
     "_sage_pk",
-    "audtorg",
     "cmnttype",
     "textcmnt1",
     "textcmnt10",
@@ -3428,8 +3574,7 @@
     "textcmnt7",
     "textcmnt8",
     "textcmnt9",
-    "userid",
-    "vendorid"
+    "userid"
    ],
    "whole": [
     "audtdate",
@@ -3444,6 +3589,24 @@
   "sage.ap_vendor": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecheck",
+    "codectry",
+    "codestte",
+    "codetaxgrp",
+    "curncode",
+    "glaccnt",
+    "idacctset",
+    "idgrp",
+    "legalname",
+    "namecity",
+    "paymcode",
+    "ratetype",
+    "shortname",
+    "vendname",
+    "vendorid"
+   ],
    "money": [
     "amtbaldueh",
     "amtbalduet",
@@ -3471,29 +3634,13 @@
    ],
    "rows": 992,
    "text": [
-    "audtorg",
     "clasid",
-    "codecheck",
-    "codectry",
-    "codestte",
-    "codetaxgrp",
-    "curncode",
     "distcode",
     "distsetid",
-    "glaccnt",
-    "idacctset",
     "idcust",
-    "idgrp",
     "idinvchily",
     "idppnt",
-    "legalname",
-    "namecity",
-    "paymcode",
     "primrmit",
-    "ratetype",
-    "shortname",
-    "vendname",
-    "vendorid",
     "website"
    ],
    "whole": [
@@ -3563,6 +3710,7 @@
   "sage.ap_vendor_remit": {
    "code": [],
    "empty": [],
+   "ident": [],
    "money": [],
    "rows": 0,
    "text": [],
@@ -3571,14 +3719,16 @@
   "sage.ap_veno": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 14,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "optfield",
     "value",
     "vendorid"
+   ],
+   "money": [],
+   "rows": 14,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -3594,21 +3744,23 @@
   "sage.ap_vgr": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 6,
-   "text": [
+   "ident": [
     "acctsetid",
     "audtorg",
-    "classid",
     "curncode",
     "descriptn",
-    "distcode",
-    "distsetid",
     "glacctid",
     "groupid",
     "paymcode",
     "ratetypeid",
     "taxgrp"
+   ],
+   "money": [],
+   "rows": 6,
+   "text": [
+    "classid",
+    "distcode",
+    "distsetid"
    ],
    "whole": [
     "activesw",
@@ -3639,6 +3791,10 @@
   "sage.ap_vgs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idgrp"
+   ],
    "money": [
     "amtadjhc",
     "amtcrhc",
@@ -3652,9 +3808,7 @@
    ],
    "rows": 459,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "idgrp"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -3676,6 +3830,10 @@
   "sage.ap_vsm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "vendorid"
+   ],
    "money": [
     "amtadjhc",
     "amtadjtc",
@@ -3697,9 +3855,7 @@
    ],
    "rows": 20406,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "vendorid"
+    "_sage_pk"
    ],
    "whole": [
     "amtblrvltc",
@@ -3724,6 +3880,11 @@
   "sage.ar_aged": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "idinvc"
+   ],
    "money": [
     "amtbaldueh",
     "amtbalduet",
@@ -3749,9 +3910,6 @@
    "rows": 7824,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "idcust",
-    "idinvc",
     "idmemoxref",
     "idrmit",
     "sortvalue1",
@@ -3790,22 +3948,23 @@
   "sage.ar_bta": {
    "code": [],
    "empty": [],
-   "money": [
-    "adjustamt",
-    "amtenter",
-    "funcamount",
-    "rateexchhc",
-    "reaplyamt"
-   ],
-   "rows": 19788,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "batchdesc",
     "codecurn",
     "codepymtyp",
     "ratetype",
     "srceappl"
+   ],
+   "money": [
+    "adjustamt",
+    "amtenter",
+    "funcamount",
+    "reaplyamt"
+   ],
+   "rows": 19788,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -3823,6 +3982,7 @@
     "depstnbr",
     "nbrerrors",
     "postseqnbr",
+    "rateexchhc",
     "rateop",
     "swprinted",
     "swrate",
@@ -3832,13 +3992,16 @@
   "sage.ar_cmm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "userid"
+   ],
    "money": [],
    "rows": 4616,
    "text": [
     "_sage_pk",
-    "audtorg",
     "cmnttype",
-    "idcust",
     "textcmnt1",
     "textcmnt10",
     "textcmnt2",
@@ -3848,8 +4011,7 @@
     "textcmnt6",
     "textcmnt7",
     "textcmnt8",
-    "textcmnt9",
-    "userid"
+    "textcmnt9"
    ],
    "whole": [
     "audtdate",
@@ -3864,13 +4026,15 @@
   "sage.ar_cmmtp": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2,
-   "text": [
-    "alertcol",
+   "ident": [
     "audtorg",
     "cmnttype",
     "textdesc"
+   ],
+   "money": [],
+   "rows": 2,
+   "text": [
+    "alertcol"
    ],
    "whole": [
     "actvsw",
@@ -3884,6 +4048,10 @@
   "sage.ar_csm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust"
+   ],
    "money": [
     "amtadjhc",
     "amtadjtc",
@@ -3909,9 +4077,7 @@
    ],
    "rows": 30000,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "idcust"
+    "_sage_pk"
    ],
    "whole": [
     "amtbarvalt",
@@ -3938,13 +4104,15 @@
   "sage.ar_cuso": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idcust",
     "optfield"
+   ],
+   "money": [],
+   "rows": 30000,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -3961,6 +4129,27 @@
   "sage.ar_customer": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecheck",
+    "codectry",
+    "codecurn",
+    "codeslsp1",
+    "codestte",
+    "codetaxgrp",
+    "idacctset",
+    "idbillcycl",
+    "idcust",
+    "idgrp",
+    "idinvchi",
+    "idnatacct",
+    "idratetype",
+    "idsvcchrg",
+    "namecity",
+    "namecust",
+    "priclist",
+    "textsnam"
+   ],
    "money": [
     "amtbaldueh",
     "amtbalduet",
@@ -3994,42 +4183,23 @@
    ],
    "rows": 7412,
    "text": [
-    "audtorg",
     "brn",
-    "codecheck",
-    "codectry",
-    "codecurn",
     "codedab",
     "codedabrtg",
-    "codeslsp1",
     "codeslsp2",
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codestte",
-    "codetaxgrp",
     "codeterr",
     "fob",
-    "idacctset",
     "idautocash",
-    "idbillcycl",
-    "idcust",
     "iddlnq",
-    "idgrp",
-    "idinvchi",
     "idinvchily",
-    "idnatacct",
     "idppnt",
-    "idratetype",
-    "idsvcchrg",
-    "namecity",
-    "namecust",
     "paymcode",
-    "priclist",
     "primshipto",
     "shpviacode",
     "shpviadesc",
-    "textsnam",
     "website"
    ],
    "whole": [
@@ -4111,14 +4281,15 @@
   "sage.ar_dro": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [
     "amtbal",
     "amtinvc"
    ],
    "rows": 2792,
-   "text": [
-    "audtorg"
-   ],
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -4128,15 +4299,17 @@
   "sage.ar_dun": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2,
-   "text": [
+   "ident": [
     "audtorg",
     "codestmt",
     "textdesc",
-    "textstmt1",
     "textstmt2",
-    "textstmt3",
+    "textstmt3"
+   ],
+   "money": [],
+   "rows": 2,
+   "text": [
+    "textstmt1",
     "textstmt4",
     "textstmt5"
    ],
@@ -4151,11 +4324,13 @@
   "sage.ar_glref": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [],
    "rows": 81,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -4173,11 +4348,20 @@
   "sage.ar_gro": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "cdcrlmcur1",
+    "codetaxgrp",
+    "idacctset",
+    "idbillcycl",
+    "idgrp",
+    "idsvcchg",
+    "ratetype",
+    "textdesc"
+   ],
    "money": [],
    "rows": 13,
    "text": [
-    "audtorg",
-    "cdcrlmcur1",
     "cdcrlmcur2",
     "cdcrlmcur3",
     "cdcrlmcur4",
@@ -4187,15 +4371,8 @@
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codetaxgrp",
-    "idacctset",
     "idautocash",
-    "idbillcycl",
-    "iddlnq",
-    "idgrp",
-    "idsvcchg",
-    "ratetype",
-    "textdesc"
+    "iddlnq"
    ],
    "whole": [
     "audtdate",
@@ -4230,13 +4407,15 @@
   "sage.ar_groo": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 24,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idgrp",
     "optfield"
+   ],
+   "money": [],
+   "rows": 24,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -4253,6 +4432,10 @@
   "sage.ar_gsm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idgrp"
+   ],
    "money": [
     "amtadjhc",
     "amtcrhc",
@@ -4266,11 +4449,9 @@
     "amtwrofhc",
     "avgdayspay"
    ],
-   "rows": 1051,
+   "rows": 1052,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "idgrp"
+    "_sage_pk"
    ],
    "whole": [
     "amtintthc",
@@ -4295,15 +4476,16 @@
   "sage.ar_ibc": {
    "code": [],
    "empty": [],
-   "money": [
-    "amtentr"
-   ],
-   "rows": 3515,
-   "text": [
+   "ident": [
     "audtorg",
     "btchdesc",
     "srceappl"
    ],
+   "money": [
+    "amtentr"
+   ],
+   "rows": 3516,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -4323,6 +4505,11 @@
   "sage.ar_ibd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idacctrev",
+    "textdesc"
+   ],
    "money": [
     "amtextn",
     "amtextnhc",
@@ -4345,20 +4532,17 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "category",
     "contract",
     "edn",
     "idacctcogs",
     "idacctinv",
-    "idacctrev",
     "iddist",
     "idinvc",
     "iditem",
     "idjobproj",
     "project",
     "resource",
-    "textdesc",
     "unitmeas"
    ],
    "whole": [
@@ -4442,8 +4626,36 @@
    ]
   },
   "sage.ar_ibh": {
-   "code": [],
+   "code": [
+    "exchratehc"
+   ],
    "empty": [],
+   "ident": [
+    "arversion",
+    "audtorg",
+    "codecurn",
+    "codecurnrc",
+    "codeslsp1",
+    "codetax1",
+    "codetaxgrp",
+    "custpo",
+    "drillapp",
+    "enteredby",
+    "idacctset",
+    "idcust",
+    "idinvc",
+    "idshipnbr",
+    "ordrnbr",
+    "ratetype",
+    "ratetyperc",
+    "shptocity",
+    "shptoctry",
+    "shptoloc",
+    "shptopost",
+    "shptoste1",
+    "shptostte",
+    "srceappl"
+   ],
    "money": [
     "amtdiscavl",
     "amtdischc",
@@ -4464,8 +4676,6 @@
     "basetax1",
     "basetax2",
     "distnethc",
-    "exchratehc",
-    "origratehc",
     "txamt1hc",
     "txamt1rc",
     "txamt2hc",
@@ -4477,56 +4687,32 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "arversion",
-    "audtorg",
-    "codecurn",
-    "codecurnrc",
-    "codeslsp1",
     "codeslsp2",
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
-    "codetaxgrp",
-    "custpo",
-    "drillapp",
     "edn",
-    "enteredby",
-    "idacctset",
     "idbill",
-    "idcust",
-    "idinvc",
     "idppd",
-    "idshipnbr",
     "idshpt",
     "idstdinvc",
     "invcapplto",
     "invcdesc",
     "jobnbr",
-    "ordrnbr",
-    "ratetype",
-    "ratetyperc",
     "rtgapplyto",
     "sfpaid",
     "sfpaurl",
     "shipvia",
-    "shptocity",
-    "shptoctry",
-    "shptoloc",
-    "shptopost",
-    "shptoste1",
     "shptoste2",
     "shptoste3",
     "shptoste4",
-    "shptostte",
     "shpviacode",
     "shpviadesc",
-    "specinst",
-    "srceappl"
+    "specinst"
    ],
    "whole": [
     "amtnottxbl",
@@ -4564,6 +4750,7 @@
     "invcstts",
     "invctype",
     "lastline",
+    "origratehc",
     "pctdisc",
     "pctsasplt1",
     "pctsasplt2",
@@ -4627,6 +4814,9 @@
   "sage.ar_ibs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [
     "amtdisc",
     "amtdischc",
@@ -4635,8 +4825,7 @@
    ],
    "rows": 30000,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -4651,12 +4840,14 @@
   "sage.ar_ibt": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "textline"
+   ],
    "money": [],
    "rows": 222,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "textline"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -4670,12 +4861,14 @@
   "sage.ar_intck": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "tocusdoc"
+   ],
    "money": [],
    "rows": 1,
    "text": [
-    "audtorg",
-    "frcusdoc",
-    "tocusdoc"
+    "frcusdoc"
    ],
    "whole": [
     "audtdate",
@@ -4696,11 +4889,15 @@
   "sage.ar_msg": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "msgid",
+    "textdesc"
+   ],
    "money": [],
    "rows": 4,
    "text": [
     "_sage_pk",
-    "audtorg",
     "body1",
     "body10",
     "body2",
@@ -4711,9 +4908,7 @@
     "body7",
     "body8",
     "body9",
-    "msgid",
-    "subject",
-    "textdesc"
+    "subject"
    ],
    "whole": [
     "activesw",
@@ -4727,6 +4922,21 @@
   "sage.ar_nat": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codectry",
+    "codecurn",
+    "codestate",
+    "idacctset",
+    "idbillcycl",
+    "idgrp",
+    "idinvchigh",
+    "idnatacct",
+    "idratetype",
+    "idsvcchrg",
+    "nameacct",
+    "namecity"
+   ],
    "money": [
     "amtadjhc",
     "amtadjtc",
@@ -4757,24 +4967,11 @@
    ],
    "rows": 470,
    "text": [
-    "audtorg",
-    "codectry",
-    "codecurn",
     "codedab",
-    "codestate",
     "dabrtg",
-    "idacctset",
     "idautocash",
-    "idbillcycl",
     "iddlnq",
-    "idgrp",
-    "idinvchigh",
     "idinvchily",
-    "idnatacct",
-    "idratetype",
-    "idsvcchrg",
-    "nameacct",
-    "namecity",
     "website"
    ],
    "whole": [
@@ -4832,13 +5029,15 @@
   "sage.ar_nato": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1122,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idnatacct",
     "optfield"
+   ],
+   "money": [],
+   "rows": 1122,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -4855,6 +5054,10 @@
   "sage.ar_nsm": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idnatlacct"
+   ],
    "money": [
     "amtadjhcur",
     "amtadjtcur",
@@ -4877,11 +5080,9 @@
     "amtwrfhcur",
     "amtwrftcur"
    ],
-   "rows": 8057,
+   "rows": 8062,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "idnatlacct"
+    "_sage_pk"
    ],
    "whole": [
     "amtinthcur",
@@ -4907,6 +5108,12 @@
   "sage.ar_oblj": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "idglacct",
+    "idinvc"
+   ],
    "money": [
     "amtduehc",
     "amtduetc",
@@ -4918,13 +5125,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "category",
     "contract",
-    "idcust",
     "iddist",
-    "idglacct",
-    "idinvc",
     "iditem",
     "project",
     "resource",
@@ -4986,23 +5189,24 @@
   "sage.ar_obp": {
    "code": [],
    "empty": [],
-   "money": [
-    "amtpaymhc",
-    "amtpaymtc",
-    "rateexchhc"
-   ],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "codecurn",
-    "codetax",
     "idcust",
     "idcustrmit",
     "idinvc",
     "idmemoxref",
-    "idprepaid",
     "idratetype"
+   ],
+   "money": [
+    "amtpaymhc",
+    "amtpaymtc"
+   ],
+   "rows": 30000,
+   "text": [
+    "_sage_pk",
+    "codetax",
+    "idprepaid"
    ],
    "whole": [
     "audtdate",
@@ -5023,6 +5227,7 @@
     "idrmit",
     "pymcuid",
     "ratedate",
+    "rateexchhc",
     "rateop",
     "stmtseq",
     "swinvcdel",
@@ -5034,6 +5239,15 @@
   "sage.ar_obs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "idcustpo",
+    "idgrp",
+    "idinvc",
+    "idordrnbr",
+    "idshipnbr"
+   ],
    "money": [
     "amtdcsrmhc",
     "amtdischc",
@@ -5047,16 +5261,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "idcust",
-    "idcustpo",
-    "idgrp",
-    "idinvc",
     "idnatacct",
-    "idordrnbr",
     "idprepaid",
     "idrmit",
-    "idshipnbr",
     "rtgapplyto"
    ],
    "whole": [
@@ -5077,12 +5284,14 @@
   "sage.ar_ofd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "optfield"
+   ],
    "money": [],
    "rows": 24,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "optfield"
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -5120,11 +5329,12 @@
   "sage.ar_ofh": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -5135,6 +5345,27 @@
   "sage.ar_open_document": {
    "code": [],
    "empty": [],
+   "ident": [
+    "arversion",
+    "audtorg",
+    "codecurn",
+    "codecurnrc",
+    "codeslsp1",
+    "codetax1",
+    "codetaxgrp",
+    "codeterr",
+    "idacctset",
+    "idcust",
+    "idcustpo",
+    "idgrp",
+    "idinvc",
+    "idordernbr",
+    "idratetype",
+    "idshipnbr",
+    "oratetype",
+    "srceappl",
+    "typebtch"
+   ],
    "money": [
     "amtbase1hc",
     "amtbase1tc",
@@ -5155,48 +5386,26 @@
     "amttaxhc",
     "amttaxtc",
     "amttxblhc",
-    "amttxbltc",
-    "exchratehc",
-    "orate",
-    "raterc"
+    "amttxbltc"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "arversion",
-    "audtorg",
-    "codecurn",
-    "codecurnrc",
-    "codeslsp1",
     "codeslsp2",
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
-    "codetaxgrp",
-    "codeterr",
     "descinvc",
-    "idacctset",
-    "idcust",
-    "idcustpo",
     "idcustshpt",
-    "idgrp",
-    "idinvc",
     "idnatacct",
-    "idordernbr",
     "idprepaid",
-    "idratetype",
     "idrmit",
-    "idshipnbr",
-    "oratetype",
     "ratetyperc",
-    "rtgapplyto",
-    "srceappl",
-    "typebtch"
+    "rtgapplyto"
    ],
    "whole": [
     "amtbase3hc",
@@ -5237,6 +5446,7 @@
     "depline",
     "depseq",
     "depstnbr",
+    "exchratehc",
     "fiscper",
     "fiscyr",
     "invctype",
@@ -5245,6 +5455,7 @@
     "oamtwht3tc",
     "oamtwht4tc",
     "oamtwht5tc",
+    "orate",
     "oratedate",
     "orateop",
     "oswrate",
@@ -5258,6 +5469,7 @@
     "ratedaterc",
     "rateop",
     "rateoprc",
+    "raterc",
     "rtgamthc",
     "rtgamttc",
     "rtgdatedue",
@@ -5299,34 +5511,34 @@
   "sage.ar_pjd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecurn",
+    "glref",
+    "idacct",
+    "idcust",
+    "idinvc",
+    "idratetype",
+    "srcetype",
+    "typebtch"
+   ],
    "money": [
     "amtadjhcur",
     "amtadjtcur",
     "amtdschcur",
     "amtdsctcur",
     "amtextndhc",
-    "amtextndtc",
-    "ratedoc",
-    "rateexchhc"
+    "amtextndtc"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codecurn",
     "edn",
     "glcomment",
-    "glref",
-    "idacct",
-    "idcust",
     "iddist",
-    "idinvc",
     "iditem",
-    "idratetype",
     "itemdesc",
     "paymcode",
-    "srcetype",
-    "typebtch",
     "unitmeas"
    ],
    "whole": [
@@ -5359,6 +5571,8 @@
     "postseqnce",
     "qtyinvc",
     "ratedate",
+    "ratedoc",
+    "rateexchhc",
     "rtgamthc",
     "rtgamttc",
     "rtgdatedue",
@@ -5371,37 +5585,37 @@
   "sage.ar_pjh": {
    "code": [],
    "empty": [],
-   "money": [
-    "amtbc",
-    "amthc",
-    "amttc",
-    "rateexchbc",
-    "rateexchtc"
-   ],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "codecurnbc",
     "codecurntc",
-    "codetaxgrp",
-    "desc",
-    "edn",
     "enteredby",
     "idacctset",
-    "idbillcyc",
     "idcust",
-    "idcustshp",
     "idgrp",
     "idinvc",
-    "idinvcappl",
     "namermit",
     "paymcode",
     "ratetypebc",
     "ratetypetc",
-    "rtgapplyto",
-    "textref",
     "typebtch"
+   ],
+   "money": [
+    "amtbc",
+    "amthc",
+    "amttc"
+   ],
+   "rows": 30000,
+   "text": [
+    "_sage_pk",
+    "codetaxgrp",
+    "desc",
+    "edn",
+    "idbillcyc",
+    "idcustshp",
+    "idinvcappl",
+    "rtgapplyto",
+    "textref"
    ],
    "whole": [
     "amtinvctc",
@@ -5430,6 +5644,8 @@
     "postseqnce",
     "ratedatebc",
     "ratedatetc",
+    "rateexchbc",
+    "rateexchtc",
     "rateopbc",
     "rateoptc",
     "revinvc",
@@ -5450,13 +5666,15 @@
   "sage.ar_pjs": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 13023,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "pgmver",
     "typebtch"
+   ],
+   "money": [],
+   "rows": 13024,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -5473,13 +5691,15 @@
   "sage.ar_pter": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codepaym",
+    "errcodepym"
+   ],
    "money": [],
    "rows": 57,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codepaym",
-    "errcodepym",
     "errdesc",
     "msgcode"
    ],
@@ -5501,13 +5721,14 @@
   "sage.ar_ptp": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 7,
-   "text": [
+   "ident": [
     "audtorg",
     "paymcode",
     "textdesc"
    ],
+   "money": [],
+   "rows": 7,
+   "text": [],
    "whole": [
     "actvsw",
     "audtdate",
@@ -5518,28 +5739,31 @@
    ]
   },
   "sage.ar_pym": {
-   "code": [],
-   "empty": [],
-   "money": [
-    "amthc",
-    "amtpc",
-    "amttc",
+   "code": [
     "rateexch"
    ],
-   "rows": 417,
-   "text": [
-    "_sage_pk",
+   "empty": [],
+   "ident": [
     "audtorg",
-    "cctranid",
-    "checklang",
     "codecurn",
     "idacct",
     "idcust",
     "idinvc",
     "namermit",
+    "ratetype"
+   ],
+   "money": [
+    "amthc",
+    "amtpc",
+    "amttc"
+   ],
+   "rows": 417,
+   "text": [
+    "_sage_pk",
+    "cctranid",
+    "checklang",
     "paymcode",
     "processcod",
-    "ratetype",
     "textretrn"
    ],
    "whole": [
@@ -5574,12 +5798,13 @@
   "sage.ar_r01": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "idr01"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "atrrvalseq",
     "audtdate",
@@ -5612,12 +5837,9 @@
   "sage.ar_r02": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "idr02",
-    "rtgschdkey",
     "textcrpf",
     "textdrpf",
     "textitpf",
@@ -5626,6 +5848,11 @@
     "textrdpf",
     "textripf",
     "textrxpf"
+   ],
+   "money": [],
+   "rows": 1,
+   "text": [
+    "rtgschdkey"
    ],
    "whole": [
     "atrinvcseq",
@@ -5678,9 +5905,7 @@
   "sage.ar_r03": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "adprefix",
     "audtorg",
     "dfratetype",
@@ -5691,6 +5916,9 @@
     "rfprefix",
     "ucprefix"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "adjbtch",
     "adjtrx",
@@ -5732,12 +5960,13 @@
   "sage.ar_r04": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "idr04"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "agecr",
     "ageuapl",
@@ -5753,12 +5982,14 @@
   "sage.ar_r05": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idr05"
+   ],
    "money": [],
    "rows": 1,
    "text": [
-    "audtorg",
-    "cmnttype",
-    "idr05"
+    "cmnttype"
    ],
    "whole": [
     "audtdate",
@@ -5772,9 +6003,7 @@
   "sage.ar_r06": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "idr06",
     "srctypead",
@@ -5794,6 +6023,9 @@
     "srctypeuc",
     "srctypewo"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -5813,10 +6045,7 @@
   "sage.ar_ras": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2,
-   "text": [
-    "acctadj",
+   "ident": [
     "acctdisc",
     "acctwrof",
     "aridacct",
@@ -5824,14 +6053,19 @@
     "cashliab",
     "curncode",
     "idacctset",
-    "idsusp",
     "rlzdgain",
     "rlzdloss",
     "rndacct",
-    "rtgacct",
     "textdesc",
     "unrlgain",
     "unrlloss"
+   ],
+   "money": [],
+   "rows": 2,
+   "text": [
+    "acctadj",
+    "idsusp",
+    "rtgacct"
    ],
    "whole": [
     "actvsw",
@@ -5844,16 +6078,18 @@
   "sage.ar_rbc": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcycl",
+    "textdesc"
+   ],
    "money": [],
    "rows": 1,
    "text": [
-    "audtorg",
     "city",
     "cntycode",
-    "idcycl",
     "name",
-    "state",
-    "textdesc"
+    "state"
    ],
    "whole": [
     "actvsw",
@@ -5870,15 +6106,16 @@
   "sage.ar_rfb": {
    "code": [],
    "empty": [],
-   "money": [
-    "entrytot"
-   ],
-   "rows": 347,
-   "text": [
+   "ident": [
     "audtorg",
     "btchdesc",
     "srceappl"
    ],
+   "money": [
+    "entrytot"
+   ],
+   "rows": 347,
+   "text": [],
    "whole": [
     "audtdate",
     "audttime",
@@ -5897,21 +6134,24 @@
    ]
   },
   "sage.ar_rfd": {
-   "code": [],
-   "empty": [],
-   "money": [
-    "amthc",
-    "amtpc",
-    "amttc",
+   "code": [
     "rateexch"
    ],
-   "rows": 442,
-   "text": [
-    "_sage_pk",
+   "empty": [],
+   "ident": [
     "audtorg",
     "codecurn",
     "idinvc",
     "ratetype"
+   ],
+   "money": [
+    "amthc",
+    "amtpc",
+    "amttc"
+   ],
+   "rows": 442,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "amtjob",
@@ -5931,8 +6171,29 @@
    ]
   },
   "sage.ar_rfh": {
-   "code": [],
+   "code": [
+    "rateexch"
+   ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "checklang",
+    "codectry",
+    "codecurn",
+    "codecurnca",
+    "codecurnck",
+    "codestte",
+    "docdesc",
+    "enteredby",
+    "idcust",
+    "idinvc",
+    "namecity",
+    "namermit",
+    "ratetype",
+    "ratetypeca",
+    "ratetypeck",
+    "srceappl"
+   ],
    "money": [
     "amthc",
     "amthcca",
@@ -5942,36 +6203,16 @@
     "amttc",
     "amttcca",
     "amttccc",
-    "amttcck",
-    "rateexch",
-    "rateexchca",
-    "rateexchck"
+    "amttcck"
    ],
    "rows": 416,
    "text": [
     "_sage_pk",
-    "audtorg",
     "ccorigid",
     "ccprevid",
     "cctranid",
-    "checklang",
-    "codectry",
-    "codecurn",
-    "codecurnca",
-    "codecurnck",
-    "codestte",
-    "docdesc",
-    "enteredby",
     "idacctca",
-    "idcust",
-    "idinvc",
-    "namecity",
-    "namermit",
-    "processcod",
-    "ratetype",
-    "ratetypeca",
-    "ratetypeck",
-    "srceappl"
+    "processcod"
    ],
    "whole": [
     "applymeth",
@@ -5996,6 +6237,8 @@
     "ratedate",
     "ratedateca",
     "ratedateck",
+    "rateexchca",
+    "rateexchck",
     "rateop",
     "rateopca",
     "rateopck",
@@ -6010,12 +6253,14 @@
   "sage.ar_salesperson": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codeslsp"
+   ],
    "money": [],
    "rows": 50,
    "text": [
-    "audtorg",
-    "codeempl",
-    "codeslsp"
+    "codeempl"
    ],
    "whole": [
     "amtanltarg",
@@ -6031,25 +6276,27 @@
   "sage.ar_ship_to": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codectry",
+    "codestte",
+    "codetaxgrp",
+    "idcust",
+    "idcustshpt",
+    "namecity",
+    "namelocn"
+   ],
    "money": [],
    "rows": 676,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codectry",
     "codeslsp1",
     "codeslsp2",
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codestte",
-    "codetaxgrp",
     "codeterr",
     "fob",
-    "idcust",
-    "idcustshpt",
-    "namecity",
-    "namelocn",
     "priclist",
     "shipvia",
     "shpviacode",
@@ -6080,12 +6327,14 @@
   "sage.ar_slcus": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust"
+   ],
    "money": [],
    "rows": 8,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "idcust",
     "sortvalue1",
     "sortvalue2",
     "sortvalue3",
@@ -6106,18 +6355,20 @@
   "sage.ar_sllbl": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 7282,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "codectry",
     "codestte",
     "idcust",
-    "idinvc",
-    "idshipto",
     "namecity",
     "namecust"
+   ],
+   "money": [],
+   "rows": 7282,
+   "text": [
+    "_sage_pk",
+    "idinvc",
+    "idshipto"
    ],
    "whole": [
     "audtdate",
@@ -6129,13 +6380,16 @@
   "sage.ar_sllst": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "desc",
+    "field1",
+    "keyfield"
+   ],
    "money": [],
    "rows": 2550,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "desc",
-    "field1",
     "field10",
     "field11",
     "field12",
@@ -6152,8 +6406,7 @@
     "field6",
     "field7",
     "field8",
-    "field9",
-    "keyfield"
+    "field9"
    ],
    "whole": [
     "audtdate",
@@ -6165,6 +6418,10 @@
   "sage.ar_sps": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codeslsp"
+   ],
    "money": [
     "amtcr",
     "amtdisc",
@@ -6173,11 +6430,9 @@
     "amtpaym",
     "amtwrof"
    ],
-   "rows": 2748,
+   "rows": 2752,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "codeslsp"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -6195,6 +6450,28 @@
   "sage.ar_stcus": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codectry",
+    "codecurn",
+    "codeslsp1",
+    "codestte",
+    "codetaxgrp",
+    "codeterr",
+    "idacctset",
+    "idbillcycl",
+    "idcust",
+    "idgrp",
+    "idinvchi",
+    "idnatacct",
+    "idratetype",
+    "idsvcchrg",
+    "namecity",
+    "namecust",
+    "priclist",
+    "textsnam",
+    "textstmt"
+   ],
    "money": [
     "amtbaldueh",
     "amtbalduet",
@@ -6232,41 +6509,21 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codectry",
-    "codecurn",
     "codedab",
     "codedabrtg",
-    "codeslsp1",
     "codeslsp2",
     "codeslsp3",
     "codeslsp4",
     "codeslsp5",
-    "codestte",
-    "codetaxgrp",
-    "codeterr",
     "cursymbol",
-    "idacctset",
     "idautocash",
-    "idbillcycl",
-    "idcust",
     "iddlnq",
-    "idgrp",
-    "idinvchi",
     "idinvchily",
-    "idnatacct",
     "idppnt",
-    "idratetype",
-    "idsvcchrg",
-    "namecity",
-    "namecust",
-    "priclist",
     "rbccity",
     "rbccntycde",
     "rbcname",
     "rbcstate",
-    "textsnam",
-    "textstmt",
     "website"
    ],
    "whole": [
@@ -6337,13 +6594,15 @@
   "sage.ar_stcuso": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 30000,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "idcust",
     "optfield"
+   ],
+   "money": [],
+   "rows": 30000,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "allownull",
@@ -6360,6 +6619,16 @@
   "sage.ar_stnat": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codectry",
+    "codecurn",
+    "codestate",
+    "idnatacct",
+    "nameacct",
+    "namecity",
+    "textstmt"
+   ],
    "money": [
     "amtbgnblf",
     "amtdueag1",
@@ -6374,14 +6643,6 @@
    "rows": 8276,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codectry",
-    "codecurn",
-    "codestate",
-    "idnatacct",
-    "nameacct",
-    "namecity",
-    "textstmt",
     "website"
    ],
    "whole": [
@@ -6397,6 +6658,13 @@
   "sage.ar_stobl": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "idcustpo",
+    "idinvc",
+    "idordernbr"
+   ],
    "money": [
     "amtdisc",
     "amtdue",
@@ -6405,14 +6673,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "code",
     "descinvc",
-    "idcust",
-    "idcustpo",
     "idcustshpt",
-    "idinvc",
-    "idordernbr",
     "idrmit"
    ],
    "whole": [
@@ -6432,16 +6695,18 @@
   "sage.ar_stobp": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "idcust",
+    "idinvc",
+    "idmemoxref"
+   ],
    "money": [
     "amtpaymtc"
    ],
    "rows": 6688,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "idcust",
-    "idinvc",
-    "idmemoxref"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -6458,16 +6723,18 @@
   "sage.ar_strun": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2810,
-   "text": [
+   "ident": [
     "audtorg",
     "iddunning",
     "idfrom1",
+    "idto1"
+   ],
+   "money": [],
+   "rows": 2810,
+   "text": [
     "idfrom2",
     "idfrom3",
     "idfrom4",
-    "idto1",
     "idto2",
     "idto3",
     "idto4",
@@ -6509,13 +6776,15 @@
   "sage.ar_svc": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 2,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "codecurn",
     "codesvcchr"
+   ],
+   "money": [],
+   "rows": 2,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "amtminchg",
@@ -6527,14 +6796,15 @@
   "sage.ar_svd": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "codesvcchr",
     "idacctchrg",
     "textdesc"
    ],
+   "money": [],
+   "rows": 1,
+   "text": [],
    "whole": [
     "actvsw",
     "audtdate",
@@ -6550,6 +6820,11 @@
   "sage.ar_tcn": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codepaym",
+    "idacct"
+   ],
    "money": [
     "amtdisthc",
     "amtdisttc",
@@ -6561,13 +6836,10 @@
    "rows": 152,
    "text": [
     "_sage_pk",
-    "audtorg",
     "category",
-    "codepaym",
     "contract",
     "gldesc",
     "glref",
-    "idacct",
     "iddistcode",
     "project",
     "resource"
@@ -6632,6 +6904,12 @@
   "sage.ar_tcp": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codepaym",
+    "idcust",
+    "idinvc"
+   ],
    "money": [
     "amtadjhc",
     "amtadjtot",
@@ -6643,12 +6921,8 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codepaym",
     "glref",
-    "idcust",
     "iddocmtch",
-    "idinvc",
     "idppd",
     "textadj"
    ],
@@ -6697,6 +6971,22 @@
   "sage.ar_tcr": {
    "code": [],
    "empty": [],
+   "ident": [
+    "arversion",
+    "audtorg",
+    "codecurn",
+    "codecurnbc",
+    "codepaym",
+    "codepymtyp",
+    "docnbr",
+    "enteredby",
+    "idacctset",
+    "idcust",
+    "ratetypehc",
+    "ratetypetc",
+    "srceappl",
+    "textpayor"
+   ],
    "money": [
     "amtadjent",
     "amtadjhc",
@@ -6713,8 +7003,6 @@
     "amtrmit",
     "amtrmithc",
     "amtrmittc",
-    "rateexchhc",
-    "rateexchtc",
     "remunapl",
     "remunaplhc",
     "remunapltc",
@@ -6724,33 +7012,19 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "arversion",
-    "audtorg",
     "ccprevid",
     "cctranid",
-    "codecurn",
-    "codecurnbc",
     "codecurnrc",
-    "codepaym",
-    "codepymtyp",
     "codetax1",
     "codetax2",
     "codetax3",
     "codetax4",
     "codetax5",
     "codetaxgrp",
-    "docnbr",
     "drillapp",
-    "enteredby",
-    "idacctset",
-    "idcust",
     "idinvcmtch",
     "processcod",
-    "ratetypehc",
     "ratetyperc",
-    "ratetypetc",
-    "srceappl",
-    "textpayor",
     "textrmit",
     "txtrmitref"
    ],
@@ -6789,6 +7063,8 @@
     "opercust",
     "paymtype",
     "ratedaterc",
+    "rateexchhc",
+    "rateexchtc",
     "rateoprc",
     "raterc",
     "rmittype",
@@ -6837,6 +7113,11 @@
   "sage.ar_tcu": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codepaym",
+    "idacct"
+   ],
    "money": [
     "amtdist",
     "amtdisthc"
@@ -6844,11 +7125,8 @@
    "rows": 2300,
    "text": [
     "_sage_pk",
-    "audtorg",
     "category",
-    "codepaym",
     "contract",
-    "idacct",
     "iddistcode",
     "iditem",
     "project",
@@ -6890,29 +7168,32 @@
    ]
   },
   "sage.ar_unpsth": {
-   "code": [],
+   "code": [
+    "exchratehc"
+   ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "codecurn",
+    "enteredby",
+    "idcust",
+    "idinvc",
+    "srceappl"
+   ],
    "money": [
-    "exchratehc",
     "transamt",
     "transamthc"
    ],
    "rows": 5,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codecurn",
     "custpo",
-    "enteredby",
-    "idcust",
-    "idinvc",
     "idnatacct",
     "invcapplto",
     "ordrnbr",
     "payer",
     "rtgapplyto",
     "shipnbr",
-    "srceappl",
     "textdesc",
     "textref"
    ],
@@ -6946,18 +7227,20 @@
   "sage.gl_01": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
-    "abrkdelm",
+   "ident": [
     "abrkdflt",
     "audtorg",
     "companyid",
     "dflratetyp",
-    "lockfill",
     "optionid",
-    "rpacct",
     "srcetype"
+   ],
+   "money": [],
+   "rows": 1,
+   "text": [
+    "abrkdelm",
+    "lockfill",
+    "rpacct"
    ],
    "whole": [
     "acctseg",
@@ -7001,13 +7284,15 @@
    "empty": [
     "numofkey"
    ],
+   "ident": [
+    "ablkdesc",
+    "audtorg"
+   ],
    "money": [],
    "rows": 4,
    "text": [
     "ablkdelm",
-    "ablkdesc",
-    "ablkvalue",
-    "audtorg"
+    "ablkvalue"
    ],
    "whole": [
     "ablklen",
@@ -7027,6 +7312,11 @@
   "sage.gl_abrx": {
    "code": [],
    "empty": [],
+   "ident": [
+    "abrkdesc",
+    "acctbrkid",
+    "audtorg"
+   ],
    "money": [],
    "rows": 6,
    "text": [
@@ -7040,7 +7330,6 @@
     "ablkdelm7",
     "ablkdelm8",
     "ablkdelm9",
-    "abrkdesc",
     "abrktitle",
     "abrktype",
     "abrkvseq1",
@@ -7053,9 +7342,7 @@
     "abrkvseq7",
     "abrkvseq8",
     "abrkvseq9",
-    "acctbrkid",
-    "accttype",
-    "audtorg"
+    "accttype"
    ],
    "whole": [
     "abrkid1",
@@ -7101,15 +7388,19 @@
   "sage.gl_account": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 573,
-   "text": [
+   "ident": [
     "abrkid",
     "acctdesc",
     "acctfmttd",
+    "accttype",
+    "audtorg",
+    "defcurncod"
+   ],
+   "money": [],
+   "rows": 573,
+   "text": [
     "acctofset",
     "acctsrty",
-    "accttype",
     "acsegval03",
     "acsegval04",
     "acsegval05",
@@ -7118,8 +7409,6 @@
     "acsegval08",
     "acsegval09",
     "acsegval10",
-    "audtorg",
-    "defcurncod",
     "postosegid",
     "srceldgid",
     "uom"
@@ -7152,12 +7441,13 @@
   "sage.gl_acgrp": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 37,
-   "text": [
+   "ident": [
     "acctgrpdes",
     "audtorg"
    ],
+   "money": [],
+   "rows": 37,
+   "text": [],
    "whole": [
     "acctgrpcod",
     "audtdate",
@@ -7169,11 +7459,13 @@
   "sage.gl_achd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [],
    "rows": 10,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -7185,11 +7477,13 @@
   "sage.gl_adsd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg"
+   ],
    "money": [],
    "rows": 10,
    "text": [
-    "_sage_pk",
-    "audtorg"
+    "_sage_pk"
    ],
    "whole": [
     "ancestor",
@@ -7202,6 +7496,12 @@
   "sage.gl_afs": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "curntype",
+    "fscscurn",
+    "fscsdsg"
+   ],
    "money": [
     "netperd1",
     "netperd10",
@@ -7222,11 +7522,7 @@
    "rows": 19900,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "codervl",
-    "curntype",
-    "fscscurn",
-    "fscsdsg"
+    "codervl"
    ],
    "whole": [
     "acctid",
@@ -7242,13 +7538,15 @@
   "sage.gl_asv": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "segvaldesc"
+   ],
    "money": [],
    "rows": 20,
    "text": [
     "_sage_pk",
-    "acctretern",
-    "audtorg",
-    "segvaldesc"
+    "acctretern"
    ],
    "whole": [
     "audtdate",
@@ -7258,19 +7556,20 @@
    ]
   },
   "sage.gl_avc": {
-   "code": [
-    "acctid"
-   ],
+   "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "curnid"
+   ],
    "money": [],
    "rows": 34,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "curnid",
     "revalid"
    ],
    "whole": [
+    "acctid",
     "audtdate",
     "audttime",
     "revalsw"
@@ -7279,16 +7578,17 @@
   "sage.gl_batch": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "btchdesc",
+    "srceledgr"
+   ],
    "money": [
     "credittot",
     "debittot"
    ],
    "rows": 30000,
-   "text": [
-    "audtorg",
-    "btchdesc",
-    "srceledgr"
-   ],
+   "text": [],
    "whole": [
     "activesw",
     "audtdate",
@@ -7312,12 +7612,14 @@
   "sage.gl_cas": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "srceldgid"
+   ],
    "money": [],
    "rows": 11,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "srceldgid"
+    "_sage_pk"
    ],
    "whole": [
     "acctid",
@@ -7328,11 +7630,12 @@
   "sage.gl_chagp": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 36,
-   "text": [
+   "ident": [
     "audtorg"
    ],
+   "money": [],
+   "rows": 36,
+   "text": [],
    "whole": [
     "acctgrpcod",
     "audtdate",
@@ -7343,6 +7646,16 @@
   "sage.gl_je_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "hcurncode",
+    "ratetype",
+    "scurncode",
+    "srceldgr",
+    "srcetype",
+    "transdesc",
+    "transref"
+   ],
    "money": [
     "scurnamt",
     "transamt"
@@ -7350,17 +7663,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "companyid",
     "descomp",
-    "hcurncode",
-    "ratetype",
-    "scurncode",
-    "srceldgr",
-    "srcetype",
-    "taxauth",
-    "transdesc",
-    "transref"
+    "taxauth"
    ],
    "whole": [
     "acctid",
@@ -7387,6 +7692,13 @@
     "drilldwnlk"
    ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "drilapp",
+    "enteredby",
+    "srceledger",
+    "srcetype"
+   ],
    "money": [
     "jrnlcr",
     "jrnldr"
@@ -7394,13 +7706,10 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "codecurnrc",
     "codetaxgrp",
     "custvend",
     "docnumber",
-    "drilapp",
-    "enteredby",
     "expnsacnt1",
     "expnsacnt2",
     "expnsacnt3",
@@ -7414,8 +7723,6 @@
     "recblacnt3",
     "recblacnt4",
     "recblacnt5",
-    "srceledger",
-    "srcetype",
     "taxauth1",
     "taxauth2",
     "taxauth3",
@@ -7538,12 +7845,14 @@
   "sage.gl_jec": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "jecomment"
+   ],
    "money": [],
    "rows": 3723,
    "text": [
-    "_sage_pk",
-    "audtorg",
-    "jecomment"
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -7556,12 +7865,14 @@
   "sage.gl_perr": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "errdesc"
+   ],
    "money": [],
-   "rows": 11689,
+   "rows": 11747,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "errdesc",
     "msgcode"
    ],
    "whole": [
@@ -7580,13 +7891,15 @@
   "sage.gl_pjc": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 3650,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "comment",
     "reference"
+   ],
+   "money": [],
+   "rows": 3650,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -7600,25 +7913,26 @@
   "sage.gl_pjd": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "hcurncode",
+    "jnldtldesc",
+    "jnldtlref",
+    "ratetype",
+    "scurncode",
+    "srceledger",
+    "srcetype"
+   ],
    "money": [
-    "convrate",
     "scurnamt",
     "transamt"
    ],
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "audtorg",
     "companyid",
     "descomp",
-    "hcurncode",
-    "jnldtldesc",
-    "jnldtlref",
     "origcomp",
-    "ratetype",
-    "scurncode",
-    "srceledger",
-    "srcetype",
     "taxauth"
    ],
    "whole": [
@@ -7628,6 +7942,7 @@
     "batchnbr",
     "codestatus",
     "consolidat",
+    "convrate",
     "dateentry",
     "datemtchcd",
     "docdate",
@@ -7653,17 +7968,19 @@
   "sage.gl_rval": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 1,
-   "text": [
+   "ident": [
     "audtorg",
     "desc",
-    "racctgain",
-    "racctloss",
     "ratetype",
     "rvalid",
     "srceldgr",
     "srcetype"
+   ],
+   "money": [],
+   "rows": 1,
+   "text": [
+    "racctgain",
+    "racctloss"
    ],
    "whole": [
     "acctgain",
@@ -7674,18 +7991,20 @@
    ]
   },
   "sage.gl_rvl": {
-   "code": [],
-   "empty": [],
-   "money": [
+   "code": [
     "convrate"
    ],
-   "rows": 1,
-   "text": [
-    "_sage_pk",
+   "empty": [],
+   "ident": [
     "audtorg",
     "batchdesc",
     "curncycode",
     "dfltrvlcd"
+   ],
+   "money": [],
+   "rows": 1,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "acctgain",
@@ -7709,15 +8028,19 @@
   "sage.gl_sjn": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 3,
-   "text": [
+   "ident": [
     "audtorg",
     "caretname",
     "caretsnam",
     "srcejrnl",
     "srceldgr01",
     "srceldgr02",
+    "srcetype01",
+    "srcetype02"
+   ],
+   "money": [],
+   "rows": 3,
+   "text": [
     "srceldgr03",
     "srceldgr04",
     "srceldgr05",
@@ -7766,8 +8089,6 @@
     "srceldgr48",
     "srceldgr49",
     "srceldgr50",
-    "srcetype01",
-    "srcetype02",
     "srcetype03",
     "srcetype04",
     "srcetype05",
@@ -7825,14 +8146,16 @@
   "sage.gl_srce": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 60,
-   "text": [
-    "_sage_pk",
+   "ident": [
     "audtorg",
     "srcedesc",
     "srceledger",
     "srcetype"
+   ],
+   "money": [],
+   "rows": 60,
+   "text": [
+    "_sage_pk"
    ],
    "whole": [
     "audtdate",
@@ -7842,6 +8165,23 @@
   "sage.oe_invoice_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "acctset",
+    "audtorg",
+    "baseunit",
+    "basewunit",
+    "category",
+    "invunit",
+    "item",
+    "ordnumber",
+    "ordunit",
+    "pricelist",
+    "priceunit",
+    "prwghtunit",
+    "shinumber",
+    "tauth1",
+    "weightunit"
+   ],
    "money": [
     "blduntconv",
     "cog",
@@ -7879,12 +8219,7 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "acctset",
-    "audtorg",
-    "baseunit",
-    "basewunit",
     "buildunit",
-    "category",
     "ccategory",
     "cogswip",
     "contract",
@@ -7893,28 +8228,18 @@
     "desc",
     "edn",
     "glnonstkcr",
-    "invunit",
-    "item",
     "manitemno",
     "misccharge",
-    "ordnumber",
-    "ordunit",
     "pickseq",
-    "pricelist",
-    "priceunit",
     "project",
-    "prwghtunit",
     "revbill",
-    "shinumber",
     "shiptrack",
     "shipvia",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
     "tauth5",
-    "viadesc",
-    "weightunit"
+    "viadesc"
    ],
    "whole": [
     "audtdate",
@@ -8006,10 +8331,49 @@
    ]
   },
   "sage.oe_invoice_header": {
-   "code": [],
-   "empty": [],
-   "money": [
+   "code": [
     "inrate",
+    "shrate"
+   ],
+   "empty": [],
+   "ident": [
+    "audtorg",
+    "bilcity",
+    "bilcountry",
+    "bilname",
+    "bilstate",
+    "bilzip",
+    "cusacctset",
+    "customer",
+    "enteredby",
+    "inhomecurr",
+    "inratetype",
+    "insourcurr",
+    "invnumber",
+    "itrcurrncy",
+    "itrrattype",
+    "ordnumber",
+    "ponumber",
+    "pricelist",
+    "salesper1",
+    "shhomecurr",
+    "shinumber",
+    "shiptrack",
+    "shipvia",
+    "shpcity",
+    "shpcountry",
+    "shpname",
+    "shpstate",
+    "shpzip",
+    "shratetype",
+    "shsourcurr",
+    "strcurrncy",
+    "strrattype",
+    "tauth1",
+    "taxgroup",
+    "viadesc"
+   ],
+   "money": [
     "invdiscamt",
     "invdiscbas",
     "invetaxtot",
@@ -8024,7 +8388,6 @@
     "itreamnt1",
     "itreamnt2",
     "miscdistot",
-    "shrate",
     "tbase1",
     "tbase2",
     "teamount1",
@@ -8032,63 +8395,28 @@
    ],
    "rows": 30000,
    "text": [
-    "audtorg",
-    "bilcity",
-    "bilcountry",
-    "bilname",
-    "bilstate",
-    "bilzip",
     "comment",
-    "cusacctset",
-    "customer",
     "desc",
     "edn",
-    "enteredby",
     "fob",
-    "inhomecurr",
-    "inratetype",
-    "insourcurr",
-    "invnumber",
-    "itrcurrncy",
-    "itrrattype",
-    "ordnumber",
-    "ponumber",
-    "pricelist",
-    "salesper1",
     "salesper2",
     "salesper3",
     "salesper4",
     "salesper5",
     "sfpaid",
     "sfpaurl",
-    "shhomecurr",
-    "shinumber",
     "shipto",
-    "shiptrack",
-    "shipvia",
-    "shpcity",
-    "shpcountry",
-    "shpname",
-    "shpstate",
-    "shpzip",
-    "shratetype",
-    "shsourcurr",
-    "strcurrncy",
-    "strrattype",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
     "tauth5",
-    "taxgroup",
     "template",
     "territory",
     "texempt1",
     "texempt2",
     "texempt3",
     "texempt4",
-    "texempt5",
-    "viadesc"
+    "texempt5"
    ],
    "whole": [
     "audtdate",
@@ -8201,6 +8529,17 @@
   "sage.oe_order_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "acctset",
+    "audtorg",
+    "baseunit",
+    "category",
+    "item",
+    "ordunit",
+    "pricelist",
+    "priceunit",
+    "tauth1"
+   ],
    "money": [
     "cosuntcst",
     "defextwght",
@@ -8234,14 +8573,10 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "acctset",
     "aritemno",
     "arunit",
-    "audtorg",
-    "baseunit",
     "basewunit",
     "buildunit",
-    "category",
     "ccategory",
     "cogswip",
     "contract",
@@ -8250,20 +8585,15 @@
     "desc",
     "frmnumber",
     "glnonstkcr",
-    "item",
     "manitemno",
     "misccharge",
-    "ordunit",
     "pickseq",
-    "pricelist",
-    "priceunit",
     "project",
     "prwghtunit",
     "quonumber",
     "revbill",
     "shiptrack",
     "shipvia",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
@@ -8353,8 +8683,37 @@
   "sage.oe_order_header": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "bilcity",
+    "bilcountry",
+    "bilname",
+    "bilstate",
+    "bilzip",
+    "custgroup",
+    "customer",
+    "desc",
+    "inhomecurr",
+    "inratetype",
+    "insourcurr",
+    "lastinvnum",
+    "ordnumber",
+    "orhomecurr",
+    "orratetype",
+    "orsourcurr",
+    "ponumber",
+    "pricelist",
+    "salesper1",
+    "shpcity",
+    "shpcountry",
+    "shpname",
+    "shpstate",
+    "shpzip",
+    "tauth1",
+    "taxgroup",
+    "territory"
+   ],
    "money": [
-    "inrate",
     "invamtdue",
     "invdiscamt",
     "invdiscbas",
@@ -8371,7 +8730,6 @@
     "ordpaytot",
     "ordpydstot",
     "ordtotal",
-    "orrate",
     "tbase1",
     "tbase2",
     "teamount1",
@@ -8379,49 +8737,21 @@
    ],
    "rows": 30000,
    "text": [
-    "audtorg",
-    "bilcity",
-    "bilcountry",
-    "bilname",
-    "bilstate",
-    "bilzip",
     "comment",
-    "custgroup",
-    "customer",
-    "desc",
     "fob",
-    "inhomecurr",
-    "inratetype",
-    "insourcurr",
     "invnumber",
-    "lastinvnum",
-    "ordnumber",
-    "orhomecurr",
-    "orratetype",
-    "orsourcurr",
-    "ponumber",
-    "pricelist",
     "quoordnum",
-    "salesper1",
     "salesper2",
     "salesper3",
     "salesper4",
     "salesper5",
     "shipto",
     "shipvia",
-    "shpcity",
-    "shpcountry",
-    "shpname",
-    "shpstate",
-    "shpzip",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
     "tauth5",
-    "taxgroup",
     "template",
-    "territory",
     "texempt1",
     "texempt2",
     "texempt3",
@@ -8442,6 +8772,7 @@
     "incoppotot",
     "indatemtch",
     "innoprepay",
+    "inrate",
     "inratedate",
     "inrateover",
     "inraterep",
@@ -8469,6 +8800,7 @@
     "ordlines",
     "orduniq",
     "ornoprepay",
+    "orrate",
     "orratedate",
     "orrateover",
     "orraterep",
@@ -8512,6 +8844,22 @@
   "sage.oe_shipment_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "acctset",
+    "audtorg",
+    "baseunit",
+    "basewunit",
+    "category",
+    "item",
+    "ordnumber",
+    "ordunit",
+    "pricelist",
+    "priceunit",
+    "prwghtunit",
+    "shiunit",
+    "tauth1",
+    "weightunit"
+   ],
    "money": [
     "cog",
     "cosuntcst",
@@ -8546,14 +8894,9 @@
    "rows": 30000,
    "text": [
     "_sage_pk",
-    "acctset",
     "aritemno",
     "arunit",
-    "audtorg",
-    "baseunit",
-    "basewunit",
     "buildunit",
-    "category",
     "ccategory",
     "cogswip",
     "contract",
@@ -8561,27 +8904,18 @@
     "ddtlno",
     "desc",
     "glnonstkcr",
-    "item",
     "manitemno",
     "misccharge",
-    "ordnumber",
-    "ordunit",
     "pickseq",
-    "pricelist",
-    "priceunit",
     "project",
-    "prwghtunit",
     "revbill",
     "shiptrack",
     "shipvia",
-    "shiunit",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
     "tauth5",
-    "viadesc",
-    "weightunit"
+    "viadesc"
    ],
    "whole": [
     "addtoiloc",
@@ -8679,11 +9013,51 @@
    ]
   },
   "sage.oe_shipment_header": {
-   "code": [],
+   "code": [
+    "orrate",
+    "shrate"
+   ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "bilcity",
+    "bilcountry",
+    "bilname",
+    "bilstate",
+    "bilzip",
+    "cusacctset",
+    "custgroup",
+    "customer",
+    "enteredby",
+    "lastinvnum",
+    "ordnumber",
+    "orhomecurr",
+    "orratetype",
+    "orsourcurr",
+    "otrcurrncy",
+    "otrrattype",
+    "ponumber",
+    "pricelist",
+    "salesper1",
+    "shhomecurr",
+    "shinumber",
+    "shiptrack",
+    "shipvia",
+    "shpcity",
+    "shpcountry",
+    "shpname",
+    "shpstate",
+    "shpzip",
+    "shratetype",
+    "shsourcurr",
+    "strcurrncy",
+    "strrattype",
+    "tauth1",
+    "taxgroup",
+    "territory"
+   ],
    "money": [
     "itemdistot",
-    "orrate",
     "shidiscamt",
     "shidiscbas",
     "shidiscper",
@@ -8697,7 +9071,6 @@
     "shisubtot",
     "shitotal",
     "shiweight",
-    "shrate",
     "tbase1",
     "tbase2",
     "teamount1",
@@ -8705,55 +9078,19 @@
    ],
    "rows": 30000,
    "text": [
-    "audtorg",
-    "bilcity",
-    "bilcountry",
-    "bilname",
-    "bilstate",
-    "bilzip",
     "comment",
-    "cusacctset",
-    "custgroup",
-    "customer",
     "desc",
-    "enteredby",
     "fob",
-    "lastinvnum",
-    "ordnumber",
-    "orhomecurr",
-    "orratetype",
-    "orsourcurr",
-    "otrcurrncy",
-    "otrrattype",
-    "ponumber",
-    "pricelist",
-    "salesper1",
     "salesper2",
     "salesper3",
     "salesper4",
     "salesper5",
-    "shhomecurr",
-    "shinumber",
     "shipto",
-    "shiptrack",
-    "shipvia",
-    "shpcity",
-    "shpcountry",
-    "shpname",
-    "shpstate",
-    "shpzip",
-    "shratetype",
-    "shsourcurr",
-    "strcurrncy",
-    "strrattype",
-    "tauth1",
     "tauth2",
     "tauth3",
     "tauth4",
     "tauth5",
-    "taxgroup",
     "template",
-    "territory",
     "texempt1",
     "texempt2",
     "texempt3",
@@ -8873,6 +9210,12 @@
   "sage.po_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "orderunit",
+    "stockunit",
+    "weightunit"
+   ],
    "money": [
     "defextwght",
     "defuweight",
@@ -8898,11 +9241,7 @@
     "_sage_pk",
     "aritemno",
     "arunit",
-    "audtorg",
-    "itemdesc",
-    "orderunit",
-    "stockunit",
-    "weightunit"
+    "itemdesc"
    ],
    "whole": [
     "audtdate",
@@ -8991,8 +9330,25 @@
    ]
   },
   "sage.po_header": {
-   "code": [],
+   "code": [
+    "rate"
+   ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "currency",
+    "descriptio",
+    "lastreceip",
+    "ponumber",
+    "ratetype",
+    "ratetyperc",
+    "taxgroup",
+    "trcurrency",
+    "vdcity",
+    "vdcode",
+    "vdcountry",
+    "vdstate"
+   ],
    "money": [
     "doctotal",
     "extcancel",
@@ -9001,8 +9357,6 @@
     "extweight",
     "fcamount",
     "oqordered",
-    "rate",
-    "raterc",
     "scamount",
     "taramount1",
     "taxamount",
@@ -9019,15 +9373,8 @@
    ],
    "rows": 5309,
    "text": [
-    "audtorg",
     "comment",
-    "currency",
-    "descriptio",
     "fobpoint",
-    "lastreceip",
-    "ponumber",
-    "ratetype",
-    "ratetyperc",
     "reference",
     "rqnnumber",
     "taxauth1",
@@ -9035,14 +9382,8 @@
     "taxauth3",
     "taxauth4",
     "taxauth5",
-    "taxgroup",
     "template",
-    "trcurrency",
-    "vdcity",
-    "vdcode",
-    "vdcountry",
     "vdname",
-    "vdstate",
     "viacode",
     "vianame"
    ],
@@ -9076,6 +9417,7 @@
     "rateoper",
     "rateoperrc",
     "rateover",
+    "raterc",
     "ratercover",
     "rcpcount",
     "rcpdate",
@@ -9163,6 +9505,12 @@
   "sage.po_receipt_detail": {
    "code": [],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "rcpunit",
+    "stockunit",
+    "weightunit"
+   ],
    "money": [
     "defextwght",
     "defuweight",
@@ -9190,11 +9538,7 @@
    "rows": 12200,
    "text": [
     "_sage_pk",
-    "audtorg",
-    "itemdesc",
-    "rcpunit",
-    "stockunit",
-    "weightunit"
+    "itemdesc"
    ],
    "whole": [
     "audtdate",
@@ -9302,8 +9646,27 @@
    ]
   },
   "sage.po_receipt_header": {
-   "code": [],
+   "code": [
+    "rate"
+   ],
    "empty": [],
+   "ident": [
+    "audtorg",
+    "currency",
+    "descriptio",
+    "invnumber",
+    "ponumber",
+    "ratetype",
+    "ratetyperc",
+    "rcpnumber",
+    "taxgroup",
+    "trcurrency",
+    "vdcity",
+    "vdcode",
+    "vdcountry",
+    "vdstate",
+    "vdzip"
+   ],
    "money": [
     "amount",
     "discount",
@@ -9312,7 +9675,6 @@
     "extended",
     "extweight",
     "fcamount",
-    "rate",
     "rqreceived",
     "scamount",
     "taramount1",
@@ -9329,31 +9691,16 @@
    ],
    "rows": 6514,
    "text": [
-    "audtorg",
     "comment",
-    "currency",
-    "descriptio",
     "fobpoint",
-    "invnumber",
-    "ponumber",
-    "ratetype",
-    "ratetyperc",
-    "rcpnumber",
     "reference",
     "taxauth1",
     "taxauth2",
     "taxauth3",
     "taxauth4",
     "taxauth5",
-    "taxgroup",
     "template",
-    "trcurrency",
-    "vdcity",
-    "vdcode",
-    "vdcountry",
     "vdname",
-    "vdstate",
-    "vdzip",
     "viacode",
     "vianame"
    ],
@@ -9505,10 +9852,21 @@
    "empty": [
     "industry_type"
    ],
+   "ident": [
+    "address",
+    "city",
+    "code",
+    "contact_name",
+    "country",
+    "name",
+    "phone",
+    "state",
+    "status",
+    "website"
+   ],
    "money": [],
    "rows": 146,
    "text": [
-    "address",
     "cert_clean_beauty",
     "cert_conscious_beauty",
     "cert_credo",
@@ -9518,18 +9876,9 @@
     "cert_organic",
     "cert_vegan",
     "cert_whole_food",
-    "city",
-    "code",
-    "contact_name",
-    "country",
     "created_at",
     "email",
-    "name",
-    "phone",
-    "state",
-    "status",
-    "updated_at",
-    "website"
+    "updated_at"
    ],
    "whole": [
     "id"
@@ -9538,18 +9887,20 @@
   "silver.manufacturers": {
    "code": [],
    "empty": [],
-   "money": [],
-   "rows": 52,
-   "text": [
+   "ident": [
     "city",
     "contact",
     "country",
-    "created_at",
-    "email",
     "gmp_compliance",
     "name",
     "phone",
-    "state",
+    "state"
+   ],
+   "money": [],
+   "rows": 52,
+   "text": [
+    "created_at",
+    "email",
     "updated_at"
    ],
    "whole": [
@@ -9558,36 +9909,39 @@
    ]
   },
   "silver.order_entries": {
-   "code": [
-    "customer_order_count"
-   ],
+   "code": [],
    "empty": [
     "reference",
     "ship_to_address"
+   ],
+   "ident": [
+    "date_required",
+    "erp_code",
+    "order_date",
+    "order_number",
+    "status"
    ],
    "money": [],
    "rows": 522,
    "text": [
     "created_at",
-    "date_required",
-    "erp_code",
-    "order_date",
-    "order_number",
-    "status",
     "updated_at"
    ],
    "whole": [
     "customer_id",
+    "customer_order_count",
     "id"
    ]
   },
   "silver.order_entry_items": {
    "code": [],
    "empty": [],
+   "ident": [
+    "status"
+   ],
    "money": [],
    "rows": 1693,
    "text": [
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -9601,6 +9955,11 @@
   "silver.purchase_order_items": {
    "code": [],
    "empty": [],
+   "ident": [
+    "po_item_type",
+    "product_type",
+    "status"
+   ],
    "money": [
     "quantity",
     "total_cost",
@@ -9608,9 +9967,6 @@
    ],
    "rows": 10031,
    "text": [
-    "po_item_type",
-    "product_type",
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -9625,6 +9981,11 @@
    "empty": [
     "expected_date"
    ],
+   "ident": [
+    "date_generated",
+    "po_number",
+    "status"
+   ],
    "money": [
     "shipping_cost",
     "subtotal",
@@ -9635,9 +9996,6 @@
    "text": [
     "created_at",
     "currency",
-    "date_generated",
-    "po_number",
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -9654,11 +10012,13 @@
     "expiry_date",
     "status"
    ],
+   "ident": [
+    "lab_id",
+    "lot_number"
+   ],
    "money": [],
    "rows": 8258,
    "text": [
-    "lab_id",
-    "lot_number",
     "updated_at"
    ],
    "whole": [
@@ -9673,15 +10033,17 @@
   "silver.receipt_raw_items": {
    "code": [],
    "empty": [],
+   "ident": [
+    "expiry_date",
+    "lab_id",
+    "lot_number",
+    "status"
+   ],
    "money": [
     "qty_received"
    ],
    "rows": 9333,
    "text": [
-    "expiry_date",
-    "lab_id",
-    "lot_number",
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -9698,6 +10060,16 @@
     "received_by",
     "supplier_id"
    ],
+   "ident": [
+    "carrier",
+    "notes",
+    "order_date",
+    "po_reference",
+    "received_date",
+    "status",
+    "supplier_name",
+    "uom"
+   ],
    "money": [],
    "rows": 3438,
    "text": [
@@ -9706,15 +10078,7 @@
     "accept_odors",
     "accept_pests",
     "accept_vehicle",
-    "carrier",
     "created_at",
-    "notes",
-    "order_date",
-    "po_reference",
-    "received_date",
-    "status",
-    "supplier_name",
-    "uom",
     "updated_at"
    ],
    "whole": [
@@ -9728,17 +10092,19 @@
    "empty": [
     "status"
    ],
+   "ident": [
+    "carrier",
+    "city",
+    "country",
+    "ship_date",
+    "shipment_code",
+    "state"
+   ],
    "money": [],
    "rows": 380,
    "text": [
     "address",
-    "carrier",
-    "city",
-    "country",
-    "notes",
-    "ship_date",
-    "shipment_code",
-    "state"
+    "notes"
    ],
    "whole": [
     "customer_id",
@@ -9752,6 +10118,18 @@
    "empty": [
     "notes"
    ],
+   "ident": [
+    "address",
+    "city",
+    "country",
+    "name",
+    "payment_terms",
+    "phone",
+    "phone_any",
+    "postal_code",
+    "state_province",
+    "status"
+   ],
    "money": [
     "min_order_qty",
     "surcharge_percent",
@@ -9759,20 +10137,10 @@
    ],
    "rows": 327,
    "text": [
-    "address",
-    "city",
-    "country",
     "created_at",
     "currency",
     "email",
     "email_any",
-    "name",
-    "payment_terms",
-    "phone",
-    "phone_any",
-    "postal_code",
-    "state_province",
-    "status",
     "updated_at"
    ],
    "whole": [
@@ -9785,5 +10153,6 @@
    ]
   }
  },
- "rows_per_relation": 30000
+ "rows_per_relation": 30000,
+ "rules": "2026-11-06.2"
 }

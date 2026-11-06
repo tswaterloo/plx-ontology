@@ -643,19 +643,21 @@ class CaseWorkspace:
             view = self.runtime.resolve_citation(handle, self.actor)
         except CitationUnresolvable:
             raise KeyError("citation_unresolvable_for_actor") from None
-        view = marked_rows(handle, view, self.markings if markings is None else markings)
+        from ontology import raw_markings
+        view = marked_rows(handle, view, self.markings if markings is None else markings,
+                           raw_markings.state_dirs_of(self.runtime))
         return {**view, "kind": "row", "status": status, "read_only": True}
 
 
 
 
-def marked_rows(handle: str, view: Mapping[str, Any], held: Iterable[str]
-                ) -> dict[str, Any]:
+def marked_rows(handle: str, view: Mapping[str, Any], held: Iterable[str],
+                state_dirs: Iterable[Any] = ()) -> dict[str, Any]:
     """A resolved mirror row view (``row`` or ``rows``) without the columns a reader
     holding ``held`` may not see (``ontology.raw_markings.mark_view``: marked columns and
     their twins); a row marking the reader lacks reads as not found (``KeyError``)."""
     from ontology import raw_markings
-    marked = raw_markings.mark_view(handle, view, held)
+    marked = raw_markings.mark_view(handle, view, held, state_dirs)
     if marked is None:
         raise KeyError("citation_unresolvable_for_actor")
     return marked

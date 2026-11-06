@@ -2,16 +2,19 @@
 relation, what its values are across the relation, read once from the source mirror
 (read-only). ``ontology.raw_markings`` decides money per column from it, never per cell.
 
-A column is ``money`` when it is mostly numeric (at least half of its non-empty cells) and
-at least ``FRACTIONAL_SHARE`` of its non-zero numbers are fractional (``2210.400``;
-``2225`` is whole, and so is FileMaker's ``1.0``), ``whole`` when it is mostly numeric
-with fewer fractional figures (identifiers, compact dates, flags, counts: an invoice
-number column holding a stray ``12.5`` among thousands of whole ones stays whole; real
-amounts measured at 2.4 % or more, identifiers at 0.2 % or less), ``code`` when at least
-``HUGE_SHARE`` of its non-zero numbers are ``HUGE`` or more in size (no amount is: FileMaker's
-container data such as ``receipt_raw_material.coadata`` holds encoded references like
-``-9.519e18``), ``text`` when it is not mostly numeric, ``empty`` when no sampled
-cell holds a value. Only column names are written, never a value.
+Per column (``classify``): ``code`` when most of its non-zero figures are encodings (1e12
+or more in size, or written with more than six decimal places: FileMaker's container data
+such as ``receipt_raw_material.coadata``, 12- to 16-place doubles, a third negative, up to
+-9.5e18), so a 1e14 "no limit" placeholder in some rows of an amount column never makes it
+one; ``money`` when at least half of its cells are figures and at least 0.5 % of its
+amount-sized figures are fractional amounts (``2210.400``; measured: amounts 2.4 % and
+up, identifiers with a stray fraction 0.2 % and below; ``2225`` and FileMaker's ``1.0`` are
+whole); ``whole`` when mostly figures otherwise (identifiers, compact dates, flags,
+counts); ``ident`` when not, but mostly identifier tokens with at most 1 % written as
+amounts (a customer PO number column whose numbers read ``4501.2``); ``text`` when not;
+``empty`` when no sampled cell holds a value. A code or text column is read with a tripwire (``ontology.raw_markings``):
+a cell written as an amount there is withheld, so "no limit" text in most rows of an
+amount column never shows the amounts of the others. Only column names are written.
 
     python3 -m scripts.gen_raw_money_profile --mirror <source-mirror.sqlite> [--rows 30000]
         [--workers 4] [--out ontology/raw_money_profile.json]     # the committed profile
@@ -29,6 +32,7 @@ import argparse
 import datetime
 import json
 import multiprocessing
+import re
 import sqlite3
 import sys
 from decimal import Decimal, InvalidOperation
@@ -38,9 +42,17 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "ontology" / "raw_money_profile.json"
 FORMAT = "plx-raw-money-profile/v1"
+# The classification rules' version: a profile written under other rules is never reused.
+RULES = "2026-11-06.2"
 FRACTIONAL_SHARE = 0.005
+NUMERIC_SHARE = 0.5
+# An identifier as written: a short token of letters, digits and . _ / # - (spaces too,
+# Sage pads its fields), such as a customer PO number "4501.2" or "PO 4501-2".
+IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._/#-]{0,39}")
+IDENTIFIER_SHARE = 0.5      # of a text column's values, for it to be an identifier column
+IDENTIFIER_AMOUNTS = 0.01   # at most this share of its values written as amounts
 HUGE = Decimal(10) ** 12
-HUGE_SHARE = 0.01
+MONEY_DECIMALS = 6
 
 
 def _number(value: Any) -> Decimal | None:
@@ -60,13 +72,40 @@ def _number(value: Any) -> Decimal | None:
     return None
 
 
+def decimals(number: Decimal) -> int:
+    """How many decimal places ``number`` is written with (``1234.567890123456``: 12)."""
+    exponent = number.as_tuple().exponent
+    return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+def money_shaped(number: Decimal) -> bool:
+    """A fractional figure written as an amount is: under ``HUGE`` in size, with at most
+    ``MONEY_DECIMALS`` decimal places (``2210.400``; never ``-4567.123456789012``)."""
+    try:
+        return abs(number) < HUGE and number != number.to_integral_value() \
+            and decimals(number) <= MONEY_DECIMALS
+    except ArithmeticError:
+        return False
+
+
 def classify(rows: Any) -> dict[str, str]:
-    """{column: money | whole | code | text | empty} over ``rows`` (dicts)."""
+    """{column: money | whole | code | text | empty} over ``rows`` (dicts). Per column:
+    ``code`` when most of its non-zero figures are encodings (``HUGE`` or more in size, or
+    written with more than ``MONEY_DECIMALS`` places: a double's noise), so a placeholder
+    in a few rows of an amount column (a 1e14 "no limit") never makes it one; ``money``
+    when at least ``NUMERIC_SHARE`` of its cells are figures and ``FRACTIONAL_SHARE`` of its
+    amount-sized ones are fractional amounts; ``whole`` when mostly figures, too few of
+    them such amounts; ``ident`` when not mostly figures but mostly identifier tokens
+    (``IDENTIFIER``: a customer PO number column) with at most 1 % written as amounts;
+    else ``text``. At read time a text column's amount-shaped cells trip, an identifier
+    column's only those written with two or more decimal places (an amount's ``12.50``,
+    never a PO number's ``4501.2``)."""
     filled: dict[str, int] = {}
     numeric: dict[str, int] = {}
-    fractional: dict[str, int] = {}
-    zeros: dict[str, int] = {}
-    huge: dict[str, int] = {}
+    nonzero: dict[str, int] = {}
+    encoded: dict[str, int] = {}
+    amounts: dict[str, int] = {}
+    idents: dict[str, int] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -75,39 +114,42 @@ def classify(rows: Any) -> dict[str, str]:
             if value is None or value == "" or isinstance(value, (dict, list)):
                 continue
             filled[column] += 1
+            if isinstance(value, str) and IDENTIFIER.fullmatch(value.strip()):
+                idents[column] = idents.get(column, 0) + 1
             number = _number(value)
             if number is None:
                 continue
-            if number == 0:
-                zeros[column] = zeros.get(column, 0) + 1
-                continue   # a zero amount says nothing about the column's figures
             numeric[column] = numeric.get(column, 0) + 1
+            if number == 0:
+                continue   # a zero amount says nothing about the column's figures
+            nonzero[column] = nonzero.get(column, 0) + 1
             try:
                 large = abs(number) >= HUGE
             except ArithmeticError:   # an exponent past the context's range
                 large = True
-            if large:
-                huge[column] = huge.get(column, 0) + 1
-            try:
-                whole = number == number.to_integral_value()
-            except ArithmeticError:
-                whole = True
-            if not whole:
-                fractional[column] = fractional.get(column, 0) + 1
+            if large or (decimals(number) > MONEY_DECIMALS
+                         and number != number.to_integral_value()):
+                encoded[column] = encoded.get(column, 0) + 1
+            elif money_shaped(number):
+                amounts[column] = amounts.get(column, 0) + 1
     out = {}
     for column, count in filled.items():
+        figures, some = numeric.get(column, 0), nonzero.get(column, 0)
+        sized = some - encoded.get(column, 0)
         if count == 0:
             out[column] = "empty"
-        elif (numeric.get(column, 0) + zeros.get(column, 0)) * 2 < count:
-            out[column] = "text"
+        elif some and encoded.get(column, 0) * 2 >= some:
+            out[column] = "code"
+        elif figures >= NUMERIC_SHARE * count and amounts.get(column) \
+                and amounts[column] >= FRACTIONAL_SHARE * sized:
+            out[column] = "money"
+        elif figures * 2 >= count:
+            out[column] = "whole"
+        elif idents.get(column, 0) >= IDENTIFIER_SHARE * count \
+                and amounts.get(column, 0) <= IDENTIFIER_AMOUNTS * count:
+            out[column] = "ident"
         else:
-            share = fractional.get(column, 0) / max(1, numeric.get(column, 0))
-            if huge.get(column) and huge[column] >= HUGE_SHARE * numeric[column]:
-                out[column] = "code"
-            elif fractional.get(column) and share >= FRACTIONAL_SHARE:
-                out[column] = "money"
-            else:
-                out[column] = "whole"
+            out[column] = "text"
     return out
 
 
@@ -150,15 +192,53 @@ def profile(mirror: Path, rows: int = 30000, workers: int = 4) -> dict[str, Any]
                    "from the source mirror by ontology/money_profile.py. Column names "
                    "only. Read by ontology/raw_markings.py; a column it does not list is "
                    "finance.",
-           "mirror_generation": generation, "rows_per_relation": rows,
+           "mirror_generation": generation, "rows_per_relation": rows, "rules": RULES,
+           "mirror_fingerprint": fingerprint(mirror, relations),
            "profiled_at": datetime.datetime.now(datetime.timezone.utc).strftime(
                "%Y-%m-%dT%H:%M:%SZ"),
            "relations": {}}
     for relation, sampled, columns in found:
         out["relations"][relation] = {"rows": sampled, **{
             kind: sorted(c for c, k in columns.items() if k == kind)
-            for kind in ("money", "whole", "code", "text", "empty")}}
+            for kind in ("money", "whole", "code", "ident", "text", "empty")}}
     return out
+
+
+def fingerprint(mirror: Path, relations: list[str] | None = None) -> str | None:
+    """A cheap digest of what the mirror holds of ``relations`` (default the
+    finance-sensitive ones): its generation and change epoch, each relation's write counter
+    (``relation_change.n``, which the mirror's triggers raise on every row and version
+    write: an absence swap that keeps the row count, a soft-delete sync) and its last
+    capture, row count and last refresh (``relation_state``): two small reads. None when it
+    cannot be read."""
+    import hashlib
+    if relations is None:
+        from ontology import raw_markings
+        from ontology import schema as ontology_schema
+        domains = raw_markings._catalog_domains(str(ontology_schema.META_DIR))
+        relations = sorted(r for r, d in domains.items()
+                           if d in raw_markings.SENSITIVE_DOMAINS)
+    try:
+        db = sqlite3.connect(f"file:{mirror}?mode=ro", uri=True)
+        try:
+            meta = dict(db.execute("SELECT * FROM mirror_meta"))
+            wanted = set(relations)
+            state = sorted(row for row in db.execute(
+                "SELECT relation, last_capture_id, row_count, last_refresh_at "
+                "FROM relation_state") if row[0] in wanted)
+            changes = sorted(row for row in db.execute(
+                "SELECT relation, n FROM relation_change") if row[0] in wanted)
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+    body = json.dumps([meta.get("generation"), meta.get("change_epoch"), state, changes],
+                      default=str)
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _generation(mirror: Path) -> str | None:
@@ -176,13 +256,30 @@ def write(doc: dict[str, Any], out: Path) -> None:
     tmp.replace(out)
 
 
-def profile_state(state_dir: Path, *, rows: int = 30000, workers: int = 4) -> dict[str, Any]:
+def profile_state(state_dir: Path, *, rows: int = 30000, workers: int = 4,
+                  force: bool = False) -> dict[str, Any]:
     """Profile a state directory's mirror into its own profile (``raw_markings.
     STATE_PROFILE``), which its readers prefer while it is the newer: what a projection
-    build runs after it publishes. Returns counts."""
+    build runs after it publishes. Skipped (``skipped: mirror_unchanged``) when the state's
+    profile was written under these rules for the same mirror (``fingerprint``), unless
+    ``force``: a build whose captures changed no finance-sensitive relation spends one
+    small read, not a profiling pass. Returns counts."""
     from ontology import raw_markings
+    out_path = Path(state_dir) / raw_markings.STATE_PROFILE
+    if not force:
+        now = fingerprint(Path(state_dir) / MIRROR)
+        try:
+            kept = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            kept = {}
+        if now is not None and kept.get("mirror_fingerprint") == now \
+                and kept.get("rules") == RULES:
+            # Still current: say when it was last found so (``check`` ages it from then).
+            kept["checked_at"] = _now()
+            write(kept, out_path)
+            return {"skipped": "mirror_unchanged", "mirror_fingerprint": now}
     doc = profile(Path(state_dir) / MIRROR, rows, workers)
-    write(doc, Path(state_dir) / raw_markings.STATE_PROFILE)
+    write(doc, out_path)
     return {"relations": len(doc["relations"]), "mirror_generation": doc["mirror_generation"],
             "money_columns": sum(len(v["money"]) for v in doc["relations"].values())}
 
@@ -209,8 +306,10 @@ def check(state_dir: Path, *, max_age_days: float = MAX_AGE_DAYS,
     elif doc.get("mirror_generation") != served:
         problems.append("mirror_generation_not_profiled")
     try:
-        at = datetime.datetime.strptime(str(doc.get("profiled_at")), "%Y-%m-%dT%H:%M:%SZ"
-                                        ).replace(tzinfo=datetime.timezone.utc)
+        # Its age: since it was profiled, or last found current for an unchanged mirror.
+        at = datetime.datetime.strptime(
+            max(str(doc.get("profiled_at") or ""), str(doc.get("checked_at") or "")),
+            "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
         age = ((now or datetime.datetime.now(datetime.timezone.utc)) - at).total_seconds()
         if age > max_age_days * 86400:
             problems.append("profile_too_old")
@@ -221,6 +320,52 @@ def check(state_dir: Path, *, max_age_days: float = MAX_AGE_DAYS,
             "profiled_at": doc.get("profiled_at"), "age_days": None if age is None
             else round(age / 86400, 2), "mirror_generation": doc.get("mirror_generation"),
             "served_generation": served}
+
+
+def tripwire_scan(state_dir: Path, *, rows: int = 1000) -> dict[str, Any]:
+    """The tripwire over a sample of the state's mirror (read-only): per finance-sensitive
+    relation its first ``rows`` rows, read with the profile a reader of ``state_dir`` uses,
+    counting the (relation, column) whose visible cells look like money (``raw_markings.
+    _trips``: the profile is stale there) and those cells. The truth check reports it."""
+    from ontology import raw_markings
+    from ontology import schema as ontology_schema
+    domains = raw_markings._catalog_domains(str(ontology_schema.META_DIR))
+    relations = sorted(r for r, d in domains.items() if d in raw_markings.SENSITIVE_DOMAINS)
+    hits: dict[str, int] = {}
+    db = sqlite3.connect(f"file:{Path(state_dir) / MIRROR}?mode=ro", uri=True)
+    try:
+        for relation in relations:
+            found = raw_markings.relation_markings(raw_markings.PORTAL, relation, None,
+                                                   [state_dir])
+            if not found.tripwire:
+                continue
+            for (text,) in db.execute(
+                    "SELECT row_json FROM row_current WHERE relation = ? AND run_length = 1 "
+                    "AND absent_since_capture IS NULL LIMIT ?", (relation, rows)):
+                row = json.loads(text)
+                for column, kind in found.tripwire.items():
+                    if isinstance(row, dict) and column in row \
+                            and raw_markings._trips(kind, row[column]):
+                        key = f"{relation}.{column}"
+                        hits[key] = hits.get(key, 0) + 1
+    finally:
+        db.close()
+    return {"columns": len(hits), "cells": sum(hits.values()), "rows_per_relation": rows,
+            "top": sorted(hits, key=lambda k: (-hits[k], k))[:20]}
+
+
+def health(state_dir: Path, *, rows: int = 1000) -> dict[str, Any]:
+    """``check`` and ``tripwire_scan`` together, never raising: what a health check (the
+    truth check) runs after every publish and delta cycle."""
+    try:
+        out = check(state_dir)
+    except Exception as error:  # noqa: BLE001 - a health line, never a crash
+        out = {"ok": False, "problems": [f"check_failed:{type(error).__name__}"]}
+    try:
+        out["tripwire"] = tripwire_scan(state_dir, rows=rows)
+    except Exception as error:  # noqa: BLE001
+        out["tripwire"] = {"error": type(error).__name__}
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
