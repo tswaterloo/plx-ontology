@@ -142,6 +142,13 @@ def _past_deadline() -> int:
     return int(deadline is not None and time.monotonic() >= deadline)
 
 
+def seconds_left() -> float | None:
+    """Seconds before this thread's SQL deadline (``sql_deadline``: a bounded call's
+    limit); None when no deadline is set."""
+    deadline = _SQL_DEADLINE.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
 def interruptible(conn: Any) -> None:
     """Have ``conn`` (a ``sqlite3.Connection``) interrupt a statement running past the
     SQL deadline of the thread running it (``sql_deadline``); none set: never."""

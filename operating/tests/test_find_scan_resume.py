@@ -151,6 +151,43 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
                 small = self.listed(self.pages(t, PRESENT, limit=2))
                 self.assertEqual(sorted(set(small)), expected)
 
+    def test_a_scarce_match_past_empty_segments_is_listed_on_the_first_page(self):
+        # One order of many carries the filtered value, far past the first cap: the
+        # first call lists it, never a not_found that reads as absence.
+        s = self.store(30)
+        s.conn.execute("DELETE FROM object_values WHERE object_id != ?",
+                       (_oid("bulk-0025a"),))
+        s.conn.commit()
+        t = tools(s)
+        page = self.ok(t, "plx.find", dict(PRESENT, limit=10))
+        self.assertEqual([c["object"]["object_id"] for c in page["candidates"]],
+                         [_oid("bulk-0025a")])
+        self.assertEqual(page["status"], "found")
+        # the empty segments read along the way are where this page started
+        self.assertEqual(self.listed(self.pages(t, PRESENT)), [_oid("bulk-0025a")])
+        # out of time: the empty first segment is answered as before, with its cursor
+        with mock.patch.object(ot, "EMPTY_SCAN_SECONDS", 0.0):
+            cut = self.ok(t, "plx.find", dict(PRESENT, limit=10))
+        self.assertEqual((cut["status"], cut["completeness"]["reason"]),
+                         ("not_found", "scan_cap"))
+        self.assertIsNotNone(cut["completeness"]["next_cursor"])
+
+    def test_a_selection_reads_the_whole_type_and_a_sets_members(self):
+        # plx.query's filtered start: every match of the type past every segment, only
+        # what the reader may read; among a set's members, the ones the filters keep.
+        hidden = ("bulk-0008c",)
+        t = tools(self.store(12, hidden=hidden))
+        agg = oa.AggregateTools(t)
+        got = agg.select(PRESENT, READER)
+        self.assertEqual(sorted(got["ids"]), sorted(_oid(f"bulk-{i:04d}a") for i in range(12)))
+        some = t._new_set(READER, [_oid("bulk-0001a"), _oid("bulk-0001b"),
+                                   _oid("bulk-0002a")])
+        kept = agg.select({"set": some, "filters": PRESENT["filters"]}, READER)
+        self.assertEqual(sorted(kept["ids"]), [_oid("bulk-0001a"), _oid("bulk-0002a")])
+        refused = agg.select({"set": some, "filters": [{"property": "nope", "op": "present"}]},
+                             READER)
+        self.assertEqual(refused["error"]["code"], "unknown_property")
+
     def test_an_unreadable_match_past_the_cap_is_never_returned(self):
         hidden = ("bulk-0008c", "bulk-0011c")      # past the first cap of 7 readable
         t = tools(self.store(12, hidden=hidden))

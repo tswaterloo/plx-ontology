@@ -39,7 +39,10 @@ SESSION_SECONDS = 60     # the Ask's whole wall budget (ANSWER_SECONDS); was 150
 # Tiered (``question_budget``): a lookup of one named record keeps a short session; a
 # question that needs several records walked, summed or compared (``is_multi_step``) gets
 # the deep one, so a reconciliation is not cut off before its records are read.
-LOOKUP_SECONDS = 45
+# 45 s was too short on a loaded host: a lookup of a name no record holds spent its 27 s of
+# research on two finds and was stopped before it could say so (curveball q38, 11-06).
+# It is a cap: a lookup answered in 20 s still ends in 20 s.
+LOOKUP_SECONDS = 75
 DEEP_SECONDS = 180
 # Measured (12 of 240 sessions at 105 s / 120 s): the gate had passed the answer and the
 # session was cut while the agent wrote its final message. Research now ends 60 s before
@@ -539,6 +542,8 @@ class Budget:
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
         self.continues = 0   # decisions sent back with their open parts (``after_answer``)
         self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
+        # a stopped call no research call was forwarded after (``cut_short``)
+        self.timeout_open = False
         self.records_read = 0   # record reads forwarded (``RECORD_TOOLS``)
         # the question named records: a text search waits for the first record read
         self.records_first = records_first
@@ -584,6 +589,7 @@ class Budget:
                                 "open.")}
         if why is None:
             self.steps += 1
+            self.timeout_open = False   # research went on after any stopped call
             if name in RECORD_TOOLS:
                 self.records_read += 1
             return None
@@ -613,11 +619,20 @@ class Budget:
         from operating.call_limits import MIN_SECONDS
         return self.ends_at is None or now < self.ends_at - SUBMIT_SECONDS - MIN_SECONDS
 
+    def stopped_call(self) -> None:
+        """A call the host stopped at its limit (``call_limits``)."""
+        self.timed_out += 1
+        self.timeout_open = True
+
     @property
     def cut_short(self) -> bool:
         """Whether research ended before the agent was done: a call refused for the
-        budget, a grace read used, or a call stopped at its limit."""
-        return bool(self.refused or self.grace or self.timed_out)
+        budget, a grace read used, or a call stopped at its limit with no research after
+        it. A session whose call stopped early and that went on reading (measured: a
+        40 s find in the first turn of a 180 s session, then eight reads and a
+        submission with a minute of research left) did not stop at the time limit, and
+        its reply never says so: what it left open is in its gaps."""
+        return bool(self.refused or self.grace or self.timeout_open)
 
     def note(self, now: float) -> dict[str, Any]:
         """The note a served call's result carries."""
@@ -653,17 +668,27 @@ class Budget:
         if self.max_steps is not None and self.max_steps - self.steps < CONTINUE_STEPS:
             return None
         decision = decision_body(result)
-        if not isinstance(decision, Mapping) or decision.get("outcome") != "answered":
+        if not isinstance(decision, Mapping) \
+                or decision.get("outcome") not in ("answered", "abstained"):
             return None
-        parts = open_parts(decision)
+        # An abstained decision established nothing (every claim refused, or none given):
+        # with research time left the whole question is still open (measured 11-06: three
+        # sessions gave up at 60-85 s of a 180 s budget, a minute and more unspent).
+        nothing = decision.get("outcome") == "abstained"
+        parts = open_parts(decision) or (
+            ["the whole question: nothing is established yet"] if nothing else [])
         if not parts:
             return None
         self.continues += 1
         left = int(self.deadline - now)
         note = self.note(now)
+        said = ("this decision establishes nothing of the question" if nothing else
+                "this decision leaves the parts listed in open unsettled")
         note.update({CONTINUE_KEY: True, "open": parts[:MAX_OPEN_SHOWN], "next": (
-            f"Research is not over: {left} seconds are left and this decision leaves the "
-            "parts listed in open unsettled. Do not write your reply yet. This decision "
+            f"Research is not over: {left} seconds are left and {said}. A part no read so "
+            "far settled may be reached another way: the records of a type selected by a "
+            "status or a date, the links of records you read, the text of a message or "
+            "file you found. Do not write your reply yet. This decision "
             "stays your answer if nothing more is found. For each open part, take the "
             "next record, link or document that could settle it: the links of the records "
             "you already read (plx.object counts them; plx.query walks several hops from "

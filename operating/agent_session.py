@@ -989,7 +989,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             if _timed_out(result):
                 # the host stopped the call at its limit (``call_limits``)
                 with lock:
-                    budget.timed_out += 1
+                    budget.stopped_call()
                     summary = budget.summary()
                 if budget_log is not None:
                     with lock, budget_log.open("a", encoding="utf-8") as out:
@@ -1090,7 +1090,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     with lock:
                         noted.pop(key, None)
                         if budget is not None:
-                            budget.timed_out += 1
+                            budget.stopped_call()
                     emit({"jsonrpc": "2.0", "id": json.loads(key), "result": {
                         "content": [{"type": "text",
                                      "text": call_limits.timed_out_text(name, limit)}],

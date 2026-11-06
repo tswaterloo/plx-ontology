@@ -69,9 +69,13 @@ class TableBackend:
                  new_set: Callable[[Any, list[str]], str] | None, schema: Any,
                  visible: Callable[[Any, list[str]], set[str]] | None = None,
                  codes: Callable[..., tuple[list[str], list[str]]] | None = None,
-                 rows: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None
+                 rows: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None,
+                 select: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None
                  ) -> None:
         self.call, self.new_set, self.schema = call, new_set, schema
+        # the records filters select, of a type or among a set's members
+        # (``AggregateTools.select``)
+        self.select = select
         # the members of a set with their cited values (``AggregateTools.rows``)
         self.rows = rows
         # (records holding these exact codes, the codes none holds) for a reader
@@ -142,6 +146,13 @@ class QueryTool:
             return _clean(self._per_code(arguments, actor, call))
         start, records, mention = self._start(arguments["from"], call, actor, gaps)
         traverse = list(arguments.get("traverse") or ())
+        # The start's own filters (from.where; the top-level where too when nothing is
+        # walked, as it filters what is reached: the start), never dropped unread.
+        selecting = list(arguments["from"].get("where") or ()) + (
+            [] if traverse else list(arguments.get("where") or ()))
+        if selecting:
+            start, records = self._selected(start, records, selecting, arguments, actor,
+                                            gaps)
         out: dict[str, Any] = {"from": {"records": (records or [])[:MAX_CITED]}}
         if mention:
             out["from"]["entity"] = mention
@@ -302,14 +313,55 @@ class QueryTool:
         out["meta"] = meta
         return out
 
+    def _selected(self, start: str | None, records: list[str] | None,
+                  filters: list[Any], arguments: Mapping[str, Any], actor: Any,
+                  gaps: list[dict[str, Any]]) -> tuple[str | None, list[str] | None]:
+        """The start records ``filters`` keep, as ``_start`` gives them (a set handle, or
+        the records: an entity's stay records, each walked on its own; an
+        ``object_type`` start: every record of the type they select, as a set); nothing
+        kept is said as a gap."""
+        if self.backend.select is None:
+            raise _Refused(_error("invalid_input", "filtering the start needs the host's "
+                                  "value reads"))
+        common = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
+        object_type = arguments["from"].get("object_type")
+        if start is None and records is None:
+            args = {"object_type": object_type, "filters": filters, **common}
+        else:
+            handle = start if records is None else self._set_of(records, actor)
+            args = {"set": handle, "filters": filters, **common}
+        got = self.backend.select(args, actor)
+        if got.get("error"):
+            raise _Refused({"error": got["error"]})
+        gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+        ids = list(got.get("ids") or ())
+        if not ids:
+            gaps.append({"state": "unknown", "reason": "nothing_selected",
+                         "subject": json.dumps(filters, default=str)[:700],
+                         "detail": "no start record this reader may read holds these "
+                                   "values"})
+            return None, None
+        if records is not None:
+            return None, [r for r in records if r in set(ids)]
+        return self._set_of(ids, actor), None
+
     def _start(self, start: Mapping[str, Any], call, actor, gaps
                ) -> tuple[str | None, list[str] | None, str | None]:
-        """(a set handle to walk from, or the start records, and the entity mention)."""
-        keys = set(start)
+        """(a set handle to walk from, or the start records, and the entity mention);
+        (None, None, None) for an ``object_type`` start, whose records its ``where``
+        selects (``_selected``)."""
+        keys = set(start) - {"where"}
+        if keys == {"object_type"}:
+            if not start.get("where"):
+                raise _Refused(_error("invalid_input", "an object_type start needs where: "
+                                      "the filters that select its records (e.g. a status "
+                                      "eq, a date gte and lt)"))
+            return None, None, None
         if keys not in ({"set"}, {"object_id"}, {"object_ids"}, {"entity"}, {"codes"},
                         {"codes", "object_type"}):
             raise _Refused(_error("invalid_input", "from names one start: set, object_id, "
-                                  "object_ids, entity, or codes (with an object_type)"))
+                                  "object_ids, entity, codes (with an object_type), or an "
+                                  "object_type with where"))
         if "codes" in start:
             # many records at once (the codes of a sheet's rows): their exact codes on the
             # identifier index in one read, each record through the store's gate
@@ -499,10 +551,17 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
             answers[:] = [AggregateTools(base)]
         return answers[0].rows(arguments, actor)
 
+    def select(arguments: Mapping[str, Any], actor: Any) -> Mapping[str, Any]:
+        from .ontology_tools_aggregate import AggregateTools
+        if not answers or answers[0].base is not base:
+            answers[:] = [AggregateTools(base)]
+        return answers[0].select(arguments, actor)
+
     backend = TableBackend(call, getattr(base, "_new_set", None), getattr(base, "schema", None),
                            visible if hasattr(base, "_visible_versions") else None,
                            codes if hasattr(base, "_visible_versions") else None,
-                           rows if hasattr(base, "_visible_versions") else None)
+                           rows if hasattr(base, "_visible_versions") else None,
+                           select if hasattr(base, "_filter_objects") else None)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

@@ -148,6 +148,8 @@ class AskRun:
     # why the session itself failed (``session_failure``): the assistant was unavailable,
     # which is never "no records answer this"; None for a session that ran
     failure: Optional[str] = None
+    # the session's own budget (``deep_investigation.question_budget`` under the cap)
+    budget: Optional[float] = None
 
 
 # The Claude Code CLI's own words when the login's quota is spent ("You've hit your weekly
@@ -429,7 +431,8 @@ class AgentAsk:
             # stated only through a claim the gate passed, like any other tool output's.
             prompt = app_prompt(question, route) + (
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
-            agent = self.agent_for(on_line, deep.question_budget(question, self.seconds, route))
+            budget = deep.question_budget(question, self.seconds, route)
+            agent = self.agent_for(on_line, budget)
             # the sources the pre-read brief names are read in the session itself, so
             # what the agent cites of them is evidence the session returned
             agent.quiet_reads = runner.told_reads(context)
@@ -468,7 +471,7 @@ class AgentAsk:
         return AskRun(final_text=run.final_text, answer=answer, events=run.events,
                       decision=last_decision(run.events), stopped=stopped,
                       seconds=time.monotonic() - started, usage=dict(run.usage),
-                      final_reply=reply, failure=failure)
+                      final_reply=reply, failure=failure, budget=budget)
 
 
 def reply_prose(final_text: str, answer: Optional[Mapping[str, Any]]) -> str:

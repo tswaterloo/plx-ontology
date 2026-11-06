@@ -547,6 +547,36 @@ class DocumentsTests(unittest.TestCase):
         self.assertEqual([(c["reason"], c["matched"]["property"]) for c in found],
                          [("display_text", "subject")])
 
+    def test_a_hits_text_is_read_by_its_versions_citation_never_by_scanning_every_chunk(self):
+        # A hybrid hit is quoted from its object's stored text. Matched by object id the
+        # store had no key and read every chunk (118 s per find, live): each version is
+        # one seek on the citation key, a page's citation (the handle and a suffix) too.
+        import zlib
+        store = self.tools.base.store
+        rows = [(1, M1, M1_H, M1_H, "row.body_text", "email body"),
+                (2, A1, A1_H, A1_H + "&page=1", "row.content_text", "packing list page"),
+                (3, M1, "graph-mail://mbx-a/m-1@old", "graph-mail://mbx-a/m-1@old",
+                 "row.body_text", "an older version")]
+        for field, oid, handle, citation, path, text in rows:
+            store.conn.execute(
+                "INSERT INTO text_fields (field_id, object_id, version_handle, citation, "
+                "field_path, document_kind, sender_class, text_digest) "
+                "VALUES (?,?,?,?,?,'email','person','d')", (field, oid, handle, citation, path))
+            store.conn.execute("INSERT INTO text_chunks (field_id, start, body) VALUES (?,0,?)",
+                               (field, zlib.compress(text.encode())))
+        scope = self.tools.base._scope(FULL, NOW)
+        got = store.object_chunks(scope, {M1: M1_H, A1: A1_H})
+        self.assertEqual(sorted((r["object_id"], r["citation"]) for r in got),
+                         sorted([(M1, M1_H), (A1, A1_H + "&page=1")]))
+        sql = []
+        store.conn.set_trace_callback(sql.append)
+        store.object_chunks(scope, {M1: M1_H})
+        store.conn.set_trace_callback(None)
+        plan = " ".join(str(r["detail"]) for r in store.conn.execute(
+            "EXPLAIN QUERY PLAN " + sql[-1]))
+        self.assertIn("SEARCH fd USING INDEX", plan)
+        self.assertNotIn("SCAN t", plan)
+
     def test_a_typed_find_of_a_type_holding_no_text_never_runs_hybrid_search(self):
         # A hybrid hit is quoted from its object's stored text: a purchase order (Portal
         # and Business Central rows) holds none, so a typed find never ranks the whole
@@ -989,6 +1019,22 @@ class BareIdentifierTests(unittest.TestCase):
         self.assertEqual(unread["documents"], [])
         self.assertEqual(self.reading_gaps(unread), [])
         self.assertIn("no_match", [g["reason"] for g in unread["gaps"]])
+
+    def test_a_system_record_id_holding_the_number_hides_no_business_number(self):
+        """The bare number is also some other order's FileMaker record id (a kind naming
+        no ontology object type): that root does not hide the PO whose number it is (its
+        same-number twin stays a candidate beside it)."""
+        fm = "PurchaseOrder:portal.fm_po:fm-9"
+
+        def record_id(s):
+            s.obj(fm, "api:public.fm_po", api("fm_po", "fm-9"), "gold_etl_from_fm")
+            s.ident(fm, "fm_id", self.BARE, prop="fm_generated_po_id")
+        out = ok(self, "plx.find", tools(extend=record_id).base.call(
+            "plx.find", {"query": self.BARE}, FULL))
+        listed = {c["object"]["object_id"]: c["reason"] for c in out["candidates"]}
+        self.assertEqual(listed.get(fm), "exact_identifier")
+        self.assertEqual(listed.get(P1), "same_number_twin")
+        self.assertEqual(out["status"], "ambiguous")
 
     def test_twins_come_from_the_shared_lookup_and_a_cut_range_is_reported(self):
         """The bare number's same-number twins (the stored PO100012 rows) are read by

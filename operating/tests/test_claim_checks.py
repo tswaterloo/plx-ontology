@@ -11,6 +11,7 @@ for the AO-26005B case driven through the MCP case tools over
 from __future__ import annotations
 
 from decimal import Decimal
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -2437,6 +2438,32 @@ class TextFigureTests(unittest.TestCase):
         claim = dict(vc(value, handle, field, extra.pop("role", None),
                         extra.pop("unit", None)), **extra)
         return gate(said, [handle], [claim], rows=dict(ROWS, **(rows or self.ROWS)))
+
+    def test_a_structured_cell_is_quoted_and_figured_as_its_text(self):
+        """A task event's payload (a JSON object, or a string holding one) is what its
+        values say: a quote of it, or a figure of it, passes untyped; a value it does not
+        hold fails; the whole cell is never the only value it can back."""
+        event = "mc://live/task-events/TASK-1~9@abc-1"
+        payload = {"notes": "Read back: LCY = CAD (generalLedgerSetup); chart loaded: 278 "
+                            "accounts. Moving to review; not Verified.",
+                   "progressPct": None, "stage": "review"}
+        for cell in (payload, json.dumps(payload)):
+            rows = {event: {"relation": "mission_control.task_events",
+                            "row": {"payload": cell}}}
+            for value, extra in (("LCY = CAD", {"quote": "LCY = CAD (generalLedgerSetup)"}),
+                                 ("LCY = CAD (generalLedgerSetup)", {}),
+                                 ("278", {"quote": "chart loaded: 278 accounts"}),
+                                 ("278", {}), ("review", {})):
+                with self.subTest(value=value, extra=extra, cell=type(cell).__name__):
+                    out = self.check(value, event, field="row.payload", rows=rows, **extra)
+                    self.assertTrue(out["passed"], out["failures"])
+            out = self.check("LCY = USD", event, field="row.payload", rows=rows)
+            self.assertEqual(codes(out), ["claim_value_mismatch"], out["failures"])
+        # a quote alone states the passage: the gate reads it as the claim's value
+        stated = answer_gate.read_value(
+            {"citation": event, "field": "row.payload", "quote": "LCY = CAD"}, {event},
+            lambda handle: {"row": {"payload": payload}})
+        self.assertEqual(stated["value"], "LCY = CAD")
 
     def test_a_figure_of_a_records_text_passes_untyped_and_pinned_by_a_quote(self):
         for value, handle, extra in (

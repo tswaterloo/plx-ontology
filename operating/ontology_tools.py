@@ -265,6 +265,10 @@ NAMED_READ_NOTE = ("the search stopped at its scan cap, after every record whose
 TEXT_SCAN_CAP = 400  # readable objects a display-text search returns at most
 LEAD_SCAN_CAP = 2000  # identifier rows one prefix or same-number range reads at most
 FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
+# A filter listing whose segment matched nothing scans the next ones for this long (and
+# stops this many seconds before the call's own limit), so a scarce match is listed.
+EMPTY_SCAN_SECONDS = 20.0
+EMPTY_SCAN_MARGIN_SECONDS = 12.0
 SCAN_CURSOR_PREFIX = "s1."  # a filter listing's resumable scan cursor
 CURSOR_MAX_CHARS = 512  # the contract's cursor bound (ontology_tool_contracts.json)
 SCAN_ROW_BUDGET = 50000  # rows read per search, item-ACL denials included
@@ -1028,23 +1032,31 @@ class StoreReader:
             + where + "ORDER BY f.rowid LIMIT :batch",
             scope.params(words=words, after=after, batch=batch, type=object_type)))
 
-    def object_chunks(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
-        """Every readable chunk of captured document text of ``object_ids`` (the shape of
-        ``chunk_matches``, no word match): the object readable, the version the field
-        reads current at :at, the field's markings permitted; in chunk order."""
+    def object_chunks(self, scope: _Scope, versions: Mapping[str, str]) -> list[sqlite3.Row]:
+        """Every readable chunk of captured document text of each object of ``versions``
+        (object_id -> the l1 handle of the version read; the shape of ``chunk_matches``,
+        no word match): the object readable, that version current at :at, the field's
+        markings permitted; in chunk order. A field's citation always begins with its
+        version's handle (a page or member adds a suffix), so each version is one seek on
+        the ``text_fields`` key, which leads with the citation: matched on its object id
+        alone, the store had no key to use and read every chunk (118 s a find, live)."""
         return list(self.conn.execute(
             "SELECT t.chunk_id AS row_no, t.body, fd.object_id, fd.version_handle, "
             "fd.citation, fd.field_path, fd.sender_class, o.object_type, "
-            "o.binding_id AS object_binding, o.audience_key FROM text_chunks t "
-            "JOIN text_fields fd ON fd.field_id = t.field_id "
+            "o.binding_id AS object_binding, o.audience_key FROM json_each(:pairs) p "
+            "CROSS JOIN text_fields fd ON fd.citation >= json_extract(p.value, '$[1]') "
+            "AND fd.citation < json_extract(p.value, '$[1]') || char(1114111) "
+            "AND fd.version_handle = json_extract(p.value, '$[1]') "
+            "AND fd.object_id = json_extract(p.value, '$[0]') "
+            "JOIN text_chunks t ON t.field_id = fd.field_id "
             "JOIN objects o ON o.object_id = fd.object_id "
             "JOIN object_versions v ON v.l1_handle = fd.version_handle "
             "AND v.object_id = fd.object_id "
-            "WHERE fd.object_id IN (SELECT value FROM json_each(:ids)) AND "
-            + self._VISIBLE_OBJECT + "AND " + self._at("v")
+            "WHERE " + self._VISIBLE_OBJECT + "AND " + self._at("v")
             + " AND fd.markings IN (SELECT value FROM json_each(:marks)) "
             "ORDER BY fd.object_id, fd.field_id, t.start",
-            scope.params(ids=json.dumps(list(object_ids)))))
+            scope.params(pairs=json.dumps([[object_id, handle] for object_id, handle
+                                           in versions.items()]))))
 
     def objects_of_type(self, scope: _Scope, object_type: str, after: str,
                         batch: int) -> list[sqlite3.Row]:
@@ -1052,6 +1064,16 @@ class StoreReader:
             "SELECT o.* FROM objects o WHERE o.object_type = :type AND o.object_id > :after AND "
             + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
             scope.params(type=object_type, after=after, batch=batch)))
+
+    def audience_of_version(self, handle: str) -> str | None:
+        """The audience key of the record whose version ``handle`` is (one seek on the
+        versions' handle key), None when no version has it. Names no value."""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT o.audience_key FROM object_versions v JOIN objects o "
+                "ON o.object_id = v.object_id WHERE v.l1_handle = ? LIMIT 1",
+                (handle,)).fetchone()
+        return None if row is None else row[0]
 
     def visible_versions(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
         """The version current at :at of each readable object among ``object_ids``."""
@@ -3084,6 +3106,15 @@ class OntologyTools:
         else:
             matches, scan_truncated, undecided, scan_position = self._match_filters(
                 scope, object_type, filters, scan_after)
+            if not prior:
+                # A segment with no match lists nothing: scan on before answering, as
+                # paging through empty pages would (a status scarce among many records,
+                # 24 lots of 17,500 in quarantine, was answered not_found after the
+                # first segment). Bounded by EMPTY_SCAN_SECONDS and the call's limit.
+                matches, scan_truncated, undecided, scan_position, scan_after = \
+                    self._scan_past_empty(scope, object_type, filters, matches,
+                                          scan_truncated, undecided, scan_position,
+                                          scan_after)
             undecided |= undecided_before
             notes += self._scope_identity(scope, matches, None)
         # Records of other systems carrying the asked key: the counterparts a candidate
@@ -3114,6 +3145,9 @@ class OntologyTools:
                 best[match.object_id] = match
         ranked = sorted(best.values(), key=_Match.sort_key)
         rooted = any(m.reason in ROOT_REASONS for m in ranked)
+        # roots on system record ids alone hide no business number (``_only_system_keys``)
+        unseated = rooted and not self._only_system_keys(
+            [m for m in ranked if m.reason in ROOT_REASONS])
         # A query whose own filters pin it in a property (``_pinned``) asks for the
         # records holding it there: a reference match in a pinned property is the
         # listing's answer, a candidate (a lead, ``reference_match``, never a root and
@@ -3129,7 +3163,7 @@ class OntologyTools:
                 holders.setdefault((match.object_id.split(":", 1)[0], match.property,
                                     match.normalized), set()).add(match.object_id)
         related: list[_Match] = []
-        if rooted:
+        if unseated:
             # Exact and alias matches decide the status: the grammar's leads (a prefix
             # form, a same-number twin) and references never unseat them; they ride on
             # each of them as related leads instead (``_related_features``), references
@@ -3384,6 +3418,24 @@ class OntologyTools:
             count -= 1
             out = finish(count)
         return out
+
+    def _only_system_keys(self, roots: Sequence[_Match]) -> bool:
+        """Whether every root match is on a key of a kind that names no object type of
+        the ontology (a system's own record id or document number: an FM record id is any
+        integer). Such a key does not unseat the business numbers the same text reads as:
+        their forms (a PO's same-number twin) stay candidates beside it, never hidden as
+        its related leads (live: "PO 5457" searched as 5457 answered with FM record 5457,
+        PO#5432, while PO#5457 rode on it unseen)."""
+        if not roots or self.grammar is None or self.schema is None:
+            return False
+        for match in roots:
+            try:
+                kind_type = self.grammar.kind_spec(match.kind).get("object_type")
+            except Exception:  # noqa: BLE001 - an unknown kind is read as a business key
+                return False
+            if kind_type in self.schema.object_types:
+                return False
+        return True
 
     def _match_query(self, scope: _Scope, query: str, keys: list[_Key],
                      kind_filter: str | None, object_type: str | None
@@ -3897,9 +3949,9 @@ class OntologyTools:
                or h["object_id"].split(":", 1)[0] == object_type]
         readable = self._visible_versions(scope, ids)
         chunks: dict[str, list[sqlite3.Row]] = {}
-        for row in self.store.object_chunks(scope, [i for i in ids if i in readable]):
-            if row["version_handle"] == readable[row["object_id"]]["l1_handle"]:
-                chunks.setdefault(row["object_id"], []).append(row)
+        for row in self.store.object_chunks(scope, {i: readable[i]["l1_handle"]
+                                                    for i in ids if i in readable}):
+            chunks.setdefault(row["object_id"], []).append(row)
         tokens = [t.casefold() for t in _text_tokens(query, [], limit=None)]
         out: list[_Match] = []
         for rank, object_id in enumerate(ids, start=1):
@@ -3919,6 +3971,28 @@ class OntologyTools:
                 match.order = rank
                 out.append(match)
         return out
+
+    def _scan_past_empty(self, scope: _Scope, object_type: str, filters: list[dict],
+                         matches: list[_Match], truncated: bool, undecided: set[str],
+                         position: str | None, start: str
+                         ) -> tuple[list[_Match], bool, set[str], str | None, str]:
+        """The first segment of a filter listing holding a match, from ``start`` on:
+        the segment already scanned when it holds one or ends the type, else the next
+        ones while EMPTY_SCAN_SECONDS (and the call's own limit) allow. Returns the
+        segment's matches, whether it was cut, the undecided properties of every segment
+        read, where it resumes and where it started."""
+        from operating import call_limits
+        ends = time.monotonic() + EMPTY_SCAN_SECONDS
+        while not matches and truncated and position is not None and position > start:
+            left = call_limits.seconds_left()
+            if time.monotonic() >= ends or (left is not None
+                                            and left < EMPTY_SCAN_MARGIN_SECONDS):
+                break
+            start = position
+            matches, truncated, more, position = self._match_filters(
+                scope, object_type, filters, start)
+            undecided = set(undecided) | more
+        return matches, truncated, undecided, position, start
 
     def _match_filters(self, scope: _Scope, object_type: str, filters: list[dict],
                        start: str = "") -> tuple[list[_Match], bool, set[str], str | None]:

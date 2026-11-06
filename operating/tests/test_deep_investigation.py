@@ -270,6 +270,19 @@ class OpenPartsContinue(Temp):
         self.assertFalse(any(ends(text) for text in line(1, first)))
         self.assertTrue(any(ends(text) for text in line(3, second)))
 
+    def test_a_decision_that_establishes_nothing_goes_back_while_time_is_left(self):
+        abstained = {"structuredContent": {"outcome": "abstained", "reason": "no_cited_claims",
+                                           "claims": []}}
+        budget = deep.Budget(deadline=time.time() + 100, max_steps=30)
+        note = budget.after_answer(abstained, time.time())
+        self.assertTrue(note[deep.CONTINUE_KEY])
+        self.assertEqual(note["open"], ["the whole question: nothing is established yet"])
+        self.assertIn("establishes nothing", note["next"])
+        self.assertIsNone(deep.Budget(deadline=time.time() + deep.CONTINUE_SECONDS - 5,
+                                      max_steps=30).after_answer(abstained, time.time()))
+        self.assertIsNone(budget.after_answer(   # a repair asked is the gate's own send-back
+            {"structuredContent": {"outcome": "repair", "claims": []}}, time.time()))
+
     def test_no_time_left_or_nothing_open_ends_the_session_as_before(self):
         late = self.run_gate(deep.Budget(deadline=time.time() + deep.CONTINUE_SECONDS - 5,
                                          max_steps=30))
@@ -384,6 +397,21 @@ class RecordsFirst(unittest.TestCase):
         self.assertIsNone(budget.decide("plx.documents", {"query": "x"}, 3.0))
         self.assertEqual((budget.steps, budget.waited), (2, 1))
         self.assertFalse(budget.cut_short)
+
+    def test_a_call_stopped_early_that_research_went_on_after_is_not_a_stop(self):
+        """A call stopped at its limit with research after it: the session read on and
+        was not stopped at the time limit (its reply never says so); one with no research
+        after it was."""
+        budget = deep.Budget(deadline=1000.0, max_steps=10)
+        self.assertIsNone(budget.decide("plx.find", {"query": "x"}, 1.0))
+        budget.stopped_call()
+        self.assertTrue(budget.cut_short)
+        self.assertIsNone(budget.decide("plx.object", {"object_id": "x"}, 45.0))
+        self.assertIsNone(budget.decide(deep.ANSWER_TOOL, {"answer": {}}, 60.0))
+        self.assertEqual((budget.timed_out, budget.cut_short), (1, False))
+        budget.stopped_call()   # the last read stopped, then the answer: cut short
+        self.assertIsNone(budget.decide(deep.ANSWER_TOOL, {"answer": {}}, 90.0))
+        self.assertEqual((budget.timed_out, budget.cut_short), (2, True))
 
 
 class Task(unittest.TestCase):

@@ -4436,7 +4436,9 @@ def agent_answer(backend: "WorkspaceBackend", view: Any, request: m.AskRequest, 
         failure = "timeout"
     unavailable = UNAVAILABLE_WORDS.get(failure) if failure else None
     if failure == "timeout":
-        seconds = int(getattr(backend.agent_ask, "seconds", 0) or 0)
+        # the session's own budget (a lookup's is shorter than the app's cap)
+        seconds = int(getattr(ran, "budget", None) or getattr(backend.agent_ask, "seconds", 0)
+                      or 0)
         unavailable = f"it reached its {seconds} s time limit" if seconds else unavailable
     if unavailable is not None:
         # The session failed as a session (its usage limit, its sign-in, its time, a

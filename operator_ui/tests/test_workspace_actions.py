@@ -489,5 +489,30 @@ class FollowUpActionTest(unittest.TestCase):
                           len(world.mc.create_claims)), (1, 1))
 
 
+class CitationAccessTests(unittest.TestCase):
+    """A cited record the reader's own grant admits is shown, even when its capture's
+    unit is coarser than the audience the projection keeps it under."""
+
+    def test_a_record_kept_under_a_finer_audience_is_decided_by_it(self):
+        from operator_ui.object_workspace import HostAccess, NOT_GRANTED, audience_unit
+        task = "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1"
+        unit = audience_unit(task)
+        granted = {unit + "/PRJ-A"}
+
+        class Policy:
+            @staticmethod
+            def may_read(_gated, key):
+                return key in granted
+        kept = {task: unit + "/PRJ-A", "mc://live/tasks/TASK-2@7e3f6f53ea5c2690-1": unit + "/PRJ-B"}
+        self.assertIsNone(HostAccess._decide(task, "reader", Policy, None, kept.get))
+        for handle, keyed in (("mc://live/tasks/TASK-2@7e3f6f53ea5c2690-1", kept.get),   # not granted
+                              ("mc://live/tasks/TASK-3@7e3f6f53ea5c2690-1", kept.get),   # not kept
+                              (task, None),                                 # no store
+                              (task, {task: "mc:elsewhere/PRJ-A"}.get)):    # no refinement
+            with self.subTest(handle=handle):
+                self.assertEqual(HostAccess._decide(handle, "reader", Policy, None, keyed)
+                                 ["reason"], NOT_GRANTED)
+
+
 if __name__ == "__main__":
     unittest.main()

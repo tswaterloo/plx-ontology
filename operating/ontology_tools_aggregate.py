@@ -369,6 +369,59 @@ class AggregateTools:
             finally:
                 self.store.conn.create_function(gate_name, 1, None)
 
+    def select(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+        """The records ``filters`` select (plx.find's filter grammar and matcher), as this
+        reader may read them: of ``object_type`` (every record of the type, scanned to
+        its end, as an ``object_type`` + ``filters`` aggregate counts them) or among the
+        members of ``set``. {"ids": [...], "gaps": [...]}; a refusal is
+        ``{"error": ...}``. Read for ``plx.query``'s filtered starts."""
+        gate_name = "plx_l9_gate_" + secrets.token_hex(8)
+        with self.store.lock:
+            self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
+                                            deterministic=True)
+            try:
+                return self._select(arguments, actor, gate_name)
+            except ToolError as exc:
+                return _error(exc.code, exc.message, exc.hint)
+            except sqlite3.Error as exc:
+                return _error("store_unavailable", f"the projection store could not be "
+                              f"read ({type(exc).__name__})")
+            finally:
+                self.store.conn.create_function(gate_name, 1, None)
+
+    def _select(self, arguments: Mapping[str, Any], actor: Actor, gate: str
+                ) -> dict[str, Any]:
+        scope = self.walk._scope(actor, arguments, gate)
+        if "set" not in arguments:
+            ids, gaps = self._filtered_root(scope, arguments, actor)
+            return {"ids": ids, "gaps": list(gaps)}
+        roots, root_gaps = self.walk._root(scope, arguments["set"])
+        base = self.base
+        found = base._scope(actor, base._as_known_at(arguments))
+        by_type: dict[str, list[str]] = {}
+        for oid in roots:
+            by_type.setdefault(oid.split(":", 1)[0], []).append(oid)
+        kept: list[str] = []
+        gaps = list(root_gaps)
+        undecided: set[str] = set()
+        for object_type, ids in sorted(by_type.items()):
+            declared = set(self._declared(object_type))
+            unknown = sorted({f["property"] for f in arguments["filters"]} - declared)
+            if unknown:
+                raise ToolError("unknown_property",
+                                f"{object_type} declares no property {', '.join(unknown)}"
+                                [:600], "call plx.schema for the type's properties")
+            base._require_co_sourced(object_type, arguments["filters"])
+            filters = base._filters_as_stored(object_type, list(arguments["filters"]))
+            passing, unsure = base._filter_objects(found, ids, filters)
+            undecided |= unsure
+            kept += [oid for oid in ids if oid in passing]
+        if undecided:
+            from operating.ontology_tools import _withheld_filter_gap
+            gaps.append(_withheld_filter_gap(next(iter(by_type)) if len(by_type) == 1
+                                             else None, undecided))
+        return {"ids": kept, "gaps": gaps}
+
     def _rows(self, arguments: Mapping[str, Any], actor: Actor, gate: str
               ) -> dict[str, Any]:
         scope = self.walk._scope(actor, arguments, gate)

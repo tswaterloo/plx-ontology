@@ -7314,7 +7314,7 @@
       }
     },
     "plx.query": {
-      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own) or a set; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them. rows lists what is reached (cited values, a date, newest first; last, lowest, highest); per_code answers each code on its own.",
+      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them. rows lists what is reached (cited values, a date, newest first; last, lowest, highest); per_code answers each code on its own.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7356,6 +7356,15 @@
                 },
                 "minItems": 1,
                 "maxItems": 300
+              },
+              "where": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/filter"
+                },
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "Filters that select the start records: with object_type alone, every record of the type they hold on (e.g. a status eq, a date gte and lt); with another start, the start records they keep. With no traverse the top-level where filters the start too."
               }
             }
           },

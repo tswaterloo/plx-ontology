@@ -191,6 +191,42 @@ class Query(unittest.TestCase):
         self.assertIsNone(window["value"])
         self.assertEqual(window["mixed"], ["EA", "KG"])
 
+    def test_a_start_is_every_record_its_where_selects_and_a_where_never_goes_unread(self):
+        """from an object_type with where: every record of the type the filters select
+        (the host's select, scanned to the type's end), walked as one set; a where with
+        nothing to walk filters the start, never dropped; with no where an object_type
+        alone is refused, saying what to add."""
+        table = Table()
+        asked, made = [], []
+
+        def select(arguments, actor):
+            asked.append(dict(arguments))
+            if "object_type" in arguments:
+                return {"ids": [SAGE], "gaps": []}
+            return {"ids": [], "gaps": []}
+
+        def new_set(actor, ids):
+            made.append(list(ids))
+            return "set:picked01"
+        tool = oq.QueryTool(oq.TableBackend(table, new_set, Schema(), lambda a, ids: set(ids),
+                                            select=select))
+        status = [{"property": "qc_status", "op": "eq", "value": "Quarantine"}]
+        out = tool.call({"from": {"object_type": "Product", "where": status},
+                         "traverse": [{"link_type": "SalesInvoiceLine.for_item",
+                                       "direction": "reverse"}]}, "actor")
+        self.assertNotIn("error", out)
+        self.assertEqual(asked[0], {"object_type": "Product", "filters": status})
+        self.assertEqual(out["set"], "set:lines0001")
+        # a top-level where with no traverse filters the start: here it keeps nothing
+        dated = [{"property": "order_date", "op": "gte", "value": "2026-01-01"}]
+        kept = tool.call({"from": {"object_ids": [SAGE, FM]}, "where": dated}, "actor")
+        self.assertEqual(asked[1], {"set": "set:picked01", "filters": dated})
+        self.assertIsNone(kept["set"])
+        self.assertIn("nothing_selected", [g["reason"] for g in kept["gaps"]])
+        alone = tool.call({"from": {"object_type": "Product"}}, "actor")
+        self.assertEqual(alone["error"]["code"], "invalid_input")
+        self.assertIn("where", alone["error"]["message"])
+
     def test_a_bad_request_is_refused_by_the_contract(self):
         tool = oq.QueryTool(oq.TableBackend(Table(), None, Schema()))
         self.assertEqual(tool.call({"from": {}}, "actor")["error"]["code"], "invalid_input")

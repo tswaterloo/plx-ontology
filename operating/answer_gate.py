@@ -659,7 +659,8 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
     ``PAGE_TEXT``) the claim's ``quote``, the passage it states. Anything else is left
     as given, so the claim is refused as before (no value, a citation this session was
     not returned, a computed value, a list, a long text without a quote, a cell the
-    reader cannot read): a value is never guessed. A written agent states each value
+    reader cannot read): a value is never guessed. A structured cell (a JSON object or
+    list, ``claim_checks.structured_text``) given a quote states that quote, as text does. A written agent states each value
     once, in its text; the gate then checks that text against the cell itself."""
     if rows is None or not isinstance(given, Mapping) or "value" in given \
             or "op" in given or "calculation" in given:
@@ -690,6 +691,10 @@ def read_value(given: Any, seen: set[str], rows: Callable[[str], Any] | None) ->
             and not claim_checks._changed(view) else (False, None)
     if not found or cell is None or isinstance(cell, bool):
         return given
+    if isinstance(quote, str) and quote.strip() \
+            and claim_checks.structured_text(cell) is not None:
+        # a structured cell is quoted as text is (``claim_checks.structured_text``)
+        return {**given, "value": quote.strip()}
     if isinstance(cell, int):
         return {**given, "value": cell}
     if isinstance(cell, (float, Decimal)):

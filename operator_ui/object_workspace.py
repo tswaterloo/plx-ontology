@@ -2370,16 +2370,31 @@ class HostAccess:
         if todo:
             with self.host.per_call():
                 item_gate = self.host.tools.item_gate
+                store = getattr(self.host.tools, "store", None)
+                keyed = getattr(store, "audience_of_version", None)
                 for handle in todo:
-                    memo[handle] = self._decide(handle, gated, policy, item_gate)
+                    memo[handle] = self._decide(handle, gated, policy, item_gate, keyed)
         return {handle: memo[handle] for handle in handles}
 
     @staticmethod
-    def _decide(handle: str, gated: Any, policy: Any,
-                item_gate: Callable | None) -> dict[str, str] | None:
+    def _decide(handle: str, gated: Any, policy: Any, item_gate: Callable | None,
+                keyed: Callable[[str], str | None] | None = None
+                ) -> dict[str, str] | None:
         unit = audience_unit(handle)
         if unit is not None and not policy.may_read(gated, unit):
-            return _withheld(NOT_GRANTED)
+            # A capture's unit can be coarser than the audience its records are kept
+            # under (a Mission Control task: mc:live/tasks, kept per project as
+            # mc:live/tasks/<project>): the version's own audience in the projection,
+            # the one every tool read it under, decides when it refines that unit.
+            own = None
+            if keyed is not None:
+                try:
+                    own = keyed(handle.split("#", 1)[0])
+                except Exception:  # noqa: BLE001 - an unread audience grants nothing
+                    own = None
+            if not (isinstance(own, str) and own.startswith(unit + "/")
+                    and policy.may_read(gated, own)):
+                return _withheld(NOT_GRANTED)
         if handle.startswith(_ITEM_ACL_SCHEMES):
             try:
                 admitted = item_gate is not None and item_gate(gated, handle) is True

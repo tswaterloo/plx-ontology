@@ -1495,6 +1495,8 @@ def _quote_mismatch(claim: Mapping[str, Any], resolved: Mapping[str, Any] | None
         text, original = resolved.get("text"), True
     else:
         _exists, text = dig(resolved, field)
+        if structured_text(text) is not None:
+            text = structured_text(text)
         original = field in ORIGINAL_TEXT_FIELDS and \
             claim["citation"].partition("://")[0] in ORIGINAL_SCHEMES or \
             isinstance(text, str) and text_field(field) and result.get("value_basis") in (
@@ -1649,6 +1651,18 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
         if claim["kind"] == "number":
             return _check_text_figure(claim, out, cell, f"the cited {field}")
         return _check_quote(claim, out, cell, field)
+    structured = structured_text(cell)
+    if structured is not None:
+        # A structured cell (a task event's payload, a list item's fields) is served as
+        # its text: a value it holds whole passes as that value; anything else it says is
+        # quoted or figured from that text, as prose is.
+        if claim["kind"] == "text" and any(_same_value(claim, value) for _key, value
+                                           in structured_values(cell) or ()):
+            return {**out, "status": "passed", "role_basis": "untyped",
+                    "quantity_type": None, "value_basis": "text_span"}
+        if claim["kind"] == "number":
+            return _check_text_figure(claim, out, structured, f"the cited {field}")
+        return _check_quote(claim, out, structured, field)
     form = value_form(claim, handle, resolved, field)
     zone = None
     if form in ("date", "enum"):
@@ -2458,6 +2472,45 @@ def _check_quote(claim: Mapping[str, Any], out: dict[str, Any], cell: Any,
                      f"role contract, so the claimed {claim['role']} cannot be verified")
     return {**out, "status": "passed", "role_basis": "untyped", "quantity_type": None,
             "value_basis": "text_span"}
+
+
+def structured_values(cell: Any) -> list[tuple[str | None, str]] | None:
+    """The values a structured cell holds (a JSON object or array, or a string holding
+    one), each with its key, in order; None for any other cell."""
+    if isinstance(cell, str):
+        held = cell.strip()
+        if held[:1] not in ("{", "[") or held[-1:] not in ("}", "]"):
+            return None
+        try:
+            cell = json.loads(held)
+        except ValueError:
+            return None
+    if not isinstance(cell, (Mapping, list)):
+        return None
+    out: list[tuple[str | None, str]] = []
+
+    def walk(value: Any, key: str | None) -> None:
+        if isinstance(value, Mapping):
+            for name, inner in value.items():
+                walk(inner, str(name))
+        elif isinstance(value, list):
+            for inner in value:
+                walk(inner, key)
+        elif value is not None and not isinstance(value, bool):
+            out.append((key, str(value)))
+    walk(cell, None)
+    return out
+
+
+def structured_text(cell: Any) -> str | None:
+    """The text of a structured cell (``structured_values``): each value it holds as
+    ``key: value``, one per line, in order; None for any other cell, or one holding no
+    value. What it says is checked as a record's free text is (a quote of it, a figure
+    of it), and a value it holds whole as that value, never the whole cell as one."""
+    held = structured_values(cell)
+    if not held:
+        return None
+    return "\n".join(f"{key}: {value}" if key else value for key, value in held)
 
 
 def text_field(field: str) -> bool:
