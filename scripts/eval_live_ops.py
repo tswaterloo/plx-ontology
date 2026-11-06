@@ -1051,7 +1051,10 @@ CORE_SUITE = "core"
 # ``open``: question shapes no card or route was written for; its held-out half is
 # reported as counts only (``report``). The suites after the CEO set are dealt per card.
 OPEN_SUITE = "open"
-SUITES = (CORE_SUITE, "ceo", "wide", "proactive", "roles", OPEN_SUITE, "inventory")
+# ``blind``: the blind mined family (``scripts.eval_blind_mined``), keyed and split there.
+BLIND_SUITE = "blind"
+SUITES = (CORE_SUITE, "ceo", "wide", "proactive", "roles", OPEN_SUITE, "inventory",
+          BLIND_SUITE)
 PER_CARD_SUITES = frozenset({"wide", "proactive", "roles", OPEN_SUITE, "inventory"})
 
 
@@ -1203,6 +1206,10 @@ def rekey(pairs: Sequence[tuple[Mapping, Mapping]], world: keys.World,
     out = []
     for item, key in pairs:
         family = key["family"]
+        if family not in keys.FAMILIES:
+            # a family keyed outside the cards (the blind mined one) keeps its own key
+            out.append((dict(item), dict(key)))
+            continue
         if family not in found:
             found[family] = keys.FAMILIES[family](world)
         card = cards.get(_card_of(key), {})
