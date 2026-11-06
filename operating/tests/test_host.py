@@ -1734,7 +1734,8 @@ class FreshnessBoundTests(HostCase):
         self.assertEqual(host_module.freshness_bounds(host.config), {
             "portal_api": 161000.0, "bc": 161200.0, "graph_mail": 161200.0,
             "sharepoint": 161200.0, "teams": 161200.0,
-            "mission_control": host_module.DEFAULT_FRESHNESS_HOURS * 3600})
+            "mission_control": host_module.DEFAULT_FRESHNESS_HOURS * 3600,
+            "meetings": host_module.DEFAULT_FRESHNESS_HOURS * 3600})
         argv = host_module.mcp_arguments(host, session_ticket_env="T")
         given = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--freshness-bound"]
         self.assertEqual(mcp_server.freshness_bounds(given),

@@ -170,7 +170,7 @@ class TestRecords(unittest.TestCase):
 
             def _call(self, tool, args):
                 i = int(args["object_id"].rsplit(":", 1)[1])
-                vendor = "Lorpon Labels (DO NOT USE)" if i == 1 else "DSM"
+                vendor = "Laura TEST" if i == 1 else "DSM"
                 return {"object": {"display": f"PO{100000 + i}"},
                         "values": [{"property": "vendor_name", "value": vendor}]}
 
@@ -202,7 +202,7 @@ class TestRecords(unittest.TestCase):
 
             def _call(self, tool, args):
                 i = int(args.get("object_id", args.get("from", "x:0")).rsplit(":", 1)[1])
-                vendor = "Lorpon Labels (DO NOT USE)" if i == test_at else "DSM"
+                vendor = "Laura TEST" if i == test_at else "DSM"
                 return {"object": {"display": f"PO{100000 + i}"},
                         "values": [{"property": "vendor_name", "value": vendor}]}
 

@@ -6171,9 +6171,10 @@ def received_before_ordered(backend: WorkspaceBackend, view: Any,
     ordered = str(plain(order.get("value")))[:10]
     early = []
     for event in (page.get("timeline") or {}).get("events") or ():
-        when = event.get("at") or event.get("occurred_at") or event.get("time") \
-            if isinstance(event, Mapping) else None
-        handle = citation_handle(event.get("citation")) if isinstance(event, Mapping) else None
+        if not isinstance(event, Mapping):
+            continue   # an event that is no mapping states no date
+        when = event.get("at") or event.get("occurred_at") or event.get("time")
+        handle = citation_handle(event.get("citation"))
         if event.get("event_type") in RECEIPT_EVENTS and isinstance(when, str) \
                 and isinstance(handle, str) and when[:10] < ordered:
             early.append((when[:10], handle))
