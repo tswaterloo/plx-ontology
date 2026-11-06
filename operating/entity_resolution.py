@@ -41,6 +41,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 MATCH_AT = 0.85
 DERIVED_SCORE = 0.8   # a code read out of a longer reference: offered, never the same thing
 WEAK_SCORE = 0.7      # most a lower-case word's name match counts for
+IN_ORDER_SCORE = 0.86  # the one name differing from the asked only by a plural
+IN_ORDER_LEAD = 0.78   # the asked words in order with others between or a letter slip: a lead
 MAX_MENTIONS = 6
 MAX_ENTITIES = 12
 MAX_LEADS = 4      # lead entities listed after the matches (a brand's products: a few)
@@ -111,7 +113,18 @@ def mentions(text: str) -> list[dict[str, Any]]:
 
     words = text.split()
     if len(words) <= 4 and "?" not in text:
-        add(text, "code" if re.search(r"\d", text) else "name")
+        # a code typed with a space or a label word ("PO 3360", "invoice IN100"): the
+        # grammar's own forms of it, never the label glued into the code
+        leads = [lead for lead in identifier_leads(text)
+                 if not re.fullmatch(r"[\d,.]+", text[lead.span[0]:lead.span[1]])]
+        rest = text
+        for lead in sorted(leads, key=lambda lead: -lead.span[0]):
+            add(text[lead.span[0]:lead.span[1]], "code", lead.forms)
+            rest = rest[:lead.span[0]] + " " + rest[lead.span[1]:]
+        if leads and len(rest.split()) <= 1:
+            return out   # the code and at most a label word: nothing else to name
+        if not leads:
+            add(text, "code" if re.search(r"\d", text) else "name")
         if re.search(r"\d", text) and len(words) > 1:
             add(text, "name")
         return out
@@ -140,6 +153,72 @@ def mentions(text: str) -> list[dict[str, Any]]:
     if run:
         add(" ".join(run), "name")
     return out
+
+
+def _name_score(row: Any, key: str, text: str, loose: bool = True
+                ) -> tuple[float, str] | None:
+    """(score, why) of an index row's name against a name mention's key (module doc), or
+    None when it is only a loose likeness (or ``loose`` is False and it is not closer)."""
+    name = _name_key(row.normalized or row.name)
+    party = row.type in PARTY_TYPES
+    if name == key:
+        return 0.95, f"its name is \"{text}\""
+    if name.startswith(key + " ") or (" " + key + " ") in (" " + name + " "):
+        if party and name.startswith(key + " "):
+            return 0.9, f"its name begins with \"{text}\""
+        if " " in key:
+            # a phrase of several words, whole in the name: that record names it
+            return 0.88, f"its name holds the phrase \"{text}\""
+        return 0.7, f"its name contains \"{text}\" (related, not the same)"
+    if " " in key and _plural_only(key.split(), name.split()):
+        return IN_ORDER_SCORE, f"its name is \"{text}\" but for a plural"
+    if " " in key and _in_order(key.split(), name.split()):
+        return IN_ORDER_LEAD, f"its name holds the words of \"{text}\" in order (a lead)"
+    strict = float(getattr(row, "strict", 0.0) or 0.0)
+    if strict < 0.8 or not loose:
+        return None   # a loose likeness names nothing
+    return round(0.7 * strict, 2), f"its name is like \"{text}\""
+
+
+def _by_whole_name(row: Any, terms: Sequence[str], words: Sequence[str]) -> bool:
+    """Whether an index row was found by the whole name asked (its term, or an alias equal
+    to it), not by one of its words alone."""
+    matched = getattr(row, "matched", "") or ""
+    if matched == "alias":   # the index's exact alias branch: which alias, then
+        return any(_fold(str(a)) in terms for a in row.alias)
+    return matched not in words
+
+
+def _same_word(asked: str, held: str) -> bool:
+    """A word of a name as asked: equal, or for a word of five letters or more its plural
+    or one letter apart (a slip in either spelling: ``logisitics``)."""
+    if asked == held:
+        return True
+    if len(asked) < 5 or len(held) < 5:
+        return False
+    from operating.query_understanding import _edits
+    return held in (asked + "s", asked + "es") or asked in (held + "s", held + "es") \
+        or _edits(asked, held, 1) <= 1
+
+
+def _plural_only(asked: Sequence[str], held: Sequence[str]) -> bool:
+    """The same words in the same order, some only as their plural (no word between, no
+    letter slip)."""
+    return len(asked) == len(held) and all(
+        a == h or h in (a + "s", a + "es") or a in (h + "s", h + "es")
+        for a, h in zip(asked, held))
+
+
+def _in_order(asked: Sequence[str], held: Sequence[str]) -> bool:
+    """Every asked word is a word of the name, in the asked order (others between)."""
+    at = 0
+    for word in asked:
+        while at < len(held) and not _same_word(word, held[at]):
+            at += 1
+        if at == len(held):
+            return False
+        at += 1
+    return True
 
 
 class _Index:
@@ -235,29 +314,38 @@ class Resolver:
                                                "longer reference, or the number without its "
                                                "letters)")
             return
-        term = _fold(text)
-        key = _name_key(text)
-        if not key:
+        # the name as folded today and as an index row written before the fold dropped
+        # apostrophes holds it ("plant s power"): both are looked up and compared
+        spellings = list(dict.fromkeys((text, text.replace("'", " ").replace("’", " "))))
+        terms = [_fold(t) for t in spellings]
+        keys = [k for k in dict.fromkeys(_name_key(t) for t in spellings) if k]
+        if not keys:
             return
-        rows, _hidden = index.by_terms([term], escope)
+        # each distinctive word of a name of several words is looked up too, so a name
+        # whose other words are common ("X Logistics" among dozens of logistics firms)
+        # is still among the rows; a row found by one word alone is scored on the whole
+        # name and never as a loose likeness
+        words = sorted({w for k in keys for w in k.split()
+                        if len(w) >= 3 and len(k.split()) > 1} - set(terms))
+        rows, _hidden = index.by_terms(list(dict.fromkeys(terms)) + words, escope)
+        best: dict[str, tuple[Any, float, str]] = {}
         for row in rows:
-            name = _name_key(row.normalized or row.name)
-            party = row.type in PARTY_TYPES
-            if name == key:
-                score, why = 0.95, f"its name is \"{text}\""
-            elif name.startswith(key + " ") or (" " + key + " ") in (" " + name + " "):
-                if party and name.startswith(key + " "):
-                    score, why = 0.9, f"its name begins with \"{text}\""
-                elif " " in key:
-                    # a phrase of several words, whole in the name: that record names it
-                    score, why = 0.88, f"its name holds the phrase \"{text}\""
-                else:
-                    score, why = 0.7, f"its name contains \"{text}\" (related, not the same)"
-            else:
-                strict = float(getattr(row, "strict", 0.0) or 0.0)
-                if strict < 0.8:
-                    continue   # a loose likeness names nothing
-                score, why = round(0.7 * strict, 2), f"its name is like \"{text}\""
+            for key in keys:
+                got = _name_score(row, key, text, loose=_by_whole_name(row, terms, words))
+                held = best.get(row.object_id)
+                if got is not None and (held is None or got[0] > held[1]):
+                    best[row.object_id] = (row, got[0], got[1])
+        # a name differing only by a plural names a record only when it is the one such
+        # name and nothing is named more closely; otherwise it is a lead (two firms a
+        # letter apart, "Prater" and "Crater", are never both the one asked)
+        plural = {_name_key(row.normalized or row.name)
+                  for row, score, _why in best.values() if score == IN_ORDER_SCORE}
+        closer = any(score > IN_ORDER_SCORE for _row, score, _why in best.values())
+        for row, score, why in best.values():
+            if score == IN_ORDER_SCORE and closer:
+                score, why = WEAK_SCORE, why + " (a closer name was found)"
+            elif score == IN_ORDER_SCORE and len(plural) > 1:
+                score, why = IN_ORDER_LEAD, why + " (several names differ so)"
             if str(row.object_id).split(":", 1)[0] in MESSAGE_TYPES:
                 score = min(score, WEAK_SCORE)
                 why += " (a participant named on a message)"
@@ -276,6 +364,11 @@ class Resolver:
             entry["codes"] |= _code_aliases(row.alias)
             entry["name"] = entry["name"] or _name_key(row.normalized or row.name)
             entry["type"] = entry["type"] or row.type
+            if row.type == "person":
+                # a participant row per mailbox: its first alias is the address
+                address = next((a for a in row.alias[:1] if "@" in str(a)), None)
+                if address:
+                    entry["address"] = str(address).lower()
         entry["codes"] |= set(codes)
 
     def _expand(self, index: Any, escope: Any, scope: Any,
@@ -347,8 +440,15 @@ class Resolver:
 
         by_code: dict[str, str] = {}
         by_name: dict[str, str] = {}
+        by_address: dict[str, str] = {}
         for oid in ids:
             entry = scores[oid]
+            if entry.get("address"):
+                # one person seen in several mailboxes is one person
+                if entry["address"] in by_address:
+                    join(oid, by_address[entry["address"]])
+                else:
+                    by_address[entry["address"]] = oid
             for code in entry["codes"]:
                 if code in by_code:
                     join(oid, by_code[code])

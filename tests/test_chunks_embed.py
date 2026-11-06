@@ -277,7 +277,8 @@ class Fixture:
             CREATE TABLE link_rows (link_id TEXT, link_type TEXT, from_object TEXT,
               to_object TEXT, tier TEXT, binding_kind TEXT);
             CREATE TABLE identifiers (identifier_kind TEXT, normalized TEXT, raw TEXT,
-              role TEXT, object_id TEXT, markings TEXT, superseded_at TEXT);
+              role TEXT, object_id TEXT, markings TEXT, superseded_at TEXT,
+              property TEXT);
         """)
         self.n = 0
 
@@ -297,9 +298,9 @@ class Fixture:
                               (self.n, oid, handle, citation, path, kind, "unknown", marks, "x"))
             self.conn.execute("INSERT INTO text_chunks (field_id, start, body) VALUES (?,?,?)",
                               (self.n, 0, zlib.compress(body.encode())))
-        for k, v, role, m in idents:
-            self.conn.execute("INSERT INTO identifiers VALUES (?,?,?,?,?,?,NULL)",
-                              (k, v, v, role, oid, m))
+        for k, v, role, m, *prop in idents:
+            self.conn.execute("INSERT INTO identifiers VALUES (?,?,?,?,?,?,NULL,?)",
+                              (k, v, v, role, oid, m, prop[0] if prop else "code"))
         return handle
 
     def link(self, a, b, link_type, binding="fk"):
@@ -574,7 +575,9 @@ class FixtureChunkerTests(unittest.TestCase):
                     values={"name": ("Maple Suds Inc", "[]"),
                             "bc_email": ("orders@maplesuds.example", "[]")})
         for oid, sender, to, when in (
-                ("Email:1", "jane.roe@maplesuds.example", f"['{staff}']", "2026-10-15"),
+                ("Email:1", "jane.roe@maplesuds.example",
+                 f"['{staff}', 'no-reply@maplesuds.example', 'info2@maplesuds.example']",
+                 "2026-10-15"),
                 ("Email:2", staff, "['jane.roe@maplesuds.example', 'gone@example-plx.com']",
                  "2026-10-28"),
                 ("Email:3", "gone@example-plx.com", "['kim@maplesuds.example']",
@@ -598,6 +601,8 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(jane.object_id, "Email:2")        # its newest message there
         self.assertEqual(jane.markings, ("pii",))
         self.assertIn((f"mail:{box}", staff), found)
+        self.assertNotIn("no-reply@", json.dumps([e.alias for e in found.values()]))
+        self.assertNotIn("info2@", json.dumps([e.alias for e in found.values()]))
         text = json.dumps([e.__dict__ for e in found.values()])
         self.assertNotIn("gone@", text)                     # never the excluded person
         self.assertNotIn("kim@", text)                   # nor what their mail names
@@ -617,11 +622,34 @@ class FixtureChunkerTests(unittest.TestCase):
         self.fx.obj("Contact:excluded", "Contact", "bc:co/contacts",
                     values={"display_name": ("Excluded Person", '["pii"]'),
                             "email": ("gone@example-plx.com", '["pii"]')})
+        self.fx.obj("Contact:company", "Contact", "bc:co/contacts",
+                    values={"display_name": ("Maple Suds Inc.", '["pii"]'),
+                            "contact_type": ("Company", '["pii"]'),
+                            "email": ("buyer@customer.example", '["pii"]')})
         self.fx.obj("Contact:noaddress", "Contact", "bc:co/contacts",
                     values={"display_name": ("No Address", '["pii"]')})
         self.fx.obj("PurchaseOrder:1", "PurchaseOrder", "api:public.app_purchase_order",
                     idents=[("petra_po", "PO5280", "primary", "[]")])
         self.fx.obj("Customer:bad", "Customer", "api:*", values={"name": ("Nope", "[]")})
+        # a parent's code each location carries names the parent, never the location; a
+        # first name typed in a number field is no code
+        self.fx.obj("Customer:2", "Customer", "api:public.app_customer",
+                    values={"name": ("Savon Quebec - Laval", "[]")},
+                    idents=[("customer_erp_code", "SAVL02", "alias", "[]", "erp_code"),
+                            ("customer_erp_code", "SAVQ01", "alias", "[]",
+                             "bill_to_erp_code")])
+        self.fx.obj("CustomerPurchaseOrder:1", "CustomerPurchaseOrder", "api:sage.oe",
+                    idents=[("customer_po", "MARCEL", "alias", "[]", "po_number")])
+        # a document asked for by number: its number value is its code, nothing else
+        self.fx.obj("SalesInvoice:1", "SalesInvoice", "api:sage.oe",
+                    values={"invoice_number": ("XN1000777 ", "[]"),
+                            "customer_number": ("SAVQ01", "[]")},
+                    idents=[("customer_erp_code", "SAVQ01", "alias", "[]",
+                             "customer_number")])
+        self.fx.obj("Receipt:1", "Receipt", "api:fm.receipt",
+                    values={"sage_receipt_number": ("n/a", "[]")})
+        self.fx.obj("CustomerPurchaseOrder:2", "CustomerPurchaseOrder", "api:sage.oe",
+                    idents=[("customer_po", "PO-4410", "alias", "[]", "po_number")])
         self.fx.obj("CustomerLocation:1", "CustomerLocation", "api:public.app_customer_location",
                     values={"label": ("Savon Quebec - Montreal plant", "[]"),
                             "country": ("CA", "[]"), "city": ("PRIVATECITY", '["pii"]')})
@@ -645,6 +673,9 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertNotIn("FIN-77", " ".join(customer.alias))
         self.assertEqual(customer.markings, ())
         self.assertEqual(found["Contact:1"].markings, ("pii",))
+        self.assertEqual(found["Contact:1"].type, "person")
+        self.assertEqual(found["Contact:company"].type, "contact")   # a company's card
+        self.assertEqual(found["Contact:company"].markings, ("pii",))
         self.assertEqual(found["PurchaseOrder:1"].name, "PO5280")
         self.assertNotIn("Customer:bad", found)
         self.assertEqual(fold("G2  Beauty & Co."), "g2 beauty and co")
@@ -654,6 +685,16 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertNotIn("PRIVATECITY", " ".join(place.alias))
         self.assertEqual(place.markings, ())
         self.assertIn("SOAP", found["Product:1"].alias)
+        self.assertIn("SAVL02", found["Customer:2"].alias)
+        self.assertNotIn("SAVQ01", found["Customer:2"].alias)
+        self.assertNotIn("CustomerPurchaseOrder:1", found)     # no code: no entity
+        invoice = found["SalesInvoice:1"]
+        self.assertEqual((invoice.type, invoice.name), ("sales_invoice", "Invoice XN1000777"))
+        self.assertIn("XN1000777", invoice.alias)
+        self.assertNotIn("SAVQ01", invoice.alias)               # its customer's code
+        self.assertNotIn("Receipt:1", found)
+        self.assertIn("PO-4410", found["CustomerPurchaseOrder:2"].alias + (
+            found["CustomerPurchaseOrder:2"].name,))
 
     def email(self, oid, box, text, *, sender="supplier@outside.example", marks="[]"):
         handle = f"graph-mail://{box}/{oid}@1"
@@ -725,7 +766,7 @@ class FixtureChunkerTests(unittest.TestCase):
         self.email("Email:2", box, "Marked twin message body that is long enough.",
                    marks='["finance"]')
         self.fx.conn.execute("INSERT INTO identifiers VALUES ('petra_po','PO7777','PO7777',"
-                             "'primary','Email:2','[]',NULL)")
+                             "'primary','Email:2','[]',NULL,'code')")
         self.fx.link("Email:1", "Email:2", "Email.same_thread")
         # Same unit, readable: its id and name may be stated.
         self.fx.obj("Thread:3", "Thread", f"mail:{box}", values={"name": ("Cartons thread", "[]")},

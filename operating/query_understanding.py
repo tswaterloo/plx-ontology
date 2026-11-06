@@ -346,6 +346,7 @@ class PgEntityIndex:
     there) is a common word, not a name: it is not ranked (the phrases around it are)."""
 
     TERM_LIMIT = 50      # visible matches per term, best first
+    PERSON_LIMIT = 10    # distinct people among them (``_PERSON_KEY``)
     WORD_THRESHOLD = 0.45
     THRESHOLDS = (0.6, 0.45)   # a tight band first; a looser one for terms it misses
     HIDDEN_MIN = 0.6     # strict word similarity a hidden match needs to be counted
@@ -494,11 +495,12 @@ class PgEntityIndex:
         hidden: dict[str, dict[str, float]] = {}
         pending = [t for t in terms if t not in self.common]
         sql = self._TERMS_SQL.format(table=self.table, cols=self._COLS,
-                                     visible=self._visible(scope))
+                                     visible=self._visible(scope), person=self._PERSON_KEY)
         for tier, threshold in enumerate(self.THRESHOLDS):
             params = self._params(scope, types, terms=pending, lim=self.TERM_LIMIT,
                                   upper=upper, window=self.HIDDEN_WINDOW,
-                                  hlim=self.HIDDEN_LIMIT, alias=tier == 0)
+                                  hlim=self.HIDDEN_LIMIT, alias=tier == 0,
+                                  plim=self.PERSON_LIMIT)
             rows = self._run(sql, params, threshold=threshold)
             found = set()
             for r in rows:
@@ -515,6 +517,13 @@ class PgEntityIndex:
                 break
         return out, hidden
 
+    # A person (a mail or Teams participant) is listed once per mailbox it was seen in:
+    # one address is one person per term (its best row), and at most PERSON_LIMIT people
+    # per term, so the senders of an organisation's domain never crowd that organisation
+    # (or any other party) out of the TERM_LIMIT best rows.
+    _PERSON_KEY = ("CASE WHEN e.type = 'person' THEN coalesce(lower(e.alias[1]), "
+                   "e.normalized) END")
+
     # Per term, every trigram match (on the name, and on the alias words through the
     # indexed expression search.alias_text(alias)) at the session threshold is ranked in
     # SQL: word similarity, then strict similarity, then the shorter name. Visible rows
@@ -525,7 +534,7 @@ class PgEntityIndex:
             SELECT q.term, e.entity_id, {visible} AS vis,
                    word_similarity(q.term, e.normalized) AS ws,
                    strict_word_similarity(q.term, e.normalized) AS sws,
-                   length(e.normalized) AS len
+                   length(e.normalized) AS len, {person} AS pkey
             FROM unnest(%(terms)s::text[]) AS q(term)
             JOIN {table} e ON q.term <%% e.normalized
             WHERE (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))
@@ -534,26 +543,36 @@ class PgEntityIndex:
             SELECT q.term, e.entity_id, {visible},
                    word_similarity(q.term, search.alias_text(e.alias)),
                    strict_word_similarity(q.term, search.alias_text(e.alias)),
-                   length(e.normalized)
+                   length(e.normalized), {person}
             FROM unnest(%(terms)s::text[]) AS q(term)
             JOIN {table} e ON q.term <%% search.alias_text(e.alias)
             WHERE (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))
               AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))
             UNION ALL
-            SELECT 'alias', e.entity_id, {visible}, 1.0, 1.0, length(e.normalized)
+            SELECT 'alias', e.entity_id, {visible}, 1.0, 1.0, length(e.normalized), {person}
             FROM {table} e
             WHERE %(alias)s AND e.alias && %(upper)s::text[]
               AND (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))
               AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))),
         b AS (SELECT DISTINCT ON (term, entity_id) * FROM m
               ORDER BY term, entity_id, ws DESC, sws DESC),
-        r AS (
+        d AS (
             SELECT b.*,
-                   row_number() OVER (PARTITION BY b.term
-                                      ORDER BY b.ws DESC, b.sws DESC, b.len, b.entity_id) AS overall,
-                   row_number() OVER (PARTITION BY b.term, b.vis
-                                      ORDER BY b.ws DESC, b.sws DESC, b.len, b.entity_id) AS rn
-            FROM b)
+                   row_number() OVER (PARTITION BY b.term, b.vis, b.pkey
+                                      ORDER BY b.ws DESC, b.sws DESC, b.len, b.entity_id) AS dup
+            FROM b),
+        p AS (
+            SELECT d.*,
+                   row_number() OVER (PARTITION BY d.term, d.vis, d.pkey IS NOT NULL
+                                      ORDER BY d.ws DESC, d.sws DESC, d.len, d.entity_id) AS pn
+            FROM d WHERE d.pkey IS NULL OR d.dup = 1),
+        r AS (
+            SELECT p.*,
+                   row_number() OVER (PARTITION BY p.term
+                                      ORDER BY p.ws DESC, p.sws DESC, p.len, p.entity_id) AS overall,
+                   row_number() OVER (PARTITION BY p.term, p.vis
+                                      ORDER BY p.ws DESC, p.sws DESC, p.len, p.entity_id) AS rn
+            FROM p WHERE p.pkey IS NULL OR p.pn <= %(plim)s)
         SELECT r.term, r.vis, r.entity_id, e.object_id, e.type, e.name, e.normalized,
                e.alias, r.ws, r.sws
         FROM r LEFT JOIN {table} e ON r.vis AND e.entity_id = r.entity_id

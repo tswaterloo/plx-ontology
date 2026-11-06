@@ -14,10 +14,10 @@ stay two entities.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
-import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterator, Sequence
 
@@ -36,7 +36,20 @@ ENTITY_TYPES = {"Customer": ("customer", ("name",)), "Supplier": ("supplier", ("
                 "Manufacturer": ("manufacturer", ("name",)),
                 "RelPublicAppManufacturer": ("manufacturer", ("name",)),
                 "RelSageApVendor": ("supplier", ("vendname", "legalname")),
-                "CustomerLocation": ("customer_location", ("label",))}
+                "CustomerLocation": ("customer_location", ("label",)),
+                # documents people ask for by number: codes only, never their text
+                "Receipt": ("receipt", ()), "SalesInvoice": ("sales_invoice", ()),
+                "Shipment": ("shipment", ()), "SupplierInvoice": ("supplier_invoice", ()),
+                "PackingSlip": ("packing_slip", ()),
+                "CertificateOfAnalysis": ("certificate_of_analysis", ())}
+# A document's own number the store keeps as a text value, not an identifier (a Sage
+# invoice, receipt or shipment number; a CoA's document number): read as a code alias of
+# that record. Only a value holding a digit, one token, is a code.
+CODE_PROPS = {"SalesInvoice": ("invoice_number",), "Receipt": ("sage_receipt_number",),
+              "Shipment": ("sage_shipment_number",),
+              "CertificateOfAnalysis": ("document_number",)}
+CODE_LABELS = {"SalesInvoice": "Invoice", "Receipt": "Receipt", "Shipment": "Shipment",
+               "CertificateOfAnalysis": "CoA"}
 # The record's own values people describe an entity by (place, category, short name,
 # site). Read at markings the row already carries, never raising it: a value marked
 # beyond the row (a location's ``pii`` city, a supplier item's ``finance`` origin) is left
@@ -78,15 +91,19 @@ class Entity:
 
 
 def fold(text: str) -> str:
-    """Lower case, accents and punctuation off, ``&`` as ``and``, spaces collapsed."""
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch)).casefold()
-    text = text.replace("&", " and ")
-    return " ".join(re.sub(r"[^0-9a-z]+", " ", text).split())
+    """Lower case, accents and punctuation off, ``&`` as ``and``, an apostrophe dropped
+    (``Plant's`` -> ``plants``), spaces collapsed: the query's own fold
+    (``query_understanding.fold``), so a name is stored as a question spells it."""
+    from operating.query_understanding import fold as query_fold
+    return query_fold(text)
 
 
-# Entity types that are people: kept only when the people exclusion clears their address.
-PERSON_TYPES = frozenset({"person"})
+# Entity types that are people or a company's contact card (its address is a person's):
+# kept only when the people exclusion clears their address.
+PERSON_TYPES = frozenset({"person", "contact"})
+# A record whose own value says it is another kind of entity: a BC contact card that is a
+# company, not a person, is a ``contact`` (a party), never a person.
+KIND_PROPS = {"Contact": {("contact_type", "Company"): "contact"}}
 _PERSON_KEYS = ("email",)
 
 
@@ -98,7 +115,10 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
     counts = counts or Counts()
     produced = 0
     for object_type, (etype, name_props) in sorted(ENTITY_TYPES.items()):
-        if types is not None and etype not in types:
+        code_props = CODE_PROPS.get(object_type, ())
+        kind_props = KIND_PROPS.get(object_type, {})
+        if types is not None and etype not in types \
+                and not set(kind_props.values()) & set(types):
             continue
         after = ""
         while True:
@@ -118,18 +138,30 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
                 latest[r["object_id"]] = r["markings"]
             names: dict[str, list[tuple[str, str]]] = {}
             attrs: dict[str, list[tuple[str, str, str]]] = {}
+            codes: dict[str, list[tuple[str, str, str]]] = {}
             addresses: dict[str, list[str]] = {}
+            kinds: dict[str, str] = {}
             for r in conn.execute(
                     "SELECT object_id, property, value, markings FROM object_values WHERE "
                     "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
                     "AND property IN (SELECT value FROM json_each(?))",
                     (ids, json.dumps(list(name_props) + list(ATTRIBUTE_PROPS)
-                                     + list(_PERSON_KEYS)))):
+                                     + list(_PERSON_KEYS) + list(code_props)
+                                     + [prop for prop, _value in kind_props]))):
                 if not (isinstance(r["value"], str) and r["value"].strip()):
+                    continue
+                if (r["property"], r["value"].strip()) in kind_props:
+                    kinds[r["object_id"]] = kind_props[(r["property"], r["value"].strip())]
                     continue
                 if r["property"] in _PERSON_KEYS:
                     if etype in PERSON_TYPES:
                         addresses.setdefault(r["object_id"], []).append(r["value"].strip())
+                    continue
+                if r["property"] in code_props:
+                    code = _code_value(r["value"])
+                    if code:
+                        codes.setdefault(r["object_id"], []).append(
+                            (CODE_LABELS.get(object_type, etype), code, r["markings"]))
                     continue
                 if r["property"] in name_props:
                     names.setdefault(r["object_id"], []).append(
@@ -141,27 +173,71 @@ def entities(conn: Any, counts: Counts | None = None, types: Sequence[str] | Non
                        for oid, found in names.items()}
             idents: dict[str, list[Any]] = {}
             for r in conn.execute(
-                    "SELECT object_id, identifier_kind, normalized, raw, role, markings FROM "
+                    "SELECT object_id, identifier_kind, normalized, raw, role, markings, "
+                    "property FROM "
                     "identifiers WHERE object_id IN (SELECT value FROM json_each(?)) AND "
                     "superseded_at IS NULL ORDER BY role DESC, identifier_kind, normalized",
                     (ids,)):
-                if r["identifier_kind"] not in hd.TECHNICAL:
+                if r["identifier_kind"] not in hd.TECHNICAL \
+                        and _names_itself(object_type, r["property"], r["identifier_kind"],
+                                          r["normalized"]):
                     idents.setdefault(r["object_id"], []).append(r)
             for row in rows:
-                if not _cleared(row, etype, addresses.get(row["object_id"], []), exclusion,
+                rtype = kinds.get(row["object_id"], etype)
+                if types is not None and rtype not in types:
+                    continue
+                if not _cleared(row, rtype, addresses.get(row["object_id"], []), exclusion,
                                 counts):
                     continue
-                entity = _entity(row, etype, latest.get(row["object_id"], "[]"),
+                entity = _entity(row, rtype, latest.get(row["object_id"], "[]"),
                                  ordered.get(row["object_id"], []),
                                  idents.get(row["object_id"], []), counts,
-                                 attrs.get(row["object_id"], []))
+                                 attrs.get(row["object_id"], []),
+                                 codes.get(row["object_id"], []))
                 if entity is None:
                     continue
-                counts.chunks[f"entity:{etype}"] += 1
+                counts.chunks[f"entity:{rtype}"] += 1
                 yield entity
                 produced += 1
                 if limit is not None and produced >= limit:
                     return
+
+
+@functools.lru_cache(maxsize=1)
+def reference_properties() -> frozenset[tuple[str, str]]:
+    """(object type, property) of every identifier the schema says names another record
+    (``identifies: reference``: a customer's bill-to payer code, an order's vendor
+    number); none when the schema cannot be read."""
+    try:
+        from ontology.schema import load_schema
+        schema = load_schema()
+    except Exception:  # noqa: BLE001 - no schema: every identifier is the record's own
+        return frozenset()
+    return frozenset((tid, prop["name"]) for tid, otype in schema.object_types.items()
+                     for prop in otype.get("properties", ())
+                     if prop.get("identifies") == "reference")
+
+
+# Identifier kinds that are numbers: a value with no digit is free text typed in the field
+# (a first name in a customer PO field), never a code naming the record.
+NUMBER_KINDS = frozenset({"customer_po", "lot_number"})
+
+
+def _names_itself(object_type: str, prop: str, kind: str, normalized: Any) -> bool:
+    """Whether an identifier is a code of the record itself, so an alias: never a code of
+    another record it refers to (a parent customer's code on every location it bills
+    would make that code match each of them), never a number field's free text."""
+    if (object_type, prop) in reference_properties():
+        return False
+    return not (kind in NUMBER_KINDS and not re.search(r"\d", str(normalized or "")))
+
+
+def _code_value(value: Any) -> str | None:
+    """A document number read from a text value: one token holding a digit, upper case."""
+    text = str(value or "").strip().upper()
+    if not text or " " in text or len(text) > 40 or not re.search(r"\d", text):
+        return None
+    return text
 
 
 def _cleared(row: Any, etype: str, addresses: list[str], exclusion: Any,
@@ -199,7 +275,8 @@ def attribute_words(prop: str, value: str) -> list[str]:
 
 def _entity(row: Any, etype: str, latest: str, names: list[tuple[str, str]],
             idents: list[Any], counts: Counts,
-            attrs: list[tuple[str, str, str]] = ()) -> Entity | None:
+            attrs: list[tuple[str, str, str]] = (),
+            codes: list[tuple[str, str, str]] = ()) -> Entity | None:
     oid, audience = row["object_id"], row["audience_key"]
     if not valid_key(audience):
         counts.skip("entity_audience_key_unknown")
@@ -226,13 +303,20 @@ def _entity(row: Any, etype: str, latest: str, names: list[tuple[str, str]],
             continue   # never raise a row to an identifier's markings; leave it out
         alias.extend([r["raw"], r["normalized"], hd.id_label(r["identifier_kind"],
                                                              r["normalized"])])
+    own_codes = [(label, code) for label, code, value_marks in codes
+                 if (held := parse_markings(value_marks)) is not None and set(held) <= marks]
+    for label, code in own_codes:
+        alias.extend([code, f"{label} {code}"])
     if name is None:
         primary = next((r for r in idents if (h := parse_markings(r["markings"])) is not None
                         and set(h) <= marks), None)
-        if primary is None:
+        if primary is not None:
+            name = hd.id_label(primary["identifier_kind"], primary["normalized"])
+        elif own_codes:
+            name = hd.undoubled(f"{own_codes[0][0]} {own_codes[0][1]}")
+        else:
             counts.skip(f"entity_unnamed:{etype}")
             return None
-        name = hd.id_label(primary["identifier_kind"], primary["normalized"])
     for prop, value, value_marks in attrs:
         held = parse_markings(value_marks)
         if held is None or not set(held) <= marks:
@@ -291,6 +375,28 @@ def organisations(conn: Any) -> dict[str, str]:
                     if domain:
                         found.setdefault(domain, set()).add(names[r["object_id"]])
     return {d: next(iter(n)) for d, n in found.items() if len(n) == 1}
+
+
+# Shared and system mailboxes: an address is a role, not a person, when its local part
+# (digits and separators aside) is one of these words. Never a person entity: thousands
+# of "info" or "noreply" rows would name no one and crowd real names out.
+ROLE_MAILBOXES = frozenset("""
+    info information noreply donotreply notreply support help helpdesk service
+    customerservice customerservices custserv care sales sale accounts account accounting
+    ap ar admin administrator orders order billing bills invoice invoices invoicing
+    payables receivables payable receivable payment payments remittance remittances
+    statements purchasing procurement receiving shipping logistics dispatch warehouse
+    customs contact contactus hello office reception mail email mailer mailerdaemon
+    postmaster webmaster notification notifications alerts alert news newsletter
+    marketing hr careers jobs team bounce bounces quotes quote rfq returns credit
+    collections ops operations it system systems automated auto reply
+""".split())
+
+
+def role_mailbox(address: str) -> bool:
+    """Whether ``address`` is a shared or system mailbox (``ROLE_MAILBOXES``)."""
+    local = address.split("@", 1)[0].lower()
+    return re.sub(r"[^a-z]", "", local) in ROLE_MAILBOXES
 
 
 def _person_name(address: str) -> str:
@@ -372,6 +478,9 @@ def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
                     if not exclusion.identity_clear(who):
                         counts.skip("people_exclusion:participant")
                         continue
+                    if "@" in who and role_mailbox(who):
+                        counts.skip("participant_role_mailbox")
+                        continue
                     base = parse_markings(row["markings"], marks, '["pii"]')
                     if base is None:
                         continue
@@ -411,4 +520,4 @@ def participants(conn: Any, counts: Counts | None = None, exclusion: Any = None,
 
 
 __all__ = ["ATTRIBUTE_PROPS", "ENTITY_TYPES", "Entity", "attribute_words", "entities", "fold",
-           "organisations", "participants"]
+           "organisations", "participants", "role_mailbox"]

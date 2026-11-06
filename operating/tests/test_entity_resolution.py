@@ -125,6 +125,17 @@ class Mentions(unittest.TestCase):
                          [("acme", "name")])
 
 
+    def test_a_short_code_with_a_space_or_a_label_word_is_the_code(self):
+        got = er.mentions("PO 100")
+        self.assertEqual([(m["text"], m["kind"]) for m in got], [("PO 100", "code")])
+        self.assertIn("PO100", got[0]["forms"])
+        got = er.mentions("invoice XY1000123")
+        self.assertEqual([(m["text"], m["kind"]) for m in got], [("XY1000123", "code")])
+        entities, _ = resolve("PO 100")
+        self.assertEqual(entities[0]["status"], "match")
+        self.assertEqual(entities[0]["records"][0]["object"]["object_id"], PO)
+
+
 class Resolve(unittest.TestCase):
     def test_a_code_reaches_every_system_through_shared_codes(self):
         entities, gaps = resolve("Where is AB-CD-12X now?")
@@ -199,6 +210,107 @@ class Resolve(unittest.TestCase):
         with mock.patch.object(er, "MAX_LEADS", 1):
             entities, _ = resolve("did we get XY0103440 and XY0101004?")
         self.assertEqual({e["mention"] for e in entities}, set(by_mention))
+
+    def test_the_index_and_the_query_fold_a_name_alike(self):
+        """One normaliser: the entity index stores a name as the query folds it (an
+        apostrophe dropped, ``&`` as ``and``), and a row stored before that (an
+        apostrophe as a space) still resolves."""
+        from operating.chunking.entities import fold as index_fold
+        from operating.query_understanding import fold as query_fold
+        for name in ("Mapleton's Supply", "Ash & Oak Ltd.", "Café Rouge’s", "ACME, INC.",
+                     "B2B-Parts/East", "o'neil  &  sons"):
+            self.assertEqual(index_fold(name), query_fold(name))
+        self.assertEqual(index_fold("Mapleton's Supply"), "mapletons supply")
+        legacy = row('Supplier:bc.vendors:{"id":"m1"}', "supplier", "MAPLETON'S SUPPLY", [])
+        legacy = EntityRow(legacy.entity_id, legacy.object_id, legacy.type, legacy.name,
+                           "mapleton s supply", (), "", 1.0, 1.0)
+
+        class Legacy(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                return [legacy] if "mapleton s supply" in terms else [], {}
+
+        entities, _ = er.Resolver(FakeBase(), Legacy()).resolve("scope", "actor",
+                                                               "Mapleton's Supply")
+        self.assertEqual(entities[0]["status"], "match")
+        self.assertEqual(entities[0]["records"][0]["object"]["object_id"], legacy.object_id)
+
+    def test_a_name_with_a_slip_or_words_between_is_a_lead_and_a_plural_a_match(self):
+        slip = row('Supplier:bc.vendors:{"id":"t1"}', "supplier",
+                   "NORVIK LOGISITICS 9TH WAREHOUSE", [])
+        towel = row('Product:portal.sage_ic_item:{"itemno":"T1"}', "item",
+                    "12 x 20 Copper Leaf Std Hand Towels", [])
+        exact = row('Supplier:bc.vendors:{"id":"q1"}', "supplier", "Quill Works", [])
+        near = row('Supplier:bc.vendors:{"id":"q2"}', "supplier", "Quills Works Inc", [])
+
+        class Index(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                return [slip, towel, exact, near], {}
+
+        def best(text):
+            entities, _ = er.Resolver(FakeBase(), Index()).resolve("scope", "actor", text)
+            return {r["object"]["object_id"]: r["status"] for e in entities
+                    for r in e["records"]}
+
+        self.assertEqual(best("Norvik Logistics")[slip.object_id], "lead")
+        self.assertEqual(best("Copper Leaf hand towel")[towel.object_id], "lead")
+        found = best("Quill Works")
+        self.assertEqual(found[exact.object_id], "match")
+        self.assertEqual(found[near.object_id], "lead")   # a closer name was found
+
+    def test_a_name_among_many_namesakes_of_its_common_word_is_found_by_its_rare_one(self):
+        slip = EntityRow('e:s', 'Supplier:bc.vendors:{"id":"t1"}', "supplier",
+                         "NORVIK LOGISITICS 9TH WAREHOUSE", "norvik logisitics 9th warehouse",
+                         (), "norvik", 1.0, 1.0)
+        word = EntityRow('e:w', 'Email:9', "person", "Norvik", "norvik", (), "norvik",
+                         1.0, 1.0)
+
+        class Index(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                # the whole name's term finds only its namesakes; its rare word finds it
+                return ([slip, word] if "norvik" in terms else []), {}
+
+        entities, _ = er.Resolver(FakeBase(), Index()).resolve("scope", "actor",
+                                                               "Norvik Logistics")
+        found = {r["object"]["object_id"]: r["status"] for e in entities for r in e["records"]}
+        self.assertEqual(found, {slip.object_id: "lead"})   # one word alone names nothing
+
+    def test_two_firms_a_letter_apart_are_never_matched_and_one_plural_is(self):
+        prater = row('Customer:bc.customers:{"id":"c1"}', "customer", "Prater Way Car Wash LP", [])
+        crater = row('Customer:bc.customers:{"id":"c2"}', "customer", "Crater Car Wash", [])
+        bolt = row('Supplier:bc.vendors:{"id":"s1"}', "supplier", "Bolt Fasteners", [])
+        bolts = row('Supplier:bc.vendors:{"id":"s2"}', "supplier", "Bolts Fastener", [])
+        rows = []
+
+        class Index(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                return rows, {}
+
+        def found(text):
+            entities, _ = er.Resolver(FakeBase(), Index()).resolve("scope", "actor", text)
+            return {r["object"]["object_id"]: r["status"] for e in entities
+                    for r in e["records"]}
+
+        rows[:] = [prater, crater]
+        self.assertEqual(found("Prater Car Wash"),
+                         {prater.object_id: "lead", crater.object_id: "lead"})
+        rows[:] = [bolt]
+        self.assertEqual(found("Bolt Fastener"), {bolt.object_id: "match"})
+        rows[:] = [bolt, bolts]   # two names differ from the asked only by a plural
+        self.assertEqual(found("Bolt Fastener"),
+                         {bolt.object_id: "lead", bolts.object_id: "lead"})
+
+    def test_one_person_seen_in_several_mailboxes_is_one_person(self):
+        people = [EntityRow(f"p:{n}", f"Email:{n}", "person", "Jo Park", "jo park",
+                            ("jo.park@maple.example", "maple.example"), "", 1.0, 1.0)
+                  for n in range(3)]
+
+        class Index(FakeIndex):
+            def by_terms(self, terms, scope, types=None):
+                return people, {}
+
+        entities, _ = er.Resolver(FakeBase(), Index()).resolve("scope", "actor", "Jo Park")
+        self.assertEqual(len(entities), 1)
+        self.assertEqual(len(entities[0]["records"]), 3)
 
     def test_no_index_is_a_gap_never_an_error(self):
         entities, gaps = er.Resolver(FakeBase(), None).resolve("scope", "actor", "Acme")
