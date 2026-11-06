@@ -100,7 +100,10 @@ def publish(served: Path, layers: list[Path]) -> None:
 
 
 class Guard:
-    """A people exclusion that excludes one mailbox."""
+    """A people exclusion that excludes one mailbox; the tenant's own domain."""
+
+    def known_domains(self):
+        return frozenset({"own.example"})
 
 
 def excluded(_guard, handle: str) -> bool:
@@ -204,12 +207,66 @@ class DiscoverTest(World):
 
 
 def queued(ws, oid: str, object_type: str, handle: str, change: str = "new",
-           changed=(), event: str = "2026-10-20T11:00:00") -> None:
+           changed=(), event: str = "2026-10-20T11:00:00", traits=None) -> None:
     ws.execute("INSERT OR REPLACE INTO queue (object_id, object_type, handle, change, "
-               "changed, event_at, since, thread, queued_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               "changed, event_at, since, thread, queued_at, traits) VALUES "
+               "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                (oid, object_type, handle, change, json.dumps(list(changed)), event,
                 aw._iso(NOW - dt.timedelta(days=1)) if change == "changed" else None, None,
-                aw._iso(NOW)))
+                aw._iso(NOW), json.dumps(traits) if traits is not None else None))
+
+
+class MailTest(World):
+    """Who writes: one copy of a message across mailboxes, who the company writes to, and
+    the order messages are read in (made-up addresses)."""
+
+    def test_copies_correspondents_and_the_reading_order(self) -> None:
+        self.base().build(self.served)
+        rows = Rows()
+
+        def email(n, mbx, sender, *, key=None, to="", sent="2026-10-20T10:00:00Z"):
+            values = {"sent_at": ("timestamp", sent), "sender": ("text", sender),
+                      "to_addresses": ("text", to)}
+            if key:
+                values["internet_message_id"] = ("identifier", key)
+            rows.obj(f"Email:fx:{n}", "Email", f"graph-mail://mbx-{mbx}/msg-{n}@v1",
+                     values, digest=f"e{n}", recorded=RECENT)
+        # a colleague wrote to the buyer last year (backlog, never queued, still learned)
+        email(30, 1, "pat@own.example", to="buyer@customer.example",
+              sent="2025-05-01T10:00:00Z")
+        # the buyer's mail, delivered to two mailboxes: one copy is read
+        email(31, 1, "buyer@customer.example", key="<m31@customer.example>",
+              to="pat@own.example", sent="2026-10-20T09:00:00Z")
+        email(32, 2, "buyer@customer.example", key="<m31@customer.example>",
+              to="lee@own.example", sent="2026-10-20T09:00:00Z")
+        # a stranger and a notifier, newer than the buyer's mail
+        email(33, 1, "sales@pitch.example", to="pat@own.example")
+        for n in range(40, 46):
+            email(n, 1, "no-reply@alerts.example", to="pat@own.example",
+                  sent=f"2026-10-20T10:{n}:00Z")
+        layer = make_layer(self.state / "projection" / "mail.sqlite", rows,
+                           [r["object_id"] for r in rows.rows["objects"]], self.served)
+        publish(self.served, [layer])
+        with closing(aw.open_store(self.watch)) as ws:
+            found = aw.discover(ws, self.served, now=NOW, guard=Guard(), excluded=excluded,
+                                sender_excluded=lambda g, a: False)
+            self.assertEqual((found["copy"], found["old_news"]), (1, 1))
+            stored = " ".join(str(tuple(r)) for r in ws.execute(
+                "SELECT * FROM correspondents"))
+            self.assertNotIn("customer.example", stored)   # digests, never addresses
+            batch = aw.pick(ws, now=NOW, max_reads=6, message_bulk_min=4)
+        self.assertEqual([(r["object_id"], r["tier"]) for r in batch["entries"]],
+                         [("Email:fx:31", "correspondent"), ("Email:fx:33", "other")])
+        [stream] = batch["bulk"]
+        self.assertEqual((stream["messages"], stream["automated"], stream["count"]),
+                         (True, True, 6))
+        prompt = aw.task(batch, [], [], now=NOW, departments=["PROC"])
+        self.assertIn("Email:fx:31: new, 2026-10-20T09:00 [from someone the company "
+                      "writes to]", prompt)
+        self.assertIn("6 Email messages from one automated sender", prompt)
+        self.assertNotIn("customer.example", prompt)
+        self.assertIn(("plx.read", {"citation": "graph-mail://mbx-1/msg-45@v1",
+                                    "max_chars": aw.READ_CHARS}), aw.reads_for(batch))
 
 
 class PickTest(unittest.TestCase):
@@ -260,7 +317,8 @@ class ProposalTest(unittest.TestCase):
     def test_an_item_stands_only_on_what_the_gate_passed(self) -> None:
         passed = [claim("c1", row(1), "number", "PO-77"),
                   claim("c2", mail(5), "sent_at", "2026-10-20")]
-        events = [gate_event("PO-77 slips", "Supplier moved PO-77 to 2026-12-03.", passed),
+        events = [gate_event("PO-77 slips", "PO-77 was sent on 2026-10-20. It now arrives "
+                             "on 2026-12-03.", passed),
                   gate_event("Nothing backed", "x", [], outcome="abstained")]
         final = "done\n```json\n" + json.dumps({"items": [
             {"title": "PO-77 slips", "subject": "PurchaseOrder:fx:1",
@@ -275,8 +333,8 @@ class ProposalTest(unittest.TestCase):
         self.assertEqual(item["groups"], [[row(1)], [mail(5)]])
         self.assertEqual(item["departments"], ["PROC"])
         self.assertEqual(item["priority"], "medium")
-        # a date no claim states is screened out; the rest is the claims' lines
-        self.assertNotIn("2026-12-03", item["text"])
+        # a date no claim states is screened out, with its sentence
+        self.assertEqual(item["text"], "PO-77 was sent on 2026-10-20.")
         self.assertNotIn("2026-11-30", item["why"])
         self.assertEqual(items["Nothing backed"]["gate"], "not_passed:abstained")
         self.assertEqual(items["Never submitted"]["gate"], "not_submitted")
@@ -314,9 +372,23 @@ class ProposalTest(unittest.TestCase):
         self.assertEqual(aw.screened("Pat should confirm it. Bill 9000 USD.", passed,
                                      suggestion=True), "Pat should confirm it.")
 
+    def test_an_item_whose_own_words_the_claims_do_not_carry_is_refused(self) -> None:
+        """Passed fragments (a number, a status) under a statement none of whose sentences
+        they carry: the item is not shown on them; it gets its own gate pass instead."""
+        passed = [claim("c1", row(1), "number", "AO-7"), claim("c2", row(1), "status", "open")]
+        events = [gate_event("AO-7 quantities disagree",
+                             "AO-7 is planned at 2500 in one system and 2077 in the other.",
+                             passed)]
+        final = "```json\n" + json.dumps({"items": [{
+            "title": "AO-7 quantities disagree", "why": "Planning works from 2077."}]}) + "\n```"
+        [item] = aw.proposals(FakeRun(events, final), departments=set())
+        self.assertEqual(item["gate"], "not_passed:statement_unsupported")
+        self.assertIn("statement_unsupported", item["refusals"])
+        self.assertIn("retry", item)
+
     def test_a_session_cut_short_keeps_what_its_gate_passed(self) -> None:
-        events = [gate_event("Hold on batch", "Batch held.", [claim("c1", row(4), "status",
-                                                                    "held")])]
+        events = [gate_event("Hold on batch", "The batch is held.",
+                             [claim("c1", row(4), "status", "held")])]
         items = aw.proposals(FakeRun(events, ""), departments=set())
         self.assertEqual([(i["title"], i["gate"]) for i in items],
                          [("Hold on batch", "passed")])
@@ -481,7 +553,7 @@ class ReadTest(World):
         passed = {"id": "c1", "citations": [row(9)], "text": "unit_cost: 41.45",
                   "value_claims": [{"citation": row(9), "field": "row.unit_cost",
                                     "value": "41.45"}]}
-        events = [gate_event("Cost", "Cost moved.", [passed])]
+        events = [gate_event("Cost", "The cost moved.", [passed])]
         [item] = aw.proposals(FakeRun(events, ""), departments=set())
         places = aw.Places(served)
         try:
@@ -606,6 +678,22 @@ class RetryTest(World):
         self.assertEqual((summary["retried"], summary["recovered"]), (1, 0))
         self.assertEqual(summary["items"][0]["state"], "refused")
         self.assertEqual(len(agent.calls), 2)
+
+
+class ReadOnlyTest(unittest.TestCase):
+    def test_the_watcher_session_can_only_read(self) -> None:
+        """Dry or on, the watcher's sessions get the read-only tools and the answer gate
+        only: never a case writer, a proposal, an approval or a send."""
+        from operating import agent_session
+        for agent in (aw.claude_agent("opus"), aw.claude_agent(
+                "opus", budget=aw.RETRY_BUDGET_SECONDS, timeout=aw.RETRY_TIMEOUT_SECONDS)):
+            allowed, _refused = agent_session.allowed_tools(
+                [{"name": "plx.read", "read_only": True},
+                 {"name": "plx.case_get", "read_only": True},
+                 {"name": "plx.case_propose"}, {"name": "plx.case_add_finding"},
+                 {"name": "plx.act"}, {"name": "plx.send_mail"}, {"name": "plx.approve"}],
+                case_tools=agent.case_tools, proposals=agent.proposals)
+            self.assertEqual(allowed, ["plx.read", "plx.case_get"])
 
 
 class Killed(BaseException):

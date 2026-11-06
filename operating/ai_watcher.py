@@ -13,13 +13,19 @@ Each run (``cycle``):
    is a restamp; a new record whose own newest time is older than ``WINDOW_HOURS`` is a
    backlog capture, not news; a part of a message (an attachment, a handle with a
    ``#`` fragment) is read through its message; a message of a thread already queued
-   folds into the thread's newest. A message, chat or document the people exclusion may
-   cover is dropped before anything reads it (fail closed: no guard, no messages).
+   folds into the thread's newest; another mailbox's copy of a message already seen (its
+   ``internet_message_id``) is a ``copy``. A message, chat or document the people
+   exclusion may cover is dropped before anything reads it (fail closed: no guard, no
+   messages). Every colleague's message in the layers teaches who the company writes to
+   (``correspondents``: digests of outside addresses and domains, never the text).
    Each is queued; a queued change older than ``WINDOW_HOURS`` ages out, counted.
 2. **One batch** (``pick``): at most ``MAX_READS`` reads per run: changed business records
-   first, then new messages and records, newest first; a run of more than ``BULK_MIN``
-   records of one type that changed the same properties is one line (a bulk recompute)
-   with a sample read. Nothing new: no model call (``nothing_new``). Every model session
+   first, then new messages and records, newest first; messages by tier (``_tier``: from
+   someone the company writes to, naming business records, from a colleague, other,
+   automated); a run of more than ``BULK_MIN`` records of one type that changed the same
+   properties is one line (a bulk recompute) with a sample read, and so are more than
+   ``MESSAGE_BULK_MIN`` messages of one automated or unknown sender (a notification
+   stream). Nothing new: no model call (``nothing_new``). Every model session
    (batch or retry) is recorded as it starts; ``MAX_SESSIONS_PER_HOUR`` started in the
    last hour: none more (``rate_capped``); the queue waits. A run starts a session only
    when its time limit ends within ``RUN_SECONDS``; a killed run is resumed (``recover``).
@@ -37,7 +43,9 @@ Each run (``cycle``):
 4. **Gate, screen, truth check** (``proposals``, ``truth``): an item stands only on what
    the gate passed: its evidence groups are the passed claims' citations, its text and
    why are the submitted ones screened against those claims (``answer_gate.final_reply``
-   with no asker-given identifiers), and it is checked by the cross-system truth check
+   with no asker-given identifiers; an item none of whose text or why sentences stand is
+   ``statement_unsupported`` and gets its own gate pass), and it is checked by the
+   cross-system truth check
    (``operating.truth_check``: test records, an order received or cancelled elsewhere, a
    lot used up, a hold that is a default, a quantity that is a format pair, an at-risk
    cause that is wrong). A contradicted item is refused, never shown.
@@ -126,6 +134,17 @@ MESSAGE_SCHEMES = ("graph-mail", "teams-chat", "teams-channel", "sharepoint",
                    "sharepoint-list", "meeting-transcript", "calendar-event", "original")
 # A message's thread (its newest message stands for the rest in one run).
 THREAD_PROPERTIES = ("conversation_id", "chat_id")
+# A message's own id across mailboxes (one copy per message is read), its sender and its
+# recipients (who the company writes to: ``correspondents``).
+MESSAGE_KEY_PROPERTIES = ("internet_message_id",)
+SENDER_PROPERTIES = ("sender", "from_address")
+RECIPIENT_PROPERTIES = ("to_addresses", "cc_addresses")
+# More than this many queued messages of one sender who is automated or no correspondent:
+# one bulk line with one sample read (a notification stream, a mailing).
+MESSAGE_BULK_MIN = 4
+# How the batch orders new messages (``_tier``): mail from someone the company writes to,
+# then mail naming a business record, then colleagues, then the rest, automated last.
+TIERS = ("correspondent", "names_records", "internal", "other", "automated")
 TIME_TYPES = ("timestamp", "date")
 # A batch's reads: messages, the schema's curated business records, its generated source
 # mirrors (a share one leaves unused goes to the others).
@@ -209,7 +228,7 @@ CREATE TABLE IF NOT EXISTS seen (object_id TEXT PRIMARY KEY, digest TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS queue (object_id TEXT PRIMARY KEY, object_type TEXT NOT NULL,
   handle TEXT NOT NULL, change TEXT NOT NULL, changed TEXT NOT NULL, event_at TEXT NOT NULL,
   since TEXT, thread TEXT, queued_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-  claimed INTEGER);
+  claimed INTEGER, traits TEXT);
 CREATE TABLE IF NOT EXISTS sessions (session_id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL CHECK (kind IN ('batch', 'retry')), parent INTEGER,
   started_at TEXT NOT NULL, ended_at TEXT, state TEXT NOT NULL CHECK (state IN
@@ -228,6 +247,10 @@ CREATE TABLE IF NOT EXISTS item_cites (item_id TEXT NOT NULL, grp INTEGER NOT NU
   handle TEXT NOT NULL, object_id TEXT, markings TEXT NOT NULL,
   PRIMARY KEY (item_id, grp, handle));
 CREATE INDEX IF NOT EXISTS items_open ON items (state, last_seen);
+CREATE TABLE IF NOT EXISTS message_keys (key TEXT PRIMARY KEY, object_id TEXT NOT NULL,
+  at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS correspondents (key TEXT PRIMARY KEY, n INTEGER NOT NULL,
+  at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS item_states (item_id TEXT NOT NULL, reader TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('dismissed', 'snoozed')), until TEXT, reason TEXT,
   at TEXT NOT NULL, PRIMARY KEY (item_id, reader));
@@ -244,7 +267,7 @@ def open_store(directory: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
-    for column in ("attempts INTEGER NOT NULL DEFAULT 0", "claimed INTEGER"):
+    for column in ("attempts INTEGER NOT NULL DEFAULT 0", "claimed INTEGER", "traits TEXT"):
         try:   # a store written before sessions: its queue gains the columns
             conn.execute(f"ALTER TABLE queue ADD COLUMN {column}")
         except sqlite3.OperationalError:
@@ -323,6 +346,20 @@ def _values(conn: sqlite3.Connection, ids: Sequence[str]
     return out
 
 
+def _values_of(conn: sqlite3.Connection, ids: Sequence[str], props: Sequence[str]
+               ) -> dict[str, dict[str, list[Any]]]:
+    """``_values`` of only ``props`` (what learning who the company writes to reads)."""
+    out: dict[str, dict[str, list[Any]]] = defaultdict(lambda: defaultdict(list))
+    for part in _chunks(list(ids)):
+        for row in conn.execute(
+                "SELECT object_id, property, value_type, value FROM object_values WHERE "
+                "object_id IN (SELECT value FROM json_each(?)) AND superseded_at IS NULL "
+                "AND property IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(part)), json.dumps(list(props)))):
+            out[row[0]][row[1]].append((row[2], row[3]))
+    return out
+
+
 def _props(values: Mapping[str, Sequence[Any]]) -> dict[str, str]:
     """property -> a digest of its values (what a change compares)."""
     return {prop: hashlib.sha256(json.dumps(sorted(str(v) for _, v in vals))
@@ -347,15 +384,105 @@ def _thread(values: Mapping[str, Sequence[Any]]) -> str | None:
     return None
 
 
+_ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _key(text: str) -> str:
+    """A lowered address or domain as the watcher keeps it: a digest, never the text."""
+    return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()[:24]
+
+
+def _addresses(values: Mapping[str, Sequence[Any]], props: Sequence[str]) -> list[str]:
+    return [a.lower() for prop in props for _, v in values.get(prop) or ()
+            if isinstance(v, str) for a in _ADDRESS.findall(v)]
+
+
+def _party_keys(address: str) -> list[str]:
+    """The keys a counterparty address is known by: itself, and its domain unless that
+    is a shared mail provider's (one gmail writer says nothing of another)."""
+    from ontology.mentions import shared_mail_domain
+    domain = address.rsplit("@", 1)[1]
+    return [_key(address)] + ([] if shared_mail_domain(domain) else [_key("@" + domain)])
+
+
+def _message_key(values: Mapping[str, Sequence[Any]]) -> str | None:
+    for prop in MESSAGE_KEY_PROPERTIES:
+        for _, value in values.get(prop) or ():
+            if isinstance(value, str) and value.strip():
+                return _key(value)
+    return None
+
+
+def _traits(values: Mapping[str, Sequence[Any]], internal: frozenset[str], linked: int
+            ) -> dict[str, Any]:
+    """What the batch knows of a message before reading it (never shown as text): its
+    sender's keys, whether the sender is a colleague (an address of the tenant's own
+    domains) or automated (``capture_mail.automated_sender``), how many business records
+    it names (its mention links)."""
+    from integrations.capture_mail import automated_sender
+    senders = _addresses(values, SENDER_PROPERTIES)
+    out: dict[str, Any] = {"linked": linked}
+    if senders:
+        sender = senders[0]
+        out.update(sender=_key(sender), parties=_party_keys(sender),
+                   internal=sender.rsplit("@", 1)[1] in internal,
+                   automated=automated_sender(sender))
+    return out
+
+
+def learn_correspondents(ws: sqlite3.Connection, values: Mapping[str, Mapping[str, Any]],
+                         internal: frozenset[str], *, now: str,
+                         sender_excluded: Callable[[str], bool]) -> int:
+    """Count, by digest, every outside address and domain a colleague wrote to in these
+    messages (``correspondents``): who the company answers is who matters to it. A
+    message whose sender the people exclusion may cover teaches nothing (fail closed)."""
+    counts: Counter = Counter()
+    for vals in values.values():
+        senders = _addresses(vals, SENDER_PROPERTIES)
+        if not senders or senders[0].rsplit("@", 1)[1] not in internal \
+                or sender_excluded(senders[0]):
+            continue
+        for address in set(_addresses(vals, RECIPIENT_PROPERTIES)):
+            if address.rsplit("@", 1)[1] not in internal:
+                counts.update(_party_keys(address))
+    for key, n in counts.items():
+        ws.execute("INSERT INTO correspondents VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE "
+                   "SET n = n + excluded.n, at = excluded.at", (key, n, now))
+    return sum(1 for _ in counts)
+
+
+def _linked(conn: sqlite3.Connection, ids: Sequence[str]) -> Counter:
+    """message id -> how many business records its current mention links name."""
+    out: Counter = Counter()
+    try:
+        for part in _chunks(list(ids)):
+            for (oid,) in conn.execute(
+                    "SELECT from_object FROM links WHERE superseded_at IS NULL AND "
+                    "link_type LIKE '%.mentions%' AND from_object IN (SELECT value FROM "
+                    "json_each(?))", (json.dumps(list(part)),)):
+                out[oid] += 1
+    except sqlite3.Error:
+        pass   # a layer without links: nothing named
+    return out
+
+
 def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
              guard: Any = None, excluded: Callable[[Any, str], bool] | None = None,
-             window_hours: float = WINDOW_HOURS) -> dict[str, Any]:
+             window_hours: float = WINDOW_HOURS,
+             sender_excluded: Callable[[Any, str], bool] | None = None) -> dict[str, Any]:
     """Queue the changes of every delta layer this watcher has not looked at (module doc,
     step 1); counts only."""
     from ontology.delta import STAMP_PROPERTIES
     from . import truth_check
 
     excluded = excluded or (lambda g, h: truth_check.excluded_hit(g, {"handle": h}))
+    sender_excluded = sender_excluded or (
+        lambda g, a: truth_check.excluded_hit(g, {"header": a}))
+    try:
+        internal = frozenset(d.lower() for d in guard.known_domains()) \
+            if guard is not None else frozenset()
+    except Exception:  # noqa: BLE001 - a guard that cannot say: no colleague is known
+        internal = frozenset()
     counts: Counter = Counter()
     digest, layers = _pointer(store)
     fresh = [layer for layer in layers if not ws.execute(
@@ -363,7 +490,6 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         (layer, digest)).fetchone()]
     if not fresh:
         return {"layers": 0, **counts}
-    now_text = _iso(now)
     since = _iso(now - dt.timedelta(hours=window_hours))
     newest: dict[str, tuple[str, sqlite3.Row]] = {}
     for layer in fresh:   # newest first: an object is the newest layer's that owns it
@@ -373,6 +499,25 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                 for row in conn.execute(_CURRENT, (json.dumps(list(part)),)):
                     newest.setdefault(row["object_id"], (layer, row))
     counts["owned"] = len(newest)
+    now_text = _iso(now)
+    if guard is not None and internal:
+        for layer in fresh:
+            mine = [oid for oid, (lay, row) in newest.items() if lay == layer
+                    and is_message(row["l1_handle"]) and "#" not in row["l1_handle"]
+                    and not excluded(guard, row["l1_handle"])]
+            if not mine:
+                continue
+            with closing(_ro(layer)) as conn:
+                vals = _values_of(conn, mine, SENDER_PROPERTIES + RECIPIENT_PROPERTIES)
+            ws.execute("BEGIN IMMEDIATE")
+            try:
+                counts["correspondents"] += learn_correspondents(
+                    ws, vals, internal, now=now_text,
+                    sender_excluded=lambda a: sender_excluded(guard, a))
+                ws.execute("COMMIT")
+            except BaseException:
+                ws.execute("ROLLBACK")
+                raise
     held = {r["object_id"]: r for part in _chunks(sorted(newest)) for r in ws.execute(
         "SELECT object_id, digest, props FROM seen WHERE object_id IN (SELECT value FROM "
         "json_each(?))", (json.dumps(list(part)),))}
@@ -410,6 +555,7 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         for layer, ids in wanted.items():
             with closing(_ro(layer)) as conn:
                 values = _values(conn, ids)
+                linked = _linked(conn, [o for o in ids if is_message(newest[o][1]["l1_handle"])])
             for oid in ids:
                 row = newest[oid][1]
                 vals = values.get(oid, {})
@@ -431,7 +577,17 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                 if change == "new" and event < since[:19]:
                     counts["old_news"] += 1
                     continue
-                thread = _thread(vals) if is_message(row["l1_handle"]) else None
+                message = is_message(row["l1_handle"])
+                key = _message_key(vals) if message else None
+                if key is not None:   # another mailbox's copy of a message already queued
+                    held_by = ws.execute("SELECT object_id FROM message_keys WHERE key = ?",
+                                         (key,)).fetchone()
+                    if held_by is not None and held_by[0] != oid:
+                        counts["copy"] += 1
+                        continue
+                    ws.execute("INSERT OR REPLACE INTO message_keys VALUES (?, ?, ?)",
+                               (key, oid, now_text))
+                thread = _thread(vals) if message else None
                 if thread is not None and thread in threads:
                     other, at = threads[thread]
                     if at >= event:
@@ -443,14 +599,18 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                     threads[thread] = (oid, event)
                 ws.execute(
                     "INSERT OR REPLACE INTO queue (object_id, object_type, handle, change, "
-                    "changed, event_at, since, thread, queued_at) VALUES "
-                    "(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "changed, event_at, since, thread, queued_at, traits) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (oid, row["object_type"], row["l1_handle"], change, json.dumps(changed),
-                     event, None if change == "new" else since, thread, now_text))
+                     event, None if change == "new" else since, thread, now_text,
+                     json.dumps(_traits(vals, internal, linked.get(oid, 0)))
+                     if message else None))
                 queued += 1
         for layer in fresh:
             ws.execute("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
                        (layer, digest, now_text))
+        ws.execute("DELETE FROM message_keys WHERE at < ?",
+                   (_iso(now - dt.timedelta(days=ITEM_DAYS)),))
         ws.execute("COMMIT")
     except BaseException:
         ws.execute("ROLLBACK")
@@ -464,11 +624,42 @@ def _reads(row: Mapping[str, Any]) -> int:
     return 2 if row["change"] == "changed" and not is_message(row["handle"]) else 1
 
 
-def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, str]
-              ) -> list[dict[str, Any]]:
+def traits_of(row: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        value = json.loads(row.get("traits") or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def known_parties(ws: sqlite3.Connection, rows: Iterable[Mapping[str, Any]]) -> set[str]:
+    """The party keys of these messages' senders the company has written to."""
+    keys = sorted({k for r in rows for k in traits_of(r).get("parties") or ()})
+    return {r[0] for part in _chunks(keys) for r in ws.execute(
+        "SELECT key FROM correspondents WHERE key IN (SELECT value FROM json_each(?))",
+        (json.dumps(list(part)),))}
+
+
+def _tier(row: Mapping[str, Any], known: set[str]) -> str:
+    """Where a message stands in the batch (``TIERS``): its sender is someone the company
+    writes to, it names business records, it is a colleague's, another person's, or an
+    automated sender's. Never a filter: it decides only what is read first."""
+    traits = traits_of(row)
+    if traits.get("automated"):
+        return "automated"
+    if not traits.get("internal") and known & set(traits.get("parties") or ()):
+        return "correspondent"
+    if traits.get("linked"):
+        return "names_records"
+    return "internal" if traits.get("internal") else "other"
+
+
+def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, str],
+              known: set[str] | None = None) -> list[dict[str, Any]]:
     """At most ``budget`` reads of ``rows`` (newest first): ``SHARES`` of it to messages,
     to the schema's curated business records and to its generated source mirrors, a
-    share one stream leaves unused going to the others; records are taken round-robin
+    share one stream leaves unused going to the others; messages are taken by their tier
+    (``_tier``), each tier newest first; records are taken round-robin
     over their types, the type with the fewest changes first (one change among thousands
     of a bulk recompute says more), each type's newest first."""
     streams: dict[str, list[dict[str, Any]]] = {"message": [], "curated": [], "mirror": []}
@@ -476,6 +667,10 @@ def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, 
         stream = "message" if is_message(row["handle"]) else (
             "mirror" if origin.get(row["object_type"]) == "generated" else "curated")
         streams[stream].append(row)
+    known = known or set()
+    for row in streams["message"]:
+        row["tier"] = _tier(row, known)
+    streams["message"].sort(key=lambda r: TIERS.index(r["tier"]))   # stable: newest first
     for name in ("curated", "mirror"):
         by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in streams[name]:
@@ -506,7 +701,8 @@ def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, 
 
 def pick(ws: sqlite3.Connection, *, now: dt.datetime, max_reads: int = MAX_READS,
          window_hours: float = WINDOW_HOURS, bulk_min: int = BULK_MIN,
-         origin: Mapping[str, str] | None = None) -> dict[str, Any]:
+         origin: Mapping[str, str] | None = None,
+         message_bulk_min: int = MESSAGE_BULK_MIN) -> dict[str, Any]:
     """This run's batch from the queue (module doc, step 2): ``entries`` read one by one
     (``_balanced``), ``bulk`` groups (one line, one sample read each) and the queue
     entries it takes; the others stay queued. Aged entries leave the queue
@@ -519,23 +715,38 @@ def pick(ws: sqlite3.Connection, *, now: dt.datetime, max_reads: int = MAX_READS
                        (since,)).rowcount
     rows = [dict(r) for r in ws.execute("SELECT * FROM queue WHERE claimed IS NULL ORDER BY "
                                         "event_at DESC, object_id")]
+    known = known_parties(ws, [r for r in rows if is_message(r["handle"])])
     groups: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        if not is_message(row["handle"]) and row["change"] == "changed":
+        if is_message(row["handle"]):
+            traits = traits_of(row)
+            # a sender's stream: automated, or no one the company writes to nor a colleague
+            if traits.get("sender") and (traits.get("automated") or (
+                    not traits.get("internal")
+                    and not known & set(traits.get("parties") or ()))):
+                groups[("message", traits["sender"])].append(row)
+        elif row["change"] == "changed":
             groups[(row["object_type"], row["changed"])].append(row)
-        elif not is_message(row["handle"]):
+        else:
             groups[(row["object_type"], "new")].append(row)
-    bulky = {key for key, members in groups.items() if len(members) > bulk_min}
-    single = [r for r in rows if is_message(r["handle"])
-              or (r["object_type"], r["changed"] if r["change"] == "changed" else "new")
-              not in bulky]
-    bulk = [{"object_type": key[0], "change": "new" if key[1] == "new" else "changed",
-             "changed": [] if key[1] == "new" else json.loads(key[1]),
+    bulky = {key for key, members in groups.items()
+             if len(members) > (message_bulk_min if key[0] == "message" else bulk_min)}
+
+    def group_of(r: Mapping[str, Any]) -> tuple:
+        if is_message(r["handle"]):
+            return ("message", traits_of(r).get("sender"))
+        return (r["object_type"], r["changed"] if r["change"] == "changed" else "new")
+    single = [r for r in rows if group_of(r) not in bulky]
+    bulk = [{"object_type": groups[key][0]["object_type"],
+             "change": "new" if key[0] == "message" or key[1] == "new" else "changed",
+             "changed": [] if key[0] == "message" or key[1] == "new" else json.loads(key[1]),
+             "messages": key[0] == "message",
+             "automated": bool(traits_of(groups[key][0]).get("automated")),
              "count": len(groups[key]), "sample": groups[key][0],
              "members": [m["object_id"] for m in groups[key]]}
-            for key in sorted(bulky, key=lambda k: (-len(groups[k]), k))]
+            for key in sorted(bulky, key=lambda k: (-len(groups[k]), str(k)))]
     bulk = bulk[:max(0, max_reads // 6)]   # one sample read each
-    entries = _balanced(single, max_reads - len(bulk), origin or {})
+    entries = _balanced(single, max_reads - len(bulk), origin or {}, known)
     taken = [r["object_id"] for r in entries] + [m for g in bulk for m in g["members"]]
     return {"entries": entries, "bulk": bulk, "taken": taken, "aged_out": aged,
             "waiting": len(rows) - len(taken)}
@@ -558,6 +769,9 @@ def reads_for(batch: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
             out.append(("plx.object", {**args, "as_known_at": row["since"]}))
     for group in batch["bulk"]:
         sample = group["sample"]
+        if is_message(sample["handle"]):
+            out.append(("plx.read", {"citation": sample["handle"], "max_chars": READ_CHARS}))
+            continue
         args = {"object_id": sample["object_id"], "response_format": "concise"}
         if group["changed"]:
             args["properties"] = group["changed"][:50]
@@ -579,11 +793,16 @@ def flagged(inbox: Path, ws: sqlite3.Connection, object_ids: Sequence[str]
                     "(SELECT gap_id FROM gap_cites WHERE object_id IN (SELECT value FROM "
                     "json_each(?)))) ORDER BY g.object_id, g.kind LIMIT 200", (ids, ids)):
                 events.append({"kind": row[0], "object_id": row[1]})
-    own = [{"title": r["title"], "subject": r["subject"]} for r in ws.execute(
-        "SELECT DISTINCT i.title, i.subject FROM items i LEFT JOIN item_cites c ON "
-        "c.item_id = i.item_id WHERE i.state = 'open' AND (i.subject IN (SELECT value FROM "
-        "json_each(?)) OR c.object_id IN (SELECT value FROM json_each(?))) LIMIT 100",
-        (json.dumps(list(object_ids)), json.dumps(list(object_ids))))]
+    # this watcher's open items about these records, then its other open items newest
+    # first: one matter reaches the company through many records and mailboxes
+    own: list[dict[str, str]] = []
+    for r in ws.execute(
+            "SELECT i.title, i.subject, max(i.subject IN (SELECT value FROM json_each(?)) OR "
+            "c.object_id IN (SELECT value FROM json_each(?))) AS here FROM items i LEFT JOIN "
+            "item_cites c ON c.item_id = i.item_id WHERE i.state = 'open' GROUP BY "
+            "i.item_id ORDER BY here DESC, i.last_seen DESC LIMIT 40",
+            (json.dumps(list(object_ids)), json.dumps(list(object_ids)))):
+        own.append({"title": r["title"], "subject": r["subject"]})
     return events, own
 
 
@@ -591,12 +810,21 @@ def flagged(inbox: Path, ws: sqlite3.Connection, object_ids: Sequence[str]
 
 INSTRUCTION = (
     "You are the operations lead of a manufacturer reading what just changed in the "
-    "company's systems: new mail and chat, new and changed records. Raise only what "
-    "genuinely needs someone's attention or action now: something that threatens a "
-    "customer commitment, supply, quality, cash or margin, a promise or request someone "
-    "must answer, or two records that contradict each other. Routine traffic, automated "
-    "notices and changes that alter nothing anyone must do are not items. Most batches "
-    "hold nothing worth raising; raising nothing is a good answer.")
+    "company's systems: new mail and chat, new and changed records. You brief the chief "
+    "executive. Raise only what genuinely needs a decision or action now: something that "
+    "threatens or changes a customer commitment, supply, quality, cash or margin; a "
+    "customer, supplier or other outside party waiting on an answer from us, above all one "
+    "who is chasing; new business offered to us; money owed that is not being collected "
+    "or paid; or two records that contradict each other in a way that changes what "
+    "someone must do. Not items: routine traffic, marketing and cold pitches, automated "
+    "notices that report no business event, IT and account notices, and the next normal "
+    "step of work the person it is addressed to is already doing (a quote, invoice, "
+    "confirmation or document sent to the colleague who asked for it), unless something "
+    "about it is late, contradicts a record or changes money, quantities or dates. Raise "
+    "one item per real-world matter: when several changes, mailboxes or one of your open "
+    "items below already cover the same matter with the same counterparty, raise it at most "
+    "once and only for what is new. Most batches hold nothing worth raising; raising "
+    "nothing is a good answer.")
 
 GATE_RULE = (
     "Each item is a proposal with evidence, never your own assertion. For each item, "
@@ -615,7 +843,10 @@ GATE_RULE = (
     "yourself (plx.read with only its citation for a message or document, plx.object with "
     "only its object_id for a record: not the calls made for you), since the "
     "gate accepts only citations your own reads in this session returned; the gate allows "
-    "one repair in the whole session, so get each submission right. A claim the gate refuses is not part of the item; outcome \"repair\" lists "
+    "one repair in the whole session, so get each submission right. Write the text only "
+    "from what your claims carry: every name of a person or company, figure, code and "
+    "date in it must stand in a claimed line or quote, or its sentence is dropped, and an "
+    "item none of whose sentences stand is not shown. A claim the gate refuses is not part of the item; outcome \"repair\" lists "
     "refused claims once: fix them and submit again. An item whose claims all fail is "
     "dropped: say nothing about it. Never send, propose or draft anything to anyone "
     "outside: the next step you suggest is for a colleague to decide.")
@@ -648,8 +879,14 @@ def task(batch: Mapping[str, Any], events: Sequence[Mapping[str, str]],
             else row["changed"]
         what = row["change"] + (f" ({', '.join(changed[:12])})" if changed else "")
         lines.append(f"{n}. {row['object_type']} {row['object_id']}: {what}, "
-                     f"{row['event_at'][:16]}")
+                     f"{row['event_at'][:16]}{_about(row)}")
     for group in batch["bulk"]:
+        if group.get("messages"):
+            lines.append(f"- {group['count']} {group['object_type']} messages from one "
+                         f"{'automated ' if group.get('automated') else ''}sender the "
+                         "company does not write to (one stream; one sample read: "
+                         f"{group['sample']['object_id']})")
+            continue
         what = (f"changed {', '.join(group['changed'][:8])}" if group["changed"]
                 else "new")
         lines.append(f"- {group['count']} {group['object_type']} records {what} together "
@@ -670,6 +907,23 @@ def task(batch: Mapping[str, Any], events: Sequence[Mapping[str, str]],
     return "\n".join(lines)
 
 
+_ABOUT = {"correspondent": "from someone the company writes to",
+          "names_records": "names business records", "internal": "from a colleague",
+          "other": "from someone the company has not written to",
+          "automated": "from an automated sender"}
+
+
+def _about(row: Mapping[str, Any]) -> str:
+    """What the batch knows of a message's sender before reading it (``_tier``)."""
+    tier = row.get("tier")
+    if tier not in _ABOUT:
+        return ""
+    linked = traits_of(row).get("linked") or 0
+    extra = (f"; names {linked} business record{'s' if linked != 1 else ''}"
+             if linked and tier != "names_records" else "")
+    return f" [{_ABOUT[tier]}{extra}]"
+
+
 RETRY_RULE = (
     "An earlier review of new changes raised the item below, but the answer gate refused "
     "its claims ({refusals}), and that session had used its one repair. Decide it again on "
@@ -684,6 +938,10 @@ def retry_task(title: str, retry: Mapping[str, Any], refusals: Sequence[str], *,
     lines = [INSTRUCTION, "", RETRY_RULE.replace("{refusals}", ", ".join(refusals)
                                                  or "no claim passed"), "",
              f"Title: {title}"]
+    if "statement_unsupported" in refusals:
+        lines[2] += (" statement_unsupported: claims passed, but no sentence of its text or "
+                     "why stood on them (a name, figure or date in each was in no passed "
+                     "claim): claim the passages that carry what it says.")
     for key, label in (("subject", "Subject record"), ("text", "Submitted text"),
                        ("why", "Why it was raised"), ("next_step", "Suggested next step")):
         if isinstance(retry.get(key), str) and retry[key].strip():
@@ -952,15 +1210,25 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
         # one evidence group per claim: every record it cites or is computed from
         groups = [c["citations"] for c in claims if c["citations"]]
         fields = {h: f for c in claims for h, f in (c.get("fields") or {}).items()}
+        # the item's own statement (its text or why) must stand on what the gate passed:
+        # when the screen keeps no sentence of either, the passed claims are fragments
+        # that do not carry what the item says (a refused claim held its point)
+        text = screened(decision["text"], claims, refused=decision["refused_said"]) \
+            if decision else ""
+        why = screened(item.get("why"), claims, refused=decision["refused_said"]) \
+            if claims else ""
+        if gate == "passed" and not text and not why:
+            gate = "not_passed:statement_unsupported"
+        elif gate == "passed" and not text:
+            text = screened(decision["text"], claims, fallback=True,
+                            refused=decision["refused_said"])
         kind = item.get("rests_on") if item.get("rests_on") in CLAIM_KINDS else "other"
         priority = item.get("priority") if item.get("priority") in PRIORITIES else "medium"
         out.append({
             "title": title, "subject": item.get("subject") if isinstance(
                 item.get("subject"), str) else None,
-            "text": screened(decision["text"], claims, fallback=True,
-                             refused=decision["refused_said"]) if decision else "",
-            "why": screened(item.get("why"), claims, refused=decision["refused_said"])
-            if claims else "",
+            "text": text,
+            "why": why,
             "next_step": screened(item.get("next_step"), claims, suggestion=True,
                                   refused=decision["refused_said"]) if claims else "",
             "departments": [d for d in item.get("departments") or () if d in codes][:4],
@@ -969,7 +1237,9 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
                         "citations": c["citations"]} for c in claims],
             "groups": groups, "fields": fields,
             "refused_claims": decision["unsupported"] if decision else 0,
-            "refusals": decision["refusals"] if decision else [],
+            "refusals": (decision["refusals"] + (
+                ["statement_unsupported"] if gate.endswith("statement_unsupported") else [])
+                if decision else []),
             # what an item the gate refused is decided again from, on its own pass
             **({"retry": {"text": decision["text"], "why": item.get("why"),
                           "next_step": item.get("next_step"), "cited": decision["cited"],
