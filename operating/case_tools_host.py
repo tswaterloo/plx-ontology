@@ -2151,7 +2151,7 @@ class CaptureCaseHostTools(CaseHostTools):
         return None
 
     def call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
-        with self.request(), self.per_call():
+        with self.request(), self.per_call(), self._employee_held(actor):
             bound = self._call_bound
             searching = bound.search
             # A search result is matched on the capture's stored, hash-checked text and
@@ -2167,6 +2167,25 @@ class CaptureCaseHostTools(CaseHostTools):
                     return self._capture_call(name, arguments, actor)
             finally:
                 bound.search = searching
+
+    @contextmanager
+    def _employee_held(self, actor: Any) -> Iterator[None]:
+        """The reader's employee entitlement resolved once for this tool call
+        (``EmployeeActorGate.holding``): every item check of the call (a mail or file
+        gate per candidate or row) reuses it instead of resolving the employee again, and
+        the next call resolves anew, so a grant change applies from the next call. A
+        reader the gate refuses, or a runtime with no such gate, holds nothing: each check
+        resolves (and refuses) on its own, as before."""
+        holding = getattr(getattr(self.runtime, "employee_gate", None), "holding", None)
+        if holding is None:
+            yield
+            return
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(holding(actor))
+            except Exception:  # noqa: BLE001 - nothing held: each check decides for itself
+                pass
+            yield
 
     def _capture_call(self, name: str, arguments: Any, actor: Any) -> dict[str, Any]:
         if name != "plx.documents" or self.mail_capture_dir is None:

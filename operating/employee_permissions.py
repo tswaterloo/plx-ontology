@@ -1334,9 +1334,11 @@ def _is_agent_principal(principal: Any) -> bool:
     return _folded(principal).startswith(_AGENT_PREFIXES)
 
 
-# (gate, gated actor, its entitlement) of the gated call in progress in this context
-# (``EmployeeActorGate.holding``): that call's own reads reuse the entitlement, nothing else.
-_HELD: ContextVar[tuple[Any, Actor, EmployeeEntitlement] | None] = ContextVar(
+# (gate, gated actor, its entitlement, the actor as presented) of the gated call in
+# progress in this context (``EmployeeActorGate.holding``): that call's own reads reuse the
+# entitlement, whether they pass the gated actor or the very actor the call was given;
+# nothing else does.
+_HELD: ContextVar[tuple[Any, Actor, EmployeeEntitlement, Any] | None] = ContextVar(
     "employee_gate_held", default=None)
 
 
@@ -1377,7 +1379,7 @@ class EmployeeActorGate:
 
     def _held(self, actor: Any) -> EmployeeEntitlement | None:
         held = _HELD.get()
-        if held is not None and held[0] is self and held[1] is actor:
+        if held is not None and held[0] is self and (held[1] is actor or held[3] is actor):
             return held[2]
         return None
 
@@ -1417,9 +1419,13 @@ class EmployeeActorGate:
 
     def _gate(self, actor: Any) -> tuple[Any, EmployeeEntitlement | None]:
         """(the actor a read uses, the entitlement that decided it; None: no employee)."""
-        held = self._held(actor)
-        if held is not None:
-            return actor, held
+        held = _HELD.get()
+        if held is not None and held[0] is self:
+            if held[1] is actor:
+                return actor, held[2]
+            if held[3] is actor:
+                # the actor the held call was given: its gated actor, decided once
+                return held[1], held[2]
         entitlement = self._resolve(actor)
         if entitlement is None:
             return actor, None
@@ -1443,7 +1449,7 @@ class EmployeeActorGate:
         if entitlement is None:
             yield gated
             return
-        token = _HELD.set((self, gated, entitlement))
+        token = _HELD.set((self, gated, entitlement, actor))
         try:
             yield gated
         finally:

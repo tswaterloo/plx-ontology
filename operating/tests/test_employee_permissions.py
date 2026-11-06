@@ -1048,6 +1048,21 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             EmployeeActorGate(resolver(), "other-tenant")
 
+    def test_a_held_call_resolves_its_presented_actor_once(self):
+        portal = Calls(portal_user())
+        gate = EmployeeActorGate(resolver(portal), "plx")
+        actor = Actor("plx", frozenset({"employee:" + OID}))
+        resolved = gate(actor)
+        once = portal.count
+        with gate.holding(actor) as gated:
+            self.assertEqual(gated, resolved)
+            for _ in range(3):   # the actor the call was given, checked per row
+                self.assertEqual(gate(actor), resolved)
+                self.assertIsNotNone(gate.entitlement(actor))
+            self.assertEqual(portal.count, 2 * once)
+        gate(actor)   # after the call: resolved anew
+        self.assertEqual(portal.count, 3 * once)
+
 
 class AudienceIntegrationTests(unittest.TestCase):
     def test_mirror_relations_follow_the_resolved_actor(self):

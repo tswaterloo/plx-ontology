@@ -2657,7 +2657,11 @@ class OntologyTools:
         ids = sorted(set(object_ids))
         out: dict[str, sqlite3.Row] = {}
         for start in range(0, len(ids), 500):
-            for version in self.store.visible_versions(scope, ids[start:start + 500]):
+            versions = self.store.visible_versions(scope, ids[start:start + 500])
+            # what the item gate reads of each handle, read ahead in batches (decides
+            # nothing: every version below is still gated one by one)
+            self.prefetch_items(scope.actor, [version["l1_handle"] for version in versions])
+            for version in versions:
                 if self._item_allowed(scope.actor, version["l1_handle"]):
                     out[version["object_id"]] = version
         return out
