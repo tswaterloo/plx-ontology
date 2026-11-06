@@ -171,7 +171,11 @@ ETL_REINSERTED: Mapping[str, Mapping[str, frozenset[str]]] = {
     "portal_api": {relation: frozenset({"id", "created_at", "updated_at"}) for relation in (
         "public.app_assembly_order_damage", "public.app_assembly_order_status",
         "public.app_batch_schedule", "public.app_manufacturer",
-        "public.app_manufacturing_order_line", "public.app_production_task")}}
+        "public.app_manufacturing_order_line", "public.app_production_task",
+        # each 2-hourly ETL run inserts every line again under a new id (17,724 rows for
+        # 1,827 lines on 2026-11-06; +384 a run, none changed): /data/scratch/audit/A-data.md
+        # finding 6
+        "public.app_sales_order_line")}}
 # The working file's layout. Bumped when what one build writes beside its store changes
 # (2: the record kept once in ``stage``, compressed with a per-binding dictionary;
 # ``v`` points at it), so a disk peak

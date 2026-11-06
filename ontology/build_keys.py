@@ -80,6 +80,10 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         "4a57d4fed7080b57658ccf0859c282a1553795442ab3aa2b064120c37fc49d01",
         # the commit's invariant queries run by threads over the committed rows (rows untouched)
         "0bc0be9cd031e1fe6083948df73ee87723dc09678f36813d7f95803e37a64294",
+        # ETL_REINSERTED names public.app_sales_order_line: the rows it changes are those
+        # of the units reading that relation, whose keys name it (``unit_slice`` "etl"),
+        # so a unit of an unchanged key writes the same rows
+        "7fbff16572c05486c099935abee16b7fa16eca3376f27d1d9817d76d180633da",
     }),
 }
 
@@ -487,6 +491,16 @@ def _get(item: Any, name: str) -> Any:
     return getattr(item, name, None)
 
 
+# The relations ``ontology.project.ETL_REINSERTED`` collapsed in every generation built
+# under this key scheme: their rows never depended on the list. A relation added to it
+# later enters the key of every unit reading it (``unit_slice``), so those units are
+# projected again with its copies collapsed, and no other unit is.
+_ETL_KEYED = frozenset(("portal_api", relation) for relation in (
+    "public.app_assembly_order_damage", "public.app_assembly_order_status",
+    "public.app_batch_schedule", "public.app_manufacturer",
+    "public.app_manufacturing_order_line", "public.app_production_task"))
+
+
 class SchemaParts:
     """Digests of the parts of a compiled schema a unit's rows can read, and the
     indexes :func:`unit_slice` picks them with."""
@@ -500,6 +514,13 @@ class SchemaParts:
         self.events = {eid: _sha(_canonical(ev)) for eid, ev in events.items()}
         self.binding_type = {b["id"]: tid for tid, t in types.items()
                              for b in t.get("bindings", [])}
+        # binding -> the minted columns its relation's ETL copies differ in, for a relation
+        # collapsed after every generation of this key scheme (``_ETL_KEYED``)
+        from ontology.project import ETL_REINSERTED
+        self.etl = {b["id"]: sorted(ETL_REINSERTED[b["source"]][b["relation"]])
+                    for t in types.values() for b in t.get("bindings", [])
+                    if b.get("relation") in ETL_REINSERTED.get(b.get("source"), {})
+                    and (b.get("source"), b.get("relation")) not in _ETL_KEYED}
         self.events_of: dict[str, set[str]] = {}
         for eid, ev in events.items():
             self.events_of.setdefault(ev.get("object_type"), set()).add(eid)
@@ -551,11 +572,15 @@ def unit_slice(parts: SchemaParts, unit: str, deps: Iterable[str]) -> str:
         own = unit[2:].split("|")[0].split("#")[0]
         lids |= {own} if own in parts.links else set(parts.links)
     unknown = sorted(b for b in deps if b not in parts.binding_type)
-    return _sha(_canonical({
+    sliced = {
         "types": {t: parts.types[t] for t in sorted(tids)},
         "links": {lid: parts.links[lid] for lid in sorted(lids) if lid in parts.links},
         "events": {e: parts.events[e] for e in sorted(eids)},
-        "unknown": unknown}))
+        "unknown": unknown}
+    etl = {b: parts.etl[b] for b in sorted(deps) if b in parts.etl}
+    if etl:   # a relation collapsed since: the units reading it are projected again
+        sliced["etl"] = etl
+    return _sha(_canonical(sliced))
 
 
 __all__ = ["FINGERPRINT_ROOTS", "KEY_SCHEME", "PROJECTION_ROWS_VERSION", "ROWS_CODE_DIGESTS",

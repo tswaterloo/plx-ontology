@@ -121,6 +121,12 @@ READER_CHANGES: Mapping[tuple[str, str], tuple[str | None, str | None]] = {
     ("ontology.mentions", "DOCUMENT_KINDS"): (
         "bfdbd2ac8d056231f5d7d38d2937dcff8d965791ffc47e050cf0877866718171",
         "d5654fffe9c1b439fa7cba402907d127d0998c674bd1d93fea8cb8a5620f8a3f"),
+    # The Portal relations whose ETL copies a binding collapses gain
+    # public.app_sales_order_line (finding 6 of the 2026-11-06 data audit): a Portal
+    # binding's records, never what a mail or SharePoint reader reads or fingerprints.
+    ("ontology.project", "ETL_REINSERTED"): (
+        "fe224d4907c33f214e42a12e00db9b0399fb07fb190aeac3fb3b011dcdb41605",
+        "a40d1e8d80af8b7cb4648210c376daafe3341871c105b369af61b9a70a024ef7"),
     # The document group key's code keeps the earlier commit's value where it is proven
     # equivalent (VALUE_EQUIVALENTS); otherwise the same digest as before.
     ("ontology.project", "document_code"): (
@@ -175,9 +181,11 @@ DERIVATION_CHANGES: Mapping[str, tuple[str | None, str]] = {
     # keeping each object's report entries apart (Projector, _Report, object_unit): it projects records, never derives one; the meetings capture as a
     # capture source of its own (CAPTURE_SOURCES, _NOT_DERIVATION: another source's reader);
     # the mail attachments read by mailbox ranges side by side (MailCaptures, ontology/tests/test_build_prints.py)
+    # and ETL_REINSERTED naming app_sales_order_line (which Portal records one binding
+    # collapses as ETL copies at projection, never how a document record is derived)
     "ontology/project.py": (
         "2409495cb9bd2b9bac667ca4724a471698c748db7b0305de24e9692b8710efaf",
-        "6968d6c14a93f94bad3eca3cc80b2e22b50182f4a1e7fa7b3ce47ce8b6a33ac2"),
+        "85dd65249e37b8dae4999a31cb9310ee3f1f3729d1fdee8296f1f77ec2e46842"),
     # the mention step's failures per document (DocumentFailures), the store's windows in
     # its memo key and a read-ahead load that fails left to the step: the mention step,
     # which derives no documentFields or containerMembers record; the meetings document

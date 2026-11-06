@@ -51,6 +51,27 @@ class RowsCodeVersionTests(unittest.TestCase):
                                                   "ontology.mentions"})
 
 
+class EtlKeyTests(unittest.TestCase):
+
+    def test_a_relation_collapsed_later_moves_only_the_keys_of_the_units_reading_it(self):
+        from ontology import project
+        from ontology.schema import load_schema
+        schema = load_schema()
+        lines, orders = "portal.app_sales_order_line", "portal.app_manufacturing_order_line"
+        now = build_keys.SchemaParts(schema)
+        self.assertEqual(now.etl.get(lines), ["created_at", "id", "updated_at"])
+        self.assertNotIn(orders, now.etl)   # collapsed in every generation of the scheme
+        without = dict(project.ETL_REINSERTED["portal_api"])
+        del without["public.app_sales_order_line"]
+        with mock.patch.dict(project.ETL_REINSERTED, {"portal_api": without}):
+            before = build_keys.SchemaParts(schema)
+        for unit, deps, moved in ((f"b:{lines}", {lines}, True),
+                                  (f"b:{orders}", {orders}, False)):
+            with self.subTest(unit):
+                self.assertEqual(build_keys.unit_slice(now, unit, deps)
+                                 != build_keys.unit_slice(before, unit, deps), moved)
+
+
 class ReaderCodeTests(unittest.TestCase):
     def test_a_readers_code_reaches_what_shapes_its_records(self):
         # The mirror's citations, a BC source's stand-in scopes: in no captured byte.
