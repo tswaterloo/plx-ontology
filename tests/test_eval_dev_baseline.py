@@ -154,7 +154,7 @@ class BudgetStopTests(unittest.TestCase):
         self.assertEqual(sum(":not_measured:" not in row for row in rows), block["measured"])
         self.assertTrue(all(row.endswith(":not_measured:" + block["stopped"]["phase"])
                             for row in rows if ":not_measured:" in row), rows)
-        detail = live_verify._cap({"fields": live_verify._recorded(spec, document)})
+        detail = live_verify._cap({"fields": live_verify._recorded(spec, document)}, spec)
         self.assertEqual(detail["fields"]["item_rows"], rows)
 
     def test_items_stop_on_the_deadline_with_the_measured_ones_recorded(self):
@@ -321,7 +321,7 @@ class SessionProjectionTests(unittest.TestCase):
             "root": "ambiguous", "outcome": "unscored_other",
             "reasons": ["pin_drift:no_capture_at_or_after_time"]}, None),
             "F4-12:ambiguous:unscored_o:pin_drift:no_capture_at_or_after_time")
-        recorded = live_verify._cap({"fields": live_verify._recorded(SPEC, document)})
+        recorded = live_verify._cap({"fields": live_verify._recorded(SPEC, document)}, SPEC)
         # Recorded as printed: never scrubbed as an opaque token, never reduced to a length.
         self.assertEqual(live_verify.scrub_tree(recorded["fields"]["item_rows"], []), rows)
 

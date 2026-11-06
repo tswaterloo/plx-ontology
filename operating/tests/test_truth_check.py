@@ -174,6 +174,32 @@ class ProbesAndOrder(unittest.TestCase):
 class CustomerOrders(unittest.TestCase):
     """An overdue customer order checked in every copy (``customer_order_verdict``)."""
 
+    def test_lines_only_in_sage_or_bc_are_goods_and_other_orders_lines_are_not(self):
+        def order(ident, **custom):
+            return _row(tc.SALES_ORDER, id=ident, status="Open", required_date="2026-10-01",
+                        order_date="2026-09-01", customer_id="fm-cust-9", order_number=ident,
+                        custom_fields=custom)
+        portal = [order("sageonly", sageOrdUniq="501"), order("sagesrc", sageSourceOrdUniq="MAKE:502"),
+                  order("bconly"), order("other", sageOrdUniq="999"), order("bare")]
+        sage = [_row(tc.SAGE_ORDER_LINE, orduniq=501, item="A"),
+                _row(tc.SAGE_ORDER_LINE, orduniq=502, item="B")]
+        emap = [_row(tc.ENTITY_MAP, id="m", entity_type="salesOrder", status="LINKED",
+                     source_id="bconly", bc_system_id="bso1"),
+                _row(tc.ENTITY_MAP, id="m2", entity_type="salesOrder", status="LINKED",
+                     source_id="bare", bc_system_id="bso2")]
+        src = tc.Sources(portal={tc.SALES_ORDER: portal, tc.SAGE_ORDER_LINE: sage,
+                                 tc.ENTITY_MAP: emap},
+                         bc=[_bc("salesOrders", "bso1", number="S-1"),
+                             _bc("salesOrders", "bso2", number="S-2"),
+                             _bc("salesOrderLines", "bl1", documentId="bso1")],
+                         as_of=date(2026, 11, 5))
+        verdicts = {i: tc.customer_order_verdict(
+            src, f'SalesOrder:portal.app_sales_order:{{"id":"{i}"}}')["verdict"]
+            for i in ("sageonly", "sagesrc", "bconly", "other", "bare")}
+        self.assertEqual(verdicts, {"sageonly": "supported", "sagesrc": "supported",
+                                    "bconly": "supported", "other": "no_goods",
+                                    "bare": "no_goods"})
+
     def test_closed_copy_no_goods_and_default_dates_contradict(self):
         portal = [
             _row(tc.SALES_ORDER, id="real", status="Open", required_date="2026-10-01",

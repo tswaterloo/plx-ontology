@@ -765,7 +765,10 @@ class ScanAndProactiveTests(unittest.TestCase):
                 self.call, self.reach, self.items = call, reach, 0
 
             def map(self, task, items, left=None):
-                self.items += len(items)
+                # the margin head start and the card rules read on the pool too: count
+                # only the PO delivery-window asks
+                if task is pp.tool_call:
+                    self.items += sum(1 for tool, _ in items if tool == "plx.process")
                 return [task(self.call, item) if self.reach is None or n < self.reach
                         else pp.NOT_READ for n, item in enumerate(items)]
 
@@ -777,7 +780,7 @@ class ScanAndProactiveTests(unittest.TestCase):
         pool = Pool(self.caller(s, STAFF))
         whole = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF),
                        card_bound=1, pool=pool)
-        self.assertEqual(pool.items, 2)   # the bound of 1 no longer cuts
+        self.assertEqual(pool.items, 2)   # the bound of 1 no longer cuts (PO asks only)
         self.assertEqual(whole["detectors"]["orders_at_risk"], "complete")
         self.assertEqual(whole["top_finding"]["orders_at_risk"], 2)
         self.assertEqual(whole["coverage"]["orders_at_risk"], {

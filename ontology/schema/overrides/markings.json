@@ -155,6 +155,10 @@
     {
      "object_type": "SupplierConfirmation",
      "property": "unit_price"
+    },
+    {
+     "object_type": "SupplierConfirmation",
+     "property": "line_promises"
     }
    ],
    "raw_columns": [

@@ -63,7 +63,7 @@ import secrets
 import sqlite3
 import threading
 from functools import lru_cache
-from typing import Any, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
 
@@ -372,7 +372,8 @@ def _prune_indexes(directory: Path) -> None:
 
 
 def build_index(conn: Any, identity: Mapping[str, Any], target: Path,
-                types: Sequence[str] = DEFAULT_TYPES) -> bool:
+                types: Sequence[str] = DEFAULT_TYPES,
+                stop: Callable[[], bool] | None = None) -> bool:
     """Write the kept index of the store ``conn`` reads (``identity``) to ``target``,
     whole or not at all (owner-only, a temporary file renamed over it); False when it was
     not written (a directory this process may not write, an exit, a failed read)."""
@@ -392,7 +393,7 @@ def build_index(conn: Any, identity: Mapping[str, Any], target: Path,
                 "SELECT object_id, audience_key FROM objects WHERE object_type = ? "
                 "ORDER BY object_id", (object_type,))]
             for start in range(0, len(held), BATCH):
-                if _STOP.is_set():
+                if _STOP.is_set() or (stop is not None and stop()):
                     raise InterruptedError
                 chunk = held[start:start + BATCH]
                 ids = json.dumps([oid for oid, _a in chunk])
@@ -539,6 +540,8 @@ class ChangeTools:
         self._lock = threading.Lock()
         self._index: _Index | None = None
         self._kept: _Kept | None = None
+        self._closed = threading.Event()   # the host closed: a prime stops between batches
+        self._primer: threading.Thread | None = None
 
     # ------------------------------------------------------------------ entry
 
@@ -688,6 +691,18 @@ class ChangeTools:
                 self._index = _Index(stamp)
             return self._index
 
+    def close(self) -> None:
+        """The host that served this tool is closing: stop the background prime (it closes
+        its own connections as it stops) and release the kept index's read connection."""
+        self._closed.set()
+        primer = self._primer
+        if primer is not None and primer is not threading.current_thread():
+            primer.join(timeout=30)
+        with self._lock:
+            if self._kept is not None:
+                self._kept.close()
+                self._kept = None
+
     def kept(self) -> "_Kept | None":
         """The kept index of the store file the shared connection reads, when one was built
         from this very file by this code (``index_path``); None otherwise (the call reads
@@ -729,7 +744,11 @@ class ChangeTools:
         thread = threading.Thread(target=self.prime, args=(own, index),
                                   name="plx-changes-prime", daemon=True)
         thread.start()
+        self._primer = thread
         return thread
+
+    def _stopping(self) -> bool:
+        return _STOP.is_set() or self._closed.is_set()
 
     def prime(self, conn: Any, index: "_Index", types: Sequence[str] = DEFAULT_TYPES,
               days: float = PRIME_DAYS) -> None:
@@ -740,15 +759,15 @@ class ChangeTools:
         every version captured in the last ``days`` (and the one each replaced) instead."""
         try:
             found = _identity(conn)
-            if found is not None and not _STOP.is_set():
+            if found is not None and not self._stopping():
                 try:
                     target = index_path(found[0])
                 except OSError:
                     target = None
-                if target is not None and build_index(conn, found[1], target, types):
+                if target is not None and build_index(conn, found[1], target, types, self._closed.is_set):
                     return
             for object_type in types:
-                if _STOP.is_set():
+                if self._stopping():
                     return
                 wanted = []
                 for oid, _audience in index.of_type(conn, object_type):
@@ -758,7 +777,7 @@ class ChangeTools:
                         if i and version.start >= cut:
                             wanted += [(oid, version.handle), (oid, chain[i - 1].handle)]
                 for start in range(0, len(wanted), BATCH):
-                    if _STOP.is_set():
+                    if self._stopping():
                         return
                     index.signatures(conn, wanted[start:start + BATCH])
         except sqlite3.Error:
@@ -970,6 +989,14 @@ def _stop_primes() -> None:
         thread.join(timeout=10)
 
 
+def close_tools(table: Mapping[str, Any] | None) -> None:
+    """Release the kept index connection of the ``plx.changes`` tool a host table serves
+    (``register``); a host calls it when it closes."""
+    owner = getattr((table or {}).get(TOOL_NAME, {}).get("handler"), "__self__", None)
+    if isinstance(owner, ChangeTools):
+        owner.close()
+
+
 def register(table: MutableMapping[str, dict[str, Any]], base: OntologyTools, *,
              prime: bool = False) -> ChangeTools:
     """Serve ``plx.changes`` in a host tool table (``ontology_host.tool_table``) over the
@@ -988,4 +1015,4 @@ def register(table: MutableMapping[str, dict[str, Any]], base: OntologyTools, *,
 
 
 __all__ = ["ChangeTools", "DEFAULT_TYPES", "STAMPS", "TOOL", "TOOL_NAME", "TOOL_NAMES",
-           "register"]
+           "close_tools", "register"]

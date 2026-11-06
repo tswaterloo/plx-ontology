@@ -278,10 +278,8 @@ class PurchasingGrantTest(unittest.TestCase):
             count_job_titles(self._graph(["Buyer"]), self.probe.KEYWORDS, PeopleExclusion())
 
     def test_probe_output_meets_its_live_check_spec(self):
-        import sys
         from integrations.people_exclusion import PeopleExclusion
-        sys.path.insert(0, str(ROOT / "devloop"))
-        import live_verify as lv
+        from verify import live_verify as lv
         spec = json.loads(self.SPEC.read_text("utf-8"))
         lv.validate_spec(spec)
 

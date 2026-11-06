@@ -270,6 +270,8 @@ class ToolHost:
             if close:
                 close()
         finally:
+            from operating import ontology_tools_changes
+            ontology_tools_changes.close_tools(self._table)
             for resource in self._closing:
                 resource.close()
 

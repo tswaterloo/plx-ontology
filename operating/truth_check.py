@@ -73,12 +73,15 @@ BATCH, FM_BATCH = "public.app_batch_record", "public.batch"
 MO = "public.app_manufacturing_order"
 SALES_ORDER, SALES_ORDER_LINE = "public.app_sales_order", "public.app_sales_order_line"
 FM_ORDER_ENTRY, FM_ORDER_ITEM = "public.order_entry", "public.order_entry_item"
+SAGE_ORDER_LINE = "sage.oe_order_detail"
+# The keys a Portal order's custom fields hold for its Sage order (the Sage ETL's stamps).
+SAGE_ORDER_KEYS = ("sageOrdUniq", "sageSourceOrdUniq")
 RELATIONS = (PO, PO_LINE, ENTITY_MAP, FM_PO, FM_PO_ITEM, FM_RECEIPT, FM_RAW_LOT, FM_PACK_LOT,
              SAGE_PO, SAGE_RECEIPT, BATCH, FM_BATCH, MO, SALES_ORDER, SALES_ORDER_LINE,
-             FM_ORDER_ENTRY, FM_ORDER_ITEM)
+             FM_ORDER_ENTRY, FM_ORDER_ITEM, SAGE_ORDER_LINE)
 BC_SETS = ("purchaseOrders", "purchaseOrderLines", "purchaseReceipts",
            "purchaseReceiptLines", "purchaseInvoices", "purchaseOrderReferences",
-           "salesOrders")
+           "salesOrders", "salesOrderLines")
 
 # The detectors the engine runs (``operating.proactive_engine.DETECTORS``; read from there
 # when importable, so a new detector is never silently out of this check's health rule).
@@ -724,6 +727,12 @@ def _so_index(src: Sources) -> dict[str, Any]:
         if _norm(row.get("custpocode")) and row.get("idcust") is not None:
             ix["so_fm_by_po"][(_norm(row.get("custpocode")), f"fm-cust-{row.get('idcust')}")
                               ].append(i)
+    ix["so_sage_lines"], ix["so_bc_lines"] = by(), by()
+    for i in src.rows(SAGE_ORDER_LINE):
+        ix["so_sage_lines"][str(i["row"].get("orduniq"))].append(i)
+    for r in src.bc:
+        if r["entity_set"] == "salesOrderLines":
+            ix["so_bc_lines"][str(r["fields"].get("documentId"))].append(r)
     ix["so_posted"] = {}
     bc_orders = {r["id"]: r for r in src.bc if r["entity_set"] == "salesOrders"}
     for i in src.rows(ENTITY_MAP):
@@ -750,7 +759,7 @@ def customer_order_verdict(src: Sources, object_id: str) -> dict[str, Any]:
     """A customer order called open past its required date, checked in every copy: closed
     in any copy (C3: its own status, its FileMaker or Portal copy by the stored fmId, a
     Portal copy of a closed FileMaker order of the same customer and customer PO code, or
-    the BC order it was posted as fully shipped), no goods on any copy (C4: no Portal line,
+    the BC order it was posted as fully shipped), no goods on any copy (C4: no Portal, Sage or BC line,
     no FileMaker item), or a required date that is a default (C5: the record's own order or
     creation day, or a day a bulk share of its relation holds) contradicts the claim."""
     ix = _so_index(src)
@@ -792,6 +801,17 @@ def customer_order_verdict(src: Sources, object_id: str) -> dict[str, Any]:
     goods = [*(l["citation"] for i in portal for l in ix["so_lines"].get(
         str(i["row"].get("id")), [])), *(t["citation"] for i in fm for t in ix["so_items"].get(
             str(i["row"].get("id")), []))]
+    # lines that exist only in Sage (the Portal order's stored Sage order key) or in BC (the
+    # order it was posted as) still state goods
+    for i in portal:
+        custom = i["row"].get("custom_fields")
+        for name in SAGE_ORDER_KEYS if isinstance(custom, dict) else ():
+            key = str(custom.get(name) or "").strip()
+            for form in {key, key.partition(":")[2]} - {""}:
+                goods += [l["citation"] for l in ix["so_sage_lines"].get(form, [])]
+        bc = ix["so_posted"].get(str(i["row"].get("id")))
+        if bc is not None:
+            goods += [l["citation"] for l in ix["so_bc_lines"].get(bc["id"], [])]
     if not goods:
         reasons.append({"rule": "C4", "text": "no copy of the order holds a line: no goods are "
                         "stated on it", "citations": [i["citation"] for i in [*portal, *fm]]})

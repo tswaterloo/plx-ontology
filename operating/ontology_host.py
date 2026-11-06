@@ -613,6 +613,8 @@ class CaseHostTools:
         store and the resolver's throw-away stores). Called when the session ends and
         when a request finds a newer projection generation; the next call builds them
         again."""
+        from . import ontology_tools_changes
+        ontology_tools_changes.close_tools(self._table)   # its kept index's read connection
         if self._reader is not None:
             closer = getattr(self._reader, "close", None)
             closer() if closer is not None else self._reader.conn.close()

@@ -298,7 +298,12 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         kept = [index / live_ws.INDEX_FILE, opener.projection_path]
         # the kept files and the store facts kept beside each (``facts_path``) only
         allowed = {p.name for p in kept} | {facts_path(p).name for p in kept if p.exists()}
-        leftovers = [p.name for p in index.iterdir() if p.name not in allowed]
+        # plx.changes keeps its index beside each store file (``index_path``: the host's
+        # background prime builds it once per generation); a temporary file is never kept
+        from operating.ontology_tools_changes import INDEX_PREFIX
+        kept_change_index = re.compile(re.escape(INDEX_PREFIX) + r"\d+-\d+\.sqlite")
+        leftovers = [p.name for p in index.iterdir()
+                     if p.name not in allowed and not kept_change_index.fullmatch(p.name)]
         self.assertEqual(leftovers, [])  # each write goes through its own temp file
 
     def test_missing_data_is_named_never_a_silent_pass(self):
