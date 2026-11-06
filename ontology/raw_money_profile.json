@@ -1,9 +1,11 @@
 {
  "format": "plx-raw-money-profile/v1",
  "mirror_generation": "5a1c29f59e06162d",
- "note": "Per column of each finance-sensitive Portal relation (reporting-catalog domains purchasing, orders, customers): money (mostly numeric, at least 0.5 % of its non-zero figures fractional; N.0 is whole), whole, text or empty, read from the source mirror by scripts/gen_raw_money_profile.py. Column names only. Read by ontology/raw_markings.py; a column it does not list is finance.",
+ "note": "Per column of each finance-sensitive Portal relation (reporting-catalog domains purchasing, orders, customers): money (mostly numeric, at least 0.5 % of its non-zero figures fractional; N.0 is whole), whole, code (encoded references, figures of 1e12 and more), text or empty, read from the source mirror by ontology/money_profile.py. Column names only. Read by ontology/raw_markings.py; a column it does not list is finance.",
+ "profiled_at": "2026-11-06T08:47:26Z",
  "relations": {
   "public.app_customer": {
+   "code": [],
    "empty": [
     "account_manager_id",
     "annual_revenue",
@@ -50,6 +52,7 @@
    ]
   },
   "public.app_customer_location": {
+   "code": [],
    "empty": [
     "shipping_agent_code"
    ],
@@ -75,6 +78,7 @@
    "whole": []
   },
   "public.app_manufacturer": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 22330,
@@ -93,6 +97,7 @@
    "whole": []
   },
   "public.app_pr_line_item": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -100,6 +105,7 @@
    "whole": []
   },
   "public.app_purchase_order": {
+   "code": [],
    "empty": [
     "approved_at",
     "approved_by",
@@ -141,6 +147,7 @@
    ]
   },
   "public.app_purchase_order_line": {
+   "code": [],
    "empty": [
     "artwork_attachment_id",
     "artwork_due_date",
@@ -168,6 +175,7 @@
    "whole": []
   },
   "public.app_purchase_requisition": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -175,6 +183,7 @@
    "whole": []
   },
   "public.app_quote": {
+   "code": [],
    "empty": [
     "accepted_at",
     "created_by",
@@ -205,6 +214,7 @@
    ]
   },
   "public.app_quote_line": {
+   "code": [],
    "empty": [
     "annual_volume",
     "custom_fields",
@@ -232,6 +242,7 @@
    ]
   },
   "public.app_receipt": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -239,6 +250,7 @@
    "whole": []
   },
   "public.app_receipt_line": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -246,6 +258,7 @@
    "whole": []
   },
   "public.app_sales_order": {
+   "code": [],
    "empty": [
     "custom_fields",
     "customer_location_id",
@@ -281,6 +294,7 @@
    ]
   },
   "public.app_sales_order_line": {
+   "code": [],
    "empty": [
     "notes"
    ],
@@ -305,6 +319,7 @@
    ]
   },
   "public.app_ship_release": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -312,6 +327,7 @@
    "whole": []
   },
   "public.app_shipment": {
+   "code": [],
    "empty": [
     "created_by",
     "customer_location_id",
@@ -346,6 +362,7 @@
    ]
   },
   "public.app_shipment_line": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -353,6 +370,7 @@
    "whole": []
   },
   "public.app_supplier": {
+   "code": [],
    "empty": [
     "account_manager_id",
     "created_by_id",
@@ -394,6 +412,7 @@
    ]
   },
   "public.bc_invoice_snapshot": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -401,6 +420,7 @@
    "whole": []
   },
   "public.bc_purchase_invoice_snapshot": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -408,6 +428,7 @@
    "whole": []
   },
   "public.customer": {
+   "code": [],
    "empty": [
     "document",
     "documentdata",
@@ -459,6 +480,7 @@
    ]
   },
   "public.generated_purchase_order": {
+   "code": [],
    "empty": [
     "cost",
     "datearrive",
@@ -528,6 +550,7 @@
    ]
   },
   "public.generated_purchase_order_item": {
+   "code": [],
    "empty": [
     "costperkg",
     "zct_audit_log"
@@ -575,6 +598,7 @@
    ]
   },
   "public.manufacturer": {
+   "code": [],
    "empty": [
     "description",
     "document",
@@ -604,6 +628,9 @@
    ]
   },
   "public.order_entry": {
+   "code": [
+    "oecust_c"
+   ],
    "empty": [
     "documentdata",
     "reference",
@@ -625,11 +652,11 @@
    ],
    "whole": [
     "id",
-    "idcust",
-    "oecust_c"
+    "idcust"
    ]
   },
   "public.order_entry_item": {
+   "code": [],
    "empty": [
     "document",
     "documentdata",
@@ -652,6 +679,7 @@
    ]
   },
   "public.order_entry_item_assembly": {
+   "code": [],
    "empty": [
     "notes"
    ],
@@ -675,6 +703,7 @@
    ]
   },
   "public.order_entry_item_batch": {
+   "code": [],
    "empty": [],
    "money": [
     "qtymfg",
@@ -699,6 +728,11 @@
    ]
   },
   "public.receipt": {
+   "code": [
+    "documentdata",
+    "documentdata_2",
+    "documentdata_3"
+   ],
    "empty": [
     "document1",
     "document2",
@@ -707,11 +741,7 @@
     "initial",
     "name"
    ],
-   "money": [
-    "documentdata",
-    "documentdata_2",
-    "documentdata_3"
-   ],
+   "money": [],
    "rows": 3438,
    "text": [
     "auditcreator",
@@ -740,6 +770,9 @@
    ]
   },
   "public.receipt_packaging": {
+   "code": [
+    "documentdatacoc"
+   ],
    "empty": [
     "expirydate",
     "intitalsqc",
@@ -751,8 +784,7 @@
     "status_c"
    ],
    "money": [
-    "costitem",
-    "documentdatacoc"
+    "costitem"
    ],
    "rows": 8258,
    "text": [
@@ -775,6 +807,9 @@
    ]
   },
   "public.receipt_raw_material": {
+   "code": [
+    "coadata"
+   ],
    "empty": [
     "intitalslog",
     "intitalsqc",
@@ -784,7 +819,6 @@
     "releasedby"
    ],
    "money": [
-    "coadata",
     "costitem",
     "sumqty"
    ],
@@ -808,6 +842,7 @@
    ]
   },
   "public.supplier": {
+   "code": [],
    "empty": [
     "businessterms",
     "doc_assessmentform",
@@ -861,6 +896,7 @@
    ]
   },
   "sage.ap_aged": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbaldueh",
@@ -929,6 +965,7 @@
    ]
   },
   "sage.ap_bta": {
+   "code": [],
    "empty": [],
    "money": [
     "amtenter",
@@ -973,6 +1010,7 @@
    ]
   },
   "sage.ap_clx": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 15,
@@ -1001,6 +1039,7 @@
    ]
   },
   "sage.ap_dpo": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbal",
@@ -1017,6 +1056,7 @@
    ]
   },
   "sage.ap_dsd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 73,
@@ -1038,6 +1078,7 @@
    ]
   },
   "sage.ap_dsh": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 12,
@@ -1059,6 +1100,7 @@
    ]
   },
   "sage.ap_glref": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 70,
@@ -1080,6 +1122,7 @@
    ]
   },
   "sage.ap_ibc": {
+   "code": [],
    "empty": [],
    "money": [
     "amtentr"
@@ -1108,6 +1151,7 @@
    ]
   },
   "sage.ap_ibd": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdist",
@@ -1285,6 +1329,7 @@
    ]
   },
   "sage.ap_ibdo": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 36,
@@ -1309,6 +1354,7 @@
    ]
   },
   "sage.ap_ibh": {
+   "code": [],
    "empty": [],
    "money": [
     "amtalloctx",
@@ -1510,6 +1556,7 @@
    ]
   },
   "sage.ap_ibho": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -1533,6 +1580,7 @@
    ]
   },
   "sage.ap_ibs": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdisc",
@@ -1556,6 +1604,7 @@
    ]
   },
   "sage.ap_ibt": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 607,
@@ -1574,6 +1623,7 @@
    ]
   },
   "sage.ap_intck": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -1599,6 +1649,7 @@
    ]
   },
   "sage.ap_msg": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -1629,6 +1680,7 @@
    ]
   },
   "sage.ap_oblj": {
+   "code": [],
    "empty": [],
    "money": [
     "amtduehc",
@@ -1714,6 +1766,7 @@
    ]
   },
   "sage.ap_obljo": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 36,
@@ -1737,6 +1790,7 @@
    ]
   },
   "sage.ap_oblo": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -1759,6 +1813,7 @@
    ]
   },
   "sage.ap_obp": {
+   "code": [],
    "empty": [],
    "money": [
     "amtpaymhc",
@@ -1802,6 +1857,7 @@
    ]
   },
   "sage.ap_obs": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdcsrmhc",
@@ -1843,6 +1899,7 @@
    ]
   },
   "sage.ap_ofd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 5,
@@ -1884,6 +1941,7 @@
    ]
   },
   "sage.ap_ofh": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 3,
@@ -1898,6 +1956,7 @@
    ]
   },
   "sage.ap_open_document": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbase1hc",
@@ -2054,6 +2113,7 @@
    ]
   },
   "sage.ap_p01": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -2086,6 +2146,7 @@
    ]
   },
   "sage.ap_p02": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -2112,6 +2173,7 @@
    ]
   },
   "sage.ap_p03": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -2188,6 +2250,7 @@
    ]
   },
   "sage.ap_p04": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -2224,6 +2287,7 @@
    ]
   },
   "sage.ap_p05": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -2242,6 +2306,7 @@
    ]
   },
   "sage.ap_pjd": {
+   "code": [],
    "empty": [],
    "money": [
     "amtextndhc",
@@ -2308,6 +2373,7 @@
    ]
   },
   "sage.ap_pjdo": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -2333,6 +2399,7 @@
    ]
   },
   "sage.ap_pjh": {
+   "code": [],
    "empty": [],
    "money": [
     "amtinvctc",
@@ -2410,6 +2477,7 @@
    ]
   },
   "sage.ap_pjho": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -2434,6 +2502,7 @@
    ]
   },
   "sage.ap_pjs": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 15556,
@@ -2456,6 +2525,7 @@
    ]
   },
   "sage.ap_pter": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 176,
@@ -2483,6 +2553,7 @@
    ]
   },
   "sage.ap_ptp": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 9,
@@ -2501,6 +2572,7 @@
    ]
   },
   "sage.ap_ras": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2,
@@ -2530,6 +2602,7 @@
    ]
   },
   "sage.ap_rdc": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 4,
@@ -2549,6 +2622,7 @@
    ]
   },
   "sage.ap_rpd": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdist",
@@ -2618,6 +2692,7 @@
    ]
   },
   "sage.ap_rph": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdist",
@@ -2724,6 +2799,7 @@
    ]
   },
   "sage.ap_rpho": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 22,
@@ -2747,6 +2823,7 @@
    ]
   },
   "sage.ap_rstrt": {
+   "code": [],
    "empty": [
     "data1"
    ],
@@ -2762,9 +2839,11 @@
    ]
   },
   "sage.ap_slh": {
+   "code": [
+    "amtmaxchk"
+   ],
    "empty": [],
    "money": [
-    "amtmaxchk",
     "amtminchk",
     "exchratebc",
     "exchratetc"
@@ -2820,6 +2899,7 @@
    ]
   },
   "sage.ap_slven": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 114,
@@ -2845,6 +2925,7 @@
    ]
   },
   "sage.ap_tcn": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdisthc",
@@ -2979,6 +3060,7 @@
    ]
   },
   "sage.ap_tcp": {
+   "code": [],
    "empty": [],
    "money": [
     "adjtotcrtc",
@@ -3044,6 +3126,7 @@
    ]
   },
   "sage.ap_tcr": {
+   "code": [],
    "empty": [],
    "money": [
     "adjtotcrhc",
@@ -3213,6 +3296,7 @@
    ]
   },
   "sage.ap_tcu": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdist",
@@ -3270,6 +3354,7 @@
    ]
   },
   "sage.ap_term": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 13,
@@ -3325,6 +3410,7 @@
    ]
   },
   "sage.ap_vcm": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 42,
@@ -3356,6 +3442,7 @@
    ]
   },
   "sage.ap_vendor": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbaldueh",
@@ -3474,6 +3561,7 @@
    ]
   },
   "sage.ap_vendor_remit": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 0,
@@ -3481,6 +3569,7 @@
    "whole": []
   },
   "sage.ap_veno": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 14,
@@ -3503,6 +3592,7 @@
    ]
   },
   "sage.ap_vgr": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 6,
@@ -3547,6 +3637,7 @@
    ]
   },
   "sage.ap_vgs": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -3583,6 +3674,7 @@
    ]
   },
   "sage.ap_vsm": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -3630,6 +3722,7 @@
    ]
   },
   "sage.ar_aged": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbaldueh",
@@ -3695,6 +3788,7 @@
    ]
   },
   "sage.ar_bta": {
+   "code": [],
    "empty": [],
    "money": [
     "adjustamt",
@@ -3736,6 +3830,7 @@
    ]
   },
   "sage.ar_cmm": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 4616,
@@ -3767,6 +3862,7 @@
    ]
   },
   "sage.ar_cmmtp": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2,
@@ -3786,6 +3882,7 @@
    ]
   },
   "sage.ar_csm": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -3839,6 +3936,7 @@
    ]
   },
   "sage.ar_cuso": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -3861,6 +3959,7 @@
    ]
   },
   "sage.ar_customer": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbaldueh",
@@ -4010,6 +4109,7 @@
    ]
   },
   "sage.ar_dro": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbal",
@@ -4026,6 +4126,7 @@
    ]
   },
   "sage.ar_dun": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2,
@@ -4048,6 +4149,7 @@
    ]
   },
   "sage.ar_glref": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 81,
@@ -4069,6 +4171,7 @@
    ]
   },
   "sage.ar_gro": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 13,
@@ -4125,6 +4228,7 @@
    ]
   },
   "sage.ar_groo": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 24,
@@ -4147,6 +4251,7 @@
    ]
   },
   "sage.ar_gsm": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -4188,6 +4293,7 @@
    ]
   },
   "sage.ar_ibc": {
+   "code": [],
    "empty": [],
    "money": [
     "amtentr"
@@ -4215,6 +4321,7 @@
    ]
   },
   "sage.ar_ibd": {
+   "code": [],
    "empty": [],
    "money": [
     "amtextn",
@@ -4335,6 +4442,7 @@
    ]
   },
   "sage.ar_ibh": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdiscavl",
@@ -4517,6 +4625,7 @@
    ]
   },
   "sage.ar_ibs": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdisc",
@@ -4540,6 +4649,7 @@
    ]
   },
   "sage.ar_ibt": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 222,
@@ -4558,6 +4668,7 @@
    ]
   },
   "sage.ar_intck": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -4583,6 +4694,7 @@
    ]
   },
   "sage.ar_msg": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 4,
@@ -4613,6 +4725,7 @@
    ]
   },
   "sage.ar_nat": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -4717,6 +4830,7 @@
    ]
   },
   "sage.ar_nato": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1122,
@@ -4739,6 +4853,7 @@
    ]
   },
   "sage.ar_nsm": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhcur",
@@ -4790,6 +4905,7 @@
    ]
   },
   "sage.ar_oblj": {
+   "code": [],
    "empty": [],
    "money": [
     "amtduehc",
@@ -4868,6 +4984,7 @@
    ]
   },
   "sage.ar_obp": {
+   "code": [],
    "empty": [],
    "money": [
     "amtpaymhc",
@@ -4915,6 +5032,7 @@
    ]
   },
   "sage.ar_obs": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdcsrmhc",
@@ -4957,6 +5075,7 @@
    ]
   },
   "sage.ar_ofd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 24,
@@ -4999,6 +5118,7 @@
    ]
   },
   "sage.ar_ofh": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5013,6 +5133,7 @@
    ]
   },
   "sage.ar_open_document": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbase1hc",
@@ -5176,6 +5297,7 @@
    ]
   },
   "sage.ar_pjd": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhcur",
@@ -5247,6 +5369,7 @@
    ]
   },
   "sage.ar_pjh": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbc",
@@ -5325,6 +5448,7 @@
    ]
   },
   "sage.ar_pjs": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 13023,
@@ -5347,6 +5471,7 @@
    ]
   },
   "sage.ar_pter": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 57,
@@ -5374,6 +5499,7 @@
    ]
   },
   "sage.ar_ptp": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 7,
@@ -5392,6 +5518,7 @@
    ]
   },
   "sage.ar_pym": {
+   "code": [],
    "empty": [],
    "money": [
     "amthc",
@@ -5445,6 +5572,7 @@
    ]
   },
   "sage.ar_r01": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5482,6 +5610,7 @@
    ]
   },
   "sage.ar_r02": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5547,6 +5676,7 @@
    ]
   },
   "sage.ar_r03": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5600,6 +5730,7 @@
    ]
   },
   "sage.ar_r04": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5620,6 +5751,7 @@
    ]
   },
   "sage.ar_r05": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5638,6 +5770,7 @@
    ]
   },
   "sage.ar_r06": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5678,6 +5811,7 @@
    ]
   },
   "sage.ar_ras": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2,
@@ -5708,6 +5842,7 @@
    ]
   },
   "sage.ar_rbc": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -5733,6 +5868,7 @@
    ]
   },
   "sage.ar_rfb": {
+   "code": [],
    "empty": [],
    "money": [
     "entrytot"
@@ -5761,6 +5897,7 @@
    ]
   },
   "sage.ar_rfd": {
+   "code": [],
    "empty": [],
    "money": [
     "amthc",
@@ -5794,6 +5931,7 @@
    ]
   },
   "sage.ar_rfh": {
+   "code": [],
    "empty": [],
    "money": [
     "amthc",
@@ -5870,6 +6008,7 @@
    ]
   },
   "sage.ar_salesperson": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 50,
@@ -5890,6 +6029,7 @@
    ]
   },
   "sage.ar_ship_to": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 676,
@@ -5938,6 +6078,7 @@
    ]
   },
   "sage.ar_slcus": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 8,
@@ -5963,6 +6104,7 @@
    ]
   },
   "sage.ar_sllbl": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 7282,
@@ -5985,6 +6127,7 @@
    ]
   },
   "sage.ar_sllst": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2550,
@@ -6020,6 +6163,7 @@
    ]
   },
   "sage.ar_sps": {
+   "code": [],
    "empty": [],
    "money": [
     "amtcr",
@@ -6049,6 +6193,7 @@
    ]
   },
   "sage.ar_stcus": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbaldueh",
@@ -6190,6 +6335,7 @@
    ]
   },
   "sage.ar_stcuso": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 30000,
@@ -6212,6 +6358,7 @@
    ]
   },
   "sage.ar_stnat": {
+   "code": [],
    "empty": [],
    "money": [
     "amtbgnblf",
@@ -6248,6 +6395,7 @@
    ]
   },
   "sage.ar_stobl": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdisc",
@@ -6282,6 +6430,7 @@
    ]
   },
   "sage.ar_stobp": {
+   "code": [],
    "empty": [],
    "money": [
     "amtpaymtc"
@@ -6307,6 +6456,7 @@
    ]
   },
   "sage.ar_strun": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2810,
@@ -6357,6 +6507,7 @@
    ]
   },
   "sage.ar_svc": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 2,
@@ -6374,6 +6525,7 @@
    ]
   },
   "sage.ar_svd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -6396,6 +6548,7 @@
    ]
   },
   "sage.ar_tcn": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdisthc",
@@ -6477,6 +6630,7 @@
    ]
   },
   "sage.ar_tcp": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjhc",
@@ -6541,6 +6695,7 @@
    ]
   },
   "sage.ar_tcr": {
+   "code": [],
    "empty": [],
    "money": [
     "amtadjent",
@@ -6680,6 +6835,7 @@
    ]
   },
   "sage.ar_tcu": {
+   "code": [],
    "empty": [],
    "money": [
     "amtdist",
@@ -6734,6 +6890,7 @@
    ]
   },
   "sage.ar_unpsth": {
+   "code": [],
    "empty": [],
    "money": [
     "exchratehc",
@@ -6787,6 +6944,7 @@
    ]
   },
   "sage.gl_01": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -6839,6 +6997,7 @@
    ]
   },
   "sage.gl_abk": {
+   "code": [],
    "empty": [
     "numofkey"
    ],
@@ -6866,6 +7025,7 @@
    ]
   },
   "sage.gl_abrx": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 6,
@@ -6939,6 +7099,7 @@
    ]
   },
   "sage.gl_account": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 573,
@@ -6989,6 +7150,7 @@
    ]
   },
   "sage.gl_acgrp": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 37,
@@ -7005,6 +7167,7 @@
    ]
   },
   "sage.gl_achd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 10,
@@ -7020,6 +7183,7 @@
    ]
   },
   "sage.gl_adsd": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 10,
@@ -7036,6 +7200,7 @@
    ]
   },
   "sage.gl_afs": {
+   "code": [],
    "empty": [],
    "money": [
     "netperd1",
@@ -7075,6 +7240,7 @@
    ]
   },
   "sage.gl_asv": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 20,
@@ -7092,6 +7258,9 @@
    ]
   },
   "sage.gl_avc": {
+   "code": [
+    "acctid"
+   ],
    "empty": [],
    "money": [],
    "rows": 34,
@@ -7102,13 +7271,13 @@
     "revalid"
    ],
    "whole": [
-    "acctid",
     "audtdate",
     "audttime",
     "revalsw"
    ]
   },
   "sage.gl_batch": {
+   "code": [],
    "empty": [],
    "money": [
     "credittot",
@@ -7141,6 +7310,7 @@
    ]
   },
   "sage.gl_cas": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 11,
@@ -7156,6 +7326,7 @@
    ]
   },
   "sage.gl_chagp": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 36,
@@ -7170,6 +7341,7 @@
    ]
   },
   "sage.gl_je_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "scurnamt",
@@ -7211,6 +7383,9 @@
    ]
   },
   "sage.gl_je_header": {
+   "code": [
+    "drilldwnlk"
+   ],
    "empty": [],
    "money": [
     "jrnlcr",
@@ -7284,7 +7459,6 @@
     "detailcnt",
     "docdate",
     "doctype",
-    "drilldwnlk",
     "drilsrcty",
     "errbatch",
     "errentry",
@@ -7362,6 +7536,7 @@
    ]
   },
   "sage.gl_jec": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 3723,
@@ -7379,6 +7554,7 @@
    ]
   },
   "sage.gl_perr": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 11689,
@@ -7402,6 +7578,7 @@
    ]
   },
   "sage.gl_pjc": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 3650,
@@ -7421,6 +7598,7 @@
    ]
   },
   "sage.gl_pjd": {
+   "code": [],
    "empty": [],
    "money": [
     "convrate",
@@ -7473,6 +7651,7 @@
    ]
   },
   "sage.gl_rval": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1,
@@ -7495,6 +7674,7 @@
    ]
   },
   "sage.gl_rvl": {
+   "code": [],
    "empty": [],
    "money": [
     "convrate"
@@ -7527,6 +7707,7 @@
    ]
   },
   "sage.gl_sjn": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 3,
@@ -7642,6 +7823,7 @@
    ]
   },
   "sage.gl_srce": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 60,
@@ -7658,6 +7840,7 @@
    ]
   },
   "sage.oe_invoice_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "blduntconv",
@@ -7823,6 +8006,7 @@
    ]
   },
   "sage.oe_invoice_header": {
+   "code": [],
    "empty": [],
    "money": [
     "inrate",
@@ -8015,6 +8199,7 @@
    ]
   },
   "sage.oe_order_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "cosuntcst",
@@ -8166,6 +8351,7 @@
    ]
   },
   "sage.oe_order_header": {
+   "code": [],
    "empty": [],
    "money": [
     "inrate",
@@ -8324,6 +8510,7 @@
    ]
   },
   "sage.oe_shipment_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "cog",
@@ -8492,6 +8679,7 @@
    ]
   },
   "sage.oe_shipment_header": {
+   "code": [],
    "empty": [],
    "money": [
     "itemdistot",
@@ -8683,6 +8871,7 @@
    ]
   },
   "sage.po_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "defextwght",
@@ -8802,6 +8991,7 @@
    ]
   },
   "sage.po_header": {
+   "code": [],
    "empty": [],
    "money": [
     "doctotal",
@@ -8971,6 +9161,7 @@
    ]
   },
   "sage.po_receipt_detail": {
+   "code": [],
    "empty": [],
    "money": [
     "defextwght",
@@ -9111,6 +9302,7 @@
    ]
   },
   "sage.po_receipt_header": {
+   "code": [],
    "empty": [],
    "money": [
     "amount",
@@ -9309,6 +9501,7 @@
    ]
   },
   "silver.customers": {
+   "code": [],
    "empty": [
     "industry_type"
    ],
@@ -9343,6 +9536,7 @@
    ]
   },
   "silver.manufacturers": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 52,
@@ -9364,6 +9558,9 @@
    ]
   },
   "silver.order_entries": {
+   "code": [
+    "customer_order_count"
+   ],
    "empty": [
     "reference",
     "ship_to_address"
@@ -9381,11 +9578,11 @@
    ],
    "whole": [
     "customer_id",
-    "customer_order_count",
     "id"
    ]
   },
   "silver.order_entry_items": {
+   "code": [],
    "empty": [],
    "money": [],
    "rows": 1693,
@@ -9402,6 +9599,7 @@
    ]
   },
   "silver.purchase_order_items": {
+   "code": [],
    "empty": [],
    "money": [
     "quantity",
@@ -9423,6 +9621,7 @@
    ]
   },
   "silver.purchase_orders": {
+   "code": [],
    "empty": [
     "expected_date"
    ],
@@ -9450,6 +9649,7 @@
    ]
   },
   "silver.receipt_pack_items": {
+   "code": [],
    "empty": [
     "expiry_date",
     "status"
@@ -9471,6 +9671,7 @@
    ]
   },
   "silver.receipt_raw_items": {
+   "code": [],
    "empty": [],
    "money": [
     "qty_received"
@@ -9491,6 +9692,7 @@
    ]
   },
   "silver.receipts": {
+   "code": [],
    "empty": [
     "receipt_number",
     "received_by",
@@ -9522,6 +9724,7 @@
    ]
   },
   "silver.shipments": {
+   "code": [],
    "empty": [
     "status"
    ],
@@ -9545,6 +9748,7 @@
    ]
   },
   "silver.suppliers": {
+   "code": [],
    "empty": [
     "notes"
    ],

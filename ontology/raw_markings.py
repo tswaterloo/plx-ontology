@@ -20,18 +20,26 @@ relation (a Portal relation of the purchasing, orders or customers domain of the
 catalog: purchasing, sales, AP, AR and GL; a BC entity set that carries a money marking)
 keeps its figures behind ``finance`` whatever their names. There a column no curated
 property reads, that no marking covers and that is no key is finance when it holds
-amounts: on the Portal, when the relation's value profile (``raw_money_profile.json``,
-read once from the source mirror by ``scripts/gen_raw_money_profile.py``) finds it mostly
+amounts: on the Portal, when the relation's value profile (``ontology.money_profile``:
+the committed ``raw_money_profile.json`` and the one every projection build writes into
+its state directory, ``use_state_dir``; per relation the newer decides) finds it mostly
 numeric with fractional figures (at least 0.5 % of them: Sage's ``2210.400`` makes its
-``2225`` money too; FileMaker's ``1.0`` is whole, and so is an invoice number column with a
-stray ``12.5``); in BC, when $metadata types it decimal. A column the profile finds whole
-(an identifier, a compact date, a flag, a count), text or a measure that is not money
-(``NOT_MONEY``: a quantity, weight, rate, percent, factor, lead time...) stays visible, on
-every row alike; so does a column a curated property reads unmarked, as
+``2225`` money too; FileMaker's ``1.0`` is whole, and so is an invoice number column with
+a stray ``12.5``); in BC, when $metadata types it decimal. A column the profile finds
+whole (an identifier, a compact date, a flag, a count), a code (an encoded reference such
+as FileMaker container data, figures of 1e12 and more), text, or a measure that is not
+money (``NOT_MONEY``: a quantity, weight, rate, percent, factor, lead time...) stays
+visible, on every row alike; so does a column a curated property reads unmarked, as
 ``plx.object`` shows it. A column the profile does not list or found empty is finance
 unless its declared type holds no figure (a text, date, identifier or JSON column). A
 scoped marking replaces ``finance`` on its listed columns, as it does for the name rules.
 The decision is cached per relation (``relation_markings``).
+
+Two guards follow the data between profiles. A column profiled whole that serves a
+fractional figure is withheld for that read and the profile is stale (``stale``; the
+next build profiles again; ``money_profile.check`` fails on an old profile). A Sage
+optional field (``value``, ``defval``) is withheld on each row whose own ``decimals``
+declare an amount (a free-shipping minimum in dollars, ``SHPMINDOL``).
 
 Fail closed. A relation that carries a money marking (``finance`` or
 ``purchasing_prices``) on its row or any column, or is finance-sensitive, is a money
@@ -104,13 +112,19 @@ class RelationMarkings:
     gets no row. ``columns``: every column whose status is known, with its markings
     (empty: unmarked). ``unknown``: the markings of a column not in ``columns``.
     ``keys``: the relation's key columns (never twins). ``sensitive``: a
-    finance-sensitive relation (module doc)."""
+    finance-sensitive relation (module doc). ``tripwire``: columns the profile found whole
+    (no curated property reads them): one serving a fractional figure is withheld for that
+    read and the profile is stale (``stale``). ``typed_by_row``: a value column -> the
+    column of its row declaring its decimals (Sage optional fields): withheld where that
+    declares decimals."""
 
     row: frozenset[str]
     columns: Mapping[str, frozenset[str]]
     unknown: frozenset[str]
     keys: frozenset[str] = field(default_factory=frozenset)
     sensitive: bool = False
+    tripwire: frozenset[str] = field(default_factory=frozenset)
+    typed_by_row: Mapping[str, str] = field(default_factory=dict)
 
     def of(self, column: str) -> frozenset[str]:
         got = self.columns.get(column)
@@ -183,20 +197,63 @@ def _catalog_domains(meta: str) -> Mapping[str, str]:
         return {}
 
 
-@functools.lru_cache(maxsize=4)
-def _profile(path: str) -> Mapping[str, Mapping[str, str]]:
-    """Portal relation -> {column: money | whole | text | empty} (``PROFILE``); none when
-    the file is missing or unreadable (every unlisted column is then finance)."""
+PROFILE_KINDS = ("money", "whole", "code", "text", "empty")
+# A state directory's own profile (``STATE_PROFILE`` in it), written by every projection
+# build (``operating.host.build_projection``); ``use_state_dir`` names it for this process.
+STATE_PROFILE = "raw-money-profile.json"
+_state_dirs: list[Path] = []
+
+
+def use_state_dir(state_dir: str | Path) -> None:
+    """Read the money profile a state directory's builds keep (``STATE_PROFILE``) besides
+    the committed one: per relation, the newer one decides. Called by each case runtime."""
+    path = Path(state_dir)
+    if path not in _state_dirs:
+        _state_dirs.append(path)
+
+
+@functools.lru_cache(maxsize=8)
+def _profile_file(path: str, stamp: tuple) -> tuple[str, Mapping[str, Mapping[str, str]]]:
+    """(its ``profiled_at``, relation -> {column: kind}) of one profile file; empty when
+    missing or unreadable. ``stamp``: its (mtime, size), so a rewritten file is read anew."""
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return "", {}
     out: dict[str, dict[str, str]] = {}
     for relation, kinds in (doc.get("relations") or {}).items():
         if isinstance(kinds, Mapping):
-            out[str(relation)] = {str(c): kind for kind in ("money", "whole", "text", "empty")
+            out[str(relation)] = {str(c): kind for kind in PROFILE_KINDS
                                   for c in kinds.get(kind) or ()}
-    return out
+    return str(doc.get("profiled_at") or ""), out
+
+
+def _stamp(path: Path) -> tuple:
+    try:
+        stat = path.stat()
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return ()
+
+
+def _profiles() -> list[tuple[str, Mapping[str, Mapping[str, str]]]]:
+    files = [PROFILE] + [d / STATE_PROFILE for d in _state_dirs]
+    return [_profile_file(str(f), _stamp(f)) for f in files if _stamp(f)]
+
+
+def profile_stamp() -> tuple:
+    """What the profiles read now are (paths and stamps): part of the cache key."""
+    files = [PROFILE] + [d / STATE_PROFILE for d in _state_dirs]
+    return tuple((str(f), _stamp(f)) for f in files)
+
+
+def _profile(relation: str) -> Mapping[str, str]:
+    """{column: kind} of ``relation`` in the newest profile that profiles it."""
+    best: tuple[str, Mapping[str, str]] | None = None
+    for profiled_at, relations in _profiles():
+        if relation in relations and (best is None or profiled_at > best[0]):
+            best = (profiled_at, relations[relation])
+    return best[1] if best else {}
 
 
 def _not_money(column: str) -> bool:
@@ -240,7 +297,8 @@ def _types_bound(compiled: Any, source: str, relation: str, generated: Iterable[
 
 
 @functools.lru_cache(maxsize=4096)
-def _markings_for(digest: str, source: str, relation: str) -> RelationMarkings:
+def _markings_for(digest: str, profiles: tuple, source: str, relation: str
+                  ) -> RelationMarkings:
     from ontology import schema as ontology_schema
     compiled = ontology_schema.load_schema()
     return _compute(compiled, source, relation, str(ontology_schema.GENERATED_DIR),
@@ -286,17 +344,28 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
     money = bool((row | frozenset().union(*columns.values())) & MONEY_MARKINGS)
     sensitive = (_catalog_domains(meta_dir).get(relation) in SENSITIVE_DOMAINS
                  if source == PORTAL else money)
+    tripwire: set[str] = set()
+    typed_by_row: dict[str, str] = {}
     if sensitive:
         overrides = _overrides()
-        profiled = _profile(str(PROFILE)).get(relation, {}) if source == PORTAL else {}
+        # Sage optional fields: a row declares its own value's type (``decimals``): a value
+        # with decimals is an amount (a free-shipping minimum in dollars), else a code or
+        # a count. The value column is withheld on the rows whose type has decimals.
+        decimals = next((c for c in set(columns) | set(catalog) if c == "decimals"), None)
+        if decimals is not None:
+            typed_by_row = {c: decimals for c in ("value", "defval")
+                            if c in set(columns) | set(catalog) and not columns.get(c)}
+        profiled = _profile(relation) if source == PORTAL else {}
         for column in sorted(set(columns) | set(catalog) | set(profiled)):
             if columns.get(column) or column in curated or column in keys \
                     or _not_money(column):
                 continue
             if source == PORTAL:
                 kind = profiled.get(column)
-                if kind in ("whole", "text"):
-                    continue   # an identifier, a date, a flag, a count, a word
+                if kind in ("whole", "code", "text"):
+                    if kind == "whole" and column not in curated:
+                        tripwire.add(column)
+                    continue   # an identifier, a date, a flag, a count, a code, a word
                 if kind != "money" and types.get(column) and not (
                         types[column] & {"decimal", "money", "integer"}):
                     continue   # never filled when profiled: its declared type holds no figure
@@ -306,7 +375,8 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
                 "finance", source, relation, column)})
     return RelationMarkings(frozenset(row), columns,
                             UNKNOWN_MONEY if money or sensitive else frozenset(),
-                            frozenset(keys), sensitive)
+                            frozenset(keys), sensitive, frozenset(tripwire - keys),
+                            dict(typed_by_row))
 
 
 # The committed schema's digest, re-read at most this often: ``load_schema`` re-reads and
@@ -314,6 +384,18 @@ def _compute(compiled: Any, source: str, relation: str, generated_dir: str, meta
 # must not pay per column. Schema files change with a deploy, which restarts the reader.
 _DIGEST_SECONDS = 60.0
 _digest_seen: list[Any] = [None, 0.0]
+
+
+_profile_seen_at: list[Any] = [None, 0.0]
+
+
+def _profile_seen() -> tuple:
+    """``profile_stamp`` re-read at most every ``_DIGEST_SECONDS``."""
+    import time
+    now = time.monotonic()
+    if _profile_seen_at[0] is None or now - _profile_seen_at[1] > _DIGEST_SECONDS:
+        _profile_seen_at[:] = [profile_stamp(), now]
+    return _profile_seen_at[0]
 
 
 def _committed_digest() -> str:
@@ -329,7 +411,7 @@ def relation_markings(source: str, relation: str, schema: Any = None) -> Relatio
     """The markings of ``relation``'s raw rows in ``source`` (module doc). ``schema``: a
     compiled schema (default the committed one, cached per schema digest)."""
     if schema is None:
-        return _markings_for(_committed_digest(), source, relation)
+        return _markings_for(_committed_digest(), _profile_seen(), source, relation)
     from ontology import schema as ontology_schema
     return _compute(schema, source, relation, str(ontology_schema.GENERATED_DIR),
                     str(ontology_schema.META_DIR))
@@ -412,6 +494,40 @@ def numbers(value: Any) -> set[Decimal]:
     return out
 
 
+def _positive(value: Any) -> bool:
+    number = _number(value)
+    return number is not None and number > 0
+
+
+def _fractional(value: Any) -> bool:
+    """A figure that is not whole (``12.5``; FileMaker's ``1.0`` and ``2225`` are whole)."""
+    number = _number(value)
+    if number is None or not number.is_finite():
+        return False
+    try:
+        return number != number.to_integral_value()
+    except ArithmeticError:
+        return False
+
+
+# (relation, column) a tripwire fired on in this process: its profile is stale until the
+# next build profiles the mirror again (``check`` reports it; the read withheld the cell).
+STALE: set[tuple[str, str]] = set()
+
+
+def _mark_stale(relation: str, column: str) -> None:
+    if (relation, column) not in STALE:
+        STALE.add((relation, column))
+        import sys
+        print(f"raw_markings: profile stale: {relation}.{column} profiled whole served a "
+              "fractional figure (withheld)", file=sys.stderr)
+
+
+def stale() -> list[tuple[str, str]]:
+    """The (relation, column) whose profile a read found stale in this process."""
+    return sorted(STALE)
+
+
 def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
                      held: Iterable[str], schema: Any = None) -> frozenset[str] | None:
     """The columns of ``row`` a reader holding ``held`` may not see (marked ones and
@@ -421,6 +537,14 @@ def withheld_columns(source: str, relation: str, row: Mapping[str, Any],
     if not found.row <= held:
         return None
     hidden = {c for c in row if not _column_of(found, source, relation, str(c)) <= held}
+    if not UNKNOWN_MONEY <= held:
+        for column, declares in found.typed_by_row.items():
+            if column in row and _positive(row.get(declares)):
+                hidden.add(column)
+        for column in found.tripwire & set(row):
+            if column not in hidden and _fractional(row[column]):
+                hidden.add(column)
+                _mark_stale(relation, column)
     if not hidden:
         return frozenset()
     secret: set[Decimal] = set()

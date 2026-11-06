@@ -2093,6 +2093,16 @@ class _LiveSets:
 
 # --------------------------------------------------------------------------- tools
 
+
+def schema_offers_type(types: Mapping[str, Any], tid: Any) -> bool:
+    """Whether an unfiltered ``plx.schema`` listing offers the object type: a type no
+    source serves (``not_served``: no record of it can be read) is left out, so the map
+    lists only types a read can reach; naming it (``object_type``) still describes it and
+    why it is not served. A link, event or action is offered when every type it names is."""
+    spec = types.get(tid) if isinstance(tid, str) else None
+    return spec is None or (spec.get("availability") or {}).get(
+        "state", "served") != "not_served"
+
 class OntologyTools:
     """``plx.schema``, ``plx.find`` and ``plx.object`` over one projection store.
 
@@ -2761,13 +2771,7 @@ class OntologyTools:
         detailed = object_type is not None
 
         def offered(tid: Any) -> bool:
-            """Whether an unfiltered listing offers the type: a type no source serves
-            (``not_served``: no record of it can be read) is left out, so the map lists
-            only types a read can reach; naming it (``object_type``) still describes it
-            and why it is not served."""
-            spec = types.get(tid) if isinstance(tid, str) else None
-            return detailed or spec is None or (spec.get("availability") or {}).get(
-                "state", "served") != "not_served"
+            return detailed or schema_offers_type(types, tid)
         chosen = [object_type] if object_type else [t for t in sorted(types) if offered(t)]
 
         def type_entry(tid: str) -> dict[str, Any]:

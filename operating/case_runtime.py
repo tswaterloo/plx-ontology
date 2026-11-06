@@ -415,6 +415,10 @@ class CaseRuntime:
                                else LinkContracts.from_file(link_contracts))
         root = Path(state_dir) / CASE_RUNTIME_DIR
         self.state_dir = Path(state_dir)
+        # The money profile this state's builds keep decides raw columns' markings too
+        # (``ontology.raw_markings.use_state_dir``), newest per relation.
+        from ontology import raw_markings
+        raw_markings.use_state_dir(self.state_dir)
         self.client_configured = client is not None
         if live is not None and not isinstance(live, LiveReaders):
             raise CaseRuntimeUnavailable("live_readers_invalid")

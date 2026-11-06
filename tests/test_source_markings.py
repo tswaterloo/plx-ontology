@@ -268,13 +268,91 @@ class RelationMarkingTests(unittest.TestCase):
                 self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, ()), hidden)
 
     def test_the_profile_reads_a_column_by_its_figures_across_the_relation(self):
-        from scripts.gen_raw_money_profile import classify
+        from ontology.money_profile import classify
         rows = [{"total": "2210.400", "flag": "1.0", "invoice": str(1000 + n), "note": "x",
                  "empty": None} for n in range(300)]
         rows[0].update(total="2225", invoice="1012.5")   # one stray fraction in 300 ids
         self.assertEqual(classify(rows), {"total": "money", "flag": "whole",
                                           "invoice": "whole", "note": "text",
                                           "empty": "empty"})
+
+    def test_container_references_are_codes_not_money(self):
+        """FileMaker container data (``receipt_raw_material.coadata``) holds encoded
+        references such as -9.519e18, never an amount: a code, visible; its cost is not."""
+        from ontology.money_profile import classify
+        rows = [{"coadata": f"-95190191{n:04d}.5e10", "costitem": "12.5"} for n in range(50)]
+        self.assertEqual(classify(rows), {"coadata": "code", "costitem": "money"})
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.receipt_raw_material",
+                                             {"id": "r1", "coadata": "-9.51901913080919e+18",
+                                              "costitem": "12.5"}, ()), {"costitem"})
+
+    def test_a_sage_optional_field_is_withheld_where_its_row_declares_decimals(self):
+        row = {"_sage_pk": "C1-SHPMINDOL", "idcust": "C1", "optfield": "SHPMINDOL",
+               "type": "100", "decimals": "3", "value": "50.000"}
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "sage.ar_cuso", row, ()), {"value"})
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "sage.ar_cuso", row, {"finance"}),
+                         set())
+        count = {**row, "optfield": "SHPMINCSE", "type": "6", "decimals": "0", "value": "6"}
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "sage.ar_cuso", count, ()), set())
+
+    def test_a_whole_column_serving_a_fraction_is_withheld_and_the_profile_stale(self):
+        rm.STALE.discard(("public.receipt", "acceptdamages"))
+        flag = {"id": "r1", "acceptdamages": "1.0"}
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.receipt", flag, ()), set())
+        self.assertNotIn(("public.receipt", "acceptdamages"), rm.stale())
+        odd = {"id": "r1", "acceptdamages": "0.5"}
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.receipt", odd, ()),
+                         {"acceptdamages"})
+        self.assertEqual(rm.withheld_columns(rm.PORTAL, "public.receipt", odd, {"finance"}),
+                         set())
+        self.assertIn(("public.receipt", "acceptdamages"), rm.stale())
+
+    def test_a_state_profile_newer_than_the_committed_one_decides(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as state:
+            relation = "public.order_entry"
+            row = {"id": "o1", "oecust_c": "1234.0"}
+            self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, ()), set())
+            Path(state, rm.STATE_PROFILE).write_text(json.dumps({
+                "profiled_at": "2999-01-01T00:00:00Z",
+                "relations": {relation: {"money": ["oecust_c"], "whole": ["id"]}}}))
+            saved = list(rm._state_dirs)
+            try:
+                rm.use_state_dir(state)
+                rm._profile_seen_at[0] = None   # re-read the profiles now
+                self.assertEqual(rm.withheld_columns(rm.PORTAL, relation, row, ()),
+                                 {"oecust_c"})
+            finally:
+                rm._state_dirs[:] = saved
+                rm._profile_seen_at[0] = None
+
+    def test_the_profile_check_fails_when_old_or_of_another_mirror(self):
+        import datetime
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from ontology import money_profile as mp
+        with tempfile.TemporaryDirectory() as state:
+            mirror = Path(state) / mp.MIRROR
+            mirror.parent.mkdir(parents=True)
+            db = sqlite3.connect(mirror)
+            db.execute("CREATE TABLE mirror_meta (key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("INSERT INTO mirror_meta VALUES ('generation', 'g2')")
+            db.commit()
+            db.close()
+            Path(state, rm.STATE_PROFILE).write_text(json.dumps({
+                "mirror_generation": "g2", "profiled_at": "2026-11-01T00:00:00Z",
+                "relations": {}}))
+            now = datetime.datetime(2026, 11, 3, tzinfo=datetime.timezone.utc)
+            self.assertTrue(mp.check(Path(state), now=now)["ok"])
+            later = datetime.datetime(2026, 11, 20, tzinfo=datetime.timezone.utc)
+            self.assertEqual(mp.check(Path(state), now=later)["problems"],
+                             ["profile_too_old"])
+            Path(state, rm.STATE_PROFILE).write_text(json.dumps({
+                "mirror_generation": "g1", "profiled_at": "2026-11-01T00:00:00Z"}))
+            self.assertEqual(mp.check(Path(state), now=now)["problems"],
+                             ["mirror_generation_not_profiled"])
 
     def test_a_purchasing_reader_keeps_the_line_amount_a_finance_twin_repeats(self):
         line = {"id": "l1", "description": "resin", "quantity": 10, "directUnitCost": 91.205,

@@ -23,7 +23,8 @@ example file: an example mapping, never a production clearance. ``OUTSIDER`` hol
 * ``schema`` (a): ``plx.schema`` paged by its cursor to the end;
   every page that says ``truncated`` must carry a ``next_cursor``
   (``truncated_without_cursor``), and the pages together list every declared object, link,
-  event and action type once (``sections.*.missing`` / ``duplicates``).
+  event and action type the listing offers once (``sections.*.missing`` / ``duplicates``):
+  all but the ones naming a type no source serves (``sections.*.not_served``).
 * ``find`` ((b) and (c)): for every served object type, a ``plx.find`` filter on a
   property the type does not declare (the most common property name of other types) must
   be ``unknown_property`` whose hint names the type's declared properties
@@ -323,10 +324,21 @@ def schema_check(call: Callable[..., dict], schema: Any) -> dict[str, Any]:
         if not cursor:
             complete = completeness.get("complete") is True
             break
+    from operating.ontology_tools import schema_offers_type
+    types = schema.object_types
+    names = {"object_types": ("id",), "link_types": ("from", "to"),
+             "event_types": ("object_type",), "action_types": ("target",)}
     sections = {}
     for key in _SECTIONS:
-        declared, seen = set(getattr(schema, key)), set(listed[key])
+        # declared: every type of the section the unfiltered listing offers, so a type
+        # a source serves is never missing; a not-served one is counted, never listed
+        every = getattr(schema, key)
+        declared = {tid for tid, spec in every.items()
+                    if all(schema_offers_type(types, tid if field == "id" else spec.get(field))
+                           for field in names[key])}
+        seen = set(listed[key])
         sections[key] = {"declared": len(declared), "listed": len(seen),
+                         "not_served": len(every) - len(declared),
                          "missing": len(declared - seen), "undeclared": len(seen - declared),
                          "duplicates": len(listed[key]) - len(seen)}
     return {"pages": pages, "truncated_without_cursor": truncated_without_cursor,

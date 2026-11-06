@@ -603,12 +603,39 @@ def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str
     _publish(generation.store, path, facts=primed)
     timings["publish"] = round(time.monotonic() - laid, 3)
     generation.seconds["publish"] = timings["publish"]
+    laid = time.monotonic()
+    timings.begin("money_profile")
+    _profile_money(state_dir)
+    timings["money_profile"] = round(time.monotonic() - laid, 3)
+    generation.seconds["money_profile"] = timings["money_profile"]
     return {**generation.report, "build": {
         "mode": generation.mode, "units": generation.units,
         "units_rebuilt": generation.units_rebuilt, "seconds": generation.seconds,
         "seed": generation.seed, "need": generation.need,
         "steps": {name: dict(step.get("counts") or {}) for name, step in
                   (generation.report.get("post_project") or {}).items()}}}
+
+
+def _profile_money(state_dir: Path) -> bool:
+    """Profile the state's source mirror again after a publish (``ontology.money_profile.
+    profile_state``: which raw columns of finance-sensitive relations
+    hold amounts, read by ``ontology.raw_markings``), so the profile readers use follows
+    the data; read-only on the mirror, at most four processes. Never fails a build: a
+    profile that cannot be written leaves the last one served, and ``--check`` reports it
+    stale."""
+    from ontology import project_parallel
+    from ontology import money_profile
+    try:
+        workers = max(1, min(4, project_parallel.workers(None)))
+    except Exception:  # noqa: BLE001 - a refused count profiles on one process
+        workers = 1
+    try:
+        found = money_profile.profile_state(state_dir, workers=workers)
+    except Exception as error:  # noqa: BLE001 - the profile is the readers', never the build's
+        print(f"money profile: not written ({type(error).__name__})", file=sys.stderr)
+        return False
+    print(f"money profile: {json.dumps(found)}", file=sys.stderr)
+    return True
 
 
 def _prime_store_facts(store: Path) -> bool:
