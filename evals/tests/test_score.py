@@ -2489,6 +2489,71 @@ class CapturedRecordAndCalculationTests(unittest.TestCase):
                 self.assertEqual(codes_of(result, "invoiced_total"), [code])
                 self.assertEqual(result["outcome"], "wrong")
 
+    def test_an_average_is_scored_as_recomputed_through_the_gate(self):
+        """avg over the two invoiced lines (1000.25, 260.25): right, it scores correct;
+        written otherwise it is a calculation_mismatch, never the claimed value scored."""
+        item = f4_item()
+        next(v for v in item["known_outcome"]["values"]
+             if v["name"] == "invoiced_total")["value"] = "630.25"
+        # a wrong value fails as a wrong sum does: recomputed, and its prose claim refused
+        for value, want in (("630.25", []),
+                            ("630.26", ["calculation_mismatch", "claim_check_failed"])):
+            with self.subTest(value=value):
+                answer = self.with_value("invoiced_total", value=value,
+                                         calculation={**sum_of(BC_A, BC_B), "op": "avg"})
+                answer["text"] = answer["text"].replace("1260.50", value)
+                result = sc.score(*run(item=item, answer=answer, host=captured_host()))
+                self.assertEqual(codes_of(result, "invoiced_total"), want)
+        malformed = self.with_value("invoiced_total", calculation={
+            **sum_of(BC_A, BC_B, BC_A), "op": "ratio"})
+        self.assertEqual(self.score(malformed)["answer_error"],
+                         "answer_malformed:values.4.calculation")
+
+
+class ComputedClaimAgreementTests(unittest.TestCase):
+    def test_the_gate_and_the_scorer_reach_one_verdict_on_each_computed_value(self):
+        """One shared example: the claim gate (``claim_checks``) and the scorer's recompute
+        over the same three cells (100.50, 200.25, 0) pass and refuse the same values."""
+        from operating import claim_checks
+        handles = [fx.handle("public.app_receipt", {"id": f"r-{n}"}, n + 1) for n in range(3)]
+        rows = {h: {"relation": "public.app_receipt", "key": {"id": f"r-{n}"},
+                    "row": {"id": f"r-{n}", "amount": amount}}
+                for n, (h, amount) in enumerate(zip(handles, ("100.50", "200.25", "0")))}
+        evidence = {h: {"ok": True, **view} for h, view in rows.items()}
+        a, b, zero = handles
+        table = (("avg", [a, b], "150.38", None, True), ("avg", [a, b], "150.37", None, False),
+                 ("avg", [a, b], "150.4", None, False), ("avg", handles, "100.25", None, True),
+                 ("min", handles, "0", None, True), ("max", handles, "200.25", None, True),
+                 ("max", handles, "200.26", None, False),
+                 ("difference", [b, a], "99.75", None, True),
+                 ("difference", [a, b], "99.75", None, False),
+                 ("ratio", [a, b], "50.19", "percent", True),
+                 ("ratio", [a, b], "0.50", None, True), ("ratio", [a, b], "0.5", None, False),
+                 ("ratio", [a, zero], "1", None, False), ("sum", handles, "300.75", None, True))
+        for op, cited, value, unit, want in table:
+            with self.subTest(op=op, value=value):
+                claim = {"value": value, "op": op,
+                         "of": [{"citation": h, "field": "row.amount"} for h in cited],
+                         **({"unit": unit} if unit else {})}
+                gated = claim_checks.check_items(
+                    [{"id": "F1", "texts": [], "citations": [
+                        {"handle": h, "status": "resolved"} for h in cited],
+                      "value_claims": claim_checks.parse_value_claims([claim], cited, [])}],
+                    rows=rows.get)
+                stated = {"name": "v", "value": value, **({"unit": unit} if unit else {}),
+                          "calculation": {"op": op, "inputs": [
+                              {"l1_handle": h, "field_path": "row.amount"} for h in cited]}}
+                self.assertEqual(sc.calculation_problem(stated["calculation"]), None)
+                result = sc.recompute(stated["calculation"], evidence, stated)
+                scored = result["code"] is None and result.get("holds") is not False \
+                    and Decimal(value) == result["value"]
+                self.assertEqual((gated["passed"], scored), (want, want), gated["failures"])
+        self.assertEqual(sc.calculation_problem({"op": "median", "inputs": [
+            {"l1_handle": a, "field_path": "row.amount"}]}), "op")
+        self.assertEqual(sc.recompute({"op": "ratio", "inputs": [
+            {"l1_handle": h, "field_path": "row.amount"} for h in (a, zero)]}, evidence)["code"],
+            "calculation_zero_denominator")
+
 
 CONTRACTS = json.loads((Path(__file__).resolve().parents[2] / "operating"
                         / "ontology_tool_contracts.json").read_text("utf-8"))

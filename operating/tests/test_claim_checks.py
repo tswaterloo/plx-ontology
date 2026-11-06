@@ -3206,6 +3206,82 @@ class AskClaimFormTests(unittest.TestCase):
         self.assertEqual(codes(gate("90.", both, [mixed_roles], rows=BC_ROWS,
                                     calculations=())), ["claim_role_mismatch"])
 
+    def test_avg_min_max_difference_and_ratio_are_recomputed_from_the_cells_they_cite(self):
+        """The owner's computed claims: each recomputed from the re-read cells (never the
+        claimed value), an average or ratio rounded half-up to its written decimals and no
+        coarser than its floor, a ratio over zero refused, money in one currency."""
+        rows = dict(sales_order(index, amount)
+                    for index, amount in ((1, "100.50"), (2, "200.25"), (3, "0")))
+        handles = list(rows)
+        cells = [{"citation": h, "field": "row.total_amount"} for h in handles]
+        returned = {"counts": [], "currencies": {}}
+        for handle in handles:
+            claim_checks.returned_evidence("plx.object", {}, {"values": [
+                money(handle, "row.total_amount", "USD")]}, returned)
+
+        def run(text, claim, given=returned, read=rows):
+            return gate(text, handles, [claim], rows=read, calculations=(), returned=given)
+        passing = (
+            ("Average 100.25 USD.", op("100.25", "avg", cells, currency="USD")),
+            # 150.375 rounded half-up to the cents it writes, or exact
+            ("Average 150.38 USD.", op("150.38", "avg", cells[:2], currency="USD")),
+            ("Average 150.375 USD.", op("150.375", "avg", cells[:2], currency="USD")),
+            ("Lowest 0 USD.", op("0", "min", cells, currency="USD")),
+            ("Highest 200.25 USD.", op("200.25", "max", cells, currency="USD")),
+            ("Up 99.75 USD.", op("99.75", "difference", [cells[1], cells[0]],
+                                 currency="USD")),
+            ("A ratio of 0.50.", op("0.50", "ratio", cells[:2])),
+            ("It is 50.19% of it.", op("50.19", "ratio", cells[:2], unit="percent")))
+        for text, claim in passing:
+            with self.subTest(text=text):
+                result = run(text, claim)
+                self.assertTrue(result["passed"], result["failures"])
+        refused = (
+            ("wrong average", "Average 100.26 USD.",
+             op("100.26", "avg", cells, currency="USD"), "claim_value_mismatch"),
+            ("average rounded the wrong way", "Average 150.37 USD.",
+             op("150.37", "avg", cells[:2], currency="USD"), "claim_value_mismatch"),
+            ("average coarser than its cents", "Average 150.4 USD.",
+             op("150.4", "avg", cells[:2], currency="USD"), "claim_value_mismatch"),
+            ("min is no input's value", "Lowest 1 USD.",
+             op("1", "min", cells, currency="USD"), "claim_value_mismatch"),
+            ("max is not the largest", "Highest 100.50 USD.",
+             op("100.50", "max", cells, currency="USD"), "claim_value_mismatch"),
+            ("difference reversed", "Down 99.75 USD.",
+             op("99.75", "difference", cells[:2], currency="USD"), "claim_value_mismatch"),
+            ("ratio coarser than 0.01", "A ratio of 0.5.",
+             op("0.5", "ratio", cells[:2]), "claim_value_mismatch"),
+            ("ratio over zero", "A ratio of 1.",
+             op("1", "ratio", [cells[0], cells[2]]), "claim_value_mismatch"),
+            ("average in no currency", "Average 100.25.",
+             op("100.25", "avg", cells), "claim_currency_mismatch"),
+            # the prose states a number the computed claims do not
+            ("prose beyond the claim", "Average 100.25 USD, peak 300 USD.",
+             op("100.25", "avg", cells, currency="USD"), "claim_unstructured"))
+        for name, text, claim, code in refused:
+            with self.subTest(case=name):
+                self.assertEqual(codes(run(text, claim)), [code])
+        self.assertIn("denominator", run("A ratio of 1.", op("1", "ratio", [
+            cells[0], cells[2]]))["failures"][0]["detail"])
+        # Recomputed from the cells as read now: the same claim fails once a cell differs.
+        moved = dict(rows, **dict([sales_order(3, "3")]))
+        self.assertEqual(codes(run("Average 100.25 USD.", op("100.25", "avg", cells,
+                                                              currency="USD"), read=moved)),
+                         ["claim_value_mismatch"])
+        # One currency across the inputs: a difference (or ratio) of USD and CAD is refused.
+        cad = {"counts": [], "currencies": {**returned["currencies"],
+                                            (handles[1], "row.total_amount"): "CAD"}}
+        for claim in (op("99.75", "difference", [cells[1], cells[0]], currency="USD"),
+                      op("0.50", "ratio", cells[:2])):
+            with self.subTest(op=claim["op"]):
+                self.assertEqual(codes(run(f"It is {claim['value']}.", claim, cad)),
+                                 ["claim_currency_mismatch"])
+        for bad in (op("1", "ratio", cells), op("1", "difference", cells[:1]),
+                    op("0.50", "ratio", cells[:2], currency="USD"),
+                    op("1", "max", [cells[0], cells[0]]), op("1", "median", cells)):
+            with self.subTest(bad=bad), self.assertRaises(ValidationError):
+                claim_checks.parse_value_claims([bad], handles, [])
+
     def test_a_margin_and_its_percent_hold_over_cited_revenue_and_ledger_cost(self):
         """A margin over cited revenue and booked ledger cost (signed negative) is an
         expression in the revenue's currency; its percent is the share margin / revenue

@@ -2387,7 +2387,7 @@
   },
   "tools": {
     "plx.schema": {
-      "description": "The ontology map: object, link, event and action types with properties (value type, unit, quantity role, markings, availability), the process graphs plx.process serves (processes: root type, stages, whether an unnamed call picks it) and the schema digest every answer cites. Filter by object type or section; page with completeness.next_cursor as cursor until it is null.",
+      "description": "The ontology map: object, link, event and action types with properties (value type, unit, quantity role, markings, availability), the process graphs plx.process serves (processes: root type, stages, whether an unnamed call picks it) and the schema digest every answer cites. Filter by object type or section; page with completeness.next_cursor as cursor until it is null. Without object_type only served and partial types (and their links, events, actions) are listed; a not_served type is described only when named.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -3727,7 +3727,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "description": "A hop names a declared link type and the direction it is walked, or a link by its navigation name on the type the hop starts from (a link's name on its from type walks it forward, its reverse_name on its to type in reverse; unique per type, e.g. mentioned_in_email): one path then serves every start type declaring that name. A name the start type does not declare is refused (undeclared_link), as is one that would mean several links (ambiguous_link); the answer's hops name the link type walked.",
+              "description": "A hop names a declared link type and direction, or a link's navigation name on the hop's start type (its name walks it forward, its reverse_name in reverse; e.g. mentioned_in_email), so one path serves every start type declaring that name. An undeclared name is refused (undeclared_link), one meaning several links too (ambiguous_link); the answer's hops name the link type walked.",
               "properties": {
                 "link_type": {
                   "type": "string",
@@ -4197,11 +4197,34 @@
                     "forward",
                     "reverse"
                   ]
+                },
+                "link": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
                 }
               },
-              "required": [
-                "link_type",
-                "direction"
+              "oneOf": [
+                {
+                  "required": [
+                    "link_type",
+                    "direction"
+                  ],
+                  "not": {
+                    "required": [
+                      "link"
+                    ]
+                  }
+                },
+                {
+                  "required": [
+                    "link"
+                  ],
+                  "properties": {
+                    "link_type": false,
+                    "direction": false
+                  }
+                }
               ]
             },
             "minItems": 1,
@@ -4401,7 +4424,7 @@
           "process": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,63}$",
-            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (open by operating.po_status: an issued header word with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window with its lateness: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised, received dates, late or not with days late and the reason chain; any other root gets its type's one implicit process."
+            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (operating.po_status: issued with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window with its lateness: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised and received dates, days late and the reason chain; any other root gets its type's one implicit process."
           },
           "include_variants": {
             "type": "boolean"
@@ -6009,7 +6032,7 @@
             "type": "string",
             "minLength": 2,
             "maxLength": 200,
-            "description": "Locate a short phrase (case and white space ignored) in the content, or in the field named by field_path; exclusive with text_offset and line. matches.hits lists the first 50 in text order, each with its line, offset (a text_offset that reads on from it), chars and its snippet of the text, served and quotable as a window is (page_citation and page_offset on an original's page); matches.total_hits counts them all."
+            "description": "Locate a short phrase (case and white space ignored) in the content, or the field_path field; exclusive with text_offset and line. matches.hits: the first 50 in text order, each with its line, offset (a text_offset reading on from it), chars and a snippet quotable as a window is (page_citation, page_offset on an original's page); matches.total_hits counts all."
           },
           "column_offset": {
             "type": "integer",
@@ -6602,7 +6625,7 @@
           },
           "plan": {
             "type": "object",
-            "description": "An inline plan (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no listed family answers: family or plan, never both; prefer a family when one fits. Checked against the live schema first: every type, link, property and binding declared, each step a primitive (plx.object, plx.around, ...) with valid arguments, steps <= step_budget <= 128; a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. Runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: $schema \"_plan.schema.json\", format, id, families [\"F<n>\"], title, description, root {object_types, fallback_filters}, step_budget, steps [{id, tool, from (root or a step id), bind (object_id or from), args}], evidence [{name, kind property|count, object_type, properties}]. Examples: ontology/plans/_inline_examples.json. Supplier's orders past due: root Supplier; plx.around path [PurchaseOrder.ordered_from reverse] filters [expected_date lt <date>]; plx.object; evidence PurchaseOrder po_number, expected_date. Order items with no receipt: root PurchaseOrder; plx.around [PurchaseOrderLine.line_of reverse] filters [received_quantity eq 0]; evidence PurchaseOrderLine description, ordered_quantity."
+            "description": "An inline plan (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no listed family answers: family or plan, never both; prefer a family when one fits. Checked against the live schema first: every type, link, property and binding declared, each step a primitive (plx.object, plx.around, ...) with valid arguments, steps <= step_budget <= 128; a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. Runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: $schema \"_plan.schema.json\", format, id, families [\"F<n>\"], title, description, root {object_types, fallback_filters}, step_budget, steps [{id, tool, from (root or a step id), bind (object_id or from), args}], evidence [{name, kind property|count, object_type, properties}]. Examples: ontology/plans/_inline_examples.json."
           },
           "root": {
             "$ref": "#/$defs/investigate_root"
@@ -6639,7 +6662,7 @@
                 "pattern": "^case-[0-9a-f]{32}$"
               }
             },
-            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, via the action path (ontology_tools_investigate.record_follow_ups): one workbench.follow_up.record per gap and one workbench.draft.record per engine-worded request; workbench-internal, approval none, nothing sent. A gap already on the case is not recorded again; executor notes, run limits and host state (source_not_configured, freshness_unknown, projection_not_built) record nothing. First page only. A host without an action path refuses it (follow_ups_not_configured); an unseen case is case_not_found."
+            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, via the action path: one workbench.follow_up.record per gap, one workbench.draft.record per engine-worded request; workbench-internal, nothing sent. A gap already on the case, executor notes, run limits and host state (source_not_configured, freshness_unknown, projection_not_built) record nothing. First page only. No action path: follow_ups_not_configured; an unseen case: case_not_found."
           },
           "response_format": {
             "type": "string",

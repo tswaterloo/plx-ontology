@@ -217,8 +217,14 @@ Another record or revision is ``cited_other_row``.
      "calculation": {"op": "sum", "inputs": [{"l1_handle": "bc://...", "field_path":
                      "row.amount", "unit": "USD", "currency": "USD"}, ...]}}
 
-``sum`` (Decimal sum of the cited cells), ``count`` (distinct cited records) and ``equal``
-(true when every cited cell holds the same number; the value is a boolean). The scorer
+``sum`` (Decimal sum of the cited cells), ``count`` (distinct cited records), ``equal``
+(true when every cited cell holds the same number; the value is a boolean), ``avg``,
+``min``, ``max`` (of the cited cells) and ``difference``/``ratio`` (``x0 - x1``/``x0 / x1``
+over exactly two cells; a ratio is a pure number, or x 100 when the value's ``unit`` is
+``percent``, and states no currency; over a zero denominator ``calculation_zero_denominator``),
+these five recomputed by the claim gate's own rule (``answer_contract.computed_claim``: an
+average or a ratio may be written rounded half-up to the value's decimals, never coarser
+than its floor), each cell read once (a sum's and a count's each record once). The scorer
 recomputes it from the harness re-reads (``recompute``): units and currencies are never
 mixed (``calculation_unit_mismatch``, ``calculation_currency_mismatch``; a value stating
 no currency, or another, beside an expected one is ``currency_mismatch``), a sum never
@@ -292,7 +298,7 @@ from evals import measure as measuring
 from operating.answer_contract import (  # noqa: F401 - the scorer's answer contract
     ANSWER_FORMAT, ANSWERABILITY, ACTION_TOOL, _JSON_FENCE, MAX_VALUES, MAX_CITATIONS,
     CALCULATION_OPS, MAX_CALCULATION_INPUTS, canonical, answer_candidate, parse_answer,
-    answer_problems, calculation_problem)
+    answer_problems, calculation_problem, NUMERIC_OPS, ZeroDenominator, computed_claim)
 
 TRANSCRIPT_FORMAT = "plx-eval-transcript/v1"
 SCORE_FORMAT = "plx-eval-score/v1"
@@ -1147,7 +1153,7 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
     from operating.claim_checks import MAX_CLAIMS, ROLES, parse_value_claims
     from ontology.types import ValidationError
     calc = value["calculation"]
-    result = recompute(calc, evidence)
+    result = recompute(calc, evidence, value)
     entry: dict[str, Any] = {"claims": [], "malformed": None, "calculation": result}
     if result["code"]:
         return entry
@@ -1189,7 +1195,7 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
                                "field": given["field_path"],
                                "unit": result["unit"] or "1"}
     if text is not None and calc["op"] != "equal":
-        if calc["op"] in ("count", "expression"):
+        if calc["op"] != "sum":
             # recomputed here (an expression's figures are page text, which the gate reads
             # as text, not as cells): the gate covers the prose number with the result
             names = {"n": {"kind": "literal", "value": _value_text(result["value"]),
@@ -1206,7 +1212,7 @@ def _calculation_claims(index: int, value: Mapping[str, Any], text: str | None,
         role = value.get("quantity_role")
         if calc["op"] == "sum" and isinstance(role, str) and role in ROLES:
             claim["role"] = role
-        if calc["op"] == "sum" and isinstance(value.get("unit"), str):
+        if calc["op"] in NUMERIC_OPS and isinstance(value.get("unit"), str):
             claim["unit"] = value["unit"]
         raw.append(claim)
     # the gate takes MAX_CLAIMS claims per item: a long sum's cells spread over items
@@ -1374,12 +1380,16 @@ def _recompute_expression(calc: Mapping[str, Any], evidence: Mapping[str, Any],
             "currency": currencies.pop() if currencies else None}
 
 
-def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any],
+              stated: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """An answer value's calculation recomputed from the harness re-reads, Decimal only:
     ``value`` (a Decimal, or a boolean for ``equal``), ``unit``/``currency`` (the inputs'
     one unit and currency, never mixed), ``inputs`` (the records, ``cite_identity``; for an
     expression each page and figure), ``cells`` (the input values as read) and ``code``
-    (None, or why it does not recompute; module docstring)."""
+    (None, or why it does not recompute; module docstring). An average or a ratio is
+    judged against the answer value ``stated`` (its ``value``, and its ``unit`` for a
+    percent) by the claim gate's rule (``answer_contract.computed_claim``): its ``value``
+    is the stated one where that holds, else the recomputed one as it should be written."""
     out: dict[str, Any] = {"value": None, "unit": None, "currency": None, "inputs": [],
                            "cells": [], "code": None}
     if calc["op"] == "expression":
@@ -1391,13 +1401,19 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str,
     rows = _rows(evidence)
     numbers: list[Decimal] = []
     units, currencies, sources = set(), set(), set()
+    # A sum or a count reads each record once; any other op each cell once (a difference
+    # of two fields of one line).
+    by_cell = calc["op"] in NUMERIC_OPS and calc["op"] != "sum"
+    seen = set()
     for given in calc["inputs"]:
         handle = given["l1_handle"]
         view, identity = rows(handle), cite_identity(handle)
         if view is None or identity is None:
             return {**out, "code": "calculation_input_unresolved"}
-        if identity in out["inputs"]:
+        key = (identity, given.get("field_path")) if by_cell else identity
+        if key in seen:
             return {**out, "code": "calculation_duplicate_input"}
+        seen.add(key)
         out["inputs"].append(identity)
         if calc["op"] == "count":
             continue
@@ -1409,7 +1425,7 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str,
         tiers = {(view.get("row") or {}).get("tier"),
                  (read.get("provenance") or {}).get("tier")
                  if isinstance(read.get("provenance"), Mapping) else None}
-        if calc["op"] == "sum" and LEAD_TIER in tiers:
+        if calc["op"] in NUMERIC_OPS and LEAD_TIER in tiers:
             return {**out, "code": "calculation_lead_tier"}
         numbers.append(number)
         out["cells"].append(cell)
@@ -1421,10 +1437,31 @@ def recompute(calc: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str,
         return {**out, "code": "calculation_unit_mismatch"}
     if len(currencies) > 1:
         return {**out, "code": "calculation_currency_mismatch"}
-    if calc["op"] == "sum" and {"sage", "bc"} <= sources:
+    if calc["op"] in ("sum", "avg") and {"sage", "bc"} <= sources:
         return {**out, "code": "calculation_twin_sources"}
     if calc["op"] == "count":
         out["value"] = Decimal(len(out["inputs"]))
+    elif by_cell:
+        unit = (stated or {}).get("unit")
+        percent = calc["op"] == "ratio" and isinstance(unit, str) \
+            and unit.strip().casefold() in _PERCENT_UNITS
+        claimed = (stated or {}).get("value")
+        try:
+            holds, value = computed_claim(
+                calc["op"], None if isinstance(claimed, bool) else to_decimal(claimed),
+                numbers, percent)
+        except ZeroDenominator:
+            return {**out, "code": "calculation_zero_denominator"}
+        except (ValueError, ArithmeticError):
+            return {**out, "code": "calculation_unevaluable"}
+        if calc["op"] == "ratio":
+            # same-unit inputs in one currency: a pure number, or a percent
+            out.update(unit="percent" if percent else None, currency=None)
+        else:
+            out.update(unit=calc["inputs"][0].get("unit") or None, currency=currencies.pop())
+        # whether the stated value holds (``0.5`` for a ratio of 0.5019 equals 0.50 but is
+        # written coarser than its floor: no)
+        out.update(value=value, holds=holds)
     else:
         given = calc["inputs"][0]
         out.update(unit=given.get("unit") or None, currency=currencies.pop())
@@ -2274,8 +2311,9 @@ def _score_calculated(expected: Mapping[str, Any], answer: Mapping[str, Any],
     codes = []
     value = result["value"]
     claimed = answer.get("value")
-    if not (claimed is value if isinstance(value, bool) else
-            not isinstance(claimed, bool) and to_decimal(claimed) == value):
+    if result.get("holds") is False or not (claimed is value if isinstance(value, bool) else
+                                            not isinstance(claimed, bool)
+                                            and to_decimal(claimed) == value):
         codes.append("calculation_mismatch")
     scored = value if isinstance(value, bool) else format(value, "f")
     if not same_value(scored, expected["value"], expected.get("tolerance")):

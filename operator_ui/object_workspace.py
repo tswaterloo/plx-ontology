@@ -2167,6 +2167,42 @@ class WorkspaceActions:
 SERVED_TOOLS = TOOLS + (DOCUMENTS_TOOL, INVESTIGATE_TOOL, AGGREGATE_TOOL)
 
 
+def _version_keys(host: Any) -> Callable[[str], str | None] | None:
+    """The audience key a cited version is kept under, as the host reads its records now:
+    the newest row-delta layer serving that version's record (a task that arrived in a
+    recent delta), else the served store (``StoreReader.version_audience``). A layer
+    decides only for the records it serves (a context record there is the served
+    store's); a version none holds, or held under two keys, decides nothing (None)."""
+    store = getattr(getattr(host, "tools", None), "store", None)
+    base = getattr(store, "version_audience", None)
+    check = getattr(host, "check_overlay", None)
+    try:
+        if callable(check):
+            check()
+    except Exception:  # noqa: BLE001 - no overlay read: the served store alone
+        pass
+    overlay = getattr(host, "_overlay", None)
+    layers = [layer for layer in getattr(overlay, "layers", None) or ()
+              if callable(getattr(getattr(layer, "reader", None), "version_audience", None))]
+    if base is None and not layers:
+        return None
+
+    def keyed(handle: str) -> str | None:
+        for layer in layers:   # newest first
+            found = layer.reader.version_audience(handle)
+            if found is not None and found[0] & layer.serves:
+                if not found[0] <= layer.serves:
+                    return None   # some of the record's objects served elsewhere: undecided
+                return found[1]
+        found = base(handle) if base is not None else None
+        if found is None:
+            return None
+        if overlay is not None and found[0] & getattr(overlay, "owned", frozenset()):
+            return None   # a layer replaces this record and does not hold the version
+        return found[1]
+    return keyed
+
+
 def audience_unit(handle: str) -> str | None:
     """The audience unit (C0 audience key) a cited record belongs to: ``api:<relation>``
     for a Portal row, the capture kind's unit (``bc:...``, ``mail:<mailbox>``) for a
@@ -2370,8 +2406,7 @@ class HostAccess:
         if todo:
             with self.host.per_call():
                 item_gate = self.host.tools.item_gate
-                store = getattr(self.host.tools, "store", None)
-                keyed = getattr(store, "audience_of_version", None)
+                keyed = _version_keys(self.host)
                 for handle in todo:
                     memo[handle] = self._decide(handle, gated, policy, item_gate, keyed)
         return {handle: memo[handle] for handle in handles}

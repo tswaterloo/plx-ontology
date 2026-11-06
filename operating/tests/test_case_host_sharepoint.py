@@ -258,6 +258,40 @@ class DocumentQuestionTests(SharePointHostCase):
         self.assertEqual(hidden["documents"], [])
         self.assertNotIn(self.handle(SCAN), json.dumps(hidden))
 
+    def test_the_lookup_outlives_a_capture_that_changes_nothing_and_not_a_revocation(self):
+        # The capture lists every file again every few seconds (a commit each time): a
+        # listing that changes no version, content or permission keeps the reader's
+        # lookup and every visibility decision; a permission re-read revoking the file
+        # for this reader drops it at the next question, decided again for that file.
+        from operating import case_tools_host
+        server = self.server(EMPLOYEE, portal_granted=False)
+        question = {"query": SCAN_PO, "sources": ["sharepoint"]}
+        first = self.ok(server, "plx.documents", question)
+        self.assertEqual([d["citation"] for d in first["documents"]], [self.handle(SCAN)])
+        self.assertTrue(self.capture.run(scope())["complete"])
+        def listed(decisions):
+            # the visibility listing's decisions (its rows carry no record; a gate's
+            # resolve of one file reads the whole row)
+            return [call.args[1]["l1_handle"] for call in decisions.call_args_list
+                    if "record" not in call.args[1].keys()]
+        decided = mock.patch.object(SharePointCaptureStore, "_row_visible", autospec=True,
+                                    side_effect=SharePointCaptureStore._row_visible)
+        with mock.patch.object(case_tools_host, "_file_names",
+                               side_effect=AssertionError("names read again")), \
+                mock.patch.object(case_tools_host, "_file_index",
+                                  side_effect=AssertionError("index read again")), \
+                decided as decisions:
+            again = self.ok(server, "plx.documents", question)
+        self.assertEqual([d["citation"] for d in again["documents"]], [self.handle(SCAN)])
+        self.assertEqual(listed(decisions), [])
+        self.drive.items[f"{DRIVE}:{SCAN}"]["acl"] = [RICARDO]   # sales removed upstream
+        self.assertTrue(self.capture.run(scope())["complete"])
+        with decided as decisions:
+            revoked = self.ok(server, "plx.documents", question)
+        self.assertEqual(revoked["documents"], [])
+        self.assertNotIn(self.handle(SCAN), json.dumps(revoked))
+        self.assertEqual(set(listed(decisions)), {self.handle(SCAN)})   # that file alone
+
     def test_find_returns_the_captured_file_labelled_as_of_capture(self):
         answer = self.ok(self.server(QUALITY), "plx.find",
                          {"query": "packet-scan", "object_type": "SharePointFile"})

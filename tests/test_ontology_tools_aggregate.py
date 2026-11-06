@@ -237,6 +237,23 @@ class AggregateTests(_Base):
         self.assertEqual(group["value"], "170")
         self.assertEqual(group["inputs"], 3)
 
+    def test_a_group_path_may_name_its_links_by_navigation_name(self):
+        """plx.query passes a group path as the agent wrote it: a hop named by its link's
+        navigation name groups as its link type and direction do, and a to-many name is
+        refused as its link type is (never counted once per reached record)."""
+        named = self.agg(STAFF, [L1, L2, L4], {"property": "ordered_quantity", "op": "sum"},
+                         group_by=["name"], path=[{"link": "line_of"}, {"link": "ordered_from"}])
+        typed = self.agg(STAFF, [L1, L2, L4], {"property": "ordered_quantity", "op": "sum"},
+                         group_by=["name"],
+                         path=[{"link_type": "PurchaseOrderLine.line_of", "direction": "forward"},
+                               {"link_type": "PurchaseOrder.ordered_from",
+                                "direction": "forward"}])
+        self.assertNotIn("error", named)
+        self.assertEqual(named["groups"], typed["groups"])
+        out = self.agg(STAFF, [PO1, PO2], {"op": "count"}, group_by=["description"],
+                       path=[{"link": "lines"}])
+        self.assertEqual(out["refused"]["code"], "fan_out")
+
     def test_unlinked_ambiguous_and_weak_links_are_explicit(self):
         path = [{"link_type": "PurchaseOrderLine.line_of", "direction": "forward"},
                 {"link_type": "PurchaseOrder.ordered_from", "direction": "forward"}]

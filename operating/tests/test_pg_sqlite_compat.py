@@ -72,6 +72,36 @@ class CompatTests(unittest.TestCase):
                          "WHERE object_id = ?", ("A:b:2",)).fetchone()
         self.assertEqual((row["object_id"], row[1], row["later"]), ("A:b:2", 1, 1))
 
+    def test_a_versions_text_fields_are_read_by_citation_range_on_both_stores(self):
+        # plx.find's text read (StoreReader.object_chunks) seeks each version's fields on
+        # the citation key; its range end is made in Python (no char(): Postgres has none).
+        import psycopg
+        from operating.ontology_tools import _CITATION_RANGE, _citation_pairs
+        from operating.pg.sqlite_compat import PgCompatConnection
+        fields = [(1, "A:b:1", "graph-mail://box/1@x", "graph-mail://box/1@x"),
+                  (2, "A:b:1", "graph-mail://box/1@x", "graph-mail://box/1@x#page=2"),
+                  (3, "A:b:1", "graph-mail://box/1@xy", "graph-mail://box/1@xy"),
+                  (4, "A:b:2", "graph-mail://box/2@x", "graph-mail://box/2@x")]
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            with conn.cursor().copy("COPY ontology.text_fields (field_id, object_id, "
+                                    "version_handle, citation, field_path, document_kind, "
+                                    "sender_class, markings, text_digest) FROM STDIN") as copy:
+                for row in fields:
+                    copy.write_row((*row, "text", "mail", "internal", "[]", "d"))
+        self.addCleanup(lambda: psycopg.connect(self.dsn, autocommit=True).execute(
+            "DELETE FROM ontology.text_fields"))
+        lite = sqlite3.connect(":memory:")
+        lite.execute("CREATE TABLE text_fields (field_id, object_id, version_handle, "
+                     "citation)")
+        lite.executemany("INSERT INTO text_fields VALUES (?,?,?,?)", fields)
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        sql = ("SELECT fd.field_id FROM json_each(:pairs) p CROSS JOIN text_fields fd ON "
+               + _CITATION_RANGE + " ORDER BY fd.field_id")
+        pairs = {"pairs": _citation_pairs({"A:b:1": "graph-mail://box/1@x"})}
+        got = [[r[0] for r in store.execute(sql, pairs).fetchall()] for store in (lite, pg)]
+        self.assertEqual(got, [[1, 2], [1, 2]])
+
     def test_translation_of_the_sqlite_forms_the_tools_use(self):
         from operating.pg.sqlite_compat import translate
         self.assertEqual(translate("SELECT * FROM object_versions WHERE rowid > ?"),

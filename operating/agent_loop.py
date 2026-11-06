@@ -189,7 +189,8 @@ class Bounds:
 #   {"action": "call", "calls": [{"tool": name, "arguments": {...}}, ...]}
 #   {"action": "answer", "claims": [{"id"?, "value", "citation", "field", "role"?, "unit"?,
 #                                    "quote"?, "lead"?}
-#                                   | {"id"?, "value", "op": "count" | "sum", "of":
+#                                   | {"id"?, "value", "op": "count" | "sum" | "avg" |
+#                                      "min" | "max" | "difference" | "ratio", "of":
 #                                      [{"citation", "field"?, "unit"?}, ...], "role"?,
 #                                      "unit"?, "currency"? (sum), "lead"?}
 #                                   | {"id"?, "value", "op": "expression", "expression",
@@ -746,8 +747,14 @@ PLANNER_RULES = (
     "\"at least N\", N the records it cites, where records from two sources (a Portal "
     "row and a BC record) may be one record and count once, unless one such count group "
     'with a value listed them (its identity lookup told them apart). A sum of money states '
-    '"currency" (ISO 4217, as the tools returned the values). A value you computed is a '
-    "claim only as such a count or sum over its cited inputs, or as an expression over "
+    '"currency" (ISO 4217, as the tools returned the values). "op":"avg", "min" or "max" '
+    'takes the same "of" as a sum; "difference" (x0 - x1) or "ratio" (x0 / x1, "unit":'
+    '"percent" for x 100) exactly two inputs in that order; inputs share one unit and '
+    "currency, a ratio states none; an avg or ratio may be written rounded half-up (an avg "
+    "at least to its inputs' cents, a ratio to 0.01 or a whole percent). A value you "
+    "computed is a "
+    "claim only as such a count or sum (or avg, min, max, difference, ratio) over its "
+    "cited inputs, or as an expression over "
     'figures cited texts print: {"id":...,"value":...,"op":"expression","expression":'
     '"x0 - x1","of":[{"citation":...,"field":...,"value":"<the figure as written>",'
     '"quote":...},...]} (x0 the first input, each input with the quote of the passage '

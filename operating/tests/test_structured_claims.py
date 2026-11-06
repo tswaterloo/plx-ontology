@@ -652,6 +652,45 @@ class OnQuestionTests(unittest.TestCase):
             tools=tools, request=contextlib.nullcontext, per_call=contextlib.nullcontext,
             policy_now=lambda actor: None)
 
+    def test_the_walk_reads_the_store_file_a_generation_swap_put_in_place(self):
+        """The relevance walk's own read-only connection follows the file at the store's
+        path: a new generation renamed into place is read on a new connection and the
+        old file's connection is closed (never links of a generation no longer served)."""
+        import sqlite3
+        import threading
+        import types
+        from operating import mcp_server
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ontology.sqlite"
+
+            def generation(name, object_id):
+                conn = sqlite3.connect(Path(tmp) / name)
+                conn.execute("CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT)")
+                conn.execute("INSERT INTO object_versions VALUES (?, 'h')", (object_id,))
+                conn.commit()
+                conn.close()
+            generation("ontology.sqlite", "PO:old")
+            store = types.SimpleNamespace(conn=sqlite3.connect(path), lock=threading.Lock())
+            server = types.SimpleNamespace(ontology=types.SimpleNamespace(
+                tools=types.SimpleNamespace(store=store)))
+            self.addCleanup(mcp_server._LINK_CONNS.pop, str(path.resolve()), None)
+            first = mcp_server._link_connection(server)
+            self.assertIs(mcp_server._link_connection(server), first)
+            self.assertEqual(first.execute("SELECT object_id FROM object_versions")
+                             .fetchall(), [("PO:old",)])
+            generation("next.sqlite", "PO:new")
+            (Path(tmp) / "next.sqlite").replace(path)
+            store.conn.close()
+            store.conn = sqlite3.connect(path)   # the host reopens the swapped generation
+            second = mcp_server._link_connection(server)
+            self.assertIsNot(second, first)
+            self.assertEqual(second.execute("SELECT object_id FROM object_versions")
+                             .fetchall(), [("PO:new",)])
+            with self.assertRaises(sqlite3.ProgrammingError):
+                first.execute("SELECT 1")   # the old file's connection is closed
+            second.close()
+            store.conn.close()
+
     def test_a_record_linked_to_the_questions_record_is_on_the_question(self):
         """A line whose row names the question's order only by its id stands without a
         via when a firm link joins it to that order (within the link hops); a mention

@@ -513,6 +513,94 @@ class CitationAccessTests(unittest.TestCase):
                 self.assertEqual(HostAccess._decide(handle, "reader", Policy, None, keyed)
                                  ["reason"], NOT_GRANTED)
 
+    def test_a_version_read_live_past_the_projection_takes_its_records_audience(self):
+        """A task version the session read live, newer than any the projection holds, is
+        decided by the audience its record's held versions are kept under (one only):
+        curveball q23 hid TASK-3243's merged stage, read live, and the answer fell back
+        to bare fact lines."""
+        import sqlite3
+        from operating.ontology_tools import StoreReader
+        from operator_ui.object_workspace import HostAccess, NOT_GRANTED, audience_unit
+        unit = audience_unit("mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1")
+        conn = sqlite3.connect(":memory:")
+        conn.executescript("CREATE TABLE objects (object_id TEXT, audience_key TEXT);"
+                           "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT);")
+        conn.executemany("INSERT INTO objects VALUES (?, ?)", [
+            ("MCTask:1", unit + "/PRJ-A"), ("MCTask:10", unit + "/PRJ-B"),
+            ("MCTask:2", unit + "/PRJ-A"), ("MCTask:2b", unit + "/PRJ-B")])
+        conn.executemany("INSERT INTO object_versions VALUES (?, ?)", [
+            ("MCTask:1", "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1"),
+            ("MCTask:1", "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-5"),
+            ("MCTask:10", "mc://live/tasks/TASK-10@7e3f6f53ea5c2690-1"),
+            ("MCTask:2", "mc://live/tasks/TASK-2@7e3f6f53ea5c2690-1"),
+            ("MCTask:2b", "mc://live/tasks/TASK-2@7e3f6f53ea5c2690-2")])
+        store = StoreReader(conn)
+        granted = {unit + "/PRJ-A"}
+
+        class Policy:
+            @staticmethod
+            def may_read(_gated, key):
+                return key in granted
+        newer = "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-9"
+        self.assertEqual(store.audience_of_version(newer), unit + "/PRJ-A")
+        self.assertIsNone(HostAccess._decide(newer, "reader", Policy, None,
+                                             store.audience_of_version))
+        # TASK-10's versions are another record's (PRJ-B), never TASK-1's; a record kept
+        # under two audiences, or never held, decides nothing.
+        for handle in ("mc://live/tasks/TASK-10@7e3f6f53ea5c2690-9",
+                       "mc://live/tasks/TASK-2@7e3f6f53ea5c2690-9",
+                       "mc://live/tasks/TASK-3@7e3f6f53ea5c2690-9"):
+            with self.subTest(handle=handle):
+                self.assertEqual(HostAccess._decide(handle, "reader", Policy, None,
+                                                    store.audience_of_version)["reason"],
+                                 NOT_GRANTED)
+
+    def test_a_task_that_arrived_in_a_recent_delta_is_decided_by_its_layer(self):
+        """A task the served store does not hold yet but a row-delta layer serves is kept
+        under that layer's audience; a layer's context record is the served store's; a
+        task neither holds stays withheld (fail closed)."""
+        import sqlite3
+        import types
+        from operating.ontology_tools import StoreReader
+        from operator_ui.object_workspace import (HostAccess, NOT_GRANTED, _version_keys,
+                                                  audience_unit)
+        unit = audience_unit("mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1")
+
+        def store(rows):
+            conn = sqlite3.connect(":memory:")
+            conn.executescript("CREATE TABLE objects (object_id TEXT, audience_key TEXT);"
+                               "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT);")
+            conn.executemany("INSERT INTO objects VALUES (?, ?)",
+                             [(oid, unit + "/" + project) for oid, _h, project in rows])
+            conn.executemany("INSERT INTO object_versions VALUES (?, ?)",
+                             [(oid, handle) for oid, handle, _p in rows])
+            return StoreReader(conn)
+        base = store([("MCTask:1", "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1", "PRJ-A")])
+        delta = store([("MCTask:9", "mc://live/tasks/TASK-9@7e3f6f53ea5c2690-4", "PRJ-A"),
+                       ("MCTask:1", "mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1", "PRJ-B")])
+        layer = types.SimpleNamespace(reader=delta, serves=frozenset({"MCTask:9"}))
+        host = types.SimpleNamespace(
+            tools=types.SimpleNamespace(store=base), check_overlay=lambda: None,
+            _overlay=types.SimpleNamespace(layers=[layer], owned=frozenset({"MCTask:9"})))
+        keyed = _version_keys(host)
+        granted = {unit + "/PRJ-A"}
+
+        class Policy:
+            @staticmethod
+            def may_read(_gated, key):
+                return key in granted
+        decide = lambda handle: HostAccess._decide(handle, "reader", Policy, None, keyed)
+        self.assertIsNone(decide("mc://live/tasks/TASK-9@7e3f6f53ea5c2690-4"))   # delta
+        self.assertIsNone(decide("mc://live/tasks/TASK-9@7e3f6f53ea5c2690-7"))   # newer
+        # the layer's copy of TASK-1 is context (not served there): the served store's
+        self.assertEqual(keyed("mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1"), unit + "/PRJ-A")
+        self.assertEqual(decide("mc://live/tasks/TASK-5@7e3f6f53ea5c2690-1")["reason"],
+                         NOT_GRANTED)
+        # Once a layer owns TASK-1 but holds no version of it, the served store's is no
+        # longer its record's: undecided, withheld.
+        host._overlay.owned = frozenset({"MCTask:9", "MCTask:1"})
+        self.assertIsNone(_version_keys(host)("mc://live/tasks/TASK-1@7e3f6f53ea5c2690-1"))
+
 
 if __name__ == "__main__":
     unittest.main()

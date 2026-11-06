@@ -142,6 +142,12 @@ class FactText(unittest.TestCase):
                         "bc://production/fbd2/itemLedgerEntries/e1@g-3"),
              "Item ledger entry cost amount actual: 12 CAD"),
         ]
+        # several records' same field: the claim's own name says whose it is
+        task = "mc://live/tasks/TASK-3233@7e3f6f53ea5c2690-1"
+        cases += [({**self.claim("stage", "merged", "row.stage", task),
+                    "name": "task_3233_stage"}, "Task 3233 stage: merged"),
+                  ({**self.claim("stage", "merged", "row.stage", task), "name": "c1"},
+                   "Stage: merged")]
         for claim, want in cases:
             got = p.fact_text(claim["text"], claim)
             self.assertEqual(got, want)
@@ -246,7 +252,9 @@ class FloatNoise(unittest.TestCase):
 
 
 class PeriodNoticeTest(unittest.TestCase):
-    """An answer to a question about a period the data does not reach says so first."""
+    """An answer to a question about a period the data does not reach says so in one short
+    note (after the answer, once per conversation: ``WorkspaceBackend._first_notice``),
+    naming a lagging source only where it bears on the answer."""
 
     def test_period_past_the_data_or_a_lagging_source_is_said(self):
         from datetime import datetime, timezone
@@ -256,14 +264,28 @@ class PeriodNoticeTest(unittest.TestCase):
         fresh = m.Freshness(as_of="2026-11-05T20:34:00Z", sources=[
             m.FreshnessSource(system="Email", as_of="2026-11-05T20:34:00Z"),
             m.FreshnessSource(system="Teams", as_of="2026-10-30T02:18:00Z")])
-        self.assertEqual(
-            period_notice("What did the supplier send today?", fresh, now),
-            "The data reaches 5 Nov, 3:34 p.m., before the end of the period asked, today "
-            "(Nov 5); anything later is not in this answer. Teams is read only to 29 Oct.")
-        self.assertEqual(
-            period_notice("What was invoiced last month?", fresh, now),
-            "Teams is read only to 29 Oct, before the end of the period asked, last month "
-            "(Oct 1 through Oct 31); its later records are not in this answer.")
+        self.assertEqual(period_notice("What did the supplier send today?", fresh, now),
+                         "Note: the data runs to 5 Nov, 3:34 p.m. (Teams to 29 Oct).")
+        self.assertEqual(period_notice("What was invoiced last month?", fresh, now),
+                         "Note: Teams to 29 Oct only.")
+        # A settled answer citing only mail: Teams lagging does not bear on it.
+        self.assertEqual(period_notice("What did the supplier send today?", fresh, now,
+                                       cited={"Email"}),
+                         "Note: the data runs to 5 Nov, 3:34 p.m.")
+        self.assertIsNone(period_notice("What was invoiced last month?", fresh, now,
+                                        cited={"Email"}))
+        # Not settled: what is missing may be in the lagging source, so it is named.
+        self.assertEqual(period_notice("What was invoiced last month?", fresh, now,
+                                       cited={"Email"}, settled=False),
+                         "Note: Teams to 29 Oct only.")
+        # Sources read to about the data's own cut-off are not listed beside it, however
+        # far that cut-off is from the period's end: only one lagging the rest.
+        stale = m.Freshness(as_of="2026-11-04T06:51:00Z", sources=[
+            m.FreshnessSource(system="Email", as_of="2026-11-04T06:46:00Z"),
+            m.FreshnessSource(system="BC", as_of="2026-11-04T06:51:00Z"),
+            m.FreshnessSource(system="Teams", as_of="2026-10-30T02:18:00Z")])
+        self.assertEqual(period_notice("What came in this week?", stale, now),
+                         "Note: the data runs to 4 Nov, 1:51 a.m. (Teams to 29 Oct).")
         self.assertIsNone(period_notice("Who buys for the customer?", fresh, now))
         self.assertIsNone(period_notice("What is due next week?", fresh, now))  # not read
         current = m.Freshness(as_of="2026-11-05T21:55:00Z", sources=[

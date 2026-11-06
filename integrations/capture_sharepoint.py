@@ -2132,19 +2132,90 @@ class SharePointCaptureStore:
 
     def index(self, actor: Actor, audience: LiveSourceAudience, *, limit: int = 5000
               ) -> dict[str, Any]:
-        """Current captured versions this reader may see, as identifiers only."""
+        """Current captured versions this reader may see, as identifiers only
+        (``visible_current``); ``state`` names that list: the same state, the same list."""
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100_000:
             raise CaptureError("limit_invalid")
-        items, truncated = [], False
-        for row in self._visible_rows(actor, audience):
-            if len(items) >= limit:
-                truncated = True
-                break
-            items.append({"drive_id": row["drive_id"], "item_id": row["item_id"],
-                          "l1_handle": row["l1_handle"],
-                          "content_sha256": row["content_sha256"],
-                          "recorded_at": row["recorded_at"]})
-        return {"items": items, "truncated": truncated, "lineage": LINEAGE}
+        state, rows = self.visible_current(actor, audience)
+        items = [{"drive_id": r[0], "item_id": r[1], "l1_handle": r[2],
+                  "content_sha256": r[3], "recorded_at": r[4]} for r in rows[:limit]]
+        return {"items": items, "truncated": len(rows) > limit, "lineage": LINEAGE,
+                "state": state}
+
+    # The columns a version's visibility is decided on (``_row_visible``), and those
+    # ``index`` lists: the visible-rows snapshot (``visible_current``) reads these alone.
+    _VISIBILITY_ROWS = ("SELECT version_id, drive_id, item_id, l1_handle, content_sha256, "
+                        "recorded_at, superseded_at, removed_reason, resources, source_acl "
+                        "FROM items WHERE drive_id IN ({})")
+
+    def content_stamp(self) -> tuple[Any, Any]:
+        """The store's version and content state: the last version id and the last item
+        event. Every write that adds a version (a new eTag, a move, a column re-read),
+        supersedes or removes one, or changes a version's captured bytes or text adds a
+        version or records an event (``item_events``), in the same transaction; a listing
+        that only sees a version again (``last_seen_at``, its root) or re-reads its
+        permissions (``resources``, ``source_acl``) changes neither. Read in one
+        statement (one snapshot)."""
+        row = self.db.execute("SELECT (SELECT MAX(version_id) FROM items), "
+                              "(SELECT MAX(rowid) FROM item_events)").fetchone()
+        return (row[0], row[1])
+
+    def visible_current(self, actor: Any, audience: Any) -> tuple[Any, list[tuple]]:
+        """(state, rows): this reader's current captured versions it may see now
+        (``_visible_rows``: the version's path keys and item permissions, and its item's
+        latest version's), as (drive_id, item_id, l1_handle, content_sha256, recorded_at)
+        in drive, item and version order. Kept per reader and audience on this store
+        object: each call reads the visibility columns of every version again
+        (``_VISIBILITY_ROWS``: no record, so far less than a listing's ``SELECT *``) and
+        decides again only a version whose own inputs, or its item's latest version's,
+        changed since (a new version, a supersession or removal, a permission re-read):
+        the same decision ``_row_visible`` makes, made once per state of its inputs.
+        ``state`` changes exactly when the list does (a new list is a new state)."""
+        drives = self._drives(actor, audience)
+        if not drives:
+            return ("none",), []
+        memo_all = self.__dict__.setdefault("_visibility_memo", {})
+        key = (actor, id(audience))
+        held = memo_all.get(key)
+        if held is None or held["audience"] is not audience or held["drives"] != drives:
+            held = memo_all[key] = {"audience": audience, "drives": drives, "rows": {},
+                                    "acls": {}, "list": None, "state": 0}
+            while len(memo_all) > 8:   # a few readers per store object
+                memo_all.pop(next(iter(memo_all)))
+        decided: dict[int, tuple] = held["rows"]
+        acls: dict[str, Any] = held["acls"]
+        # Item permissions are few texts shared by many versions: each kept once.
+        texts: dict[str, str] = held.setdefault("texts", {})
+        rows = self.db.execute(self._VISIBILITY_ROWS.format(",".join("?" * len(drives))),
+                               tuple(drives)).fetchall()
+        # Read in table order (one pass over the file, no sort in SQL): each item's
+        # latest version is its highest version id, and the list is put in drive, item and
+        # version order here.
+        latest: dict[tuple[str, str], sqlite3.Row] = {}
+        for row in rows:
+            held_row = latest.get((row[1], row[2]))
+            if held_row is None or held_row[0] < row[0]:
+                latest[(row[1], row[2])] = row
+        out: list[tuple] = []
+        seen: dict[int, tuple] = {}
+        for row in rows:
+            top = latest[(row[1], row[2])]
+            inputs = (row[8], texts.setdefault(row[9], row[9]), top[0], top[7], top[8],
+                      texts.setdefault(top[9], top[9]))
+            kept = decided.get(row[0])
+            if kept is not None and kept[0] == inputs:
+                visible = kept[1]
+            else:
+                visible = self._row_visible(row, actor, audience, top, acls)
+            seen[row[0]] = (inputs, visible)
+            if visible and row[6] is None:
+                out.append((row[1], row[2], row[0], row[3], row[4], row[5]))
+        out.sort()
+        out = [(drive, item, handle, digest, at) for drive, item, _v, handle, digest, at in out]
+        held["rows"] = seen
+        if held["list"] != out:
+            held["list"], held["state"] = out, held["state"] + 1
+        return (id(held), held["state"]), held["list"]
 
     def audience_check(self, audience: LiveSourceAudience) -> Callable[[Actor, str], bool]:
         """A ``ReadPolicy`` audience check for the ``sharepoint`` prefix: a captured drive

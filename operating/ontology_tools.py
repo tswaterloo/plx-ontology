@@ -235,6 +235,23 @@ _AUDIENCE_SOURCE = {"api": "portal_api", "bc": "bc", "mail": "graph_mail",
                     "workbench": "workbench", "mc": "mission_control",
                     "brain": "brain", "teams": "teams", "meetings": "meetings"}
 # Records with their own item ACL, re-checked per reader through the L1 handle.
+# The last Unicode code point: a text range "starts with X" is [X, X + _LAST_CHAR).
+_LAST_CHAR = chr(0x10FFFF)
+# A text field of a version (``StoreReader.object_chunks``), one seek on the citation key
+# per (object id, version handle, range end) of ``json_each(:pairs)`` (``_citation_pairs``):
+# a field's citation begins with its version's handle. The range's end is made in Python,
+# never by a store function (SQLite's char(), Postgres's chr()), so one statement runs on
+# both stores (``operating.pg.sqlite_compat``; a C-collated Postgres orders code points).
+_CITATION_RANGE = ("fd.citation >= json_extract(p.value, '$[1]') "
+                   "AND fd.citation < json_extract(p.value, '$[2]') "
+                   "AND fd.version_handle = json_extract(p.value, '$[1]') "
+                   "AND fd.object_id = json_extract(p.value, '$[0]')")
+
+
+def _citation_pairs(versions: Mapping[str, str]) -> str:
+    """``_CITATION_RANGE``'s pairs: [object id, version handle, the range's end]."""
+    return json.dumps([[object_id, handle, handle + _LAST_CHAR]
+                       for object_id, handle in versions.items()])
 _ITEM_ACL_SCHEMES = frozenset({"graph-mail", "sharepoint", "original", "teams-channel",
                                "teams-chat", "sharepoint-list", "calendar-event",
                                "planner-task", "meeting-transcript"})
@@ -265,6 +282,7 @@ NAMED_READ_NOTE = ("the search stopped at its scan cap, after every record whose
 TEXT_SCAN_CAP = 400  # readable objects a display-text search returns at most
 LEAD_SCAN_CAP = 2000  # identifier rows one prefix or same-number range reads at most
 FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
+FILTER_BATCH = 1000  # objects a filter scan reads per statement (its key-ordered range)
 # A filter listing whose segment matched nothing scans the next ones for this long (and
 # stops this many seconds before the call's own limit), so a scarce match is listed.
 EMPTY_SCAN_SECONDS = 20.0
@@ -1044,10 +1062,7 @@ class StoreReader:
             "SELECT t.chunk_id AS row_no, t.body, fd.object_id, fd.version_handle, "
             "fd.citation, fd.field_path, fd.sender_class, o.object_type, "
             "o.binding_id AS object_binding, o.audience_key FROM json_each(:pairs) p "
-            "CROSS JOIN text_fields fd ON fd.citation >= json_extract(p.value, '$[1]') "
-            "AND fd.citation < json_extract(p.value, '$[1]') || char(1114111) "
-            "AND fd.version_handle = json_extract(p.value, '$[1]') "
-            "AND fd.object_id = json_extract(p.value, '$[0]') "
+            "CROSS JOIN text_fields fd ON " + _CITATION_RANGE + " "
             "JOIN text_chunks t ON t.field_id = fd.field_id "
             "JOIN objects o ON o.object_id = fd.object_id "
             "JOIN object_versions v ON v.l1_handle = fd.version_handle "
@@ -1055,25 +1070,50 @@ class StoreReader:
             "WHERE " + self._VISIBLE_OBJECT + "AND " + self._at("v")
             + " AND fd.markings IN (SELECT value FROM json_each(:marks)) "
             "ORDER BY fd.object_id, fd.field_id, t.start",
-            scope.params(pairs=json.dumps([[object_id, handle] for object_id, handle
-                                           in versions.items()]))))
+            scope.params(pairs=_citation_pairs(versions))))
 
     def objects_of_type(self, scope: _Scope, object_type: str, after: str,
                         batch: int) -> list[sqlite3.Row]:
+        # An object id begins with its type ("<Type>:..."): the type's ids are one range
+        # of the object key, walked in key order and stopped at the batch, so the
+        # visibility predicate is read for the rows taken, never for every object of the
+        # type before a sort (77k objects of one type: 0.45 s a batch, now milliseconds).
+        # The type is still compared, on its value only (``|| ''``: no index on it).
         return list(self.conn.execute(
-            "SELECT o.* FROM objects o WHERE o.object_type = :type AND o.object_id > :after AND "
+            "SELECT o.* FROM objects o WHERE o.object_type || '' = :type "
+            "AND o.object_id > :after AND o.object_id >= :lo AND o.object_id < :hi AND "
             + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
-            scope.params(type=object_type, after=after, batch=batch)))
+            scope.params(type=object_type, after=after, batch=batch, lo=object_type + ":",
+                         hi=object_type + ";")))
 
     def audience_of_version(self, handle: str) -> str | None:
-        """The audience key of the record whose version ``handle`` is (one seek on the
-        versions' handle key), None when no version has it. Names no value."""
+        """The audience key of the record whose version ``handle`` is (``version_audience``),
+        None when none decides. Names no value."""
+        found = self.version_audience(handle)
+        return None if found is None else found[1]
+
+    def version_audience(self, handle: str) -> tuple[frozenset[str], str] | None:
+        """(the objects, their one audience key) of the version ``handle`` (one seek on the
+        versions' handle key). A version the projection does not hold (read live, newer
+        than the projection's: ``<record>@<revision>``) takes its record's: the audience
+        every held version of that record (the handles before its ``@``) is kept under,
+        when it is one. None when neither decides. Names no value."""
         with self.lock:
-            row = self.conn.execute(
-                "SELECT o.audience_key FROM object_versions v JOIN objects o "
+            rows = self.conn.execute(
+                "SELECT o.object_id, o.audience_key FROM object_versions v JOIN objects o "
                 "ON o.object_id = v.object_id WHERE v.l1_handle = ? LIMIT 1",
-                (handle,)).fetchone()
-        return None if row is None else row[0]
+                (handle,)).fetchall()
+            if not rows and "@" in handle:
+                record = handle.rsplit("@", 1)[0]
+                # the record's versions: one range of the handle key ("@" < "A")
+                rows = self.conn.execute(
+                    "SELECT DISTINCT o.object_id, o.audience_key FROM object_versions v "
+                    "JOIN objects o ON o.object_id = v.object_id WHERE v.l1_handle >= ? "
+                    "AND v.l1_handle < ? LIMIT 50", (record + "@", record + "A")).fetchall()
+        keys = {row[1] for row in rows}
+        if len(keys) != 1:
+            return None
+        return frozenset(row[0] for row in rows), next(iter(keys))
 
     def visible_versions(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
         """The version current at :at of each readable object among ``object_ids``."""
@@ -1083,14 +1123,19 @@ class StoreReader:
             "WHERE o.object_id IN (SELECT value FROM json_each(:ids)) AND " + self._VISIBLE_OBJECT
             + "AND " + self._at("v"), scope.params(ids=json.dumps(list(object_ids)))))
 
-    def readable_values(self, scope: _Scope, object_ids: Sequence[str]) -> list[sqlite3.Row]:
+    def readable_values(self, scope: _Scope, object_ids: Sequence[str],
+                        properties: Sequence[str] | None = None) -> list[sqlite3.Row]:
         """Values current at :at with permitted markings (the caller passes only
-        readable objects), each currency as this reader may read it (``scoped_currency``)."""
+        readable objects), each currency as this reader may read it (``scoped_currency``);
+        of ``properties`` only when named (None = all)."""
+        where = ("AND v.property IN (SELECT value FROM json_each(:props)) "
+                 if properties is not None else "")
         return self.scoped_currency(scope, self.conn.execute(
             "SELECT * FROM object_values v WHERE v.object_id IN (SELECT value FROM json_each(:ids)) "
-            "AND " + self._at("v") + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
+            + where + "AND " + self._at("v") + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
             "ORDER BY v.object_id, v.property, v.authority_rank IS NULL, v.authority_rank, "
-            "v.l1_handle, v.field_path", scope.params(ids=json.dumps(list(object_ids)))))
+            "v.l1_handle, v.field_path", scope.params(ids=json.dumps(list(object_ids)),
+                                                       props=json.dumps(list(properties or ())))))
 
     def withheld_values(self, scope: _Scope, object_ids: Sequence[str],
                         properties: Sequence[str] | None = None) -> list[sqlite3.Row]:
@@ -2713,8 +2758,17 @@ class OntologyTools:
         if object_type is not None and object_type not in types:
             raise ToolError("unknown_object_type", f"no object type {object_type} in the schema",
                             "call plx.schema without object_type for the list")
-        chosen = [object_type] if object_type else sorted(types)
         detailed = object_type is not None
+
+        def offered(tid: Any) -> bool:
+            """Whether an unfiltered listing offers the type: a type no source serves
+            (``not_served``: no record of it can be read) is left out, so the map lists
+            only types a read can reach; naming it (``object_type``) still describes it
+            and why it is not served."""
+            spec = types.get(tid) if isinstance(tid, str) else None
+            return detailed or spec is None or (spec.get("availability") or {}).get(
+                "state", "served") != "not_served"
+        chosen = [object_type] if object_type else [t for t in sorted(types) if offered(t)]
 
         def type_entry(tid: str) -> dict[str, Any]:
             spec = types[tid]
@@ -2739,7 +2793,9 @@ class OntologyTools:
             return entry
 
         def related(item: Mapping[str, Any], *fields: str) -> bool:
-            return object_type is None or any(item.get(f) == object_type for f in fields)
+            if object_type is None:
+                return all(offered(item.get(f)) for f in fields)
+            return any(item.get(f) == object_type for f in fields)
 
         sections = {"objects": ("object_types", [type_entry(t) for t in chosen]),
                     "links": ("link_types", [
@@ -3145,9 +3201,12 @@ class OntologyTools:
                 best[match.object_id] = match
         ranked = sorted(best.values(), key=_Match.sort_key)
         rooted = any(m.reason in ROOT_REASONS for m in ranked)
-        # roots on system record ids alone hide no business number (``_only_system_keys``)
-        unseated = rooted and not self._only_system_keys(
-            [m for m in ranked if m.reason in ROOT_REASONS])
+        # roots on system record ids alone hide no business number the same text reads
+        # as on another record (``_only_system_keys``, ``_business_rivals``); with no such
+        # rival the roots answer, as any unique code does
+        roots_found = [m for m in ranked if m.reason in ROOT_REASONS]
+        unseated = rooted and not (self._only_system_keys(roots_found)
+                                   and self._business_rivals(roots_found, ranked))
         # A query whose own filters pin it in a property (``_pinned``) asks for the
         # records holding it there: a reference match in a pinned property is the
         # listing's answer, a candidate (a lead, ``reference_match``, never a root and
@@ -3418,6 +3477,24 @@ class OntologyTools:
             count -= 1
             out = finish(count)
         return out
+
+    def _business_rivals(self, roots: Sequence[_Match], ranked: Sequence[_Match]) -> bool:
+        """Whether a match beside ``roots`` (a lead: a same-number twin, a prefix form) is
+        on a kind naming an object type of the ontology (a business number) and names a
+        record none of the roots is: a real collision of a system's record id with a
+        business number. Without one the roots stand (an item code, a supplier invoice
+        number or a project key matched only as such is no collision)."""
+        held = {m.object_id for m in roots}
+        for match in ranked:
+            if match.reason in ROOT_REASONS or match.object_id in held:
+                continue
+            try:
+                kind_type = self.grammar.kind_spec(match.kind).get("object_type")
+            except Exception:  # noqa: BLE001 - an unknown kind names no business record
+                continue
+            if self.schema is not None and kind_type in self.schema.object_types:
+                return True
+        return False
 
     def _only_system_keys(self, roots: Sequence[_Match]) -> bool:
         """Whether every root match is on a key of a kind that names no object type of
@@ -4031,7 +4108,7 @@ class OntologyTools:
         after, readable_count, scanned, truncated = start, 0, 0, False
         position = start
         while True:
-            rows = self.store.objects_of_type(scope, object_type, after, 200)
+            rows = self.store.objects_of_type(scope, object_type, after, FILTER_BATCH)
             if not rows:
                 break
             after = rows[-1]["object_id"]
@@ -4107,7 +4184,9 @@ class OntologyTools:
         not read is matched only where its readable values already decide it, never
         read as missing that value (``_filters_verdict``)."""
         values: dict[str, dict[str, list[tuple[str, Any]]]] = {}
-        for row in self.store.readable_values(scope, object_ids):
+        # the filtered properties' values alone: no verdict reads another property
+        for row in self.store.readable_values(scope, object_ids,
+                                              sorted({f["property"] for f in filters})):
             values.setdefault(row["object_id"], {}).setdefault(row["property"], []).append(
                 (row["value_type"], row["value"]))
         withheld: dict[str, set[str]] = {}

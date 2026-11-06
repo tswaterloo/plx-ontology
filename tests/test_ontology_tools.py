@@ -1407,7 +1407,14 @@ class SchemaToolTests(ContractMixin, unittest.TestCase):
         t = tools()
         listing = self.ok(t, "plx.schema", {})
         self.assertEqual(listing["schema_digest"], SCHEMA.digest_hex)
-        self.assertIn("Formulation", [o["id"] for o in listing["object_types"]])
+        listed = [o["id"] for o in listing["object_types"]]
+        self.assertIn("SalesOrder", listed)
+        # A type no source serves is not offered in the map (no read reaches a record of
+        # it), nor a link to it; named, it is described with why it is not served.
+        self.assertNotIn("Formulation", listed)
+        unserved = self.ok(t, "plx.schema", {"object_type": "Formulation"})["object_types"]
+        self.assertEqual([(o["id"], o["availability"]) for o in unserved],
+                         [("Formulation", "not_served")])
         one = self.ok(t, "plx.schema", {"object_type": "SalesOrder"})
         (entry,) = one["object_types"]
         props = {p["name"]: p for p in entry["properties"]}

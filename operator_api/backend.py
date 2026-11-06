@@ -584,6 +584,8 @@ class WorkspaceBackend(ActionsMixin):
         self.sections: Any = None   # the section pool (``section_pool.SectionPool``)
         self._answers: dict[str, dict[str, Any]] = {}
         self._recent: dict[str, list[m.RecentQuestion]] = {}
+        # The data notes said per (reader, conversation) (``_first_notice``).
+        self._notices: dict[tuple[Any, Any], set[str]] = {}
         self._lock = threading.Lock()
         self._pool: Any = None
         self.page_cache = ReaderCache()   # pages, Home lists, briefings: per reader
@@ -1266,10 +1268,16 @@ class WorkspaceBackend(ActionsMixin):
         if request is not asked:
             answer.question = asked.question     # the person's own words
             request = asked
-        # a question about a period the data does not reach yet says so first
-        notice = presentation.period_notice(intent, answer.freshness, self.clock())
-        if notice and notice not in answer.direct_answer:
-            answer.direct_answer = f"{notice} {answer.direct_answer}".strip()
+        # a question about a period the data does not reach yet says so: one short note
+        # after the answer (never in place of its start), naming a lagging source only
+        # where it bears on the answer, and once per conversation
+        notice = presentation.period_notice(
+            intent, answer.freshness, self.clock(),
+            cited={s.system for f in answer.facts for s in f.sources},
+            settled=answer.outcome == "answered")
+        if notice and notice not in answer.direct_answer \
+                and self._first_notice(reader.key, conversation, notice):
+            answer.direct_answer = f"{answer.direct_answer} {notice}".strip()
         # what to ask next: from the answer's own records and gaps, as this reader sees them
         answer.follow_ups = presentation.follow_ups(request.question, answer)
         answer.proposals = proposals.for_answer(answer)   # drafts only: never sent
@@ -1296,6 +1304,20 @@ class WorkspaceBackend(ActionsMixin):
                                               conversation_id=conversation))
             del recent[10:]
         yield "answer", answer
+
+    def _first_notice(self, reader: Any, conversation: Any, notice: str) -> bool:
+        """Whether ``notice`` is new in this reader's conversation (then it is kept as
+        said): a data note is said once per conversation, not on every answer."""
+        key = (reader, conversation)
+        with self._lock:
+            notices = self.__dict__.setdefault("_notices", {})
+            said = notices.setdefault(key, set())
+            if notice in said:
+                return False
+            said.add(notice)
+            while len(notices) > MAX_ANSWERS_KEPT:
+                notices.pop(next(iter(notices)))
+            return True
 
     def _drain(self, events: "queue.Queue[tuple[str, Any]]", future: Future,
                seconds: float) -> Iterator[tuple[str, Any]]:

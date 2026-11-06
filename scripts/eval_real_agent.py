@@ -205,6 +205,7 @@ from evals import runner
 from operating import tool_results
 from evals import score as scoring
 from operating import eval_principal
+from operating.answer_contract import NUMERIC_OPS
 from operating.agent_session import EXCLUSION_ENV, GRAPH_ENV, ReaderHost
 from operator_ui.session_journal import run_journal_scope
 
@@ -1294,7 +1295,7 @@ def loop_answer(result: Mapping[str, Any]) -> dict[str, Any]:
     seen: set[tuple[str, str, str]] = set()
     for claim in result.get("claims") or []:
         for claimed in claim.get("value_claims") or []:
-            if claimed.get("op") in ("count", "sum"):
+            if claimed.get("op") in ("count", *NUMERIC_OPS):
                 values.append(_op_value(claimed, roles))
                 continue
             key = (claimed.get("citation"), claimed.get("field"), claimed.get("value"))
@@ -1337,22 +1338,25 @@ def loop_answer(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _op_value(claimed: Mapping[str, Any], roles: Sequence[str]) -> dict[str, Any]:
-    """A passed count or sum claim (``claim_checks`` ``op``) as the scorer's calculated
-    value, which it recomputes from its own re-reads: named by the claim's role (a count's
-    is its name), a sum's inputs in their unit or the claim's, and in the currency the
-    gate checked against the values the tools returned."""
+    """A passed count, sum, avg, min, max, difference or ratio claim (``claim_checks``
+    ``op``) as the scorer's calculated value, which it recomputes from its own re-reads:
+    named by the claim's role (a count's is its name), a computed value's inputs in their
+    unit or the claim's (a ratio's in their own: the claim's is its result's), and in the
+    currency the gate checked against the values the tools returned."""
     role, unit, currency = claimed.get("role"), claimed.get("unit"), claimed.get("currency")
+    computed = claimed["op"] in NUMERIC_OPS
+    carried = None if claimed["op"] == "ratio" else unit
     inputs = [{"l1_handle": given["citation"],
                **({"field_path": given["field"]} if "field" in given else {}),
-               **({"unit": given.get("unit") or unit}
-                  if claimed["op"] == "sum" and (given.get("unit") or unit) else {}),
+               **({"unit": given.get("unit") or carried}
+                  if computed and (given.get("unit") or carried) else {}),
                **({"currency": currency} if currency else {})}
               for given in claimed["of"]]
     value: dict[str, Any] = {"name": role or claimed["op"], "value": claimed["value"],
                              "calculation": {"op": claimed["op"], "inputs": inputs}}
     if role in roles:
         value["quantity_role"] = role
-    if unit and claimed["op"] == "sum":
+    if unit and computed:
         value["unit"] = unit
     if currency:
         value["currency"] = currency

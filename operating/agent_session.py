@@ -36,8 +36,8 @@ from operating import handle_aliases, host_peers, tool_results
 from operating.handle_aliases import Aliases
 from operating.agent_environment import agent_environment
 from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY, _JSON_FENCE,
-                                       answer_candidate, answer_problems, canonical,
-                                       parse_answer)
+                                       NUMERIC_OPS, answer_candidate, answer_problems,
+                                       canonical, parse_answer)
 # CONFLICT_REASON: the gap reason of two cited statements that contradict each other
 # (``evals.measure``); an answer carrying one unresolved is partial.
 from operating.answer_gate import ANSWER_BACKING, CONFLICT_REASON, DOCUMENT_READ_RULE
@@ -91,7 +91,14 @@ ANSWER_GATE_RULE = (
     "records is one value claim, never a bare value: {\"name\": ..., \"value\": "
     "<the result>, \"op\": "
     "\"count\" or \"sum\", \"of\": [{\"citation\": <each record's handle>, \"field\": "
-    "\"row.<column>\" (sum only)}]}. An expression over "
+    "\"row.<column>\" (sum only)}]}. An average, minimum or maximum of one field over "
+    "cited records is the same shape with \"op\": \"avg\", \"min\" or \"max\" (each "
+    "input a citation and field), and a difference or ratio of two cited fields \"op\": "
+    "\"difference\" (x0 - x1) or \"ratio\" (x0 / x1; \"unit\": \"percent\" states it "
+    "x 100) with exactly two inputs in that order, all in one unit and currency; the gate "
+    "recomputes each from the cells; an average or ratio may be rounded half-up to the "
+    "decimals you write (an average at least to its inputs' cents, a ratio to 0.01 or a "
+    "whole percent). An expression over "
     "figures printed in cited texts is one value claim too: {\"value\": <the result>, "
     "\"op\": \"expression\", \"expression\": \"x0 - x1\", \"of\": [{\"citation\": "
     "<handle>, \"field\": \"text\", \"value\": \"<the figure as printed>\", \"quote\": "
@@ -257,7 +264,7 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
         inputs = [given for given in calculation.get("inputs") or []
                   if isinstance(given, Mapping) and isinstance(given.get("l1_handle"), str)]
         op = calculation.get("op")
-        if not inputs or op not in ("expression", "sum", "count", "count_distinct"):
+        if not inputs or op not in ("expression", "count", "count_distinct", *NUMERIC_OPS):
             return None
         of = []
         for given in inputs:
@@ -268,7 +275,7 @@ def _value_claim(value: Mapping[str, Any], stated: Any) -> dict[str, Any] | None
             if op == "expression":
                 entry.update({key: given[key] for key in ("value", "quote", "unit")
                               if given.get(key) is not None})
-            elif op == "sum" and given.get("unit") is not None:
+            elif op in NUMERIC_OPS and given.get("unit") is not None:
                 entry["unit"] = given["unit"]
             of.append(entry)
         claim = {"value": stated, "op": op, "of": of}
@@ -2555,7 +2562,7 @@ def _answer_value(name: str, given: Mapping[str, Any]) -> dict[str, Any] | None:
         if isinstance(given.get("quote"), str) and given["quote"].strip():
             cite["quote"] = given["quote"]
         out["citations"] = [cite]
-    elif given.get("op") in ("count", "count_distinct", "sum", "expression") \
+    elif given.get("op") in ("count", "count_distinct", "expression", *NUMERIC_OPS) \
             and isinstance(given.get("of"), list):
         inputs = []
         for item in given["of"]:
@@ -2751,7 +2758,14 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "A count or a sum you compute over cited records states its inputs instead of "
         "citations: \"calculation\": {\"op\": \"sum|count\", \"inputs\": [{\"l1_handle\": "
         "\"<handle>\", \"field_path\": \"row.<column>\"}]} (count: the records counted). "
-        "It is recomputed from those inputs. Arithmetic over figures printed on cited "
+        "An average, minimum or maximum of one field over cited records is op \"avg\", "
+        "\"min\" or \"max\" in the same shape; a difference or a ratio of two cited fields "
+        "is op \"difference\" (x0 - x1) or \"ratio\" (x0 / x1, a pure number; with the "
+        "value's \"unit\": \"percent\" it is x 100) over exactly two inputs in that order; "
+        "inputs share one unit and currency. "
+        "It is recomputed from those inputs; an average or ratio may be written rounded "
+        "half-up (an average at least to its inputs' cents, a ratio to 0.01 or a whole "
+        "percent). Arithmetic over figures printed on cited "
         "pages (a difference, a product, a share of a total) states them the same way: "
         "\"calculation\": {\"op\": \"expression\", \"expression\": \"x0 - x1\", "
         "\"inputs\": [{\"l1_handle\": \"<page handle>\", \"field_path\": \"text\", "
@@ -2767,8 +2781,8 @@ def task_prompt(question: str, pinned: str, roles: str = ", ".join(QUANTITY_ROLE
         "share before a change, a total of table rows) is such an expression. A "
         "value with \"calculation\" has no \"citations\" (citations_beside_calculation "
         "drops the whole answer): its inputs are its evidence. Compute nothing else (no "
-        "comparison of your own): the gate checks only a count or a sum over cited records "
-        "or such an expression, so any other result is null with a gap.",
+        "comparison of your own): the gate checks only a count, sum, avg, min, max, "
+        "difference or ratio over cited records or such an expression, so any other result is null with a gap.",
         "State a unit only when the cited text prints it beside the figure or the cited "
         "field's record states it, and a currency only when it is printed or recorded "
         "there; otherwise leave it out (a bare \"$\" names no currency).",

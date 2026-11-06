@@ -246,6 +246,11 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                 if table is None:
                     raise Untranslatable(f"rowid of an unmapped table ({text})")
                 out.append((alias + "." if alias else "") + ROWID[table])
+            elif upper == "CROSS" and _cross_join_on(tokens, i):
+                # SQLite's CROSS JOIN ... ON (an inner join kept in the order written, so
+                # the planner seeks the joined table): Postgres has no ON for a CROSS JOIN,
+                # and plans the inner JOIN itself.
+                skip_until = i
             elif upper == "INDEXED":
                 k = _next(tokens, i + 1)
                 skip_until = _next(tokens, k + 1)   # INDEXED BY <name>
@@ -303,6 +308,19 @@ STAR_COLUMNS = {
     "objects": ("object_id", "object_type", "binding_id", "native_key", "audience_key",
                 "first_recorded_at", "missing_from_source_since"),
 }
+
+
+def _cross_join_on(tokens: list[tuple[str, str]], i: int) -> bool:
+    """Whether the CROSS at ``i`` starts ``CROSS JOIN <table> [alias] ON``."""
+    k = _next(tokens, i + 1)
+    if k >= len(tokens) or tokens[k][1].upper() != "JOIN":
+        return False
+    t = _next(tokens, k + 1)
+    a = _next(tokens, t + 1)
+    if a < len(tokens) and tokens[a][0] == "word" and tokens[a][1].upper() not in (
+            "ON", "JOIN", "WHERE", "CROSS", "LEFT", "INNER", "ORDER", "GROUP", "LIMIT"):
+        a = _next(tokens, a + 1)
+    return a < len(tokens) and tokens[a][1].upper() == "ON"
 
 
 def _star(tokens: list[tuple[str, str]], i: int, aliases: Mapping[str, str]

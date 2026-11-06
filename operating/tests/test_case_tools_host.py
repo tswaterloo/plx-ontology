@@ -1059,6 +1059,37 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
         self.assertEqual(self.messages(answer), set())
 
 
+    def test_the_search_mail_gate_reads_a_messages_mailbox_and_senders_alone_alike(self):
+        # The search gate reads of each candidate message only its mailbox and senders
+        # (``_mail_facts``), never the whole captured record; the answer is the one the
+        # whole row's read gives, for a reader, an excluded sender and another mailbox.
+        excluded = PeopleExclusion.from_env({**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": BOX_A})
+        read = []
+        real = CaptureCaseHostTools._mail_facts
+
+        def noted(store, handles, memo):
+            handles = list(handles)
+            read.extend(handles)
+            return real(store, handles, memo)
+
+        def search(exclusion, query):
+            result = _client(self.server(READER_A, exclusion=exclusion), "plx.documents",
+                             {"query": query, "sources": ["graph_mail"]})
+            self.assertFalse(result["isError"], result)
+            return self.messages(result["structuredContent"])
+        cases = [(None, "PO100234", {"MSG-1"}), (excluded, "PO100234", set()),
+                 (None, "confirm Friday", {"MSG-1"}), (None, "finance note", set())]
+        for exclusion, query, want in cases:
+            with self.subTest(query=query, excluded=exclusion is not None):
+                with mock.patch.object(CaptureCaseHostTools, "_mail_facts",
+                                       staticmethod(noted)):
+                    self.assertEqual(search(exclusion, query), want)
+                with mock.patch.object(CaptureCaseHostTools, "_mail_facts",
+                                       staticmethod(lambda store, handles, memo: None)):
+                    self.assertEqual(search(exclusion, query), want)   # the whole row's
+        self.assertTrue(any(h.startswith(f"graph-mail://{BOX_A}/MSG-1@") for h in read),
+                        read)
+
     def test_a_search_never_lists_mail_of_an_excluded_person_or_without_a_guard(self):
         # The search decides each message on the capture's rows; the people exclusion
         # (PLX_EXCLUDED_PEOPLE_OIDS) still holds there, and a guard that cannot decide

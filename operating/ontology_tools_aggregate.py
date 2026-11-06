@@ -442,10 +442,11 @@ class AggregateTools:
         if date:
             path = list(date.get("path") or ())
             if path:
-                refused = self._hop_cardinality(path, "max")
+                hops = self.walk._validate_path(root_types or None, path)
+                refused = self._hop_cardinality(
+                    [{"link_type": h[0], "direction": h[1]} for h in hops], "max")
                 if refused is not None:
                     raise ToolError(refused["code"], refused["message"], refused.get("hint"))
-                hops = self.walk._validate_path(root_types or None, path)
                 self._require_declared({hops[-1][3]}, [date["property"]], "date")
                 reached, _marks, _hidden, _several, _offered = self._dimensions(
                     scope, roots, hops, gaps)
@@ -1012,8 +1013,10 @@ class AggregateTools:
         hops: list[tuple] = []
         split = False   # one N:M hop of a sum: members reaching several are split
         if path:
-            refused = self._hop_cardinality(path, op)
+            # a hop may name its link by navigation name (``link``): resolved first
             hops = self.walk._validate_path(root_types or None, path)
+            refused = self._hop_cardinality(
+                [{"link_type": h[0], "direction": h[1]} for h in hops], op)
             if refused is not None:
                 return self._refusal(scope, refused, gaps, roots)
             dim_types = {hops[-1][3]}

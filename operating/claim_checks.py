@@ -18,6 +18,10 @@ A value claim (``CaseStore.finding(..., value_claims=[...])``, MCP ``value_claim
     {"value": "3", "op": "count", "of": [{"citation": "..."}, ...], "role": "receipt_count"}
     {"value": "1260.50", "op": "sum", "of": [{"citation": "...", "field": "row.amount"}, ...],
      "currency": "USD"}
+    {"value": "420.13", "op": "avg", "of": [{"citation": "...", "field": "row.amount"}, ...],
+     "currency": "USD"}                                          # also "min", "max"
+    {"value": "50.19", "op": "ratio", "unit": "percent",          # also "difference"
+     "of": [{"citation": "...", "field": "row.amount"}, {"citation": "...", "field": ...}]}
     {"value": "386.69", "op": "expression", "expression": "x0 - x1",
      "of": [{"citation": "original://...#page=11", "field": "text", "value": "18,901.08",
              "quote": "$18,901.08 received"}, ...]}
@@ -30,7 +34,16 @@ a derived role name. An ``op`` claim computes its number over rows the item cite
 row by relation and key, any other record by its re-read citation without version or
 fragment; one record cited twice fails), ``sum`` the Decimal sum of one field of each,
 checked as a recorded calculation is (recomputed from the re-read rows, typed by the type
-algebra, every input in one unit, its own or the claim's, that no contract contradicts).
+algebra, every input in one unit, its own or the claim's, that no contract contradicts);
+``avg``, ``min`` and ``max`` of one field of each (typed as their sum is), ``difference``
+(``x0 - x1``, typed by the algebra) and ``ratio`` (``x0 / x1``, never typed; unit ``1``,
+or ``percent`` for x 100, its inputs' own unit never the claim's) of exactly two, the same
+input shape and unit and currency rules as a sum (a ratio's one currency cancels: it
+states none), recomputed from the re-read cells by ``answer_contract.computed_claim``, the
+eval scorer's rule: exact, except that an average or a ratio may be written rounded half-up
+to its written decimals, never fewer than its floor (an average: its most precise
+input's, up to 2; a ratio: 2, a whole percent); a ratio over a zero denominator holds no
+value. Each backs the prose numbers it states as a sum's value does.
 A count has no quantity type; its ``role``, like a sum's role outside ``ROLES``, is the
 value's name only and types nothing. An ``expression`` names its inputs ``x0``, ``x1``, ...
 (each at least once, and in its expansion into monomials never twice in one, never in
@@ -222,6 +235,8 @@ from ontology.units import (ISO_4217, RECEIVE_ALIASES, SIGN_CURRENCIES, UOM_ALIA
                             UOM_CANONICAL, WORD_CODES, js_trim)
 
 from . import quantity_types as _qt
+from .answer_contract import (NUMERIC_OPS, PAIR_OPS, ROUNDED_OPS, ZeroDenominator,
+                              computed_claim)
 from .citation_schemes import HANDLE_PREFIX
 from .cases import (GAP_STATES, UnitMismatch, evaluate as _evaluate, format_unit, parse_unit,
                     quantity_role as _quantity_role)
@@ -479,7 +494,10 @@ MAX_QUOTE_CHARS = 500
 # refused, never a bound), the Decimal sum of one field of each, or an ``expression`` over
 # figures each input reads (``_check_expression``).
 COUNT_OPS = ("count", "count_distinct")
-OPS = (*COUNT_OPS, "sum", "expression")
+# ``sum``, ``avg``, ``min``, ``max``, ``difference`` and ``ratio`` over one numeric field of
+# each cited cell (``_check_value_claim``), recomputed by the rule the eval scorer uses
+# (``answer_contract.computed_claim``).
+OPS = (*COUNT_OPS, *NUMERIC_OPS, "expression")
 MAX_OP_INPUTS = 100
 MAX_VALUE_CHARS = 200
 _OP_INPUT_KEYS = frozenset({"citation", "field", "unit"})
@@ -598,7 +616,9 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
 
     Each claim cites one of ``handles`` (the item's own citations) with a ``field``,
     one recorded ``calculation`` id, or computes its value over cited rows (``op``
-    ``count`` or ``sum`` ``of`` inputs, each one of ``handles``; a sum's with a ``field``;
+    ``count``, ``sum``, ``avg``, ``min``, ``max``, ``difference`` or ``ratio`` ``of``
+    inputs, each one of ``handles``; any but a count's with a ``field``, a difference's or
+    ratio's exactly two;
     an ``expression``'s each a figure ``value`` read on its ``field``, the expression
     naming them ``x0``, ``x1``, ..., every one, and holding no number of its own).
     Raises ``ValidationError`` with a stable code.
@@ -676,10 +696,11 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
             claim["unit"] = unit.strip()
         currency = item.get("currency")
         if currency is not None:
-            # A sum, or one cited number (not a page figure), states a currency.
+            # A sum (an average, a min, a max, a difference), or one cited number (not a
+            # page figure), states a currency; a ratio of money is none.
             # An expression over money states its currency too (``_check_expression``);
             # a percent is no money.
-            money = claim.get("op") == "sum" or (
+            money = claim.get("op") in NUMERIC_OPS and claim["op"] != "ratio" or (
                 claim.get("op") == "expression" and not _percent_unit(claim.get("unit"))) or (
                 claim["kind"] == "number" and claim.get("field") not in (None, PAGE_TEXT))
             if not money or not isinstance(currency, str) or not _CURRENCY.match(currency):
@@ -692,16 +713,17 @@ def parse_value_claims(raw: Any, handles: Sequence[str],
 def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
                ) -> list[dict[str, str]]:
     """The cited inputs of an ``op`` claim, shape only: 1 to ``MAX_OP_INPUTS``, each one of
-    ``handles``, a sum's or a count's none twice (an expression's figure may repeat:
-    ``_check_expression`` judges it); a sum's each with a ``field`` (a row column) and an optional
+    ``handles`` (a ``difference``'s or ``ratio``'s exactly two), a ``NUMERIC_OPS`` op's or a
+    count's none twice (an expression's figure may repeat: ``_check_expression`` judges
+    it); a ``NUMERIC_OPS`` op's each with a ``field`` (a row column) and an optional
     ``unit``, a count's a citation alone, an expression's a figure (``_expression_input``)."""
     op, inputs = item["op"], item["of"]
     if op not in OPS or isinstance(inputs, (str, Mapping)) or not isinstance(
-            inputs, Sequence) or not 1 <= len(inputs) <= MAX_OP_INPUTS:
+            inputs, Sequence) or not 1 <= len(inputs) <= MAX_OP_INPUTS \
+            or (op in PAIR_OPS and len(inputs) != 2):
         raise ValidationError(f"invalid_value_claim_op:{index}")
-    keys = {"sum": _OP_INPUT_KEYS, "count": frozenset({"citation"}),
-            "count_distinct": frozenset({"citation"}),
-            "expression": _EXPRESSION_INPUT_KEYS}[op]
+    keys = {"count": frozenset({"citation"}), "count_distinct": frozenset({"citation"}),
+            "expression": _EXPRESSION_INPUT_KEYS}.get(op, _OP_INPUT_KEYS)
     out, seen = [], set()
     for given in inputs:
         if not isinstance(given, Mapping) or set(given) - keys:
@@ -716,7 +738,7 @@ def _op_inputs(item: Mapping[str, Any], handles: Sequence[str], index: int
             # a figure counted twice once multiplied out, never here by its copy.
             out.append(_expression_input(given, index))
             continue
-        if op == "sum":
+        if op in NUMERIC_OPS:
             field, unit = given.get("field"), given.get("unit")
             if not isinstance(field, str) or not _FIELD.match(field):
                 raise ValidationError(f"invalid_value_claim_field:{index}")
@@ -1553,13 +1575,13 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
         return _check_count(claim, out, handles, evidence)
     if claim.get("op") == "expression":
         return _check_expression(claim, out, handles, evidence)
-    if "calculation" in claim or claim.get("op") == "sum":
+    if "calculation" in claim or claim.get("op") in NUMERIC_OPS:
         if "calculation" in claim:
             calc, name = evidence.calcs.get(claim["calculation"]), claim["calculation"]
             if calc is None:
                 return _fail(out, "claim_uncited", "the calculation is not readable now")
         else:
-            calc, name = _sum_calculation(claim, handles, evidence), "the sum"
+            calc, name = _op_calculation(claim, handles, evidence), f"the {claim['op']}"
             if isinstance(calc, str):
                 return _fail(out, "claim_unit_mismatch", calc)
             problem = _currency_problem(claim, handles, evidence)
@@ -1581,14 +1603,24 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
             if current is None:
                 return _fail(out, "claim_changed_since", f"{name} reads {handle[:200]}: "
                              f"{problem}")
-        result = evidence.recomputed(calc)
-        if result is None or "op" not in claim and result != to_decimal(calc.get("result")):
-            return _fail(out, "claim_uncited", f"{name} does not recompute "
-                         "from its cited rows as read now")
-        if claim["kind"] != "number" or to_decimal(claim["value"]) != result:
-            return _fail(out, "claim_value_mismatch",
-                         f"{name} is {_plain(result)}, not {claim['value']}")
-        label, quantity_type, form, problem = evidence.grounded_role(calc)
+        if claim.get("op") in NUMERIC_OPS and claim["op"] != "sum":
+            problem = _computed_problem(claim, calc, name, evidence)
+            if problem is not None:
+                return _fail(out, *problem)
+        else:
+            result = evidence.recomputed(calc)
+            if result is None or "op" not in claim \
+                    and result != to_decimal(calc.get("result")):
+                return _fail(out, "claim_uncited", f"{name} does not recompute "
+                             "from its cited rows as read now")
+            if claim["kind"] != "number" or to_decimal(claim["value"]) != result:
+                return _fail(out, "claim_value_mismatch",
+                             f"{name} is {_plain(result)}, not {claim['value']}")
+        if claim.get("op") == "ratio":
+            # A quotient has no quantity type (the type algebra's rule for ratios).
+            label, quantity_type, form, problem = None, None, "x0 / x1", None
+        else:
+            label, quantity_type, form, problem = evidence.grounded_role(calc)
         if problem is not None:
             return _fail(out, "claim_role_mismatch", f"{name}: {problem}")
         shown = f" ({form})" if form else ""
@@ -2046,6 +2078,8 @@ def _currency_problem(claim: Mapping[str, Any], handles: Sequence[str],
     schema types money. A sum's unit (its own or an input's) that names a currency states
     that currency as money too."""
     stated = claim.get("currency")
+    # A ratio's inputs share one currency (or none) that cancels: its value states none.
+    cancels = claim.get("op") == "ratio"
     if "op" in claim:
         cells = [(given["citation"], given["field"]) for given in claim["of"]]
         units = [claim.get("unit")] + [given.get("unit") for given in claim["of"]]
@@ -2066,12 +2100,13 @@ def _currency_problem(claim: Mapping[str, Any], handles: Sequence[str],
         else:
             other.append(key)
     if not money:
-        claimed = stated or (named[0] if named else None)
+        claimed = stated or (named[0] if named and not cancels else None)
         return None if claimed is None else (
             "no tool returned the cited values as money and the schema types none of them "
             f"money, so {claimed} is not verified")
     if other:
-        return f"the sum adds money to {other[0][0][:200]} {other[0][1]}, which is not money"
+        return (f"the {claim.get('op') or 'sum'} combines money with {other[0][0][:200]} "
+                f"{other[0][1]}, which is not money")
     unknown = next((key for key, currency in money if currency is None), None)
     if unknown is not None:
         return (f"{unknown[0][:200]} {unknown[1]} is money in a currency no tool returned "
@@ -2088,7 +2123,9 @@ def _currency_problem(claim: Mapping[str, Any], handles: Sequence[str],
                     f"{cite[1]} states, which does not hold for this reader now")
     found = sorted({str(currency) for _key, currency in money})
     if len(found) > 1:
-        return "the sum adds money in " + " and ".join(found)
+        return f"the {claim.get('op') or 'sum'} combines money in " + " and ".join(found)
+    if cancels:
+        return None
     if stated != found[0]:
         return f"the cited values are in {found[0]}, the claim says {stated or 'no currency'}"
     return None
@@ -2347,18 +2384,54 @@ def _money_values(node: Any, out: dict[tuple[str, str], str | None],
             _money_values(value, out, cites, limit, conflicts)
 
 
-def _sum_calculation(claim: Mapping[str, Any], handles: Sequence[str],
-                     evidence: _Evidence) -> dict[str, Any] | str:
-    """A sum claim (``op: sum``) as a calculation over its cited cells, checked as a
-    recorded one is (``_check_value_claim``): the result recomputed from the re-read rows,
-    its quantity type by the type algebra. Every input in one unit (its own, else the
-    claim's, else ``1``) that the cell's contract or recorded unit does not contradict;
-    else why not (a ``claim_unit_mismatch`` detail)."""
+def _computed_problem(claim: Mapping[str, Any], calc: Mapping[str, Any], name: str,
+                      evidence: _Evidence) -> tuple[str, str] | None:
+    """Why an ``avg``, ``min``, ``max``, ``difference`` or ``ratio`` claim's value does not
+    hold over its cited cells as re-read now ((code, detail)), or None: the value
+    recomputed from those cells by ``answer_contract.computed_claim``, the eval scorer's
+    rule (exact, or for an average or a ratio rounded half-up to the decimals the claim
+    writes, never coarser than its floor). A ratio over a zero denominator is refused."""
+    numbers = []
+    for spec in calc["inputs"].values():
+        resolved = evidence.row(spec["citation"]["handle"])
+        number = to_decimal(dig(resolved, spec["field"])[1]) if resolved is not None else None
+        if number is None:
+            return "claim_uncited", f"{name} does not recompute from its cited rows as read now"
+        numbers.append(number)
+    try:
+        holds, result = computed_claim(claim["op"], to_decimal(claim["value"]), numbers,
+                                       percent=_percent_unit(claim.get("unit")))
+    except ZeroDenominator:
+        return "claim_value_mismatch", (f"{name}'s denominator (its second input) is 0 as "
+                                        "read now: no ratio holds")
+    except (ValueError, ArithmeticError):
+        return "claim_uncited", f"{name} does not recompute from its cited rows as read now"
+    if holds:
+        return None
+    rounding = (" (written rounded half-up to the decimals it gives, at least "
+                + ("the cents or units of its inputs" if claim["op"] == "avg"
+                   else "0.01, or a whole percent") + ")") \
+        if claim["op"] in ROUNDED_OPS else ""
+    shown = format(result, "f") if claim["op"] in ROUNDED_OPS else _plain(result)
+    return "claim_value_mismatch", f"{name} is {shown}, not {claim['value']}{rounding}"
+
+
+def _op_calculation(claim: Mapping[str, Any], handles: Sequence[str],
+                    evidence: _Evidence) -> dict[str, Any] | str:
+    """A ``NUMERIC_OPS`` claim (``op: sum``, ``avg``, ``min``, ``max``, ``difference``,
+    ``ratio``) as a calculation over its cited cells, checked as a recorded one is
+    (``_check_value_claim``): the result recomputed from the re-read rows, its quantity
+    type by the type algebra (an average, a min or a max typed as the sum of its inputs
+    is: one type each; a difference as ``x0 - x1``; a ratio never). Every input in one unit
+    (its own, else the claim's, else ``1``; a ratio's never the claim's, which is its
+    result's: ``1`` or a percent) that the cell's contract or recorded unit does not
+    contradict; else why not (a ``claim_unit_mismatch`` detail)."""
+    op = claim["op"]
     inputs: dict[str, dict[str, Any]] = {}
     units = set()
     for number, given in enumerate(claim["of"]):
         handle, field = given["citation"], given["field"]
-        unit = given.get("unit") or claim.get("unit") or "1"
+        unit = given.get("unit") or (claim.get("unit") if op != "ratio" else None) or "1"
         resolved = evidence.row(handle) if handle in handles else None
         if resolved is not None:
             contract = evidence.contract(handle, resolved, field)
@@ -2366,19 +2439,25 @@ def _sum_calculation(claim: Mapping[str, Any], handles: Sequence[str],
                 else next(iter(evidence.units.get((handle, field), ())), None) \
                 if len(evidence.units.get((handle, field), ())) == 1 else None
             if known is not None and parse_unit(known) != parse_unit(unit):
-                return f"{handle[:200]} {field} is recorded in {known}, the sum says {unit}"
+                return f"{handle[:200]} {field} is recorded in {known}, the {op} says {unit}"
         units.add(parse_unit(unit))
         inputs[f"x{number}"] = {"kind": "citation", "citation": {"handle": handle},
                                 "field": field, "unit": unit}
     if len(units) > 1:
-        return "the sum adds inputs in different units"
+        return f"the {op} combines inputs in different units"
     names = list(inputs)
-    # Grouped by ten: MAX_OP_INPUTS terms stay within the evaluator's expression length
-    # and depth (operating/cases.py _MAX_EXPR, _MAX_DEPTH), as the eval scorer groups.
-    expression = "+".join("(" + "+".join(names[start:start + 10]) + ")"
-                          for start in range(0, len(names), 10))
-    return {"id": "sum", "expression": expression, "inputs": inputs,
-            "unit": next(iter(inputs.values()))["unit"]}
+    unit = next(iter(inputs.values()))["unit"]
+    if op in PAIR_OPS:
+        expression = f"{names[0]} {'-' if op == 'difference' else '/'} {names[1]}"
+        if op == "ratio":
+            # Same-unit inputs: a pure number, or that number x 100 stated as a percent.
+            unit = claim["unit"] if _percent_unit(claim.get("unit")) else "1"
+    else:
+        # Grouped by ten: MAX_OP_INPUTS terms stay within the evaluator's expression length
+        # and depth (operating/cases.py _MAX_EXPR, _MAX_DEPTH), as the eval scorer groups.
+        expression = "+".join("(" + "+".join(names[start:start + 10]) + ")"
+                              for start in range(0, len(names), 10))
+    return {"id": op, "expression": expression, "inputs": inputs, "unit": unit}
 
 
 # Units a page's machine-read text may print right after a figure ("1502 EA", "25 kg",

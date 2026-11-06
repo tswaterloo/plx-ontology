@@ -895,6 +895,10 @@ VALUE_CLAIM_FIXES = {
     "value_claim_expression_input_value": (
         "an expression input's value is the figure as written in its cited text: digits, "
         "with an optional thousands comma and fraction, and % for a printed percent"),
+    "invalid_value_claim_op": (
+        "op is count, count_distinct, sum, avg, min, max, difference, ratio or expression "
+        "over 1 to 100 distinct inputs in \"of\" (difference and ratio exactly two, x0 then "
+        "x1), each {\"citation\", \"field\", \"unit\"?} (a count's a citation alone)"),
     "invalid_value_claim_expression": (
         "an expression claim is {\"value\", \"op\": \"expression\", \"expression\": "
         "\"x0 - x1\", \"of\": [{\"citation\", \"field\", \"value\", \"quote\"}, ...]}"),
@@ -1884,8 +1888,8 @@ def passed_cells(decision: Any) -> list[dict[str, Any]]:
 
 def _input_as_checked(given: Mapping[str, Any], expression: bool) -> dict[str, Any]:
     """An op claim's input (``{citation, field, value, quote, unit}``) as an answer
-    calculation states it: ``l1_handle`` and ``field_path`` (where given), and for an
-    expression input its figure as printed, its quote and its unit (where given)."""
+    calculation states it: ``l1_handle`` and ``field_path`` (where given), its unit (where
+    given), and for an expression input its figure as printed and its quote."""
     shown = {"l1_handle": plain(given.get("citation"))}
     if plain(given.get("field")) is not None:
         shown["field_path"] = plain(given.get("field"))
@@ -1893,8 +1897,9 @@ def _input_as_checked(given: Mapping[str, Any], expression: bool) -> dict[str, A
         shown["value"] = plain(given.get("value"))
         if _verbatim(plain(given.get("quote"))) is not None:
             shown["quote"] = _verbatim(plain(given.get("quote")))
-        if plain(given.get("unit")) is not None:
-            shown["unit"] = plain(given.get("unit"))
+    if plain(given.get("unit")) is not None:
+        # an op input's unit as the gate checked it (a ratio's inputs are not in its unit)
+        shown["unit"] = plain(given.get("unit"))
     return shown
 
 
@@ -1998,8 +2003,11 @@ def kept_value(value: Mapping[str, Any], passed: Sequence[Mapping[str, Any]]
     # An expression is backed only by the expression the gate checked, over the same
     # figures in the same order, and backs no value stated any other way.
     expression = _stated_expression(value)
+    # A computed value is backed only by a claim of its own op (a max of 500 over two
+    # cells is no min of them), a cited value only by a claim of no op.
+    op = calculation.get("op") if isinstance(calculation, Mapping) else None
     claims = [claim for claim in passed if _same(stated, claim["value"])
-              and claim.get("calculation") == expression
+              and claim.get("op") == op and claim.get("calculation") == expression
               and all((cite.get("l1_handle"), cite.get("field_path")) in claim["cells"]
                       or (cite.get("l1_handle"), None) in claim["cells"] for cite in cites)
               and (number or claim["quote"] is not None or all(

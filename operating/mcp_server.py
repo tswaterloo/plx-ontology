@@ -607,7 +607,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     # Case runtime; every call acts as the session
     # actor, under the host-configured source-mirror audience. Specs stay near the
     # contract's 600-character description budget (2026-10-03-host-tool-budget).
-    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the session actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews; 0 releases, optional handoff note); another session's active claim refuses claims and writes (case_claimed_until:<expires_at>). case_id + break_reason: a roster approver ends it, journalled. case_ids for case_id: an objective's cases, claimed all or none (objective_refused names the case); release/break reach each. No business write.",
+    {"name": "plx.case_open", "description": "Open a durable, hash-chained case for a business question. Audience: the actor's principals, optionally narrowed; never '*'. header_relations (optional): per identifier in the question or roots, the mirror relations holding it; a revoked grant hides the case. Claim mode: case_id + lease_seconds (1-3600 claims or renews; 0 releases, optional handoff note); another session's claim refuses claims and writes (case_claimed_until:<expires_at>). case_id + break_reason: a roster approver ends it, journalled. case_ids: an objective's cases, claimed all or none (objective_refused names the case). No business write.",
      "inputSchema": _schema({"question": {"type": "string", "minLength": 1, "maxLength": 4000},
                              "roots": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 500}, "maxItems": 20},
                              "audience": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 200}, "minItems": 1, "maxItems": 50},
@@ -695,7 +695,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
                              "outcome": {"type": "string", "minLength": 1, "maxLength": 4000}},
                             ["case_id", "outcome"]),
      "annotations": _WRITES},
-    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Pass exactly one of: inbox_name (a PDF the operator put in the host's originals-inbox/<principal>/; audience: exactly that principal; the file is consumed); drive_id + item_id (a SharePoint PDF read as the session actor, GET-only, permissions checked first, under max_bytes, re-gated on every read); citation + reason (re-read as a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes kept with their SHA-256, cited original://<id>[#page=<n>]; OCR text is machine-read. Records a cited fact finding. No business write.",
+    {"name": "plx.case_attach_original", "description": "Attach an original to a case, or re-extract one. Exactly one of: inbox_name (a PDF the operator put in originals-inbox/<principal>/; audience: that principal; consumed); drive_id + item_id (a SharePoint PDF read as the actor, GET-only, permissions checked first, under max_bytes, re-gated on every read); citation + reason (a new extraction version, original://<id>#extraction=<k>; earlier citations keep their text). Bytes kept with their SHA-256, cited original://<id>[#page=<n>]; OCR text is machine-read. Records a cited fact finding. No business write.",
      "inputSchema": _schema({"case_id": _CASE_ID,
                              "inbox_name": {"type": "string", "minLength": 1, "maxLength": 200},
                              "inbox_principal": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -2030,15 +2030,41 @@ def _link_connection(server: "MCPServer") -> Any:
         return None
     if not path:
         return _Locked(store)
+    try:
+        file = _file_key(path)
+    except OSError:
+        return None   # the file is gone: undecided, never a stale file's links
     with _LINK_CONNS_LOCK:
-        if path not in _LINK_CONNS:
-            _LINK_CONNS[path] = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro",
-                                                uri=True, check_same_thread=False)
-        return _LINK_CONNS[path]
+        held = _LINK_CONNS.get(path)
+        if held is not None and held[0] == file:
+            return held[1]
+        # A new generation swapped in at this path (another file), or a path not opened
+        # yet: every kept connection whose path no longer names its file is closed (a
+        # walk still reading one fails and is undecided), then the file is opened.
+        for kept, (key, conn) in list(_LINK_CONNS.items()):
+            try:
+                current = _file_key(kept)
+            except OSError:
+                current = None
+            if current != key or kept == path:
+                _LINK_CONNS.pop(kept)
+                conn.close()
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True,
+                               check_same_thread=False)
+        _LINK_CONNS[path] = (file, conn)
+        return conn
 
 
-# The relevance walk's read-only connection per store file (``_link_connection``).
-_LINK_CONNS: dict[str, Any] = {}
+def _file_key(path: str) -> tuple[int, int]:
+    """The file a path names now: (device, inode)."""
+    found = os.stat(path)
+    return found.st_dev, found.st_ino
+
+
+# The relevance walk's read-only connection per store file path, with the file (device,
+# inode) it was opened on (``_link_connection``): a generation swapped in at the same path
+# is another file, read on a new connection, and the old file's is closed.
+_LINK_CONNS: dict[str, tuple[tuple[int, int], Any]] = {}
 _LINK_CONNS_LOCK = threading.Lock()
 
 

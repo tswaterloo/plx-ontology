@@ -20,7 +20,7 @@ Deterministic; reads nothing.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import unquote, urlsplit
 
 # A sentence that talks about the checking machinery rather than the business: only
@@ -216,6 +216,14 @@ def fact_text(text: str, claim: Mapping[str, Any]) -> str:
     citation = value.get("citation") if isinstance(value.get("citation"), str) else (
         (claim.get("citations") or [None])[0])
     said = words(label) if "_" in label else label
+    name = claim.get("name")
+    if isinstance(name, str) and "_" in name:
+        # The claim's own name says whose field it is (task_3233_stage: "Task 3233
+        # stage"), so a line of several records' same field never reads as bare
+        # "Stage: merged" repeated.
+        named = words(name)
+        if named.lower().endswith(" " + said.lower()):
+            said = named
     if field and words(field) == said.lower() and not value.get("role"):
         kind = record_kind(citation or "")
         if kind and not said.lower().startswith(kind.lower()):
@@ -649,12 +657,17 @@ def _when_words(at: "datetime", *, time_too: bool) -> str:
     return f"{day}, {hour}:{local:%M} {'a.m.' if local.hour < 12 else 'p.m.'}"
 
 
-def period_notice(question: str, freshness: Any, now: "datetime") -> Optional[str]:
-    """One sentence when ``question`` names a period (``operating.time_window``: "today",
+def period_notice(question: str, freshness: Any, now: "datetime", *,
+                  cited: Optional[Iterable[str]] = None, settled: bool = True
+                  ) -> Optional[str]:
+    """One short note when ``question`` names a period (``operating.time_window``: "today",
     "this week", "since Nov 3", ...) that runs past what the data holds: the data's
     cut-off (``freshness.as_of``) more than ``PERIOD_AFTER_SECONDS`` before the period's
-    end, or a source read more than ``SOURCE_BEHIND_SECONDS`` before it (named). None for
-    a question naming no period, or one the data covers."""
+    end, or a source read more than ``SOURCE_BEHIND_SECONDS`` before it. A lagging source
+    is named only where it bears on the answer: a system the answer cites (``cited``), or
+    any when the answer is not settled (``settled`` False: what is missing may be in it).
+    None for a question naming no period, or one the data covers. The note goes after
+    the answer, never before it (``WorkspaceBackend``), once per conversation."""
     from datetime import datetime, time, timedelta
     from zoneinfo import ZoneInfo
     from operating.time_window import BUSINESS_TZ, window
@@ -664,21 +677,24 @@ def period_notice(question: str, freshness: Any, now: "datetime") -> Optional[st
         return None
     zone = ZoneInfo(BUSINESS_TZ)
     ends = min(now, datetime.combine(asked.end + timedelta(days=1), time(), zone))
+    bearing = None if cited is None or not settled else set(cited)
+    late = (ends - cut_off).total_seconds() > PERIOD_AFTER_SECONDS
+    # Once the data's own cut-off is said, a source is named only where it stops well
+    # before that cut-off (it lags the rest of the data); else where it stops well before
+    # the period's end.
+    mark = cut_off if late else ends
     behind = sorted(
         ((at, s.system) for s in getattr(freshness, "sources", None) or ()
          if (at := _moment(s.as_of)) is not None
-         and (ends - at).total_seconds() > SOURCE_BEHIND_SECONDS),
+         and (mark - at).total_seconds() > SOURCE_BEHIND_SECONDS
+         and (bearing is None or s.system in bearing)),
         key=lambda pair: pair[0])
-    late = (ends - cut_off).total_seconds() > PERIOD_AFTER_SECONDS
     if not late and not behind:
         return None
-    lagging = " and ".join(f"{system}{' only' if i == 0 else ''} to "
-                           f"{_when_words(at, time_too=False)}"
-                           for i, (at, system) in enumerate(behind))
-    lagging = lagging.replace(" only to", " is read only to", 1)
+    lagging = ", ".join(f"{system} to {_when_words(at, time_too=False)}"
+                        for at, system in behind)
     if late:
-        out = (f"The data reaches {_when_words(cut_off, time_too=True)}, before the end of "
-               f"the period asked, {asked.said}; anything later is not in this answer.")
-        return out + (f" {lagging}." if lagging else "")
-    return (f"{lagging}, before the end of the period asked, {asked.said}; "
-            f"{'its' if len(behind) == 1 else 'their'} later records are not in this answer.")
+        said = (f"Note: the data runs to {_when_words(cut_off, time_too=True)}"
+                + (f" ({lagging})" if lagging else ""))
+        return said if said.endswith(".") else said + "."
+    return f"Note: {lagging} only."

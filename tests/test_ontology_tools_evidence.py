@@ -1036,6 +1036,20 @@ class BareIdentifierTests(unittest.TestCase):
         self.assertEqual(listed.get(P1), "same_number_twin")
         self.assertEqual(out["status"], "ambiguous")
 
+    def test_a_number_only_a_system_record_id_holds_resolves_directly(self):
+        """No business number of another record is read from the same text (no rival): a
+        number held only as a system record id is no collision and is found, never asked
+        back."""
+        fm = "PurchaseOrder:portal.fm_po:fm-7"
+
+        def record_id(s):
+            s.obj(fm, "api:public.fm_po", api("fm_po", "fm-7"), "gold_etl_from_fm")
+            s.ident(fm, "fm_id", "987654", prop="fm_generated_po_id")
+        out = ok(self, "plx.find", tools(extend=record_id).base.call(
+            "plx.find", {"query": "987654"}, FULL))
+        self.assertEqual(out["status"], "found", out)
+        self.assertEqual([c["object"]["object_id"] for c in out["candidates"]][:1], [fm])
+
     def test_twins_come_from_the_shared_lookup_and_a_cut_range_is_reported(self):
         """The bare number's same-number twins (the stored PO100012 rows) are read by
         plx.find's range lookup and index; a range that fits its cap is fully read and

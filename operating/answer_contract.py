@@ -4,9 +4,11 @@ session's answer with these exactly as the scorer does (``evals.score`` uses the
 
 from __future__ import annotations
 
+from decimal import (ROUND_HALF_EVEN, ROUND_HALF_UP, Context, Decimal, InvalidOperation,
+                     localcontext)
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 ANSWER_FORMAT = "plx-eval-answer/v1"
@@ -31,10 +33,95 @@ MAX_VALUES = 100
 MAX_CITATIONS = 8
 
 
-CALCULATION_OPS = ("sum", "count", "count_distinct", "equal", "expression")
+# Computed values over one numeric field of each cited cell, recomputed by the claim gate
+# (``operating.claim_checks``, a value claim's ``op``) and the eval scorer (``evals.score``,
+# an answer value's ``calculation``) through ``computed_value`` / ``computed_claim``, so
+# both reach one verdict on every value. ``avg``/``min``/``max`` take 1 to
+# ``MAX_CALCULATION_INPUTS`` inputs; ``difference`` (``x0 - x1``) and ``ratio``
+# (``x0 / x1``) exactly two, in order.
+STATISTIC_OPS = ("avg", "min", "max")
+PAIR_OPS = ("difference", "ratio")
+NUMERIC_OPS = ("sum", *STATISTIC_OPS, *PAIR_OPS)
+# The ops whose value may be written rounded (``computed_claim``).
+ROUNDED_OPS = ("avg", "ratio")
+
+
+CALCULATION_OPS = ("sum", "count", "count_distinct", "equal", "expression", *STATISTIC_OPS,
+                   *PAIR_OPS)
 
 
 MAX_CALCULATION_INPUTS = 100  # the oracle's chain cap (evals/oracle/families.py MAX_CHAIN)
+
+
+class ZeroDenominator(ArithmeticError):
+    """A ``ratio`` whose denominator (its second input) is zero as read."""
+
+
+def _places(number: Decimal) -> int:
+    exponent = number.as_tuple().exponent
+    return max(0, -exponent) if isinstance(exponent, int) else 0
+
+
+def computed_value(op: str, numbers: Sequence[Decimal], percent: bool = False) -> Decimal:
+    """The exact value of a ``NUMERIC_OPS`` op over its inputs' numbers (Decimal, in input
+    order; at 50 significant digits where a quotient does not terminate): ``sum``,
+    ``avg`` (sum / count), ``min``/``max`` (one input's value), ``difference`` (x0 - x1),
+    ``ratio`` (x0 / x1; times 100 when stated as a ``percent``). Raises
+    ``ZeroDenominator`` for a ratio over zero and ``ValueError`` for anything else it
+    cannot compute (no inputs, a pair op without two, an unknown op)."""
+    numbers = list(numbers)
+    if op not in NUMERIC_OPS or not numbers or (op in PAIR_OPS and len(numbers) != 2) \
+            or any(not isinstance(n, Decimal) or not n.is_finite() for n in numbers):
+        raise ValueError(f"not_computable:{op}")
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        if op == "sum":
+            return sum(numbers, Decimal(0))
+        if op == "avg":
+            return sum(numbers, Decimal(0)) / len(numbers)
+        if op == "min":
+            return min(numbers)
+        if op == "max":
+            return max(numbers)
+        if op == "difference":
+            return numbers[0] - numbers[1]
+        if numbers[1] == 0:
+            raise ZeroDenominator("ratio_zero_denominator")
+        return numbers[0] / numbers[1] * (100 if percent else 1)
+
+
+def computed_claim(op: str, claimed: Any, numbers: Sequence[Decimal], percent: bool = False
+                   ) -> tuple[bool, Decimal]:
+    """(holds, the value as recomputed) of a claimed value (a Decimal, None for no number)
+    of a ``NUMERIC_OPS`` op, from the inputs' re-read numbers (``computed_value``; its errors propagate).
+
+    ``sum``, ``min``, ``max`` and ``difference`` hold only exactly. ``avg`` and ``ratio``
+    hold exactly, or rounded: the recomputed value rounded half-up (away from zero) to the
+    decimals the claim writes is the claimed value, so a written figure never hides more
+    than half its last digit, and the claim writes at least the floor's decimals: an
+    average at least those of its most precise input, up to 2 (an average of cents is
+    written to the cent, of whole units to the unit); a ratio at least 2 (0.33), as a
+    percent at least 0 (33). The recomputed value returned is the claimed one when it
+    holds, else the exact value rounded half-up to the claim's decimals or the floor,
+    whichever is finer (what the claim should have written)."""
+    exact = computed_value(op, numbers, percent)
+    number = claimed if isinstance(claimed, Decimal) and claimed.is_finite() else None
+    if op not in ROUNDED_OPS:
+        return number is not None and number == exact, exact
+    floor = (0 if percent else 2) if op == "ratio" else min(
+        2, max(_places(n) for n in numbers))
+    places = max(floor, _places(number) if number is not None else 0)
+    try:
+        with localcontext(Context(prec=80)):
+            shown = exact.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        shown = exact
+    if number is None:
+        return False, shown
+    if number == exact:
+        return True, number
+    if _places(number) < floor:
+        return False, shown
+    return shown == number, number if shown == number else shown
 
 
 def canonical(value: Any) -> str:
@@ -123,7 +210,8 @@ def calculation_problem(calc: Any, citations: Any = None) -> str | None:
         return "citations_beside_calculation"
     inputs = calc.get("inputs")
     if not isinstance(inputs, list) or not (
-            2 if calc["op"] == "equal" else 1) <= len(inputs) <= MAX_CALCULATION_INPUTS:
+            2 if calc["op"] == "equal" else 1) <= len(inputs) <= MAX_CALCULATION_INPUTS \
+            or (calc["op"] in PAIR_OPS and len(inputs) != 2):
         return "inputs"
     for entry in inputs:
         if expression and not (isinstance(entry, Mapping) and isinstance(entry.get("value"),

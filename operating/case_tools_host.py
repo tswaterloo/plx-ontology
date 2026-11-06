@@ -142,7 +142,7 @@ import re
 import sqlite3
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import mentions as mn
 from ontology.json_contract import validate
@@ -709,6 +709,9 @@ USE_CASE_NOTE = ("Answer a question about this use case from these documents, ne
                  "until complete) before saying something is absent from it.")
 
 
+# A handle whose message ``_mail_facts`` could not name (read by the full row instead).
+_UNREAD = object()
+
 # Statuses of a permission list the capture read (``LiveSourceAudience.visible_all``).
 _RECORDED_ACL = ("read", "derived")
 
@@ -1153,7 +1156,53 @@ class CaptureCaseHostTools(CaseHostTools):
                 return False
             # the status alone decides: a whole attachment's text is never decoded here
             return citations.read(handle, actor, content=False).get("status") in _READ_OK
+
         return gate
+
+    @staticmethod
+    def _mail_facts(store: Any, handles: Iterable[str], memo: dict) -> None:
+        """For each mail citation of ``handles`` (a message, or an attachment of one, not a
+        page), what ``_mail_search_gate`` reads of its message, read in batches and kept
+        in ``memo`` under ``("mail_facts", store path, handle)``: the message handle and
+        its latest captured row's mailbox and sender fields (``from``, ``sender``), or
+        None for no such message (an attachment no row names, or a message with no row).
+        The same rows the per-handle reads take (``store._latest``: the highest version
+        id of the handle; the attachment's message handle), only fewer statements; an
+        attachment whose rows name two messages is left to its own read."""
+        from integrations.graph_evidence import is_mail_attachment_citation
+        from ontology.mentions import cited_page
+        path = str(store.path)
+        todo = [h for h in dict.fromkeys(handles) if ("mail_facts", path, h) not in memo
+                and cited_page(h)[1] is None]
+        attachments = [h for h in todo if "#" in h and is_mail_attachment_citation(h)]
+        messages: dict[str, str | None] = {h: h for h in todo if h not in set(attachments)}
+        for at in range(0, len(attachments), 900):
+            chunk = attachments[at:at + 900]
+            found: dict[str, set[str]] = {}
+            for row in store.db.execute(
+                    "SELECT l1_handle, message_handle FROM attachments WHERE l1_handle IN "
+                    "(SELECT value FROM json_each(?))", (json.dumps(chunk),)):
+                found.setdefault(row[0], set()).add(row[1])
+            for handle in chunk:
+                named = found.get(handle)
+                if named is None:
+                    messages[handle] = None
+                elif len(named) == 1:
+                    messages[handle] = next(iter(named))
+        wanted = sorted({m for m in messages.values() if m is not None})
+        rows: dict[str, tuple[str, Any, Any]] = {}
+        for at in range(0, len(wanted), 900):
+            for row in store.db.execute(
+                    "SELECT l1_handle, mailbox_id, json_extract(record, '$.from', '$.sender') "
+                    "FROM messages WHERE version_id IN (SELECT MAX(version_id) FROM messages "
+                    "WHERE l1_handle IN (SELECT value FROM json_each(?)) GROUP BY l1_handle)",
+                    (json.dumps(wanted[at:at + 900]),)):
+                sent = json.loads(row[2]) if row[2] is not None else [None, None]
+                rows[row[0]] = (row[1], sent[0], sent[1])
+        for handle, message in messages.items():
+            facts = None if message is None or message not in rows else (message,
+                                                                         *rows[message])
+            memo[("mail_facts", path, handle)] = facts
 
     def _mail_search_gate(self, citations: Any, stores: Callable[[], Any], audience: Any, actor: Any,
                           handle: str, memo: dict) -> bool:
@@ -1181,8 +1230,15 @@ class CaptureCaseHostTools(CaseHostTools):
                         return False
                 return citations.mail_capture(handle, gated, audience) is not None
             with stores() as store:
-                message = handle
-                if "#" in handle and is_mail_attachment_citation(handle):
+                # What the gate reads of the handle's message (``_mail_facts``: its mailbox
+                # and senders, not the whole record), once per call.
+                if ("mail_facts", str(store.path), handle) not in memo:
+                    self._mail_facts(store, [handle], memo)
+                ahead = memo.get(("mail_facts", str(store.path), handle), _UNREAD)
+                if ahead is None:
+                    return False   # no message: what the reads below find too
+                message = handle if ahead is _UNREAD else ahead[0]
+                if ahead is _UNREAD and "#" in handle and is_mail_attachment_citation(handle):
                     found = store.db.execute("SELECT message_handle FROM attachments "
                                              "WHERE l1_handle=?", (handle,)).fetchone()
                     if found is None:
@@ -1196,11 +1252,19 @@ class CaptureCaseHostTools(CaseHostTools):
                 seen = ("visible", str(store.path), gated, id(audience))
                 if seen not in memo:
                     memo[seen] = (audience, frozenset(store._visible(gated, audience)))
-                row = store._latest(message)
-                if row is None or row["mailbox_id"] not in memo[seen][1]:
+                if ahead is _UNREAD:
+                    row = store._latest(message)
+                    if row is None:
+                        memo[kept] = False
+                        return False
+                    record = json.loads(row["record"])
+                    mailbox, sent = row["mailbox_id"], [record.get("from"),
+                                                        record.get("sender")]
+                else:
+                    mailbox, sent = ahead[1], [ahead[2], ahead[3]]
+                if mailbox not in memo[seen][1]:
                     memo[kept] = False
                     return False
-                mailbox = row["mailbox_id"]
                 decided = ("mailbox", str(store.path), mailbox, gated)
                 if decided not in memo:
                     memo[decided] = citations._visible_mailbox(
@@ -1208,9 +1272,7 @@ class CaptureCaseHostTools(CaseHostTools):
                 if not memo[decided]:
                     memo[kept] = False
                     return False
-                record = json.loads(row["record"])
-                memo[kept] = not citations._sent_by_excluded(
-                    store, [record.get("from"), record.get("sender")], memo)
+                memo[kept] = not citations._sent_by_excluded(store, sent, memo)
                 return memo[kept]
         except Exception:  # noqa: BLE001 - a refused gate or unreadable capture admits nothing
             return False
@@ -2415,13 +2477,24 @@ class CaptureCaseHostTools(CaseHostTools):
         ``data_version``: another connection's commit makes a new one); one is held at a
         time. Bounded by ``LOOKUP_FILES`` files and ``LOOKUP_ENTRIES`` entries (a cut
         lookup is ``truncated``)."""
-        state = store.db.execute("PRAGMA data_version").fetchone()[0]
+        version = store.db.execute("PRAGMA data_version").fetchone()[0]
         held = self._lookup
-        if held is not None and held.reader == gated and held.audience is audience \
-                and held.state == state and held.store is store:
+        same = (held is not None and held.reader == gated and held.audience is audience
+                and held.store is store)
+        if same and held.version == version:
+            return held   # no commit since
+        # A commit: the lookup is the same while this reader's visible files (the
+        # index's state) and the store's versions and their content (``content_stamp``)
+        # are; a capture listing files again, or re-reading permissions that decide
+        # nothing new for this reader, keeps it.
+        index = store.index(gated, audience, limit=LOOKUP_FILES)
+        stamp = getattr(store, "content_stamp", None)
+        state = (index.get("state"), stamp() if callable(stamp) else version)
+        if same and index.get("state") is not None and held.state == state:
+            held.version = version
             return held
         lookup = _IdentifierLookup(store, gated, audience, state)
-        index = store.index(gated, audience, limit=LOOKUP_FILES)
+        lookup.version = version
         files = file_index(store) if index["items"] else {}
         names = file_names(store) if index["items"] else {}
         lookup.truncated, held_entries = index["truncated"], 0
@@ -2509,8 +2582,11 @@ class _IdentifierLookup:
     ``entries`` (identifier kind, normalized) -> [(position in ``handles``, page or None)],
     ``unsearched`` [(position, "cap" | "not_read" | "bound" | the pages not read)]."""
 
-    def __init__(self, store: Any, reader: Any, audience: Any, state: int) -> None:
+    def __init__(self, store: Any, reader: Any, audience: Any, state: Any) -> None:
+        # ``state``: the reader's visible files and the store's content it was made from;
+        # ``version``: the store's commit counter it was last found current at.
         self.store, self.reader, self.audience, self.state = store, reader, audience, state
+        self.version: Any = None
         self.handles: list[str] = []
         self.entries: dict[tuple[str, str], list[tuple[int, int | None]]] = {}
         self.unsearched: list[tuple[int, Any]] = []
@@ -2542,6 +2618,8 @@ _INDEX_STATE_SQL = ("SELECT version_id, l1_handle, content_status, content_sha25
                     "text_status, text_sha256 FROM items WHERE superseded_at IS NULL")
 _INDEXES: dict[str, tuple[str, dict[str, dict[str, Any]]]] = {}   # per index file
 _INDEXES_LOCK = threading.Lock()
+# version id -> (its content and text state, its ``_state_key``), per index file.
+_STATE_KEYS: dict[str, dict[int, tuple[tuple, str]]] = {}
 
 
 def identifier_index_path(store_root: str | Path) -> Path:
@@ -2765,7 +2843,6 @@ def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
     """``read()`` of ``store``, kept while the store's database file state is unchanged
     (read before and after: a commit while it was read keeps nothing). A store with no
     database file path is read every time."""
-    from .ontology_host import _file_stamp
     path = getattr(store, "path", None)
     if not isinstance(path, (str, Path)):
         return read()
@@ -2773,16 +2850,32 @@ def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
     with _SNAPSHOTS_LOCK:
         reading = _SNAPSHOT_READS.setdefault(key, threading.Lock())
     with reading:
-        before = _file_stamp(path)
+        before = _snapshot_state(store, path)
         with _SNAPSHOTS_LOCK:
             held = _SNAPSHOTS.get(key)
         if held is not None and held[0] == before:
             return held[1]
         value = read()
-        if _file_stamp(path) == before:
+        if _snapshot_state(store, path) == before:
             with _SNAPSHOTS_LOCK:
                 _SNAPSHOTS[key] = (before, value)
         return value
+
+
+def _snapshot_state(store: Any, path: Any) -> tuple:
+    """The state a reader-independent snapshot of ``store`` is kept under: the store's
+    version and content state (``SharePointCaptureStore.content_stamp``: every current
+    version, its record and its captured content and text, which is all ``file_names``
+    and ``file_index`` read), so a capture seeing its files again (a ``last_seen_at``
+    write every few seconds) keeps them; else the database file's state (any commit)."""
+    from .ontology_host import _file_stamp
+    stamp = getattr(store, "content_stamp", None)
+    if callable(stamp):
+        try:
+            return ("content", stamp())
+        except Exception:  # noqa: BLE001 - unreadable: the file's state decides
+            pass
+    return ("file", _file_stamp(path))
 
 
 # Background reads keeping a SharePoint capture's reader-independent snapshots
@@ -2902,8 +2995,21 @@ def _file_index(store: Any) -> dict[str, dict[str, Any]]:
     path = identifier_index_path(store.root)
     current = store.db.execute(_INDEX_STATE_SQL).fetchall()
     facts = _version_facts(store, [row["version_id"] for row in current])
-    keys = {row["l1_handle"]: _state_key(facts[row["version_id"]], row) for row in current}
+    # Each version's key, kept per store file while its state is the same (a capture
+    # adding a few versions keys only those, not every current file again).
     with _INDEXES_LOCK:
+        known = _STATE_KEYS.setdefault(str(path), {})
+    keys, seen = {}, {}
+    for row in current:
+        state = (row["content_status"], row["content_sha256"], row["text_status"],
+                 row["text_sha256"])
+        kept = known.get(row["version_id"])
+        if kept is None or kept[0] != state:
+            kept = (state, _state_key(facts[row["version_id"]], row))
+        seen[row["version_id"]] = kept
+        keys[row["l1_handle"]] = kept[1]
+    with _INDEXES_LOCK:
+        _STATE_KEYS[str(path)] = seen
         held = _INDEXES.get(str(path))
     entries = held[1] if held is not None and code is not None and held[0] == code else None
     if entries is None or not set(keys.values()) <= set(entries):
