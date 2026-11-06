@@ -180,7 +180,9 @@ def profile(mirror: Path, rows: int = 30000, workers: int = 4) -> dict[str, Any]
     generation = _generation(mirror)
     jobs = [(str(mirror), r, rows) for r in relations]
     if workers > 1:
-        with multiprocessing.Pool(workers) as pool:
+        # spawn, not fork: the host profiles from a threaded process, and a forked child can
+        # inherit a lock another thread held and wait on it forever
+        with multiprocessing.get_context("spawn").Pool(workers) as pool:
             found = pool.map(_profile, jobs)
     else:
         found = [_profile(job) for job in jobs]
