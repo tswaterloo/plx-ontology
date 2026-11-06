@@ -1342,6 +1342,20 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                 {"property": "invoices_order", "op": "prefix", "value": "SO-2099"}]}, FULL)
         self.assertEqual(cut["error"]["code"], "link_targets_cut")
 
+    def test_a_link_filters_targets_are_never_kept_past_a_store_change(self):
+        """Link targets resolved once are reused only while the store is unchanged: after
+        the link is superseded (a delta layer, a rebuild) the same call reads it anew."""
+        s = build()
+        t = tools(s)
+        asked = {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "in", "value": [SO]}]}
+        first = self.ok(t, "plx.find", asked)
+        self.assertEqual([c["object"]["object_id"] for c in first["candidates"]], [INV])
+        s.conn.execute("UPDATE links SET superseded_at = '2099-01-15T00:00:00Z' "
+                       "WHERE link_id = 'lnk-inv-1'")
+        again = self.ok(t, "plx.find", asked)
+        self.assertEqual(again["status"], "not_found")
+
     def test_a_filter_on_an_event_reads_its_times(self):
         """A date a record holds only as its event (``SalesOrder.required``) is filtered
         by the event's name: its times decide, a time the reader may not read decides

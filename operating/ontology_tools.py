@@ -816,6 +816,15 @@ class StoreReader:
                                       self.conn.execute("SELECT key, value FROM store_meta")})
             return dict(self._meta[1])
 
+    def change_stamp(self) -> tuple[Any, ...]:
+        """What changes whenever the store this reader reads does: its connection, a commit
+        on another connection (``PRAGMA data_version``; Postgres: the data version a load
+        or a delta layer moves), a write on this one, and the generation's content digest.
+        A value read before under the same stamp is still the store's."""
+        with self.lock:
+            return (id(self.conn), self.conn.execute("PRAGMA data_version").fetchone()[0],
+                    self.conn.total_changes, self.meta().get("content_digest"))
+
     def audience_keys(self) -> list[str]:
         """Every audience key of the store's objects (no reader's grants applied), kept
         until the store changes: a commit on another connection (``PRAGMA data_version``)
@@ -2931,9 +2940,13 @@ class OntologyTools:
         (``_link_targets``); undecided, those only a link this reader may not read (its
         markings, or evidence it may not see) joins to them: never read as not linked,
         the caller says the filter is withheld for them (``_withheld_filter_gap``).
-        Resolved once per call (a scope), for every segment of the scan."""
-        key = (scope.actor, scope.at, scope.audience_keys, scope.marking_sets,
-               object_type, json.dumps(list(links), sort_keys=True, default=str))
+        Resolved once per call (a scope) and store state (``StoreReader.change_stamp``),
+        for every segment of the scan."""
+        # bound to the store as it is (a rebuild or a delta layer makes other ids), never
+        # only to the call's scope: a pinned as_known_at repeats the same scope
+        key = (self.store.change_stamp(), scope.actor, scope.at, scope.audience_keys,
+               scope.marking_sets, object_type,
+               json.dumps(list(links), sort_keys=True, default=str))
         memo = self.__dict__.setdefault("_link_memo", {})
         if key in memo:
             kept, unsure = memo[key]
