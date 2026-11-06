@@ -160,7 +160,7 @@ import secrets
 import shutil
 import sqlite3
 import time
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology.project import (_PROJECTED_LINK_KINDS, _REC_FIELDS, DEFAULT_BATCH, ETL_REINSERTED,
                               POST_PROJECT, SHARD_BUCKETS, CaptureSource, Normalizer,
@@ -1250,7 +1250,8 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                      on_stage: Callable[[str, int, int], None] | None = None,
                      space: Callable[[Mapping[str, Any]], None] | None = None,
                      workers: int | None = None,
-                     timings: BuildTimings | None = None) -> Generation:
+                     timings: BuildTimings | None = None,
+                     kept: Callable[[Sequence[Any]], Any] | None = None) -> Generation:
     """Build the next generation of ``state_dir`` from ``sources`` under ``schema`` and
     commit it (``CURRENT``). ``previous``: the generation to reuse unchanged units from
     (default: the committed one; None = a cold build). ``reuse``: when no unit changed
@@ -1266,7 +1267,10 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
     ones; None: ``PLX_BUILD_WORKERS`` or the CPUs, and serial under ``MIN_CAPTURE_BYTES``
     of captures; 1: serial). ``timings``: where each step's start, end and seconds go as
     the build runs (``ontology.build_timings``; a fresh one by default: the generation's
-    ``seconds``). Raises
+    ``seconds``). ``kept``: called with the sources' blob directories, the context the
+    build reads and keeps file readings, member readings and document fields in (default:
+    the ones kept in ``state_dir``; a row-delta cycle keeps its own in place,
+    ``ontology.delta.kept``). Raises
     ``ProjectionError("generation_build_in_progress")`` while another build holds the
     state directory; on any failure the committed generation
     is left as it was."""
@@ -1296,9 +1300,14 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
         # (``ontology.member_primer``); served while their container is in a source's blobs.
         blobs = [s.blobs for s in sources.values() if isinstance(getattr(s, "blobs", None),
                                                                  (str, Path))]
-        with kept_readings(state / READINGS), kept_members(state / MEMBERS, blobs), \
-                kept_fields(state / FIELDS, derivation_code()), \
-                _document_pool(workers) as parse:
+        with contextlib.ExitStack() as stores:
+            if kept is None:
+                stores.enter_context(kept_readings(state / READINGS))
+                stores.enter_context(kept_members(state / MEMBERS, blobs))
+                stores.enter_context(kept_fields(state / FIELDS, derivation_code()))
+            else:
+                stores.enter_context(kept(blobs))
+            parse = stores.enter_context(_document_pool(workers))
             generation = _build(state, schema, sources, base, reuse=reuse,
                                 before_seed=before_seed, space=space, parse=parse,
                                 timings=timings, **options)

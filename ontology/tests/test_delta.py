@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -28,7 +30,8 @@ from ontology.tests.test_projection import (AUDIENCE, BASE, CATALOG, KEY, OPS, T
                                             FakeWorkbench, compiled_schema, normalizer)
 
 
-class DeltaEquivalenceTests(unittest.TestCase):
+class DeltaCase(unittest.TestCase):
+    """A captured fixture Portal mirror, its full builds and delta cycles over them."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -65,6 +68,10 @@ class DeltaEquivalenceTests(unittest.TestCase):
     def owned(self, store):
         with sqlite3.connect(store) as conn:
             return [r[0] for r in conn.execute("SELECT object_id FROM delta_owned ORDER BY 1")]
+
+
+
+class DeltaEquivalenceTests(DeltaCase):
 
     def test_changed_records_equal_a_full_build_and_nothing_else_is_owned(self):
         self.capture(T1)
@@ -208,6 +215,198 @@ class DeltaEquivalenceTests(unittest.TestCase):
         result = delta.compare(Path(report["store"]), base, owned)
         self.assertEqual(result["differ"], 0, result)
 
+
+
+class DeltaDocumentTests(DeltaCase):
+    """A cycle reads files under a budget: a file it has no time for is pending, never
+    unreadable; the rows of its record publish, the record stays open, and the next
+    cycle's layer equals a full build. Readings live in the delta directory, where a
+    killed cycle leaves them, and the next cycle takes in what a killed one read."""
+
+    def setUp(self):
+        super().setUp()
+        from integrations.tests.test_capture_sharepoint import CaptureCase, scope
+        from ontology.schema import load_schema
+        from ontology.tests.test_document_fields import SLIP, pdf
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        case = CaptureCase("run")
+        case.setUp()
+        self.addCleanup(case.tearDown)
+        case.drive.file("01SLIP", "packing list PO100235.pdf", "01AOS", pdf(SLIP))
+        self.files, self.scope, self.state = case, scope, case.state
+        self.schema, self.slip = load_schema(), pdf(SLIP)
+
+    def capture(self, at):
+        super().capture(at)
+        self.assertTrue(self.files.capture().run(self.scope())["complete"])
+
+    def full(self, name):
+        from ontology.project import SharePointCaptures
+        with MirrorCaptures(self.mirror_path) as captures, \
+                SharePointCaptures(self.state) as files:
+            build_store(self.root / name, self.schema,
+                        {"portal_api": captures, "sharepoint": files},
+                        normalizer=normalizer, clock=lambda: T2,
+                        post_project=build_steps.post_project(
+                            self.state, "plx", scratch=self.root / "steps"))
+        return self.root / name
+
+    def cycle(self, base, environ=None, **options):
+        return delta.build_delta(self.state, self.mirror_path, self.root / "delta",
+                                 base_path=base, schema=self.schema, normalizer=normalizer,
+                                 environ=environ or {}, **options)
+
+    def test_a_file_without_time_is_pending_and_its_record_follows_a_layer_later(self):
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        # a new version of the packing list: bytes no build has read
+        self.files.drive.change("01SLIP", self.slip.replace(b"PL-5512", b"PL-5513"))
+        self.capture(T2)
+        from integrations.tests.test_capture_sharepoint import DRIVE
+        record = ("item", DRIVE, "01SLIP")
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            first = self.cycle(base, environ={"PLX_DELTA_DOCUMENT_SECONDS": "1e-9"})
+        self.assertEqual(first["documents"]["held_open"], {"sharepoint": 1}, first)
+        self.assertEqual(first["documents"]["timed_out"], 0)
+        # the layer and the pointer say the record's document fields are pending
+        with sqlite3.connect(first["store"]) as conn:
+            noted = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
+                                            "'documents_pending'").fetchone()[0])
+        self.assertEqual(noted["records"], {"sharepoint": [list(record)]})
+        self.assertEqual(json.loads((self.root / "delta" / delta.POINTER).read_text())
+                         ["documents"]["pending"], 1)
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        self.addCleanup(state.conn.close)
+        self.assertIn(record, state.changed("sharepoint", open_only=True))
+        # nothing was kept for the file: it is read, not served as unreadable, next time
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            second = self.cycle(base)
+        self.assertEqual(second["documents"]["pending"], 0, second)
+        self.assertNotIn(record, state.changed("sharepoint", open_only=True))
+        full = self.full("gen2.sqlite")
+        # the first layer lacks what the file's fields make; the second equals a full build
+        held = self.owned(first["store"])
+        self.assertGreater(delta.compare(Path(first["store"]), full, held)["differ"], 0)
+        owned = self.owned(second["store"])
+        self.assertLessEqual(set(held), set(owned))
+        self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
+        # the readings stay in the delta directory (none left in a work directory)
+        delta_dir = self.root / "delta"
+        self.assertTrue(all((delta_dir / name).is_file() for name in delta.KEPT))
+        self.assertFalse([p for p in delta_dir.iterdir() if p.name.startswith("work-")])
+
+    def test_a_killed_cycles_work_is_taken_in_and_its_directory_removed(self):
+        delta_dir = self.root / "delta"
+        killed = delta_dir / "work-20261106T090527966581"
+        live = delta_dir / "work-20261106T101114626273"
+        for work in (killed, live):
+            (work / "gen").mkdir(parents=True)
+        with sqlite3.connect(killed / "gen" / "fields.sqlite") as conn:
+            conn.execute("CREATE TABLE fields (key TEXT PRIMARY KEY, code TEXT NOT NULL, "
+                         "value TEXT NOT NULL, used INTEGER NOT NULL)")
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO fields VALUES ('[\"aa\"]', 'code-1', '{}', 7)")
+        orphan = delta_dir / ".delta-20261106T090527966581.sqlite.build-0a1b2c"
+        owned = delta_dir / ".delta-20261106T101114626273.sqlite.build-3d4e5f"
+        for path in (orphan, owned):
+            path.write_bytes(b"partial store")
+        old = 1_000_000_000
+        for path in (killed, live, orphan, owned):
+            os.utime(path, (old, old))
+        with delta._locked(live / ".busy"):   # a cycle still works in this one
+            swept = delta.sweep(delta_dir)
+        self.assertEqual(swept, {"work_dirs": 1, "files": 1, "adopted": 1, "left": 0})
+        self.assertFalse(killed.exists() or orphan.exists())
+        self.assertTrue(live.is_dir() and owned.is_file())
+        with sqlite3.connect(delta_dir / "fields.sqlite") as conn:
+            self.assertEqual(conn.execute("SELECT key, code FROM fields").fetchall(),
+                             [('["aa"]', "code-1")])
+        # readings that cannot be read now: the directory waits for a later sweep
+        broken = delta_dir / "work-20261106T110000000000"
+        (broken / "gen").mkdir(parents=True)
+        (broken / "gen" / "readings.sqlite").write_bytes(b"not a database, made-up" * 64)
+        recent = time.time() - 3600
+        os.utime(broken, (recent, recent))
+        self.assertEqual(delta.sweep(delta_dir)["left"], 1)
+        self.assertTrue(broken.is_dir())
+
+
+class DeltaMailDocumentTests(DeltaCase):
+    """The same for a mail attachment: a message whose attachment a cycle had no time for
+    stays open, and the next cycle's layer equals a full build."""
+
+    def setUp(self):
+        super().setUp()
+        from integrations.capture_mail import MailCaptureStore
+        from integrations.tests import test_capture_mail as tcm
+        from ontology.schema import load_schema
+        from ontology.tests.test_document_fields import QUOTE, SLIP, pdf
+        os.environ.pop("PLX_WORKBENCH_API_KEY", None)
+        self.tcm, self.schema = tcm, load_schema()
+        self.graph = tcm.FakeGraph()
+        self.graph.put(tcm.BOX_A, "MSG-D0", "CK-D0", subject="Documents 0",
+                       body="Attached for PO100230.",
+                       attachments=[tcm.file_attachment("ATT-D0", pdf(SLIP), "doc0.pdf")])
+        self.quote = pdf(QUOTE)
+        self.store = MailCaptureStore(self.state, clock=tcm.Clock())
+        self.addCleanup(self.store.close)
+        self.environ = {"PLX_EXCLUDED_PEOPLE_OIDS": tcm.ENV["PLX_EXCLUDED_PEOPLE_OIDS"]}
+
+    def capture(self, at):
+        from integrations import graph_read
+        from integrations.capture_mail import MailCapture
+        from integrations.graph_read import GraphMailReader
+        from integrations.live_source_guard import BoundedBackoff
+        super().capture(at)
+        api, _ = graph_read.build_graph(self.tcm.ENV, sender=self.graph, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+        run = MailCapture(self.store, GraphMailReader(api, self.tcm.capture_audience()),
+                          self.tcm.CAPTURE, sleep=lambda s: None).run(self.tcm.SCOPE)
+        self.assertTrue(run["complete"], run)
+
+    def full(self, name):
+        from ontology.project import MailCaptures
+        with MirrorCaptures(self.mirror_path) as captures, MailCaptures(
+                self.state, internal_domains=delta._internal_domains(self.environ)) as mail:
+            build_store(self.root / name, self.schema,
+                        {"portal_api": captures, "graph_mail": mail},
+                        normalizer=normalizer, clock=lambda: T2,
+                        post_project=build_steps.post_project(
+                            self.state, "plx", scratch=self.root / "steps"))
+        return self.root / name
+
+    def cycle(self, base, environ=None, **options):
+        return delta.build_delta(self.state, self.mirror_path, self.root / "delta",
+                                 base_path=base, schema=self.schema, normalizer=normalizer,
+                                 environ={**self.environ, **(environ or {})}, **options)
+
+    def test_a_message_whose_attachment_is_pending_follows_a_layer_later(self):
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        # a new message carrying a quote no build has read
+        self.graph.put(self.tcm.BOX_A, "MSG-D1", "CK-D1", subject="Documents 1",
+                       body="Freight quote for PO100234.",
+                       attachments=[self.tcm.file_attachment("ATT-D1", self.quote,
+                                                             "quote.pdf")])
+        self.capture(T2)
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            first = self.cycle(base, environ={"PLX_DELTA_DOCUMENT_SECONDS": "1e-9"})
+        self.assertFalse(first.get("mail_skipped"), first)
+        self.assertEqual(first["documents"]["held_open"], {"graph_mail": 1}, first)
+        state = delta.State(self.root / "delta" / "state.sqlite")
+        self.addCleanup(state.conn.close)
+        held = [k for k in state.changed("graph_mail", open_only=True) if "MSG-D1" in k[1]]
+        self.assertEqual(len(held), 1, state.changed("graph_mail", open_only=True))
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            second = self.cycle(base)
+        self.assertEqual(second["documents"]["pending"], 0, second)
+        self.assertNotIn(held[0], state.changed("graph_mail", open_only=True))
+        full = self.full("gen2.sqlite")
+        # the second layer holds the quote's own objects the first had no reading for
+        first_owned, owned = self.owned(first["store"]), self.owned(second["store"])
+        read = set(owned) - set(first_owned)
+        self.assertTrue(read and all("ATT-D1" in o for o in read), (first_owned, owned))
+        self.assertEqual(delta.compare(Path(second["store"]), full, owned)["differ"], 0)
 
 
 class StateUpgradeTests(unittest.TestCase):

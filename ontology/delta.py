@@ -34,6 +34,20 @@ Each cycle rebuilds the delta from every change since the served generation, so 
 is idempotent: nothing is applied twice and nothing is lost when one fails. A new served
 generation resets the delta (its changes are in it).
 
+**Files** (PDFs, Office files, containers) are read under a budget
+(``ontology.reading_budget``, :data:`DOCUMENT_SECONDS`): a cycle reads the files no
+layer or generation read before for up to that many seconds, each under
+its own time limit, and publishes its rows either way. A file it did not read is pending,
+never unreadable: nothing is kept for it, the records holding it stay open and the next
+cycle projects them again, reading on (meanwhile the record's rows are current, the
+served generation's document objects stay served, and the layer's ``documents_pending``
+meta and ``CURRENT.json``'s ``documents`` say which files and records are pending); a
+file that timed out gets a longer limit there,
+and after :data:`DOCUMENT_TIMEOUTS` time outs is left to the generation build. What is
+read is kept in the delta directory (:func:`kept`) as it is read, so a cycle that is
+killed loses none of it, and the next cycle takes in what one left in its work directory
+(:func:`sweep`) and removes that directory.
+
 Run: ``python3 -m ontology.delta run --state-dir /data/plx-state [--loop 300]``.
 """
 
@@ -45,7 +59,9 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import sqlite3
 import sys
 import time
@@ -80,6 +96,23 @@ BACKLINK_CAP = 400
 # Layers served at once before a cycle folds them itself; the fold
 # (``python3 -m ontology.delta compact``, hourly) normally folds them first, apart.
 MAX_LAYERS = 48
+# Reading captured files in a cycle (``ontology.reading_budget``): files not known yet are
+# read for up to this many seconds once its reading starts (``PLX_DELTA_DOCUMENT_SECONDS``;
+# 0 or less: unbounded), each for up to ``DOCUMENT_LIMIT`` seconds
+# (``PLX_DELTA_DOCUMENT_LIMIT``), a file that timed out before ``DOCUMENT_GROWTH`` times
+# longer per time out, and after ``DOCUMENT_TIMEOUTS`` time outs left to the generation
+# build. A file not read is pending: the records holding it stay open and the next cycle
+# projects them again, so its fields follow its rows a layer later.
+DOCUMENT_SECONDS = 120.0
+DOCUMENT_LIMIT = 60.0
+DOCUMENT_GROWTH = 4
+DOCUMENT_TIMEOUTS = 2
+# A work directory whose cycle is gone (its ``.busy`` lock free) is swept this long after
+# it was made (the lock is taken just after it is made).
+WORK_GRACE = 60.0
+# A work directory whose readings could not be taken in is left for later sweeps this many
+# days, then removed (disk).
+UNADOPTED_DAYS = 2
 # Write-stamp properties: a change of these alone is a restamp, not a change
 # (``operating.ontology_tools_changes.STAMPS``: the Portal ETL bumps updated_at every run).
 STAMP_PROPERTIES = frozenset({"bc_last_modified_at", "fm_modified_at", "portal_updated_at"})
@@ -283,7 +316,9 @@ class State:
             "CREATE TABLE IF NOT EXISTS context (source TEXT NOT NULL, key TEXT NOT NULL, "
             "PRIMARY KEY (source, key));"
             "CREATE TABLE IF NOT EXISTS owned (object_id TEXT PRIMARY KEY, source TEXT NOT NULL, "
-            "key TEXT NOT NULL);")
+            "key TEXT NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS slow (digest TEXT PRIMARY KEY, "
+            "timeouts INTEGER NOT NULL);")
         if self.get("state_format") != STATE_FORMAT:
             self._upgrade()
 
@@ -324,6 +359,7 @@ class State:
         self.conn.execute("DELETE FROM changed")
         self.conn.execute("DELETE FROM context")
         self.conn.execute("DELETE FROM owned")
+        self.conn.execute("DELETE FROM slow")
         self.conn.execute("DELETE FROM meta")
         self.put("base_digest", digest)
         self.put("state_format", STATE_FORMAT)
@@ -381,6 +417,18 @@ class State:
                     "(SELECT value FROM json_each(?))", (json.dumps(list(part)),)):
                 out[row[0]] = (row[1], _tuple(json.loads(row[2])))
         return out
+
+    def timed_out(self, digests: Iterable[str]) -> None:
+        """Count one more time out of each of these files (read longer next time)."""
+        self.conn.executemany("INSERT INTO slow VALUES (?, 1) ON CONFLICT (digest) DO "
+                              "UPDATE SET timeouts = timeouts + 1",
+                              [(d,) for d in sorted(set(digests))])
+
+    def document_limits(self, limit: float) -> dict[str, float]:
+        """digest -> seconds a file that timed out before may take (0: left to the
+        generation build)."""
+        return {d: (0.0 if n >= DOCUMENT_TIMEOUTS else limit * DOCUMENT_GROWTH ** n)
+                for d, n in self.conn.execute("SELECT digest, timeouts FROM slow")}
 
     def context(self, source: str) -> set[Any]:
         return {_tuple(json.loads(r[0])) for r in self.conn.execute(
@@ -1227,9 +1275,17 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
     state = State(delta_dir / "state.sqlite")
     captures: Captures | None = None
     busy = contextlib.ExitStack()
+    from ontology.reading_budget import BUDGET_ENV
+    budget_was = os.environ.get(BUDGET_ENV)
+    documents: Path | None = None
+    held: dict[str, list[Any]] = {}
+    timed: list[str] = []
     try:
+        # what a killed cycle read is taken in, and its work directory removed
+        report["swept"] = sweep(delta_dir)
         if state.get("base_digest") != base.digest:
             state.reset(base.digest)
+            drop_kept(delta_dir)   # the new generation's readings are seeded instead
         readings = contextlib.ExitStack()
         readings.enter_context(kept(delta_dir, [state_dir / "mail-capture" / "blobs"]))
         report["base_digest"] = base.digest
@@ -1312,6 +1368,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         work = delta_dir / f"work-{stamp}"
         work.mkdir(parents=True)
         busy.enter_context(_locked(work / ".busy"))   # prune leaves a busy work dir
+        # files are read from here on (mentions, then the projection): under the budget,
+        # except for a re-derivation check, which reads every file
+        documents = None if force_changed else bound_reading(work, state, environ)
         if unavailable is not None:   # no mail at all, not even as a link partner
             found["graph_mail"] = set()
         # only the changed mail is read for mentions: a context message is never served
@@ -1324,7 +1383,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                                                       _mail_digests(work / "mentions"))
             readings.enter_context(kept(delta_dir, [state_dir / "mail-capture" / "blobs"]))
             for handle in mention_targets(work / "mentions", base, report,
-                                          domains=_internal_domains(environ)):
+                                          domains=_internal_domains(environ),
+                                          workers=workers):
                 hit = record_of_handle(handle)
                 if hit is not None and hit[0] != "graph_mail":
                     found[hit[0]].add(hit[1])
@@ -1338,7 +1398,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 state_dir, delta_dir, _drive_digests(mentions))
             readings.enter_context(kept(delta_dir, [sharepoint_paths(state_dir)[0].parent
                                                     / "blobs"]))
-            for handle in mention_targets(mentions, base, report, family="sharepoint"):
+            for handle in mention_targets(mentions, base, report, family="sharepoint",
+                                          workers=workers):
                 hit = record_of_handle(handle)
                 if hit is not None:
                     found[hit[0]].add(hit[1])
@@ -1410,8 +1471,12 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                                   workers=workers, report=report)
             report["projected"] = {k: built.get("counts", {}).get(k) for k in
                                    ("objects", "versions", "values", "links", "identifiers")}
+            if documents is not None:
+                held, timed = held_documents(documents, sub_state, mine, report)
             t = lap("project", t)
         owned_ids = finish_store(store, base, mine)
+        if report.get("documents"):
+            note_documents(store, report["documents"], held)
         report["owned"] = owned = len(owned_ids)
         t = lap("finish", t)
         shutil.rmtree(work, ignore_errors=True)
@@ -1441,6 +1506,11 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 if not force_changed and not compact_only:
                     state.close_over(found, fresh)
                 state.remember_owned(owned_ids)
+                # a record holding a file not read yet stays open (opened again when a
+                # fold re-projected it): the next cycle projects it with the reading
+                for source, keys in held.items():
+                    state.add(source, keys)
+                state.timed_out(timed)
             prune(delta_dir, keep={Path(item["store"]) for item in layers})
             if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
                 # the same layer into the Postgres ontology, over the generation it holds
@@ -1456,6 +1526,10 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                                           "error": f"{type(exc).__name__}"[:120]}
         return report
     finally:
+        if budget_was is None:
+            os.environ.pop(BUDGET_ENV, None)
+        else:
+            os.environ[BUDGET_ENV] = budget_was
         if captures is not None:
             captures.close()
         if "readings" in locals():
@@ -1529,14 +1603,125 @@ def _mail_digests(mail_state: Path) -> list[str]:
 
 
 @contextlib.contextmanager
-def kept(delta_dir: Path, blobs: Sequence[Path]) -> Iterator[None]:
-    from integrations.captured_text import kept_readings
+def kept(delta_dir: Path, blobs: Sequence[Any]) -> Iterator[None]:
+    """While open, files are read through the delta's kept readings, member readings and
+    document fields (``KEPT`` in ``delta_dir``), and new ones kept there: read in place by
+    every cycle and its build (never moved into a work directory, where a killed cycle
+    would strand them), committed every few seconds (``reading_budget.BoundedReadings``)
+    and never pruned by use, so they hold every file a layer read since the served
+    generation (dropped with the state when it changes: :func:`drop_kept`)."""
+    from integrations import captured_text
     from integrations.kept_members import kept_members
-    from ontology.document_fields import kept_fields
+    from ontology import document_fields
     from ontology.project import derivation_code
-    with kept_readings(delta_dir / KEPT[0]), kept_members(delta_dir / KEPT[1], blobs), \
-            kept_fields(delta_dir / KEPT[2], derivation_code()):
-        yield
+    from ontology.reading_budget import BoundedFields, BoundedReadings
+    readings = BoundedReadings(delta_dir / KEPT[0], captured_text.readings_code())
+    try:
+        fields = BoundedFields(delta_dir / KEPT[2], derivation_code())
+    except BaseException:
+        readings.close(prune=False)
+        raise
+    captured_text._CACHE.backing, document_fields._FIELDS.backing = readings, fields
+    try:
+        with kept_members(delta_dir / KEPT[1], blobs, build=False):
+            yield
+    finally:
+        captured_text._CACHE.backing = document_fields._FIELDS.backing = None
+        readings.close(prune=False)
+        fields.close(prune=False)
+
+
+def drop_kept(delta_dir: Path) -> None:
+    """Remove the delta's kept readings (a new served generation: its own are seeded)."""
+    for name in KEPT:
+        for suffix in ("", "-wal", "-shm"):
+            (delta_dir / (name + suffix)).unlink(missing_ok=True)
+
+
+def bound_reading(work: Path, state: State, environ: Mapping[str, str]) -> Path | None:
+    """Bound the cycle's reading of captured files (``ontology.reading_budget``, through
+    this process's environment, so the build's workers inherit it): for
+    ``DOCUMENT_SECONDS`` from now (when the cycle's reading starts, so every cycle reads
+    some files however long its discovery took), each file up to its limit
+    (:meth:`State.document_limits`). Returns the log of the files left pending; None when
+    reading is unbounded."""
+    from ontology import reading_budget
+
+    def number(name: str, default: float) -> float:
+        try:
+            return float(environ.get(name, default))
+        except (TypeError, ValueError):
+            return default
+    seconds = number("PLX_DELTA_DOCUMENT_SECONDS", DOCUMENT_SECONDS)
+    if seconds <= 0:
+        return None
+    limit = number("PLX_DELTA_DOCUMENT_LIMIT", DOCUMENT_LIMIT)
+    limits = work / "document-limits.json"
+    limits.write_text(json.dumps(state.document_limits(max(limit, 0.0)), sort_keys=True),
+                      encoding="utf-8")
+    log = work / "documents-pending.tsv"
+    os.environ[reading_budget.BUDGET_ENV] = json.dumps({
+        "deadline": time.time() + seconds,
+        "limit": limit if limit > 0 else None, "log": str(log), "limits": str(limits)})
+    reading_budget.install()
+    return log
+
+
+def pending_records(state: Path, digests: Sequence[str]) -> dict[str, set[Any]]:
+    """source -> the records of the capture subset in ``state`` (a cycle's) holding one
+    of these files: a mail message by an attachment's bytes or OCR text, a SharePoint item
+    by its bytes."""
+    out: dict[str, set[Any]] = {}
+    if not digests:
+        return out
+    wanted = json.dumps(sorted(set(digests)))
+    for db, sql in (
+            (state / "mail-capture" / "capture.db",
+             "SELECT message_handle FROM attachments WHERE content_sha256 IN (SELECT value "
+             "FROM json_each(:w)) OR text_sha256 IN (SELECT value FROM json_each(:w))"),
+            (sharepoint_paths(state)[0],
+             "SELECT l1_handle FROM items WHERE content_sha256 IN (SELECT value FROM "
+             "json_each(:w))")):
+        if not db.is_file():
+            continue
+        with contextlib.closing(_ro(db)) as conn:
+            for (handle,) in conn.execute(sql, {"w": wanted}):
+                hit = record_of_handle(handle) if isinstance(handle, str) else None
+                if hit is not None:
+                    out.setdefault(hit[0], set()).add(_tuple(hit[1]))
+    return out
+
+
+def note_documents(store: Path, documents: Mapping[str, Any],
+                   held: Mapping[str, Sequence[Any]]) -> None:
+    """Record in the layer's ``store_meta`` (``documents_pending``) the files it has not
+    read yet and the records holding them: those records are current, their document
+    fields pending (the served generation's document objects stay served until a later
+    layer reads the file)."""
+    body = dict(documents, records={s: [list(k) if isinstance(k, tuple) else k
+                                         for k in keys] for s, keys in sorted(held.items())})
+    with contextlib.closing(sqlite3.connect(store)) as conn:
+        conn.execute("INSERT OR REPLACE INTO store_meta (key, value) VALUES (?, ?)",
+                     ("documents_pending", json.dumps(body, sort_keys=True)))
+        conn.commit()
+
+
+def held_documents(log: Path, state: Path, owned: Mapping[str, Iterable[Any]],
+                   report: dict[str, Any]) -> tuple[dict[str, list[Any]], list[str]]:
+    """The records this layer owns that hold a file left pending (``log``, the cycle's
+    budget's), by source, to keep open; and the files that timed out."""
+    from ontology import reading_budget as rb
+    found = rb.pending(log)
+    retry = sorted(d for d, why in found.items() if why - {rb.GENERATION})
+    timed = sorted(d for d, why in found.items() if rb.TIMED_OUT in why)
+    holders = pending_records(state, retry)
+    held = {source: sorted(holders.get(source, set()) & {_tuple(k) for k in keys})
+            for source, keys in owned.items()}
+    held = {source: keys for source, keys in held.items() if keys}
+    report["documents"] = {"pending": len(retry), "timed_out": len(timed),
+                           "left_to_generation": len(found) - len(retry),
+                           "held_open": {s: len(v) for s, v in sorted(held.items())}}
+    return held, timed
 
 
 def project_layer(store: Path, schema: Any, sources: Mapping[str, Any], steps: Any, *,
@@ -1545,7 +1730,7 @@ def project_layer(store: Path, schema: Any, sources: Mapping[str, Any], steps: A
     """Project the copied records into ``store`` with the one projector: a cold
     ``build_generation`` in a scratch state directory, projected and its build steps run
     by worker processes (``ontology.project_parallel``, ``finish_parallel``), reading
-    the delta's kept readings (moved in for the build and back after). One worker:
+    the delta's kept readings in place (:func:`kept`). One worker:
     ``build_store`` in this process."""
     from ontology import project
     from ontology.project_incremental import build_generation
@@ -1559,32 +1744,13 @@ def project_layer(store: Path, schema: Any, sources: Mapping[str, Any], steps: A
                                        post_project=steps)
     gen = work / "gen"
     gen.mkdir()
-    moved = _move_kept(delta_dir, gen)
-    try:
-        generation = build_generation(gen, schema, sources, previous=None,
-                                      normalizer=normalizer, post_project=steps,
-                                      workers=count)
-        os.replace(generation.store, store)
-        report["build_seconds"] = dict(generation.seconds)
-        return generation.report
-    finally:
-        _move_kept(gen, delta_dir, moved)
-
-
-def _move_kept(src: Path, dst: Path, names: Sequence[str] | None = None) -> list[str]:
-    """Move the kept-readings files (checkpointed first, so no write is left in a WAL)."""
-    moved = []
-    for name in (KEPT if names is None else names):
-        path = src / name
-        if not path.is_file():
-            continue
-        with contextlib.closing(sqlite3.connect(path, timeout=60)) as conn:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        for suffix in ("", "-wal", "-shm"):
-            if (src / (name + suffix)).exists():
-                os.replace(src / (name + suffix), dst / (name + suffix))
-        moved.append(name)
-    return moved
+    generation = build_generation(gen, schema, sources, previous=None,
+                                  normalizer=normalizer, post_project=steps,
+                                  workers=count,
+                                  kept=lambda blobs: kept(delta_dir, blobs))
+    os.replace(generation.store, store)
+    report["build_seconds"] = dict(generation.seconds)
+    return generation.report
 
 
 def store_paths(state_dir: Path) -> dict[str, Path]:
@@ -1684,7 +1850,8 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
     ``store``/``owned`` name the newest (a reader of one layer reads that one)."""
     body = {"format": FORMAT, "base_digest": base.digest, "store": layers[0]["store"],
             "owned": layers[0]["owned"], "layers": list(layers), "built_at": _now(),
-            "changed": report.get("changed"), "seconds": report.get("seconds")}
+            "changed": report.get("changed"), "seconds": report.get("seconds"),
+            "documents": report.get("documents")}
     temp = delta_dir / f".{POINTER}.tmp"
     temp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
     os.replace(temp, delta_dir / POINTER)
@@ -1692,21 +1859,93 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
 
 def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> None:
     """Remove earlier delta stores (after ``grace`` seconds, so a reader holding one open
-    finishes) and abandoned work directories."""
+    finishes) and abandoned work directories (:func:`sweep`)."""
     now = time.time()
     for path in delta_dir.iterdir():
         if path.resolve() in keep or path.name in (POINTER, "state.sqlite", "state.sqlite-wal",
                                          "state.sqlite-shm", "cycles.jsonl"):
             continue
-        if (path.name.startswith("delta-") or path.name.startswith("work-")) and \
+        if path.name.startswith("delta-") and path.is_file() and \
                 now - path.stat().st_mtime > grace:
-            if path.is_dir():
-                with _locked(path / ".busy", wait=False) as free:
-                    if not free:
-                        continue   # a cycle or a fold still works in it
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
+    sweep(delta_dir)
+
+
+# A build file a cycle writes beside its store (``.delta-<stamp>.sqlite.build-*`` and the
+# like): owned by the work directory of the same stamp.
+_STAMPED = re.compile(r"^\.+delta-(\d{8}T\d{12})\.sqlite\.")
+
+
+def sweep(delta_dir: Path, *, grace: float = WORK_GRACE) -> dict[str, int]:
+    """Remove every work directory no cycle or fold owns any more (its ``.busy`` lock
+    free, made over ``grace`` seconds ago), first taking into the delta's kept readings
+    what its cycle read (:func:`adopt`: a killed cycle's readings are not read again), and
+    every build file such a cycle left beside the stores. Returns what it removed."""
+    now = time.time()
+    out = {"work_dirs": 0, "files": 0, "adopted": 0, "left": 0}
+    gone: set[str] = set()
+    for path in sorted(delta_dir.iterdir()):
+        if not (path.name.startswith("work-") and path.is_dir()):
+            continue
+        try:
+            if now - path.stat().st_mtime <= grace:
+                continue
+        except OSError:
+            continue
+        with _locked(path / ".busy", wait=False) as free:
+            if not free:
+                continue   # a cycle or a fold still works in it
+            added, whole = adopt(path, delta_dir)
+            out["adopted"] += added
+            if not whole and now - path.stat().st_mtime <= UNADOPTED_DAYS * 86400:
+                out["left"] += 1   # taken in by a later sweep (removed after the days)
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+        out["work_dirs"] += 1
+        gone.add(path.name[len("work-"):])
+    for path in delta_dir.iterdir():
+        m = _STAMPED.match(path.name)
+        if m is None or not path.is_file():
+            continue
+        owner = delta_dir / f"work-{m.group(1)}"
+        try:
+            old = now - path.stat().st_mtime > grace
+        except OSError:
+            continue
+        if old and (m.group(1) in gone or not owner.is_dir()):
+            path.unlink(missing_ok=True)
+            out["files"] += 1
+    return out
+
+
+def adopt(work: Path, delta_dir: Path) -> tuple[int, bool]:
+    """Copy into the delta's kept readings (``KEPT``) every entry a cycle's work directory
+    holds (a cycle that was killed while its build held them there); returns the entries
+    added and whether every file was taken in (False: one could not be read now).
+    Entries already kept stay (a reading is the same under the same code)."""
+    added, whole = 0, True
+    for name in KEPT:
+        for source in (work / "gen" / name, work / name):
+            if not source.is_file():
+                continue
+            target = delta_dir / name
+            try:
+                with contextlib.closing(sqlite3.connect(target, timeout=60)) as dst:
+                    os.chmod(target, 0o600)
+                    dst.execute("ATTACH DATABASE ? AS old", (str(source),))
+                    tables = dst.execute(
+                        "SELECT name, sql FROM old.sqlite_master WHERE type = 'table' AND "
+                        "name NOT LIKE 'sqlite_%' AND name != 'meta'").fetchall()
+                    dst.execute("BEGIN")
+                    for table, sql in tables:
+                        dst.execute(sql.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ",
+                                                1))
+                        added += dst.execute(f'INSERT OR IGNORE INTO main."{table}" '
+                                             f'SELECT * FROM old."{table}"').rowcount
+                    dst.execute("COMMIT")
+            except sqlite3.Error:
+                whole = False
+    return added, whole
 
 
 # --------------------------------------------------------------------------- equivalence
@@ -1780,6 +2019,10 @@ def _mirror_path(state_dir: Path) -> Path:
     return state_dir / "case-runtime" / "source-mirror.sqlite"
 
 
+def _terminated(signum: int, _frame: Any) -> None:
+    raise SystemExit(128 + signum)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m ontology.delta")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1806,6 +2049,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     delta_dir.mkdir(parents=True, exist_ok=True)
     mirror = Path(args.mirror) if args.mirror else _mirror_path(state_dir)
     folding = args.command == "compact"
+    # stopped (a unit's timeout): unwind, so what the cycle kept is committed and its
+    # work directory unlocked for the next cycle to take in
+    signal.signal(signal.SIGTERM, _terminated)
     while True:
         try:
             # one cycle or one fold at a time, on one lock: a fold waits for a running
@@ -1823,7 +2069,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         workers=args.workers, compact_only=folding)
                     line = {k: report.get(k) for k in (
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
-                        "projected", "seconds", "mail_skipped", "closure", "postgres")}
+                        "projected", "seconds", "mail_skipped", "closure", "postgres",
+                        "documents", "swept")}
                     line["command"] = args.command
         except Exception as exc:  # noqa: BLE001 - the last published delta stays served
             import traceback
