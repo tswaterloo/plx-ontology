@@ -282,7 +282,15 @@ NAMED_READ_NOTE = ("the search stopped at its scan cap, after every record whose
 TEXT_SCAN_CAP = 400  # readable objects a display-text search returns at most
 LEAD_SCAN_CAP = 2000  # identifier rows one prefix or same-number range reads at most
 FILTER_SCAN_CAP = 5000  # readable objects a filter listing scans at most
+# A filter on a link (``OntologyTools._linked_ids``): the weakest link tier it follows
+# (plx.around's default floor), the records it may name at most, and the segments a name
+# lookup of them scans.
+LINK_FILTER_TIER_FLOOR = "stored_by_text_join"
+LINK_TARGET_CAP = 5000
+LINK_TARGET_SEGMENTS = 20
 FILTER_BATCH = 1000  # objects a filter scan reads per statement (its key-ordered range)
+NARROWED_SPAN = 2000  # keys a narrowed statement passes over at most
+SCAN_MARGIN_SECONDS = 8.0   # call time a filter scan leaves to answer what it decided
 # A filter listing whose segment matched nothing scans the next ones for this long (and
 # stops this many seconds before the call's own limit), so a scarce match is listed.
 EMPTY_SCAN_SECONDS = 20.0
@@ -1073,18 +1081,49 @@ class StoreReader:
             scope.params(pairs=_citation_pairs(versions))))
 
     def objects_of_type(self, scope: _Scope, object_type: str, after: str,
-                        batch: int) -> list[sqlite3.Row]:
+                        batch: int, narrowing: Sequence[tuple[str, dict[str, Any]]] = (),
+                        among: Sequence[str] | None = None,
+                        events: Sequence[tuple[str, str, str | None]] = (),
+                        upto: str | None = None) -> list[sqlite3.Row]:
         # An object id begins with its type ("<Type>:..."): the type's ids are one range
         # of the object key, walked in key order and stopped at the batch, so the
         # visibility predicate is read for the rows taken, never for every object of the
         # type before a sort (77k objects of one type: 0.45 s a batch, now milliseconds).
         # The type is still compared, on its value only (``|| ''``: no index on it).
+        # ``narrowing`` (``_value_narrowing``): per filter, a condition on one stored
+        # value of the object that every object the filter can match or leave undecided
+        # meets; only objects meeting each are read, before their visibility (11-06
+        # q18: a date range over 77k sales orders read every one, 28-52 s a call).
+        narrow, extra = "", {}
+        for n, (condition, values) in enumerate(narrowing):
+            narrow += ("EXISTS (SELECT 1 FROM object_values x WHERE x.object_id = o.object_id "
+                       f"AND x.property = :np{n} AND ((" + condition.replace(":n_", f":n{n}_")
+                       + ") OR x.markings NOT IN (SELECT value FROM json_each(:marks)))) AND ")
+            extra[f"np{n}"] = values["property"]
+            extra.update({f"n{n}_{k}": v for k, v in values.items() if k != "property"})
+        for n, (event_type, op, day) in enumerate(events):
+            # a filter on the type's event: only records holding one of its times
+            bound = "" if op not in ("gte", "lt") or day is None else (
+                f"AND e.time {'>=' if op == 'gte' else '<'} :ed{n} ")
+            narrow += ("EXISTS (SELECT 1 FROM event_objects eo JOIN events e ON e.event_id = "
+                       f"eo.event_id WHERE eo.object_id = o.object_id AND e.event_type = :et{n} "
+                       + bound + ") AND ")
+            extra[f"et{n}"] = event_type
+            if bound:
+                extra[f"ed{n}"] = day
+        if upto is not None:
+            narrow += "o.object_id <= :upto AND "
+            extra["upto"] = upto
+        if among is not None:
+            # only these records (a link filter's): their ids, read on the object key
+            narrow += "o.object_id IN (SELECT value FROM json_each(:among)) AND "
+            extra["among"] = json.dumps(list(among))
         return list(self.conn.execute(
             "SELECT o.* FROM objects o WHERE o.object_type || '' = :type "
             "AND o.object_id > :after AND o.object_id >= :lo AND o.object_id < :hi AND "
-            + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
+            + narrow + self._VISIBLE_OBJECT + "ORDER BY o.object_id LIMIT :batch",
             scope.params(type=object_type, after=after, batch=batch, lo=object_type + ":",
-                         hi=object_type + ";")))
+                         hi=object_type + ";", **extra)))
 
     def audience_of_version(self, handle: str) -> str | None:
         """The audience key of the record whose version ``handle`` is (``version_audience``),
@@ -1136,6 +1175,30 @@ class StoreReader:
             "ORDER BY v.object_id, v.property, v.authority_rank IS NULL, v.authority_rank, "
             "v.l1_handle, v.field_path", scope.params(ids=json.dumps(list(object_ids)),
                                                        props=json.dumps(list(properties or ())))))
+
+    def key_ahead(self, object_type: str, after: str, span: int) -> str | None:
+        """The ``span``-th key of ``object_type`` after ``after`` (the object key alone,
+        no visibility); None when fewer remain."""
+        row = self.conn.execute(
+            "SELECT object_id FROM objects WHERE object_id > :after AND object_id >= :lo "
+            "AND object_id < :hi ORDER BY object_id LIMIT 1 OFFSET :skip",
+            {"after": after, "lo": object_type + ":", "hi": object_type + ";",
+             "skip": span - 1}).fetchone()
+        return row[0] if row else None
+
+    def event_times(self, scope: _Scope, object_ids: Sequence[str],
+                    event_types: Sequence[str]) -> list[sqlite3.Row]:
+        """(object_id, event_type, time, readable) of each event of ``event_types``
+        relating to these objects, current at :at; ``readable`` 0 when the reader does
+        not hold its markings (a time it may not read, never one it lacks)."""
+        return list(self.conn.execute(
+            "SELECT eo.object_id, e.event_type, e.time, CASE WHEN e.markings IN "
+            "(SELECT value FROM json_each(:marks)) THEN 1 ELSE 0 END AS readable "
+            "FROM event_objects eo JOIN events e ON e.event_id = eo.event_id "
+            "WHERE eo.object_id IN (SELECT value FROM json_each(:ids)) "
+            "AND e.event_type IN (SELECT value FROM json_each(:types)) AND e.time IS NOT NULL "
+            "AND " + self._at("e") + " ORDER BY eo.object_id",
+            scope.params(ids=json.dumps(list(object_ids)), types=json.dumps(list(event_types)))))
 
     def withheld_values(self, scope: _Scope, object_ids: Sequence[str],
                         properties: Sequence[str] | None = None) -> list[sqlite3.Row]:
@@ -1219,6 +1282,19 @@ class StoreReader:
             "AND (l.from_object IN (SELECT value FROM json_each(:ids)) "
             "OR l.to_object IN (SELECT value FROM json_each(:ids))) AND " + self._at("l")
             + " AND l.markings IN (SELECT value FROM json_each(:marks)) ORDER BY l.link_id",
+            scope.params(ids=json.dumps(list(object_ids)),
+                         types=json.dumps(list(link_types)))))
+
+    def withheld_links(self, scope: _Scope, object_ids: Sequence[str],
+                       link_types: Sequence[str]) -> list[sqlite3.Row]:
+        """(from_object, to_object, tier) of the links of ``link_types`` with an end among
+        ``object_ids``, current at :at, whose markings this reader does not hold: what
+        ``links_touching`` leaves out, never to be read as no link."""
+        return list(self.conn.execute(
+            "SELECT l.from_object, l.to_object, l.tier FROM links l WHERE l.link_type IN "
+            "(SELECT value FROM json_each(:types)) AND (l.from_object IN (SELECT value FROM "
+            "json_each(:ids)) OR l.to_object IN (SELECT value FROM json_each(:ids))) AND "
+            + self._at("l") + " AND l.markings NOT IN (SELECT value FROM json_each(:marks))",
             scope.params(ids=json.dumps(list(object_ids)),
                          types=json.dumps(list(link_types)))))
 
@@ -2731,6 +2807,236 @@ class OntologyTools:
                         if isinstance(wanted, list) else stored(kind, wanted)})
         return out
 
+    def link_names(self, object_type: str) -> dict[str, tuple[str, bool, str]]:
+        """navigation name -> (link type, forward, type reached) of each declared link of
+        ``object_type`` a filter may name (``ordered_from``, ``purchase_orders``); never a
+        mention or identity link."""
+        out: dict[str, tuple[str, bool, str]] = {}
+        for link_id, spec in sorted(((self.schema.link_types or {}) if self.schema else {})
+                                    .items()):
+            if ".mentions_" in link_id or link_id.endswith(".same_record_as"):
+                continue
+            if spec.get("from") == object_type and spec.get("name"):
+                out.setdefault(spec["name"], (link_id, True, spec["to"]))
+            if spec.get("to") == object_type and spec.get("reverse_name"):
+                out.setdefault(spec["reverse_name"], (link_id, False, spec["from"]))
+        return out
+
+    def _declared_names(self, object_type: str) -> frozenset[str]:
+        spec = (self.schema.object_types if self.schema else {}).get(object_type) or {}
+        return frozenset(p["name"] for p in spec.get("properties", ())
+                         if isinstance(p, Mapping) and p.get("name"))
+
+    def event_names(self, object_type: str) -> dict[str, str]:
+        """name -> event type of each declared event of ``object_type`` (``entered`` for
+        ``AssemblyOrderDamage.entered``): a filter may name it as a date the record holds
+        only as its event."""
+        events = (getattr(self.schema, "event_types", None) or {}) if self.schema else {}
+        return {event_id.split(".", 1)[1]: event_id for event_id, spec in sorted(events.items())
+                if spec.get("object_type") == object_type and "." in event_id}
+
+    def _link_filters(self, object_type: str, filters: Sequence[Mapping[str, Any]]
+                      ) -> list[Mapping[str, Any]]:
+        """The filters naming a link of ``object_type`` (``link_names``) instead of a
+        declared property: a record passes when that link reaches one of the records the
+        filter names (``_linked_ids``)."""
+        if self.schema is None or object_type not in self.schema.object_types:
+            return []
+        declared = {p["name"] for p in self.schema.object_types[object_type]
+                    .get("properties", ()) if isinstance(p, Mapping)}
+        names = self.link_names(object_type)
+        return [f for f in filters if f.get("property") not in declared
+                and f.get("property") in names]
+
+    def _checked_filters(self, object_type: str, filters: list[dict]) -> list[dict]:
+        """``filters`` as a scan reads them: every one names a declared property or a link
+        of the type (else ``unknown_property``, naming both), a link takes records, a set
+        or a name (``eq``, ``in``, ``prefix``), the property filters can hold together
+        (``_require_co_sourced``) and are in their stored forms."""
+        declared = sorted(p["name"] for p in self.schema.object_types[object_type]
+                          .get("properties", ()) if isinstance(p, Mapping))
+        links = self._link_filters(object_type, filters)
+        timed = self.event_names(object_type)
+        events = [f for f in filters if f["property"] not in declared
+                  and f["property"] in timed and f not in links]
+        unknown = sorted({f["property"] for f in filters} - set(declared)
+                         - {f["property"] for f in links} - {f["property"] for f in events})
+        if unknown:
+            named = sorted(self.link_names(object_type))
+            raise ToolError("unknown_property",
+                            f"{object_type} declares no property {', '.join(unknown)}",
+                            (property_hint(self.schema, object_type, unknown)
+                             + (f"; or an event's date: {', '.join(sorted(timed)[:8])}"
+                                if timed else "")
+                             + (f"; or a link, naming its records, a set or a name: "
+                                f"{', '.join(named[:12])}" if named else ""))[:600])
+        for f in events:
+            if f.get("op") not in ("gte", "lt", "eq", "in", "prefix", "present", "absent"):
+                raise ToolError("invalid_input",
+                                f"a filter on the event {f['property']} takes a date (gte, "
+                                "lt, eq, prefix) or present/absent",
+                                "a date bound as YYYY-MM-DD")
+        for f in links:
+            if f.get("op") not in ("eq", "in", "prefix") or f.get("value") in (None, [], ""):
+                raise ToolError("invalid_input",
+                                f"a filter on the link {f['property']} takes eq or in (the "
+                                "records it reaches: object ids or a set) or prefix (their "
+                                "name)", "plx.find the records first, or name them")
+        rest = [f for f in filters if f not in links and f not in events]
+        self._require_co_sourced(object_type, rest)
+        return (self._filters_as_stored(object_type, rest) + [dict(f) for f in events]
+                + [dict(f) for f in links])
+
+    def unsourced_filter_gaps(self, object_type: str, filters: Sequence[Mapping[str, Any]]
+                              ) -> list[dict[str, Any]]:
+        """A gap per filtered property some sources of the type never record: their
+        records never match it (a supplier name only Business Central's purchase orders
+        carry leaves the other systems' orders out), naming the links that reach the same
+        related records in those sources, so the filter can name them instead."""
+        if self.schema is None or object_type not in self.schema.object_types:
+            return []
+        spec = self.schema.object_types[object_type]
+        bindings = [b.get("id") for b in spec.get("bindings", ()) if isinstance(b, Mapping)]
+        props = {p["name"]: p for p in spec.get("properties", ()) if isinstance(p, Mapping)}
+        out, seen = [], set()
+        for f in filters:
+            sources = (props.get(f.get("property")) or {}).get("sources")
+            if f.get("op") in ("absent", "ne") or not sources or f["property"] in seen:
+                continue
+            seen.add(f["property"])
+            held = {x.get("binding") for x in sources if isinstance(x, Mapping)}
+            left = [b for b in bindings if b and b not in held]
+            if not left:
+                continue
+            routes = sorted(name for name, (link_id, forward, _t)
+                            in self.link_names(object_type).items()
+                            if any((b.get("from_binding") if forward else b.get("to_binding"))
+                                   in left for b in self.schema.link_types[link_id]
+                                   .get("bindings", ()) if isinstance(b, Mapping)))
+            out.append({"state": "unknown", "reason": "filter_not_sourced",
+                        "subject": f"{object_type}.{f['property']}",
+                        "detail": (f"{f['property']} is recorded only by "
+                                   f"{', '.join(sorted(held))}: {object_type} records of "
+                                   f"{', '.join(left)} never match this filter"
+                                   + (f"; a filter on a link reaches the related records in "
+                                      f"every source: {', '.join(routes)} (its records, a "
+                                      "set, or a name prefix)" if routes else ""))[:600]})
+        return out
+
+    def _linked_ids(self, scope: _Scope, object_type: str,
+                    links: Sequence[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
+        """(the records of ``object_type`` every link filter keeps, the readable records it
+        cannot decide): kept, those its link (at the default tier floor or stronger, never
+        contradicted, its evidence readable) joins to one of the records the filter names
+        (``_link_targets``); undecided, those only a link this reader may not read (its
+        markings, or evidence it may not see) joins to them: never read as not linked,
+        the caller says the filter is withheld for them (``_withheld_filter_gap``).
+        Resolved once per call (a scope), for every segment of the scan."""
+        key = (scope.actor, scope.at, scope.audience_keys, scope.marking_sets,
+               object_type, json.dumps(list(links), sort_keys=True, default=str))
+        memo = self.__dict__.setdefault("_link_memo", {})
+        if key in memo:
+            kept, unsure = memo[key]
+            return set(kept), set(unsure)
+        names = self.link_names(object_type)
+        floor = _TIER_RANK[LINK_FILTER_TIER_FLOOR]
+        per_filter: list[tuple[set[str], set[str], bool]] = []
+        for f in links:
+            link_id, forward, target_type = names[f["property"]]
+            targets, targets_unsure = self._link_targets(scope, target_type, f)
+            wanted, found, hidden = set(targets), set(), set()
+
+            def near_of(row: Mapping[str, Any]) -> str | None:
+                near, far = ((row["from_object"], row["to_object"]) if forward
+                             else (row["to_object"], row["from_object"]))
+                return near if far in wanted and near.split(":", 1)[0] == object_type \
+                    else None
+            for start in range(0, len(targets), 500):
+                chunk = targets[start:start + 500]
+                for row in self.store.links_touching(scope, chunk, [link_id]):
+                    near = near_of(row)
+                    if near is None or row["tier"] == "contradicted" \
+                            or _TIER_RANK.get(row["tier"], len(TIER_ORDER)) > floor:
+                        continue
+                    if all(self._item_allowed(scope.actor, handle) for handle
+                           in json.loads(row["evidence_handles"] or "[]")):
+                        found.add(near)
+                    else:
+                        hidden.add(near)
+                for row in self.store.withheld_links(scope, chunk, [link_id]):
+                    near = near_of(row)
+                    if near is not None and row["tier"] != "contradicted":
+                        hidden.add(near)
+            # a name this reader may not read: which records it names is undecided
+            per_filter.append((found, hidden - found, targets_unsure))
+        kept = set.intersection(*(found for found, _h, _u in per_filter)) \
+            if per_filter else set()
+        candidates = set().union(*(found | hidden for found, hidden, _u in per_filter))
+        unsure = {oid for oid in candidates - kept
+                  if all(oid in found or oid in hidden or star
+                         for found, hidden, star in per_filter)}
+        unsure = set(self._visible_versions(scope, sorted(unsure)))
+        if any(star for _f, _h, star in per_filter):
+            unsure.add("*")
+        if len(memo) > 16:
+            memo.clear()
+        memo[key] = (frozenset(kept), frozenset(unsure))
+        return set(kept), set(unsure)
+
+    def _link_targets(self, scope: _Scope, target_type: str, f: Mapping[str, Any]
+                      ) -> tuple[list[str], bool]:
+        """(the records of ``target_type`` a link filter names, readable to this reader,
+        whether a name it gives matched a record whose name the reader may not read):
+        its object ids, a set's members, and the records whose display name (the type's
+        ``display`` properties) equals, or with ``prefix`` begins with, a name it gives.
+        More than ``LINK_TARGET_CAP`` records, or a name lookup cut short (its segments or
+        the call's time), is refused (``link_targets_cut``): a filter on part of the
+        records it names would answer as if exact."""
+        values = f["value"] if isinstance(f["value"], list) else [f["value"]]
+        ids: list[str] = []
+        names: list[str] = []
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            if value.startswith("set:"):
+                ids += list(self.sets.resolve(value, scope.actor) or ())
+            elif value.split(":", 1)[0] == target_type and value.count(":") >= 2:
+                ids.append(value)
+            else:
+                names.append(value)
+        spec = self.schema.object_types.get(target_type) or {}
+        declared = {p["name"] for p in spec.get("properties", ()) if isinstance(p, Mapping)}
+        unsure = False
+        for prop in [p for p in spec.get("display") or () if p in declared] if names else ():
+            wanted = [{"property": prop, "op": "prefix" if f["op"] == "prefix" else "in",
+                       "value": names}]
+            start, segments = "", 0
+            while True:
+                matches, truncated, undecided, position = self._match_filters(
+                    scope, target_type, wanted, start)
+                ids += [m.object_id for m in matches]
+                unsure = unsure or bool(undecided)
+                segments += 1
+                if not truncated:
+                    break
+                if position is None or position <= start or segments >= LINK_TARGET_SEGMENTS:
+                    raise ToolError(
+                        "link_targets_cut",
+                        f"the {f['property']} filter's name lookup over {target_type} "
+                        "stopped before its end (its scan cap or the call's time), so it "
+                        "cannot say which records the link reaches",
+                        f"name the {target_type} records (object ids) or a set from "
+                        "plx.find, or give a longer name")
+                start = position
+        ids = [i for i in dict.fromkeys(ids) if i.split(":", 1)[0] == target_type]
+        visible = sorted(self._visible_versions(scope, ids))
+        if len(visible) > LINK_TARGET_CAP:
+            raise ToolError("link_targets_cut",
+                            f"the {f['property']} filter names {len(visible)} {target_type} "
+                            f"records, more than the {LINK_TARGET_CAP} one call follows",
+                            "name fewer records, or walk from them with plx.query")
+        return visible, unsure
+
     def _require_co_sourced(self, object_type: str, filters: Sequence[Mapping[str, Any]]
                             ) -> None:
         """Refuse filters no record can pass together. Each record of a type is one
@@ -3156,15 +3462,7 @@ class OntologyTools:
         if object_type is not None and self.schema is not None:
             # A filter on a property the type does not declare can match nothing: an
             # error naming the valid ones, never a not_found that reads as absence.
-            declared = sorted(p["name"] for p in self.schema.object_types[object_type]
-                              .get("properties", ()) if isinstance(p, Mapping))
-            unknown = sorted({f["property"] for f in filters} - set(declared))
-            if unknown:
-                raise ToolError("unknown_property",
-                                f"{object_type} declares no property {', '.join(unknown)}",
-                                property_hint(self.schema, object_type, unknown))
-            self._require_co_sourced(object_type, filters)
-            filters = self._filters_as_stored(object_type, filters)
+            filters = self._checked_filters(object_type, filters)
         notes: list[dict] = []
         keys: list[_Key] = []
         undecided: set[str] = set()
@@ -3196,6 +3494,8 @@ class OntologyTools:
                                           scan_after)
             undecided |= undecided_before
             notes += self._scope_identity(scope, matches, None)
+            if object_type is not None:
+                notes += self.unsourced_filter_gaps(object_type, filters)
         # Records of other systems carrying the asked key: the counterparts a candidate
         # is corroborated against (typed identifier matches only, any type; a reference
         # included: a BC invoice naming the order is compared on the order's customer).
@@ -3208,7 +3508,14 @@ class OntologyTools:
         visible = self._visible_versions(scope, {m.object_id for m in matches})
         key_matched = bool(visible)
         if query is not None and filters:
-            keep, undecided = self._filter_objects(scope, sorted(visible), filters)
+            links = self._link_filters(object_type, filters) if object_type else []
+            keep, undecided = self._filter_objects(scope, sorted(visible),
+                                                   [f for f in filters if f not in links])
+            if links:
+                linked, hidden = self._linked_ids(scope, object_type, links)
+                if "*" in hidden or hidden & set(visible):
+                    undecided = set(undecided) | {f["property"] for f in links}
+                keep &= linked
             visible = {k: v for k, v in visible.items() if k in keep}
         best: dict[str, _Match] = {}
         for match in matches:
@@ -4130,11 +4437,51 @@ class OntologyTools:
         versions: dict[str, sqlite3.Row] = {}
         after, readable_count, scanned, truncated = start, 0, 0, False
         position = start
+        links = self._link_filters(object_type, filters)
+        among: list[str] | None = None
+        if links:
+            # a filter on a link: only the records it joins to the named ones are read; one
+            # only a withheld link joins is never read as unlinked
+            linked, hidden = self._linked_ids(scope, object_type, links)
+            if hidden:
+                undecided |= {f["property"] for f in links}
+            among = sorted(linked)
+            filters = [f for f in filters if f not in links]
+            if not among:
+                return [], False, undecided, None
+        timed = self.event_names(object_type)
+        declared = self._declared_names(object_type)
+        narrowing = _value_narrowing([f for f in filters if f.get("property") in declared])
+        events = [(timed[f["property"]], f["op"], _event_bound(f))
+                  for f in filters if f.get("property") in timed
+                  and f.get("property") not in declared and f.get("op") != "absent"]
+        from operating import call_limits
         while True:
-            rows = self.store.objects_of_type(scope, object_type, after, FILTER_BATCH)
+            # A narrowed statement may pass over many records to find a batch: it reads
+            # at most NARROWED_SPAN keys of the type, so the scan can stop between
+            # statements when the call's time runs short and answer what it decided,
+            # with where to resume, never nothing at its limit (11-06 q17: a supplier
+            # name prefix over a cold store stopped at 40 s and returned nothing).
+            upto = self.store.key_ahead(object_type, after, NARROWED_SPAN) \
+                if narrowing or events else None
+            rows = self.store.objects_of_type(scope, object_type, after, FILTER_BATCH,
+                                              narrowing, among, events, upto)
+            left = call_limits.seconds_left()
+            short = left is not None and left < SCAN_MARGIN_SECONDS
             if not rows:
-                break
-            after = rows[-1]["object_id"]
+                if upto is None:
+                    break
+                # the keys up to ``upto`` are decided, but a cursor resumes only from a
+                # record this reader may read (``position``): never from a key it may not
+                after = upto
+                if short:
+                    truncated = True
+                    break
+                continue
+            full = len(rows) >= FILTER_BATCH
+            # a statement that did not fill its batch decided every key up to its span
+            after = rows[-1]["object_id"] if full or upto is None else upto
+            at_end = upto is None and not full
             scanned += len(rows)
             batch = self._visible_versions(scope, [r["object_id"] for r in rows])
             ids = [r["object_id"] for r in rows if r["object_id"] in batch]
@@ -4144,13 +4491,14 @@ class OntologyTools:
                 # Rows past the last readable object kept are scanned again next time.
                 position = ids[-1] if ids else position
             else:
-                position = after
+                # a span decided to its end resumes after its last readable record
+                position = after if after != upto else (ids[-1] if ids else position)
             readable_count += len(ids)
             versions.update(batch)
             passing, unsure = self._filter_objects(scope, ids, filters)
             undecided |= unsure
             matched.extend(oid for oid in ids if oid in passing)
-            if truncated or scanned >= SCAN_ROW_BUDGET:
+            if truncated or scanned >= SCAN_ROW_BUDGET or (short and not at_end):
                 truncated = True
                 break
         out = self._filter_matches(scope, object_type, filters, matched, versions)
@@ -4216,6 +4564,33 @@ class OntologyTools:
         for row in self.store.withheld_values(scope, object_ids,
                                               sorted({f["property"] for f in filters})):
             withheld.setdefault(row["object_id"], set()).add(row["property"])
+        # a filter naming an event of the record's type (not a property it declares)
+        # reads that event's times as the filtered values
+        timed: dict[str, str] = {}
+        for object_type in {oid.split(":", 1)[0] for oid in object_ids}:
+            names, declared = self.event_names(object_type), self._declared_names(object_type)
+            timed.update({names[f["property"]]: f["property"] for f in filters
+                          if f.get("property") in names and f["property"] not in declared})
+        if timed:
+            # an event filtered by days (every bound a bare date) reads each time as its
+            # business day (Eastern, as date groups are); a time bound reads it as it is
+            by_day = {name for name in timed.values()
+                      if all(isinstance(v, str) and _DATE.match(v)
+                             for f in filters if f.get("property") == name
+                             and f.get("op") not in ("present", "absent")
+                             for v in (f.get("value") if isinstance(f.get("value"), list)
+                                       else [f.get("value")]))}
+            for row in self.store.event_times(scope, object_ids, sorted(timed)):
+                name = timed[row["event_type"]]
+                if not row["readable"]:
+                    withheld.setdefault(row["object_id"], set()).add(name)
+                    continue
+                time_text = str(row["time"])
+                if name in by_day:
+                    time_text = _business_day(time_text)
+                kind = "date" if _DATE.match(time_text) else "timestamp"
+                values.setdefault(row["object_id"], {}).setdefault(name, []).append(
+                    (kind, time_text))
         passing: set[str] = set()
         undecided: set[str] = set()
         for oid in object_ids:
@@ -5229,6 +5604,99 @@ def _withheld_filter_gap(object_type: str | None, properties: Iterable[str]) -> 
                 "some records this reader can read hold a value of a filtered property it "
                 "may not read; they are neither matched nor excluded on it (a withheld "
                 "value is not a missing one)")
+
+
+_NUMERIC_TYPES = "('decimal', 'money', 'quantity', 'integer')"
+# outside ASCII (a byte past one per character): read alike by SQLite and Postgres, whose
+# GLOB translation reads a negated class as a plain one
+_NOT_ASCII = "octet_length(x.value) > length(x.value)"
+_ISO_DAY = "x.value GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'"
+
+
+def _business_day(text: str) -> str:
+    """An ISO time as its business day (``YYYY-MM-DD`` in ``time_window.BUSINESS_TZ``):
+    a time with a zone or offset converted, one without read as written; text that is no
+    time stays as it is."""
+    if _DATE.match(text):
+        return text
+    try:
+        moment = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if moment.tzinfo is not None:
+        from zoneinfo import ZoneInfo
+        from operating.time_window import BUSINESS_TZ
+        moment = moment.astimezone(ZoneInfo(BUSINESS_TZ))
+    return moment.date().isoformat()
+
+
+def _event_bound(f: Mapping[str, Any]) -> str | None:
+    """The ISO day an event filter's ``gte``/``lt`` bound is widened to (two days, as a
+    value bound: ``_value_narrowing``); None for any other filter or an unreadable
+    bound (the event's presence alone narrows)."""
+    wanted = f.get("value")
+    wanted = wanted[0] if isinstance(wanted, list) and wanted else wanted
+    moment = _parse_time(wanted) if isinstance(wanted, str) else None
+    if f.get("op") not in ("gte", "lt") or moment is None:
+        return None
+    return (moment.date() + dt.timedelta(days=-2 if f["op"] == "gte" else 2)).isoformat()
+
+
+def _value_narrowing(filters: Sequence[Mapping[str, Any]]
+                     ) -> list[tuple[str, dict[str, Any]]]:
+    """Per filter whose matches a store condition can bound, (an SQL condition on one
+    stored value ``x`` of the object, its parameters): every value ``_filter_holds``
+    can match meets it, so an object holding no such value (and no value of the property
+    the reader may not read: ``objects_of_type`` adds that) can neither match nor leave
+    the filter undecided, and the scan skips it. A superset, never the verdict itself:
+    ``present``; ``prefix`` (an ASCII prefix, any case); ``eq``/``in`` on text (a word
+    of the wanted value, any case; numbers compare as numbers and are kept); ``gte``/
+    ``lt`` on a date or time (ISO days two days wide of the bound; other kinds kept).
+    Values outside ASCII are kept wherever case folding decides. Other filters (``ne``,
+    ``absent``, a number bound) narrow nothing."""
+    out: list[tuple[str, dict[str, Any]]] = []
+    for f in filters:
+        op, prop = f.get("op"), f.get("property")
+        wanted = f.get("value")
+        targets = wanted if isinstance(wanted, list) else [wanted]
+        if not isinstance(prop, str):
+            continue
+        if op == "present":
+            out.append(("x.value IS NOT NULL", {"property": prop}))
+            continue
+        if op not in ("prefix", "eq", "in", "gte", "lt") or not targets \
+                or len(targets) > 20:
+            continue
+        if op in ("gte", "lt"):
+            moment = _parse_time(targets[0]) if isinstance(targets[0], str) else None
+            if moment is None:
+                continue
+            day = (moment.date() + dt.timedelta(days=-2 if op == "gte" else 2)).isoformat()
+            out.append((f"x.value_type NOT IN ('date', 'timestamp') OR NOT {_ISO_DAY} OR "
+                        f"x.value {'>=' if op == 'gte' else '<'} :n_day",
+                        {"property": prop, "day": day}))
+            continue
+        words: list[str] = []
+        for target in targets:
+            if isinstance(target, bool) or target is None:
+                break
+            text = str(target)
+            if op != "prefix":
+                text = max(text.split(), key=len, default="")
+            if not text or not text.isascii() or "\\" in text:
+                break   # Postgres' ILIKE reads a backslash as its escape
+            words.append(text.lower())
+        else:
+            # LIKE ignores ASCII case (ILIKE on Postgres); a % or _ in a word only
+            # widens what is kept
+            keep = f"{_NOT_ASCII} OR " + ("" if op == "prefix" else
+                                          f"x.value_type IN {_NUMERIC_TYPES} OR ")
+            likes = " OR ".join(f"x.value LIKE :n_w{i}" for i in range(len(words)))
+            values = {"property": prop}
+            values.update({f"w{i}": (w + "%" if op == "prefix" else "%" + w + "%")
+                           for i, w in enumerate(words)})
+            out.append((keep + likes, values))
+    return out
 
 
 def _filters_verdict(values: Mapping[str, list[tuple[str, Any]]], withheld: Iterable[str],

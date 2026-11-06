@@ -19,6 +19,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from collections import namedtuple
 
 from ontology import store_ddl
@@ -1233,6 +1234,177 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
         self.assertEqual(by_id[PO2]["tier"], "lead")  # gold_native_staging is never authority
         self.assertEqual(by_id[PO]["tier"], "verified")
         self.assertEqual(by_id[PO2]["matched"]["identifier_kind"], "object_key")
+
+    def test_a_value_narrowed_filter_scan_lists_what_a_whole_scan_lists(self):
+        """A filter listing reads only the objects a stored value can match
+        (``_value_narrowing``) and lists exactly what reading every object lists: dates
+        and offset timestamps near a bound, text in any case or spacing, values outside
+        ASCII, a withheld value, a number."""
+        s = build()
+        forms = [("promised_date", "date", "2026-06-30"), ("promised_date", "timestamp",
+                                                         "2026-07-01T02:30:00Z"),
+                 ("promised_date", "timestamp", "2026-06-30T23:30:00-05:00"),
+                 ("promised_date", "date", "2026-07-01"), ("promised_date", "text", "July 2026"),
+                 ("customer_po", "text", "ACME  Widgets Ltd"),
+                 ("customer_po", "text", "acme widgets"), ("customer_po", "text", "Äcme"),
+                 ("customer_po", "text", "Widget Acme"), ("total_amount", "money", "1200.50")]
+        for index, (prop, value_type, value) in enumerate(forms):
+            oid = f"SalesOrder:portal.app_sales_order:narrow-{index:02d}"
+            handle = f"api://public.app_sales_order/narrow-{index:02d}@0000000000000001-9"
+            s.obj(oid, "api:public.app_sales_order", handle, "gold_etl_from_fm")
+            s.val(oid, prop, value_type, value, handle, f"row.{prop}", "gold_etl_from_fm",
+                  markings='["finance"]' if index == 9 else "[]")
+        t = tools(s)
+        asked = [[{"property": "promised_date", "op": "gte", "value": "2026-07-01"}],
+                 [{"property": "promised_date", "op": "lt", "value": "2026-07-01T00:00:00Z"}],
+                 [{"property": "customer_po", "op": "eq", "value": "acme widgets ltd"}],
+                 [{"property": "customer_po", "op": "prefix", "value": "acme"}],
+                 [{"property": "customer_po", "op": "prefix", "value": "äc"}],
+                 [{"property": "customer_po", "op": "in", "value": ["Widget  acme", "x"]}],
+                 [{"property": "total_amount", "op": "eq", "value": "1200.5"}],
+                 [{"property": "total_amount", "op": "present"}],
+                 [{"property": "customer_po", "op": "present"},
+                  {"property": "customer_po", "op": "prefix", "value": "ACME"}]]
+
+        def listed(filters):
+            out = self.ok(t, "plx.find", {"object_type": "SalesOrder",
+                                          "filters": filters, "limit": 50})
+            return sorted(c["object"]["object_id"] for c in out.get("candidates") or [out]
+                          if "narrow-" in (c.get("object") or {}).get("object_id", ""))
+        # every filter narrows but the prefix outside ASCII (case folding decides it)
+        self.assertEqual([bool(ot._value_narrowing(f)) for f in asked],
+                         [True] * 4 + [False] + [True] * 4)
+        narrowed = [listed(f) for f in asked]
+        with mock.patch.object(ot, "_value_narrowing", lambda filters: []):
+            whole = [listed(f) for f in asked]
+        self.assertEqual(narrowed, whole)
+        self.assertEqual([[oid[-2:] for oid in n] for n in narrowed],
+                         [["01", "02", "03", "04"], ["00"], ["05"], ["05", "06"],
+                          ["07"], ["08"], ["09"], ["09"], ["05", "06"]])
+
+    def test_a_filter_names_related_records_by_link(self):
+        """A filter on a link keeps the records it joins to the named ones: their ids,
+        or a name their display property begins with, either way along the link; a
+        property some sources never record says which sources it leaves out."""
+        t = tools()
+        by_id = self.ok(t, "plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "in", "value": [SO]}]})
+        by_name = self.ok(t, "plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "prefix", "value": "so-2099"}]})
+        back = self.ok(t, "plx.find", {"object_type": "SalesOrder", "filters": [
+            {"property": "invoices", "op": "eq", "value": INV}]})
+        self.assertEqual([[c["object"]["object_id"] for c in r.get("candidates") or [r]]
+                          for r in (by_id, by_name, back)], [[INV], [INV], [SO]])
+        none = self.ok(t, "plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "prefix", "value": "SO-1999"}]})
+        self.assertEqual(none["status"], "not_found")
+        refused = t.call("plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "present"}]}, FULL)
+        self.assertEqual(refused["error"]["code"], "invalid_input")
+        unknown = t.call("plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoiced_order", "op": "eq", "value": "x"}]}, FULL)
+        self.assertIn("or a link", unknown["error"]["hint"])
+        self.assertIn("invoices_order", unknown["error"]["hint"])
+        listed = self.ok(t, "plx.find", {"object_type": "SalesOrder", "filters": [
+            {"property": "customer_po", "op": "present"}]})
+        [gap] = [g for g in listed["gaps"] if g["reason"] == "filter_not_sourced"]
+        self.assertIn("fm.order_entry", gap["detail"])
+
+    def test_a_link_filter_never_reads_a_withheld_link_or_a_cut_lookup_as_exact(self):
+        """A record only a link the reader may not read joins to the named records is
+        neither matched nor read as unlinked: the filter is withheld for it (a gap, a
+        partial count). A name lookup cut short is refused, never answered as exact."""
+        from operating import ontology_tools_aggregate as oa
+        s = build()
+        s.conn.execute("UPDATE links SET markings = '[\"finance\"]' WHERE link_id = 'lnk-inv-1'")
+        policy = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}, "bc:*": {"sales"}},
+                               markings={"finance": {"finance_clerk"}})
+        t = tools(s, policy=policy)
+        found = t.call("plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "in", "value": [SO]}]}, SALES)
+        self.assertEqual(found.get("candidates") or [], [])
+        self.assertIn("invoices_order", json.dumps([g for g in found["gaps"]
+                                                    if g["reason"] != "no_visible_match"]))
+        counted = oa.AggregateTools(t).call("plx.aggregate", {
+            "object_type": "SalesInvoice", "measure": {"op": "count"},
+            "filters": [{"property": "invoices_order", "op": "in", "value": [SO]}]}, SALES)
+        self.assertTrue(counted["partial"])
+        self.assertIsNone(counted["groups"][0]["value"])
+        self.assertFalse(counted["completeness"]["complete"])
+        # the reader who holds the link's marking finds it
+        full = tools(s).call("plx.find", {"object_type": "SalesInvoice", "filters": [
+            {"property": "invoices_order", "op": "in", "value": [SO]}]}, FULL)
+        self.assertEqual([c["object"]["object_id"] for c in full["candidates"]], [INV])
+        # a name lookup that cannot reach the end of its type is refused
+        with mock.patch.object(ot, "LINK_TARGET_SEGMENTS", 1), \
+                mock.patch.object(ot, "FILTER_SCAN_CAP", 0):
+            cut = tools(s).call("plx.find", {"object_type": "SalesInvoice", "filters": [
+                {"property": "invoices_order", "op": "prefix", "value": "SO-2099"}]}, FULL)
+        self.assertEqual(cut["error"]["code"], "link_targets_cut")
+
+    def test_a_filter_on_an_event_reads_its_times(self):
+        """A date a record holds only as its event (``SalesOrder.required``) is filtered
+        by the event's name: its times decide, a time the reader may not read decides
+        nothing, and a record without one never matches a bound."""
+        s = build()
+        for n, (oid, time, marks) in enumerate(((SO, "2099-03-05", "[]"),
+                                                (FM, "2099-02-20T23:00:00-05:00", "[]"))):
+            s.conn.execute(
+                "INSERT INTO events (event_id, event_type, time_basis, time, l1_handle, "
+                "field_path, digest, lineage, markings, recorded_at) VALUES "
+                "(?, 'SalesOrder.required', 'planned', ?, ?, 'row.required_date', ?, "
+                "'gold_etl_from_fm', ?, '2099-01-01T00:00:00Z')",
+                (f"E:{n}", time, SO_V2, "a" * 64, marks))
+            s.conn.execute("INSERT INTO event_objects VALUES (?, ?, 'order')", (f"E:{n}", oid))
+        t = tools(s)
+
+        def listed(filters):
+            out = self.ok(t, "plx.find", {"object_type": "SalesOrder", "filters": filters})
+            return sorted(c["object"]["object_id"] for c in out.get("candidates") or ())
+        self.assertEqual(listed([{"property": "required", "op": "gte", "value": "2099-03-01"}]),
+                         [SO])
+        # 23:00 -05:00 is 04:00 UTC on the 21st, and the 20th in the business day
+        self.assertEqual(listed([{"property": "required", "op": "lt", "value": "2099-02-21"}]),
+                         [FM])
+        self.assertEqual(listed([{"property": "required", "op": "eq", "value": "2099-02-20"}]),
+                         [FM])
+        self.assertEqual(listed([{"property": "required", "op": "lt",
+                                  "value": "2099-02-21T00:00:00Z"}]), [])
+        self.assertEqual(listed([{"property": "required", "op": "present"}]), sorted([SO, FM]))
+        hint = t.call("plx.find", {"object_type": "SalesOrder", "filters": [
+            {"property": "required_date", "op": "gte", "value": "2099-01-01"}]}, FULL)
+        self.assertIn("or an event's date: required", hint["error"]["hint"])
+
+    def test_a_narrowed_scan_short_of_time_answers_what_it_decided_and_resumes(self):
+        """With little of the call's time left, a narrowed filter scan stops between its
+        statements and lists what it decided, with a cursor; following it lists the rest,
+        none twice."""
+        import time as clock
+        from operating import call_limits
+        s = build()
+        s.conn.execute("INSERT INTO store_meta VALUES ('content_digest', 'made-up-gen-1')")
+        for index in range(7):
+            oid = f"PurchaseOrder:portal.app_purchase_order:short-{index}"
+            handle = f"api://public.app_purchase_order/short-{index}@0000000000000001-9"
+            s.obj(oid, "api:public.app_purchase_order", handle, "gold_etl_from_fm")
+            s.val(oid, "po_number", "identifier", f"PO{300000 + index}", handle,
+                  "row.po_number", "gold_etl_from_fm")
+        t = tools(s)
+        asked = {"object_type": "PurchaseOrder", "limit": 50,
+                 "filters": [{"property": "po_number", "op": "prefix", "value": "PO3"}]}
+        with mock.patch.object(ot, "NARROWED_SPAN", 2), \
+                call_limits.sql_deadline(clock.monotonic() + 1.0):
+            first = self.ok(t, "plx.find", asked)
+        self.assertTrue(first["completeness"]["truncated"], first)
+        seen = [c["object"]["object_id"] for c in first["candidates"]]
+        cursor = first["completeness"]["next_cursor"]
+        self.assertTrue(len(seen) < 7 and cursor, first)
+        while cursor:
+            page = self.ok(t, "plx.find", dict(asked, cursor=cursor))
+            seen += [c["object"]["object_id"] for c in page.get("candidates") or ()]
+            cursor = page["completeness"]["next_cursor"]
+        self.assertEqual(sorted(seen), sorted(set(seen)))
+        self.assertEqual(len(seen), 7)
 
     def test_filter_listing_pages_through_every_match_beyond_five_hundred(self):
         s = build()

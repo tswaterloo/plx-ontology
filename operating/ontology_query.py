@@ -67,9 +67,16 @@ PER_CODE_BYTES = 38000
 # walked. A link that reaches nothing ends its route: 11-06 q01, the quarantined lots'
 # receipts name no supplier and their receipt lines' PO lines do (4 links). Mention links
 # (a document naming a record) and identity links are no route.
-ROUTE_HOPS = 4
+# How far a route may run is bounded by its cost, never a fixed length: each route at
+# most ``ROUTE_SLACK`` links longer than the schema's shortest from where it starts, at
+# most ``MAX_HOPS``, while the walk has calls (``MAX_ROUTE_CALLS``) and time
+# (``ROUTE_MARGIN_SECONDS`` of the call's limit) left (11-06 q12: a lot's customers by
+# its bill of materials is five links, the shortest declared route three).
+ROUTE_SLACK = 2
+ROUTE_MARGIN_SECONDS = 6.0
+ROUTE_HOPS = MAX_HOPS
 MAX_ROUTES = 6            # schema routes a hop that reached nothing names
-MAX_ROUTE_CALLS = 24
+MAX_ROUTE_CALLS = 40
 MAX_ROUTES_SHOWN = 24
 MAX_ROUTE_PATHS = 400     # partial routes a schema search keeps per length
 WALK_REFUSALS = frozenset({"undeclared_link", "ambiguous_link", "path_type_mismatch",
@@ -159,7 +166,7 @@ class TableBackend:
             frontier = grown
         return out
 
-    def routes(self, start: str, goal: str, hops: int = ROUTE_HOPS - 1
+    def routes(self, start: str, goal: str, hops: int = ROUTE_SLACK + 1
                ) -> list[list[tuple[str, str, str]]]:
         """Declared routes from ``start`` to ``goal`` (each ``(link_type, direction,
         type reached)`` per hop): the shortest, then those one hop longer, never through a
@@ -194,6 +201,12 @@ class TableBackend:
                 shortest = depth
             frontier = grown
         return out
+
+    def identity_link(self, object_type: str) -> str | None:
+        """The type's identity link (``<Type>.same_record_as``: a record's copies in other
+        systems) when the schema declares one."""
+        link_id = f"{object_type}.same_record_as"
+        return link_id if link_id in (getattr(self.schema, "link_types", None) or {}) else None
 
     def link_from_type(self, hop: Mapping[str, Any]) -> str | None:
         """The object type a hop starts from (None: a navigation name, decided by the
@@ -259,9 +272,13 @@ class QueryTool:
         traverse = list(arguments.get("traverse") or ())
         # The start's own filters (from.where; the top-level where too when nothing is
         # walked, as it filters what is reached: the start), never dropped unread.
+        if traverse and traverse[0].get("to") \
+                and traverse[0]["to"] != arguments["from"].get("object_type"):
+            # a walk no declared route makes is refused before its start is read
+            self._reachable(arguments["from"].get("object_type"), traverse[0]["to"], 0)
         selecting = list(arguments["from"].get("where") or ()) + (
             [] if traverse else list(arguments.get("where") or ()))
-        if selecting:
+        if selecting or (start is None and records is None):
             start, records = self._selected(start, records, selecting, arguments, actor,
                                             gaps)
         out: dict[str, Any] = {"from": {"records": (records or [])[:MAX_CITED]}}
@@ -323,7 +340,8 @@ class QueryTool:
                 if not current:
                     break
                 continue
-            got = self._around(call, current, hop, filters, arguments, common)
+            got = self._around(call, current, self._directed(here, hop), filters, arguments,
+                               common)
             if got.get("error"):
                 raise _Refused(_error(got["error"].get("code") or "traverse_refused",
                                       f"hop {index + 1}: " + str(got["error"].get("message")),
@@ -392,6 +410,21 @@ class QueryTool:
         types = {oid.split(":", 1)[0] for oid in ids or ()}
         return types.pop() if len(types) == 1 else None
 
+    def _directed(self, here: str | None, hop: Mapping[str, Any]) -> Mapping[str, Any]:
+        """A hop naming a link by name and a direction too (``{"link": "received_lot",
+        "direction": "reverse"}``) as the one declared link of that name walked that way
+        from ``here``: its link type; the name alone when none or several are."""
+        if "link" not in hop or "direction" not in hop:
+            return hop
+        links = getattr(self.backend.schema, "link_types", None) or {}
+        end = "from" if hop["direction"] == "forward" else "to"
+        found = [link_id for link_id, spec in links.items()
+                 if (spec.get("name") == hop["link"] or link_id.endswith("." + hop["link"]))
+                 and spec.get(end) == here]
+        if len(found) == 1:
+            return {"link_type": found[0], "direction": hop["direction"]}
+        return {"link": hop["link"]}
+
     def _named_type(self, here: str | None, name: Any) -> str | None:
         """The object type a hop's ``link`` names when it names no link of ``here`` but
         one type (``supplier``, ``Suppliers``): a hop to that type."""
@@ -423,31 +456,61 @@ class QueryTool:
             raise _Refused(_error("invalid_input", f"hop {index + 1}: the records walked "
                                   "from are of several types or none; name the link",
                                   "plx.object a record to see its links"))
-        if here == goal or not current:
+        if not current:
             # nothing to walk from (a start its where selected none of): nothing walked
             return {"routes": [], "hops": [], "gaps": [], "meta": None, "set": current}
-        far = self.backend.distances(goal)
-        if far.get(here) is None or far[here] > ROUTE_HOPS:
-            raise _Refused(_error("undeclared_link", f"hop {index + 1}: no declared route "
-                                  f"from {here} to {goal} within {ROUTE_HOPS} links",
-                                  "plx.schema section links lists the links of each type"))
+        if here == goal:
+            # already at the type: the hop's where still selects among these records
+            if not filters:
+                return {"routes": [], "hops": [], "gaps": [], "meta": None, "set": current}
+            if self.backend.select is None:
+                raise _Refused(_error("invalid_input", "filtering the records needs the "
+                                      "host's value reads"))
+            common_args = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
+            got = self.backend.select({"set": current, "filters": filters, **common_args},
+                                      actor)
+            if got.get("error"):
+                raise _Refused({"error": got["error"]})
+            kept_gaps = [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+            ids = list(got.get("ids") or ())
+            if not ids:
+                kept_gaps.append({"state": "unknown", "reason": "nothing_selected",
+                                  "subject": json.dumps(filters, default=str)[:700],
+                                  "detail": "no record this reader may read holds these "
+                                            "values"})
+            return {"routes": [], "hops": [], "gaps": kept_gaps, "meta": None,
+                    "set": self._set_of(ids, actor)}
+        far = self._reachable(here, goal, index)
+        reach = min(ROUTE_HOPS, far[here] + ROUTE_SLACK)
+        from operating import call_limits
         listed: list[dict[str, Any]] = []
         found: list[dict[str, Any]] = []
         gaps: list[dict[str, Any]] = []
         meta, calls, cut = None, 0, False
         seen: set[tuple[str, frozenset[str]]] = set()
         frontier: list[tuple[list[dict[str, Any]], Any, str]] = [([], current, here)]
-        for depth in range(1, ROUTE_HOPS + 1):
+        for depth in range(1, reach + 1):
             grown: list[tuple[list[dict[str, Any]], Any, str]] = []
             for walked, handle, kind in frontier:
                 passed = {here} | {self.backend.link_end(h["link_type"], h["direction"])
                                    for h in walked}
-                for link_type, direction, reached in self.backend.links_from(kind):
+                twin = self.backend.identity_link(kind) if not any(
+                    h["link_type"].endswith(".same_record_as") for h in walked) else None
+                # a record's copy in another system (its identity link, once a route) may
+                # carry the next link its own system does not (11-06 q12: a FileMaker lot
+                # names no item, its Portal copy does)
+                options = self.backend.links_from(kind) + (
+                    [(twin, "forward", kind), (twin, "reverse", kind)] if twin else [])
+                for link_type, direction, reached in options:
                     last = reached == goal
-                    if not last and (reached in passed or far.get(reached) is None
-                                     or depth + far[reached] > ROUTE_HOPS):
+                    identity = link_type == twin
+                    if not last and ((reached in passed and not identity)
+                                     or far.get(reached) is None
+                                     or depth + far[reached] > reach):
                         continue
-                    if calls >= MAX_ROUTE_CALLS:
+                    left = call_limits.seconds_left()
+                    if calls >= MAX_ROUTE_CALLS or (left is not None
+                                                    and left < ROUTE_MARGIN_SECONDS):
                         cut = True
                         break
                     calls += 1
@@ -486,7 +549,7 @@ class QueryTool:
                     break
             if found or cut:
                 break
-            frontier = sorted(grown, key=lambda node: (far.get(node[2], ROUTE_HOPS),
+            frontier = sorted(grown, key=lambda node: (far.get(node[2], reach),
                                                        len(node[0])))
             if not frontier:
                 break
@@ -495,19 +558,51 @@ class QueryTool:
             found.sort(key=lambda route: -route["entry"]["count"])
             found[0]["entry"]["taken"] = True
             gaps += found[0]["gaps"]
+            others = found[1:]
+            if others:
+                # the records only the other routes reached are not in this answer: said,
+                # with each route's count and set, never left out silently
+                said = "; ".join(
+                    " / ".join(f"{h['link_type']} {h['direction']}" for h in route["hops"])
+                    + f" ({route['entry']['count']} records, {route['set']})"
+                    for route in others[:MAX_ROUTES])
+                gaps.append({"state": "unknown", "reason": "routes_not_taken",
+                             "subject": f"{here} to {goal}"[:700],
+                             "detail": (f"{len(others)} other route(s) also reached {goal} "
+                                        "records, which this answer leaves out unless the "
+                                        f"taken route reached them too: {said}. Start from a "
+                                        "route's set to read its records")[:600]})
         if cut:
             gaps.append({"state": "unknown", "reason": "routes_not_walked",
                          "subject": f"{here} to {goal}"[:700],
-                         "detail": f"the search stopped after {MAX_ROUTE_CALLS} links "
-                                   "walked; name the links of a longer route to walk it"})
+                         "detail": f"the search stopped after {calls} links walked (its "
+                                   "call or time budget); name the links of a longer route "
+                                   "to walk it"})
         if not found:
             gaps.append({"state": "unknown", "reason": "nothing_reached",
                          "subject": f"{here} to {goal}"[:700],
-                         "detail": f"no route of up to {ROUTE_HOPS} declared links from these "
+                         "detail": f"no route of up to {reach} declared links from these "
                                    f"records reaches a {goal} ({calls} links walked)"})
         return {"routes": listed[:MAX_ROUTES_SHOWN],
                 "hops": found[0]["hops"] if found else [], "gaps": gaps, "meta": meta,
                 "set": found[0]["set"] if found else None}
+
+    def _reachable(self, here: str | None, goal: str, index: int) -> dict[str, int]:
+        """The schema's distances to ``goal`` (``distances``) when ``here`` has a declared
+        route there; else refused, naming the text mentions that reach it instead."""
+        far = self.backend.distances(goal)
+        if here is not None and (far.get(here) is None or far[here] > ROUTE_HOPS):
+            links = getattr(self.backend.schema, "link_types", None) or {}
+            said = sorted(link_id for link_id, spec in links.items()
+                          if ".mentions_" in link_id and {spec.get("from"), spec.get("to")}
+                          == {here, goal})
+            raise _Refused(_error(
+                "undeclared_link", f"hop {index + 1}: no declared route from {here} to "
+                f"{goal} within {ROUTE_HOPS} links",
+                (f"only text mentions join them: plx.around {', '.join(said)} (tier_floor "
+                 "lead; what it reaches is a lead)" if said else
+                 "plx.schema section links lists the links of each type")[:600]))
+        return far
 
     def _other_routes(self, here: str | None, goal: str | None, link_type: Any
                       ) -> dict[str, Any] | None:
@@ -643,10 +738,8 @@ class QueryTool:
         selects (``_selected``)."""
         keys = set(start) - {"where"}
         if keys == {"object_type"}:
-            if not start.get("where"):
-                raise _Refused(_error("invalid_input", "an object_type start needs where: "
-                                      "the filters that select its records (e.g. a status "
-                                      "eq, a date gte and lt)"))
+            # its where selects among the type's records; without one, every record of
+            # the type is the start (a count by stage over every task)
             return None, None, None
         if keys not in ({"set"}, {"object_id"}, {"object_ids"}, {"entity"}, {"codes"},
                         {"codes", "object_type"}):
@@ -836,7 +929,8 @@ def _fitted(out: dict[str, Any], limit: int = RESULT_BYTES) -> dict[str, Any]:
                         done = dict(result.get("completeness") or {})
                         start = _page_start(done, len(result["groups"]))
                         result["groups"] = result["groups"][:keep]
-                        done.update(complete=False, truncated=True, reason="result_size",
+                        done.update(complete=False, truncated=True,
+                                    reason=_size_cut(done.get("reason")),
                                     returned=keep, next_cursor=f"g{start + keep}")
                         result["completeness"] = done
                     lists.append((_size(groups), cut_groups, len(groups)))
@@ -852,6 +946,14 @@ def _fitted(out: dict[str, Any], limit: int = RESULT_BYTES) -> dict[str, Any]:
         _bytes, cut, count = max(lists, key=lambda item: item[0])
         cut(max(1, count // 2))
     return out
+
+
+def _size_cut(reason: Any) -> str:
+    """The completeness reason of groups cut for size: ``result_size``, beside the
+    reason the groups were already incomplete for (``partial_inputs``: a group lacks
+    inputs), never in its place."""
+    from operating.ontology_tools_aggregate import size_cut_reason
+    return size_cut_reason(reason)
 
 
 def _page_start(done: Mapping[str, Any], shown: int) -> int:

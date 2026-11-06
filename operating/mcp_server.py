@@ -1808,7 +1808,8 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
     reply = None if repairing or not isinstance(answer, dict) else \
         answer_gate.final_reply(answer.get("text", ""), gated["claims"],
                                 unsupported=gated["unsupported"],
-                                unknowns=gated["unknowns"], question=asked)
+                                unknowns=gated["unknowns"], question=asked,
+                                names=frozenset(getattr(server, "returned_names", ()) or ()))
     # A final decision says its answerability (``answer_gate.answerability``): a
     # passed claim, a document's stated gap included, is never a blocked answer.
     state = answer_gate.answerability(gated, answer.get("gaps") if isinstance(answer, dict)
@@ -2234,6 +2235,11 @@ class MCPServer:
         # Repairs this session's final answers had (``plx.case_get`` answer mode): at most
         # ``answer_gate.MAX_REPAIRS`` over the session.
         self._answer_repairs = 0
+        # The name tokens the tool results shown to the client returned (record numbers,
+        # customer and file names): never figures in the reply, as the final screen reads
+        # them (``answer_gate.returned_names``), so the reply plx.case_get previews loses
+        # what the final one loses and nothing more.
+        self.returned_names: set[str] = set()
         # The question's records as the answer gate's relevance check names them
         # (``_relevance``), for the question last asked.
         self._anchors: dict[str, frozenset[str]] = {}
@@ -2449,6 +2455,10 @@ class MCPServer:
                     if _envelope_size(payload) + spare <= MAX_RESULT_BYTES:
                         self._note_returned(name, arguments, built,
                                             None if host_code else value)
+                        if not host_code and name != "plx.case_get" \
+                                and len(self.returned_names) < answer_gate.MAX_RETURNED_NAMES:
+                            self.returned_names |= answer_gate.returned_names(
+                                [{"type": "tool_call", "name": name, "result": value}])
                         if self._unkept is not None:
                             payload["_meta"][EVIDENCE_META_KEY] = {
                                 "kept": False, "reason": self._unkept}

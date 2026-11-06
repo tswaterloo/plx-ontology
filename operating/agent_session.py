@@ -476,6 +476,24 @@ def gate_final_reply(final_text: str, events: Sequence[Mapping[str, Any]],
         if reply["modified"]:
             report.update(rewritten=True, answer_error=error)
         return reply["text"], report
+    if passed and not answer.get("values"):
+        # An answer block that copies none of the claims the gate passed still states
+        # them (its prose does: 11-06, six replies lost sentences whose figures only the
+        # passed claims hold): they are its values, each in the form the reply keeps
+        # whole (``answer_gate.answer_values``), so the prose stating them is backed.
+        from operating.answer_contract import MAX_VALUES
+        # each named by its claim's own words (the reader never sees a claim id)
+        said = {claim.get("id"): answer_gate.plain(claim.get("text"))
+                for claim in gate.get("claims") or () if isinstance(claim, Mapping)}
+        copied = [{"name": (said.get(item["claim"]) if isinstance(said.get(item["claim"]), str)
+                            and said[item["claim"]].strip() else item["claim"])[:120],
+                   **item["answer_value"]}
+                  for item in answer_gate.answer_values(gate)
+                  if isinstance(item.get("claim"), str)]
+        copied = [value for value in copied
+                  if not answer_problems({"answerability": "partial", "values": [value]})]
+        if copied:
+            answer = {**answer, "values": copied[:MAX_VALUES]}
     values, gaps = [], one_gap_per_value(answer.get("gaps") or [])
     concerned = {gap.get("concerns") for gap in gaps}
     said: list[str] = []

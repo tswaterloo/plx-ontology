@@ -24,6 +24,7 @@ from ontology import schema as schema_loader
 from ontology import project, store_ddl, units
 from ontology.json_contract import validate
 from ontology.types import Actor
+from operating import claim_checks
 from operating import ontology_tools as ot
 from operating import ontology_tools_aggregate as oa
 from operating import ontology_tools_process as op
@@ -311,6 +312,22 @@ class AggregateTests(_Base):
         out = self.agg(STAFF, [L1, L3], {"property": "line_total", "op": "sum"})
         self.assertEqual(out["refused"]["code"], "currency_unknown")
 
+    def test_a_group_mixing_currencies_shows_no_value_and_the_others_stand(self):
+        self.line_totals()   # L1 250 CAD, L4 35 USD
+        self.store.val(L2, "line_total", "money", "12.50", currency="CAD", markings='["finance"]')
+        self.store.val(L4, "description", "text", "Bottle 500ml")   # L1's group
+        out = self.agg(STAFF, [L1, L2, L4], {"property": "line_total", "op": "max"},
+                       group_by=["description"])
+        self.assertNotIn("refused", out)
+        values = [(g["value"], g.get("currency")) for g in out["groups"]]
+        self.assertEqual(sorted(values, key=str), sorted([("12.5", "CAD"), (None, None)],
+                                                         key=str))
+        self.assertTrue(out["partial"])
+        self.assertIn("currency_mixing", {g["reason"] for g in out["gaps"]})
+        # one group only: still refused whole
+        self.assertEqual(self.agg(STAFF, [L1, L4], {"property": "line_total", "op": "sum"})[
+            "refused"]["code"], "currency_mixing")
+
     def test_money_sum_carries_currency_and_markings(self):
         self.line_totals()
         self.store.val(L2, "line_total", "money", "12.50", currency="CAD", markings='["finance"]')
@@ -319,6 +336,20 @@ class AggregateTests(_Base):
         self.assertEqual((group["value"], group["currency"]), ("262.5", "CAD"))
         self.assertNotIn("unit", group)  # an amount is per nothing
         self.assertEqual(group["markings"], ["finance"])
+
+    def test_summary_carries_markings_and_names_a_partial_total(self):
+        """A summary of finance groups is as marked as they are, and a total over groups
+        one of which holds no value is a lower bound (partial_total), never the total."""
+        self.store.val(L1, "line_total", "money", "250", currency="CAD", markings='["finance"]')
+        self.store.val(L2, "line_total", "money", "12.50", currency="CAD", markings='["finance"]')
+        out = self.agg(STAFF, [L1, L2], {"property": "line_total", "op": "sum"},
+                       group_by=["description"], having={"op": "gte", "value": 0})
+        self.assertEqual((out["summary"]["markings"], out["summary"]["total"]),
+                         (["finance"], "262.5"))
+        out = self.agg(STAFF, [L1, L2, L3], {"property": "line_total", "op": "sum"},
+                       group_by=["ordered_quantity"], having={"op": "gte", "value": 0})
+        self.assertNotIn("total", out["summary"])
+        self.assertEqual(out["summary"]["partial_total"], "262.5")
 
     def test_unit_prices_are_rates_never_summed(self):
         self.store.val(L2, "unit_price", "money", "0.25", unit="EA", currency="CAD",
@@ -502,6 +533,18 @@ class AggregateTests(_Base):
         self.assertEqual(self.call("plx.aggregate", {
             "set": handle, "measure": {"op": "count"}, "cursor": "page2"})["error"]["code"],
             "invalid_input")
+
+    def test_a_timestamp_lands_in_its_business_day(self):
+        """22:30 Eastern on June 30 is stored as 02:30 UTC on July 1: June's, by month and
+        by day; a timestamp without a zone keeps the day it writes."""
+        self.store.val(PO1, "order_date", "timestamp", "2026-07-01T02:30:00Z")
+        self.store.val(PO2, "order_date", "timestamp", "2026-07-01T09:00:00")
+        for bucket, keys in (("month", ["2026-06", "2026-07"]),
+                             ("day", ["2026-06-30", "2026-07-01"])):
+            out = self.agg(STAFF, [PO1, PO2], {"op": "count"}, group_by=["order_date"],
+                           bucket=bucket)
+            self.assertEqual([g["key"]["order_date"]["untrusted_text"] for g in out["groups"]],
+                             keys)
 
     def test_dates_group_by_period_and_having_keeps_every_group_that_holds(self):
         """"Every month": order dates grouped or counted by month (bucket), and only the
@@ -771,6 +814,19 @@ class FilterCountTests(_Base):
         self.assertIn("marking_withheld", {g["reason"] for g in priced["gaps"]})
         self.assertEqual(self.count([{"property": "unit_price", "op": "gte", "value": "0"}])[
             "groups"][0]["value"], "2")
+        # a count whose filter some sources never record is no exact count for the gate
+        priced = self.count([{"property": "unit_price", "op": "gte", "value": "0"}])
+        self.assertIn("filter_not_sourced", {g["reason"] for g in priced["gaps"]})
+        entry = claim_checks.returned_evidence(
+            "plx.aggregate", {"object_type": "PurchaseOrderLine", "measure": {"op": "count"},
+                              "filters": [{"property": "unit_price", "op": "gte",
+                                           "value": "0"}]}, priced)["counts"][0]
+        self.assertFalse(entry["complete"])
+        # no filters: every record of the type the reader may read
+        for actor, every in ((STAFF, "5"), (SALES, "4")):
+            out = self.call("plx.aggregate", {"object_type": "PurchaseOrderLine",
+                                              "measure": {"op": "count"}}, actor)
+            self.assertEqual(out["groups"][0]["value"], every)
 
     def test_unknown_inputs_fail_closed(self):
         widget = [{"property": "description", "op": "eq", "value": "widget"}]
@@ -779,7 +835,6 @@ class FilterCountTests(_Base):
                 ({"object_type": "PurchaseOrderLine",
                   "filters": [{"property": "no_such", "op": "eq", "value": "x"}]},
                  "unknown_property"),
-                ({"object_type": "PurchaseOrderLine"}, "invalid_input"),
                 ({"set": self.set_of(STAFF, L1), "object_type": "PurchaseOrderLine",
                   "filters": widget}, "invalid_input")):
             with self.subTest(arguments=arguments):

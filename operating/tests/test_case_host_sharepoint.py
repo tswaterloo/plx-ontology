@@ -1703,7 +1703,13 @@ class StoredTextLookupTests(SharePointHostCase):
         from integrations import captured_text
         unread = mock.patch.object(captured_text, "stored_text",
                                    side_effect=AssertionError("stored text read again"))
-        with self.new_process() as extract, unread:
+        # nor is any file's record parsed again: its name facts are kept beside the store
+        from operating import case_tools_host
+        facts = Path(self.store.root) / case_tools_host.FACTS_FILE
+        self.assertEqual(facts.stat().st_mode & 0o777, 0o600)
+        unparsed = mock.patch.object(case_tools_host, "_name_tokens",
+                                     side_effect=AssertionError("records parsed again"))
+        with self.new_process() as extract, unread, unparsed:
             again = self.ask(EMPLOYEE, "PO999999")
             found = self.ask(EMPLOYEE, SCAN_PO)
         for answer in (empty, again):

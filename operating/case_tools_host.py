@@ -2748,7 +2748,7 @@ def _file_key(row: Mapping[str, Any]) -> str:
 
 def _state_key(facts: tuple[Any, ...], row: Mapping[str, Any]) -> str:
     """``_file_key`` of a version from its kept record facts and its current state."""
-    name, _path, _modified, _tokens, mime = facts
+    name, _path, _modified, _tokens, mime = facts[:5]
     return hashlib.sha256(json.dumps(
         [mime, name if isinstance(name, str) else "", row["content_status"],
          row["content_sha256"], row["text_status"], row["text_sha256"]]).encode("utf-8")
@@ -3049,26 +3049,130 @@ _VERSIONS: dict[str, dict[int, tuple[Any, ...]]] = {}
 _VERSIONS_LOCK = threading.Lock()
 
 
+# The same facts kept beside the store for the next process (each agent session runs its
+# own host: reading every record again took 5-20 s of the session's first read, which
+# waited for it). Each entry is bound to its version's L1 handle (the item and its eTag:
+# a store made anew, or a version renumbered, never lends a file another's name; checked
+# against the store on load) and the file to this code's reading of a record
+# (``_facts_code``: a digest of the functions that read it).
+FACTS_FILE = ".file-facts.json"
+
+
+@functools.lru_cache(maxsize=1)
+def _facts_code() -> str | None:
+    import inspect
+    from integrations import captured_text
+    try:
+        parts = [inspect.getsource(_name_tokens), _NAME_TOKEN.pattern, _NAME_PART.pattern,
+                 inspect.getsource(captured_text.file_type),
+                 inspect.getsource(captured_text._mime), inspect.getsource(_version_facts)]
+    except (OSError, TypeError, AttributeError):
+        return None
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _facts_path(store: Any) -> Path | None:
+    root = getattr(store, "root", None)
+    return Path(root) / FACTS_FILE if isinstance(root, (str, Path)) else None
+
+
+def _store_inode(store: Any) -> int | None:
+    try:
+        return Path(getattr(store, "path")).stat().st_ino
+    except (OSError, TypeError):
+        return None
+
+
+def _load_facts(store: Any) -> dict[int, tuple[Any, ...]]:
+    """The facts kept beside ``store`` by this code, each kept only while the store still
+    holds its version under the same L1 handle; else none."""
+    path, inode, code = _facts_path(store), _store_inode(store), _facts_code()
+    if path is None or inode is None or code is None:
+        return {}
+    try:
+        if path.stat().st_size > INDEX_MAX_BYTES:
+            return {}
+        kept = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    if not isinstance(kept, dict) or kept.get("code") != code \
+            or kept.get("inode") != inode or not isinstance(kept.get("facts"), dict):
+        return {}
+    try:
+        handles = {row[0]: row[1] for row in store.db.execute(
+            "SELECT version_id, l1_handle FROM items")}
+    except Exception:  # noqa: BLE001 - unreadable now: nothing kept is used
+        return {}
+    out: dict[int, tuple[Any, ...]] = {}
+    for key, entry in kept["facts"].items():
+        if not (isinstance(entry, list) and len(entry) == 6 and isinstance(entry[3], list)
+                and key.isdigit()):
+            return {}
+        if handles.get(int(key)) == entry[5]:
+            out[int(key)] = (entry[0], entry[1], entry[2], frozenset(entry[3]), entry[4],
+                             entry[5])
+    return out
+
+
+def _save_facts(store: Any, facts: Mapping[int, tuple[Any, ...]]) -> None:
+    """Keep ``facts`` beside ``store``, owner-only, whole or not at all (as the index)."""
+    path, inode, code = _facts_path(store), _store_inode(store), _facts_code()
+    if path is None or inode is None or code is None:
+        return
+    import os
+    import secrets
+    text = json.dumps({"code": code, "inode": inode, "facts": {
+        str(v): [f[0], f[1], f[2], sorted(f[3]), f[4], f[5]] for v, f in facts.items()
+        if len(f) == 6}}, separators=(",", ":"))
+    if len(text) > INDEX_MAX_BYTES:
+        return
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _version_facts(store: Any, version_ids: Sequence[int]) -> dict[int, tuple[Any, ...]]:
     """version id -> (name, path, last modified, name-and-path words, MIME type) of each
-    version, read from its record once per process and store file."""
+    version, read from its record once per process and store file (from the facts kept
+    beside the store when this process has none yet; kept again when it read more)."""
     with _VERSIONS_LOCK:
-        known = _VERSIONS.setdefault(str(getattr(store, "path", "")), {})
+        key = str(getattr(store, "path", ""))
+        fresh = key not in _VERSIONS
+        known = _VERSIONS.setdefault(key, {})
+    if fresh:
+        loaded = _load_facts(store)
+        with _VERSIONS_LOCK:
+            for version, facts in loaded.items():
+                known.setdefault(version, facts)
+    with _VERSIONS_LOCK:
         missing = [v for v in version_ids if v not in known]
     found: dict[int, tuple[Any, ...]] = {}
     from integrations.captured_text import file_type
     for at in range(0, len(missing), 5000):
         for row in store.db.execute(
-                "SELECT version_id, path, record FROM items WHERE version_id IN "
+                "SELECT version_id, path, record, l1_handle FROM items WHERE version_id IN "
                 "(SELECT value FROM json_each(?))", (json.dumps(missing[at:at + 5000]),)):
             record = json.loads(row["record"])
             record = record if isinstance(record, dict) else {}
             name, modified = record.get("name"), record.get("last_modified")
             found[row["version_id"]] = (name, row["path"], modified,
-                                        _name_tokens(name, row["path"]), file_type(record)[0])
+                                        _name_tokens(name, row["path"]), file_type(record)[0],
+                                        row["l1_handle"])
     with _VERSIONS_LOCK:
         known.update(found)
-        return {v: known[v] for v in version_ids if v in known}
+        out = {v: known[v] for v in version_ids if v in known}
+        kept = dict(known) if found else None
+    if kept is not None:
+        _save_facts(store, kept)
+    return out
 
 
 def _file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
@@ -3077,7 +3181,7 @@ def _file_names(store: Any) -> dict[str, tuple[Any, Any, Any, frozenset[str]]]:
     facts = _version_facts(store, [row["version_id"] for row in rows])
     out: dict[str, tuple[Any, Any, Any, frozenset[str]]] = {}
     for row in rows:
-        name, path, modified, tokens, _mime = facts[row["version_id"]]
+        name, path, modified, tokens = facts[row["version_id"]][:4]
         out[row["l1_handle"]] = (name, path, modified, tokens)
     return out
 

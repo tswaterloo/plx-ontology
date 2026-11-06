@@ -138,6 +138,7 @@ import json
 import re
 import secrets
 import sqlite3
+import threading
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence
 
 from ontology.json_contract import validate
@@ -306,6 +307,13 @@ class AggregateTools:
         self.store = base.store
         self.contracts = base.contracts
         self.limits = self.contracts["limits"]
+        # Whether this thread's call is bounded by the result byte limit (``call``): per
+        # thread, so a concurrent call never runs with another call's bound.
+        self._calls = threading.local()
+
+    @property
+    def _bounded(self) -> bool:
+        return getattr(self._calls, "bounded", True)
 
     @property
     def schema(self):  # noqa: ANN201 - L8 SchemaView or None
@@ -321,11 +329,12 @@ class AggregateTools:
         the result byte limit."""
         if name not in TOOL_NAMES:
             raise KeyError(name)
-        self._bounded = bounded
+        held = self._bounded
+        self._calls.bounded = bounded
         try:
             return self._call(name, arguments, actor)
         finally:
-            self._bounded = True
+            self._calls.bounded = held
 
     def _call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         contract = self.contracts["tools"][name]
@@ -417,16 +426,18 @@ class AggregateTools:
         gaps = list(root_gaps)
         undecided: set[str] = set()
         for object_type, ids in sorted(by_type.items()):
-            declared = set(self._declared(object_type))
-            unknown = sorted({f["property"] for f in arguments["filters"]} - declared)
-            if unknown:
-                raise ToolError("unknown_property",
-                                f"{object_type} declares no property {', '.join(unknown)}"
-                                [:600], property_hint(self.schema, object_type, unknown))
-            base._require_co_sourced(object_type, arguments["filters"])
-            filters = base._filters_as_stored(object_type, list(arguments["filters"]))
-            passing, unsure = base._filter_objects(found, ids, filters)
+            filters = base._checked_filters(object_type, list(arguments.get("filters") or ()))
+            links = base._link_filters(object_type, filters)
+            passing, unsure = base._filter_objects(found, ids,
+                                                   [f for f in filters if f not in links])
+            if links:
+                linked, hidden = base._linked_ids(found, object_type, links)
+                if "*" in hidden or hidden & set(ids):
+                    # a member only a withheld link joins is never read as unlinked
+                    unsure = set(unsure) | {f["property"] for f in links}
+                passing &= linked
             undecided |= unsure
+            gaps += base.unsourced_filter_gaps(object_type, filters)
             kept += [oid for oid in ids if oid in passing]
         if undecided:
             from operating.ontology_tools import _withheld_filter_gap
@@ -503,7 +514,7 @@ class AggregateTools:
         if problems:
             return _error("contract_violation", ("output failed the contract: "
                                                  + "; ".join(problems))[:600])
-        if getattr(self, "_bounded", True) \
+        if self._bounded \
                 and _envelope_bytes(result) > self.limits["max_result_bytes"]:
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the set, group by fewer properties or compare fewer properties")
@@ -912,14 +923,7 @@ class AggregateTools:
         if spec is None:
             raise ToolError("unknown_object_type", f"no object type {object_type}",
                             "call plx.schema for the declared object types")
-        declared = {p["name"] for p in spec.get("properties", ()) if isinstance(p, Mapping)}
-        unknown = sorted({f["property"] for f in arguments["filters"]} - declared)
-        if unknown:
-            raise ToolError("unknown_property",
-                            f"{object_type} declares no property {', '.join(unknown)}"[:600],
-                            property_hint(self.schema, object_type, unknown))
-        base._require_co_sourced(object_type, arguments["filters"])
-        filters = base._filters_as_stored(object_type, list(arguments["filters"]))
+        filters = base._checked_filters(object_type, list(arguments.get("filters") or ()))
         found_scope = base._scope(actor, base._as_known_at(arguments))
         subject = f"{object_type} matching filters"
         members: list[str] = []
@@ -934,6 +938,15 @@ class AggregateTools:
             segments += 1
             if not truncated:
                 break
+            from operating import call_limits
+            from operating.ontology_tools import SCAN_MARGIN_SECONDS
+            left = call_limits.seconds_left()
+            if left is not None and left < SCAN_MARGIN_SECONDS:
+                gaps.append(_gap("unknown", "scan_cap", subject,
+                                 "the filter scan ran out of the call's time before the end "
+                                 "of the type; the count covers the records scanned (narrow "
+                                 "the filters, or ask again)"))
+                break
             if position is None or position <= start or segments >= MAX_FILTER_SEGMENTS:
                 gaps.append(_gap("unknown", "scan_cap", subject,
                                  "the filter scan could not reach the end of the type; the "
@@ -943,6 +956,7 @@ class AggregateTools:
         if undecided:
             from operating.ontology_tools import _withheld_filter_gap
             gaps.append(_withheld_filter_gap(object_type, undecided))
+        gaps += base.unsourced_filter_gaps(object_type, filters)
         if not getattr(base, "projection_built", True):
             gaps.append(_gap("not_ingested", "projection_not_built", subject,
                              "this host has no built projection store: nothing is counted"))
@@ -998,7 +1012,10 @@ class AggregateTools:
                      len(removed) - len(asserted))
         # Members first captured after T are simply not known at T: the answer as known
         # then is complete without them (their gap says so).
-        lost_gaps = [g for g in root_gaps if g["reason"] != CAPTURED_AFTER]
+        # nor does a filter some sources never record (filter_not_sourced): it matched
+        # every record it could, and its gap says which sources it left out
+        lost_gaps = [g for g in root_gaps if g["reason"] not in (CAPTURED_AFTER,
+                                                                 "filter_not_sourced")]
         partial = bool(lost_gaps)
         withheld_objects = any(g["reason"] in PERMISSION_LOSSES for g in root_gaps)
         # Types of every readable member, removed or not: whether a measure applies never
@@ -1249,11 +1266,18 @@ class AggregateTools:
 
         # Roles, units and currencies over the values each group would combine (every
         # group carries its own unit, currency and role).
+        # A group mixing them shows no value and says why; the others stand (11-06 q42:
+        # unit prices by item, one item bought in CAD and USD, refused every item). Only a
+        # single group, or every group mixing, refuses the answer.
         if prop is not None and op in ("sum", "min", "max", "count_distinct"):
-            for group in groups.values():
-                refused = _mixing(group["rows"], op, self._basis, self._rate)
-                if refused is not None:
-                    return self._refusal(scope, refused, gaps, roots, group["rows"])
+            mixed = {key: refused for key, group in groups.items()
+                     if (refused := _mixing(group["rows"], op, self._basis, self._rate))
+                     is not None}
+            if mixed and (len(groups) < 2 or len(mixed) == len(groups)):
+                key = next(iter(mixed))
+                return self._refusal(scope, mixed[key], gaps, roots, groups[key]["rows"])
+            for key, refused in mixed.items():
+                groups[key]["mixed"] = refused
 
         if op in ("count", "sum"):
             # Twins (one record in two systems) would be counted or summed twice.
@@ -1289,12 +1313,12 @@ class AggregateTools:
             # value holds none): the set a "which groups ..." question asks for.
             out_groups = [g for g in out_groups if _holds(g.get("value"), having)]
         total = len(out_groups)
-        summary = _groups_summary(out_groups, op) \
+        if withheld_props or withheld_objects or withheld_links:
+            partial = True
+        summary = _groups_summary(out_groups, op, partial) \
             if total > SUMMARY_FROM or offset or having is not None else None
         shown_groups = out_groups[offset:offset + MAX_GROUPS]
         truncated = offset + len(shown_groups) < total
-        if withheld_props or withheld_objects or withheld_links:
-            partial = True
         meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots))
         gaps.extend(fresh)
         complete = not truncated and not offset and not partial
@@ -1320,7 +1344,7 @@ class AggregateTools:
         is stated as ``truncated`` with reason ``result_size`` (never silent), and a
         paged list (``offset``: groups) says where the next page starts."""
         limit = self.limits["max_result_bytes"]
-        if not getattr(self, "_bounded", True) or _envelope_bytes(result) <= limit:
+        if not self._bounded or _envelope_bytes(result) <= limit:
             return result
         items = result[key]
         low, high, best = 0, len(items), None
@@ -1328,7 +1352,8 @@ class AggregateTools:
             mid = (low + high) // 2
             trial = dict(result, **{key: items[:mid]}, completeness=dict(
                 result["completeness"], complete=False, truncated=True, returned=mid,
-                reason="result_size", **({"next_cursor": _group_cursor(offset + mid)}
+                reason=size_cut_reason(result["completeness"].get("reason")),
+                **({"next_cursor": _group_cursor(offset + mid)}
                                          if offset is not None else {})))
             if _envelope_bytes(trial) <= limit:
                 best, low = trial, mid + 1
@@ -1371,6 +1396,15 @@ class AggregateTools:
             lacking += group["twins"]
         value: str | None
         incomplete = False
+        mixed = group.get("mixed")
+        if mixed:
+            gaps.add("unknown", mixed["code"], subject,
+                     ("a group's values cannot be combined, so it shows no value: "
+                      + mixed["message"])[:600])
+            marks = sorted(group["marks"] | {m for r in list(rows) + list(group["key_rows"])
+                                             for m in _markings(r["markings"])})
+            return {"key": group["key"], "value": None, "inputs": len(rows),
+                    "markings": marks}, True
         if op == "count":
             value = str(len(group["members"]) if prop is None else len(rows))
             if (set_lost or group["withheld"] or group["conflict"] or group["link_withheld"]
@@ -1677,16 +1711,35 @@ def _group_offset(cursor: Any) -> int:
     return int(found[1])
 
 
+def size_cut_reason(reason: Any) -> str:
+    """Why groups cut at the result size are incomplete: ``result_size``, kept beside
+    ``partial_inputs`` (a group lacks inputs: ``partial_inputs_and_result_size``), so a
+    size cut never hides that the groups shown are partial."""
+    return "partial_inputs_and_result_size" if reason in (
+        "partial_inputs", "partial_inputs_and_result_size") else "result_size"
+
+
 def _bucketed(row: Mapping[str, Any], bucket: str | None) -> str | None:
     """A date or timestamp value as its ``bucket`` (``2026-07`` for month, ``2026-Q3``,
-    ``2026-W28``, ``2026``, ``2026-07-15``); None: no bucket, or not a date."""
+    ``2026-W28``, ``2026``, ``2026-07-15``); None: no bucket, or not a date. A timestamp
+    with a zone or offset is bucketed by its day in the business time zone
+    (``time_window.BUSINESS_TZ``, Eastern): a record stamped 22:30 Eastern on June 30
+    (02:30 UTC on July 1) is June's; a date, or a timestamp without a zone, by the day
+    it writes."""
     if bucket is None or row["value_type"] not in ("date", "timestamp"):
         return None
-    raw = row["value"]
+    raw = str(row["value"])
     try:
-        day = dt.date.fromisoformat(str(raw)[:10])
+        day = dt.date.fromisoformat(raw[:10])
     except ValueError:
         return None
+    if len(raw) > 10:
+        try:
+            moment = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            moment = None
+        if moment is not None and moment.tzinfo is not None:
+            day = moment.astimezone(_business_zone()).date()
     if bucket == "year":
         return f"{day.year:04d}"
     if bucket == "quarter":
@@ -1699,6 +1752,12 @@ def _bucketed(row: Mapping[str, Any], bucket: str | None) -> str | None:
     return day.isoformat()
 
 
+def _business_zone() -> Any:
+    from zoneinfo import ZoneInfo
+    from operating.time_window import BUSINESS_TZ
+    return ZoneInfo(BUSINESS_TZ)
+
+
 def _holds(value: Any, having: Mapping[str, Any]) -> bool:
     """Whether a group's value holds ``having`` (op against a number)."""
     number, wanted = to_decimal(value), to_decimal(having.get("value"))
@@ -1708,20 +1767,28 @@ def _holds(value: Any, having: Mapping[str, Any]) -> bool:
             "lt": number < wanted, "lte": number <= wanted}.get(having.get("op"), False)
 
 
-def _groups_summary(groups: Sequence[Mapping[str, Any]], op: str) -> dict[str, Any]:
+def _groups_summary(groups: Sequence[Mapping[str, Any]], op: str, partial: bool = False
+                    ) -> dict[str, Any]:
     """What every group computed says together, returned or not: how many groups, how
     many hold a value, the lowest and highest value, their total (a count, or a sum in
     one unit and currency) and how many groups hold each value (the most frequent first,
-    ``MAX_VALUE_COUNTS``): computed from the groups, never a figure of a source."""
+    ``MAX_VALUE_COUNTS``): computed from the groups, never a figure of a source. It
+    carries the markings of every group it summarises (a finance or PII value's total is
+    as marked as the value), and a total over groups one of which holds no value, or of
+    a ``partial`` answer, is ``partial_total``: a lower bound, never named the total."""
     values = [(g, n) for g in groups if (n := to_decimal(g.get("value"))) is not None]
     out: dict[str, Any] = {"groups": len(groups), "with_value": len(values)}
+    markings = sorted({m for g in groups for m in g.get("markings") or ()})
+    if markings:
+        out["markings"] = markings
     if not values:
         return out
     numbers = [n for _g, n in values]
     out["lowest"], out["highest"] = _plain(min(numbers)), _plain(max(numbers))
     kinds = {(g.get("unit"), g.get("currency")) for g, _n in values}
     if op in ("count", "count_distinct") or (op == "sum" and len(kinds) == 1):
-        out["total"] = _plain(sum(numbers, Decimal(0)))
+        whole = not partial and len(values) == len(groups)
+        out["total" if whole else "partial_total"] = _plain(sum(numbers, Decimal(0)))
     counted: dict[Decimal, int] = {}
     for number in numbers:
         counted[number] = counted.get(number, 0) + 1

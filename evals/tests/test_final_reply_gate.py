@@ -928,6 +928,21 @@ class RestatedCalculationTests(unittest.TestCase):
         self.assertEqual(answer_gate.answer_values(decision["result"]), [])
 
 
+    def test_an_answer_copying_no_value_keeps_the_prose_its_passed_claims_back(self):
+        """A final answer block with no values (written at the time limit) still states
+        what the gate passed: its prose stating a passed figure keeps that sentence, and a
+        figure nothing passed is still removed."""
+        events = [_submit("answered", passed=[("26076H", DOC, "row.content_text")])]
+        prose = "The complaint names lot 26076H. It shipped 4400 units."
+        text, parsed, error, report = _gated(_answer(""), events, prose=prose)
+        self.assertIsNone(error)
+        self.assertEqual(report["removed_sentences"], 1)
+        self.assertIn("The complaint names lot 26076H.", text)
+        self.assertNotIn("4400", text)
+        self.assertEqual([(v["name"], v["value"]) for v in parsed["values"]],
+                         [("content text: 26076H", "26076H")])   # its claim's words, no id
+
+
 class OneGapPerValueTests(unittest.TestCase):
     def test_a_second_gap_on_one_value_loses_its_concerns_and_stays(self):
         # AG-05: one null value, two gaps in two states (not_ingested and unknown), which

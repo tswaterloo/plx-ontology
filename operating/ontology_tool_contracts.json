@@ -4294,8 +4294,7 @@
           },
           {
             "required": [
-              "object_type",
-              "filters"
+              "object_type"
             ]
           }
         ]
@@ -4433,8 +4432,20 @@
               "summary": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Computed over every group (returned or not): how many, how many hold a value, lowest, highest, total, and how many groups hold each value.",
+                "description": "Computed over every group (returned or not): how many, how many hold a value, lowest, highest, total (partial_total when a group lacks its value or the answer is partial: a lower bound, never the whole), how many groups hold each value, and the markings of what it summarises.",
                 "properties": {
+                  "markings": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/marking"
+                    },
+                    "maxItems": 20,
+                    "uniqueItems": true
+                  },
+                  "partial_total": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                  },
                   "groups": {
                     "type": "integer",
                     "minimum": 0
@@ -7498,7 +7509,7 @@
                 "to": {
                   "type": "string",
                   "pattern": "^[A-Z][A-Za-z0-9]{1,63}$",
-                  "description": "The object type this hop goes to: the records are walked on along the declared links that lead there (up to 4), each route reaching it listed and counted; the one reaching most records is taken."
+                  "description": "The object type this hop goes to: the records are walked on along the declared links that lead there (as deep as cost allows), each route reaching it listed and counted; the one reaching most records is taken."
                 }
               }
             },

@@ -2190,6 +2190,8 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
         return into
     # A count whose only gap is the citation cap (more members than one answer cites) is
     # still the tool's exact count: it lists a sample of its records, all distinct.
+    # A count whose filter some sources never record (``filter_not_sourced``) is not: it
+    # counted only the records of the sources that record the filtered property.
     gaps = [gap for gap in result.get("gaps") or () if isinstance(gap, Mapping)]
     capped = bool(gaps) and all(gap.get("reason") == CITATIONS_CAPPED for gap in gaps)
     # A page of the groups (``group_page``: paged, or only those ``having`` keeps; or cut

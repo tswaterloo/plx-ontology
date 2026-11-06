@@ -224,9 +224,10 @@ class Query(unittest.TestCase):
         self.assertEqual(asked[1], {"set": "set:picked01", "filters": dated})
         self.assertIsNone(kept["set"])
         self.assertIn("nothing_selected", [g["reason"] for g in kept["gaps"]])
+        # an object_type start without where starts from every record of the type
         alone = tool.call({"from": {"object_type": "Product"}}, "actor")
-        self.assertEqual(alone["error"]["code"], "invalid_input")
-        self.assertIn("where", alone["error"]["message"])
+        self.assertNotIn("error", alone)
+        self.assertEqual(asked[-1], {"object_type": "Product", "filters": []})
 
     def test_every_group_is_kept_and_a_result_too_large_is_cut_where_it_says(self):
         """No group is dropped by plx.query itself: plx.aggregate's page, summary,
@@ -277,6 +278,14 @@ class Query(unittest.TestCase):
         self.assertEqual(result["inputs_citations_kept"], 0)
         self.assertEqual(result["completeness"]["reason"], "result_size")
         self.assertEqual(result["completeness"]["next_cursor"], f"g{100 + shown}")
+        # groups already missing inputs keep saying so beside the size cut
+        partial = {"results": [{"groups": copy.deepcopy(many), "partial": True,
+                                "completeness": {"complete": False, "truncated": False,
+                                                 "returned": 150, "total": 150,
+                                                 "reason": "partial_inputs"}}]}
+        cut = oq._fitted(partial)["results"][0]["completeness"]
+        self.assertEqual((cut["reason"], cut["truncated"]),
+                         ("partial_inputs_and_result_size", True))
         # rows past the bound are cut, the cut counted, never result_too_large
         value = {"property": "p", "value_type": "text", "value": "x" * 900,
                  "citation": cite, "markings": []}
@@ -321,7 +330,7 @@ class Query(unittest.TestCase):
                 return {"groups": [{"key": {}, "value": "3", "inputs": 0, "markings": []}]}
             hop = arguments["path"][0]
             walked.append((arguments["from"], hop.get("link_type") or hop.get("link")))
-            handle, count = reach[hop["link_type"]]
+            handle, count = reach.get(hop["link_type"], (None, 0))
             return {"set": handle, "hops": [{"link_type": hop["link_type"],
                                              "direction": hop["direction"],
                                              "count": count}]}
@@ -363,6 +372,87 @@ class Query(unittest.TestCase):
         out = empty.call({"from": quarantined, "traverse": [{"to": "Supplier"}]}, "actor")
         self.assertEqual(walked, [])
         self.assertIn("nothing_selected", [g["reason"] for g in out["gaps"]])
+
+    def test_routes_left_out_are_said_and_a_hop_to_its_own_type_keeps_where(self):
+        """Two routes of one length reach suppliers: the one reaching more is taken and the
+        other is named as left out, with its count and set. A hop to the type the walk is
+        already at still selects by the call's where."""
+        class Links:
+            link_types = {
+                "Lot.received_in": {"from": "Lot", "to": "Receipt"},
+                "Receipt.supplied_by": {"from": "Receipt", "to": "Supplier"},
+                "Receipt.carried_by": {"from": "Receipt", "to": "Supplier"}}
+        reach = {"Lot.received_in": ("set:receipts", 7), "Receipt.supplied_by": ("set:sup00003", 3),
+                 "Receipt.carried_by": ("set:car00001", 1)}
+
+        def call(name, arguments, actor):
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": "3", "inputs": 0, "markings": []}]}
+            hop = arguments["path"][0]
+            handle, count = reach.get(hop["link_type"], (None, 0))
+            return {"set": handle, "hops": [{"link_type": hop["link_type"],
+                                             "direction": hop["direction"], "count": count}]}
+        selected = []
+
+        def select(arguments, actor):
+            selected.append(arguments)
+            return {"ids": ["Lot:x:1", "Lot:x:2"], "gaps": []}
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:lots0001", Links(),
+                                            lambda a, ids: set(ids), select=select))
+        out = tool.call({"from": {"object_id": "Lot:x:1"}, "traverse": [{"to": "Supplier"}]},
+                        "actor")
+        self.assertEqual(out["set"], "set:sup00003")
+        [left] = [g for g in out["gaps"] if g["reason"] == "routes_not_taken"]
+        self.assertIn("Receipt.carried_by forward (1 records, set:car00001)", left["detail"])
+        where = [{"property": "qc_status", "op": "eq", "value": "Quarantine"}]
+        out = tool.call({"from": {"object_id": "Lot:x:1"}, "traverse": [{"to": "Lot"}],
+                         "where": where}, "actor")
+        self.assertEqual(selected[-1]["filters"], where)
+        self.assertEqual(out["set"], "set:lots0001")
+        # a link named with a direction too is that link walked that way
+        self.assertEqual(tool._directed("Receipt", {"link": "received_in",
+                                                    "direction": "reverse"}),
+                         {"link_type": "Lot.received_in", "direction": "reverse"})
+        self.assertEqual(tool._directed("Supplier", {"link": "received_in",
+                                                     "direction": "reverse"}),
+                         {"link": "received_in"})
+
+    def test_a_route_may_cross_to_a_records_copy_and_an_unroutable_walk_reads_nothing(self):
+        """A lot whose own system names no item reaches it through its copy in another
+        system (its identity link, once a route); a walk to a type only text mentions
+        reach is refused, naming them, before its start is selected."""
+        class Links:
+            link_types = {
+                "Lot.of_item": {"from": "Lot", "to": "Product"},
+                "Lot.same_record_as": {"from": "Lot", "to": "Lot"},
+                "Note.mentions_product": {"from": "Note", "to": "Product"}}
+
+        def call(name, arguments, actor):
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": "3", "inputs": 0, "markings": []}]}
+            hop = arguments["path"][0]
+            handle, count = {("Lot.of_item", "Lot:fm:1"): (None, 0),
+                             ("Lot.same_record_as", "Lot:fm:1"): ("set:twins001", 1),
+                             ("Lot.of_item", "set:twins001"): ("set:prods001", 3)}.get(
+                (hop["link_type"], arguments["from"]), (None, 0))
+            return {"set": handle, "hops": [{"link_type": hop["link_type"],
+                                             "direction": hop["direction"], "count": count}]}
+        selected = []
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:x0000001", Links(),
+                                            lambda a, ids: set(ids),
+                                            select=lambda a, actor: selected.append(a)
+                                            or {"ids": ["Note:n:1"], "gaps": []}))
+        out = tool.call({"from": {"object_id": "Lot:fm:1"}, "traverse": [{"to": "Product"}]},
+                        "actor")
+        self.assertEqual(out["set"], "set:prods001")
+        self.assertEqual([h["link_type"] for h in out["hops"]],
+                         ["Lot.same_record_as", "Lot.of_item"])
+        refused = tool.call({"from": {"object_type": "Note", "where": [
+            {"property": "stage", "op": "eq", "value": "open"}]},
+            "traverse": [{"to": "Product"}]}, "actor")
+        self.assertEqual(refused["error"]["code"], "undeclared_link")
+        self.assertIn("Note.mentions_product", refused["error"]["hint"])
+        self.assertEqual(selected, [])
 
     def test_a_bad_request_is_refused_by_the_contract(self):
         tool = oq.QueryTool(oq.TableBackend(Table(), None, Schema()))
