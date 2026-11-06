@@ -73,7 +73,10 @@ class NameRule:
 @dataclass(frozen=True)
 class ScopedMarking:
     """A declared marking that replaces ``replaces`` on the listed raw ``columns``
-    ((relation, column)) and curated ``properties`` ((object type, property)) only."""
+    ((relation, column)) and curated ``properties`` ((object type, property)) only.
+    ``raw_columns``: (source, relation, column) of raw source columns no generated type
+    reads (BC's PO totals beside the one a curated property reads): the marking replaces
+    ``replaces`` there in raw source reads only (``ontology.raw_markings``)."""
 
     marking: str
     replaces: str
@@ -81,6 +84,7 @@ class ScopedMarking:
     description: str
     columns: Mapping[tuple[str, str], str]
     properties: frozenset[tuple[str, str]]
+    raw_columns: Mapping[tuple[str, str, str], str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,14 @@ class Overrides:
         marking that replaces it there, else ``marking`` itself."""
         return next((s.marking for s in self.scoped_markings if s.replaces == marking
                      and (relation, column) in s.columns), marking)
+
+    def raw_scoped_marking(self, marking: str, source: str, relation: str,
+                           column: str) -> str:
+        """``scoped_marking`` for a raw source column: a scoped marking's ``columns`` or its
+        ``raw_columns`` (raw source reads only) replace ``marking`` there."""
+        return next((s.marking for s in self.scoped_markings if s.replaces == marking
+                     and ((relation, column) in s.columns
+                          or (source, relation, column) in s.raw_columns)), marking)
 
     def name_rule(self, marking: str) -> NameRule:
         return next(rule for rule in self.name_rules if rule.marking == marking)
@@ -243,7 +255,7 @@ def _name_rule(rule: Any, where: str) -> NameRule:
 
 def _scoped_marking(item: Any, rules: tuple[NameRule, ...], where: str) -> ScopedMarking:
     keys = {"marking", "replaces", "held_with", "description", "columns", "properties"}
-    _keys(item, keys, keys, where)
+    _keys(item, keys | {"raw_columns"}, keys, where)
     marking, replaces = (_markings([item[k]], where)[0] for k in ("marking", "replaces"))
     _need(marking != replaces and any(r.marking == replaces for r in rules), where,
           "replaces must name another name rule's marking")
@@ -268,9 +280,19 @@ def _scoped_marking(item: Any, rules: tuple[NameRule, ...], where: str) -> Scope
         _need(key not in props, where, f"property {key} listed twice")
         props.add(key)
     _need(bool(columns) or bool(props), where, "names no column and no property")
+    raw: dict[tuple[str, str, str], str] = {}
+    _need(isinstance(item.get("raw_columns", []), list), where, "raw_columns must be a list")
+    for c in item.get("raw_columns", []):
+        _keys(c, {"source", "relation", "column", "reason"},
+              {"source", "relation", "column", "reason"}, where)
+        key = (_text(c["source"], where, "source"), _text(c["relation"], where, "relation"),
+               _text(c["column"], where, "column"))
+        _need(key not in raw and key[1:] not in columns, where,
+              f"raw column {key} listed twice")
+        raw[key] = _text(c["reason"], where, "reason")
     return ScopedMarking(marking, replaces, held_with,
                          _text(item["description"], where, "description"), columns,
-                         frozenset(props))
+                         frozenset(props), raw)
 
 
 def _storage(doc: Mapping[str, Any]) -> dict[str, dict[str, str]]:

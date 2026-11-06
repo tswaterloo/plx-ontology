@@ -231,7 +231,7 @@ class RenderedQuantityWordTests(unittest.TestCase):
                    "field": "row.qtymfg_c", "role": "manufactured"}]
         rows = lambda runtime, actor, **_kw: (lambda handle: self.ROW if handle == self.HANDLE
                                        else None)
-        with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
             return answer_gate.gate_answer({"claims": claims, "text": text}, session,
                                            seen={self.HANDLE}, returned={},
@@ -302,7 +302,7 @@ class OneProseScreenTests(unittest.TestCase):
         rows = lambda runtime, actor, **_kw: (lambda handle: {"handle": handle, "revision": "0-1",
                                                        **self.ROWS[handle]}
                                        if handle in self.ROWS else None)
-        with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
             return answer_gate.gate_answer(
                 {"claims": claims if claims is not None else [self.claim(i) for i in ids],
@@ -592,7 +592,7 @@ class OnQuestionTests(unittest.TestCase):
             return frozenset({"0103510"})
         with mock.patch.object(mcp_server, "_question_anchors", anchors):
             relevant = mcp_server.MCPServer._relevance(server, "Did PO0103510 arrive?")
-        with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
             return answer_gate.gate_answer({"claims": [claim]}, session,
                                            seen={self.ORDER, self.LINE, self.MOVED,

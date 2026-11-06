@@ -990,10 +990,24 @@ def _shown_value(value: Any) -> str:
         and not isinstance(value, bool) else "?"
 
 
+def _held(server: Any) -> frozenset[str]:
+    """The value markings ``server``'s reader holds now (``MCPServer.held_markings``: its
+    tools' read policy); a server that cannot say, or fails to: none (fail closed)."""
+    held = getattr(server, "held_markings", None)
+    try:
+        return frozenset(held()) if callable(held) else frozenset()
+    except Exception:  # noqa: BLE001 - undecided: no marking held
+        return frozenset()
+
+
 def _reader(server: Any) -> Callable[[str], Any]:
     """The cited records as ``server``'s actor re-reads them now (``gate_rows`` over
-    ``citation_rows``), each read once per decision."""
-    read = gate_rows(citation_rows(server.case_runtime), server.actor, moved_on=True)
+    ``citation_rows``), each read once per decision, with the value markings the reader
+    holds (``_held``, decided once per decision): a column a marking withholds from the
+    reader is neither filled into a claim nor compared with a stated value."""
+    held = _held(server)
+    read = gate_rows(citation_rows(server.case_runtime, held_markings=lambda _actor: held),
+                     server.actor, moved_on=True)
     cache: dict[str, Any] = {}
 
     def rows(handle: str) -> Any:

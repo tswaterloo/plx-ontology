@@ -154,7 +154,8 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     ontology_tools_process.register(table, _LazyProcess(tools))
     ontology_tools_investigate.register(table, ontology_tools_investigate.InvestigateTools(
         table, contracts=tools.contracts, schema=schema if schema is not None else tools.schema,
-        rows=ontology_tools_investigate.citation_rows(runtime),
+        rows=ontology_tools_investigate.citation_rows(
+            runtime, held_markings=lambda actor: tools.policy.held_markings(actor)),
         scope=ontology_tools_investigate.read_scope(tools),
         captured=ontology_tools_investigate.capture_claims(tools),
         complete=ontology_tools_investigate.relation_complete(tools), follow_ups=follow_ups,

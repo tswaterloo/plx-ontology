@@ -2893,27 +2893,10 @@ class EvidenceTools:
         return self._read(arguments, actor)
 
 
-    def _bc_marked(self, handle: str, read: Mapping[str, Any], actor: Actor
-                   ) -> dict[str, Any]:
-        """A raw BC row as the reader may open it (defence in depth): the markings its
-        projected record carries (``ontology.project_bc.raw_row_markings``) apply to the
-        read too. Lacking a row marking (a bank account without finance): withheld, no
-        field shown. Lacking a field's (its IBAN without l5): that field is left out."""
-        from integrations.live_source_guard import parse_handle
-        from ontology.project_bc import raw_row_markings
-        try:
-            (_env, _company, entity_set, _record), _version, _extra = parse_handle(
-                handle, "bc", 4)
-        except ValueError:
-            return {"status": "withheld", "gaps": []}
-        held = self.base.policy.held_markings(actor)
-        row_marks, field_marks = raw_row_markings(entity_set)
-        if not row_marks <= held:
-            return {"status": "withheld", "gaps": []}
-        hidden = {f"row.{name}" for name, marks in field_marks.items() if not marks <= held}
-        fields = {path: value for path, value in (read.get("fields") or {}).items()
-                  if ".".join(str(path).split(".", 2)[:2]) not in hidden}
-        return {**read, "fields": fields}
+    def _marked(self, handle: str, read: Mapping[str, Any], actor: Actor
+                ) -> dict[str, Any]:
+        """``marked_read`` for the session reader's markings now."""
+        return marked_read(handle, read, self.base.policy.held_markings(actor))
 
     def _read(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
         handle = arguments["citation"]
@@ -2937,8 +2920,8 @@ class EvidenceTools:
         read = self.reader.read(handle, actor, page=page)
         status = read.get("status")
         gaps = list(read.get("gaps") or [])
-        if status in ("resolved", "changed_since") and _scheme(handle) == "bc":
-            read = self._bc_marked(handle, read, actor)
+        if status in ("resolved", "changed_since") and _scheme(handle) in RAW_ROW_SCHEMES:
+            read = self._marked(handle, read, actor)
             status = read.get("status")
         if status not in ("resolved", "changed_since"):
             status = "withheld" if status == "withheld" else "unresolvable"
@@ -2965,7 +2948,19 @@ class EvidenceTools:
             if wanted is not None and path != wanted and not path.startswith(wanted + "."):
                 continue
             fields[path] = field_value(value, origin, path, document, limit)
-        if wanted is not None and wanted not in fields and wanted != read.get("content_field"):
+        withheld = [path for path in read.get("withheld_fields") or ()
+                    if wanted is None or path == wanted or wanted.startswith(path + ".")
+                    or path.startswith(wanted + ".")]
+        if withheld:
+            # A marked value (or one repeating it) is withheld, never absent: whether the
+            # record holds a value there is not said.
+            gaps.append(_gap("inaccessible", "marking_withheld",
+                             ", ".join(withheld)[:700],
+                             "these fields carry a marking this reader does not hold (or "
+                             "repeat the figure of one that does): they are not shown, and "
+                             "whether they hold a value is not said"))
+        if wanted is not None and wanted not in fields and wanted != read.get("content_field") \
+                and not withheld:
             # The one field reader: absent only when the field was read and is empty or
             # missing; a column the reader does not mirror, or JSON text that does not
             # parse, is unknown (a trimmed field is never reported absent).
@@ -3034,6 +3029,9 @@ class EvidenceTools:
 # --------------------------------------------------------------------------- pure helpers
 
 TEXT_NOT_EXTRACTED = "text_not_extracted"
+# The citations plx.read serves as raw source rows, whose value markings apply to the read
+# (``EvidenceTools._marked``): Portal mirror rows and BC records (live or captured).
+RAW_ROW_SCHEMES = ("api", "bc")
 # A live read of a file: its metadata, read now; its text is read from a capture only.
 LIVE_METADATA_ONLY = "live_metadata_only"
 # The mail capture relations of a file (whose text is extracted), not of a message body.
@@ -3049,6 +3047,80 @@ def _extraction_status(extraction: Mapping[str, Any]) -> str:
     status = str(extraction.get("status") or "unknown")
     warnings = [str(w) for w in extraction.get("warnings") or () if w]
     return f"{status}:{warnings[0]}" if status != "extracted" and warnings else status
+
+
+# The envelope of a live BC record (``integrations.bc_read.BusinessCentralReader._record``):
+# the BC columns are its ``fields``; the others say where and which version it was read.
+# ``content_sha256`` digests every column, so it is left out once one is withheld.
+LIVE_BC_ENVELOPE = frozenset({"source", "environment", "company_id", "entity_set", "id",
+                              "etag", "last_modified", "source_acl", "citation"})
+
+
+def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str]
+                ) -> dict[str, Any]:
+    """A reader's read (``CitationReader.read``) of a raw source row (a Portal mirror row,
+    a live or captured BC record: ``RAW_ROW_SCHEMES``) as a reader holding ``held`` may
+    open it, by the value markings ``plx.object`` applies to what is projected from it
+    (``ontology.raw_markings``). Lacking a row marking (a bank account without finance):
+    withheld, no field shown. Lacking a column's (a PO total without purchasing_prices):
+    that column is left out, and so is every column repeating its figure (a twin); each
+    is named in ``withheld_fields`` (with those an earlier pass withheld). A live BC
+    record's columns are those of its ``row.fields``. A row citation whose relation the
+    handle does not name is withheld (fail closed). Any other read, or one that did not
+    resolve, is returned as it is."""
+    from ontology import raw_markings
+    if read.get("status") not in ("resolved", "changed_since") \
+            or _scheme(handle) not in RAW_ROW_SCHEMES:
+        return dict(read)
+    withheld_read = {"status": "withheld", "gaps": []}
+    found = raw_markings.handle_relation(handle)
+    if found is None:
+        return withheld_read
+    source, relation = found
+    held = frozenset(held)
+    if not raw_markings.relation_markings(source, relation).row <= held:
+        return withheld_read
+    values = dict(read.get("fields") or {})
+    hidden = set(read.get("withheld_fields") or ())
+    live = source == raw_markings.BC and isinstance(values.get("row.fields"), Mapping) \
+        and "row.entity_set" in values
+    if live:
+        columns = dict(values["row.fields"])
+        withheld = raw_markings.withheld_columns(source, relation, columns, held)
+        if withheld is None:
+            return withheld_read
+        if withheld:
+            values["row.fields"] = {k: v for k, v in columns.items() if k not in withheld}
+            values.pop("row.content_sha256", None)
+            hidden |= {f"row.fields.{column}" for column in withheld}
+        unknown = [path for path in values if str(path).split(".")[0] != "row"
+                   or str(path).split(".")[1] not in LIVE_BC_ENVELOPE | {"fields",
+                                                                         "content_sha256"}]
+        for path in unknown:   # an envelope field no reader named: never shown
+            values.pop(path)
+            hidden.add(str(path))
+        return {**read, "fields": values, "withheld_fields": sorted(hidden)}
+    rows: dict[str, dict[str, Any]] = {}
+    for path, value in values.items():
+        parts = str(path).split(".")
+        cut = 3 if parts[0] == "rows" else 2
+        if len(parts) < cut:
+            return withheld_read   # a field of no column: never shown
+        prefix, column = ".".join(parts[:cut - 1]), parts[cut - 1]
+        row = rows.setdefault(prefix, {})
+        row[column] = value if len(parts) == cut else [row.get(column), value]
+    for prefix, row in rows.items():
+        withheld = raw_markings.withheld_columns(source, relation, row, held)
+        if withheld is None:
+            return withheld_read
+        hidden |= {f"{prefix}.{column}" for column in withheld}
+
+    def column_of(path: str) -> str:
+        return ".".join(path.split(".")[:3 if path.startswith("rows.") else 2])
+
+    return {**read, "fields": {path: value for path, value in values.items()
+                               if column_of(str(path)) not in hidden},
+            "withheld_fields": sorted(hidden)}
 
 
 def text_not_extracted(read: Mapping[str, Any], handle: str, wanted: str | None

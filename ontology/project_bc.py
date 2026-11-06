@@ -307,41 +307,5 @@ class BcCaptures(Reopenable):
                     out.append(self._record(relation, row))
         return out
 
-def raw_row_markings(entity_set: str, schema: Any = None
-                     ) -> tuple[frozenset[str], dict[str, frozenset[str]]]:
-    """The markings a raw captured row of one BC entity set carries, as its projected
-    record does (defence in depth for raw reads, ``plx.read``): (the markings every type
-    bound to the set carries, {top-level row field: the markings of every property that
-    reads it}). A reader lacking a row marking gets no row; lacking a field's, not that
-    field. ``schema``: the compiled schema (default the committed one)."""
-    from ontology import schema as ontology_schema
-    compiled = schema if schema is not None else ontology_schema.load_schema()
-    bindings = {bid for bid, (_tid, b) in compiled.bindings.items()
-                if b.get("source") == SOURCE and b.get("relation") == entity_set}
-    row: set[str] = set()
-    fields: dict[str, set[str]] = {}
-    for type_def in compiled.object_types.values():
-        if not any(b.get("id") in bindings for b in type_def.get("bindings", ())):
-            continue
-        row |= set(type_def.get("markings") or ())
-        for prop in type_def.get("properties", ()):
-            marks = set(prop.get("markings") or ())
-            if not marks:
-                continue
-            for source in prop.get("sources", ()):
-                if source.get("binding") in bindings and isinstance(source.get("path"), str):
-                    fields.setdefault(source["path"].split(".", 1)[0], set()).update(marks)
-    return frozenset(row), {f: frozenset(m) for f, m in fields.items()}
 
-
-def marked_row(entity_set: str, row: Mapping[str, Any], held: frozenset[str],
-               schema: Any = None) -> dict[str, Any] | None:
-    """``row`` as a reader holding ``held`` markings may open it: None when it lacks a
-    marking of the row, else the row without each field whose markings it lacks."""
-    row_marks, field_marks = raw_row_markings(entity_set, schema)
-    if not row_marks <= held:
-        return None
-    return {k: v for k, v in row.items() if field_marks.get(k, frozenset()) <= held}
-
-
-__all__ = ["BcCaptures", "INCOMPLETE", "NOT_CAPTURED", "marked_row", "raw_row_markings"]
+__all__ = ["BcCaptures", "INCOMPLETE", "NOT_CAPTURED"]

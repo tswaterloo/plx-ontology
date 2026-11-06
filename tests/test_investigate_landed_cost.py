@@ -222,7 +222,9 @@ class ProjectedTests(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(FixtureWorld.runtime), scope=oi.read_scope(base)))
+            table, rows=oi.citation_rows(FixtureWorld.runtime,
+                                         held_markings=policy.held_markings),
+            scope=oi.read_scope(base)))
         return table
 
     def investigate(self, number: str, table=None, family="landed_cost") -> dict:

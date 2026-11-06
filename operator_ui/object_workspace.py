@@ -1682,7 +1682,12 @@ class ObjectWorkspace:
             raise LookupError("source_reader_not_configured")
         self._base()  # a store from another mirror never opens citations either
         if handle.startswith(CASE_RESOLVER_SCHEMES):
-            view = self.sources.citation(handle, text_offset=text_offset)
+            # A cited row shows the columns this reader's value markings open, decided
+            # with the grant of this request (``HostAccess.grant``); without a grant,
+            # none (every marked column withheld).
+            grant = getattr(self.access, "grant", None)
+            held = grant()[1] if callable(grant) else frozenset()
+            view = self.sources.citation(handle, text_offset=text_offset, markings=held)
         else:
             view = self.access.read(handle, text_offset=text_offset)
             if view.get("status") not in ("resolved", "changed_since"):

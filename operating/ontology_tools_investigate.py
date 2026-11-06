@@ -4008,7 +4008,8 @@ def register(tool_table: MutableMapping[str, dict[str, Any]], tools: Investigate
             lambda arguments, actor, _n=spec["name"]: tools.call(_n, arguments, actor)))
 
 
-def citation_rows(runtime: Any) -> Callable[[str, Actor], Mapping[str, Any] | None]:
+def citation_rows(runtime: Any, held_markings: Callable[[Actor], Any] | None = None
+                  ) -> Callable[[str, Actor], Mapping[str, Any] | None]:
     """The claim gate's row reader over a case runtime (``plx.investigate`` and the agent
     loop): ``CaseRuntime.claim_row`` for the investigating actor, the view of the one
     resolver cases and ``plx.read`` use (audience, employee gate, item ACL and digest
@@ -4025,16 +4026,29 @@ def citation_rows(runtime: Any) -> Callable[[str, Actor], Mapping[str, Any] | No
     never from the projection store; a document that no longer gives that row carries none.
     The bytes a handle pins never change, so what they state is extracted once per handle
     and reader (a bounded cache of the reads that gave fields); the runtime's gate (``claim_row``) still runs on every
-    read, so a reader it refuses gets no row whatever was cached."""
+    read, so a reader it refuses gets no row whatever was cached.
+
+    A raw row (a mirror row, a captured or live BC record) is read as the reader may see
+    it (``ontology.raw_markings.mark_view``, the value markings ``plx.read`` applies):
+    a withheld column is not in the row, so the gate neither fills a claim's value from it
+    nor compares a stated one with it, and a row whose marking the reader lacks reads as
+    none. ``held_markings(actor)``: the markings the reader holds; None: none (every
+    marked column withheld)."""
     from .capability_guards import DOCUMENT_SCHEMES, current_reader
 
     stated: dict[tuple[str, Any], Any] = {}
+
+    from ontology.raw_markings import mark_view
 
     def rows(handle: str, actor: Actor) -> Mapping[str, Any] | None:
         try:
             view = _with_captured_row(runtime, runtime.claim_row(handle, actor), handle,
                                        actor)
+            view = mark_view(handle, view, held_markings(actor)
+                             if held_markings is not None else ())
         except Exception:  # noqa: BLE001 - unreadable for this reader through the runtime
+            return None
+        if view is None:
             return None
         if not (isinstance(view, Mapping) and isinstance(handle, str)
                 and handle.startswith(DOCUMENT_SCHEMES)) or view.get("changed_since"):

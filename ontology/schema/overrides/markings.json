@@ -156,6 +156,44 @@
      "object_type": "SupplierConfirmation",
      "property": "unit_price"
     }
+   ],
+   "raw_columns": [
+    {
+     "source": "bc",
+     "relation": "purchaseOrders",
+     "column": "totalAmountExcludingTax",
+     "reason": "the BC PO total before tax: the marked totalAmountIncludingTax less its tax, the same figure when the PO carries no tax"
+    },
+    {
+     "source": "bc",
+     "relation": "purchaseOrders",
+     "column": "discountAmount",
+     "reason": "the BC PO discount"
+    },
+    {
+     "source": "bc",
+     "relation": "purchaseOrderLines",
+     "column": "netAmount",
+     "reason": "the BC PO line amount after the invoice discount"
+    },
+    {
+     "source": "bc",
+     "relation": "purchaseOrderLines",
+     "column": "invoiceDiscountAllocation",
+     "reason": "the BC PO line's share of the PO discount"
+    },
+    {
+     "source": "bc",
+     "relation": "purchaseOrderLines",
+     "column": "amountIncludingTax",
+     "reason": "the BC PO line amount with its tax, as the header's totalAmountIncludingTax"
+    },
+    {
+     "source": "bc",
+     "relation": "purchaseOrderLines",
+     "column": "netAmountIncludingTax",
+     "reason": "the BC PO line net amount with its tax, as the header's totalAmountIncludingTax"
+    }
    ]
   }
  ],

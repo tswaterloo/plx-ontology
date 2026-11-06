@@ -30,7 +30,7 @@ fixture); the UI shows it on every case.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from ontology.core import Actor, ValidationError
 from operating.case_runtime import LIMITATIONS, CaseRuntime
@@ -81,9 +81,11 @@ class CaseWorkspace:
 
     def __init__(self, runtime: CaseRuntime, actor: Actor, *, report_store: Any = None,
                  evidence: Mapping[str, Any] | None = None, action_path: Any = None,
-                 ingestion: Any = None) -> None:
+                 ingestion: Any = None, markings: Iterable[str] = ()) -> None:
         """``action_path``: an ``operating.action_path.ActionPath`` over this runtime's
-        case store (read only here); ``ingestion``: an ``IngestionStatusSource``."""
+        case store (read only here); ``ingestion``: an ``IngestionStatusSource``;
+        ``markings``: the value markings the actor holds, which decide the columns of a
+        cited row ``citation`` shows (default none: every marked column is withheld)."""
         if not isinstance(actor, Actor):
             raise ValueError("case_workspace_requires_actor")
         if runtime is None:
@@ -94,6 +96,7 @@ class CaseWorkspace:
         self.evidence = dict(evidence) if evidence else dict(EVIDENCE_UNSTATED)
         self.action_path = action_path
         self.ingestion = ingestion
+        self.markings = frozenset(markings)
 
     # ---- list ------------------------------------------------------------
 
@@ -605,8 +608,13 @@ class CaseWorkspace:
     # ---- one citation ----------------------------------------------------
 
     def citation(self, handle: str, *, text_offset: int = 0,
-                 max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
-        """One citation as the actor sees it now (``plx.source_citation`` semantics)."""
+                 max_chars: int = MAX_TEXT_CHARS,
+                 markings: Iterable[str] | None = None) -> dict[str, Any]:
+        """One citation as the actor sees it now (``plx.source_citation`` semantics). A
+        cited row shows only the columns the actor's value markings open
+        (``ontology.raw_markings``, as ``plx.object`` and ``plx.read`` apply them):
+        ``markings`` the actor holds now (default the workspace's); a row whose relation
+        carries a marking the actor lacks reads as not found."""
         if (not isinstance(handle, str) or not handle or len(handle) > MAX_HANDLE
                 or not handle.startswith(("api://", "original://"))):
             raise ValueError("citation_scheme_not_supported")
@@ -635,9 +643,22 @@ class CaseWorkspace:
             view = self.runtime.resolve_citation(handle, self.actor)
         except CitationUnresolvable:
             raise KeyError("citation_unresolvable_for_actor") from None
+        view = marked_rows(handle, view, self.markings if markings is None else markings)
         return {**view, "kind": "row", "status": status, "read_only": True}
 
 
+
+
+def marked_rows(handle: str, view: Mapping[str, Any], held: Iterable[str]
+                ) -> dict[str, Any]:
+    """A resolved mirror row view (``row`` or ``rows``) without the columns a reader
+    holding ``held`` may not see (``ontology.raw_markings.mark_view``: marked columns and
+    their twins); a row marking the reader lacks reads as not found (``KeyError``)."""
+    from ontology import raw_markings
+    marked = raw_markings.mark_view(handle, view, held)
+    if marked is None:
+        raise KeyError("citation_unresolvable_for_actor")
+    return marked
 
 
 def conflicts(view: Mapping[str, Any]) -> list[dict[str, Any]]:

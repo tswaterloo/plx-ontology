@@ -1972,10 +1972,13 @@ class BcHostClaimTests(unittest.TestCase):
                                               root=CONTRACTS), [])
                     self.assertEqual(out["status"], "resolved", out)
                     self.assertEqual(_text(out["fields"][path]), _text(entry["value"]))
-                    # The digest a case records, of the same view the gate checked.
-                    self.assertEqual(out["digest"], _digest(rows(handle, reader)))
+                    # The digest a case records; the gate checked the same view, less the
+                    # columns a marking withholds from this reader (it holds none here).
+                    from ontology.raw_markings import mark_view
                     self.assertEqual(out["digest"],
                                      _digest(runtime.resolve_citation(handle, reader)))
+                    self.assertEqual(rows(handle, reader), mark_view(
+                        handle, runtime.resolve_citation(handle, reader), ()))
                     self.assertTrue(runtime.read_live(handle, reader)["captured"])
         for entry in passed:
             self.runtime.cases.finding(opener, case_id, f"{entry['name']} is "

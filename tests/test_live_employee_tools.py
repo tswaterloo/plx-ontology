@@ -315,7 +315,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(self.verdict(spec, code, doc)["detail"]["fields"]["clearance_source"],
                          doc["clearance_source"])
         # The defect: the claim gate cannot re-read what the answer cites.
-        with mock.patch.object(oi, "citation_rows", lambda runtime: lambda handle, actor: None):
+        with mock.patch.object(oi, "citation_rows",
+                               lambda runtime, **_kw: lambda handle, actor: None):
             spec, code, doc = self.run_spec("tools.investigate_bc_claims")
         failures = " ".join(live_verify.check_expectations(spec, code, doc))
         self.assertEqual(code, 1)
@@ -483,7 +484,8 @@ class LiveEmployeeToolsTest(unittest.TestCase):
         self.assertEqual(entry["result"], "fail")
         self.assertEqual(entry["detail"]["fields"]["bc_companies_unread"], ["consol"])
         # The same reach with an uncited answer is wrong, never blocked.
-        with mock.patch.object(oi, "citation_rows", lambda runtime: lambda handle, actor: None):
+        with mock.patch.object(oi, "citation_rows",
+                               lambda runtime, **_kw: lambda handle, actor: None):
             spec, code, doc = self.run_spec("tools.investigate_bc_claims", no_sales_orders())
         self.assertEqual(code, 1)
         self.assertNotIn("sources_blocked", doc)
@@ -570,7 +572,7 @@ class LiveEmployeeToolsTest(unittest.TestCase):
             fake = world()
             fake.fail(r"/generalLedgerEntries(\?|$)", *[TOO_MANY] * 40)
             with mock.patch.object(oi, "citation_rows",
-                                   (lambda runtime: lambda handle, actor: None) if uncited
+                                   (lambda runtime, **_kw: lambda handle, actor: None) if uncited
                                    else oi.citation_rows):
                 spec, code, doc = self.run_spec("tools.investigate_bc_claims", fake)
             self.assertEqual(doc["upstream_throttled"]["http_statuses"], [429])

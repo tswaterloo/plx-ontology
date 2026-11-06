@@ -365,7 +365,9 @@ class FixtureReaders(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(world.FixtureWorld.runtime), scope=oi.read_scope(base),
+            table, rows=oi.citation_rows(world.FixtureWorld.runtime,
+                                         held_markings=policy.held_markings),
+            scope=oi.read_scope(base),
             held_markings=lambda actor: policy.held_markings(actor)))
         return table
 

@@ -680,7 +680,8 @@ def main(argv: Sequence[str] | None = None, *, fixtures: Any = None,
         def workspace_for(identity: SessionIdentity) -> CaseWorkspace:
             return CaseWorkspace(runtime, identity.actor, report_store=store,
                                  evidence=evidence, action_path=action_path,
-                                 ingestion=ingestion)
+                                 ingestion=ingestion,
+                                 markings=args.marking if resolver is None else ())
 
         if ontology_path is not None:
             try:

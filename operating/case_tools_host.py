@@ -183,13 +183,20 @@ class _Recording(CitationReader):
     """A ``CitationReader`` that keeps the last raw read, so a page is cut from exactly
     the content the generic read decided on (one read, one digest)."""
 
-    def __init__(self, reader: CitationReader) -> None:
+    def __init__(self, reader: CitationReader,
+                 mark: Callable[[str, Mapping[str, Any], Any], dict[str, Any]] | None = None
+                 ) -> None:
         self.reader = reader
+        self.mark = mark
         self.last: dict[str, Any] | None = None
 
     def read(self, handle: str, actor: Any, *, page: int | None = None) -> dict[str, Any]:
-        self.last = self.reader.read(handle, actor, page=page)
-        return self.last
+        """The reader's read; ``last`` keeps it as the reader may open it (``mark``: the
+        value markings of a raw row, ``EvidenceTools._marked``), so no page, window,
+        find or column page cut from it shows a value the read withholds."""
+        got = self.reader.read(handle, actor, page=page)
+        self.last = self.mark(handle, got, actor) if self.mark is not None else got
+        return got
 
     def originals(self, actor: Any, limit: int) -> list[dict[str, Any]]:
         return self.reader.originals(actor, limit)
@@ -239,7 +246,8 @@ class PagedRead:
         if sum(key in arguments for key in PAGING_ARGUMENTS) > 1:
             return self._checked(_error(
                 "invalid_input", "text_offset, column_offset, line and find are exclusive"))
-        recording = _Recording(self.evidence.reader or CitationReader())
+        recording = _Recording(self.evidence.reader or CitationReader(),
+                               mark=self.evidence._marked)
         tools = EvidenceTools(self.evidence.base, traverse=self.evidence.traverse,
                               reader=recording if self.evidence.reader else None)
         base_args = {k: v for k, v in arguments.items() if k not in PAGING_ARGUMENTS}

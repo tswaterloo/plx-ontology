@@ -228,11 +228,13 @@ def build():
     return s
 
 
-POLICY = ot.ReadPolicy(
-    tenant="plx",
-    audiences={"api:*": {"ops", "full"}, "bc:*": {"ops", "full"},
-               "mail:mbx-a": {"ops", "full"}, "mail:*": {"full"}, "sharepoint:*": {"full"}},
-    markings={"finance": {"full"}})
+POLICY_AUDIENCES = {"api:*": {"ops", "full"}, "bc:*": {"ops", "full"},
+                    "mail:mbx-a": {"ops", "full"}, "mail:*": {"full"},
+                    "sharepoint:*": {"full"}}
+POLICY = ot.ReadPolicy(tenant="plx", audiences=dict(POLICY_AUDIENCES),
+                       markings={"finance": {"full"}})
+FINANCE_OPS_POLICY = ot.ReadPolicy(tenant="plx", audiences=dict(POLICY_AUDIENCES),
+                                   markings={"finance": {"full", "ops"}})
 FULL = Actor("plx", frozenset({"full"}))
 OPS = Actor("plx", frozenset({"ops"}))
 
@@ -1113,8 +1115,10 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(self.reader.calls, [M2_H])
 
     def test_structured_row_values_are_typed_or_enveloped(self):
+        # The fixture's columns are not the PO's own: a column of unknown status on a money
+        # relation is finance (ontology.raw_markings), so the row is read by a holder.
         handle = "api://public.app_purchase_order/x@0000000000000001-1"
-        out = ok(self, "plx.read", self.call(citation=handle))
+        out = ok(self, "plx.read", self.call(FULL, citation=handle))
         self.assertEqual(out["status"], "changed_since")
         self.assertTrue(out["current_citation"].endswith("-2"))
         fields = out["fields"]
@@ -1125,7 +1129,7 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(fields["row.po_number"]["untrusted_text"], "PO100012")
         self.assertEqual(json.loads(fields["row.custom_fields"]["untrusted_text"]),
                          {"fmId": 7, "source": "fm"})
-        one = ok(self, "plx.read", self.call(citation=handle,
+        one = ok(self, "plx.read", self.call(FULL, citation=handle,
                                              field_path="row.custom_fields.fmId"))
         self.assertEqual(one["fields"], {"row.custom_fields.fmId": 7})
 
@@ -1154,7 +1158,8 @@ class ReadTests(unittest.TestCase):
     JSON_ROW = "api://public.app_purchase_order/j@0000000000000001-1"
 
     def _read_one(self, path):
-        return ok(self, "plx.read", self.call(citation=self.JSON_ROW, field_path=path))
+        # A finance holder: the fixture's JSON columns are not the PO's own (unknown status).
+        return ok(self, "plx.read", self.call(FULL, citation=self.JSON_ROW, field_path=path))
 
     def test_a_key_inside_a_json_text_column_is_read_not_absent(self):
         out = self._read_one("row.custom_fields.fmId")
@@ -1435,6 +1440,9 @@ class RuntimeCitationsTests(unittest.TestCase):
                         "recorded_at": T0, "status": "current", "changed_since": False}
         audience = LiveSourceAudience({f"bc:production:{CO}:*": ["ops"]}, tenant="plx")
         host = tools(ev.RuntimeCitations(Runtime(live=_Live(audience))))
+        # The fixture's columns are not a BC PO header's own (unknown status: finance on a
+        # money relation, ontology.raw_markings): the reader granted the unit holds finance.
+        host.base.policy = FINANCE_OPS_POLICY
         for actor, status in ((FULL, "withheld"), (OPS, "resolved")):
             with self.subTest(status=status):
                 out = mcp_server._firewall(ok(self, "plx.read", host.call(
@@ -1624,6 +1632,11 @@ class LiveBcReadTests(unittest.TestCase):
                                       'W/"JzQ0Oyc="')
         self.reader = ev.RuntimeCitations(self.runtime, bc_books={CO.upper(): "manufacturing"})
         self.tools = tools(self.reader)
+        # The finance reader holds finance: the fixture's BC columns are not a PO header's
+        # own (unknown status: finance on a money relation, ontology.raw_markings).
+        self.tools.base.policy = ot.ReadPolicy(
+            tenant="plx", audiences=dict(POLICY_AUDIENCES),
+            markings={"finance": {"full", "staff:finance"}})
 
     def read(self, handle, actor=None):
         return ok(self, "plx.read", self.tools.call("plx.read", {"citation": handle},

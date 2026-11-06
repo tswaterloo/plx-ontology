@@ -2970,6 +2970,14 @@ class MCPServer:
             self._read_scope = (_evidence_scope(host.store_meta(), host.tools.policy), reads)
         return result
 
+    def held_markings(self) -> frozenset[str]:
+        """The value markings this session's reader holds now: the read policy its tool
+        calls are decided under (``policy_now`` of the gated actor). The answer gate reads
+        cited rows with them (``answer_gate._reader``)."""
+        gated = self.case_runtime.employee_gate(self.actor)
+        host = self._ontology_host()
+        return frozenset(host.policy_now(gated).held_markings(gated))
+
     def _ontology_host(self) -> CaseHostTools:
         """This session's ontology host, built at its first use."""
         if self.ontology is None:

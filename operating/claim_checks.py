@@ -976,6 +976,14 @@ def expression_inputs(claim: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 # --------------------------------------------------------------------------- evidence
 
+
+def _withheld(resolved: Any, field: str) -> bool:
+    """Whether ``field`` (or the column it is in) is one a marking withheld from the
+    reader's row (its ``withheld_fields``)."""
+    withheld = resolved.get("withheld_fields") if isinstance(resolved, Mapping) else None
+    return bool(withheld) and any(field == path or field.startswith(path + ".")
+                                  for path in withheld if isinstance(path, str))
+
 def dig(resolved: Mapping[str, Any], field: str) -> tuple[bool, Any]:
     value: Any = resolved
     for part in field.split("."):
@@ -1671,6 +1679,11 @@ def _checked_value(claim: Mapping[str, Any], handles: Sequence[str],
                      "source's current one; cite its current version")
     if field == PAGE_TEXT:
         return _check_page_claim(claim, out, resolved)
+    if _withheld(resolved, field):
+        # A marking withholds the cell from this reader (``raw_markings.mark_view``): it is
+        # not checked, so a stated value, right or wrong, is refused alike.
+        return _fail(out, "claim_uncited", f"the cited {field} is withheld from this "
+                     "reader by a marking: it is neither read nor checked")
     exists, cell = dig(resolved, field)
     if not exists:
         return _fail(out, "claim_value_mismatch", f"the cited row has no {field}")

@@ -123,7 +123,8 @@ class BcRootedLandedCost(unittest.TestCase):
         ot.register(table, base)
         tt.register(table, tt.TraverseTools(base))
         oi.register(table, oi.InvestigateTools(
-            table, rows=oi.citation_rows(self.runtime), scope=oi.read_scope(base),
+            table, rows=oi.citation_rows(self.runtime, held_markings=policy.held_markings),
+            scope=oi.read_scope(base),
             held_markings=lambda actor: policy.held_markings(actor)))
         result = table["plx.investigate"]["handler"](
             {"family": "landed_cost", "root": self.root, "as_known_at": AT},
