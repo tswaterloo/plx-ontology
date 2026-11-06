@@ -2503,6 +2503,7 @@ _PAGE_UNITS = {**{unit: unit for unit in UOM_CANONICAL}, **UOM_ALIASES, **RECEIV
                **dict.fromkeys(("pallet", "pallets", "plt", "plts"), "plt"),
                **dict.fromkeys(_PERCENT_UNITS, "percent")}
 _KNOWN_UNITS = frozenset(_PAGE_UNITS.values())
+_KNOWN_RATES = frozenset("/" + unit for unit in _KNOWN_UNITS if unit != "percent")
 # The word right after a figure. A one-letter word (g, l, t) is a unit only standing
 # alone: never inside a token or before a period ("7 t-shirts", "line 4 l.", "7 L/min").
 _UNIT_AFTER = re.compile(r"[ \t\u00a0]*((?i:metric[ \t\u00a0]+ton(?:ne)?s?)\b|[A-Za-z]{2,}\b"
@@ -2666,13 +2667,49 @@ def _joined(text: str, start: int, end: int) -> bool:
         return True
     if _COMPOUND.match(text, end):
         return False       # "30-day", "12-pack": a figure of a compound word
+    if _rate_unit(text, end) is not None:
+        return False       # "5.02/kg", "45.70/dz": a figure per a unit of measure
     after = text[end:end + 2]
     if after[:1].isdigit() or after[:1] == "_" or after[:1] in _TOKEN_JOINER \
             and after[1:2].isalnum():
         return True
     glued = re.match(r"[A-Za-z]+", text[end:])
+    if glued is not None and _GLUED_CODE.fullmatch(glued.group(0)) \
+            and glued.group(0) in ISO_4217 and glued.group(0) not in WORD_CODES:
+        return False       # "14,074.15CAD": a currency code written against its amount
     return glued is not None and (_ORDINAL.fullmatch(glued.group(0)) is not None
                                   or glued.group(0).casefold() not in _PAGE_UNITS)
+
+
+# The unit of a rate written against its figure: ``/`` and a unit of measure of two
+# letters or more the page-unit table knows (``5.02/kg``, ``45.70/dz``), ending the token
+# (``5/02``, ``14/Aug``, ``1/2``, ``kg/m3`` stay parts of a longer token).
+_RATE_AFTER = re.compile(r"/([A-Za-z]{2,})(?![\w'\u2019]|[-/\\.:@#][\w])")
+_GLUED_CODE = re.compile(r"[A-Z]{3}")
+
+
+def _rate_unit(text: str, end: int) -> str | None:
+    """The canonical rate unit (``/kg``) written right after the figure ending at
+    ``end`` (``_RATE_AFTER``), or None: never a percent or the count words unit(s)."""
+    match = _RATE_AFTER.match(text, end)
+    if match is None:
+        return None
+    word = match.group(1).casefold()
+    unit = _PAGE_UNITS.get(word)
+    if unit is None or unit == "percent" or word in ("unit", "units"):
+        return None
+    return "/" + unit
+
+
+def rate_unit(unit: Any) -> str | None:
+    """A claim's ``unit`` as a rate (``1/kg``, ``USD/kg``, ``/kg``, ``per kg``,
+    ``per kilogram``: ``/kg``), or None when it names no rate of a known unit."""
+    if not isinstance(unit, str):
+        return None
+    match = re.fullmatch(r"\s*(?:(?:1|[A-Z]{3})?\s*/|per\s+)\s*([A-Za-z]{2,})\s*", unit)
+    if match is None:
+        return None
+    return _rate_unit("/" + match.group(1), 0)
 
 
 @lru_cache(maxsize=8)
@@ -2728,6 +2765,9 @@ def _text_figures(text: str, breaks: tuple[int, ...] = ()) -> tuple[_Figure, ...
         quantity_label = label is not None and label.group(1).casefold() in _QUANTITY_LABELS
         after = _COMPOUND.match(text, tail, stop) or _UNIT_AFTER.match(text, tail, stop)
         word = " ".join(after.group(1).casefold().split()) if after else None
+        rate = _rate_unit(text, tail)
+        if rate is not None:
+            word = rate      # "5.02/kg" states a figure per kg, never 5.02 kg
         digits = match.group("int") or ""
         plain = digits.isdigit() and not match.group("frac") and not scale and tail == end
         before = _CURRENCY_BEFORE.search(text, max(line, start - 8), start)
@@ -2740,7 +2780,7 @@ def _text_figures(text: str, breaks: tuple[int, ...] = ()) -> tuple[_Figure, ...
                 and trailing.group("code") not in WORD_CODES:   # "12 KGS" is kilograms
             currency = trailing.group("code")
         counted = quantity_label or currency is not None or word is not None and (
-            word in _PAGE_UNITS or word in _QUANTITY_LABELS or _stem(word) in _QUANTITY_LABELS)
+            rate is not None or word in _PAGE_UNITS or word in _QUANTITY_LABELS or _stem(word) in _QUANTITY_LABELS)
         supports = not (
             _joined(text, start, end)
             or _NEGATOR.search(text, reach, start) or _EXCLUDED_BEFORE.search(text, reach, start)
@@ -2848,7 +2888,8 @@ def _check_text_figure(claim: Mapping[str, Any], out: dict[str, Any], cell: str,
     quantity type: untyped, a quantity role is ``claim_role_unverified``."""
     text = _normalised_text(cell)
     value = to_decimal(claim["value"])
-    claimed = _page_unit(claim["unit"]) if "unit" in claim else None
+    claimed = (rate_unit(claim["unit"]) or _page_unit(claim["unit"])) if "unit" in claim \
+        else None
     percent = claimed == "percent"
     found = [figure for figure in _text_figures(text, _line_breaks(cell))
              if (figure.value * 100 if figure.percent and percent else figure.value) == value]
@@ -2877,6 +2918,11 @@ def _check_text_figure(claim: Mapping[str, Any], out: dict[str, Any], cell: str,
                 return "percent"
             if figure.word is None:
                 return None
+            if figure.word.startswith("/") or claimed.startswith("/"):
+                # A rate (``/kg``) is verified only by the same rate, and contradicts any
+                # other unit: 5.02/kg is no 5.02 kg, and 120 kg no 120/kg.
+                return figure.word if figure.word in _KNOWN_RATES or claimed in _KNOWN_RATES \
+                    else None
             if _stem(figure.word) == _stem(claimed):
                 return claimed
             # A known page unit contradicts only a claimed unit the table knows too; a

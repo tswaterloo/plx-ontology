@@ -1799,6 +1799,14 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
                                     may_repair=may_repair, unread=unread, read_values=True,
                                     relevant=relevant)
     repairing = gated["outcome"] == "repair"
+    if gated["outcome"] == "answered" and isinstance(answer, dict) \
+            and isinstance(answer.get("text"), str):
+        # The figures the text writes that no claim states, bound to the document
+        # passages this session read that state them, each checked by the gate
+        # (``answer_gate.bind_read_figures``): a figure read is a claim, never dropped.
+        gated["claims"] = gated["claims"] + answer_gate.bind_read_figures(
+            answer["text"], gated["claims"], server, seen=seen, returned=returned,
+            question=asked, unsupported=gated["unsupported"], relevant=relevant)
     text = {"text_check": answer_gate.check_text(answer["text"], gated["claims"], server,
                                                  returned, question=asked)} \
         if isinstance(answer, dict) and "text" in answer else {}
@@ -2594,6 +2602,23 @@ class MCPServer:
             if not entry["whole"]:
                 for handle in entry["handles"]:   # fail closed: forgetting is never whole
                     handles.pop(handle, None)
+
+    def read_texts(self) -> list[tuple[list[str], str, list[tuple[int, int]] | None]]:
+        """The texts ``plx.read`` served this session's reader under the scope in force
+        (``_note_texts``), newest first: ``(handles, field, spans)``, the handles that
+        name the text, ``spans`` the
+        character spans served of it, None when it was served whole. What the answer gate
+        may bind a reply's figure to (``answer_gate.bind_read_figures``)."""
+        out = []
+        for key, entry in reversed(list(self._evidence.get("texts", {}).items())):
+            field = key[-1] if isinstance(key, tuple) and key else None
+            if not isinstance(field, str) or not entry.get("handles"):
+                continue
+            spans = None if entry.get("whole") else [tuple(span) for span in entry["spans"]]
+            if spans == []:
+                continue
+            out.append((list(entry["handles"]), field, spans))
+        return out
 
     def served_parts(self, handle: str, field: str) -> list[tuple[int, int, str]]:
         """The parts of a partly served text (``unread``) this session's reader was

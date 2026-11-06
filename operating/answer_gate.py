@@ -1098,7 +1098,10 @@ TEXT_INSTRUCTION = (
     "Your text states numbers or ISO dates (uncovered) that no passing claim states. A "
     "number in prose is a claim: state each as a cited value claim (an identifier whose "
     "digits stand alone after capitals, such as ABC-012, as a text value of the field "
-    "that holds it) and submit again, or leave it out of the text.")
+    "that holds it) and submit again, or leave it out of the text. A figure read in a "
+    "document's text is covered when the text writes it as its passage does, beside a "
+    "word, unit and currency the passage prints with it; claim it with \"quote\" "
+    "otherwise.")
 UNSTATED_INSTRUCTION = (
     "Your text writes a passing claim's value negated (uncovered, claim_value_unstated): "
     "it denies what the claim states. Say the value as the claim states it.")
@@ -1154,6 +1157,19 @@ def check_text(text: Any, claims: list[dict], server: Any,
         isinstance(entry["value"], str) and claim_checks._percent_written(entry["value"])
         and (found := claim_checks.prose_numbers(entry["value"]))
         and change_backed(found[0][0], found[0][1], stated, prose))]
+    # A number only a passed claim's passage states as the text does (``passage_backed``,
+    # the reply screen's rule) is covered: every place the text writes it.
+    spans = passage_backed(prose, passages_of(claims))
+    if spans:
+        rest = prose
+        for start, end in reversed(spans):
+            rest = rest[:start] + " " * (end - start) + rest[end:]
+        left = {written for written, _ in claim_checks.prose_numbers(rest)}
+        inside = {written for start, end in spans
+                  for written, _ in claim_checks.prose_numbers(prose[start:end])}
+        shown = [entry for entry in shown if not (
+            entry["code"] == "claim_unstructured" and entry["value"] in inside
+            and entry["value"] not in left)]
     uncovered = [entry for entry in shown if entry["code"] != claim_checks.PROSE_UNCHECKED]
     unchecked = [entry for entry in shown if entry["code"] == claim_checks.PROSE_UNCHECKED]
     said = [line for line, needed in (
@@ -1294,7 +1310,7 @@ def _names_blanked(prose: str, names: Collection[str], refused: Sequence[Any]) -
 
 def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
              refused: Sequence[Any] = (), percents: Sequence[Any] = (),
-             names: Collection[str] = ()) -> list[str]:
+             names: Collection[str] = (), passages: Sequence[str] = ()) -> list[str]:
     """The factual statements of a final reply's ``text`` that no passed claim's value
     (``values``) backs, as written, in order and once, by the gate's own tokenisers:
     every number (``claim_checks.prose_numbers``: handles, identifiers and dates apart)
@@ -1314,7 +1330,11 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     ``values`` covers what it holds, and a name the run returned verbatim (``names``,
     ``returned_names``: SO-FM-388, 1-Shoppe, 01-FORMULAS) is a name, never a figure,
     unless a refused claim said it (``_names_blanked``); a figure beside it is still one.
-    Plain prose, other words and the question restated
+    A token holding digits that a passed claim's passage (``passages``,
+    ``passages_of``: its quote or text value, as its cited record writes it) states as
+    the reply does (``passage_backed``: the same whole token, said of the same thing,
+    neither negated nor bounded there, with the reply's unit and currency) is backed by
+    that passage. Plain prose, other words and the question restated
     are not statements. Fail closed: a text that is not a string, or longer than
     ``MAX_REPLY_CHARS``, is one unbacked statement."""
     if not isinstance(text, str) or len(text) > MAX_REPLY_CHARS:
@@ -1373,6 +1393,8 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     for value in sorted({value for value in covered if value}, key=len, reverse=True):
         scan = scan.replace(value, " ")
     scan = claim_checks.HANDLE.sub(lambda match: " " * len(match.group(0)), scan)
+    for start, end in reversed(passage_backed(scan, passages)):
+        scan = scan[:start] + " " * (end - start) + scan[end:]
     found = claim_checks.labels(scan)
     for match in found:
         label = match.group(0)
@@ -1465,6 +1487,294 @@ def given_blanked(text: str, given: Sequence[str]) -> str:
     return text
 
 
+# ------------------------------------------------------------------ document passages
+
+# A token of prose that writes a figure or a code with digits ("$5.02/kg", "24x48",
+# "14th", "81395"), its edge punctuation trimmed (``_prose_tokens``).
+_DIGIT_TOKEN = re.compile(r"\S*\d\S*")
+_TOKEN_EDGES = "()[]{}<>,;:!?\"'“”‘’.*`"
+_CONTEXT_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+# A token whose digits are glued to letters or joined to other digits ("24x48", "14th",
+# "PO#2563", "5/02"): a name or code read whole, never a figure of its own.
+_COMPOUND_TOKEN = re.compile(r"\d[A-Za-z]|[A-Za-z#_]\d|\d[-/:]\d")
+CONTEXT_WORDS = 3          # words each side of a token that say what it is
+PROSE_CONTEXT_WORDS = 6    # words before a reply's token that may name it
+MAX_PASSAGE_CHARS = claim_checks.MAX_VALUE_CHARS
+MAX_BOUND_CLAIMS = 12      # passages one reply binds (``bind_read_figures``)
+MAX_BIND_TEXTS = 40        # served texts the binder searches
+MAX_BIND_CHECKS = 24       # candidate passages the binder checks
+
+
+def _prose_tokens(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of each token of ``text`` holding a digit, edge punctuation off
+    (a decimal or thousands mark inside it stays)."""
+    out = []
+    for match in _DIGIT_TOKEN.finditer(text):
+        start, end = match.span()
+        while start < end and text[start] in _TOKEN_EDGES:
+            start += 1
+        while end > start and text[end - 1] in _TOKEN_EDGES:
+            end -= 1
+        if start < end and any(char.isdigit() for char in text[start:end]):
+            out.append((start, end))
+    return out
+
+
+def _context(text: str, start: int, end: int, before_words: int = CONTEXT_WORDS
+             ) -> set[str]:
+    """The stems (``claim_checks._stem``) of the content words (three letters or more, no
+    grammar word, no digit) within ``before_words`` words before ``text[start:end]`` and
+    ``CONTEXT_WORDS`` after it, on its own line: what the token there is said to be."""
+    line_start = max(text.rfind("\n", 0, start) + 1, 0)
+    line_end = text.find("\n", end)
+    line_end = len(text) if line_end < 0 else line_end
+    before = _CONTEXT_WORD.findall(text[line_start:start])[-before_words:]
+    after = _CONTEXT_WORD.findall(text[end:line_end])[:CONTEXT_WORDS]
+    return {claim_checks._stem(word) for word in before + after
+            if len(word) >= 3 and word.isalpha()
+            and word.lower() not in claim_checks._PROSE_GRAMMAR}
+
+
+def _figure_in(text: str, start: int, end: int) -> Any:
+    """The figure ``claim_checks`` reads inside ``text[start:end]`` (its ``_Figure``:
+    value, whether it supports a claim, the word and currency printed with it), or None."""
+    for figure in claim_checks._text_figures(text):
+        if start <= figure.start and figure.end <= end:
+            return figure
+    return None
+
+
+def _marks_agree(said: Any, read: Any) -> bool:
+    """Whether the unit and currency prose writes with a figure (``said``) are what the
+    passage prints with it (``read``): a currency only beside the same one (a sign with
+    the code it writes, never a code the passage does not print), a unit of measure or
+    rate only beside the same one. Prose that writes neither agrees."""
+    if said is None:
+        return True
+    if said.currency is not None:
+        if read is None or read.currency is None or not (
+                said.currency == read.currency
+                or claim_checks.same_currency(said.currency, read.currency)):
+            return False
+    unit = said.word if said.word is not None and (
+        said.word.startswith("/") or said.word in claim_checks._PAGE_UNITS) else None
+    if unit is not None:
+        printed = None if read is None or read.word is None else read.word
+        if printed is None or claim_checks._page_unit(printed) != claim_checks._page_unit(unit):
+            return False
+    return True
+
+
+def _occurrences(token: str, text: str) -> Iterator[int]:
+    """Each start of ``token`` in ``text`` as a whole token (case folded; no letter or
+    digit glued to either end)."""
+    for match in re.finditer(r"(?<![A-Za-z0-9])(?<!\d[.,])" + re.escape(token)
+                             + r"(?![A-Za-z0-9])(?![.,]\d)",
+                             text, re.IGNORECASE):
+        yield match.start()
+
+
+def _passage_states(prose: str, start: int, end: int, passage: str) -> bool:
+    """Whether ``passage`` (a text a passed claim quotes or states, read in its cited
+    record) states the token ``prose[start:end]`` as the prose does: the same whole
+    token, said of the same thing (a content word near it in the prose is one near it in
+    the passage: "quote 81395" of "Quote # 81395", "August 14th" of "starting August
+    14th"), not negated, bounded or a range end there (``claim_checks``' figure rules;
+    a code's digits only not after a negator or bound), with any unit or currency the
+    prose writes beside it printed beside it there (``_marks_agree``). The same digits
+    said of another thing, beside another unit or currency, or only near the text state
+    nothing."""
+    token = prose[start:end]
+    said = _context(prose, start, end, PROSE_CONTEXT_WORDS)
+    if not said:
+        return False
+    figure = _figure_in(prose, start, end)
+    near = max(prose.rfind("\n", 0, start) + 1, start - 48)
+    for at in _occurrences(token, passage):
+        stop = at + len(token)
+        if not said & _context(passage, at, stop):
+            continue
+        read = _figure_in(passage, at, stop)
+        if read is not None and not read.supports and not _COMPOUND_TOKEN.search(token) \
+                and (figure is None or figure.supports):
+            continue     # a figure the passage negates, bounds, ranges or labels
+        reach = max(passage.rfind("\n", 0, at) + 1, at - 48)
+        # A negator or bound before it in the passage must be restated before it in the
+        # reply ("go up to $5.26" of "will go up to $5.26"): the same statement.
+        if any(pattern.search(passage, reach, at) and not pattern.search(prose, near, start)
+               for pattern in (claim_checks._NEGATOR, claim_checks._BOUND_BEFORE,
+                               claim_checks._AT_LEAST_BEFORE, claim_checks._RANGE_BEFORE)):
+            continue
+        if not _marks_agree(figure, read):
+            continue
+        return True
+    return False
+
+
+def passage_backed(prose: str, passages: Sequence[str]) -> list[tuple[int, int]]:
+    """The tokens of ``prose`` holding a digit (``_prose_tokens``) that a passage of
+    ``passages`` states as the prose does (``_passage_states``), as spans."""
+    texts = [text for text in passages if isinstance(text, str) and text.strip()]
+    if not texts:
+        return []
+    return [(start, end) for start, end in _prose_tokens(prose)
+            if any(_passage_states(prose, start, end, text) for text in texts)]
+
+
+def passages_of(claims: Sequence[Any]) -> list[str]:
+    """What passed claims quote or state as text, as their cited records write it: each
+    value claim's quote (checked verbatim in the cited text) and each text value (no
+    figure)."""
+    out: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, Mapping) or (claim.get("check") or {}).get(
+                "status", "passed") != "passed":
+            continue
+        for value_claim in claim.get("value_claims") or ():
+            if not isinstance(value_claim, Mapping):
+                continue
+            for key in ("quote", "value"):
+                said = plain(value_claim.get(key))
+                if isinstance(said, str) and said.strip() and (
+                        key == "quote" or claim_checks.to_decimal(said) is None):
+                    out.append(said)
+    return list(dict.fromkeys(out))
+
+
+def _passage_around(text: str, at: int, stop: int) -> str:
+    """The line of ``text`` holding ``text[at:stop]``, cut on white space to at most
+    ``MAX_PASSAGE_CHARS`` around it, white space runs as one space."""
+    line_start = text.rfind("\n", 0, at) + 1
+    line_end = text.find("\n", stop)
+    line_end = len(text) if line_end < 0 else line_end
+    room = max((MAX_PASSAGE_CHARS - (stop - at)) // 2, 0)
+    left, right = max(line_start, at - room), min(line_end, stop + room)
+    if left > line_start:
+        space = text.find(" ", left, at)
+        left = at if space < 0 else space + 1
+    if right < line_end:
+        space = text.rfind(" ", stop, right)
+        right = stop if space < 0 else space
+    return " ".join(text[left:right].split())
+
+
+def bind_read_figures(text: Any, claims: Sequence[Mapping[str, Any]], server: Any, *,
+                      seen: Collection[str], returned: Mapping[str, Any],
+                      question: Any = "", unsupported: Sequence[Any] = (),
+                      relevant: Callable[[Sequence[str], Callable[[str], Any]], bool | None]
+                      | None = None) -> list[dict[str, Any]]:
+    """Passed claims binding the figures a final reply's ``text`` writes, that no claim
+    of ``claims`` backs, to the document passages this session read that state them.
+
+    For each token holding a digit that the reply screen would drop (``unbacked``), the
+    texts ``server`` served this session's reader (``read_texts``: the handles naming
+    it, its field and the served character spans, or the whole text; cited by a handle
+    the session was returned as evidence, ``seen``) are searched, in what was served only, for
+    that token where the passage around it (its line, ``_passage_around``) states it as
+    the reply does (``_passage_states``: the same whole token said of the same thing,
+    neither negated nor bounded, with the reply's unit and currency). Each such passage
+    becomes a claim of a text value on that record's field and goes through the gate's
+    own check (``_check``: ``claim_checks`` over the record as the reader re-reads it
+    now, with the value markings it holds): a text the reader can no longer read, a
+    field a marking withholds, or a passage the text no longer holds binds nothing. A
+    record cited only on a lead, or one off the question (``relevant`` False), binds
+    nothing. Never from model memory: the passage is copied from the re-read text.
+    Bounded (``MAX_BOUND_CLAIMS``, ``MAX_BIND_TEXTS``, ``MAX_BIND_CHECKS``); none for a
+    server that does not say what it served. Each claim is marked ``bound``."""
+    texts = getattr(server, "read_texts", None)
+    try:
+        served = list(texts())[:MAX_BIND_TEXTS] if callable(texts) else []
+    except Exception:  # noqa: BLE001 - nothing said served, nothing bound
+        served = []
+    if not isinstance(text, str) or not served or len(text) > MAX_REPLY_CHARS:
+        return []
+    rows = _reader(server)
+    said = refused_said(unsupported)
+    bound: list[dict[str, Any]] = []
+    checks = 0
+    ids = {claim.get("id") for claim in claims if isinstance(claim, Mapping)}
+
+    def body(handle: str, field: str) -> str | None:
+        resolved = rows(handle)
+        if not isinstance(resolved, Mapping):
+            return None
+        found = resolved.get("text") if field == PAGE_TEXT else dig(resolved, field)[1]
+        return found if isinstance(found, str) else None
+
+    for sentence, _gap in _sentences(text):
+        prose = " ".join(sentence.split())
+        if not prose:
+            continue
+        passed = list(claims) + bound
+        open_tokens = unbacked(prose, backing(passed), question=question, refused=said,
+                               percents=in_percent(passed), passages=passages_of(passed))
+        open_numbers = {number for token in open_tokens
+                        for _written, number in claim_checks.prose_numbers(token)}
+        if not open_numbers:
+            continue
+        for start, end in _prose_tokens(prose):
+            numbers = {number for _w, number in claim_checks.prose_numbers(prose[start:end])}
+            if not numbers & open_numbers or any(
+                    _passage_states(prose, start, end, passage)
+                    for passage in passages_of(list(claims) + bound)):
+                continue
+            token = prose[start:end]
+            done = False
+            for handles, field, spans in served:
+                if done or checks >= MAX_BIND_CHECKS or len(bound) >= MAX_BOUND_CLAIMS:
+                    break
+                handle = next((name for name in ([handles] if isinstance(handles, str)
+                                                 else handles or ())
+                               if isinstance(name, str) and name in seen), None)
+                if handle is None or not isinstance(field, str):
+                    continue
+                if PAGE_CITATION.search(handle):
+                    field = PAGE_TEXT    # a page's text is its field, as every re-read reads it
+                full = body(handle, field)
+                if full is None:
+                    continue
+                for left, right in spans or ((0, len(full)),):
+                    part = full[max(left, 0):right]
+                    for at in _occurrences(token, part):
+                        passage = _passage_around(part, at, at + len(token))
+                        where = passage.lower().find(token.lower())
+                        if where < 0 or not _passage_states(prose, start, end, passage):
+                            continue
+                        checks += 1
+                        claim = _bound_claim(passage, handle, field, ids)
+                        if claim is None or relevant is not None and relevant(
+                                [handle], rows) is False:
+                            continue
+                        ok, _failed, _report = _check([claim], rows, returned)
+                        if ok:
+                            ok[0]["bound"] = True
+                            bound.append(ok[0])
+                            ids.add(claim["id"])
+                            done = True
+                            break
+                    if done or checks >= MAX_BIND_CHECKS:
+                        break
+    return bound
+
+
+def _bound_claim(passage: str, handle: str, field: str, ids: Collection[Any]
+                 ) -> dict[str, Any] | None:
+    """The gate's claim of ``passage`` as a text value of ``field`` on ``handle``, with an
+    id no claim of the decision has (``b<n>``); None for a passage no claim may state."""
+    try:
+        value_claims = parse_value_claims([{"value": passage, "citation": handle,
+                                            "field": field}], [handle], [])
+    except ValueError:
+        return None
+    if not value_claims or _page_field_problem(value_claims) is not None:
+        return None
+    number = 1
+    while f"b{number}" in ids:
+        number += 1
+    return {"id": f"b{number}", "lead": False, "said": f"b{number}: {passage}",
+            "citations": [handle], "value_claims": value_claims}
+
+
 # ------------------------------------------------------------------ the final reply
 
 # One sentence, clause list item or line of a reply, with the break after it kept.
@@ -1554,6 +1864,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     or is too long (``MAX_REPLY_CHARS``) keeps nothing."""
     backed = backing(claims)
     percents = in_percent(claims)
+    passages = passages_of(claims)
     said = refused_said(unsupported) + [s for s in refused if isinstance(s, str)]
     lines = [str(plain(claim.get("text"))) for claim in claims if isinstance(claim, Mapping)
              and isinstance(plain(claim.get("text")), str)]
@@ -1570,7 +1881,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
             continue
         sentences += 1
         tokens = unbacked(sentence, backed, question=question, refused=said,
-                          percents=percents, names=names)
+                          percents=percents, names=names, passages=passages)
         tokens += [token for token in _denied(sentence, denials) if token not in tokens]
         bare, other = _currencies_as_checked(sentence, marks)
         tokens += [token for token in other if token not in tokens]
@@ -1602,7 +1913,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     for unknown in unknowns:
         if isinstance(unknown, str) and not unbacked(unknown, backed, question=question,
                                                      refused=said, percents=percents,
-                                                     names=names):
+                                                     names=names, passages=passages):
             shown_unknowns.append(unknown)
         else:
             dropped += 1
