@@ -71,12 +71,14 @@ SAGE_PO, SAGE_PO_LINE = "sage.po_header", "sage.po_detail"
 SAGE_RECEIPT = "sage.po_receipt_header"
 BATCH, FM_BATCH = "public.app_batch_record", "public.batch"
 MO = "public.app_manufacturing_order"
-SALES_ORDER = "public.app_sales_order"
-FM_ORDER_ENTRY = "public.order_entry"
+SALES_ORDER, SALES_ORDER_LINE = "public.app_sales_order", "public.app_sales_order_line"
+FM_ORDER_ENTRY, FM_ORDER_ITEM = "public.order_entry", "public.order_entry_item"
 RELATIONS = (PO, PO_LINE, ENTITY_MAP, FM_PO, FM_PO_ITEM, FM_RECEIPT, FM_RAW_LOT, FM_PACK_LOT,
-             SAGE_PO, SAGE_RECEIPT, BATCH, FM_BATCH, MO, SALES_ORDER, FM_ORDER_ENTRY)
+             SAGE_PO, SAGE_RECEIPT, BATCH, FM_BATCH, MO, SALES_ORDER, SALES_ORDER_LINE,
+             FM_ORDER_ENTRY, FM_ORDER_ITEM)
 BC_SETS = ("purchaseOrders", "purchaseOrderLines", "purchaseReceipts",
-           "purchaseReceiptLines", "purchaseInvoices", "purchaseOrderReferences")
+           "purchaseReceiptLines", "purchaseInvoices", "purchaseOrderReferences",
+           "salesOrders")
 
 # The detectors the engine runs (``operating.proactive_engine.DETECTORS``; read from there
 # when importable, so a new detector is never silently out of this check's health rule).
@@ -502,8 +504,12 @@ def po_verdict(src: Sources, object_id: str, need: str | None = None) -> dict[st
     if ev["tests"]:
         reason("T1", "the order carries test/UAT/demo marks: " + "; ".join(
             sorted({t["text"] for t in ev["tests"]}))[:200], (t["citation"] for t in ev["tests"]))
+    fm_open = False
     for fm in ev["fm"]:
         done, cites, open_items = _fm_received(fm)
+        # FileMaker's own order still waiting on items under a header that closes nothing
+        fm_open = fm_open or bool(open_items) and _norm(fm["status"]) not in (
+            FM_ITEM_DONE | FM_ITEM_CANCEL)
         if done:
             reason("P1-fm", f"FileMaker {fm['number']}: every item is received or closed "
                    f"(header says {fm['status']!r})", [fm["citation"], *cites])
@@ -577,8 +583,8 @@ def po_verdict(src: Sources, object_id: str, need: str | None = None) -> dict[st
         verdict = "draft_twin"
     elif "D1" in rules:
         verdict = "date_not_real"
-    elif bc_open or any(_norm(p["status"]) not in PORTAL_DONE | PORTAL_CANCEL
-                        for p in ev["portal"]):
+    elif bc_open or fm_open or any(_norm(p["status"]) not in PORTAL_DONE | PORTAL_CANCEL
+                                   for p in ev["portal"]):
         verdict = "supported"
     else:
         verdict = "unknown"
@@ -683,6 +689,129 @@ def at_risk_verdict(src: Sources, gap: Mapping[str, Any], cites: Sequence[Mappin
             "reasons": [r for c in checks for r in c["reasons"]]}
 
 
+# A customer order's own status words: closed in either system (the Portal's SHIPPED,
+# COMPLETE, CANCELLED; FileMaker's Closed, Complete), open (the Portal's open codes and
+# FileMaker's Open).
+SO_CLOSED = frozenset({"closed", "shipped", "invoiced", "cancelled", "canceled", "complete",
+                       "completed", "delivered", "realized"})
+SO_OPEN = frozenset({"open", "ready_to_ship", "confirmed", "in_production",
+                     "partially_shipped"})
+
+
+def _so_index(src: Sources) -> dict[str, Any]:
+    """The sales-order joins, built once: Portal and FileMaker rows by id, the stored keys
+    between them (the Portal's ``custom_fields.fmId``; a Portal copy without one by its
+    order number = FileMaker's customer PO code for the same customer, the Portal holding
+    FileMaker customers as ``fm-cust-<idcust>``), their lines and items, the BC order a
+    Portal order was posted as (entity map), and each relation's bulk required dates."""
+    ix = src._ix
+    if "so_built" in ix:
+        return ix
+    by = lambda: defaultdict(list)  # noqa: E731
+    ix["so_portal"] = {str(i["row"].get("id")): i for i in src.rows(SALES_ORDER)}
+    ix["so_fm"] = {str(i["row"].get("id")): i for i in src.rows(FM_ORDER_ENTRY)}
+    ix["so_lines"], ix["so_items"], ix["so_by_fm"], ix["so_fm_by_po"] = by(), by(), by(), by()
+    for i in src.rows(SALES_ORDER_LINE):
+        ix["so_lines"][str(i["row"].get("sales_order_id"))].append(i)
+    for i in src.rows(FM_ORDER_ITEM):
+        ix["so_items"][str(i["row"].get("idoe"))].append(i)
+    for oid, i in ix["so_portal"].items():
+        fm_id = _fm_of(i["row"])
+        if fm_id is not None:
+            ix["so_by_fm"][fm_id].append(i)
+    for i in src.rows(FM_ORDER_ENTRY):
+        row = i["row"]
+        if _norm(row.get("custpocode")) and row.get("idcust") is not None:
+            ix["so_fm_by_po"][(_norm(row.get("custpocode")), f"fm-cust-{row.get('idcust')}")
+                              ].append(i)
+    ix["so_posted"] = {}
+    bc_orders = {r["id"]: r for r in src.bc if r["entity_set"] == "salesOrders"}
+    for i in src.rows(ENTITY_MAP):
+        row = i["row"]
+        if row.get("entity_type") == "salesOrder" and row.get("status") == "LINKED" \
+                and str(row.get("bc_system_id")) in bc_orders:
+            ix["so_posted"][str(row.get("source_id"))] = bc_orders[str(row.get("bc_system_id"))]
+    ix["so_bulk"] = {}
+    for relation, column in ((SALES_ORDER, "required_date"), (FM_ORDER_ENTRY, "datereq")):
+        days = Counter(d for d in (_day(i["row"].get(column)) for i in src.rows(relation)) if d)
+        total = sum(days.values())
+        ix["so_bulk"][relation] = {d: n for d, n in days.items()
+                                   if n >= 10 and total and n / total >= 0.10}
+    ix["so_built"] = True
+    return ix
+
+
+def _fm_of(row: Mapping[str, Any]) -> str | None:
+    cf = row.get("custom_fields") if isinstance(row.get("custom_fields"), dict) else {}
+    return str(cf["fmId"]) if cf.get("fmId") not in (None, "") else None
+
+
+def customer_order_verdict(src: Sources, object_id: str) -> dict[str, Any]:
+    """A customer order called open past its required date, checked in every copy: closed
+    in any copy (C3: its own status, its FileMaker or Portal copy by the stored fmId, a
+    Portal copy of a closed FileMaker order of the same customer and customer PO code, or
+    the BC order it was posted as fully shipped), no goods on any copy (C4: no Portal line,
+    no FileMaker item), or a required date that is a default (C5: the record's own order or
+    creation day, or a day a bulk share of its relation holds) contradicts the claim."""
+    ix = _so_index(src)
+    _, binding, key = parse_object(object_id)
+    ident = str(key.get("id"))
+    portal, fm = [], []
+    if binding == "portal.app_sales_order" and ident in ix["so_portal"]:
+        portal.append(ix["so_portal"][ident])
+    elif binding == "portal.fm_order_entry" and ident in ix["so_fm"]:
+        fm.append(ix["so_fm"][ident])
+    if not portal and not fm:
+        return {"verdict": "unknown", "contradicted": False, "reasons": [
+            {"rule": "C0", "text": "the order's source row is not in the mirror",
+             "citations": []}]}
+    # every copy joined by a stored key
+    for i in list(portal):
+        fm_id = _fm_of(i["row"])
+        if fm_id in ix["so_fm"]:
+            fm.append(ix["so_fm"][fm_id])
+    for i in list(fm):
+        portal += [p for p in ix["so_by_fm"].get(str(i["row"].get("id")), []) if p not in portal]
+    copies = [i for i in portal if _fm_of(i["row"]) is None]
+    dupes = [f for i in copies for f in ix["so_fm_by_po"].get(
+        (_norm(i["row"].get("order_number")), str(i["row"].get("customer_id"))), [])]
+    reasons: list[dict[str, Any]] = []
+    for i in [*portal, *fm, *dupes]:
+        word = _norm(i["row"].get("status")).replace(" ", "_")
+        if word in SO_CLOSED:
+            said = f"a copy of the order is {i['row'].get('status')}"
+            if i in dupes:
+                said += " (the same customer's order under this customer PO code)"
+            reasons.append({"rule": "C3", "text": said, "citations": [i["citation"]]})
+    for i in portal:
+        bc = ix["so_posted"].get(str(i["row"].get("id")))
+        if bc is not None and bc["fields"].get("fullyShipped") is True:
+            reasons.append({"rule": "C3", "text": f"BC {bc['fields'].get('number')}, the order "
+                            "the Portal posted it as, is fully shipped",
+                            "citations": [bc["citation"]]})
+    goods = [*(l["citation"] for i in portal for l in ix["so_lines"].get(
+        str(i["row"].get("id")), [])), *(t["citation"] for i in fm for t in ix["so_items"].get(
+            str(i["row"].get("id")), []))]
+    if not goods:
+        reasons.append({"rule": "C4", "text": "no copy of the order holds a line: no goods are "
+                        "stated on it", "citations": [i["citation"] for i in [*portal, *fm]]})
+    for relation, rows, column, own in ((SALES_ORDER, portal, "required_date",
+                                         ("order_date", "created_at")),
+                                        (FM_ORDER_ENTRY, fm, "datereq",
+                                         ("audittimestampcreated",))):
+        for i in rows:
+            day = _day(i["row"].get(column))
+            if day and (day in ix["so_bulk"][relation]
+                        or day in {_day(i["row"].get(c)) for c in own}):
+                reasons.append({"rule": "C5", "text": f"the required date {day} is a default "
+                                "(the record's own day or a bulk day of its system)",
+                                "citations": [i["citation"]]})
+    rules = {r["rule"] for r in reasons}
+    verdict = ("closed_elsewhere" if "C3" in rules else "no_goods" if "C4" in rules
+               else "date_not_real" if "C5" in rules else "supported")
+    return {"verdict": verdict, "contradicted": verdict != "supported", "reasons": reasons}
+
+
 def probes(src: Sources, claims: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """False negatives: what the sources say that no open claim reports (general rules)."""
     def ident(object_id: Any) -> tuple[str, str, str] | None:
@@ -704,11 +833,16 @@ def probes(src: Sources, claims: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                          if i is not None}
         return out_
     out = []
-    # L6: a batch made but never released by QC is a real hold
+    # L6: a batch made but never released by QC is a real hold. A Portal batch record the
+    # ETL copied from FileMaker batches (the stored pair namebatch_c = batch_name,
+    # ``Batch.same_record_as``) is decided by those origins, counted on them: the copy's
+    # QC value is whatever the last upsert left, never a hold of its own
+    origins = {_norm(i["row"].get("namebatch_c")) for i in src.rows(FM_BATCH)} - {""}
     for relation, qc_field, binding in ((BATCH, "status_qc", "portal.app_batch_record"),
                                         (FM_BATCH, "statusqc", "portal.fm_batch")):
         held = [i for i in src.rows(relation) if _norm(i["row"].get("status")) == "realized"
-                and _norm(i["row"].get(qc_field)) not in {"released", "rejected", ""}]
+                and _norm(i["row"].get(qc_field)) not in {"released", "rejected", ""}
+                and not (relation == BATCH and _norm(i["row"].get("batch_name")) in origins)]
         holds = named({"lot_on_hold"})
         missed = [i for i in held
                   if ("Batch", binding, str(i["row"].get("id"))) not in holds]
@@ -726,28 +860,28 @@ def probes(src: Sources, claims: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                         "text": f"{relation}.{column} is empty on {len(rows) - filled} of "
                         f"{len(rows)} records: 'no due date' is systemic, not per order",
                         "citations": [i["citation"] for i in rows[:3]]})
-    # C2: a customer order open past its own required date
+    # C2: a customer order open past its own required date: open in the Portal, its
+    # required date passed, and not contradicted in any copy (``customer_order_verdict``:
+    # closed elsewhere, no goods, a default date)
     today = src.as_of.isoformat()
-    overdue = [i for i in src.rows(SALES_ORDER) if _norm(i["row"].get("status")) in {
-        "open", "ready_to_ship"} and (_day(i["row"].get("required_date")) or "9999") < today]
-    # any claim about the order credits it (an overdue customer order, or one at risk);
-    # an order its FileMaker copy (custom_fields.fmId, a stored key) has closed is not open
+    overdue = [i for i in src.rows(SALES_ORDER)
+               if _norm(i["row"].get("status")).replace(" ", "_") in SO_OPEN
+               and (_day(i["row"].get("required_date")) or "9999") < today]
+    # any claim about the order credits it (an overdue customer order, or one at risk)
     about = named({"order_at_risk", "late_customer_order", "po_impact"})
-    fm_closed = {str(i["row"].get("id")) for i in src.rows(FM_ORDER_ENTRY)
-                 if any(stem in _norm(i["row"].get("status"))
-                        for stem in ("complet", "closed", "realiz", "shipped", "cancel"))}
     unclaimed = []
     for i in overdue:
-        cf = i["row"].get("custom_fields") if isinstance(i["row"].get("custom_fields"),
-                                                         dict) else {}
-        if str(cf.get("fmId")) in fm_closed and cf.get("fmId") is not None:
+        if ("SalesOrder", "portal.app_sales_order", str(i["row"].get("id"))) in about:
             continue
-        if ("SalesOrder", "portal.app_sales_order", str(i["row"].get("id"))) not in about:
+        if not customer_order_verdict(
+                src, f'SalesOrder:portal.app_sales_order:{json.dumps({"id": i["row"].get("id")})}'
+        )["contradicted"]:
             unclaimed.append(i)
     if unclaimed:
         out.append({"rule": "C2", "kind": "late_customer_order", "count": len(unclaimed),
                     "text": f"{len(unclaimed)} Portal sales orders are open past their "
-                    "required date (and not closed in FileMaker) and no claim reports them",
+                    "required date (not closed in any copy, with goods and a real date) and "
+                    "no claim reports them",
                     "citations": [i["citation"] for i in unclaimed[:10]]})
     return out
 
@@ -855,6 +989,13 @@ def check(src: Sources, claims: Sequence[Mapping[str, Any]],
                 r = dict(r, verdict="governing_side_wrong")
             if kind == "undated_po" and r["verdict"] == "date_not_real":
                 r = dict(r, verdict="supported", contradicted=False)
+        elif kind == "receipt_reconciliation":
+            # "one copy records the goods received, another still shows them open": holds
+            # only when some system did receive them
+            r = po(c["object_id"], None)
+            r = dict(r, verdict="supported", contradicted=False) \
+                if r["verdict"] == "received_elsewhere" else \
+                dict(r, verdict="not_received_anywhere", contradicted=True)
         elif kind == "lot_near_expiry":
             r = lot_verdict(src, c)
         elif kind == "lot_on_hold":
@@ -863,6 +1004,8 @@ def check(src: Sources, claims: Sequence[Mapping[str, Any]],
             r = quantity_verdict(src, c)
         elif kind == "order_at_risk":
             r = at_risk_verdict(src, c, c.get("cites", []))
+        elif kind == "late_customer_order":
+            r = customer_order_verdict(src, c["object_id"])
         else:
             r = {"verdict": "not_checked", "contradicted": False, "reasons": []}
         # a claim that says late: late_po, or an unconfirmed order whose need date passed

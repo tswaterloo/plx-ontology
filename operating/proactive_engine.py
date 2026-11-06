@@ -678,6 +678,7 @@ def _run_link_types() -> list[str]:
         *TEST_ORDER_LINKS, *TEST_TWIN_LINKS, *RECEIPT_LINKS, *_identity_link_types(),
         *declared_qc_links(),
         pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *so_status.twin_links(),
+        so_status.LINE_OF,
         *so_status.FULFILLED_LINKS, *ev.LINK_TYPES,
         *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts]))
 
@@ -1075,8 +1076,9 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
     """A customer order open past its own required date by the one sales-order definition
     (``operating.sales_order_status``): ONE gap per order across its records, joined by
     settled identity links only. A lead twin that is closed, or a lead shipment or invoice,
-    leaves it unjudged; an unknown status is ``not_evaluated``, never open; an order whose
-    every required date is a source default is undated, never late. Late when its
+    leaves it unjudged; an unknown status is ``not_evaluated``, never open; an order no
+    record of which holds a line states no goods (``no_order_lines``, not judged); an
+    order whose every required date is a source default is undated, never late. Late when its
     requested date is before the business day ``as_of``: cited by the date and by each
     status value it is open by (each its own group), and shown only to a reader granted
     every audience the absence of a closure rests on (``REQUIRES_GRANT``)."""
@@ -1098,6 +1100,8 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
         if link["to_object"] in found:
             fulfilled[link["to_object"]] = fulfilled.get(link["to_object"], False) \
                 or link["tier"] in SETTLED
+    lined = {link["to_object"] for link in st.links([so_status.LINE_OF])
+             if link["to_object"] in found}   # records holding at least one line
     lead_twins: dict[str, set[tuple[str, str]]] = defaultdict(set)   # order -> (twin, link)
     for link in twins:
         ends = (link["from_object"], link["to_object"])
@@ -1147,6 +1151,12 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
             continue
         if order.cls == so_status.DRAFT:
             classes["draft"] += 1
+            continue
+        if not any(m in lined for m in group):
+            # no record of the order holds a line: no goods are stated on it (a header
+            # copied without its lines, or an empty shell), so it is not judged
+            classes["unknown"] += 1
+            skipped.note(so_status.NO_LINES, group, read)
             continue
         classes["open"] += 1
         wanted = so_status.requested_date([

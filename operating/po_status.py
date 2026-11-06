@@ -793,6 +793,16 @@ def system_of(object_id: str) -> str:
     return (binding_of(object_id) or "unknown").split(".", 1)[0]
 
 
+def _header_closed(values: Sequence[Any] | None) -> bool:
+    """Whether a FileMaker header states one word that closes the order by itself
+    (Complete, a cancelled or closed word)."""
+    words = {word(v) for v in values or ()}
+    if len(words) != 1:
+        return False
+    (text,) = words
+    return text in COMPLETE_WORDS or header_class(text) == IGNORED
+
+
 def _read_side(source: Any, records: Sequence[str],
                reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
                notes: list | None = None
@@ -803,7 +813,8 @@ def _read_side(source: Any, records: Sequence[str],
     each record's ``record_note`` is appended.
 
     A FileMaker record's status is rolled up from its items (``fm_rollup``: FileMaker
-    leaves the header stale), and a Portal record joined to a FileMaker one is FileMaker's
+    leaves the header stale), except that items never reopen a header that closes the
+    order (Complete, cancelled: ``_header_closed``), and a Portal record joined to a FileMaker one is FileMaker's
     mirror: once FileMaker's items decide, the mirror's copied header and ETL-seeded line
     quantities decide nothing of their own."""
     fm = [m for m in records if reads[m][0].get("fm_status")]
@@ -815,6 +826,11 @@ def _read_side(source: Any, records: Sequence[str],
         found, evidence, hidden, link_marks = source.fm_lines(twin)
         logs[twin] = found
         status = fm_rollup(found)
+        if status is not None and status.cls == OPEN and _header_closed(
+                reads[twin][0].get("fm_status")):
+            # the items may close a stale open header (B.Order over items all Complete),
+            # never reopen a closed one: Complete closes whatever was received (Ross)
+            status = None
         if status is not None:
             rolled[twin] = status
             cited += evidence

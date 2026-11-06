@@ -36,8 +36,9 @@ class DateProvenanceTest(Engine):
 
 
 class FileMakerReceiptTest(Engine):
-    def fm_order(self, w: World, word: str, *, receipt: bool) -> tuple[str, str | None]:
-        order = w.obj("PurchaseOrder", {"fm_status": "B.Order", "expected_date": "2026-10-01"},
+    def fm_order(self, w: World, word: str, *, receipt: bool, header: str = "B.Order"
+                 ) -> tuple[str, str | None]:
+        order = w.obj("PurchaseOrder", {"fm_status": header, "expected_date": "2026-10-01"},
                       binding=FM)
         item = w.obj("PurchaseOrderLine", {"ordered_quantity": ("49", "ea"),
                                            "fm_receiving_status": word})
@@ -54,9 +55,12 @@ class FileMakerReceiptTest(Engine):
         w = World()
         partial, receipt = self.fm_order(w, "B.Order", receipt=True)
         settled, _ = self.fm_order(w, "Complete", receipt=True)
+        # items never reopen a header that closed the order (Complete over a Pending item)
+        closed, _ = self.fm_order(w, "Pending", receipt=False, header="Complete")
         self.run_engine(w)
         gaps = {g["object_id"]: g for g in self.read()["gaps"]}
         self.assertNotIn(settled, gaps)
+        self.assertNotIn(closed, gaps)
         self.assertEqual(gaps[partial]["kind"], "unconfirmed_po")   # open, late, partly in
         self.assertIn(handle(int(receipt.rsplit(":", 1)[1])), gaps[partial]["citations"])
 

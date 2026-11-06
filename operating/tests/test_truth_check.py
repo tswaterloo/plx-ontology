@@ -68,11 +68,27 @@ class PurchaseOrderRules(unittest.TestCase):
         self.assertNotEqual(out["verdict"], "received_elsewhere")
         self.assertNotIn("P1-fm", {r["rule"] for r in out["reasons"]})
 
+    def test_a_reconciliation_note_holds_only_where_a_system_received(self):
+        claim = [{"kind": "receipt_reconciliation", "object_id": BC_PO, "summary": ""}]
+        for status, verdict in (("Complete", "supported"), ("Pending", "not_received_anywhere")):
+            with self.subTest(status=status):
+                (out,) = tc.check(_world(fm_item_status=status), claim)["results"]
+                self.assertEqual((out["verdict"], out["contradicted"]),
+                                 (verdict, verdict != "supported"))
+
     def test_open_everywhere_with_a_real_date_is_supported(self):
         world = _world(fm_item_status="B.Order", lines_dates=())
         out = tc.po_verdict(world, BC_PO, "2026-08-01")
         self.assertEqual(out["verdict"], "supported")
         self.assertFalse(out["contradicted"])
+
+    def test_a_filemaker_only_order_waiting_on_items_is_supported(self):
+        src = tc.Sources(portal={
+            tc.FM_PO: [_row(tc.FM_PO, id=9, ponumber="PO#9", status="Pending")],
+            tc.FM_PO_ITEM: [_row(tc.FM_PO_ITEM, id=90, idpogen=9, qty="4", status="Pending")]},
+            bc=[], as_of=date(2026, 11, 5))
+        out = tc.po_verdict(src, 'PurchaseOrder:portal.fm_generated_purchase_order:{"id":9}')
+        self.assertEqual(out["verdict"], "supported")
 
     def test_a_test_invoice_marks_a_test_record(self):
         out = tc.po_verdict(_world(invoice="INVOICETEST#1"), BC_PO, "2026-07-14")
@@ -130,10 +146,18 @@ class ProbesAndOrder(unittest.TestCase):
     def test_a_claim_names_its_record_whatever_the_json_spelling(self):
         made = [_row(tc.FM_BATCH, id=n, status="Realized", statusqc="On-Hold")
                 for n in (11, 12)]
+        # a Portal copy still On-Hold of a FileMaker batch QC released: its origin decides
+        made.append(_row(tc.FM_BATCH, id=13, status="Realized", statusqc="Released",
+                         namebatch_c="BX-13"))
+        copies = [_row(tc.BATCH, id="c13", status="Realized", status_qc="On-Hold",
+                       batch_name="BX-13")]
         overdue = [_row(tc.SALES_ORDER, id=s, status="Open", required_date="2026-10-01",
                         custom_fields={"fmId": f}) for s, f in (("s1", 1), ("s2", 2),
                                                                 ("s3", 3))]
-        src = tc.Sources(portal={tc.FM_BATCH: made, tc.SALES_ORDER: overdue,
+        lines = [_row(tc.SALES_ORDER_LINE, id=f"l{s}", sales_order_id=s, quantity="5")
+                 for s in ("s1", "s2", "s3")]
+        src = tc.Sources(portal={tc.FM_BATCH: made, tc.BATCH: copies, tc.SALES_ORDER: overdue,
+                                 tc.SALES_ORDER_LINE: lines,
                                  tc.FM_ORDER_ENTRY: [_row(tc.FM_ORDER_ENTRY, id=2,
                                                           status="Closed")]},
                          bc=[], as_of=date(2026, 11, 5))
@@ -142,8 +166,55 @@ class ProbesAndOrder(unittest.TestCase):
                   {"kind": "late_customer_order",
                    "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}', "cites": []}]
         found = {p["rule"]: p for p in tc.probes(src, claims)}
-        self.assertEqual(found["L6"]["count"], 1)      # 12 unclaimed; 11 claimed
+        self.assertEqual([p["count"] for p in tc.probes(src, claims) if p["rule"] == "L6"],
+                         [1])   # FM 12 unclaimed; 11 claimed; the copy c13 decided by 13
         self.assertEqual(found["C2"]["count"], 1)      # s3; s1 claimed, s2 closed in FM
+
+
+class CustomerOrders(unittest.TestCase):
+    """An overdue customer order checked in every copy (``customer_order_verdict``)."""
+
+    def test_closed_copy_no_goods_and_default_dates_contradict(self):
+        portal = [
+            _row(tc.SALES_ORDER, id="real", status="Open", required_date="2026-10-01",
+                 order_date="2026-09-01", customer_id="fm-cust-7", order_number="SO-1",
+                 custom_fields={"fmId": 1}),
+            # a Portal copy without a stored key of a closed FileMaker order of the same
+            # customer and customer PO code
+            _row(tc.SALES_ORDER, id="dupe", status="Open", required_date="2026-10-01",
+                 order_date="2026-09-01", customer_id="fm-cust-7", order_number="PO-77"),
+            _row(tc.SALES_ORDER, id="posted", status="Open", required_date="2026-10-01",
+                 order_date="2026-09-01", customer_id="fm-cust-8", order_number="SO-3"),
+            _row(tc.SALES_ORDER, id="empty", status="Open", required_date="2026-10-01",
+                 order_date="2026-09-01", customer_id="fm-cust-9", order_number="SO-4"),
+            _row(tc.SALES_ORDER, id="ownday", status="Open", required_date="2026-09-01",
+                 order_date="2026-09-01", customer_id="fm-cust-9", order_number="SO-5")]
+        lines = [_row(tc.SALES_ORDER_LINE, id=f"l-{s}", sales_order_id=s, quantity="5")
+                 for s in ("dupe", "posted", "ownday")]
+        fm = [_row(tc.FM_ORDER_ENTRY, id=1, status="Open", datereq="2026-10-01",
+                   custpocode="SO-1", idcust=7),
+              _row(tc.FM_ORDER_ENTRY, id=2, status="Closed", datereq="2026-10-01",
+                   custpocode="PO-77", idcust=7)]
+        items = [_row(tc.FM_ORDER_ITEM, id=10, idoe=1, qty="5")]
+        emap = [_row(tc.ENTITY_MAP, id="m", entity_type="salesOrder", status="LINKED",
+                     source_id="posted", bc_system_id="bso")]
+        src = tc.Sources(portal={tc.SALES_ORDER: portal, tc.SALES_ORDER_LINE: lines,
+                                 tc.FM_ORDER_ENTRY: fm, tc.FM_ORDER_ITEM: items,
+                                 tc.ENTITY_MAP: emap},
+                         bc=[_bc("salesOrders", "bso", number="S-1", fullyShipped=True)],
+                         as_of=date(2026, 11, 5))
+        verdicts = {i: tc.customer_order_verdict(
+            src, f'SalesOrder:portal.app_sales_order:{{"id":"{i}"}}')["verdict"]
+            for i in ("real", "dupe", "posted", "empty", "ownday")}
+        self.assertEqual(verdicts, {"real": "supported", "dupe": "closed_elsewhere",
+                                    "posted": "closed_elsewhere", "empty": "no_goods",
+                                    "ownday": "date_not_real"})
+        # the probe counts only the supported one, and none once it is claimed
+        self.assertEqual([p["count"] for p in tc.probes(src, []) if p["rule"] == "C2"], [1])
+        claim = {"kind": "late_customer_order", "object_id":
+                 'SalesOrder:portal.fm_order_entry:{"id":1}', "cites": [
+                     {"object_id": 'SalesOrder:portal.app_sales_order:{"id":"real"}'}]}
+        self.assertEqual([p for p in tc.probes(src, [claim]) if p["rule"] == "C2"], [])
 
 
 class PeopleExclusionFailsClosed(unittest.TestCase):

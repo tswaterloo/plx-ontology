@@ -20,6 +20,12 @@ The order (``order_status``) is closed when ANY record of it is closed (a stale 
 record beside a Closed twin is closed), else unknown when any is unknown (never guessed
 open), else open when any is open, else draft.
 
+An order states goods to ship only through its lines: an order none of whose records holds
+a line (``LINE_OF`` from any system's order line) is not judged (``NO_LINES``). A header
+copied without its lines (a bulk load's second copy of an order another record carries
+with its items) or an empty shell says nothing about what the customer waits for; the
+record that holds the items carries the order.
+
 A required date is a requested date only when it is no source default
 (``operating.source_defaults``): not a day a bulk share of its binding's records hold
 (``date_defaults``), and not one of the record's own days (its creation or order day,
@@ -63,6 +69,10 @@ DATE_PROP = "required_date"
 OWN_DAYS = ("order_date", "portal_created_at", "fm_created_at")
 # Unknown reasons, as every reader counts them.
 STATUS_MISSING, STATUS_UNMAPPED = "status_missing", "status_unmapped"
+# An order line of any system -> its order; an order no record of which has one is not
+# judged (``NO_LINES``).
+LINE_OF = "SalesOrderLine.line_of"
+NO_LINES = "no_order_lines"
 
 
 @dataclass(frozen=True)

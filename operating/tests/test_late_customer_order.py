@@ -21,9 +21,10 @@ SHIP_AUDIENCE = "api:shipments"
 
 def order(w: World, *, status: str | None = "Open", fm: str | None = None,
           required: str | None = None, fm_required: str | None = None,
-          tier: str = "verified", **values) -> tuple[str, str | None]:
+          tier: str = "verified", lines: bool = True, **values) -> tuple[str, str | None]:
     """A Portal order (``status``, ``required``) and, with ``fm``, its FileMaker twin (that
-    status word, ``fm_required``) joined at ``tier``."""
+    status word, ``fm_required``) joined at ``tier``; with ``lines`` one order line on
+    the twin (else the Portal record)."""
     portal = w.obj("SalesOrder", {**({"status": status} if status else {}),
                                   **({"required_date": required} if required else {}),
                                   **values}, binding=PORTAL, audience="api:portal")
@@ -33,6 +34,10 @@ def order(w: World, *, status: str | None = "Open", fm: str | None = None,
             {"required_date": fm_required} if fm_required else {})}, binding=FM,
             audience="api:fm")
         w.link("SalesOrder.same_record_as", portal, twin, tier)
+    if lines:
+        on = twin or portal
+        w.link(so.LINE_OF, w.obj("SalesOrderLine", {"quantity": "5"}, audience=(
+            "api:fm" if twin else "api:portal")), on)
     return portal, twin
 
 
@@ -58,6 +63,7 @@ class LateCustomerOrder(Engine):
         order(w, required="2026-11-30")                                # not yet due
         order(w)                                                       # no date
         order(w, status="DRAFT", required="2026-10-01")                # not placed
+        order(w, required="2026-10-01", lines=False)                   # no goods stated
         summary = self.run_rule(w)
         self.assertEqual(summary["detectors"][RULE], "complete")
         gaps = self.read()["gaps"]
@@ -67,9 +73,9 @@ class LateCustomerOrder(Engine):
         self.assertIn("the Portal: Open", gap["summary"])
         self.assertIn("FileMaker: Open", gap["summary"])
         self.assertEqual(summary["not_evaluated"][RULE], {
-            "closed_in_unsettled_twin": 1, "no_required_date": 1, "required_date_default": 1,
-            "status_missing": 1, "status_unmapped": 1})
-        self.assertEqual(summary["coverage"][RULE]["total"], 12)
+            "closed_in_unsettled_twin": 1, "no_order_lines": 1, "no_required_date": 1,
+            "required_date_default": 1, "status_missing": 1, "status_unmapped": 1})
+        self.assertEqual(summary["coverage"][RULE]["total"], 13)
         self.assertEqual(summary["coverage"][RULE]["evaluated"], 7)
 
     def test_a_reader_who_may_not_read_a_copy_or_a_closure_source_sees_no_gap(self):
