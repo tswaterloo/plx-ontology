@@ -130,9 +130,12 @@ export function loadLate(fresh = false): Promise<LatePo[]> {
 }
 
 let homeOnce: Promise<HomeResponse> | null = null;
-export function loadHome(fresh = false, signal?: AbortSignal): Promise<HomeResponse> {
+/** /api/home read once per page load, shared by Today, the sidebar and Ask: never tied to one
+ * caller's abort (a caller that leaves ignores the answer), so leaving Today early, or React
+ * mounting it twice, never fails the read for the others. */
+export function loadHome(fresh = false): Promise<HomeResponse> {
   if (fresh || !homeOnce) {
-    homeOnce = getHome(signal);
+    homeOnce = getHome();
     homeOnce.catch(() => (homeOnce = null));
   }
   return homeOnce;

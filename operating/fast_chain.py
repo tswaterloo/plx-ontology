@@ -771,7 +771,7 @@ def _twin_groups(reads: Reads, picks: Sequence[Mapping[str, Any]]
     a link that cannot be read joins nothing (the records are then named apart)."""
     import time
     from . import why_trail
-    from .ontology_tools import default_schema
+    from .why_trail import default_schema
     ids = [str(p["object"]["object_id"]) for p in picks]
     parent = {oid: oid for oid in ids}
 

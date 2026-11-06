@@ -13,7 +13,7 @@ import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { listShown } from "@/lib/eta";
 import { formatDate, formatMoney, objectHref, plural, recordLabel, safeHref } from "@/lib/format";
-import { DAY_BANDS, inDayBand, matches, sortLate, supplierCounts, VALUE_BANDS, type DayBand, type LateFilter, type SortKey, type ValueBand } from "@/lib/late";
+import { DAY_BANDS, inDayBand, matches, readAllLate, sortLate, supplierCounts, VALUE_BANDS, type DayBand, type LateFilter, type SortKey, type ValueBand } from "@/lib/late";
 import { useListKeys } from "@/lib/list-keys";
 import type { ActionResult, LatePo, ProactiveSuggestion } from "@/lib/types";
 
@@ -201,21 +201,10 @@ export default function LatePage() {
     setTotal(null);
     (async () => {
       // every page, so filters and sorting cover the whole list, not the first 25
-      const all: LatePo[] = [];
-      const seen = new Set<string>();
-      let offset = 0;
-      for (;;) {
-        const page = await getLateList(offset, c.signal, PAGE);
-        for (const p of page.items ?? []) if (!seen.has(p.object_id)) (seen.add(p.object_id), all.push(p));
-        setAsOf(page.as_of ?? null);
-        const next = page.next_offset ?? offset + (page.items ?? []).length;
-        if (!page.more || next <= offset || all.length >= MOST) {
-          setTotal(page.total);
-          break;
-        }
-        offset = next;
-      }
-      setItems(all);
+      const all = await readAllLate((offset, size) => getLateList(offset, c.signal, size), PAGE, MOST);
+      setAsOf(all.asOf);
+      setTotal(all.total);
+      setItems(all.items);
     })().catch((e) => {
       if (c.signal.aborted) return;
       setBusy(noticeKind(e) === "busy");

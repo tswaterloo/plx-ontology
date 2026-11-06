@@ -27,6 +27,11 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 LOG = logging.getLogger("operator_api.sections")
 START_SECONDS = 600     # how long a slot's runtime may take to come up
+# How long one section may take in a slot: twice the page's own wait for it
+# (``backend.PAGE_TIMEOUT_SECONDS``). A child silent past it is stopped and the slot is
+# gone (its sections read on the read worker) instead of every later section mapped to
+# it waiting behind a hung read for ever.
+SECTION_SECONDS = 300
 
 
 class SlotGone(Exception):
@@ -62,6 +67,9 @@ class _Slot:
                 self.running += 1
                 try:
                     self.conn.send(message)
+                    if not self.conn.poll(SECTION_SECONDS):
+                        future.set_exception(SlotGone("timed_out"))
+                        raise SlotGone("timed_out")
                     status, value = self.conn.recv()
                 except (EOFError, OSError) as error:
                     future.set_exception(SlotGone(type(error).__name__))

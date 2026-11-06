@@ -265,6 +265,35 @@ class SharedModelTests(unittest.TestCase):
         self.assertIsNone(scores)
         self.assertTrue(problem.startswith("reranker_unavailable"), problem)
 
+    def test_a_server_that_ended_idle_is_started_again_and_never_waited_for_twice(self):
+        import threading
+        import time
+        from operating.search import model_server, models
+        embedder = models.default_embedder()
+        self.assertEqual(embedder.model, EMB.model)
+        self.server.join(5.0)   # it ends, idle
+        self.assertFalse(model_server.running(self.dir))
+        started = threading.Event()
+        with mock.patch.object(model_server.subprocess, "Popen",
+                               side_effect=lambda *a, **k: started.set()):
+            with self.assertRaises(RuntimeError):   # this query ranks without it
+                embedder.embed(["gasket order"])
+            self.assertTrue(started.wait(5))         # ... and the server starts again
+            began = time.monotonic()
+            self.assertIsNone(embedder.model)        # not waited for again meanwhile
+            self.assertLess(time.monotonic() - began, 1.0)
+        # once it serves again, the next query embeds with it
+        self.server = threading.Thread(target=model_server.serve, args=(self.dir, 1.0),
+                                       daemon=True)
+        self.server.start()
+        with mock.patch.object(embedder, "RETRY_SECONDS", 0.0):
+            for _ in range(200):
+                if model_server.running(self.dir):
+                    break
+                time.sleep(0.01)
+            self.assertEqual(embedder.embed(["gasket order"]), EMB.embed(["gasket order"]))
+        self.server.join(5.0)
+
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")
 class HybridSearchTests(unittest.TestCase):

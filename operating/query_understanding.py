@@ -352,6 +352,9 @@ class PgEntityIndex:
     HIDDEN_MIN = 0.6     # strict word similarity a hidden match needs to be counted
     HIDDEN_WINDOW = 300  # hidden matches are looked for among this many best rows
     HIDDEN_LIMIT = 20
+    CONNECTIONS = 4             # lookups at once per index (one process's workers)
+    CONNECT_TIMEOUT_S = 5
+    STATEMENT_TIMEOUT_MS = 60_000   # a lookup never holds its connection for ever
     COMMON_WORD_ROWS = 1500
     DISTINCTIVE_MAX = 5  # a word in at most this many visible names names something
 
@@ -363,34 +366,50 @@ class PgEntityIndex:
         self.dsn = dsn or os.environ.get("PLX_PG_DSN") or "postgresql:///plx"
         self.table = table
         self._connect = connect
-        self._conn: Any = None
-        self._lock = threading.Lock()
+        # A few connections, each lent to one lookup at a time: one process's read, Ask
+        # and warm workers look up at once instead of queueing behind one connection.
+        self._idle: list[Any] = []
+        self._lock = threading.Lock()                 # guards the idle list only
+        self._slots = threading.BoundedSemaphore(self.CONNECTIONS)
         self.exclusion = exclusion            # None: operating.pg.permissions.load_exclusion()
         self._scope_cache = scope_cache
         self.common: set[str] = set()         # words the last lookup found common
 
-    def _connection(self):
-        if self._conn is None or self._conn.closed:
-            if self._connect is not None:
-                self._conn = self._connect(self.dsn)
-            else:
-                import psycopg
-                self._conn = psycopg.connect(self.dsn, autocommit=True)
-            self._conn.execute("SELECT set_config('default_transaction_read_only', 'on', false)")
-        return self._conn
+    def _open(self) -> Any:
+        if self._connect is not None:
+            conn = self._connect(self.dsn)
+        else:
+            import psycopg
+            conn = psycopg.connect(self.dsn, autocommit=True,
+                                   connect_timeout=self.CONNECT_TIMEOUT_S)
+        conn.execute("SELECT set_config('default_transaction_read_only', 'on', false),"
+                     " set_config('statement_timeout', %s, false)",
+                     (f"{self.STATEMENT_TIMEOUT_MS}ms",))
+        return conn
 
     def _locked(self, call: Callable[[Any], Any]) -> Any:
-        with self._lock:
+        """``call`` over a connection of this index's own, lent to it alone; a connection
+        that failed is closed, never lent again."""
+        with self._slots:
+            conn = None
+            with self._lock:
+                while self._idle and conn is None:
+                    conn = self._idle.pop()
+                    if conn.closed:
+                        conn = None
+            if conn is None:
+                conn = self._open()
             try:
-                return call(self._connection())
+                result = call(conn)
             except Exception:
-                if self._conn is not None:
-                    try:
-                        self._conn.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._conn = None
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
                 raise
+            with self._lock:
+                self._idle.append(conn)
+            return result
 
     def _run(self, sql: str, params: Any, *, threshold: float | None = None) -> list[tuple]:
         def go(conn):
@@ -403,9 +422,9 @@ class PgEntityIndex:
 
     def close(self) -> None:
         with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
+            idle, self._idle = self._idle, []
+        for conn in idle:
+            conn.close()
 
     def scope(self, policy: Any, actor: Any) -> Any:
         """The reader's SearchScope (the ``reader_scope``: policy, people exclusion,
@@ -489,11 +508,11 @@ class PgEntityIndex:
         terms = [t for t in dict.fromkeys(terms) if t]
         if not terms:
             return [], {}
-        self.common = self._common_words(terms, scope)
+        common = self.common = self._common_words(terms, scope)
         upper = sorted({t.upper() for t in terms} | set(terms))
         out: list[EntityRow] = []
         hidden: dict[str, dict[str, float]] = {}
-        pending = [t for t in terms if t not in self.common]
+        pending = [t for t in terms if t not in common]
         sql = self._TERMS_SQL.format(table=self.table, cols=self._COLS,
                                      visible=self._visible(scope), person=self._PERSON_KEY)
         for tier, threshold in enumerate(self.THRESHOLDS):

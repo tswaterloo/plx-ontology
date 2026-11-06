@@ -173,7 +173,7 @@ function Today() {
   const load = useCallback((fresh = false) => {
     const c = new AbortController();
     setError(null);
-    loadHome(fresh, c.signal)
+    loadHome(fresh)
       .then((h) => !c.signal.aborted && setHome(h))
       .catch((e) => {
         if (c.signal.aborted) return;

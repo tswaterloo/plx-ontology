@@ -76,6 +76,25 @@ class PoolTest(unittest.TestCase):
             pool.submit(slot, "b", ("b", 0)).result(10)
         self.assertEqual(pool._load, {})
 
+    def test_a_section_that_never_answers_frees_its_slot_and_queued_sections(self):
+        stopped = threading.Event()
+
+        def serve(conn, _):
+            conn.send(("ready",))
+            conn.recv()          # the hung read: never answers
+            stopped.wait(10)
+        with mock.patch.object(sp, "SECTION_SECONDS", 0.2):
+            pool = self.pool(serve)
+            slot = pool.slot_for("late", m.PAGE_SECTIONS)
+            hung = pool.submit(slot, "a", ("a", 1))
+            queued = pool.submit(slot, "b", ("b", 1))
+            for future in (hung, queued):
+                with self.assertRaises(sp.SlotGone):
+                    future.result(10)
+        stopped.set()
+        self.assertTrue(slot.gone.is_set())
+        self.assertIsNone(pool.slot_for("late", m.PAGE_SECTIONS))   # read worker reads it
+
     def test_a_slot_that_is_gone_hands_its_sections_to_the_read_worker(self):
         def serve(conn, _):
             conn.send(("ready",))

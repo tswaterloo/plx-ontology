@@ -21,6 +21,7 @@ import concurrent.futures as cf
 import inspect
 import os
 import threading
+import time
 from typing import Any, Callable, Protocol, Sequence
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
@@ -290,22 +291,37 @@ class SharedEmbedder:
     """The query embedder of the host's model process. ``model`` is the name it embeds
     with (None while no server answers: the dense retriever is skipped, stated)."""
 
+    RETRY_SECONDS = 60.0   # a server that did not answer is not waited for again sooner
+
     def __init__(self) -> None:
         self._model: str | None = None
+        self._missing_since: float | None = None
 
     @property
     def model(self) -> str | None:
         if self._model is None:
+            if self._missing_since is not None and \
+                    time.monotonic() - self._missing_since < self.RETRY_SECONDS:
+                return None   # no query waits out a server start again meanwhile
             from operating.search import model_server
             ping = model_server.ensure()
             self._model = (ping or {}).get("embed_model") or None
+            self._missing_since = None if self._model else time.monotonic()
         return self._model
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         from operating.search import model_server
         if self.model is None:
             raise RuntimeError("model_server_unavailable")
-        out = model_server.request({"op": "embed", "texts": list(texts)}, 60.0)
+        try:
+            out = model_server.request({"op": "embed", "texts": list(texts)}, 60.0)
+        except ConnectionError:
+            # the server ended (it exits when idle): started again in the background, and
+            # this query ranks without it, as while none answers
+            self._model, self._missing_since = None, time.monotonic()
+            threading.Thread(target=model_server.ensure, daemon=True,
+                             name="plx-model-server-start").start()
+            raise RuntimeError("model_server_unavailable") from None
         if not out.get("ok"):
             raise RuntimeError(str(out.get("problem") or "embed_failed"))
         return out["vectors"]
@@ -343,6 +359,8 @@ class SharedReranker:
                                         "passages": list(passages), "timeout": timeout},
                                        timeout + 5.0)
         except (OSError, ValueError) as exc:
+            if isinstance(exc, ConnectionError):   # ended (idle): started again for later
+                self.warm()
             return None, "reranker_unavailable:" + type(exc).__name__
         if not out.get("ok"):
             return None, "reranker_error:" + str(out.get("problem"))[:40]

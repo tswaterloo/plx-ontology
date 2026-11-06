@@ -405,6 +405,21 @@ class PerPlan(unittest.TestCase):
         self.assertEqual(built["verdict_state"], "recorded")
 
 
+class SchemaOnce(unittest.TestCase):
+    def test_trails_compile_the_schema_once_per_process(self):
+        from unittest import mock
+        from operating import ontology_tools as ot
+        ot.shared_schema.cache_clear()
+        self.addCleanup(ot.shared_schema.cache_clear)
+        with mock.patch.object(ot, "default_schema", wraps=ot.default_schema) as compiled:
+            first = wt.default_schema()
+            self.assertIsNotNone(first)
+            for _ in range(3):
+                self.assertIs(wt.default_schema(), first)
+                wt.load_plans()
+        self.assertEqual(compiled.call_count, 1)
+
+
 class NoCaseValues(unittest.TestCase):
     def test_plans_carry_no_figure_in_their_wording(self):
         for path in sorted(wt.PLAN_DIR.glob("*.json")):

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LatePo } from "@/lib/types";
-import { matches, sortLate, supplierCounts, type DayBand, type ValueBand } from "./late";
+import { matches, readAllLate, sortLate, supplierCounts, type DayBand, type ValueBand, type LatePage } from "./late";
 
 const po = (n: number, extra: Partial<LatePo> = {}): LatePo => ({
   object_id: `PurchaseOrder:${n}`, label: `PO ${n}`, reason: "late", open_url: `/object/PurchaseOrder/${n}`, sources: [], ...extra,
@@ -39,5 +39,47 @@ describe("late list filters and sort", () => {
     expect(ids(sortLate(ROWS, "due"))).toBe("1,2,3,4,5");
     expect(ids(sortLate(ROWS, "po", true))).toBe("5,4,3,2,1");
     expect(ROWS.map((p) => p.object_id)).toEqual(["1", "2", "3", "4", "5"].map((n) => `PurchaseOrder:${n}`)); // never sorted in place
+  });
+});
+
+describe("readAllLate", () => {
+  const po = (n: number) => ({ object_id: `PurchaseOrder:t:${n}` }) as LatePo;
+  // a made-up list of `total` orders, `size` a page, as /api/late pages it
+  function server(total: number) {
+    const asked: number[] = [];
+    let open = 0;
+    let most = 0;
+    const get = async (offset: number, size: number): Promise<LatePage> => {
+      asked.push(offset);
+      open += 1;
+      most = Math.max(most, open);
+      await new Promise((r) => setTimeout(r, 1));
+      open -= 1;
+      const items = Array.from({ length: Math.max(0, Math.min(size, total - offset)) }, (_, i) => po(offset + i));
+      const next = offset + items.length;
+      return { items, total, more: next < total, next_offset: next, as_of: `cut-${offset}` };
+    };
+    return { get, asked, peak: () => most };
+  }
+
+  it("reads every page after the first at once, in order, each order once", async () => {
+    const s = server(250);
+    const got = await readAllLate(s.get, 100, 1000);
+    expect(got.items.map((p) => p.object_id)).toEqual(Array.from({ length: 250 }, (_, i) => `PurchaseOrder:t:${i}`));
+    expect(got.total).toBe(250);
+    expect(got.asOf).toBe("cut-200");
+    expect(s.asked).toEqual([0, 100, 200]);
+    expect(s.peak()).toBe(2);
+  });
+
+  it("stops at the cap and at a single page", async () => {
+    const big = server(5000);
+    const got = await readAllLate(big.get, 100, 1000);
+    expect(got.items).toHaveLength(1000);
+    expect(got.total).toBe(5000);
+    expect(big.asked).toHaveLength(10);
+    const one = server(40);
+    expect((await readAllLate(one.get, 100, 1000)).items).toHaveLength(40);
+    expect(one.asked).toEqual([0]);
   });
 });

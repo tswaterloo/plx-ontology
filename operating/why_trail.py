@@ -81,8 +81,11 @@ class WhyPlan:
 
 
 def default_schema() -> Any:
-    from operating.ontology_tools import default_schema as schema
-    return schema()
+    """The compiled schema, compiled once per process (``shared_schema``): every trail,
+    party and same-record check only reads it, and compiling it again costs ~45 ms of
+    Python per call (per candidate pair in a resolution)."""
+    from operating.ontology_tools import shared_schema
+    return shared_schema()
 
 
 def _far_types(schema: Any, object_type: str, name: str) -> list[str]:
@@ -240,7 +243,6 @@ def _pattern(terms: Sequence[str]) -> Optional[re.Pattern]:
 def load_plans(directory: str | Path = PLAN_DIR, *, schema: Any = None) -> list[WhyPlan]:
     """Every why plan of ``directory``, by priority (``WhyPlanError`` lists every problem)."""
     if schema is None:
-        from operating.ontology_tools import default_schema
         schema = default_schema()
     plans, problems = [], []
     for path in sorted(Path(directory).glob("*.json")):
@@ -709,7 +711,6 @@ def build(plan: WhyPlan, root: Mapping[str, Any], *, call: Callable[[str, dict],
     {plan, steps: [{kind, date, label, value, handle, check}], hidden, may_be_withheld,
     incomplete, next_action: {text, rule, suggestion_only}}."""
     if schema is None:
-        from operating.ontology_tools import default_schema
         schema = default_schema()
     run = _Run(call, time.monotonic() + seconds)
     object_id, object_type = str(root["object_id"]), str(root.get("object_type") or

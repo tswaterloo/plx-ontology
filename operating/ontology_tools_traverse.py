@@ -1520,6 +1520,9 @@ class TraverseTools:
         pegging = _pegging_links() if chosen else frozenset()
         unkinded: set[str] = set()
         reviews: dict[str, dict[str, Any]] = {}
+        # every mention link's ambiguity on this page, one read per mentioning object
+        ambiguous = self._mentions_ambiguous(
+            scope, [row for _, _, row in chosen.values() if row["binding_kind"] == "mention"])
         for link_id, (index, tier, row) in chosen.items():
             # A mention link's, or any corroborated link's, reader tier is applied with its
             # view below (reader_view): a corroborated purchase-order twin cites its
@@ -1540,7 +1543,8 @@ class TraverseTools:
                 unkinded.add(row["link_type"])
             else:
                 edge["kind"] = kind
-            if row["binding_kind"] == "mention" and self._mention_ambiguous(scope, row):
+            if row["binding_kind"] == "mention" and self._mention_ambiguous(
+                    scope, row, ambiguous):
                 edge["why_not"] = (edge["why_not"]
                                    + [{"feature": "ambiguous", "agrees": False}])[:16]
             # L8's citation rule (plx.object): a citation is kept only when it names
@@ -1648,39 +1652,77 @@ class TraverseTools:
             return "lead"
         return tier
 
-    def _mention_ambiguous(self, scope: _Scope, row: Mapping[str, Any]) -> bool:
+    @staticmethod
+    def _mention_group(row: Mapping[str, Any]) -> str | None:
+        """The ``mention_group`` a stored mention link belongs to, or None."""
+        group = next((f.get("mention_group") for f in _json_list(row["reason"])
+                      if isinstance(f, dict) and f.get("feature") == "identifier_mention"),
+                     None)
+        return group if isinstance(group, str) and group else None
+
+    def _ambiguity_memo(self, scope: _Scope) -> dict[Any, bool] | None:
+        # The same reader's decision for the rest of a plan run (``run_memo``): its calls
+        # read the same mail through each twin, page and retry of the run.
+        return run_memo_for(("mention_ambiguous", id(self), scope.actor, scope.audience_keys,
+                             scope.held, scope.marking_sets, scope.sources,
+                             scope.t if scope.explicit_at else None))
+
+    def _mentions_ambiguous(self, scope: _Scope, rows: Sequence[Mapping[str, Any]]
+                            ) -> dict[tuple[str, str], bool]:
+        """``_mention_ambiguous`` of every mention link of ``rows`` at once, by
+        (mentioning object, mention group): one store read per mentioning object for all
+        of its groups, instead of one read per link (each of which reads every mention
+        link of that object again). The same visibility rules, so the same answers."""
+        kept = self._ambiguity_memo(scope)
+        wanted: dict[str, set[str]] = {}
+        out: dict[tuple[str, str], bool] = {}
+        for row in rows:
+            group = self._mention_group(row)
+            if group is None:
+                continue
+            key = (row["from_object"], group)
+            if kept is not None and key in kept:
+                out[key] = kept[key]
+            else:
+                wanted.setdefault(row["from_object"], set()).add(group)
+        for from_object, groups in wanted.items():
+            seen = {grp: 0 for grp in groups}
+            for grp, count in self.store.conn.execute(
+                    f"""SELECT g.value, COUNT(DISTINCT l.to_object) FROM links l
+                        JOIN objects x ON x.object_id = l.to_object
+                        JOIN json_each(:groups) g
+                          ON EXISTS (SELECT 1 FROM json_each(l.reason) f
+                                     WHERE json_extract(f.value, '$.mention_group') = g.value)
+                        WHERE l.from_object = :from_object AND l.binding_kind = 'mention'
+                        AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
+                        AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
+                                        WHERE NOT {scope.gate}(h.value))
+                        AND {_visible_object('x', scope.gate)}
+                        GROUP BY g.value""",
+                    scope.params(from_object=from_object,
+                                 groups=json.dumps(sorted(groups)))).fetchall():
+                seen[grp] = count
+            for grp, count in seen.items():
+                out[(from_object, grp)] = count >= 2
+                if kept is not None:
+                    kept[(from_object, grp)] = count >= 2
+        return out
+
+    def _mention_ambiguous(self, scope: _Scope, row: Mapping[str, Any],
+                           known: Mapping[tuple[str, str], bool] | None = None) -> bool:
         """Whether this reader can see two or more candidates of the mention a stored
         mention link belongs to (its ``mention_group``, ``ontology/mentions.py``).
         Decided per reader: a candidate the reader cannot see (other end, marking,
         evidence handle or time) is never counted, so nobody learns that a hidden
-        object carries the same identifier."""
-        group = next((f.get("mention_group") for f in _json_list(row["reason"])
-                      if isinstance(f, dict) and f.get("feature") == "identifier_mention"),
-                     None)
-        if not isinstance(group, str) or not group:
+        object carries the same identifier. ``known``: the page's decisions
+        (``_mentions_ambiguous``)."""
+        group = self._mention_group(row)
+        if group is None:
             return False
-        # The same reader's decision for the rest of a plan run (``run_memo``): its calls
-        # read the same mail through each twin, page and retry of the run.
-        kept = run_memo_for(("mention_ambiguous", id(self), scope.actor, scope.audience_keys,
-                             scope.held, scope.marking_sets, scope.sources,
-                             scope.t if scope.explicit_at else None))
         key = (row["from_object"], group)
-        if kept is not None and key in kept:
-            return kept[key]
-        seen = self.store.conn.execute(
-            f"""SELECT COUNT(DISTINCT l.to_object) FROM links l
-                JOIN objects x ON x.object_id = l.to_object
-                WHERE l.from_object = :from_object AND l.binding_kind = 'mention'
-                AND EXISTS (SELECT 1 FROM json_each(l.reason) f
-                            WHERE json_extract(f.value, '$.mention_group') = :grp)
-                AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
-                AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
-                                WHERE NOT {scope.gate}(h.value))
-                AND {_visible_object('x', scope.gate)}""",
-            scope.params(from_object=row["from_object"], grp=group)).fetchone()[0]
-        if kept is not None:
-            kept[key] = seen >= 2
-        return seen >= 2
+        if known is not None and key in known:
+            return known[key]
+        return self._mentions_ambiguous(scope, [row]).get(key, False)
 
     # ------------------------------------------------------------------ plx.timeline
 

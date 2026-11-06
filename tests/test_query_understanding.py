@@ -547,6 +547,58 @@ class RankingAtScaleTests(unittest.TestCase):
 
 
 @unittest.skipUnless(PG, "Postgres with pg_trgm and psycopg needed")
+class IndexConnectionTests(unittest.TestCase):
+    """The entity index lends each lookup a connection of its own (no Postgres needed:
+    a stand-in connection)."""
+
+    class Conn:
+        def __init__(self, opened):
+            self.closed, self.sql = False, []
+            opened.append(self)
+
+        def execute(self, sql, params=None):
+            self.sql.append((sql, params))
+
+        def close(self):
+            self.closed = True
+
+    def index(self):
+        opened = []
+        index = qu.PgEntityIndex("postgresql:///none", connect=lambda dsn: self.Conn(opened))
+        return index, opened
+
+    def test_lookups_from_several_threads_run_at_once(self):
+        index, opened = self.index()
+        both = threading.Barrier(2, timeout=5)   # broken if the lookups run one by one
+        out = []
+        threads = [threading.Thread(target=lambda: out.append(index._locked(
+            lambda conn: (both.wait(), conn)[1]))) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(len(out), 2)
+        self.assertIsNot(out[0], out[1])
+        # each read-only, with a statement time limit; then lent again, never reopened
+        for conn in opened:
+            self.assertIn("default_transaction_read_only", conn.sql[0][0])
+            self.assertIn("statement_timeout", conn.sql[0][0])
+        index._locked(lambda conn: None)
+        self.assertEqual(len(opened), 2)
+
+    def test_a_connection_that_failed_is_closed_and_never_lent_again(self):
+        index, opened = self.index()
+
+        def fail(conn):
+            raise RuntimeError("server closed the connection")
+        with self.assertRaises(RuntimeError):
+            index._locked(fail)
+        self.assertTrue(opened[0].closed)
+        self.assertIsNot(index._locked(lambda conn: conn), opened[0])
+        index.close()
+        self.assertTrue(all(conn.closed for conn in opened))
+
+
 class FollowUpTests(unittest.TestCase):
     def test_second_one_picks_from_the_choices_the_prompt_offered(self):
         first = FX.ask("5280")

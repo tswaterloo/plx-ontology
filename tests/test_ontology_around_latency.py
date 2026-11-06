@@ -197,6 +197,85 @@ class AroundLatencyTests(unittest.TestCase):
         store.conn.close()
 
 
+# The traverse module before a page's mention ambiguity was read once per mentioning object.
+MENTION_BASE_SHA = "09a7dbd837df123c42fbabb45740f0dd74b5793f"
+MAIL = "MailMessage:mail.inbox:wide-0"
+
+
+def wide_mail(n):
+    """One mail that mentions ``n`` orders, in pairs (``g-i//2``),
+    every fourth order finance-marked (hidden from OPS), every seventh mention link
+    superseded: whether a group reads as ambiguous differs by reader."""
+    def extra(s):
+        handle = "graph-mail://mbx-1/wide-0@ck1"
+        s.obj(MAIL, "mail:inbox@example.test", handle, "mail",
+              display=("subject", "text", "About many orders"))
+        for i in range(n):
+            order = f"Order:portal.order:w-{i:05d}"
+            s.obj(order, "api:public.order", fx.api("order", f"W{i}"), "fm_bronze",
+                  markings='["finance"]' if i % 4 == 0 else "[]",
+                  display=("number", "identifier", f"W{i}"))
+            reason = [{"feature": "identifier_mention", "agrees": True,
+                       "mention_group": f"g-{i // 2}",
+                       "citations": [{"l1_handle": handle, "field_path": "row.subject",
+                                      "digest": fx._h(handle), "lineage": "mail"}]}]
+            s.conn.execute(
+                "INSERT INTO links(link_id, link_type, from_object, to_object, tier, "
+                "binding_kind, reason, why_not, evidence_handles, markings, recorded_at, "
+                "superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (f"l-wm-{i:05d}", "MailMessage.mentions_order", MAIL, order,
+                 "corroborated", "mention", json.dumps(reason), "[]",
+                 json.dumps([handle, s.handles[fx.O1]]), "[]", fx.T0,
+                 "2099-01-15T00:00:00Z" if i % 7 == 0 else None))
+    return fx.build(extra=extra)
+
+
+class MentionAmbiguityTests(unittest.TestCase):
+    CALL = {"from": MAIL, "path": [{"link_type": "MailMessage.mentions_order",
+                                    "direction": "forward"}], "limit": LIMIT}
+
+    def test_one_ambiguity_read_per_page_not_per_mention(self):
+        def mention_reads(n):
+            store = wide_mail(n)
+            t, _ = fx.tools(store)
+            seen = []
+            store.conn.set_trace_callback(
+                lambda sql: seen.append(sql) if "mention_group" in sql else None)
+            for actor in ACTORS:
+                self.assertNotIn("error", t.call("plx.around", self.CALL, actor))
+            store.conn.close()
+            return len(seen)
+        # one read per call (each reader), however many mentions the page shows
+        self.assertEqual(mention_reads(LIMIT + 10), len(ACTORS))
+        self.assertEqual(mention_reads(4 * LIMIT), len(ACTORS))
+
+    def test_same_edges_as_the_per_link_reads(self):
+        base = base_module(MENTION_BASE_SHA)
+        store = wide_mail(4 * LIMIT)
+        policy_tools = ot.OntologyTools(
+            ot.StoreReader(store.conn), fx.POLICY, item_gate=fx.item_gate, schema=fx.SCHEMA,
+            grammar=None, contracts=fx.CONTRACTS, clock=lambda: fx.NOW,
+            monotonic=fx.Clock().monotonic)
+        old = base.TraverseTools(policy_tools)
+        new, _ = fx.tools(store)
+        flagged = {}
+        for at in (None, "2099-01-20T00:00:00Z"):
+            for actor in ACTORS:
+                call = {**self.CALL, **({"as_known_at": at} if at else {})}
+                with self.subTest(at=at, actor=sorted(actor.principals)):
+                    got = new.call("plx.around", call, actor)
+                    fx.ok(self, "plx.around", got)
+                    self.assertEqual(comparable(got),
+                                     comparable(old.call("plx.around", call, actor)))
+                    flagged[at, actor.principals] = sum(
+                        any(w.get("feature") == "ambiguous" for w in e.get("why_not") or ())
+                        for e in got["edges"])
+        # the fixture exercises both answers, and they differ by reader
+        self.assertTrue(any(flagged.values()))
+        self.assertGreater(len(set(flagged.values())), 1, flagged)
+        store.conn.close()
+
+
 # --------------------------------------------------------------------------- store size
 
 ORPHAN = "Order:portal.order:o-7"       # an order with no party: its placed_by hop is empty

@@ -86,3 +86,38 @@ export function sortLate(items: LatePo[], key: SortKey, desc = false): LatePo[] 
     .sort(([a, i], [b, j]) => cmp[key](a, b) || i - j)
     .map(([p]) => p);
 }
+
+/** One page of the late list as `/api/late` returns it (the fields `readAllLate` reads). */
+export interface LatePage {
+  items?: LatePo[] | null;
+  total: number;
+  more?: boolean;
+  next_offset?: number | null;
+  as_of?: string | null;
+}
+
+/**
+ * Every late PO up to `most`, in the list's order, each once: the first page, then every
+ * further page at once (a page ends where the next starts), not one round trip after another.
+ * Returns the orders, the list's total and the cut-off the last page states.
+ */
+export async function readAllLate<P extends LatePage>(
+  get: (offset: number, size: number) => Promise<P>,
+  size: number,
+  most: number,
+): Promise<{ items: LatePo[]; total: number; asOf: string | null }> {
+  const first = await get(0, size);
+  const pages: P[] = [first];
+  const step = first.next_offset ?? (first.items ?? []).length;
+  if (first.more && step > 0) {
+    const offsets: number[] = [];
+    for (let o = step; o < Math.min(first.total, most); o += step) offsets.push(o);
+    pages.push(...(await Promise.all(offsets.map((o) => get(o, size)))));
+  }
+  const items: LatePo[] = [];
+  const seen = new Set<string>();
+  for (const page of pages)
+    for (const p of page.items ?? []) if (!seen.has(p.object_id)) (seen.add(p.object_id), items.push(p));
+  const last = pages[pages.length - 1];
+  return { items, total: last.total, asOf: last.as_of ?? null };
+}
