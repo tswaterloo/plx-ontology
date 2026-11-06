@@ -175,6 +175,8 @@ from integrations.captured_text import kept_readings
 from integrations.kept_members import MEMBERS_FILE, kept_members
 from ontology.document_fields import kept_fields
 from ontology import build_adopt, build_keys, build_prints, store_ddl
+from ontology.build_timings import BuildTimings
+from ontology.finish_digest import ParallelBuilder
 from ontology.store import (_DIRTY_TRIGGERS, StoreBuilder, StoreError, _fsync_dir, canonical,
                             known_at, object_segment)
 
@@ -1247,7 +1249,8 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                      before_seed: Callable[[Path], None] | None = None,
                      on_stage: Callable[[str, int, int], None] | None = None,
                      space: Callable[[Mapping[str, Any]], None] | None = None,
-                     workers: int | None = None) -> Generation:
+                     workers: int | None = None,
+                     timings: BuildTimings | None = None) -> Generation:
     """Build the next generation of ``state_dir`` from ``sources`` under ``schema`` and
     commit it (``CURRENT``). ``previous``: the generation to reuse unchanged units from
     (default: the committed one; None = a cold build). ``reuse``: when no unit changed
@@ -1261,13 +1264,16 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
     argument is ``build_store``'s. ``workers``: the processes a build projects with
     (``ontology.project_parallel``: a cold build's units, an incremental build's changed
     ones; None: ``PLX_BUILD_WORKERS`` or the CPUs, and serial under ``MIN_CAPTURE_BYTES``
-    of captures; 1: serial). Raises
+    of captures; 1: serial). ``timings``: where each step's start, end and seconds go as
+    the build runs (``ontology.build_timings``; a fresh one by default: the generation's
+    ``seconds``). Raises
     ``ProjectionError("generation_build_in_progress")`` while another build holds the
     state directory; on any failure the committed generation
     is left as it was."""
     state = Path(state_dir)
     (state / "generations").mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    timings = timings if timings is not None else BuildTimings()
     with _Lock(state):
         current = current_generation(state)
         base = current if previous is _CURRENT_GENERATION else previous
@@ -1295,11 +1301,14 @@ def build_generation(state_dir: str | Path, schema: Any, sources: Mapping[str, C
                 _document_pool(workers) as parse:
             generation = _build(state, schema, sources, base, reuse=reuse,
                                 before_seed=before_seed, space=space, parse=parse,
-                                **options)
+                                timings=timings, **options)
         if generation.mode != "reused":
+            laid = time.monotonic()
+            timings.begin("prune")
             _prune(state, generation.id)
-    generation.seconds["total"] = round(time.monotonic() - started, 3)
-    return generation
+            timings["prune"] = round(time.monotonic() - laid, 3)
+    timings["total"] = round(time.monotonic() - started, 3)
+    return replace(generation, seconds=dict(timings))
 
 
 def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
@@ -1310,8 +1319,11 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
            reuse: bool = False,
            before_seed: Callable[[Path], None] | None = None,
            space: Callable[[Mapping[str, Any]], None] | None = None,
-           workers: int | None = None, parse: Any = None) -> Generation:
+           workers: int | None = None, parse: Any = None,
+           timings: BuildTimings | None = None) -> Generation:
     started = time.monotonic()
+    seconds = timings if timings is not None else BuildTimings()
+    seconds.begin("fingerprint")
     the_plan = plan(schema)
     # What every unit's rows share: the scheme and version of the rows code
     # (``ontology.build_keys``), the cut and the normalizer's code. The schema and the
@@ -1375,7 +1387,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     fingerprints = {bid: build_keys.with_reader(print_, reader_of.get(b["source"]))
                     for bid, (_, b) in the_plan.bindings.items()
                     for print_ in [captured.get(bid)]}
-    seconds = {"fingerprint": round(time.monotonic() - started, 3)}
+    seconds["fingerprint"] = round(time.monotonic() - started, 3)
     if parse is not None:
         parse.engaged = _parallel_count(workers, marks) > 1
         relations: dict[str, set[str]] = {}
@@ -1384,6 +1396,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
         parse.know({name: pinned[name] for name in relations if name in pinned}, marks,
                    relations)
     started = time.monotonic()
+    seconds.begin("fingerprint.shards")
     shard_code = build_keys.shard_code_digest()
 
     def spec(bid: str) -> str:
@@ -1445,6 +1458,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
             return resumed
     incremental = reusable and len(dirty) < len(keys)
     read_from = time.monotonic()
+    seconds.begin("fingerprint.objects")
     local = object_local(schema, the_plan)
     sidecar = _Objects(state / f".objects-{secrets.token_hex(8)}.sqlite") if local else None
     try:
@@ -1481,6 +1495,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
     except BaseException:
         _discard(sidecar)
         raise
+    seconds.attach(directory)
     try:
         objects: dict[str, frozenset[str] | None] = {
             bid: (sidecar.changed_ids(bid) if bid in delta else None)
@@ -1501,10 +1516,14 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                 on_stage(name, work, store)
         projector.on_stage = stage
         laid = time.monotonic()
-        with StoreBuilder(directory / "store.sqlite",
-                          seed=base.store if incremental else None) as builder:
+        seconds.begin("project.seed")
+        # (the builder whose digest of the segments it wrote is made by the build's
+        # workers, ``ontology.finish_digest``)
+        with ParallelBuilder(directory / "store.sqlite",
+                             seed=base.store if incremental else None) as builder:
             seed = builder.seed_mode
             seconds["project.seed"] = round(time.monotonic() - laid, 3)
+            builder.seconds = seconds.prefixed("finish.")
             builder.digest_workers = _digest_workers(workers)
             open_generation(builder)
             parallel = None
@@ -1519,6 +1538,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                 if chosen:
                     _foreign_keys(builder.connection, on=False)
                 laid = time.monotonic()
+                seconds.begin("project.seed_delete")
                 _delta_objects(builder.connection, sidecar, delta)
                 _identifier_rows(builder.connection, the_plan, dirty, "before", delta)
                 _seed_delete(builder.connection, the_plan, schema, dirty | set(gone or ()),
@@ -1559,11 +1579,14 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                 work_peak[0] = parallel["result"].work_peak
             if serial is not None:
                 laid = time.monotonic()
+                if parallel is not None:
+                    seconds.begin("project.serial")
                 serial.project_into(builder)
                 if parallel is not None:
                     seconds["project.serial"] = round(time.monotonic() - laid, 3)
             if incremental:
                 laid = time.monotonic()
+                seconds.begin("project.changed_keys")
                 _identifier_rows(builder.connection, the_plan, dirty, "after", delta)
                 builder.connection.execute("DROP TABLE IF EXISTS temp.plx_delta_objects")
                 _changed_keys(builder.connection)
@@ -1591,6 +1614,7 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                              if serial.emit is None or u in serial.emit}
                             if serial is not None else {})}
             laid = time.monotonic()
+            seconds.begin("project.objects")
             # (an incremental build's workers hand on their objects' parts; a cold one's
             # keep none)
             projected = _object_parts(sidecar, routed, delta, projected, directory,
@@ -1614,12 +1638,16 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                 (parallel is not None and "result" in parallel)
             report = merge_reports(parts.values()) if merged else projector.report.as_dict()
             seconds["project"] = round(time.monotonic() - started, 3)
+            laid = time.monotonic()
+            seconds.begin("project.counts")
+            counted = projected_counts(builder, report)
+            seconds["project.counts"] = round(time.monotonic() - laid, 3)
             held = {
                 "format": CHECKPOINT_FORMAT, "id": token, "context": context, "code": code,
                 "keys": keys,
                 "base": base.id if base is not None else None, "incremental": incremental,
                 "store": builder.temp.name, "report": report,
-                "counts": projected_counts(builder, report),
+                "counts": counted,
                 "units": {"context": context,
                           # The keys' scheme and what a later build must share to
                           # rewrite unit by unit (``build_keys``): each binding's type,
@@ -1645,8 +1673,11 @@ def _build(state: Path, schema: Any, sources: Mapping[str, CaptureSource],
                                "bindings_read": len(scope) if scope is not None
                                else len(the_plan.bindings), "seed": seed, "need": need,
                                "unattributed": unattributed}}
+            laid = time.monotonic()
+            seconds.begin("project.checkpoint")
             if the_plan.acyclic and builder.keep_to_resume({"id": token, "steps": {}}):
                 _write_json(directory / CHECKPOINT, held)
+            seconds["project.checkpoint"] = round(time.monotonic() - laid, 3)
             generation = _finish(state, directory, builder, projector, held, token,
                                  post_project=post_project, clock=clock, seconds=seconds,
                                  started=time.monotonic())
@@ -1796,11 +1827,15 @@ def _finish(state: Path, directory: Path, builder: StoreBuilder, projector: Proj
     ``units.json``, then ``CURRENT``. ``stepped``: the report of a resumed build whose
     rows were checked and committed (only digested and swapped in here)."""
     done = dict(builder.checkpoint.get("steps") or {})
+    if isinstance(seconds, BuildTimings):
+        seconds.begin("finish")
 
     def after_step(name: str, step: Mapping[str, Any]) -> None:
         done[name] = dict(step)
         if builder.kept:
+            laid = time.monotonic()
             builder.keep_to_resume({"id": builder.checkpoint["id"], "steps": done})
+            seconds[f"finish.{name}.checkpoint"] = round(time.monotonic() - laid, 3)
 
     committed = False
     try:
@@ -1816,7 +1851,8 @@ def _finish(state: Path, directory: Path, builder: StoreBuilder, projector: Proj
     finally:
         projector.build_context.close(committed=committed)
     digested = {"mode": builder.digest_mode, "segments": builder.digest_segments}
-    seconds.update({f"finish.{name}": value for name, value in builder.seconds.items()})
+    seconds.update({f"finish.{name}": value for name, value in builder.seconds.items()
+                    if seconds.get(f"finish.{name}") != value})
     seconds["finish"] = round(time.monotonic() - started, 3)
     kept = dict(held["units"])
     _write_json(directory / "units.json", {
@@ -1871,9 +1907,9 @@ def _resume(state: Path, held: tuple[Path, dict[str, Any]], schema: Any,
         shutil.rmtree(directory, ignore_errors=True)
         return None
     try:
-        builder, marked = StoreBuilder.reopen(directory / checkpoint["store"],
-                                              directory / "store.sqlite",
-                                              seeded=bool(checkpoint.get("incremental")))
+        builder, marked = ParallelBuilder.reopen(directory / checkpoint["store"],
+                                                 directory / "store.sqlite",
+                                                 seeded=bool(checkpoint.get("incremental")))
     except (StoreError, sqlite3.Error):
         shutil.rmtree(directory, ignore_errors=True)
         return None
@@ -1882,9 +1918,13 @@ def _resume(state: Path, held: tuple[Path, dict[str, Any]], schema: Any,
         shutil.rmtree(directory, ignore_errors=True)
         return None
     started = time.monotonic()
+    if isinstance(seconds, BuildTimings):
+        seconds.attach(directory)
     seconds["resumed"] = 1
     try:
         with builder:
+            if isinstance(seconds, BuildTimings):
+                builder.seconds = seconds.prefixed("finish.")
             builder.digest_workers = _digest_workers(workers)
             open_generation(builder)
             projector = Projector(schema, pinned, normalizer=normalizer,
@@ -1966,6 +2006,8 @@ def _project_parallel(builder: StoreBuilder, schema: Any, pinned: Mapping[str, A
         return None
     hints = ((units or {}).get("parallel") or {}).get("seconds") or {}
     started = time.monotonic()
+    if isinstance(seconds, BuildTimings):
+        seconds.begin("project.parallel")
     try:
         result = par.project(builder, schema=schema, sources=pinned, marks=marks,
                              the_plan=the_plan, normalizer=normalizer,
@@ -2273,6 +2315,8 @@ def _timed(steps: Mapping[str, Callable[..., Any]] | None, seconds: dict[str, fl
     def timed(name: str, step: Callable[..., Any]) -> Callable[..., Any]:
         def run(*args: Any) -> Any:
             started = time.monotonic()
+            if isinstance(seconds, BuildTimings):
+                seconds.begin(f"finish.{name}")
             try:
                 return step(*args)
             finally:

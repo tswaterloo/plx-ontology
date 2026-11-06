@@ -287,6 +287,22 @@ class CycleTests(HostCase):
         self.assertLess(second["projection"]["units_rebuilt"], second["projection"]["units"])
         committed = inc.current_generation(host_module.projection_path(self.state).parent)
         self.assertTrue(host_module.projection_path(self.state).samefile(committed.store))
+        # Each build step's start, end and seconds: in the generation, as it ran, and in
+        # the cycle row (``report.build_timings``), so a cycle stopped after its build
+        # still records them; the store facts read before it was served and kept beside
+        # the served path.
+        timings = json.loads((committed.store.parent / "timings.json").read_text())
+        steps = {entry["step"] for entry in timings["steps"]}
+        self.assertLessEqual({"fingerprint", "project", "finish.check", "finish.digest",
+                              "finish", "total"}, steps)
+        self.assertLessEqual({"store_facts", "publish"}, set(second["projection"]["seconds"]))
+        with sqlite3.connect(self.state / "host" / "host.sqlite") as db:
+            row = db.execute("SELECT report FROM cycle WHERE cycle_id = ?",
+                             (second["cycle"],)).fetchone()
+        held = {entry["step"] for entry in json.loads(row[0])["build_timings"]["steps"]}
+        self.assertLessEqual(steps | {"store_facts", "publish"}, held)
+        from operating import ontology_tools_traverse as traverse
+        self.assertTrue(traverse.facts_path(host_module.projection_path(self.state)).is_file())
 
         # GET-only: the only other method is the OAuth token POST.
         for method, url in self.router.calls:

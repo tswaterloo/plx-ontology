@@ -844,6 +844,66 @@ class KeptFactsTests(unittest.TestCase):
         self.assertTrue(tt.facts_path(pin).is_file())
 
 
+    def test_facts_read_by_worker_processes_equal_prime_and_are_kept_alike(self):
+        """``prime_store_facts`` (each fact by its own process, as a build keeps them before
+        it serves a generation): the very file ``prime`` keeps, so a later process reads
+        it and scans nothing; it is shared to a hard link of the store (the served path)
+        and never to another file."""
+        first, _ = self.primed()
+        kept = tt.facts_path(self.path)
+        serial = json.loads(kept.read_text(encoding="utf-8"))
+        kept.unlink()
+        served = self.path.parent / "served" / "ontology.sqlite"   # another directory
+        served.parent.mkdir()
+        for workers in (1, 3):
+            with self.subTest(workers=workers):
+                os.link(self.path, served)
+                self.assertTrue(tt.prime_store_facts(self.path, ("api", "mail"),
+                                                     workers=workers, also=[served]))
+                self.assertEqual(json.loads(kept.read_text(encoding="utf-8")), serial)
+                self.assertEqual(json.loads(tt.facts_path(served).read_text("utf-8")), serial)
+                later, scans = self.primed()
+                self.assertEqual(scans, [])
+                self.assertEqual(later.store.facts[1], first.store.facts[1])
+                self.path, held = served, self.path   # the served path reads them too
+                self.assertEqual(self.primed()[1], [])
+                self.path = held
+                os.unlink(tt.facts_path(served))
+                os.unlink(served)
+                kept.unlink()
+        other = self.path.with_name("other.sqlite")
+        shutil.copyfile(self.path, other)
+        self.assertTrue(tt.prime_store_facts(self.path, ("api", "mail"), workers=1))
+        self.assertFalse(tt.share_facts(self.path, other))
+        self.assertFalse(tt.facts_path(other).exists())
+
+
+    def test_a_table_never_scans_for_facts_on_the_request_path(self):
+        """``prime_lazily`` (what a tool table runs): kept facts are loaded at once; with
+        none it returns without a scan, the facts are read in the background and kept, and
+        a call that needs one before then waits for them and answers alike."""
+        first, _ = self.primed()
+        computed = first.store.facts[1]
+        answers = self.answers(first)
+        kept = tt.facts_path(self.path)
+        loaded = self.opened()
+        self.assertTrue(loaded.prime_lazily(cell_families=("api", "mail")))
+        self.assertEqual(loaded.store.facts[1], computed)
+        kept.unlink()
+        tt._LOADED.clear()   # a process that never loaded them
+        self.enterContext(mock.patch.object(tt, "LAZY_MIN_BYTES", 0))   # a large store
+        lazy, statements = self.opened(), []
+        lazy.store.conn.set_trace_callback(statements.append)
+        self.assertFalse(lazy.prime_lazily(cell_families=("api", "mail")))
+        self.assertEqual([s for s in statements if any(
+            f" {table} " in f" {s} ".replace("\n", " ") for table in self.SCANNED)], [])
+        lazy.store.conn.set_trace_callback(None)
+        self.assertEqual([self.unhandled(a) for a in self.answers(lazy)],
+                         [self.unhandled(a) for a in answers])
+        self.assertTrue(kept.is_file())
+        self.assertEqual(lazy.store.facts[1], computed)
+
+
 class DeniedReaderTests(unittest.TestCase):
     """A denied reader's answer equals its answer on a store that never held the
     denied rows: nothing hidden changes objects, edges, counts or tiers; it only

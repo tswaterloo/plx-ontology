@@ -618,6 +618,32 @@ class TraverseTools:
         except sqlite3.Error:
             self.store.facts = None
 
+    def prime_lazily(self, cell_families: Sequence[str] = ()) -> bool:
+        """``prime`` off the request path: the facts kept beside the store file are loaded
+        when they are there (a build keeps them before it serves a generation,
+        ``prime_store_facts``); else they are read in the background, once per store file
+        per process, by worker processes (``prime_store_facts``) and kept beside the file,
+        and this returns at once. A call that needs a fact before they are kept waits for
+        that read (``_store_cached``, at most ``BACKGROUND_WAIT_SECONDS``) instead of
+        scanning the store itself. A store under ``LAZY_MIN_BYTES`` is primed at once
+        (``prime``). True when the facts were loaded now."""
+        try:
+            with self.store.lock:
+                if self.store.format_problem() is not None:
+                    return False
+                kept = _store_identity(self.store.conn)
+                if kept is None:
+                    return False   # a store that keeps no facts: each read as before
+                if self._kept_facts(*kept, cell_families):
+                    return True
+            if os.path.getsize(kept[0]) < LAZY_MIN_BYTES:   # a small store: read them now
+                self.prime(cell_families)
+                return True
+        except (sqlite3.Error, OSError):
+            return False
+        self._pending = (kept, tuple(cell_families), _background_prime(kept, cell_families))
+        return False
+
     def _kept_facts(self, store: str, identity: Mapping[str, Any],
                     cell_families: Sequence[str]) -> bool:
         """Fill the store's facts from the file kept beside it: only when it was read
@@ -647,6 +673,14 @@ class TraverseTools:
         facts = self.store.facts
         if facts is None or facts[0] != stamp:
             facts = self.store.facts = (stamp, {})
+        pending = getattr(self, "_pending", None)
+        if key not in facts[1] and pending is not None:
+            # facts being read in the background (``prime_lazily``): wait for them
+            (path, identity), families, done = pending
+            done.wait(BACKGROUND_WAIT_SECONDS)
+            self._pending = None
+            if self._kept_facts(path, identity, families):
+                facts = self.store.facts
         if key not in facts[1]:
             tick = time.perf_counter()
             facts[1][key] = read()
@@ -2188,6 +2222,241 @@ def _save_facts(store: str, identity: Mapping[str, Any], facts: Mapping[Any, Any
             pass
         return
     _prune_facts(path.parent)
+
+
+def _fact_keys(cell_families: Sequence[str]) -> list[Any]:
+    """The keys of every fact ``TraverseTools.prime`` reads, in its order."""
+    return ["audience_keys", "audiences", "event_types",
+            *(("slices", kind) for kind in _SLICE_ROWS),
+            *(("cell_span", family) for family in cell_families)]
+
+
+def _read_fact(store: str, key: Any) -> Any:
+    """One store fact of ``prime`` read by its own reader over ``store`` (read-only): the
+    same ``TraverseTools`` method ``prime`` calls, so the same value."""
+    from operating import ontology_tools
+
+    conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True, check_same_thread=False)
+    try:
+        tools = ontology_tools.OntologyTools(ontology_tools.StoreReader(conn),
+                                             ontology_tools.ReadPolicy(tenant="plx",
+                                                                       audiences={}))
+        traverse = TraverseTools(tools)
+        if key == "audience_keys":
+            return traverse._audience_keys()
+        if key == "audiences":
+            return traverse._audiences()
+        if key == "event_types":
+            return traverse._event_type_maps()
+        if key[0] == "slices":
+            return traverse._slices(key[1])
+        return traverse.cell_span(key[1])
+    finally:
+        conn.close()
+
+
+# A slice read in key ranges (``prime_store_facts``): each kind's rows by the key that
+# leads its table's primary key; the slices of the ranges merge into the whole one's (each
+# end is a maximum, over rows that partition the table).
+_SLICE_KEYS = {"object": "ov.object_id", "link": "link_id", "event": "event_id"}
+_SLICE_KEY_SOURCES = {"object": ("object_versions", "object_id"),
+                      "link": ("link_rows", "link_id"), "event": ("events", "event_id")}
+SLICE_RANGES_PER_WORKER = 3
+
+
+def _slice_bounds(store: str, kind: str, pieces: int) -> list[Any]:
+    """[None, k1, ..., None]: keys cutting ``kind``'s rows into about ``pieces`` ranges."""
+    table, column = _SLICE_KEY_SOURCES[kind]
+    conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+    try:
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        every = max(1, -(-total // max(1, pieces)))
+        found = conn.execute(
+            f"SELECT k FROM (SELECT {column} AS k, row_number() OVER (ORDER BY {column}) AS n "
+            f"FROM {table}) WHERE (n - 1) % ? = 0 AND n > 1 ORDER BY k", (every,)).fetchall()
+    finally:
+        conn.close()
+    keys = sorted({row[0] for row in found})
+    return [None, *keys, None]
+
+
+def _read_slice_part(store: str, kind: str, low: Any, high: Any
+                     ) -> dict[str, tuple[dict[str, str], dict[str, str]]]:
+    """``TraverseTools._slices(kind)``'s read of the rows whose key is in [``low``,
+    ``high``) (None: unbounded), before its handle cap: name -> ({markings: last end},
+    {gated handle: last end})."""
+    from operating import ontology_tools
+
+    conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True, check_same_thread=False)
+    try:
+        tools = ontology_tools.OntologyTools(ontology_tools.StoreReader(conn),
+                                             ontology_tools.ReadPolicy(tenant="plx",
+                                                                       audiences={}))
+        TraverseTools(tools)   # its SQL functions (plx_l9_time, plx_l9_gated) on ``conn``
+        where, args = [], []
+        if low is not None:
+            where.append(f"{_SLICE_KEYS[kind]} >= ?")
+            args.append(low)
+        if high is not None:
+            where.append(f"{_SLICE_KEYS[kind]} < ?")
+            args.append(high)
+        rows = _SLICE_ROWS[kind] + (f" WHERE {' AND '.join(where)}" if where else "")
+        out: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+        for name, markings, gated, until in conn.execute(
+                f"SELECT name, markings, {_GATED_SQL}, MAX(CASE WHEN "
+                f"superseded_at IS NULL OR plx_l9_time(superseded_at) IS NULL THEN "
+                f"'{_OPEN}' ELSE plx_l9_time(superseded_at) END) "
+                f"FROM ({rows}) GROUP BY 1, 2, 3", args):
+            kept_marks, kept_handles = out.setdefault(name, ({}, {}))
+            kept_marks[markings] = max(until, kept_marks.get(markings, until))
+            for handle in json.loads(gated) if gated else ():
+                kept_handles[handle] = max(until, kept_handles.get(handle, until))
+        return out
+    finally:
+        conn.close()
+
+
+def _merged_slices(parts: Iterable[Mapping[str, tuple[dict[str, str], dict[str, str]]]]
+                   ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+    """The slices of a kind from those of its key ranges (``_read_slice_part``), with
+    ``_slices``' handle cap."""
+    out: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+    for part in parts:
+        for name, (marks, handles) in part.items():
+            kept_marks, kept_handles = out.setdefault(name, ({}, {}))
+            for markings, until in marks.items():
+                kept_marks[markings] = max(until, kept_marks.get(markings, until))
+            for handle, until in handles.items():
+                kept_handles[handle] = max(until, kept_handles.get(handle, until))
+    return {name: (kept_marks, None if sum(until == _OPEN for until in
+                                           kept_handles.values()) > HOP_SCAN_CAP
+                   else kept_handles)
+            for name, (kept_marks, kept_handles) in out.items()}
+
+
+def prime_store_facts(store: str | Path, cell_families: Sequence[str] = (), *,
+                      workers: int = 1, also: Iterable[str | Path] = ()) -> bool:
+    """Read the facts ``TraverseTools.prime`` reads of the store file ``store`` and keep
+    them beside it (``facts_path``), each fact read by its own process when ``workers`` is
+    above one (every fact is one scan of a table; read side by side they take the longest
+    one's time, not the sum): the same values as ``prime``, kept under the same identity.
+    ``also``: other paths of the same file (hard links, as the served path of a
+    generation) whose directories keep the facts too. False, keeping nothing, when the
+    store has a format problem, cannot be identified or a read fails."""
+    from operating import ontology_tools
+
+    store = str(store)
+    conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True, check_same_thread=False)
+    try:
+        if ontology_tools.StoreReader(conn).format_problem() is not None:
+            return False
+        kept = _store_identity(conn)
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    if kept is None:
+        return False
+    keys = _fact_keys(cell_families)
+    try:
+        if workers > 1:
+            import concurrent.futures as futures
+            import multiprocessing
+
+            from ontology.store import main_not_imported
+            # Every slice in key ranges (each kind's bounds read by a worker), the other
+            # facts whole beside them.
+            pieces = workers * SLICE_RANGES_PER_WORKER
+            with main_not_imported(), futures.ProcessPoolExecutor(
+                    max_workers=workers,
+                    mp_context=multiprocessing.get_context("spawn")) as pool:
+                ranges = {kind: pool.submit(_slice_bounds, store, kind, pieces)
+                          for kind in _SLICE_ROWS}
+                whole = {key: pool.submit(_read_fact, store, key) for key in keys
+                         if not (isinstance(key, tuple) and key[0] == "slices")}
+                split = {kind: [pool.submit(_read_slice_part, store, kind, low, high)
+                                for low, high in zip(bounds, bounds[1:])]
+                         for kind, held in ranges.items() for bounds in [held.result()]}
+                values = [_merged_slices(f.result() for f in split[key[1]])
+                          if isinstance(key, tuple) and key[0] == "slices"
+                          else whole[key].result() for key in keys]
+        else:
+            values = [_read_fact(store, key) for key in keys]
+    except sqlite3.Error:
+        return False
+    facts = dict(zip(keys, values))
+    path, identity = kept
+    _save_facts(path, identity, facts)
+    for other in also:
+        share_facts(path, other)
+    return True
+
+
+# Below this store size the facts are read at once (a minute's scan only above it).
+LAZY_MIN_BYTES = 256 * 1024 * 1024
+# How long a call waits for facts read in the background (``prime_lazily``) before it
+# reads the one it needs itself.
+BACKGROUND_WAIT_SECONDS = 1800
+_BACKGROUND: dict[str, threading.Event] = {}
+_BACKGROUND_LOCK = threading.Lock()
+
+
+def _background_prime(kept: tuple[str, Mapping[str, Any]], cell_families: Sequence[str]
+                      ) -> threading.Event:
+    """The event set once the facts of the store file ``kept`` names (path, identity) are
+    read and kept by a background thread (started once per file per process): each fact
+    read by its own worker process (``PLX_FACTS_WORKERS``, default half the CPUs)."""
+    path, identity = kept
+    name = json.dumps([path, dict(identity), sorted(cell_families)], sort_keys=True)
+    with _BACKGROUND_LOCK:
+        done = _BACKGROUND.get(name)
+        if done is not None:
+            return done
+        done = _BACKGROUND[name] = threading.Event()
+    try:
+        workers = int(os.environ.get("PLX_FACTS_WORKERS") or 0)
+    except ValueError:
+        workers = 0
+    workers = workers if workers > 0 else max(1, (os.cpu_count() or 2) // 2)
+
+    def run() -> None:
+        try:
+            prime_store_facts(path, cell_families, workers=workers)
+        except Exception:  # noqa: BLE001 - a failed read leaves each call to read its own
+            pass
+        finally:
+            done.set()
+    threading.Thread(target=run, name="plx-store-facts", daemon=True).start()
+    return done
+
+
+def share_facts(store: str | Path, other: str | Path) -> bool:
+    """Keep the facts kept beside ``store`` beside ``other`` too, when ``other`` is the same
+    file (a hard link: the served path of a generation, or the temporary link a publish
+    renames over it). False when there are none or ``other`` is another file."""
+    try:
+        if not os.path.samefile(store, other):
+            return False
+        source, target = facts_path(store), facts_path(other)
+        if source == target:
+            return source.is_file()
+        text = source.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    tmp = target.with_name(f".{target.name}.{secrets.token_hex(4)}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, target)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    _prune_facts(target.parent)
+    return True
 
 
 def _grouped(rows: Iterable[Sequence[Any]]) -> dict[str, tuple[str, ...]]:

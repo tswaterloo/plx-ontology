@@ -567,7 +567,9 @@ class DiskLow(Exception):
 
 def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str = "plx",
                      space: Callable[[Mapping[str, Any]], None] | None = None,
-                     checkpoint: Callable[[], None] | None = None) -> dict[str, Any]:
+                     checkpoint: Callable[[], None] | None = None,
+                     on_timings: Callable[[Mapping[str, Any]], None] | None = None
+                     ) -> dict[str, Any]:
     """The host's one call into the projection build: the next generation by
     ``ontology.project_incremental.build_generation`` in ``<DIR>/projection`` (only the
     units whose captures changed are projected again; the rest are reused from the
@@ -578,16 +580,29 @@ def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str
     the reviewed aliases, reviewed links, confirmed document kinds), over ``tenant``'s
     review and confirmation stores in the state directory, read as they are now.
     Returns the build report plus ``build``: mode, units, units rebuilt and each step's
-    counts."""
+    counts. ``on_timings``: called with the build's step timings so far at each step's
+    start and end (``ontology.build_timings``; they are also kept in the generation's
+    ``timings.json``)."""
+    from ontology.build_timings import BuildTimings
     from ontology.project_incremental import build_generation
     from ontology.schema import load_schema
     from operating import build_steps
 
     path = projection_path(state_dir)
+    timings = BuildTimings(sink=on_timings, log=sys.stderr)
     generation = build_generation(path.parent, load_schema(), sources,
                                   post_project=build_steps.post_project(state_dir, tenant),
-                                  space=space, checkpoint=checkpoint)
-    _publish(generation.store, path)
+                                  space=space, checkpoint=checkpoint, timings=timings)
+    laid = time.monotonic()
+    timings.begin("store_facts")
+    primed = _prime_store_facts(generation.store)
+    timings["store_facts"] = round(time.monotonic() - laid, 3)
+    generation.seconds["store_facts"] = timings["store_facts"]
+    laid = time.monotonic()
+    timings.begin("publish")
+    _publish(generation.store, path, facts=primed)
+    timings["publish"] = round(time.monotonic() - laid, 3)
+    generation.seconds["publish"] = timings["publish"]
     return {**generation.report, "build": {
         "mode": generation.mode, "units": generation.units,
         "units_rebuilt": generation.units_rebuilt, "seconds": generation.seconds,
@@ -596,16 +611,47 @@ def build_projection(state_dir: Path, sources: Mapping[str, Any], *, tenant: str
                   (generation.report.get("post_project") or {}).items()}}}
 
 
-def _publish(store: Path, path: Path) -> None:
+def _prime_store_facts(store: Path) -> bool:
+    """The store facts every reader's ``plx.around`` / ``plx.timeline`` needs
+    (``ontology_tools_traverse.prime``), read once from a committed generation before it
+    is served, each fact by its own process (the build's worker count,
+    ``PLX_BUILD_WORKERS``), and kept beside its file: the first session over it starts
+    without reading them. Measurement aside, never fails a build: a store whose facts
+    cannot be read is served as before (its first reader reads them)."""
+    from ontology import project_parallel
+    from operating import ontology_tools_evidence, ontology_tools_traverse
+    try:
+        workers = project_parallel.workers(None)
+    except Exception:  # noqa: BLE001 - a refused count primes on one process
+        workers = 1
+    if store.stat().st_size < STORE_FACTS_PARALLEL_MIN_BYTES:
+        workers = 1
+    try:
+        return ontology_tools_traverse.prime_store_facts(
+            store, ontology_tools_evidence.STORE_DOCUMENT_FAMILIES, workers=workers)
+    except Exception:  # noqa: BLE001 - facts are an optimisation, never the build's
+        return False
+
+
+# Below this store size the facts are read by the build's own process.
+STORE_FACTS_PARALLEL_MIN_BYTES = 256 * 1024 * 1024
+
+
+def _publish(store: Path, path: Path, *, facts: bool = False) -> None:
     """Serve a committed generation at ``path``: a hard link to it (a committed
     generation is never written again) swapped in by rename, so a reader opening
-    ``path`` gets a whole generation, the new one or the previous one."""
+    ``path`` gets a whole generation, the new one or the previous one. ``facts``: the
+    generation's store facts are kept beside it (``_prime_store_facts``), and are put
+    beside ``path`` before the swap, so its first reader finds them."""
     temp = path.with_name(f".{path.name}.publish")
     temp.unlink(missing_ok=True)
     try:
         os.link(store, temp)
     except OSError:  # a file system without hard links: a copy, same bytes
         shutil.copyfile(store, temp)
+    if facts:
+        from operating import ontology_tools_traverse
+        ontology_tools_traverse.share_facts(store, temp)
     os.replace(temp, path)
     fd = os.open(path.parent, os.O_RDONLY)
     try:
@@ -1294,6 +1340,14 @@ class Host:
         state = ("failed" if any(o["state"] == "failed" for o in outcomes.values())
                  or projection["state"] == "failed" else "complete")
         with self._ledger() as db:
+            row = db.execute("SELECT report FROM cycle WHERE cycle_id=?",
+                             (cycle_id,)).fetchone()
+            try:   # the build's step timings kept while it ran (``_timings_sink``)
+                held = json.loads(row[0]).get("build_timings") if row and row[0] else None
+            except (ValueError, AttributeError):
+                held = None
+            if held is not None:
+                report["build_timings"] = held
             db.execute("UPDATE cycle SET finished_at=?, state=?, report=? WHERE "
                        "cycle_id=?", (_iso(self.clock()), state,
                                       json.dumps(report, sort_keys=True), cycle_id))
@@ -1461,7 +1515,8 @@ class Host:
                 if not sources:
                     return {"state": "no_captures", "generation": previous}
                 built = build_projection(self.state_dir, sources, tenant=self.config.tenant,
-                                         space=self._space_guard, checkpoint=self._disk_floor)
+                                         space=self._space_guard, checkpoint=self._disk_floor,
+                                         on_timings=self._timings_sink(cycle_id))
             except DiskLow as low:   # the guard stopped it: nothing of it is left on disk
                 return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
                         "disk": low.disk}
@@ -1480,6 +1535,26 @@ class Host:
                                 "kept": snapshot["kept"], "bytes": snapshot["bytes"],
                                 "seconds": snapshot["seconds"]}
         return report
+
+    def _timings_sink(self, cycle_id: int) -> Callable[[Mapping[str, Any]], None]:
+        """Keep a running build's step timings in its cycle row (``report.build_timings``)
+        as each step starts and ends: a cycle stopped part way (a restart, a stop for an
+        eval) still records where its build's time went. Measurement only: a ledger that
+        cannot be written is skipped."""
+        def sink(timings: Mapping[str, Any]) -> None:
+            try:
+                with self._ledger() as db:
+                    row = db.execute("SELECT report FROM cycle WHERE cycle_id=?",
+                                     (cycle_id,)).fetchone()
+                    report = json.loads(row[0]) if row is not None and row[0] else {}
+                    if not isinstance(report, dict):
+                        report = {}
+                    report["build_timings"] = dict(timings)
+                    db.execute("UPDATE cycle SET report=? WHERE cycle_id=? AND state='running'",
+                               (json.dumps(report, sort_keys=True), cycle_id))
+            except (sqlite3.Error, ValueError, OSError):
+                pass
+        return sink
 
     def build_disk(self, need: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The free bytes of the state directory's file system (None: it cannot say,

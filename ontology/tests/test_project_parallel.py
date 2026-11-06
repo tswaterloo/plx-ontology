@@ -25,7 +25,7 @@ from unittest import mock
 
 from ontology import project_incremental as inc
 from ontology import project_parallel as par
-from ontology import store
+from ontology import finish_digest, store
 from ontology.generator.fixture import SyntheticCaptures, sources
 from ontology.project import ProjectionError
 from ontology.project import Reopenable, build_store
@@ -125,7 +125,7 @@ class ParallelBuildTests(unittest.TestCase):
         self.assertEqual(schema_of(generation.store), schema_of(self.serial.store))
         # No part, working file or worker directory is left beside the generation.
         self.assertEqual(sorted(p.name for p in generation.store.parent.iterdir()),
-                         ["store.sqlite", "units.json"])
+                         ["store.sqlite", "timings.json", "units.json"])
 
     def test_a_same_record_link_is_projected_with_both_of_its_ends(self):
         the_plan = inc.plan(self.schema)
@@ -328,9 +328,17 @@ class IncrementalParallelTests(unittest.TestCase):
             for name, workers in (("serial", 1), ("parallel", 3)):
                 inc.build_generation(root / name, self.schema, sources(self.schema, self.ROWS),
                                      clock=CLOCK, workers=1)
-                built[name] = inc.build_generation(
-                    root / name, self.schema, captures(), clock=CLOCK, workers=workers,
-                    space=incremental_path)
+                # The parallel build's digest of the segments it wrote made by its workers
+                # too, every segment cut into many ranges (a few rows each).
+                with mock.patch.multiple(store, DIGEST_PARALLEL_MIN_BYTES=0, _CHUNK_ROWS=5,
+                                         _CHUNK_VALUE_OBJECTS=2), \
+                        mock.patch.object(finish_digest, "parallel_segment_parts",
+                                          wraps=finish_digest.parallel_segment_parts
+                                          ) as digested:
+                    built[name] = inc.build_generation(
+                        root / name, self.schema, captures(), clock=CLOCK, workers=workers,
+                        space=incremental_path)
+                self.assertEqual(digested.call_count, 1 if workers > 1 else 0)
             cold = build_store(root / "cold.sqlite", self.schema, captures(), clock=CLOCK)
             with closing(sqlite3.connect(cold["store"])) as conn:
                 conflicts = conn.execute(
@@ -353,7 +361,17 @@ class IncrementalParallelTests(unittest.TestCase):
             self.assertEqual(parallel.content_digest, cold["content_digest"])
             self.assertEqual(tables(parallel.store), tables(cold["store"]))
             self.assertEqual(sorted(p.name for p in parallel.store.parent.iterdir()),
-                             ["store.sqlite", "units.json"])
+                             ["store.sqlite", "timings.json", "units.json"])
+            self.assertEqual(parallel.digest["mode"], "segments")
+            # Every step's start, end and seconds kept beside the generation as it ran.
+            timings = json.loads((parallel.store.parent / "timings.json").read_text())
+            steps = {entry["step"]: entry for entry in timings["steps"]}
+            for step in ("project.seed", "project.parallel", "project.counts",
+                         "finish.check", "finish.digest", "finish"):
+                self.assertIn(step, steps)
+                self.assertIn("started_at", steps[step])
+                self.assertEqual(steps[step]["seconds"], parallel.seconds[step])
+            self.assertEqual(timings["running"], {})
 
     def test_mail_rewritten_object_by_object_by_workers_equals_cold(self):
         """One, ten and sixty new messages: the workers write only the changed objects

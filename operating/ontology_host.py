@@ -143,11 +143,11 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     table: dict[str, dict[str, Any]] = {}
     ontology_tools.register(table, tools)
     traverse = ontology_tools_traverse.TraverseTools(tools)
-    # The store facts every reader's plx.around / plx.timeline needs, read once per store
-    # generation as the table is built over it (a served generation is a file never written
-    # again; a newer one gets a new table), so no reader's call pays for them. A later
-    # process over the same file reads them from beside it (``facts_path``).
-    traverse.prime(cell_families=ontology_tools_evidence.STORE_DOCUMENT_FAMILIES)
+    # The store facts every reader's plx.around / plx.timeline needs: loaded from beside
+    # the store file (``facts_path``: a build keeps them before it serves a generation);
+    # when they are not there, read in the background by worker processes while the
+    # table serves, never on the request path (``TraverseTools.prime_lazily``).
+    traverse.prime_lazily(cell_families=ontology_tools_evidence.STORE_DOCUMENT_FAMILIES)
     ontology_tools_traverse.register(table, traverse)
     ontology_tools_process.register(table, _LazyProcess(tools))
     ontology_tools_investigate.register(table, ontology_tools_investigate.InvestigateTools(
