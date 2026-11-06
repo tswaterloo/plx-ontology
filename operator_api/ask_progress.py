@@ -32,6 +32,7 @@ MAX_MENTION_CHARS = 40
 GATE_STEP = "Checking the answer against the records"
 GATE_PASSED = "The answer checks out against the records"
 GATE_REPAIR = "A figure did not check out; correcting it"
+GATE_CONTINUE = "Part of the question is still open; reading further"
 
 # A tool, before its result, in words that name no source.
 CALL_WORDS = {"plx.find": "Looking up records", "plx.object": "Reading a record",

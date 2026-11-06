@@ -1233,6 +1233,49 @@ class SuggestionRankingTests(unittest.TestCase):
         cache.kept(View(), None, read, lambda v: v["handles"])
         self.assertEqual(len(reads), 3)          # no key, never kept
 
+    def test_parallel_requests_for_a_cold_key_read_it_once(self):
+        cache, reads, started = be.ReaderCache(), [], threading.Event()
+
+        def read():
+            reads.append(1)
+            started.set()
+            time.sleep(0.3)
+            return ("late list",)
+        got = []
+        threads = [threading.Thread(target=lambda: got.append(cache.once(("r", "late"), read)))
+                   for _ in range(4)]
+        threads[0].start()
+        started.wait(5)
+        for thread in threads[1:]:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual((len(reads), got), (1, [("late list",)] * 4))
+
+    def test_a_kept_label_is_read_again_once_a_delta_cycle_lands(self):
+        stamp, calls = ["cycle-1"], []
+
+        class View:
+            class access:
+                @staticmethod
+                def overlay_stamp():
+                    return stamp[0]
+
+            @staticmethod
+            def _call(name, arguments):
+                calls.append(name)
+                return {"object": {"display": f"PO 1 ({stamp[0]})"}}
+        cards = be.ReaderCache()
+        with mock.patch.object(be, "page_key", lambda view, what: ("reader", what)):
+            self.assertEqual(be.card_words(View(), "PurchaseOrder:1", cards=cards)[0],
+                             "PO 1 (cycle-1)")
+            be.card_words(View(), "PurchaseOrder:1", cards=cards)
+            self.assertEqual(len(calls), 1)               # kept within one cycle
+            stamp[0] = "cycle-2"                           # the next delta cycle
+            self.assertEqual(be.card_words(View(), "PurchaseOrder:1", cards=cards)[0],
+                             "PO 1 (cycle-2)")
+            self.assertEqual(len(calls), 2)
+
     def test_a_seen_mark_keeps_every_key_but_that_readers_briefing(self):
         import sqlite3
         tmp = Path(tempfile.mkdtemp(prefix="inbox-stamp-"))
@@ -1443,8 +1486,9 @@ class KnownReaderWarmTests(unittest.TestCase):
         backend.identity_for = identity_for
         self.assertEqual(backend.warm_known(), 1)
         self.assertEqual(made, [("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600)])
-        # Home, the briefing and its groups, the suggestion cards, the late list, pages
-        self.assertEqual(backend.warmer.jobs.qsize(), 5)
+        # Today first on the read workers (Home, the briefing and its groups, the
+        # suggestion cards, the late list), then the pages on the warm worker
+        self.assertEqual((backend.reads.jobs.qsize(), backend.warmer.jobs.qsize()), (4, 1))
         # signed out: never read ahead for again
         backend.forget_reader(be.Reader(SimpleNamespace(
             principals=frozenset(), employee=SimpleNamespace(

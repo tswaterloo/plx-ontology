@@ -326,6 +326,37 @@ class AggregateTests(_Base):
         self.assertEqual(out["refused"]["code"], "unit_unknown")
         self.assertIn("no known denominator", out["refused"]["message"])
 
+    def test_rows_list_each_members_cited_values_newest_first_as_the_reader_may_read(self):
+        """``rows`` (plx.query's listing): each member's value of a property and the date
+        of the one record a to-one path reaches, newest first; a value the reader may
+        not read is a status, never the figure; prices in two currencies get no lowest
+        or highest."""
+        self.store.val(PO1, "order_date", "date", "2026-01-05")
+        self.store.val(PO3, "order_date", "date", "2026-03-01")
+        self.store.conn.commit()
+        arguments = {"properties": ["unit_price"], "date": {
+            "property": "order_date",
+            "path": [{"link_type": "PurchaseOrderLine.line_of", "direction": "forward"}]}}
+        out = self.tools.rows({**arguments, "set": self.set_of(STAFF, L1, L2, L4)}, STAFF)
+        self.assertNotIn("error", out)
+        self.assertEqual([r["object_id"] for r in out["rows"]][:1], [L4])
+        self.assertEqual(out["rows"][0]["date"]["value"], "2026-03-01")
+        self.assertEqual(out["rows"][0]["values"]["unit_price"]["value"], "1.75")
+        self.assertEqual(out["rows"][0]["values"]["unit_price"]["citation"]["l1_handle"],
+                         self.store.handles[L4][0])
+        summary = out["summary"]["unit_price"]
+        self.assertEqual((summary["with_value"], summary["last"]["value"]["value"]),
+                         (2, "1.75"))
+        self.assertEqual(summary["mixed"], ["CAD", "USD", "each"])
+        summary_only = self.tools.rows({**arguments, "set": self.set_of(STAFF, L1, L2, L4),
+                                        "limit": 0}, STAFF)
+        self.assertEqual((summary_only["rows"], summary_only["more_rows"]), ([], 3))
+        self.assertEqual(summary_only["summary"], out["summary"])
+        hidden = self.tools.rows({**arguments, "set": self.set_of(SALES, L1, L4)}, SALES)
+        self.assertEqual({r["values"]["unit_price"].get("status") for r in hidden["rows"]},
+                         {"withheld"})
+        self.assertNotIn('"2.50"', json.dumps(hidden))
+
     def test_permission_trims_before_aggregation(self):
         self.line_totals()
         self.store.val(L2, "line_total", "money", "12.50", currency="CAD", markings='["finance"]')

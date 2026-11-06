@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import sys
 from time import monotonic, sleep
 from typing import Any, BinaryIO, Callable, Iterable, Mapping, Sequence
@@ -184,7 +185,9 @@ def _served_texts(result: Any) -> list[tuple[list[str], str, Any, Any]]:
         else:
             served = True
         out.append((handles, field, origin["citation"] if page_text else version, served))
-    return out + _served_pages(result, window) + _served_hits(result, version)
+    nested = [entry for item in result.get("attachment_matches") or ()
+              if isinstance(item, dict) for entry in _served_texts(item)]
+    return out + _served_pages(result, window) + _served_hits(result, version) + nested
 
 
 def _served_hits(result: dict[str, Any], version: Any
@@ -1872,11 +1875,13 @@ def _said_values(view: Any) -> list[str] | None:
 MIN_ANCHOR_CHARS = 4
 
 
-def _question_anchors(server: "MCPServer", asked: str) -> frozenset[str]:
+def _question_anchors(server: "MCPServer", asked: str,
+                      records: set[str] | None = None) -> frozenset[str]:
     """The names and codes, as letters and digits, the question ``asked`` names records
     by: each identifier it writes (the one grammar, ``find_identifiers``) and each entity
     its reader's ``plx.find`` matches or reads out of a longer reference
-    (``objective_runner.resolve_entities``, one call); a code's number alone too."""
+    (``objective_runner.resolve_entities``, one call); a code's number alone too.
+    ``records`` gets the object ids of those entities' records (``_linked_to``)."""
     from ontology.identifiers import find_identifiers
     from .objective_runner import resolve_entities
     if server.ontology is None:
@@ -1890,8 +1895,13 @@ def _question_anchors(server: "MCPServer", asked: str) -> frozenset[str]:
                 "plx.find", arguments, gated))
     except Exception:  # noqa: BLE001 - the question's own identifiers still stand
         entities = []
-    mentions += [entity.get("mention") for entity in entities
-                 if entity.get("status") in ("match", "derived")]
+    named = [entity for entity in entities if entity.get("status") in ("match", "derived")]
+    mentions += [entity.get("mention") for entity in named]
+    if records is not None:
+        records.update(record["object_id"] for entity in named
+                       for record in entity.get("records") or ()
+                       if record.get("status") in ("match", "derived")
+                       and isinstance(record.get("object_id"), str))
     anchors = set()
     for mention in mentions:
         key = _letters_digits(str(mention or ""))
@@ -1901,6 +1911,170 @@ def _question_anchors(server: "MCPServer", asked: str) -> frozenset[str]:
         if core:
             anchors.add(core.group(1))
     return frozenset(anchors)
+
+
+# A record a question's record links to is on the question too: a line, an entry, a
+# component, the order that made it (2026-11-06: the answer gate refused the assembly
+# orders that filled an item asked about, whose rows name the item by its id alone).
+# Connected: within LINK_HOPS links of a question's record, over links records hold
+# (never a mention read in text, a lead or a contradicted link), a record linked to more
+# than HUB_LINKS others (a supplier, a customer) not walked through.
+LINK_HOPS = 4
+HUB_LINKS = 150
+NEAR_CAP = 20000
+
+
+_FIRM = ("superseded_at IS NULL AND binding_kind <> 'mention' "
+         "AND tier NOT IN ('lead', 'contradicted')")
+
+
+def _neighbours(conn: Any, ids: Iterable[str]) -> dict[str, set[str]]:
+    """Each of ``ids`` -> the records its current firm links reach, either direction."""
+    ids = sorted(set(ids))
+    out: dict[str, set[str]] = {oid: set() for oid in ids}
+    for start in range(0, len(ids), 500):
+        part = json.dumps(ids[start:start + 500])
+        for near, far in conn.execute(
+                "SELECT from_object, to_object FROM link_rows WHERE from_object IN "
+                f"(SELECT value FROM json_each(:ids)) AND {_FIRM} "
+                "UNION ALL SELECT to_object, from_object FROM link_rows WHERE to_object IN "
+                f"(SELECT value FROM json_each(:ids)) AND {_FIRM}", {"ids": part}):
+            out[near].add(far)
+    return out
+
+
+def _hubs(conn: Any, ids: Iterable[str]) -> set[str]:
+    """Those of ``ids`` holding more than ``HUB_LINKS`` current firm links."""
+    out: set[str] = set()
+    ids = sorted(set(ids))
+    for start in range(0, len(ids), 500):
+        part = json.dumps(ids[start:start + 500])
+        out |= {oid for oid, count in conn.execute(
+            "SELECT oid, count(*) FROM (SELECT from_object AS oid FROM link_rows WHERE "
+            f"from_object IN (SELECT value FROM json_each(:ids)) AND {_FIRM} UNION ALL "
+            "SELECT to_object FROM link_rows WHERE to_object IN "
+            f"(SELECT value FROM json_each(:ids)) AND {_FIRM}) GROUP BY oid", {"ids": part})
+            if count > HUB_LINKS}
+    return out
+
+
+def _near(conn: Any, roots: set[str], hops: int,
+          visible: Callable[[Iterable[str]], set[str]]) -> tuple[set[str], set[str]]:
+    """(the records within ``hops`` firm links of ``roots`` that this reader may read,
+    the hubs among them): never walking on from a hub (``HUB_LINKS``) or through a
+    record the reader may not read, at most ``NEAR_CAP``."""
+    seen, frontier, hubs = set(roots), set(roots), set()
+    for _ in range(hops):
+        reach = _neighbours(conn, frontier)
+        frontier = set()
+        for near, fars in reach.items():
+            if len(fars) > HUB_LINKS and near not in roots:
+                hubs.add(near)
+                continue
+            frontier |= fars - seen
+        frontier = visible(frontier) if frontier else set()
+        seen |= frontier
+        if not frontier or len(seen) >= NEAR_CAP:
+            break
+    return seen, hubs | _hubs(conn, frontier)
+
+
+def _linked_to(server: "MCPServer", records: set[str], handles: Sequence[str],
+               near: dict[str, Any]) -> bool | None:
+    """Whether a record ``handles`` cite is within ``LINK_HOPS`` firm links of one of
+    ``records`` (the question's), as this reader may read them: the cited record is
+    within ``LINK_HOPS - 1`` of them (kept in ``near`` for the question), or links to a
+    record that is and that is no hub, so two orders of one customer, or two lines of one
+    item, are never joined through that customer or item. None: unknown (no store, no
+    record behind the handles). Read on the store file's own read-only connection, never
+    holding the session's store; nothing of a linked record is shown: this decides only
+    whether a claim on a record the gate already checked stays on the question."""
+    conn = _link_connection(server)
+    visible = _reader_visible(server)
+    if conn is None or visible is None or not records:
+        return None
+    try:
+        cited = {row[0] for row in conn.execute(
+            "SELECT DISTINCT object_id FROM object_versions WHERE l1_handle IN "
+            "(SELECT value FROM json_each(?))", (json.dumps(list(handles)),))}
+        if not cited:
+            return None
+        reach = {far for fars in _neighbours(conn, cited).values() for far in fars}
+        if (cited | reach) & set(records) and visible(((cited | reach) & set(records))):
+            return True   # one link from a question's record: no walk needed
+        if "set" not in near:
+            roots = visible(records)
+            near["set"], near["hubs"] = _near(conn, roots, LINK_HOPS - 1, visible) \
+                if roots else (set(), set())
+        if cited & near["set"]:
+            return True
+        joins = reach & near["set"]
+        return bool(joins - near["hubs"] - _hubs(conn, joins - set(records)))
+    except Exception:  # noqa: BLE001 - undecided: the claim's own checks decide it
+        return None
+
+
+def _link_connection(server: "MCPServer") -> Any:
+    """A read-only connection of its own to the file the session's ontology store reads
+    (one per file and process), so the relevance walk never holds the store's lock; None
+    without a store file (an in-memory store is read under its lock instead)."""
+    tools = getattr(getattr(server, "ontology", None), "tools", None)
+    store = getattr(tools, "store", None)
+    if store is None:
+        return None
+    try:
+        with store.lock:
+            path = next((row[2] for row in store.conn.execute("PRAGMA database_list")
+                         if row[1] == "main"), "")
+    except Exception:  # noqa: BLE001 - no file to open
+        return None
+    if not path:
+        return _Locked(store)
+    with _LINK_CONNS_LOCK:
+        if path not in _LINK_CONNS:
+            _LINK_CONNS[path] = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro",
+                                                uri=True, check_same_thread=False)
+        return _LINK_CONNS[path]
+
+
+# The relevance walk's read-only connection per store file (``_link_connection``).
+_LINK_CONNS: dict[str, Any] = {}
+_LINK_CONNS_LOCK = threading.Lock()
+
+
+class _Locked:
+    """An in-memory store's connection, used under its lock (no file to open again)."""
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+
+    def execute(self, sql: str, params: Any = ()) -> list[Any]:
+        with self.store.lock:
+            return list(self.store.conn.execute(sql, params))
+
+
+def _reader_visible(server: "MCPServer") -> Callable[[Iterable[str]], set[str]] | None:
+    """Of some object ids, those this session's reader may read now (the store's own
+    gate: audience, markings, time and item ACL), under the policy decided for them."""
+    host = getattr(server, "ontology", None)
+    if host is None or not hasattr(host, "tools"):
+        return None
+    try:
+        gated = server.case_runtime.employee_gate(server.actor)
+    except Exception:  # noqa: BLE001 - an undecided reader reads nothing
+        return None
+
+    def visible(ids: Iterable[str]) -> set[str]:
+        ids = sorted(set(ids))
+        if not ids:
+            return set()
+        with host.request(), host.per_call():
+            tools = host.tools
+            tools.policy = host.policy_now(gated)
+            with tools.store.lock:
+                scope = tools._scope(gated, tools._as_known_at({}))
+                return set(tools._visible_versions(scope, ids))
+    return visible
 
 
 class MCPServer:
@@ -2472,10 +2646,13 @@ class MCPServer:
             return None
         if asked not in self._anchors:
             self._anchors.clear()   # one question per session: the last one asked
-            self._anchors[asked] = _question_anchors(self, asked)
+            records: set[str] = set()
+            self._anchors[asked] = _question_anchors(self, asked, records)
+            self._anchor_records = (asked, records, {})
         anchors = self._anchors[asked]
         if not anchors:
             return None
+        _asked, records, near = getattr(self, "_anchor_records", (asked, set(), {}))
 
         def relevant(handles: Sequence[str], read: Callable[[str], Any]) -> bool | None:
             undecided = False
@@ -2486,6 +2663,8 @@ class MCPServer:
                     continue
                 if any(anchor in value for value in values for anchor in anchors):
                     return True
+            if records and _linked_to(self, records, list(handles), near):
+                return True   # linked to a record the question names
             return None if undecided else False
         return relevant
 
@@ -3782,17 +3961,17 @@ def serve_stdio(server: MCPServer, *, input_stream: BinaryIO | None = None,
     # The session's tool gate may start this host as the primary or a helper of one agent
     # session (``operating.host_peers``); only a stdio host takes either role.
     server.peer_role, server.peer_key = host_peers.role()
-    if server.peer_role != host_peers.HELPER:
-        # The session's answer gate reads a cited mail attachment's direction against
-        # every captured mailbox (``case_tools_host.prime_attachment_mailboxes``): read in
-        # the background from the start, never inside an answer submission. A helper
-        # never decides an answer; it reads them only if one of its calls needs them.
-        captures = getattr(server.case_runtime, "captures", None)
-        try:
-            case_tools_host.prime_attachment_mailboxes(
-                getattr(captures, "mail_capture_dir", None))
-        except OSError:
-            pass   # read by the first claim that needs it
+    # The session's answer gate reads a cited mail attachment's direction against every
+    # captured mailbox (``case_tools_host.prime_attachment_mailboxes``), and so does a
+    # document search listing attachments, which a helper serves too: read in the
+    # background from the start (another host's list when it is recent), never inside an
+    # answer submission or a search.
+    captures = getattr(server.case_runtime, "captures", None)
+    try:
+        case_tools_host.prime_attachment_mailboxes(
+            getattr(captures, "mail_capture_dir", None))
+    except OSError:
+        pass   # read by the first claim that needs it
     try:
         _serve_lines(server, input_stream or sys.stdin.buffer,
                      output_stream or sys.stdout.buffer)

@@ -47,6 +47,11 @@ MAX_LEADS = 4      # lead entities listed after the matches (a brand's products:
 MAX_RECORDS = 12
 MAX_EXPAND = 60
 PARTY_TYPES = frozenset({"customer", "supplier", "person", "manufacturer", "contact"})
+# Records that carry a name only as one of their participants (a sender or recipient read
+# off a message): a name match on one names the message it was read on, never a record of
+# that person or party, so it is a lead at most (2026-11-06: an acronym in a question and
+# the company's own name each matched a message's participant, stated as the thing).
+MESSAGE_TYPES = frozenset({"Email", "TeamsChatMessage", "TeamsChannelMessage"})
 IDENTITY_TIER = {"verified": 0.95, "reviewed": 0.95, "corroborated": 0.85,
                  "stored_by_text_join": 0.75, "lead": 0.5}
 GROUPING_TIERS = frozenset({"verified", "reviewed", "corroborated", "stored_by_text_join"})
@@ -253,6 +258,9 @@ class Resolver:
                 if strict < 0.8:
                     continue   # a loose likeness names nothing
                 score, why = round(0.7 * strict, 2), f"its name is like \"{text}\""
+            if str(row.object_id).split(":", 1)[0] in MESSAGE_TYPES:
+                score = min(score, WEAK_SCORE)
+                why += " (a participant named on a message)"
             yield row, score, why
 
     @staticmethod

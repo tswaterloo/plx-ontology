@@ -4066,6 +4066,9 @@ def _with_captured_row(runtime: Any, view: Any, handle: str, actor: Actor) -> An
     view is the one a case digests and stays as it is, and a field the view already
     states (a pinned file's ``fields``) is kept. A changed-since view, another scheme
     or a row the gate does not serve: ``view`` unchanged."""
+    if isinstance(handle, str) and handle.startswith("graph-mail://") \
+            and isinstance(view, Mapping) and not view.get("changed_since"):
+        return _with_attachment_text(runtime, view, handle, actor)
     reader = getattr(getattr(runtime, "captures", None), "served_row", None)
     if not (callable(reader) and isinstance(view, Mapping) and isinstance(handle, str)
             and handle.startswith("sharepoint://")) or view.get("changed_since"):
@@ -4080,6 +4083,34 @@ def _with_captured_row(runtime: Any, view: Any, handle: str, actor: Actor) -> An
         # A page's value is read on that page's text (field ``text``), as an original
         # page's and the scorer's re-read of the page give it.
         out["text"] = served["content_text"]
+    return out
+
+
+def _with_attachment_text(runtime: Any, view: Mapping[str, Any], handle: str,
+                          actor: Actor) -> Mapping[str, Any]:
+    """``view`` of a mail attachment (or a page or member of one) with the text
+    ``plx.read`` serves this reader for it (``row.content_text``, through the runtime's
+    one mail resolver and its gates, ``CaseRuntime.mail_capture`` with ``text``), so a
+    passage a claim quotes from the attachment is checked against what the reader was
+    shown; a page's view also carries that page's text as ``text``. A message, a view
+    already holding the text, or a row the gate does not serve: ``view`` unchanged."""
+    from integrations.graph_evidence import is_mail_attachment_citation
+    row = view.get("row") if isinstance(view.get("row"), Mapping) else None
+    if row is None or isinstance(row.get("content_text"), str) or "#" not in handle:
+        return view
+    try:
+        if not is_mail_attachment_citation(handle.split("#page=", 1)[0]):
+            return view
+        served = runtime.mail_capture(handle, actor, text=True)
+    except Exception:  # noqa: BLE001 - not served: the view as the gate read it
+        return view
+    text = ((served or {}).get("row") or {}).get("content_text") \
+        if isinstance(served, Mapping) else None
+    if not isinstance(text, str):
+        return view
+    out = {**view, "row": {**row, "content_text": text}}
+    if isinstance(view.get("page"), int) and "text" not in view:
+        out["text"] = text
     return out
 
 

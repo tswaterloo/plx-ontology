@@ -152,11 +152,22 @@ def handle_prefix(source: str, key: Any) -> str:
 # --------------------------------------------------------------------------- base
 
 class Base:
-    """The served generation, read-only: its marks and the lookups the closure needs."""
+    """The served generation, read-only: its marks and the lookups the closure needs.
 
-    def __init__(self, path: Path) -> None:
+    ``postgres`` (``PLX_DELTA_BASE_PG=1``): the Postgres ontology instead, the generation
+    it holds with every delta layer applied in place (``operating.pg.ontology_delta``):
+    the same lookups, read through ``operating.pg.sqlite_compat``, see every change a
+    layer brought, so a cycle needs only its own changes and nothing is ever folded."""
+
+    def __init__(self, path: Path, *, postgres: str | None = None) -> None:
         self.path = Path(path)
-        self.conn = _ro(self.path)
+        self.postgres = postgres is not None
+        if postgres is not None:
+            from operating.pg.sqlite_compat import PgCompatConnection
+            self.conn = PgCompatConnection(postgres)
+            self.conn.row_factory = sqlite3.Row
+        else:
+            self.conn = _ro(self.path)
         meta = {r["key"]: r["value"] for r in self.conn.execute(
             "SELECT key, value FROM store_meta WHERE key IN ('content_digest', "
             "'source_freshness', 'built_at')")}
@@ -1208,7 +1219,11 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         return now
 
     environ = os.environ if environ is None else environ
-    base = Base(base_path or served_store(state_dir))
+    pg_base = None
+    if environ.get("PLX_DELTA_BASE_PG") == "1":
+        from operating.pg import config as pg_config
+        pg_base = pg_config.dsn(environ)
+    base = Base(base_path or served_store(state_dir), postgres=pg_base)
     state = State(delta_dir / "state.sqlite")
     captures: Captures | None = None
     busy = contextlib.ExitStack()
@@ -1244,8 +1259,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
             report["mail_skipped"] = unavailable
         t = lap("discover", t)
         snapshot = [dict(layer) for layer in state.get("layers") or []]
-        if compact_only and len(snapshot) < 2:
-            report["layer"] = "none: nothing to fold"
+        if compact_only and (len(snapshot) < 2 or base.postgres):
+            report["layer"] = ("none: Postgres holds every layer" if base.postgres
+                               else "none: nothing to fold")
             return report
         # A fold holds every change since the generation, the ones a cycle has not
         # published yet too (their layer may never come): it replaces the layers it read,
@@ -1339,7 +1355,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         # replaces them all.
         layers = snapshot if publish and not force_changed else []
         layers = [layer for layer in layers if Path(layer["store"]).is_file()]
-        compact = compact_only or not layers or len(layers) >= MAX_LAYERS
+        # over Postgres every earlier change is in the base already: never cumulative
+        compact = compact_only or (not base.postgres and (not layers
+                                                          or len(layers) >= MAX_LAYERS))
         if compact:
             records = {s: (state.context(s) | set(changed[s]) | found[s]) for s in SOURCES}
             mine = changed
@@ -1412,6 +1430,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     layers = newer + [layer]
                 elif compact:         # a cycle folding inline holds the newest changes too
                     layers = [layer] + newer
+                elif base.postgres:   # layers Postgres holds leave the pointer (kept: a few)
+                    layers = [layer] + _not_in_postgres(now, base.conn, keep=PG_KEPT_LAYERS)
                 else:
                     layers = [layer] + now
                 publish_pointer(delta_dir, layers, base, report)
@@ -1422,6 +1442,18 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     state.close_over(found, fresh)
                 state.remember_owned(owned_ids)
             prune(delta_dir, keep={Path(item["store"]) for item in layers})
+            if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
+                # the same layer into the Postgres ontology, over the generation it holds
+                # (``operating.pg.ontology_delta``), with any listed layer an earlier cycle
+                # failed to apply, oldest first; a failure there never fails the cycle
+                try:
+                    from operating.pg import config as pg_config
+                    from operating.pg.ontology_delta import apply_listed
+                    report["postgres"] = apply_listed(
+                        [item["store"] for item in layers], pg_config.dsn(environ))
+                except Exception as exc:  # noqa: BLE001 - reported; SQLite layers serve
+                    report["postgres"] = {"applied": False,
+                                          "error": f"{type(exc).__name__}"[:120]}
         return report
     finally:
         if captures is not None:
@@ -1434,6 +1466,21 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
 
 
 KEPT = ("readings.sqlite", "member-readings.sqlite", "fields.sqlite")
+# Over a Postgres base: the newest layers the pointer keeps after Postgres applied them
+# (the SQLite overlay of the served generation still reads them).
+PG_KEPT_LAYERS = 8
+
+
+def _not_in_postgres(layers: Sequence[Mapping[str, Any]], conn: Any, *, keep: int
+                     ) -> list[dict[str, Any]]:
+    """``layers`` (newest first) without those Postgres has applied, past the newest
+    ``keep``."""
+    names = [Path(item["store"]).name for item in layers]
+    applied = {row[0] for row in conn.execute(
+        "SELECT substr(name, 7) FROM load_state WHERE name IN (SELECT 'delta:' || value "
+        "FROM json_each(?))", (json.dumps(names),))}
+    return [dict(item) for n, item in enumerate(layers)
+            if n < keep or Path(item["store"]).name not in applied]
 
 
 def seed_readings(state_dir: Path, delta_dir: Path, digests: Iterable[str]) -> int:
@@ -1776,7 +1823,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         workers=args.workers, compact_only=folding)
                     line = {k: report.get(k) for k in (
                         "started_at", "layer", "changed", "new_changes", "records", "owned",
-                        "projected", "seconds", "mail_skipped", "closure")}
+                        "projected", "seconds", "mail_skipped", "closure", "postgres")}
                     line["command"] = args.command
         except Exception as exc:  # noqa: BLE001 - the last published delta stays served
             import traceback

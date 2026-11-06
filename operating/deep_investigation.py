@@ -102,6 +102,19 @@ MAX_TURNS = 45
 BUDGET_KEY = "workbench_budget"
 BUDGET_REFUSAL = "budget_spent"
 ANSWER_TOOL = "plx.case_get"
+# An answer submitted while research time is left and the gate's decision leaves parts
+# of the question open (an unknown, a refused claim, a partial or blocked answerability)
+# is sent back once with the open parts (``Budget.after_answer``): measured 2026-11-06 on
+# four multi-part questions, every session submitted with 60-90 s of research left and
+# each open part still reachable by a link of a record it had read. The decision still
+# stands as the answer when the agent finds nothing more (the session's last decision).
+CONTINUE_KEY = "continue"
+# Twice: a sent-back decision is often answered first by a claim fixed, not a part
+# researched (2026-11-06 smoke: the one continuation went on a refused claim's repair).
+MAX_CONTINUES = 2
+CONTINUE_SECONDS = 25     # research seconds left for a continuation to be worth it
+CONTINUE_STEPS = 4        # tool calls left for one
+MAX_OPEN_SHOWN = 8
 
 
 
@@ -149,7 +162,9 @@ RECORDS_FIRST = (
     "state a lead as the same thing). Work from all of an entity's records: each system "
     "holds a different part of it, so read every record of the entity with plx.object in "
     "one turn before you choose where to walk. "
-    "(b) Walk: plx.object on a record lists its links counted per link type; follow the "
+    "(b) Walk: plx.object on a record lists its links counted per link type, and what "
+    "the records linked to it link to in turn (linked_beyond: a line's orders, a "
+    "component's purchases); follow the "
     "ones the question needs with plx.around (up to 3 hops per call, filters on the "
     "objects reached, e.g. a date or status; call it again from the set it returns to go "
     "further). When firm links run out, follow lead links with tier_floor \"lead\" and "
@@ -172,14 +187,18 @@ RECORDS_FIRST = (
     "code or a party (a document search takes far longer than a record read). Run "
     "independent reads in the same turn. A message's attachments are part of what it "
     "says: plx.read of a message lists them, and you read the ones that may bear on the "
-    "question by their citations. Prefer the latest record or message on the subject, "
+    "question by their citations (plx.read of a message with find searches it and its "
+    "attachments' text at once: attachment_matches). Prefer the latest record or message "
+    "on the subject, "
     "say what it supersedes, and say how recent the newest one you read is. What was "
     "sent rests on the sent copy (or the recipient's), never on a draft. A question "
     "that points at a document without naming it (this, these, the attached) means the "
     "person's most recent one on its subject: find it among their newest mail "
     "attachments and files (plx.documents, newest first), say which one you used (its "
     "name, sender and date), read it whole, and check its rows against the records "
-    "(plx.query from codes takes a sheet's item codes at once). "
+    "(plx.query from codes with per_code and rows answers a sheet's item codes at "
+    "once: each code's records walked, what they reach listed with cited values and a "
+    "date, its last, lowest and highest; page with code_offset). "
     "(e) Do not stop early: before you submit, check each part of the question; while one "
     "is unsettled and the budget note shows time left, take the next link or record that "
     "could settle it. A partial answer is for what no record or document you can open "
@@ -356,6 +375,8 @@ MAX_BULLETS = 5
 # did not confirm" (an answer that found no confirmation would say the opposite of one
 # it simply did not read).
 NOT_SETTLED = "Not settled:"
+# The line before it: what was read to look for the missing part, in words (no figure).
+CHECKED = "Checked:"
 
 
 def answer_shape_rule() -> str:
@@ -377,8 +398,10 @@ def answer_shape_rule() -> str:
         "or title. Each bullet states one of your cited values or claims, nothing else. "
         "In the json block's \"text\" the lines are joined by \\n.",
         f"Then, only when the answer is partial (a gap the question asks about), one line "
-        f"starting \"{NOT_SETTLED}\" naming what is missing in words, no figure. "
-        "An answerable answer has no such line.",
+        f"starting \"{CHECKED}\" saying in words what you read to look for the missing "
+        "part (the records and links you followed, the mail or files you searched), no "
+        f"figure, and one line starting \"{NOT_SETTLED}\" naming what is missing in words, "
+        "no figure. An answerable answer has neither line.",
         "A partial answer says plainly what you found (the verdict and bullets) and what "
         "is missing (that line); never only that it cannot be answered.",
         "In your sentences write money, prices and quantities as a reader would, rounded "
@@ -514,6 +537,7 @@ class Budget:
         self.ends_at = ends_at if ends_at is not None else deadline
         self.repair_reads, self.grace_calls = repair_reads, grace_calls
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
+        self.continues = 0   # decisions sent back with their open parts (``after_answer``)
         self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
         self.records_read = 0   # record reads forwarded (``RECORD_TOOLS``)
         # the question named records: a text search waits for the first record read
@@ -614,12 +638,128 @@ class Budget:
             out["next"] = "submit your answer to the answer gate now"
         return out
 
+    def after_answer(self, result: Any, now: float) -> dict[str, Any] | None:
+        """The note an answer-gate decision carries when research should go on: the
+        decision passed claims (``answered``) but leaves parts of the question open
+        (``open_parts``), research time and steps are left for at least one more link
+        (``CONTINUE_SECONDS``, ``CONTINUE_STEPS``), and no decision was sent back before
+        (``MAX_CONTINUES``). The note says ``continue`` and lists the open parts; the
+        session does not end at this decision (``agent_session.GateEnd``) and the next
+        submission replaces it. None: the decision ends the session as before."""
+        if self.continues >= MAX_CONTINUES or self.deadline is None:
+            return None
+        if self.deadline - now < CONTINUE_SECONDS:
+            return None
+        if self.max_steps is not None and self.max_steps - self.steps < CONTINUE_STEPS:
+            return None
+        decision = decision_body(result)
+        if not isinstance(decision, Mapping) or decision.get("outcome") != "answered":
+            return None
+        parts = open_parts(decision)
+        if not parts:
+            return None
+        self.continues += 1
+        left = int(self.deadline - now)
+        note = self.note(now)
+        note.update({CONTINUE_KEY: True, "open": parts[:MAX_OPEN_SHOWN], "next": (
+            f"Research is not over: {left} seconds are left and this decision leaves the "
+            "parts listed in open unsettled. Do not write your reply yet. This decision "
+            "stays your answer if nothing more is found. For each open part, take the "
+            "next record, link or document that could settle it: the links of the records "
+            "you already read (plx.object counts them; plx.query walks several hops from "
+            "many records at once), the lines and the records that made, used, received "
+            "or shipped them, the attachments of a message you found. A claim refused as "
+            "off the question needs \"via\". Then submit again with every claim, the ones "
+            "passed here included: the later decision replaces this one.")})
+        return note
+
     def summary(self) -> dict[str, Any]:
         return {"steps_used": self.steps, "max_steps": self.max_steps,
                 "refused_after_budget": self.refused, "repair_reads": self.repairs,
                 "grace_calls": self.grace, "timed_out": self.timed_out,
                 "cut_short": self.cut_short,
-                "submissions": self.submissions}
+                "submissions": self.submissions,
+                **({"continues": self.continues} if self.continues else {})}
+
+
+def _plain(value: Any) -> Any:
+    """A tool value with its ``untrusted_text`` envelope removed."""
+    if isinstance(value, Mapping) and "untrusted_text" in value:
+        return value.get("untrusted_text")
+    return value
+
+
+def decision_body(result: Any) -> Mapping[str, Any] | None:
+    """The answer gate's decision in an MCP ``tools/call`` result (its structured
+    content, else its one JSON text part), without a budget note; None when unreadable."""
+    if not isinstance(result, Mapping) or result.get("isError"):
+        return None
+    body: Any = result.get("structuredContent")
+    if not isinstance(body, Mapping):
+        parts = [p for p in result.get("content") or () if isinstance(p, Mapping)]
+        if len(parts) != 1 or not isinstance(parts[0].get("text"), str):
+            return None
+        try:
+            body = json.loads(parts[0]["text"])
+        except ValueError:
+            return None
+    body, _note = strip_note(body)
+    return body if isinstance(body, Mapping) else None
+
+
+def open_parts(decision: Mapping[str, Any]) -> list[str]:
+    """What an ``answered`` decision leaves open, in its own words: each unknown and each
+    refused claim (its reason), or the answerability when it is not ``answerable`` and
+    names nothing else."""
+    parts: list[str] = []
+    for unknown in decision.get("unknowns") or ():
+        text = _plain(unknown)
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip()[:200])
+    for refused in decision.get("unsupported_claims") or ():
+        if not isinstance(refused, Mapping):
+            continue
+        text, reason = _plain(refused.get("text")), _plain(refused.get("reason"))
+        if isinstance(text, str) and text.strip():
+            parts.append((f"refused {text.strip()}"
+                          + (f" ({reason})" if isinstance(reason, str) and reason else ""))[:200])
+    state = _plain((decision.get("answerability") or {}).get("state")) \
+        if isinstance(decision.get("answerability"), Mapping) else None
+    if not parts and isinstance(state, str) and state in ("partial", "blocked"):
+        parts.append(f"the answer is {state}")
+    return list(dict.fromkeys(parts))
+
+
+def with_answer_note(result: Any, note: Mapping[str, Any]) -> Any:
+    """An answer-gate result carrying ``note`` the way the decision is read again
+    (``decision_body``, ``agent_session.GateEnd``): in its structured content, else inside
+    its one JSON text part; unchanged when it is neither."""
+    if not isinstance(result, dict) or result.get("isError"):
+        return result
+
+    def told(body: dict) -> dict:
+        # a decision sent back: its own instruction (state this as your answer) would
+        # contradict the note, so the note's words take its place
+        said = body.get("instruction")
+        if note.get(CONTINUE_KEY) and isinstance(note.get("next"), str):
+            said = ({**said, "untrusted_text": note["next"]} if isinstance(said, Mapping)
+                    else note["next"])
+        return {**body, **({"instruction": said} if said is not None else {}),
+                BUDGET_KEY: dict(note)}
+    if isinstance(result.get("structuredContent"), dict):
+        body = told(result["structuredContent"])
+        content = [{"type": "text", "text": json.dumps(body)}] \
+            if isinstance(result.get("content"), list) else result.get("content")
+        return {**result, "structuredContent": body, "content": content}
+    parts = result.get("content")
+    if isinstance(parts, list) and len(parts) == 1 and isinstance(parts[0], Mapping):
+        try:
+            body = json.loads(parts[0].get("text") or "")
+        except ValueError:
+            return result
+        if isinstance(body, dict):
+            return {**result, "content": [{**parts[0], "text": json.dumps(told(body))}]}
+    return result
 
 
 def with_note(result: Any, note: Mapping[str, Any]) -> Any:

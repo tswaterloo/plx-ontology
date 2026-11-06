@@ -558,12 +558,16 @@ class OnQuestionTests(unittest.TestCase):
     MOVED = "api://public.app_purchase_order/%7B%22id%22%3A%223%22%7D@0-1"
     GONE = "api://public.app_purchase_order/%7B%22id%22%3A%224%22%7D@0-1"
     NAMED = "api://public.app_receipt_line/%7B%22id%22%3A%225%22%7D@0-1"
+    OTHER = "api://public.app_purchase_order/%7B%22id%22%3A%227%22%7D@0-1"
+    ALIEN = "api://public.app_receipt_line/%7B%22id%22%3A%228%22%7D@0-1"
     ROWS = {ORDER: {"relation": "public.app_purchase_order",
                     "row": {"po_number": "PO-0103510", "receipt_id": "77"}},
             LINE: {"relation": "public.app_receipt_line", "row": {"quantity": "40"}},
             # a column named like the code, no value saying it
             NAMED: {"relation": "public.app_receipt_line",
-                    "row": {"po0103510_quantity": "40"}}}
+                    "row": {"po0103510_quantity": "40"}},
+            OTHER: {"relation": "public.app_purchase_order", "row": {"quantity": "40"}},
+            ALIEN: {"relation": "public.app_receipt_line", "row": {"quantity": "40"}}}
 
     def view(self, handle):
         if handle == self.MOVED:
@@ -576,19 +580,24 @@ class OnQuestionTests(unittest.TestCase):
             return {"handle": handle, "revision": "0-1", **self.ROWS[handle]}
         return None
 
-    def gate(self, claim):
+    def gate(self, claim, ontology=None, records=()):
         from operating import mcp_server
         session = mock.Mock(case_runtime=None, actor=None)
         rows = lambda runtime, actor, **_kw: self.view
-        server = mock.Mock(ontology=object(), _anchors={})
-        with mock.patch.object(mcp_server, "_question_anchors",
-                               lambda _server, _asked: frozenset({"0103510"})):
+        server = mock.Mock(ontology=ontology or object(), _anchors={})
+
+        def anchors(_server, _asked, found=None):
+            if found is not None:
+                found.update(records)
+            return frozenset({"0103510"})
+        with mock.patch.object(mcp_server, "_question_anchors", anchors):
             relevant = mcp_server.MCPServer._relevance(server, "Did PO0103510 arrive?")
         with mock.patch.object(answer_gate, "citation_rows", lambda runtime: None), \
                 mock.patch.object(answer_gate, "gate_rows", rows):
             return answer_gate.gate_answer({"claims": [claim]}, session,
                                            seen={self.ORDER, self.LINE, self.MOVED,
-                                                 self.GONE, self.NAMED}, returned={},
+                                                 self.GONE, self.NAMED, self.OTHER,
+                                                 self.ALIEN}, returned={},
                                            may_repair=True, relevant=relevant)
 
     def reasons(self, answer):
@@ -603,6 +612,64 @@ class OnQuestionTests(unittest.TestCase):
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
         self.assertEqual([c["id"] for c in self.gate({**line, "via": self.MOVED})["claims"]],
                          ["q"])
+
+    def linked_world(self, hidden=()):
+        """The question's order PO:1 and its links, as the relevance walk reads them: a
+        receipt line two links away, a mention, and two hubs it touches (its customer
+        and its line's item, each with more than ``HUB_LINKS`` records)."""
+        import contextlib
+        import sqlite3
+        import threading
+        import types
+        from operating import mcp_server
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.executescript(
+            "CREATE TABLE object_versions (object_id TEXT, l1_handle TEXT);"
+            "CREATE TABLE link_rows (from_object TEXT, to_object TEXT, superseded_at TEXT,"
+            " binding_kind TEXT, tier TEXT);")
+        conn.executemany("INSERT INTO object_versions VALUES (?, ?)",
+                         [("PO:1", self.ORDER), ("Line:2", self.LINE),
+                          ("Line:5", self.NAMED), ("PO:7", self.OTHER),
+                          ("Line:8", self.ALIEN)])
+        links = [("Receipt:9", "PO:1", "fk", "verified"),
+                 ("Line:2", "Receipt:9", "fk", "verified"),
+                 ("Line:5", "PO:1", "mention", "corroborated"),
+                 ("PO:1", "Cust:1", "fk", "verified"), ("PO:7", "Cust:1", "fk", "verified"),
+                 ("Line:3", "PO:1", "fk", "verified"), ("Line:3", "Item:1", "fk", "verified"),
+                 ("Line:8", "Item:1", "fk", "verified"), ("Line:8", "PO:9", "fk", "verified"),
+                 ("PO:9", "Cust:2", "fk", "verified")]
+        links += [(f"PO:h{n}", "Cust:1", "fk", "verified")
+                  for n in range(mcp_server.HUB_LINKS + 1)]
+        links += [(f"Line:h{n}", "Item:1", "fk", "verified")
+                  for n in range(mcp_server.HUB_LINKS + 1)]
+        conn.executemany("INSERT INTO link_rows VALUES (?, ?, NULL, ?, ?)", links)
+        store = types.SimpleNamespace(conn=conn, lock=threading.Lock())
+        tools = types.SimpleNamespace(
+            store=store, policy=None, _as_known_at=lambda arguments: None,
+            _scope=lambda actor, at: "scope",
+            _visible_versions=lambda scope, ids: {i: {} for i in ids if i not in hidden})
+        return types.SimpleNamespace(
+            tools=tools, request=contextlib.nullcontext, per_call=contextlib.nullcontext,
+            policy_now=lambda actor: None)
+
+    def test_a_record_linked_to_the_questions_record_is_on_the_question(self):
+        """A line whose row names the question's order only by its id stands without a
+        via when a firm link joins it to that order (within the link hops); a mention
+        read in text joins nothing; nor does a hub: another order of the order's customer
+        and another customer's line of the order's item stay off the question; nor a
+        record joined only through one this reader may not read."""
+        ontology = self.linked_world()
+        line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}
+        self.assertEqual([c["id"] for c in self.gate(line, ontology, {"PO:1"})["claims"]],
+                         ["q"])
+        for handle, field in ((self.NAMED, "row.po0103510_quantity"),
+                              (self.OTHER, "row.quantity"), (self.ALIEN, "row.quantity")):
+            claim = {"id": "n", "value": "40", "citation": handle, "field": field}
+            self.assertEqual(self.reasons(self.gate(claim, ontology, {"PO:1"})),
+                             [answer_gate.OFF_QUESTION], handle)
+        hidden = self.linked_world(hidden={"Receipt:9"})
+        self.assertEqual(self.reasons(self.gate(line, hidden, {"PO:1"})),
+                         [answer_gate.OFF_QUESTION])
 
     def test_a_via_that_cannot_be_read_connects_nothing(self):
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}

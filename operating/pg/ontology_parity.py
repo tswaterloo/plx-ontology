@@ -5,7 +5,7 @@ objects sampled from the store (read-only), every row a ``plx.object`` read is b
 from (the object, its versions, removals, values, identifiers, links from and to it,
 its event rows) is read from both stores and compared column for column. Objects whose
 values were not loaded (``load_state`` ``values_skipped``) are compared without their
-values. Prints and returns ``{"objects", "equal", "differing": [first ids]}``.
+values (none since 0007: every value is loaded). Prints and returns ``{"objects", "equal", "differing": [first ids]}``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,24 @@ import sys
 from typing import Any, Sequence
 
 from ontology import store as S
-from operating.pg.ontology_load import _columns, _number, NUMERIC, TIMES
+from ontology import store_ddl
+from operating.pg.ontology_load import TABLES
+
+# The logical rows a plx.object read is built from, in both stores (Postgres: the views
+# over the compact tables).
+_COLUMNS = {
+    "objects": TABLES["objects"].columns[1:],   # without row_no
+    "object_removals": TABLES["object_removals"].columns,
+    "object_versions": TABLES["object_versions"].columns[1:],
+    "identifiers": TABLES["identifiers"].columns,
+    "event_objects": TABLES["event_objects"].columns,
+    "links": store_ddl.LINK_COLUMNS,
+    "object_values": store_ddl.VALUE_COLUMNS,
+}
+
+
+def _columns(table: str) -> tuple[str, ...]:
+    return tuple(_COLUMNS[table])
 
 _BY_OBJECT = {
     "objects": "object_id = ?",
@@ -37,8 +54,7 @@ def _sqlite_rows(conn: sqlite3.Connection, part: str, object_id: str) -> list[tu
         for batch in S._value_rows(conn, object_id, object_id + "\x00"):
             for row in batch:
                 if row[0] == object_id:
-                    out.append((*row, _number(row[3]) if row[2] in NUMERIC else None,
-                                row[3] if row[2] in TIMES else None))
+                    out.append(row)
         return sorted(_norm(r) for r in out)
     table = "links" if part.startswith("links") else part
     names = ", ".join(_columns(table))

@@ -364,17 +364,15 @@ export function TodayDetail({
     const c = new AbortController();
     setPage(null);
     setFailed(false);
-    // an order's trail is asked for beside its quick read (a row names its whole object id)
-    const trail = /^(PurchaseOrder|SalesOrder)$/.test(row.type) ? getObjectSection("trail", row.type, row.objectId, c.signal) : null;
-    trail?.catch(() => undefined);
     getObject(row.type, row.objectId, c.signal, true)
       .then((p) => {
         if (c.signal.aborted) return;
         // the briefing already read this PO's trail: shown at once, then the page's own
         const withTrail = !p.trail && row.item?.trail ? ({ ...p, trail: row.item.trail } as ObjectPage) : p;
         setPage(withTrail);
-        if (!p.complete && trail)
-          trail
+        // a page read whole already holds its trail: no second request
+        if (!p.complete && /^(PurchaseOrder|SalesOrder)$/.test(row.type))
+          getObjectSection("trail", row.type, row.objectId, c.signal)
             .then((s) => !c.signal.aborted && s.trail && setPage((cur) => (cur ? mergeSection(cur, s) : cur)))
             .catch(() => undefined);
       })

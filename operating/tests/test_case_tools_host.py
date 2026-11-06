@@ -1245,6 +1245,128 @@ class CapturedDocumentDirectionTests(unittest.TestCase):
             self.assertEqual(cth._attachment_mailboxes(
                 types.SimpleNamespace(path="/nonexistent/mail-capture/capture.db")), listed)
 
+    def test_a_new_host_takes_another_hosts_recent_list_and_scans_an_old_one(self):
+        """The attachment mailboxes another host read within the refresh interval are this
+        host's too (no scan); an older list is read again and kept for the next host."""
+        from operating import case_tools_host as cth
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        key = os.path.realpath("/nonexistent/mail-capture/capture-kept.db")
+        self.addCleanup(cth._MAILBOXES.pop, key, None)
+        listed = [{"mailbox_upn": "orders@example.com"}]
+        store = types.SimpleNamespace(path=key)
+        with mock.patch.dict(os.environ, {cth.MAILBOXES_CACHE_ENV: temp.name}):
+            with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
+                self.assertEqual(cth._attachment_mailboxes(store), listed)
+                self.assertEqual(scan.call_count, 1)
+            cth._MAILBOXES.pop(key, None)   # another process: nothing held in memory
+            self.assertEqual(oct(cth._mailboxes_cache(key).stat().st_mode & 0o777),
+                             "0o600")
+            with mock.patch.object(cth, "_mailbox_list",
+                                   side_effect=AssertionError("scanned")):
+                self.assertEqual(cth._attachment_mailboxes(store), listed)
+            cth._MAILBOXES.pop(key, None)
+            old = time.time() - cth.ATTACHMENT_MAILBOXES_SECONDS - 5
+            os.utime(cth._mailboxes_cache(key), (old, old))
+            fresh = [{"mailbox_upn": "sales@example.com"}]
+            with mock.patch.object(cth, "_mailbox_list", return_value=fresh) as scan:
+                self.assertEqual(cth._attachment_mailboxes(store), fresh)
+                self.assertEqual(scan.call_count, 1)
+            # a folder others may read is never read from or written to
+            cth._MAILBOXES.pop(key, None)
+            os.chmod(temp.name, 0o755)
+            with mock.patch.object(cth, "_mailbox_list", return_value=listed) as scan:
+                self.assertEqual(cth._attachment_mailboxes(store), listed)
+                self.assertEqual(scan.call_count, 1)
+            self.assertEqual(json.loads(cth._mailboxes_cache(key).read_text())["mailboxes"],
+                             fresh)
+
+
+class AttachmentFind(unittest.TestCase):
+    """A message's find also searches its attachments' text (``PagedRead.
+    _attachment_finds``): each attachment a find read of its own citation for the same
+    reader (one it refuses is left out), its first hits kept, and what was found is
+    evidence the answer gate counts and text it was served. isolated-fixture: the reads
+    stubbed, the contract, the evidence and served-text rules real."""
+    MESSAGE = "graph-mail://box/msg@ck"
+
+    def test_a_message_find_reports_each_readable_attachments_hits(self):
+        from operating import answer_gate, case_tools_host as cth, mcp_server
+        attached = [f"{self.MESSAGE}#attachment=a{n}&sha256={str(n) * 64}" for n in range(3)]
+
+        def hit(citation, text):
+            return {"offset": 0, "chars": len(text), "line": 1, "text": {
+                "untrusted_text": text, "origin": {"citation": citation,
+                                                   "field_path": "row.content_text"}}}
+
+        def read(arguments, actor, budget):
+            citation = arguments["citation"]
+            if citation == attached[1]:
+                return {"error": {"code": "withheld", "message": "not this reader's"}}
+            hits = [hit(citation, "INCI name : Orbignya Oleifera Seed Oil")] * 7 \
+                if citation == attached[0] else []
+            return {"citation": citation, "status": "resolved", "digest": "d" * 64,
+                    "matches": {"hits": hits, "total_hits": len(hits), "total_chars": 99,
+                                "sha256": "e" * 64}}
+        paged = cth.PagedRead.__new__(cth.PagedRead)
+        paged.limits = {"max_result_bytes": 48000}
+        paged._call = read
+        paged._fits = lambda result: True
+        found = {"citation": self.MESSAGE, "status": "resolved", "digest": "b" * 64,
+                 "lineage": "mail", "gaps": [], "matches": {
+                     "hits": [], "total_hits": 0, "total_chars": 5, "sha256": "c" * 64},
+                 "completeness": {"complete": True, "truncated": False, "returned": 0,
+                                  "total": 0, "next_cursor": None},
+                 "meta": {"schema_digest": "a" * 64, "as_known_at": "2026-11-06T00:00:00Z",
+                          "freshness": []}}
+        listing = [{"citation": c, "text_read": True} for c in attached] + [
+            {"citation": f"{self.MESSAGE}#attachment=img", "text_read": False}]
+        out = paged._attachment_finds(found, listing, {"find": "INCI"}, "actor", None)
+        self.assertEqual([(m["citation"], len(m["matches"]["hits"]))
+                          for m in out["attachment_matches"]],
+                         [(attached[0], cth.ATTACHMENT_FIND_HITS), (attached[2], 0)])
+        problems = validate(out, CONTRACTS["tools"]["plx.read"]["output"], root=CONTRACTS)
+        self.assertEqual(problems, [])
+        self.assertIn(attached[0], answer_gate.evidence_handles(
+            "plx.read", out, arguments={"citation": self.MESSAGE, "find": "INCI"}))
+        served = [cited for cited, _field, _v, _s in mcp_server._served_texts(out)]
+        self.assertIn([attached[0]], served)
+
+    def test_the_claim_gate_reads_an_attachments_text_as_plx_read_serves_it(self):
+        """A claim quoting a mail attachment's text is checked against the text the reader
+        was served (``row.content_text``), read through the runtime's one mail resolver;
+        a message, or an attachment its gate does not serve, is the view as it was."""
+        from operating import ontology_tools_investigate as oti
+        message = ("graph-mail://ed72cf2e-d20a-4df7-8020-ac43d39f9c11/AAkALgAAAAAAHYQD"
+                   "@CQAAABYAAAC%2BY2vGKRpf")
+        attachment = message + "#attachment=AAkALgAAAAAAHYQDAARIAEAB&sha256=" + "a" * 64
+        served = {}
+
+        class Runtime:
+            def claim_row(self, handle, actor):
+                return {"citation": handle, "relation": "graph-mail.attachment",
+                        "row": {"name": "sheet.xlsx"}}
+
+            def mail_capture(self, handle, actor, *, text=False):
+                served[handle] = text
+                if actor != "reader":
+                    return None
+                return {"row": {"name": "sheet.xlsx", "content_text": "E118=0.41"}}
+        rows = oti.citation_rows(Runtime())
+        self.assertEqual(rows(attachment, "reader")["row"]["content_text"], "E118=0.41")
+        self.assertTrue(served[attachment])
+        self.assertNotIn("content_text", rows(attachment, "someone else")["row"])
+        self.assertNotIn("content_text", rows(message, "reader")["row"])
+
+    def test_a_participants_search_reads_no_file_capture(self):
+        """A participant's search is of their mail: the SharePoint capture is not looked
+        up for it (its files crowded the participant's mail out of the page)."""
+        from operating import case_tools_host as cth
+        host = cth.CaptureCaseHostTools.__new__(cth.CaptureCaseHostTools)
+        host._sharepoint = mock.Mock(side_effect=AssertionError("read the file capture"))
+        self.assertIsNone(host._captured_search(
+            {"query": "INCI", "participant": "@example.test"}, "actor"))
+
 
 if __name__ == "__main__":
     unittest.main()

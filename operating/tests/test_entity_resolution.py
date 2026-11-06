@@ -25,6 +25,7 @@ PO = 'PurchaseOrder:bc.purchase_orders:{"id":"po1"}'
 SPRAY = 'Product:portal.fm_finished_product:{"id":12}'
 CPO_A = 'CustomerPurchaseOrder:portal.sage_oe_order_header.ponumber:{"orduniq":1}'
 CPO_B = 'CustomerPurchaseOrder:portal.sage_oe_order_header.ponumber:{"orduniq":2}'
+MAIL = 'Email:graph_mail.messages:{"id":"m1","mailbox":"b1"}'
 
 
 def row(oid, type_, name, aliases, matched="", strict=1.0):
@@ -45,7 +46,9 @@ ROWS = [row(SAGE, "item", "Acme Vanilla 75g", ["AB-CD-12X"]),
         row(CPO_A, "customer_po", "Customer PO XY0101004/ 0103440", ["XY0101004/ 0103440"]),
         row(CPO_B, "customer_po", "Customer PO XY0101004-1", ["XY0101004-1"]),
         # an order carrying the supplier's code is linked to it, never the supplier
-        row(PO, "purchase_order", "PO100", ["PO100", "ACME01"])]
+        row(PO, "purchase_order", "PO100", ["PO100", "ACME01"]),
+        # a mail participant named like a word of a question, held on the message
+        row(MAIL, "person", "Abcd", [])]
 
 
 class FakeIndex:
@@ -151,6 +154,13 @@ class Resolve(unittest.TestCase):
         # the order holding the customer's code is never the customer
         self.assertNotIn(PO, {r["object"]["object_id"] for e in entities
                               for r in e["records"]})
+
+    def test_a_name_read_off_a_message_is_a_lead_never_the_thing(self):
+        entities, _ = resolve("Did we send the documents with the different ABCD?")
+        found = [r for e in entities for r in e["records"]
+                 if r["object"]["object_id"] == MAIL]
+        self.assertTrue(found)
+        self.assertTrue(all(r["status"] == "lead" for r in found))
 
     def test_a_phrase_or_a_lower_case_name_resolves(self):
         """A phrase of several words whole in a name names that record; a word written in

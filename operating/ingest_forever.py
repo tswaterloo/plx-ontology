@@ -988,11 +988,15 @@ def ingest_settings(value: Any) -> dict[str, Any]:
     """The host config's ``ingest`` section: ``mode`` :data:`MODE`, ``grace_seconds``
     (the time a child gets past its budget), ``max_parallel`` (capture children at
     once, 1 to :data:`MAX_PARALLEL`; absent: one per configured source, at most
-    :data:`MAX_PARALLEL`) and ``build_inputs`` (:data:`BUILD_INPUTS`, default ``live``);
-    anything else is refused."""
+    :data:`MAX_PARALLEL`), ``build_inputs`` (:data:`BUILD_INPUTS`, default ``live``) and
+    ``builds`` (``on``, the default: each refresh builds the next projection generation;
+    ``off``: captures and their records only, the served generation stays and the row
+    deltas keep the stores current, docs/pg-cutover.md); anything else is refused."""
     if not isinstance(value, Mapping) or set(value) - {"mode", "grace_seconds",
-                                                       "max_parallel", "build_inputs"} \
+                                                       "max_parallel", "build_inputs",
+                                                       "builds"} \
             or value.get("mode") != MODE \
+            or value.get("builds", "on") not in ("on", "off") \
             or value.get("build_inputs", "live") not in BUILD_INPUTS:
         raise IngestError("ingest_config_invalid")
     grace = value.get("grace_seconds", DEFAULT_GRACE_SECONDS)
@@ -1001,7 +1005,8 @@ def ingest_settings(value: Any) -> dict[str, Any]:
             type(parallel) is not int or not 1 <= parallel <= MAX_PARALLEL):
         raise IngestError("ingest_config_invalid")
     return {"mode": MODE, "grace_seconds": grace, "max_parallel": parallel,
-            "build_inputs": value.get("build_inputs", "live")}
+            "build_inputs": value.get("build_inputs", "live"),
+            "builds": value.get("builds", "on")}
 
 
 def max_parallel(settings: Mapping[str, Any], configured: int) -> int:

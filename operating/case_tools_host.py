@@ -167,6 +167,10 @@ _READ_OK = ("resolved", "changed_since")
 # plx.read's find: the places it lists (the contract's matches.hits bound) and the
 # characters of context its snippet keeps on each side of the phrase.
 MAX_FIND_HITS = 50
+# A message's find also searches its attachments (``PagedRead._attachment_finds``): at
+# most this many, and this many hits of each.
+MAX_ATTACHMENT_FINDS = 12
+ATTACHMENT_FIND_HITS = 5
 FIND_CONTEXT_CHARS = 80
 PAGE_NOT_READ = "page_not_read"
 _METHOD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+:-]{0,63}$")
@@ -252,7 +256,12 @@ class PagedRead:
             return self._checked(result)
         result = self._with_conflicts(result, raw, arguments)
         if "find" in arguments:
-            return self._checked(self._find(result, raw, arguments))
+            found = self._find(result, raw, arguments)
+            if not found.get("error") and isinstance(raw.get("attachments"), list) \
+                    and raw["attachments"] and "field_path" not in arguments:
+                found = self._attachment_finds(found, raw["attachments"], arguments,
+                                               actor, budget)
+            return self._checked(found)
         if "text_offset" in arguments or "line" in arguments:
             return self._checked(self._window(result, raw, arguments))
         if "column_offset" in arguments:
@@ -577,6 +586,42 @@ class PagedRead:
             if self._fits(out) or not window["hits"]:
                 return out
             window = dict(window, hits=window["hits"][:-1])
+
+    def _attachment_finds(self, found: dict[str, Any], attachments: Sequence[Any],
+                          arguments: Mapping[str, Any], actor: Any, budget: Any
+                          ) -> dict[str, Any]:
+        """A message's ``find`` also looks in what travels with it: the same phrase in
+        each attachment whose text was read (``MAX_ATTACHMENT_FINDS``, in the listed
+        order), each a ``plx.read`` find of that attachment's citation for the same
+        reader, gated again (``attachment_matches``: its citation, status, digest and
+        matches, the first ``ATTACHMENT_FIND_HITS`` hits of each). An attachment this
+        reader may not read, or with no text, is left out; the attachments not searched
+        are counted (``attachments_not_searched``)."""
+        listed = [a for a in attachments if isinstance(a, Mapping)
+                  and isinstance(a.get("citation"), str) and a.get("text_read")]
+        out: list[dict[str, Any]] = []
+        for attachment in listed[:MAX_ATTACHMENT_FINDS]:
+            got = self._call({"citation": attachment["citation"],
+                              "find": arguments["find"]}, actor, budget)
+            matches = got.get("matches") if isinstance(got, Mapping) else None
+            if got.get("status") not in _READ_OK or not isinstance(matches, Mapping):
+                continue
+            entry = {"citation": got.get("citation") or attachment["citation"],
+                     "status": got["status"],
+                     "matches": dict(matches, hits=list(matches.get("hits") or ())[
+                         :ATTACHMENT_FIND_HITS])}
+            if got.get("digest"):
+                entry["digest"] = got["digest"]
+            out.append(entry)
+        if not out and len(listed) <= MAX_ATTACHMENT_FINDS:
+            return found
+        shown = dict(found, attachment_matches=out)
+        if len(listed) > MAX_ATTACHMENT_FINDS:
+            shown["attachments_not_searched"] = len(listed) - MAX_ATTACHMENT_FINDS
+        while not self._fits(shown) and shown["attachment_matches"]:
+            shown["attachment_matches"] = shown["attachment_matches"][:-1]
+            shown["attachments_not_searched"] = shown.get("attachments_not_searched", 0) + 1
+        return shown
 
     def _columns(self, result: dict[str, Any], raw: Mapping[str, Any],
                  start: int) -> dict[str, Any]:
@@ -1143,11 +1188,17 @@ class CaptureCaseHostTools(CaseHostTools):
                     if found is None:
                         return False
                     message = found[0]
+                # a message and each of its attachments are one decision (several of
+                # its attachments, or it and its attachments, are candidates of one search)
+                kept = ("message", str(store.path), message, gated, id(audience))
+                if kept in memo:
+                    return memo[kept]
                 seen = ("visible", str(store.path), gated, id(audience))
                 if seen not in memo:
                     memo[seen] = (audience, frozenset(store._visible(gated, audience)))
                 row = store._latest(message)
                 if row is None or row["mailbox_id"] not in memo[seen][1]:
+                    memo[kept] = False
                     return False
                 mailbox = row["mailbox_id"]
                 decided = ("mailbox", str(store.path), mailbox, gated)
@@ -1155,10 +1206,12 @@ class CaptureCaseHostTools(CaseHostTools):
                     memo[decided] = citations._visible_mailbox(
                         store, mailbox, gated, audience) is not None
                 if not memo[decided]:
+                    memo[kept] = False
                     return False
                 record = json.loads(row["record"])
-                return not citations._sent_by_excluded(
+                memo[kept] = not citations._sent_by_excluded(
                     store, [record.get("from"), record.get("sender")], memo)
+                return memo[kept]
         except Exception:  # noqa: BLE001 - a refused gate or unreadable capture admits nothing
             return False
 
@@ -2333,7 +2386,9 @@ class CaptureCaseHostTools(CaseHostTools):
         query = arguments.get("query")
         if not isinstance(query, str) or arguments.get("cursor") or arguments.get("since") \
                 or arguments.get("until") or arguments.get("object_id") is not None \
+                or arguments.get("participant") is not None \
                 or "sharepoint" not in (arguments.get("sources") or ("sharepoint",)):
+            # a participant's search is of their mail alone: no file is anyone's mail
             return None
         wanted = {(m["identifier_kind"], m["normalized"]) for m in mn.extract(query)
                   if m["normalized"]}
@@ -3325,11 +3380,78 @@ def _mailbox_list(path: str) -> list[dict[str, Any]]:
                                                                           str(upn)))]
 
 
+# The list as another host process read it, kept on disk for every host of this user
+# (``MAILBOXES_CACHE_ENV``, else a directory of the user's own in the system temporary
+# directory, private to the user): a list
+# younger than ATTACHMENT_MAILBOXES_SECONDS is taken as a list this process read that
+# long ago, so a session's helper hosts and the next session's host do not each scan
+# every attachment again (2026-11-06: 3-12 s of each new host's first document search).
+MAILBOXES_CACHE_ENV = "PLX_HOST_CACHE_DIR"
+
+
+def _mailboxes_cache(path: str) -> Path:
+    import hashlib
+    import tempfile
+    root = os.environ.get(MAILBOXES_CACHE_ENV) or os.path.join(
+        tempfile.gettempdir(), f"plx-workbench-{os.getuid()}")
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:24]
+    return Path(root) / f"attachment-mailboxes-{digest}.json"
+
+
+def _private(path: Path) -> bool:
+    """Whether ``path`` is this user's own and no one else's to read or write."""
+    stat = path.stat()
+    return stat.st_uid == os.getuid() and not stat.st_mode & 0o077
+
+
+def _cached_mailboxes(path: str) -> tuple[float, list[dict[str, Any]]] | None:
+    """(the monotonic time it stands for, the list) another host kept for ``path`` within
+    ATTACHMENT_MAILBOXES_SECONDS, or None (also when the file or its folder is not this
+    user's own and private)."""
+    try:
+        file = _mailboxes_cache(path)
+        if not (_private(file.parent) and _private(file)):
+            return None
+        age = time.time() - file.stat().st_mtime
+        if not 0 <= age < ATTACHMENT_MAILBOXES_SECONDS:
+            return None
+        kept = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    found = kept.get("mailboxes") if isinstance(kept, dict) and kept.get("path") == path \
+        else None
+    if not isinstance(found, list) or not all(
+            isinstance(row, dict) and set(row) == {"mailbox_upn"} for row in found):
+        return None
+    return time.monotonic() - age, found
+
+
+def _keep_mailboxes(path: str, found: list[dict[str, Any]]) -> None:
+    try:
+        file = _mailboxes_cache(path)
+        file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not _private(file.parent):
+            return   # a folder someone else made or can read: nothing is kept there
+        temp = file.with_name(f"{file.name}.{os.getpid()}.tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump({"path": path, "mailboxes": found}, out)
+        os.replace(temp, file)
+    except OSError:
+        pass   # each host reads its own
+
+
 def _read_mailboxes(path: str, done: threading.Event) -> None:
     try:
+        kept = _cached_mailboxes(path)
+        if kept is not None:
+            with _MAILBOXES_LOCK:
+                _MAILBOXES[path] = kept
+            return
         found = _mailbox_list(path)
         with _MAILBOXES_LOCK:
             _MAILBOXES[path] = (time.monotonic(), found)
+        _keep_mailboxes(path, found)
     except sqlite3.Error:
         pass   # read again by the next request that needs it
     finally:
@@ -3366,10 +3488,16 @@ def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
         running.wait()
         with _MAILBOXES_LOCK:
             held = _MAILBOXES.get(key)
-    if held is None:   # never read in this process: read now
+    if held is None:   # never read in this process: another host's, else read now
+        kept = _cached_mailboxes(key)
+        if kept is not None:
+            with _MAILBOXES_LOCK:
+                _MAILBOXES[key] = kept
+            return kept[1]
         found = _mailbox_list(key)
         with _MAILBOXES_LOCK:
             _MAILBOXES[key] = (time.monotonic(), found)
+        _keep_mailboxes(path=key, found=found)
         return found
     if time.monotonic() - held[0] >= ATTACHMENT_MAILBOXES_SECONDS:
         _refresh_mailboxes(key)

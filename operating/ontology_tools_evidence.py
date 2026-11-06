@@ -206,6 +206,11 @@ PARTICIPANT_PROPERTIES = ("sender", "to_addresses", "cc_addresses")
 PARTICIPANT_SCAN_CAP = 20_000   # matching value rows read per call
 MAX_PARTICIPANTS = 16           # addresses and domains one call searches
 _EMAIL_PROPERTY = re.compile(r"^(?:[a-z0-9]+_)?email(?:_[0-9]+)?$")
+# What carries a matched attachment into a participant's mail (``_carrying_messages``):
+# an attachment is attached to its message, an archive member is in its attachment.
+CARRIED_TYPES = frozenset({"Attachment", "ContainerMember"})
+CARRIED_LINKS = ("AND l.link_type IN ('Attachment.attached_to', "
+                 "'ContainerMember.in_attachment')")
 # A party record's contacts, whose addresses a participant search of the party reads too:
 # the BC contacts linked to a customer or vendor (its contactsInformation), then the
 # people of those company contacts.
@@ -1830,6 +1835,10 @@ class EvidenceTools:
         roles: dict[str, tuple[str, str]] = {}
         participants: list[str] = []
         if arguments.get("participant") is not None:
+            if candidate:
+                # an attachment the query matched speaks for the message it travels
+                # with: that message is the participant's mail the query names
+                candidate = candidate | self._carrying_messages(scope, candidate, snippets)
             # a query's candidates narrow the participant's mail first: only the mail
             # both hold is matched, dated and capped (never all of a busy vendor's mail,
             # whose newest cap would cut an older message the query names)
@@ -1897,6 +1906,35 @@ class EvidenceTools:
                 "query_keys": query_keys, "bare": bare, "scan_cut": scan_cut,
                 "participants": participants}
         return documents, gaps, info
+
+    def _carrying_messages(self, scope: Any, ids: set[str],
+                           snippets: dict[str, dict[str, Any]]) -> set[str]:
+        """The messages ``ids``' attachments (and the attachments their archive members
+        are in) travel with, over the visible ``attached_to`` and ``in_attachment``
+        links, each given its attachment's snippet when it has none (cited to the
+        attachment, where the words were found)."""
+        out: set[str] = set()
+        frontier = {oid for oid in ids if oid.split(":", 1)[0] in CARRIED_TYPES}
+        seen, source = set(frontier), {oid: oid for oid in frontier}
+        for _ in range(2):   # a member, then its attachment
+            if not frontier:
+                break
+            reached: set[str] = set()
+            for row in self._visible_links(scope, sorted(frontier), CARRIED_LINKS):
+                near, far = row["from_object"], row["to_object"]
+                if near not in frontier:
+                    continue
+                source.setdefault(far, source[near])
+                if far.split(":", 1)[0] in CARRIED_TYPES:
+                    if far not in seen:
+                        seen.add(far)
+                        reached.add(far)
+                    continue
+                out.add(far)
+                if far not in snippets and source[far] in snippets:
+                    snippets[far] = snippets[source[far]]
+            frontier = reached
+        return out
 
     def _participant_documents(self, scope: Any, participant: str, actor: Actor,
                                tenant: frozenset[str] | None, since: dt.datetime | None,
@@ -2110,7 +2148,7 @@ class EvidenceTools:
             for i, (low, high) in enumerate(spans):
                 params[f"lo{i}"], params[f"hi{i}"] = low, high
             try:
-                rows = self.store.conn.execute(
+                rows = self.store.word_conn.execute(
                     f"""SELECT v.object_id, v.property, v.value
                         FROM value_text f JOIN object_values_numbered v ON v.row_no = f.rowid
                         JOIN objects o ON o.object_id = v.object_id
@@ -2428,7 +2466,7 @@ class EvidenceTools:
             f"{tt._live('v')} AND fd.markings IN (SELECT value FROM json_each(:marks)) "
             f"AND {scope.gate}(v.l1_handle) AND {tt._visible_object('o', scope.gate)}"))
         try:
-            rows = self.store.conn.execute(
+            rows = self.store.word_conn.execute(
                 f"""SELECT fd.object_id, fd.citation, fd.field_path, t.body, o.audience_key
                     FROM chunk_text f JOIN text_chunks t ON t.chunk_id = f.rowid
                     JOIN text_fields fd ON fd.field_id = t.field_id
@@ -2572,7 +2610,7 @@ class EvidenceTools:
             for i, (low, high) in enumerate(spans or ()):
                 params[f"lo{i}"], params[f"hi{i}"] = low, high
             try:
-                rows = self.store.conn.execute(
+                rows = self.store.word_conn.execute(
                     f"""SELECT v.object_id, v.value, v.l1_handle, v.field_path, o.audience_key
                         FROM value_text f JOIN object_values_numbered v ON v.row_no = f.rowid
                         JOIN objects o ON o.object_id = v.object_id

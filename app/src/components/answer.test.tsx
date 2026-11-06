@@ -582,6 +582,26 @@ describe("a long list, a repeated pick and a page read in two steps", () => {
     expect(buttons[0]).toHaveTextContent("last picked");
   });
 
+  it("asks for no section when the quick read comes back whole", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls.push(String(url));
+        if (String(url).includes("quick=1"))
+          return new Response(JSON.stringify({
+            object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1", summary: "Supplier X",
+            status: { state: "open", text: "Open", sources: [] }, freshness: { as_of: "2026-10-29T11:00:00Z" }, complete: true,
+          }), { status: 200 });
+        return new Response(JSON.stringify({ status: "read", items: [], cards: {} }), { status: 200 });
+      }),
+    );
+    render(<ObjectView type="PurchaseOrder" id="PurchaseOrder:1" />);
+    expect(await screen.findByTestId("object-title")).toHaveTextContent("PO 1");
+    expect(calls.filter((u) => u.startsWith("/api/object-section/"))).toEqual([]);
+    expect(screen.queryByTestId("checking")).toBeNull();
+  });
+
   it("paints the quick read first, a skeleton per slow section, and merges each section as it lands", async () => {
     const base = {
       object_id: "PurchaseOrder:1", type: "PurchaseOrder", label: "PO 1", summary: "Supplier X",

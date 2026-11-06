@@ -1440,7 +1440,8 @@ class Host:
                 report = self._finish(
                     cycle_id, started, outcomes, INGEST_RUNNER,
                     first.pop() if first else {},
-                    skip_build="low_disk" if reason == "low_disk" else None,
+                    skip_build="low_disk" if reason == "low_disk" else (
+                        "builds_off" if self.config.ingest.get("builds") == "off" else None),
                     extra={"continuous": True, "build_exclusion": exclusion})
                 if on_refresh is not None:
                     on_refresh(report)

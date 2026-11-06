@@ -43,6 +43,11 @@ MAX_HOPS = 6
 MAX_GROUPS_SHOWN = 60
 MAX_CITED = 50
 MAX_CODE_RECORDS = 200   # records a code list starts from
+ROWS_SHOWN = 10          # records ``rows`` lists by default (newest first)
+# by_code entries' share of the result (the rest of max_result_bytes: hops, gaps, meta)
+PER_CODE_BYTES = 38000
+WALK_REFUSALS = frozenset({"undeclared_link", "ambiguous_link", "path_type_mismatch",
+                           "invalid_input", "unknown_property"})
 
 _CONTRACTS = json.loads((Path(__file__).with_name("ontology_tool_contracts.json"))
                         .read_text(encoding="utf-8"))
@@ -63,8 +68,12 @@ class TableBackend:
     def __init__(self, call: Callable[[str, Mapping[str, Any], Any], Mapping[str, Any]],
                  new_set: Callable[[Any, list[str]], str] | None, schema: Any,
                  visible: Callable[[Any, list[str]], set[str]] | None = None,
-                 codes: Callable[..., tuple[list[str], list[str]]] | None = None) -> None:
+                 codes: Callable[..., tuple[list[str], list[str]]] | None = None,
+                 rows: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None
+                 ) -> None:
         self.call, self.new_set, self.schema = call, new_set, schema
+        # the members of a set with their cited values (``AggregateTools.rows``)
+        self.rows = rows
         # (records holding these exact codes, the codes none holds) for a reader
         self.codes = codes
         # the ids among these this reader may read now (the store's own gate); None: the
@@ -127,6 +136,10 @@ class QueryTool:
     def _query(self, arguments: Mapping[str, Any], actor: Any) -> dict[str, Any]:
         call = lambda name, args: self.backend.call(name, args, actor)  # noqa: E731
         gaps: list[dict[str, Any]] = []
+        if arguments.get("rows") is not None and self.backend.rows is None:
+            raise _Refused(_error("invalid_input", "rows need the host's value reads"))
+        if arguments.get("per_code"):
+            return _clean(self._per_code(arguments, actor, call))
         start, records, mention = self._start(arguments["from"], call, actor, gaps)
         traverse = list(arguments.get("traverse") or ())
         out: dict[str, Any] = {"from": {"records": (records or [])[:MAX_CITED]}}
@@ -143,7 +156,7 @@ class QueryTool:
                                       "plx.object a start record to see its link types"))
             by_record, meta = [], None
             for record in starts:
-                run = self._run(call, record, traverse, arguments, [])
+                run = self._run(call, record, traverse, arguments, [], actor)
                 meta = run.pop("meta", None) or meta
                 if run["hops"] and all(h.get("count") for h in run["hops"]):
                     by_record.append({"record": record, **run})
@@ -157,13 +170,14 @@ class QueryTool:
             out["meta"] = meta
             return _clean(out)
         root = start if records is None else self._set_of(records, actor)
-        run = self._run(call, root, traverse, arguments, gaps)
+        run = self._run(call, root, traverse, arguments, gaps, actor)
         out.update(run)
         out["gaps"] = _fold(out.get("gaps") or [])[:20]
         return _clean(out)
 
     def _run(self, call, root: Any, traverse: Sequence[Mapping[str, Any]],
-             arguments: Mapping[str, Any], gaps: list[dict[str, Any]]) -> dict[str, Any]:
+             arguments: Mapping[str, Any], gaps: list[dict[str, Any]],
+             actor: Any = None) -> dict[str, Any]:
         """Walk ``traverse`` from ``root`` hop by hop, then each measure on what it
         reached: {hops, set, results, gaps, meta}."""
         common = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
@@ -196,6 +210,12 @@ class QueryTool:
                                       "detail": "no record was reached on the path"}]
             result["meta"] = meta
             return result
+        if arguments.get("rows") is not None:
+            listed = self._rows(current, arguments, gaps, actor)
+            if listed is not None:
+                result["rows"] = listed
+            result["gaps"], result["meta"] = gaps, meta
+            return result
         for measure in arguments.get("measures") or [{"op": "count"}]:
             result["results"].append(self._measure(call, current, measure, arguments,
                                                    common, gaps))
@@ -204,6 +224,83 @@ class QueryTool:
             r.pop("meta", None)
         result["gaps"], result["meta"] = gaps, meta
         return result
+
+    def _rows(self, current: str, arguments: Mapping[str, Any],
+              gaps: list[dict[str, Any]], actor: Any) -> dict[str, Any] | None:
+        """The reached set ``current`` listed (``rows``: ``AggregateTools.rows``); its
+        refusal is a gap of the answer, never the whole answer's."""
+        spec = arguments["rows"]
+        args = {"set": current, "properties": list(spec["properties"]),
+                # per code: the summary alone unless rows are asked for (many codes fit)
+                "limit": spec.get("limit", 0 if arguments.get("per_code") else ROWS_SHOWN)}
+        if spec.get("date"):
+            args["date"] = {"property": spec["date"]["property"],
+                            **({"path": [_hop(h) for h in spec["date"]["path"]]}
+                               if spec["date"].get("path") else {})}
+        for key in ("as_known_at",):
+            if key in arguments:
+                args[key] = arguments[key]
+        got = self.backend.rows(args, actor)
+        if got.get("error"):
+            gaps.append({"state": "unknown", "reason": "rows_refused",
+                         "subject": str(got["error"].get("code"))[:700],
+                         "detail": str(got["error"].get("message"))[:600]})
+            return None
+        gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+        return {k: got[k] for k in ("count", "rows", "more_rows", "summary") if k in got}
+
+    def _per_code(self, arguments: Mapping[str, Any], actor: Any, call) -> dict[str, Any]:
+        """``per_code``: each code of ``from.codes`` (from ``code_offset``) answered on its
+        own: its records (by the identifier index, ``object_type`` as given), walked along
+        ``traverse`` and listed (``rows``) or counted, in the order given, until the
+        result's size bound; ``codes_next_offset`` is where the next call starts."""
+        start = arguments["from"]
+        if "codes" not in start:
+            raise _Refused(_error("invalid_input", "per_code needs from codes"))
+        if self.backend.codes is None:
+            raise _Refused(_error("invalid_input", "codes need the host's identifier index"))
+        codes = list(dict.fromkeys(start["codes"]))
+        offset = int(arguments.get("code_offset") or 0)
+        traverse = list(arguments.get("traverse") or ())
+        out: dict[str, Any] = {"from": {"records": []}, "hops": [], "set": None,
+                               "results": [], "by_code": []}
+        gaps: list[dict[str, Any]] = []
+        meta = None
+        used = 0
+        for index in range(offset, len(codes)):
+            code = codes[index]
+            found, _missing = self.backend.codes(actor, [code], start.get("object_type"))
+            entry: dict[str, Any] = {"code": code, "records": len(found)}
+            if found:
+                local: list[dict[str, Any]] = []
+                try:
+                    run = self._run(call, self._set_of(found, actor), traverse,
+                                    arguments, local, actor)
+                except _Refused as refused:
+                    if refused.result["error"].get("code") in WALK_REFUSALS:
+                        raise   # the same walk for every code: refused once, as a whole
+                    entry["error"] = refused.result["error"]
+                else:
+                    meta = run.get("meta") or meta
+                    entry["hops"] = run.get("hops") or []
+                    if "rows" in run:
+                        entry["rows"] = run["rows"]
+                    gaps += [g for g in local if g.get("reason") != "nothing_reached"]
+            size = len(json.dumps(entry, default=str))
+            if out["by_code"] and used + size > PER_CODE_BYTES:
+                out["codes_next_offset"] = index
+                break
+            used += size
+            out["by_code"].append(entry)
+        missing = [e["code"] for e in out["by_code"] if not e["records"]]
+        if missing:
+            gaps.append({"state": "unknown", "reason": "codes_not_found",
+                         "subject": ", ".join(missing)[:700],
+                         "detail": f"{len(missing)} code(s) name no record this reader may "
+                                   "read"})
+        out["gaps"] = _fold(gaps)[:20]
+        out["meta"] = meta
+        return out
 
     def _start(self, start: Mapping[str, Any], call, actor, gaps
                ) -> tuple[str | None, list[str] | None, str | None]:
@@ -396,9 +493,16 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
         return ([i for i in ids if i in readable][:MAX_CODE_RECORDS],
                 [c for c in wanted if c not in held])
 
+    def rows(arguments: Mapping[str, Any], actor: Any) -> Mapping[str, Any]:
+        from .ontology_tools_aggregate import AggregateTools
+        if not answers or answers[0].base is not base:
+            answers[:] = [AggregateTools(base)]
+        return answers[0].rows(arguments, actor)
+
     backend = TableBackend(call, getattr(base, "_new_set", None), getattr(base, "schema", None),
                            visible if hasattr(base, "_visible_versions") else None,
-                           codes if hasattr(base, "_visible_versions") else None)
+                           codes if hasattr(base, "_visible_versions") else None,
+                           rows if hasattr(base, "_visible_versions") else None)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

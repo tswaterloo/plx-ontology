@@ -351,6 +351,26 @@ class ParticipantTests(unittest.TestCase):
                 out = self.call(tools_=busy, participant="@elsewhere.test", query=fx.NUMBER)
                 self.assertEqual(out["documents"], [])
 
+    def test_a_query_matched_in_an_attachment_finds_the_message_it_travels_with(self):
+        """What a participant's mail says includes its attachments: a query only an
+        attachment holds lists the message it was sent with, its snippet the
+        attachment's; another party's message holding the word is never listed."""
+        att = "Attachment:graph_mail.attachments:sds-1"
+
+        def extend(store):
+            store.obj(att, "mail:mbx-a", handle("mbx-a", "v-old") + "#attachment=sds-1",
+                      "mail")
+            store.val(att, "name", "text", "SDS Orbignya Oleifera Seed Oil")
+            store.link("l-sds", "Attachment.attached_to", att,
+                       "Email:graph_mail.messages:v-old")
+        out = self.call(tools_=tools(extend=extend), participant=f"rep@{VENDOR}",
+                        query="Orbignya")
+        self.assertEqual(self.listed(out), [("v-old", "from_them", "address")])
+        self.assertIn("Orbignya", out["documents"][0]["snippet"]["untrusted_text"])
+        out = self.call(tools_=tools(extend=extend), participant="@elsewhere.test",
+                        query="Orbignya")
+        self.assertEqual(out["documents"], [])
+
 
 class OwnDomainSenderTest(unittest.TestCase):
     def test_only_a_known_service_host_carries_our_name(self):

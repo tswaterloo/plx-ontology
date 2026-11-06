@@ -802,6 +802,24 @@ class ObjectTests(ContractMixin, unittest.TestCase):
     def setUp(self):
         self.t = tools()
 
+    def test_what_the_linked_records_link_to_is_counted_one_link_further(self):
+        """plx.object counts what the records linked to it link to in turn (an invoice of
+        the order, and the purchase order that invoice names), firm links only and only
+        where the reader may read both ends: never through a mention."""
+        store = build()
+        store.link("lnk-inv-po", "SalesInvoice.names_po", INV, PO, "verified", "fk",
+                   [INV_H, PO_H])
+        store.link("lnk-inv-mail", "Email.mentions_sales_invoice", MAIL, INV, "lead",
+                   "mention", [MAIL_H])
+        store.conn.commit()
+        t = tools(store)
+        full = self.ok(t, "plx.object", {"object_id": SO}, FULL)
+        self.assertEqual(full["linked_beyond"], [
+            {"via": "SalesInvoice.invoices_order", "link_type": "SalesInvoice.names_po",
+             "direction": "forward", "count": 1}])
+        # the invoice is a BC record this reader is not granted: nothing beyond it
+        self.assertNotIn("linked_beyond", self.ok(t, "plx.object", {"object_id": SO}, SALES))
+
     def test_per_source_values_with_lineage_citations_and_envelopes(self):
         result = self.ok(self.t, "plx.object", {"object_id": SO, "response_format": "detailed"})
         values = {v["property"]: v for v in result["values"]}

@@ -1008,7 +1008,8 @@ class CaseRuntime:
         return getattr(self.live, "audience", None) is not None and store_exists(directory)
 
     def mail_capture(self, handle: str, actor: Actor, *,
-                     directory: str | Path | None = None) -> dict[str, Any] | None:
+                     directory: str | Path | None = None,
+                     text: bool = False) -> dict[str, Any] | None:
         """The content-stable view of a ``graph-mail://`` version the mail capture
         (``directory``; default ``mail_capture_dir``) holds for ``actor``, through the gate
         ``plx.read`` reads it with (``RuntimeCitations.mail_capture``: the mailbox
@@ -1019,7 +1020,9 @@ class CaseRuntime:
         support), except a mail attachment, pinned to its bytes. None when no capture holds the version for this reader (the live reader then
         decides); ``CitationUnresolvable`` when the gate refuses it or the capture cannot be
         read (never read live in its place), and ``page_not_found`` for a cited page past
-        the last page of an attachment whose captured text tells (``plx.read``'s answer)."""
+        the last page of an attachment whose captured text tells (``plx.read``'s answer).
+        ``text``: an attachment's row carries its captured text (``content_text``), as
+        ``plx.read`` serves it."""
         directory = self.mail_capture_dir if directory is None else Path(directory)
         if not self._holds_mail_capture(directory):
             return None
@@ -1035,7 +1038,7 @@ class CaseRuntime:
             if not audience.may_read_any(gated, "mail:"):
                 raise CitationUnresolvable("capture_citation_unresolvable")
             reader = RuntimeCitations(self, mail_capture_dir=directory)
-            found = reader.mail_capture(handle, gated, audience)
+            found = reader.mail_capture(handle, gated, audience, text=text)
             if reader.missing_page(handle, gated, audience):
                 raise CitationUnresolvable("page_not_found")
         except (sqlite3.Error, OSError, ValueError, LookupError):

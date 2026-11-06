@@ -2271,6 +2271,11 @@ class HostAccess:
             # one reader under one grant: a reader decision one tool call of the answer
             # made (an item's ACL re-check, the scope's grants) is every other call's
             with self.host.request(), run_memo():
+                # the overlay first: the request's policy (its grant, the page keys) is
+                # decided over the audience keys the request's tool calls read under
+                check = getattr(self.host, "check_overlay", None)
+                if callable(check):
+                    check()
                 gated = self._gated()
                 self._local.state = (gated, self._policy(gated), {})
                 yield self
@@ -2317,6 +2322,12 @@ class HostAccess:
     def store_meta(self) -> dict[str, str]:
         """``store_meta`` of the projection generation the host answers from."""
         return self.host.store_meta()
+
+    def overlay_stamp(self) -> Any:
+        """The row-delta overlay the host answers with now (``host.overlay_stamp``; None:
+        none, or a host without one)."""
+        stamp = getattr(self.host, "overlay_stamp", None)
+        return stamp() if callable(stamp) else None
 
     def grant(self) -> tuple[Callable[[str], bool], frozenset[str]]:
         """The reader's grant inside ``request()``: (may it read this audience key, the

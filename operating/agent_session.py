@@ -84,7 +84,9 @@ ANSWER_GATE_RULE = (
     "the claim. "
     "A decision with outcome \"answered\" ends "
     "the session: the app renders your answer from that submission (its claims, text, "
-    "each unknown as a gap, and gaps), so submit it complete. A count or sum you computed "
+    "each unknown as a gap, and gaps), so submit it complete. Only when its "
+    "workbench_budget note says \"continue\" does research go on: settle the parts it "
+    "lists as open, then submit again with every claim. A count or sum you computed "
     "over cited "
     "records is one value claim, never a bare value: {\"name\": ..., \"value\": "
     "<the result>, \"op\": "
@@ -886,6 +888,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     finished = threading.Event()
     lock, listing, calls = threading.Lock(), set(), set()
     noted: dict[str, Any] = {}   # forwarded call -> the budget note its result carries
+    answering: set[str] = set()  # forwarded answer-gate submissions (``Budget.after_answer``)
     asked: dict[str, list[Any]] = {}   # the host's own call -> [event, its reply]
     gone = threading.Event()   # the client cannot be written to
     waiting: set[str] = set()  # the client's requests forwarded and not yet answered
@@ -992,6 +995,18 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     with lock, budget_log.open("a", encoding="utf-8") as out:
                         out.write(json.dumps(summary) + "\n")
             message = {**message, "result": deep.with_note(result, noted.pop(key))}
+        if budget is not None and "id" in message and key in answering:
+            # a decision leaving parts open while research time is left goes back once
+            # with them (``Budget.after_answer``): the session goes on (``GateEnd``)
+            with lock:
+                answering.discard(key)
+                extra = budget.after_answer(result, clock())
+                summary = budget.summary()
+            if extra is not None:
+                message = {**message, "result": deep.with_answer_note(result, extra)}
+                if budget_log is not None:
+                    with lock, budget_log.open("a", encoding="utf-8") as out:
+                        out.write(json.dumps(summary) + "\n")
         emit(message)
 
     def send(message: Mapping[str, Any]) -> None:
@@ -1162,6 +1177,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                                                              params.get("arguments")):
                 # the note as of the call's start: its step and the time left then
                 noted[json.dumps(message["id"])] = budget_note
+            elif "id" in message:
+                with lock:
+                    answering.add(json.dumps(message["id"]))
         if message.get("method") == "tools/list":
             listing.add(message.get("id"))
         if "id" in message and "method" in message:
@@ -1536,9 +1554,12 @@ class HostGate:
                  follow: Callable[[list[tuple[str, Mapping[str, Any], Any]]],
                                   Sequence[tuple[str, Mapping[str, Any]]]] | None = None,
                  child: "subprocess.Popen | None" = None,
-                 pool: "HostPool | None" = None, question: str | None = None) -> None:
+                 pool: "HostPool | None" = None, question: str | None = None,
+                 quiet: Sequence[tuple[str, Mapping[str, Any]]] = ()) -> None:
         import queue
         self.pool = pool   # the session's helper hosts (``serve_gate``), or None
+        # of ``prefetch``, the reads whose results the task does not show (``_fed``)
+        self.quiet = {_read_key(name, arguments) for name, arguments in quiet}
         self.question = question   # the session's question (``serve_gate``), or None
         import threading
         # ``child``: the host's server already started for this session (``HostSpares``),
@@ -1677,6 +1698,7 @@ class HostGate:
             handle_aliases.shorten_result(self.aliases, raw)
         # the call as the session is shown it: a handle a follow-up read names, aliased
         self.prefetched.append({"name": name, "arguments": dict(arguments),
+                                "quiet": _read_key(name, arguments) in self.quiet,
                                 "shown_arguments": dict(arguments) if self.aliases is None
                                 else self.aliases.shorten(dict(arguments)),
                                 "raw": raw, "shown": shown})
@@ -1692,6 +1714,8 @@ class HostGate:
             if self.follow is not None:
                 done = []
                 for entry in self.prefetched:
+                    if entry.get("quiet"):
+                        continue
                     try:
                         value = tool_results.result_value(entry["raw"])
                     except tool_results.ToolResultUnreadable:
@@ -1935,8 +1959,11 @@ class GateEnd:
                     parsed = json.loads(body) if isinstance(body, str) else body
                 except ValueError:
                     continue
-                parsed, _note = deep.strip_note(parsed)
-                if isinstance(parsed, Mapping) and parsed.get("outcome") == "answered":
+                parsed, note = deep.strip_note(parsed)
+                if isinstance(parsed, Mapping) and parsed.get("outcome") == "answered" \
+                        and not (note or {}).get(deep.CONTINUE_KEY):
+                    # a decision the tool gate sent back with its open parts
+                    # (``Budget.after_answer``) is not the end: research goes on
                     self.ended = True
         return self.ended
 
@@ -2098,6 +2125,11 @@ class ClaudeCodeAgent:
         self.records_named = False
         self.first_reads: list[tuple[str, dict[str, Any]]] = []
         self.follow_reads: Callable[..., Any] | None = None
+        # Reads the host makes in the session before its first turn whose results are not
+        # shown (``HostGate`` quiet): the sources the task already told the session about
+        # (the app's pre-read brief), so what it cites of them is evidence this session
+        # returned, read under the session's own gates.
+        self.quiet_reads: list[tuple[str, dict[str, Any]]] = []
         # The question the session answers (``for_question``): every answer submission is
         # decided against it, never against one the agent writes (``serve_gate``).
         self.asked: str | None = None
@@ -2192,14 +2224,17 @@ class ClaudeCodeAgent:
             # The gate and the host's server run in this process (``HostGate``): Claude
             # Code reaches them through ``connect``, and the session outlives it, so the
             # host can still submit the reply to the session's own answer gate.
-            feeds = bool(self.first_reads) and getattr(self.spawn, "feeds", False)
+            reads = list(self.first_reads) + [
+                read for read in self.quiet_reads if read not in self.first_reads]
+            feeds = bool(reads) and getattr(self.spawn, "feeds", False)
             try:
                 gate = HostGate(allowed, {**server, "env": server_env},
                     Path(work), log=log, timing=timing, budget=budget,
                     budget_log=budget_log if budget is not None else None,
                     aliases=Aliases() if self.aliases else None,
-                    prefetch=self.first_reads if feeds else (),
+                    prefetch=reads if feeds else (),
                     follow=self.follow_reads if feeds else None,
+                    quiet=self.quiet_reads if feeds else (),
                     child=None if spare is None else spare.child, pool=pool,
                     question=self.asked)
             except BaseException:
@@ -2416,6 +2451,8 @@ def _fed(prompt: str, gate: "HostGate") -> str:
     gate.prefetch_done.wait(PREFETCH_WAIT_SECONDS)
     shown = []
     for read in list(gate.prefetched):
+        if read.get("quiet"):
+            continue   # a source the task already names: read as evidence, not shown
         try:
             value = tool_results.result_value(read["shown"])
         except tool_results.ToolResultUnreadable:
@@ -2429,6 +2466,31 @@ def _fed(prompt: str, gate: "HostGate") -> str:
     task = prompt if not shown else (prompt + "\n\n" + PREFETCH_HEADING + "\n\n"
                                      + "\n\n".join(shown))
     return json.dumps({"type": "user", "message": {"role": "user", "content": task}}) + "\n"
+
+
+# The most sources of a task's own text read in its session (``told_reads``).
+MAX_TOLD_READS = 12
+
+
+def told_reads(text: str) -> list[tuple[str, dict[str, Any]]]:
+    """A ``plx.read`` of each citation handle ``text`` names (the sources a session's task
+    tells it about, such as the app's pre-read brief), at most ``MAX_TOLD_READS``, for the
+    host to make in the session (``ClaudeCodeAgent.quiet_reads``): what the session cites
+    of them is then evidence it returned, decided by its own gates."""
+    from operating.answer_gate import HANDLE
+    search = re.compile(HANDLE.pattern.lstrip("^").rstrip("$"))
+    out: list[tuple[str, dict[str, Any]]] = []
+    for match in search.finditer(text or ""):
+        handle = match.group(0).rstrip("]),.;:'\"")
+        if HANDLE.fullmatch(handle) and ("plx.read", {"citation": handle}) not in out:
+            out.append(("plx.read", {"citation": handle}))
+        if len(out) >= MAX_TOLD_READS:
+            break
+    return out
+
+
+def _read_key(name: str, arguments: Mapping[str, Any]) -> str:
+    return json.dumps([name, dict(arguments)], sort_keys=True, default=str)
 
 
 def _prefetched_event(read: Mapping[str, Any]) -> dict[str, Any]:

@@ -3594,6 +3594,41 @@
                 "maxItems": 50,
                 "description": "The visible links of an identity type (a link type joining one object type that declares a same_record binding), a person's reviewed same_record_as included; a lead or contradicted one is a candidate, not a verified identity. Every other link, a cross-type same_record key included, is counted in linked_counts."
               },
+              "linked_beyond": {
+                "type": "array",
+                "maxItems": 40,
+                "description": "What the records linked to this one by a reverse link (its lines, entries, components; at most 60) link to in turn, per link type (via: the link to them): firm links only, both ends readable.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "via",
+                    "link_type",
+                    "direction",
+                    "count"
+                  ],
+                  "properties": {
+                    "via": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "link_type": {
+                      "type": "string",
+                      "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                    },
+                    "direction": {
+                      "enum": [
+                        "forward",
+                        "reverse"
+                      ]
+                    },
+                    "count": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  }
+                }
+              },
               "linked_counts": {
                 "type": "array",
                 "items": {
@@ -5937,7 +5972,7 @@
       }
     },
     "plx.read": {
-      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (#page=<n>) of an original or captured PDF; says when changed, withheld or unresolvable. A page read cites its #page=<n>. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation.",
+      "description": "Resolve a citation for the session employee: a source row (typed values, untrusted text), a mail or document body, or one page (#page=<n>) of an original or captured PDF; says when changed, withheld or unresolvable. A page read cites its #page=<n>. text_offset pages long text until text_window.next_offset is null (sha256: whole text); column_offset pages a wide row. Live mail gives cite_as, the pinned citation. find on a message also searches its attachments' text (attachment_matches).",
       "read_only": true,
       "input": {
         "type": "object",
@@ -6204,6 +6239,114 @@
                   }
                 },
                 "description": "The slice of the text returned (text_offset); sha256 is over the whole text."
+              },
+              "attachment_matches": {
+                "type": "array",
+                "maxItems": 12,
+                "description": "A message's find also searched its attachments with text: each one's find, gated for this reader, with its first hits (served as a window's text is).",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "citation",
+                    "status",
+                    "matches"
+                  ],
+                  "properties": {
+                    "citation": {
+                      "$ref": "#/$defs/handle"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "resolved",
+                        "changed_since"
+                      ]
+                    },
+                    "digest": {
+                      "type": "string",
+                      "pattern": "^(?:sha256:)?[0-9a-f]{64}$"
+                    },
+                    "matches": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "hits",
+                        "total_hits",
+                        "total_chars",
+                        "sha256"
+                      ],
+                      "properties": {
+                        "hits": {
+                          "type": "array",
+                          "maxItems": 50,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "offset",
+                              "chars",
+                              "line",
+                              "text"
+                            ],
+                            "properties": {
+                              "offset": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Start (characters, in the whole text) of the snippet: a text_offset that reads on from it."
+                              },
+                              "chars": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "line": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Line (1-based, numbered as line reads it) the phrase starts on."
+                              },
+                              "text": {
+                                "$ref": "#/$defs/untrusted_text"
+                              },
+                              "page": {
+                                "type": "integer",
+                                "minimum": 1
+                              },
+                              "page_citation": {
+                                "$ref": "#/$defs/handle",
+                                "description": "The citation of the original's page the snippet is on, which plx.read and the answer gate accept."
+                              },
+                              "page_offset": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "description": "Start of the snippet in that page's text: a text_offset on the page citation."
+                              }
+                            }
+                          }
+                        },
+                        "total_hits": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "field_path": {
+                          "$ref": "#/$defs/field_path"
+                        },
+                        "total_chars": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "description": "A find read: where the phrase is in the text, each hit's snippet served as a window's text is; sha256 is over the whole text."
+                    }
+                  }
+                }
+              },
+              "attachments_not_searched": {
+                "type": "integer",
+                "minimum": 1
               },
               "matches": {
                 "type": "object",
@@ -7171,7 +7314,7 @@
       }
     },
     "plx.query": {
-      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own) or a set; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them.",
+      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own) or a set; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them. rows lists what is reached (cited values, a date, newest first; last, lowest, highest); per_code answers each code on its own.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7326,6 +7469,76 @@
           },
           "as_known_at": {
             "$ref": "#/$defs/as_known_at"
+          },
+          "rows": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "properties"
+            ],
+            "description": "List the reached records instead of measuring them: each one's properties (cited values) and date (its own property, or one to-one path away, e.g. a line's order date), newest first, with each property's summary (with_value, last with its date, lowest, highest).",
+            "properties": {
+              "properties": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                },
+                "minItems": 1,
+                "maxItems": 4
+              },
+              "date": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "property"
+                ],
+                "properties": {
+                  "property": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                  },
+                  "path": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "link_type": {
+                          "type": "string"
+                        },
+                        "direction": {
+                          "enum": [
+                            "forward",
+                            "reverse"
+                          ]
+                        },
+                        "link": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "minItems": 1,
+                    "maxItems": 2
+                  }
+                }
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              }
+            }
+          },
+          "per_code": {
+            "type": "boolean",
+            "description": "With from codes: each code is walked and answered on its own (by_code), in the order given."
+          },
+          "code_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300,
+            "description": "The first code answered (by_code paging: codes_next_offset)."
           }
         }
       },
@@ -7780,6 +7993,284 @@
                     }
                   }
                 }
+              },
+              "rows": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "count",
+                  "rows",
+                  "summary"
+                ],
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "rows": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "object_id",
+                        "values"
+                      ],
+                      "properties": {
+                        "object_id": {
+                          "$ref": "#/$defs/object_id"
+                        },
+                        "values": {
+                          "type": "object",
+                          "maxProperties": 4,
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "$ref": "#/$defs/value"
+                              },
+                              {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "status"
+                                ],
+                                "properties": {
+                                  "status": {
+                                    "type": "string",
+                                    "pattern": "^[a-z_]{1,40}$"
+                                  }
+                                }
+                              }
+                            ]
+                          }
+                        },
+                        "date": {
+                          "$ref": "#/$defs/value"
+                        }
+                      }
+                    }
+                  },
+                  "more_rows": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "summary": {
+                    "type": "object",
+                    "maxProperties": 4,
+                    "additionalProperties": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "with_value"
+                      ],
+                      "properties": {
+                        "with_value": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "last": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "value"
+                          ],
+                          "properties": {
+                            "value": {
+                              "$ref": "#/$defs/value"
+                            },
+                            "date": {
+                              "$ref": "#/$defs/value"
+                            }
+                          }
+                        },
+                        "lowest": {
+                          "$ref": "#/$defs/value"
+                        },
+                        "highest": {
+                          "$ref": "#/$defs/value"
+                        },
+                        "mixed": {
+                          "type": "array",
+                          "maxItems": 10,
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9 ._/%-]{1,40}$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "by_code": {
+                "type": "array",
+                "maxItems": 300,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "code",
+                    "records"
+                  ],
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000-\\u001f]{1,80}$"
+                    },
+                    "records": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "hops": {
+                      "type": "array",
+                      "maxItems": 12,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "link_type": {
+                            "type": "string",
+                            "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"
+                          },
+                          "direction": {
+                            "type": "string",
+                            "enum": [
+                              "forward",
+                              "reverse"
+                            ]
+                          },
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "tiers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "integer"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "rows": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "count",
+                        "rows",
+                        "summary"
+                      ],
+                      "properties": {
+                        "count": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "rows": {
+                          "type": "array",
+                          "maxItems": 20,
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "object_id",
+                              "values"
+                            ],
+                            "properties": {
+                              "object_id": {
+                                "$ref": "#/$defs/object_id"
+                              },
+                              "values": {
+                                "type": "object",
+                                "maxProperties": 4,
+                                "additionalProperties": {
+                                  "anyOf": [
+                                    {
+                                      "$ref": "#/$defs/value"
+                                    },
+                                    {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "required": [
+                                        "status"
+                                      ],
+                                      "properties": {
+                                        "status": {
+                                          "type": "string",
+                                          "pattern": "^[a-z_]{1,40}$"
+                                        }
+                                      }
+                                    }
+                                  ]
+                                }
+                              },
+                              "date": {
+                                "$ref": "#/$defs/value"
+                              }
+                            }
+                          }
+                        },
+                        "more_rows": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "summary": {
+                          "type": "object",
+                          "maxProperties": 4,
+                          "additionalProperties": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "with_value"
+                            ],
+                            "properties": {
+                              "with_value": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "last": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                  "value"
+                                ],
+                                "properties": {
+                                  "value": {
+                                    "$ref": "#/$defs/value"
+                                  },
+                                  "date": {
+                                    "$ref": "#/$defs/value"
+                                  }
+                                }
+                              },
+                              "lowest": {
+                                "$ref": "#/$defs/value"
+                              },
+                              "highest": {
+                                "$ref": "#/$defs/value"
+                              },
+                              "mixed": {
+                                "type": "array",
+                                "maxItems": 10,
+                                "items": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z0-9 ._/%-]{1,40}$"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "$ref": "#/$defs/error"
+                    }
+                  }
+                }
+              },
+              "codes_next_offset": {
+                "type": "integer",
+                "minimum": 1
               },
               "gaps": {
                 "type": "array",

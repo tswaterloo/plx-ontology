@@ -56,6 +56,7 @@ import dataclasses
 import os
 from pathlib import Path
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -465,6 +466,8 @@ def _file_stamp(path: Any) -> tuple | None:
 
 # The longest one answer's reads keep the policy decided at its start (``policy_pinned``).
 POLICY_PIN_SECONDS = 120.0
+# How often a host asks whether Postgres holds the served generation (``_store_moved``).
+PG_CHECK_SECONDS = 30.0
 
 
 class CaseHostTools:
@@ -532,6 +535,7 @@ class CaseHostTools:
         self._reader: StoreReader | None = None
         self._store_identity: tuple[int, int] | None = None  # the file the reader opened
         self._depth = 0  # requests in progress (``request``)
+        self._pg_checked = 0.0   # when ``_store_moved`` last asked Postgres
         # One answer's policy (``policy_pinned``): (actor, policy, until), else None.
         self._pin: tuple[Any, ReadPolicy, float] | None = None
         self._answers: Any = None  # plx.aggregate / plx.compare, built on first use
@@ -557,7 +561,8 @@ class CaseHostTools:
         when a request finds a newer projection generation; the next call builds them
         again."""
         if self._reader is not None:
-            self._reader.conn.close()
+            closer = getattr(self._reader, "close", None)
+            closer() if closer is not None else self._reader.conn.close()
         self._drop_overlay()
         if self._temp is not None:
             self._temp.cleanup()
@@ -580,7 +585,7 @@ class CaseHostTools:
         swapped = False
         if self._depth == 0 and self._reader is not None and self.store_path is not None:
             now = _file_identity(self.store_path)
-            if now is not None and now != self._store_identity:
+            if now is not None and (now != self._store_identity or self._store_moved()):
                 self.close()
                 # The case runtime's capture gates read the projection too: free the
                 # older generation's file now, not at their next resolve.
@@ -601,6 +606,41 @@ class CaseHostTools:
                 yield self
         finally:
             self._depth -= 1
+
+    def _store_moved(self) -> bool:
+        """Whether the store this host reads should change between SQLite and Postgres
+        (``PLX_ONTOLOGY_PG``: Postgres took the served generation in, by a load or a swap,
+        or no longer holds it): checked at most every ``PG_CHECK_SECONDS``."""
+        from operating.pg import ontology_reader
+        if not ontology_reader.enabled() and not hasattr(self._reader, "text_reader"):
+            return False
+        now = time.monotonic()
+        if now - self._pg_checked < PG_CHECK_SECONDS:
+            return False
+        self._pg_checked = now
+        on_pg = hasattr(self._reader, "text_reader")
+        return ontology_reader.serves(self.store_path) != on_pg
+
+    def check_overlay(self) -> None:
+        """Open the row-delta overlay this request reads (its pointer read again), before
+        anything is decided for the request: the reader's policy for the whole request is
+        then decided over the overlay's audience keys too, as each tool call's is."""
+        self.tools  # noqa: B018 - built on first use
+        self._check_overlay()
+
+    def overlay_stamp(self) -> Any:
+        """The row-delta pointer's state this host last read its overlay at (each delta
+        cycle a new one; None: no overlay). Reading Postgres (``PLX_ONTOLOGY_PG``), which
+        takes every layer in place: its data version, new with each applied layer."""
+        reader = self._reader
+        if reader is not None and hasattr(reader, "text_reader"):
+            try:
+                with reader.lock:
+                    return ("postgres",
+                            reader.conn.execute("PRAGMA data_version").fetchone()[0])
+            except sqlite3.Error:
+                return None
+        return self._overlay_stamp
 
     def store_meta(self) -> dict[str, str]:
         """``store_meta`` of the generation this host reads (its digest, freshness)."""
@@ -628,7 +668,13 @@ class CaseHostTools:
                 build_store(store, self.schema, {}, normalizer=identifiers.normalize)
             else:   # before opening: a swap in between is seen by the next request
                 self._store_identity = _file_identity(store)
-            reader = self._reader = StoreReader.open(store)
+            from operating.pg import ontology_reader
+            if self.store_path is not None and ontology_reader.serves(store):
+                # PLX_ONTOLOGY_PG: the Postgres ontology, current to the last delta
+                # layer (no overlay); the served generation keeps the word index
+                reader = self._reader = ontology_reader.PgStoreReader.open(text_store=store)
+            else:
+                reader = self._reader = StoreReader.open(store)
             # a call's time limit interrupts a store statement still running at it
             from .call_limits import interruptible
             interruptible(reader.conn)
@@ -863,6 +909,8 @@ class CaseHostTools:
         that cannot be opened is not applied."""
         if self._overlay_checked or self.store_path is None or self._tools is None:
             return
+        if getattr(self._reader, "text_reader", False) is not False:
+            return   # the Postgres ontology holds every delta layer itself
         self._overlay_checked = True
         from . import delta_overlay
         stamp = None

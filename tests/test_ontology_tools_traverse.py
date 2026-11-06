@@ -469,6 +469,13 @@ class AroundTests(unittest.TestCase):
         out = t.call("plx.around", {"from": P1, "path": [
             {"link_type": "Order.unknown_link", "direction": "reverse"}]}, FULL)
         self.assertEqual(out["error"]["code"], "undeclared_link")
+        # the hint names what the start record can walk, the closest name first
+        self.assertTrue(out["error"]["hint"].startswith("links from "), out["error"])
+        named = t.call("plx.around", {"from": P1, "path": [{"link": "placed_orders"}]}, FULL)
+        self.assertEqual(named["error"]["code"], "undeclared_link")
+        self.assertIn("Order.placed_by reverse", named["error"]["hint"])
+        self.assertEqual(validate(named, CONTRACTS["tools"]["plx.around"]["output"],
+                                  root=CONTRACTS), [])
         out = t.call("plx.around", {"from": P1, "path": [
             {"link_type": "Order.placed_by", "direction": "forward"}]}, FULL)
         self.assertEqual(out["error"]["code"], "path_type_mismatch")

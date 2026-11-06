@@ -243,6 +243,10 @@ _ITEM_ACL_AUDIENCES = frozenset({"mail", "sharepoint", "sharepoint-list", "origi
 DEFAULT_LIMIT = 10
 MAX_GAPS = 20  # plx.find gaps; freshness gaps come first and are never cut
 MAX_IDENTITY = 50  # plx.object identity links; a cut says so (identity_truncated)
+# plx.object's one-link-further counts (``_beyond``): over a reverse link of at most this
+# many records, at most this many entries.
+BEYOND_CHILDREN = 60
+MAX_BEYOND = 40
 # plx.schema: items of each list one page holds at most (the output contract's maxItems).
 _SCHEMA_PAGE_CAPS = {"object_types": 200, "link_types": 400, "event_types": 200,
                      "action_types": 100, "processes": 50}
@@ -759,6 +763,12 @@ class StoreReader:
         self._audiences: tuple[tuple[int, int], tuple[str, ...]] | None = None
         self._meta: tuple[tuple[int, int], dict[str, str]] | None = None
         self._text_schemes: tuple[tuple[int, int], dict[str, bool]] | None = None
+
+    @property
+    def word_conn(self) -> sqlite3.Connection:
+        """The connection the word index (``value_text``, ``chunk_text``) is read on: this
+        store's (``operating.pg.ontology_reader.PgStoreReader``: the SQLite generation's)."""
+        return self.conn
 
     @classmethod
     def open(cls, path: str | Path) -> "StoreReader":
@@ -4349,6 +4359,7 @@ class OntologyTools:
         identity, linked_counts, linked_values, link_gaps = self._links(scope, object_id,
                                                                         detailed)
         gaps.extend(link_gaps)
+        beyond = self._beyond(scope, object_id)
         if len(identity) > MAX_IDENTITY:   # best tier first; the cut heads the gaps
             gaps.insert(0, _gap("unknown", "identity_truncated", object_id,
                                 f"{len(identity)} identity links, the first {MAX_IDENTITY} "
@@ -4402,6 +4413,8 @@ class OntologyTools:
                        "lineage": version["lineage"]},
             "values": values, "conflicts": conflicts[:50], "identity": identity[:MAX_IDENTITY],
             "linked_counts": linked_counts[:100], "gaps": gaps[:50]}
+        if beyond:
+            result["linked_beyond"] = beyond[:MAX_BEYOND]
         if withheld_props:
             result["withheld"] = {"properties": len(withheld_props), "objects": None,
                                   "reason": "marking"}
@@ -4520,6 +4533,45 @@ class OntologyTools:
         # reviewed identity behind text-matched leads.
         identity.sort(key=lambda edge: _TIER_RANK.get(edge["tier"], len(TIER_ORDER)))
         return identity, linked_counts, peer_values, gaps
+
+    def _beyond(self, scope: _Scope, object_id: str) -> list[dict[str, Any]]:
+        """What the records linked to this one (its lines, entries, components: a reverse
+        link of at most ``BEYOND_CHILDREN`` records) link to in turn, counted per link
+        type, so a figure one link further (an order line's assembly orders, a
+        component's purchase lines) is seen before it is walked. Only links records
+        hold (never a mention read in text, a lead or a contradicted link), both ends
+        readable by this reader as ``plx.object`` counts them, the link back to this
+        record left out."""
+        firm = lambda row: row["binding_kind"] != "mention" and row["tier"] not in (  # noqa: E731
+            "lead", "contradicted")
+        children: dict[str, set[str]] = {}
+        for row in self.store.links_of(object_id):
+            if row["to_object"] != object_id or not firm(row) \
+                    or not self._row_visible(scope, row):
+                continue
+            children.setdefault(row["link_type"], set()).add(row["from_object"])
+        out: list[dict[str, Any]] = []
+        for via in sorted(children):
+            kids = children[via]
+            if len(kids) > BEYOND_CHILDREN:
+                continue
+            kids = set(self._visible_versions(scope, kids))
+            counts: dict[tuple[str, str], set[str]] = {}
+            rows = [(kid, row) for kid in sorted(kids) for row in self.store.links_of(kid)
+                    if firm(row) and object_id not in (row["from_object"], row["to_object"])
+                    and self._row_visible(scope, row)]
+            others = {row["to_object"] if row["from_object"] == kid else row["from_object"]
+                      for kid, row in rows}
+            readable = self._visible_versions(scope, others)
+            for kid, row in rows:
+                forward = row["from_object"] == kid
+                other = row["to_object"] if forward else row["from_object"]
+                if other in readable and _LINK_TYPE.match(row["link_type"]):
+                    counts.setdefault((row["link_type"], "forward" if forward
+                                       else "reverse"), set()).add(other)
+            out += [{"via": via, "link_type": lt, "direction": d, "count": len(reached)}
+                    for (lt, d), reached in sorted(counts.items())]
+        return out
 
     def _trim_citations(self, scope: _Scope, edge: dict[str, Any],
                         ends: set[str]) -> dict[str, Any]:

@@ -12,7 +12,7 @@ import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref,
 import { activityTitle, factMap, groupLinked, groupRelated, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
-import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, ObjectSection, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
 import { CustodyRail } from "./custody-rail";
@@ -767,27 +767,19 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     setObj(null);
     setPending(new Set());
     setFailed(new Set());
-    // the margin is a customer's or a sales order's only
-    const sectionsOf = (t: string) => PAGE_SECTIONS.filter((n) => n !== "margin" || t === "Customer" || t === "SalesOrder");
-    // A whole object id of this type names its record already: its sections are asked for
-    // beside the quick read (the same calls the quick read would lead to), not after it.
-    const early = new Map<SectionName, Promise<ObjectSection>>();
-    if (id.startsWith(`${type}:`))
-      for (const name of sectionsOf(type)) {
-        const p = getObjectSection(name, type, id, c.signal);
-        p.catch(() => undefined);
-        early.set(name, p);
-      }
     getObject(type, id, c.signal, true)
       .then((first) => {
         if (c.signal.aborted) return;
         setObj(first);
+        // a page read whole (kept with every section) asks for nothing more; else each
+        // section is asked for once the quick read names the record (the server started
+        // them beside the quick read)
         if (first.complete !== false) return;
-        const names = sectionsOf(first.type);
+        // the margin is a customer's or a sales order's only
+        const names = PAGE_SECTIONS.filter((n) => n !== "margin" || first.type === "Customer" || first.type === "SalesOrder");
         setPending(new Set(names));
-        const same = first.type === type && first.object_id === id;
         for (const name of names) {
-          ((same && early.get(name)) || getObjectSection(name, first.type, first.object_id, c.signal))
+          getObjectSection(name, first.type, first.object_id, c.signal)
             .then((sec) => {
               if (!c.signal.aborted) setObj((o) => (o ? mergeSection(o, sec) : o));
             })

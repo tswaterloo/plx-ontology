@@ -598,6 +598,158 @@ class OneGateTests(unittest.TestCase):
         return {"claim": (handle, field, value), "path": _path_of(full, handle),
                 "query": query}
 
+    def test_a_source_the_task_names_is_read_in_the_session_so_a_claim_on_it_passes(self):
+        # The app's pre-read brief names sources the API read for the reader before the
+        # session (``operator_api.preread``): the agent may cite one straight from the
+        # task. The host reads each in the session (``told_reads``, quiet: not shown
+        # again), so the gate decides that claim on evidence this session returned, under
+        # its own gates. Without it the same claim cites what the run did not return.
+        from unittest import mock
+        from operating import agent_session, fast_answer
+        host = self.host()
+        handle, field, value = self.prepared(host)["claim"]
+        brief = f"Already read for you:\n- 2026-10-14: a step [source {handle}]"
+
+        def session(seen):
+            def spawn(argv, cwd, env, timeout, *, feed=None, stop=None):
+                server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                    encoding="utf-8"))["mcpServers"]["plx"]
+                seen["task"] = json.loads(feed())["message"]["content"] if feed else ""
+                client = _Client(server, env)
+                try:
+                    gate = _plain(client.call("plx.case_get", {"answer": {"claims": [
+                        {"name": "stated", "citation": handle, "field": field}],
+                        "text": f"The record states {value}."}})[0])
+                    seen["gate"] = (gate["outcome"], [u.get("reason") for u in
+                                                      gate.get("unsupported_claims") or ()])
+                finally:
+                    client.close()
+                from evals.tests.test_runner import _stream
+                lines = []
+                for line in _stream("Written.", client.calls).splitlines():
+                    lines.append(line)
+                    if stop is not None and stop(line):
+                        break
+                return 0, "\n".join(lines)
+            spawn.feeds = spawn.stops = True
+            return spawn
+
+        self.assertEqual(agent_session.told_reads(brief),
+                         [("plx.read", {"citation": handle})])
+        outcomes = {}
+        for quiet in (True, False):
+            seen = {}
+            agent = runner.ClaudeCodeAgent(spawn=session(seen), max_turns=8)
+            agent.quiet_reads = agent_session.told_reads(brief) if quiet else []
+            with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+                ran = agent.for_question("q").run("Answer the question." + brief, host)
+            outcomes[quiet] = seen["gate"]
+            if quiet:
+                self.assertNotIn(agent_session.PREFETCH_HEADING, seen["task"])
+                self.assertEqual([(e["name"], e["prefetched"]) for e in ran.events[:1]],
+                                 [("plx.read", True)])
+        self.assertEqual(outcomes[True], ("answered", []))
+        self.assertIn("cites_what_this_run_did_not_return", outcomes[False][1])
+
+    def test_a_decision_leaving_a_part_open_goes_back_and_the_next_one_ends_it(self):
+        # Through the real tool gate, budget and host: an answer submitted early with an
+        # unknown is answered but sent back with a "continue" note (its instruction the
+        # note's), the session is not ended there (GateEnd), and the next submission,
+        # with nothing open, is the final decision the reply is rendered from.
+        from operating import agent_session, deep_investigation as deep, fast_answer
+        from unittest import mock
+        host = self.host()
+        seen = self.prepared(host)
+        handle, field, value = seen["claim"]
+        claim = {"name": "stated", "citation": handle, "field": field}
+
+        def spawn(argv, cwd, env, timeout, *, feed=None, stop=None):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            client = _Client(server, env)
+            lines = []
+            try:
+                client.call("plx.find", seen["query"])
+                client.call("plx.read", {"citation": handle})
+                first, _ = client.call("plx.case_get", {"answer": {
+                    "claims": [claim], "unknowns": ["the order's delivery date"],
+                    "text": f"The record states {value}."}})
+                seen["first"] = first
+                from evals.tests.test_runner import _stream
+                for line in _stream(None, client.calls).splitlines():
+                    lines.append(line)
+                    seen["ended_early"] = bool(stop(line))
+                second, _ = client.call("plx.case_get", {"answer": {
+                    "claims": [claim], "text": f"The record states {value}."}})
+                seen["second"] = second
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            out = []
+            for line in _stream("Written.", client.calls).splitlines():
+                out.append(line)
+                if stop(line):
+                    break
+            return 0, "\n".join(out)
+        spawn.feeds = spawn.stops = True
+        with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+            ran = runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, budget_seconds=150,
+                                         max_steps=30).for_question("q").run(
+                "Answer the question.", host)
+        note = seen["first"][deep.BUDGET_KEY]
+        self.assertTrue(note[deep.CONTINUE_KEY])
+        self.assertEqual(note["open"], ["the order's delivery date"])
+        self.assertEqual(_plain(seen["first"]["instruction"]), note["next"])
+        self.assertFalse(seen["ended_early"])
+        self.assertEqual(seen["second"]["outcome"], "answered")
+        self.assertNotIn(deep.BUDGET_KEY, seen["second"])
+        gates = [e for e in ran.events if e.get("name") == agent_session.ANSWER_GATE_TOOL]
+        self.assertEqual(len(gates), 2)
+
+    def test_a_read_a_helper_host_serves_is_the_sessions_evidence_at_its_gate(self):
+        # Two calls at once: the session's own host takes the first, a helper host (the
+        # same reader, its own process) the read; the helper's read reaches the session's
+        # host with the session's key, so the gate passes a claim citing what it served.
+        from unittest import mock
+        from operating import fast_answer
+        host = self.host()
+        seen = self.prepared(host)
+        handle, field, value = seen["claim"]
+
+        def spawn(argv, cwd, env, timeout, *, feed=None, stop=None):
+            server = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text(
+                encoding="utf-8"))["mcpServers"]["plx"]
+            client = _Client(server, env)
+            try:
+                # the first call returns nothing of the record: only the helper's read does
+                for ident, name, arguments in ((901, "plx.find", {"query": "ZZ-NOTHING-1"}),
+                                               (902, "plx.read", {"citation": handle})):
+                    client.child.stdin.write(json.dumps({
+                        "jsonrpc": "2.0", "id": ident, "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments}}) + "\n")
+                client.child.stdin.flush()
+                got = {}
+                while len(got) < 2:
+                    reply = json.loads(client.child.stdout.readline())
+                    if reply.get("id") in (901, 902):
+                        got[reply["id"]] = reply
+                read = json.loads(got[902]["result"]["content"][0]["text"])
+                alias = read["citation"]
+                gate = _plain(client.call("plx.case_get", {"answer": {"claims": [
+                    {"name": "stated", "citation": alias, "field": field}],
+                    "text": f"The record states {value}."}})[0])
+                seen["gate"] = (gate["outcome"], [u.get("reason") for u in
+                                                  gate.get("unsupported_claims") or ()])
+            finally:
+                client.close()
+            from evals.tests.test_runner import _stream
+            return 0, _stream("Written.", client.calls)
+
+        with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+            runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, helpers=1).for_question(
+                "q").run("Answer the question.", host)
+        self.assertEqual(seen["gate"], ("answered", []))
+
     def test_a_host_that_never_answers_its_early_initialize_reads_after_the_client(self):
         # The host's early start (``EarlyStart``) gets no initialize answer: the first
         # reads are made once the client has initialized (the gate's prelude), the task

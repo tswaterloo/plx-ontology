@@ -207,6 +207,79 @@ class GateBudget(Temp):
                          [False, False, False, True])
 
 
+class OpenPartsContinue(Temp):
+    """An answer submitted with research time left whose decision leaves parts open goes
+    back once with them, and that decision does not end the session (``GateEnd``); the
+    next one does."""
+    OPEN = textwrap.dedent("""
+        import json, sys
+        for line in sys.stdin:
+            m = json.loads(line)
+            if "id" not in m:
+                continue
+            body = {"tool": m["params"]["name"], "ok": True}
+            if "answer" in (m["params"].get("arguments") or {}):
+                body = {"outcome": "answered", "claims": [{"text": "c"}],
+                        "unknowns": [{"untrusted_text": "packaging on hand"}],
+                        "unsupported_claims": [{"text": {"untrusted_text": "c3: 10032"},
+                                                "reason": "claim_off_question"}],
+                        "answerability": {"state": "partial"},
+                        "instruction": {"untrusted_text": "This is the gate's final "
+                                                          "decision."}}
+            r = {"content": [{"type": "text", "text": json.dumps(body)}],
+                 "structuredContent": body, "isError": False}
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r})
+                             + "\\n")
+            sys.stdout.flush()
+    """)
+
+    def run_gate(self, budget):
+        host = self.root / "open.py"
+        host.write_text(self.OPEN, encoding="utf-8")
+        out = io.StringIO()
+        calls = [("plx.find", {"query": "a"}), ("plx.case_get", ANSWER),
+                 ("plx.read", {"citation": "x"}), ("plx.case_get", ANSWER),
+                 ("plx.read", {"citation": "y"}), ("plx.case_get", ANSWER)]
+        agent_session.serve_gate(["plx.read", "plx.find", "plx.case_get"],
+                                 [sys.executable, str(host)], self.root / "refused.jsonl",
+                                 stdin=io.StringIO(_calls(calls)), stdout=out, budget=budget)
+        replies = {m["id"]: m["result"] for m in map(json.loads, out.getvalue().splitlines())}
+        return [replies[n + 1] for n in range(len(calls))]
+
+    def test_an_early_partial_decision_goes_back_once_with_its_open_parts(self):
+        first, again, second = [r["structuredContent"] for r in
+                                self.run_gate(deep.Budget(deadline=time.time() + 100,
+                                                          max_steps=30))[1::2]]
+        self.assertTrue(again[deep.BUDGET_KEY][deep.CONTINUE_KEY])   # a second time
+        note = first[deep.BUDGET_KEY]
+        self.assertTrue(note[deep.CONTINUE_KEY])
+        self.assertEqual(note["open"], ["packaging on hand",
+                                        "refused c3: 10032 (claim_off_question)"])
+        # the decision's own instruction (state it as the answer) gives way to the note
+        self.assertEqual(first["instruction"]["untrusted_text"], note["next"])
+        self.assertNotIn(deep.BUDGET_KEY, second)   # MAX_CONTINUES per session
+        ends = agent_session.GateEnd()
+
+        def line(n, body):
+            use = {"type": "assistant", "message": {"content": [{
+                "type": "tool_use", "id": f"t{n}", "name": "mcp__plx__plx_case_get",
+                "input": ANSWER}]}}
+            done = {"type": "user", "message": {"content": [{
+                "type": "tool_result", "tool_use_id": f"t{n}", "content": json.dumps(body)}]}}
+            return [json.dumps(use), json.dumps(done)]
+        self.assertFalse(any(ends(text) for text in line(1, first)))
+        self.assertTrue(any(ends(text) for text in line(3, second)))
+
+    def test_no_time_left_or_nothing_open_ends_the_session_as_before(self):
+        late = self.run_gate(deep.Budget(deadline=time.time() + deep.CONTINUE_SECONDS - 5,
+                                         max_steps=30))
+        self.assertNotIn(deep.BUDGET_KEY, late[1]["structuredContent"])
+        self.assertIsNone(deep.Budget(deadline=time.time() + 100).after_answer(
+            {"structuredContent": {"outcome": "answered", "claims": [{"text": "c"}],
+                                   "answerability": {"state": "answerable"}}},
+            time.time()))
+
+
 class AgentBudget(Temp):
     def test_the_agent_runs_its_gate_with_the_budget_and_reports_the_steps_used(self):
         host_script = self.host

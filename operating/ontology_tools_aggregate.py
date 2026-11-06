@@ -344,6 +344,93 @@ class AggregateTools:
                 self.store.conn.create_function(gate_name, 1, None)
         return self._checked(name, result)
 
+    def rows(self, arguments: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+        """The members of a set (``arguments["set"]``) with the values of ``properties``
+        each holds, and ``date`` (a property of the member, or of the one record a
+        to-one ``path`` reaches from it), as this reader may read them: each value the
+        one its schema precedence ranks first (``_pick``; a person's correction in force
+        is the value, as ``plx.aggregate`` reads it), cited to its field. Newest first
+        by date (undated last), at most ``limit`` rows; ``summary`` per property: how
+        many members hold a value, the newest one's (``last``, with its date) and the
+        lowest and highest, each cited, never across two units or currencies (then
+        ``mixed``). Read for ``plx.query``'s ``rows``; nothing is combined into a new
+        figure. A refusal is ``{"error": ...}``."""
+        gate_name = "plx_l9_gate_" + secrets.token_hex(8)
+        with self.store.lock:
+            self.store.conn.create_function(gate_name, 1, self.walk._gate_function(actor),
+                                            deterministic=True)
+            try:
+                return self._rows(arguments, actor, gate_name)
+            except ToolError as exc:
+                return _error(exc.code, exc.message, exc.hint)
+            except sqlite3.Error as exc:
+                return _error("store_unavailable", f"the projection store could not be "
+                              f"read ({type(exc).__name__})")
+            finally:
+                self.store.conn.create_function(gate_name, 1, None)
+
+    def _rows(self, arguments: Mapping[str, Any], actor: Actor, gate: str
+              ) -> dict[str, Any]:
+        scope = self.walk._scope(actor, arguments, gate)
+        limit = self.limits["max_untrusted_text_chars"]
+        roots, root_gaps = self.walk._root(scope, arguments["set"])
+        gaps = _Gaps()
+        gaps.extend(root_gaps)
+        removed, _unshown = self._removed(scope, roots)
+        roots = [oid for oid in roots if removed.get(oid) != "source_soft_delete"]
+        root_types = {oid.split(":", 1)[0] for oid in roots}
+        props = list(dict.fromkeys(arguments.get("properties") or ()))
+        if props:
+            self._require_declared_by_any(root_types, props)
+        values, withheld = self._values(scope, roots, props)
+        corrections = self._corrections(actor, scope.at, roots, props)
+        date = arguments.get("date") or {}
+        dated: dict[str, Any] = {}
+        if date:
+            path = list(date.get("path") or ())
+            if path:
+                refused = self._hop_cardinality(path, "max")
+                if refused is not None:
+                    raise ToolError(refused["code"], refused["message"], refused.get("hint"))
+                hops = self.walk._validate_path(root_types or None, path)
+                self._require_declared({hops[-1][3]}, [date["property"]], "date")
+                reached, _marks, _hidden, _several, _offered = self._dimensions(
+                    scope, roots, hops, gaps)
+            else:
+                self._require_declared_by_any(root_types, [date["property"]])
+                reached = {oid: oid for oid in roots}
+            targets = sorted({oid for oid in reached.values() if isinstance(oid, str)})
+            found, hidden = self._values(scope, targets, [date["property"]])
+            for root, target in reached.items():
+                if not isinstance(target, str):
+                    continue
+                pick = _pick(found.get((target, date["property"]), []),
+                             (target, date["property"]) in hidden)
+                if pick.row is not None:
+                    dated[root] = pick.row
+        out_rows = []
+        for oid in roots:
+            row: dict[str, Any] = {"object_id": oid, "values": {}}
+            for prop in props:
+                pick = _pick(values.get((oid, prop), []), (oid, prop) in withheld)
+                chosen = pick.row
+                if chosen is not None and (oid, prop) in corrections:
+                    chosen = _corrected(chosen, corrections[(oid, prop)])
+                shown = _shown(chosen, limit) if chosen is not None else None
+                row["values"][prop] = shown if shown is not None else {"status": pick.status}
+            if oid in dated:
+                row["date"] = _shown(dated[oid], limit)
+            out_rows.append(row)
+        out_rows.sort(key=lambda r: str((r.get("date") or {}).get("value") or ""),
+                      reverse=True)
+        summary = {prop: _row_summary(out_rows, prop) for prop in props}
+        cap = 10 if arguments.get("limit") is None else int(arguments["limit"])
+        out: dict[str, Any] = {"count": len(out_rows), "rows": out_rows[:cap],
+                               "summary": summary, "gaps": gaps.out()}
+        if len(out_rows) > cap:
+            out["more_rows"] = len(out_rows) - cap
+        return out
+
     def _checked(self, name: str, result: dict[str, Any]) -> dict[str, Any]:
         problems = validate(result, self.contracts["tools"][name]["output"],
                             root=self.contracts, limit=5)
@@ -1589,6 +1676,34 @@ def _mixing(rows: Sequence[Mapping[str, Any]], op: str,
                     "hint": "narrow the set to amounts read from one source binding (each "
                             "money source declares its tax_basis in the schema)"}
     return None
+
+
+def _row_summary(rows: Sequence[Mapping[str, Any]], prop: str) -> dict[str, Any]:
+    """Of ``rows`` (``AggregateTools.rows``, newest first): how many hold a value of
+    ``prop``, and the newest (``last``, with its row's date), lowest and highest of them,
+    each the row's own cited value; with two units or currencies among them no lowest or
+    highest (``mixed`` names them)."""
+    held = [(r, r["values"].get(prop)) for r in rows
+            if isinstance(r["values"].get(prop), Mapping)
+            and r["values"][prop].get("value") is not None]
+    out: dict[str, Any] = {"with_value": len(held)}
+    if not held:
+        return out
+    first_row, first = held[0]
+    out["last"] = {"value": first, **({"date": first_row["date"]} if first_row.get("date")
+                                      else {})}
+    kinds = {(v.get("unit"), v.get("currency")) for _r, v in held}
+    numbers = [(to_decimal(v["value"]), v) for _r, v in held]
+    if len(kinds) > 1:
+        out["mixed"] = sorted({str(x) for kind in kinds for x in kind if x})[:10]
+    elif all(n is not None for n, _v in numbers):
+        # each only when it is another value than the newest (no citation twice)
+        for key, pick in (("lowest", min), ("highest", max)):
+            chosen = pick(numbers, key=lambda pair: pair[0])[1]
+            if chosen["citation"] != first["citation"] \
+                    and to_decimal(chosen["value"]) != to_decimal(first["value"]):
+                out[key] = chosen
+    return out
 
 
 def _shown(row: Mapping[str, Any] | None, limit: int) -> dict[str, Any] | None:

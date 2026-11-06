@@ -91,6 +91,9 @@ PAGE_TIMEOUT_SECONDS = 150
 # worker (jobs run lowest number first): opening another record never waits on the
 # sections of the one before.
 SECTION_PRIORITY = 1
+# Today's read-ahead (``WorkspaceBackend.warm``) on the read workers: after every live
+# request and section waiting there.
+WARM_PRIORITY = 2
 # The section pool (``section_pool``): this many processes, each its own runtime and
 # read-only connections, read a page's sections at once off the read worker (one per
 # section kind: m.PAGE_SECTIONS). None started or up (tests, start-up, a slot gone): the
@@ -353,6 +356,18 @@ class ReaderCache:
         self.put(key, copy(value))
         return value
 
+    def once(self, key: Optional[tuple], read: Callable[[], Any]) -> Any:
+        """``read()`` as kept under ``key``, read once: a live request finding another
+        reading it waits for that read (``flight``) instead of reading it beside it."""
+        held = self.get(key)
+        if held is None:
+            with self.flight(key):
+                held = self.get(key)
+                if held is None:
+                    held = read()
+                    self.put(key, held)
+        return held
+
     def get(self, key: Optional[tuple]) -> Any:
         if key is None:
             return None
@@ -470,6 +485,22 @@ _SEQ = iter(range(1, 1 << 62))
 _SEQ_LOCK = threading.Lock()
 
 
+STARTED = time.monotonic()   # this process's start, as the warm-up's log states it
+
+
+def warm_timed(name: str, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """``job`` with its end logged: how long it ran and how long after the start."""
+    def run(view: Any) -> Any:
+        began = time.monotonic()
+        try:
+            return job(view)
+        finally:
+            logging.getLogger("operator_api.warm").info(
+                "warm %s read in %.1f s (%.0f s after start)", name,
+                time.monotonic() - began, time.monotonic() - STARTED)
+    return run
+
+
 def submit(jobs: "queue.PriorityQueue", stopped: threading.Event, reader: Reader,
            job: Callable[[Any], Any], priority: int) -> Future:
     future: Future = Future()
@@ -560,6 +591,7 @@ class WorkspaceBackend(ActionsMixin):
         # the briefing and its cards name the same orders)
         self.cards = ReaderCache(CARD_WORDS_KEPT)
         self.warmer: Optional[Worker] = None   # the warm worker (``add_warm_worker``)
+        self.warm_enabled = False   # Today's read-ahead on the read workers (``--warm``)
         # employee object id -> its session now, resolved as a sign-in is (None: no
         # known reader is warmed at start)
         self.identity_for: Optional[Callable[[str, int], Any]] = None
@@ -690,7 +722,7 @@ class WorkspaceBackend(ActionsMixin):
                 self._write_known(known)
             self._warmed.pop(reader.key, None)
 
-    def warm_known(self) -> int:
+    def warm_known(self, *, today: bool = True) -> int:
         """Read ahead for each known reader (start, a new generation): only while their real
         session is unexpired and its ticket not revoked (the replay guard), each resolved
         again as a sign-in is (``session_identity.warm_session``: refused for an inactive,
@@ -712,7 +744,7 @@ class WorkspaceBackend(ActionsMixin):
                          if isinstance(p, list) and len(p) == 2]
                 if pages and not self._pages_seen.get(reader.key):
                     self._pages_seen[reader.key] = pages[:WARM_RECENT_PAGES]
-            warmed += self.warm(reader, force=True)
+            warmed += self.warm(reader, force=True, today=today)
         return warmed
 
     def watch_generation(self, stop: threading.Event) -> None:
@@ -729,20 +761,26 @@ class WorkspaceBackend(ActionsMixin):
                 self.warm_known()
 
     def _served_state(self) -> Optional[tuple]:
-        """The served store file's identity and the gap inbox's findings (``inbox_state``)."""
+        """The served store file's identity, the gap inbox's findings (``inbox_state``) and
+        the AI watcher's state (``watcher_stamp``)."""
         if not self.store_path:
             return None
         from operating.ontology_host import _file_identity
         from operating.proactive_engine import inbox_path
-        return _file_identity(self.store_path), inbox_state(inbox_path(self.store_path))
+        from operating import ai_watcher
+        return (_file_identity(self.store_path), inbox_state(inbox_path(self.store_path)),
+                ai_watcher.stamp(Path(self.store_path)))
 
-    def warm(self, reader: Reader, *, force: bool = False) -> bool:
-        """Read ahead for ``reader`` on the warm worker, at most once per
-        ``WARM_SECONDS`` (``force``: now): what Today reads (Home's list, the briefing and
-        its groups' next items, the suggestion cards, the late list), the first late
-        orders' pages and the pages they opened last. False when nothing was queued."""
+    def warm(self, reader: Reader, *, force: bool = False, today: bool = True) -> bool:
+        """Read ahead for ``reader``, at most once per ``WARM_SECONDS`` (``force``: now):
+        what Today reads first (Home's list, the briefing and its groups' next items, the
+        suggestion cards, the late list) on the read workers, behind every live request
+        (``WARM_PRIORITY``) and once per key (a live request for the same answer waits
+        for it rather than reading it beside it); then, on the warm worker once it is up,
+        the first late orders' pages and the pages they opened last (``today`` False:
+        those only, Today being read ahead already). False when nothing was queued."""
         warmer = self.warmer
-        if warmer is None or warmer.stopped.is_set():
+        if not self.warm_enabled and (warmer is None or warmer.stopped.is_set()):
             return False
         now = time.monotonic()
         with self._lock:
@@ -772,9 +810,14 @@ class WorkspaceBackend(ActionsMixin):
                 except Exception:  # noqa: BLE001 - a page that fails is read when opened
                     continue
 
-        for job in (self._attention_cached, self._briefing_ahead(reader),
-                    self._suggestions_cached, self._late_held, pages):
-            warmer.submit(reader, self.yielding(job))
+        for name, job in (("home", self._attention_cached),
+                          ("briefing", self._briefing_ahead(reader)),
+                          ("suggestions", self._suggestions_cached),
+                          ("late list", self._late_held)):
+            if today:
+                self.reads.submit(reader, warm_timed(name, job), priority=WARM_PRIORITY)
+        if warmer is not None and not warmer.stopped.is_set():
+            warmer.submit(reader, self.yielding(warm_timed("pages", pages)))
         return True
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
@@ -790,12 +833,12 @@ class WorkspaceBackend(ActionsMixin):
 
     def warm_briefing(self, reader: Reader) -> bool:
         """Read the reader's briefing ahead again (its "new since your visit" marks are
-        keyed on the visit, so a "seen" mark reads it anew): queued on the warm worker
-        behind live requests. False when there is no warm worker."""
-        warmer = self.warmer
-        if warmer is None or warmer.stopped.is_set():
+        keyed on the visit, so a "seen" mark reads it anew): queued on the read workers
+        behind live requests. False when the read-ahead is off."""
+        if not self.warm_enabled:
             return False
-        warmer.submit(reader, self.yielding(self._briefing_ahead(reader)))
+        self.reads.submit(reader, warm_timed("briefing", self._briefing_ahead(reader)),
+                          priority=WARM_PRIORITY)
         return True
 
     def yielding(self, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
@@ -1537,6 +1580,8 @@ class WorkspaceBackend(ActionsMixin):
                 status("checking", ask_progress.GATE_PASSED)
             elif kind == "gate" and data.get("outcome") == "repair":
                 status("checking", ask_progress.GATE_REPAIR)
+            elif kind == "gate" and data.get("outcome") == "continue":
+                status("reading", ask_progress.GATE_CONTINUE)
 
         session: Future = Future()
         pre: dict[str, Any] = {}
@@ -2161,8 +2206,8 @@ class WorkspaceBackend(ActionsMixin):
         (``reader_key``) for the late list's pages and its read-ahead."""
         with view._request():
             key = reader_key(view, ("late_list",))
-        held = self.page_cache.get(key)
-        if held is None:
+
+        def read() -> tuple[Any, list[Mapping[str, Any]], dict[str, str], dict[str, str]]:
             inbox, _, _ = without_tests(view.gap_inbox(limit=LATE_COUNT_LIMIT), {}, {},
                                         named=self.test_named())
             inbox = aged_to_today(inbox, self.today() if self.today else None)
@@ -2184,9 +2229,9 @@ class WorkspaceBackend(ActionsMixin):
             # total alike, so the total is the same on every page
             kept, _, _ = without_tests({"gaps": list(seen.values())}, labels, suppliers,
                                        named=self.test_named())
-            held = (inbox, kept["gaps"], labels, suppliers)
-            self.page_cache.put(key, held)
-        return held
+            return inbox, kept["gaps"], labels, suppliers
+
+        return self.page_cache.once(key, read)
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         """Every late purchase order the reader may see, a page at a time, in Home's order
@@ -2698,8 +2743,10 @@ def card_words(view: Any, oid: str, *, supplier: bool = False,
                cards: Optional["ReaderCache"] = None) -> tuple[str, Optional[str]]:
     """(the record's display label, with ``supplier`` a purchase order's supplier,
     ``supplier_of``) as this reader reads them, inside its ``_request``; kept in ``cards``
-    per reader, record and generation (``page_key``), as the pages that show them are."""
-    key = page_key(view, ("card", oid, supplier)) if cards is not None else None
+    per reader, record, generation and delta overlay (``page_key``, ``overlay_stamp``), so
+    a label never lags the row-delta updates."""
+    key = page_key(view, ("card", oid, supplier, overlay_stamp(view))) \
+        if cards is not None else None
     held = cards.get(key) if key is not None else None
     if held is not None:
         return held
@@ -5152,6 +5199,16 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
         return None
 
 
+def overlay_stamp(view: Any) -> Any:
+    """The row-delta overlay the reader's host answers with now (inside its ``_request``);
+    None without one."""
+    stamp = getattr(getattr(view, "access", None), "overlay_stamp", None)
+    try:
+        return stamp() if callable(stamp) else None
+    except Exception:  # noqa: BLE001 - an unreadable stamp keys nothing kept
+        return ("unreadable", time.monotonic())
+
+
 def reader_key(view: Any, what: tuple) -> Optional[tuple]:
     """``page_key`` of ``what`` for this reader (inside its ``_request``), with the state
     of the gap inbox beside the store (a new run or an acknowledgement is a new key; a
@@ -5252,15 +5309,13 @@ def page_oid(backend: WorkspaceBackend, view: Any, object_type: str, object_id: 
     KeyError when it resolves to nothing for them. Inside the reader's ``_request``."""
     cache = backend.page_cache
     ref = page_key(view, f"ref:{object_type}:{object_id}")
-    held = cache.get(ref)
-    if held is not None:
-        oid = held[0]
-    else:
+
+    def read() -> tuple[Optional[str]]:
         try:
-            oid = resolve_object(view, object_type, object_id)
+            return (resolve_object(view, object_type, object_id),)
         except KeyError:
-            oid = None
-        cache.put(ref, (oid,))
+            return (None,)
+    oid = cache.once(ref, read)[0]
     if oid is None:
         raise KeyError("object_not_found")   # resolved to nothing for this reader
     return oid
@@ -6335,6 +6390,11 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                     "data_dir": args.app_data_dir, "pg_dsn": args.pg_dsn,
                     "ask_served": False}))
         if getattr(args, "warm", 0):
+            backend.warm_enabled = True
+            # the known readers' Today is read as soon as the read worker serves, not once
+            # the warm worker's own runtime is up (that one reads their pages after)
+            threading.Thread(target=backend.warm_known, name="app-warm-start",
+                             daemon=True).start()
             threads.append(start_warm_worker(backend, argv, fixtures, planner))
         try:
             return start(backend, auth, auth_config)
@@ -6404,7 +6464,8 @@ def start_warm_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any,
             pass
         worker = backend.add_warm_worker(ctx["objects_for"])
         backend.warm_store()
-        backend.warm_known()   # the readers seen lately: Home and the briefing are ready
+        # the readers seen lately: their pages (their Today is read ahead at the start)
+        backend.warm_known(today=False)
         watch = threading.Thread(target=backend.watch_generation, args=(worker.stopped,),
                                  name="app-warm-generation", daemon=True)
         watch.start()

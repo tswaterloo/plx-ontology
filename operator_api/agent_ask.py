@@ -407,6 +407,11 @@ class AgentAsk:
                     try:
                         parsed = json.loads(body) or {}
                         outcome = parsed.get("outcome")
+                        note = parsed.get(deep.BUDGET_KEY)
+                        if isinstance(note, Mapping) and note.get(deep.CONTINUE_KEY):
+                            # sent back with its open parts (``Budget.after_answer``):
+                            # research goes on, so nothing of it is shown yet
+                            outcome = "continue"
                     except (TypeError, ValueError, AttributeError):
                         parsed, outcome = {}, None
                     told = None
@@ -425,6 +430,9 @@ class AgentAsk:
             prompt = app_prompt(question, route) + (
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
             agent = self.agent_for(on_line, deep.question_budget(question, self.seconds, route))
+            # the sources the pre-read brief names are read in the session itself, so
+            # what the agent cites of them is evidence the session returned
+            agent.quiet_reads = runner.told_reads(context)
             # the Ask resolved records the question names (the brief's roots): a text
             # search waits for the agent's first record read
             agent.records_named = bool(re.search(r'" names (?:one |the record)', context))

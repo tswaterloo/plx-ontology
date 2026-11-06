@@ -958,7 +958,8 @@ class TraverseTools:
             link = self.schema.link_types.get(link_type)
             if link is None:
                 raise ToolError("undeclared_link", f"{link_type} is not a declared "
-                                "link type", "call plx.schema with section links")
+                                "link type", _walkable_hint(self.schema, current,
+                                                            str(link_type)))
             forward = direction == "forward"
             source, target = (link["from"], link["to"]) if forward else (link["to"], link["from"])
             if current is not None and source not in current:
@@ -982,7 +983,7 @@ class TraverseTools:
         where = ", ".join(sorted(types)) if current is not None else "any type"
         if not found:
             raise ToolError("undeclared_link", f"hop {index + 1}: no link is named {name} on "
-                            f"{where or 'nothing'}", "call plx.schema with section links")
+                            f"{where or 'nothing'}", _walkable_hint(self.schema, current, name))
         if len(found) > 1:
             raise ToolError("ambiguous_link",
                             f"hop {index + 1}: {name} on {where} names "
@@ -1329,7 +1330,7 @@ class TraverseTools:
         the same rows of that family: no cell of it lies outside its span. One read per
         store state, for every reader."""
         def read() -> tuple[int, int] | None:
-            row = self.store.conn.execute(
+            row = self.store.word_conn.execute(   # the word index's own rowids
                 _CELL_SPAN_SQL, {"family": family, "low": family + ":",
                                  "high": family + chr(ord(":") + 1)}).fetchone()
             return None if row is None or row[0] is None else (int(row[0]), int(row[1]))
@@ -1887,6 +1888,55 @@ class TraverseTools:
 
 
 # --------------------------------------------------------------------------- pure helpers
+
+def walkable(schema: Any, types: Iterable[str]) -> list[tuple[str, str, str]]:
+    """(link type, direction, its navigation name) of every declared link an object of
+    one of ``types`` can walk: forward from its from type (its ``name``), reverse from its
+    to type (its ``reverse_name``); links records hold before mentions read in text."""
+    out = []
+    for link_id, link in sorted((getattr(schema, "link_types", None) or {}).items(),
+                                key=lambda item: (_text_only(item[1]), item[0])):
+        for direction, end, key in (("forward", "from", "name"),
+                                    ("reverse", "to", "reverse_name")):
+            if link.get(end) in types:
+                out.append((link_id, direction, str(link.get(key) or "")))
+    return out
+
+
+def _text_only(link: Mapping[str, Any]) -> bool:
+    """Whether every binding of ``link`` is a mention read in text."""
+    kinds = {b.get("kind") for b in link.get("bindings") or () if isinstance(b, Mapping)}
+    return bool(kinds) and kinds <= {"mention"}
+
+
+def _walkable_hint(schema: Any, types: set[str] | None, asked: str = "",
+                   room: int = 590) -> str:
+    """A refused hop's hint: the links the start types can walk (``walkable``), the ones
+    whose names are closest to the name ``asked`` first, as ``link_type direction``, within
+    the contract's hint length (``room``); the schema section when the start types are
+    unknown or walk nothing."""
+    import difflib
+    found = walkable(schema, types) if types else []
+    if not found:
+        return "call plx.schema with section links"
+    words = asked.lower()
+
+    def near(entry: tuple[str, str, str]) -> float:
+        link_type, _direction, name = entry
+        return max(difflib.SequenceMatcher(None, words, text.lower()).ratio()
+                   for text in (name, link_type.split(".", 1)[-1], link_type))
+    closest = sorted(found, key=near, reverse=True)[:5] if words else []
+    ordered = closest + [entry for entry in found if entry not in closest]
+    head = f"links from {', '.join(sorted(types))[:120]}: "
+    shown: list[str] = []
+    for n, (link_type, direction, _name) in enumerate(ordered):
+        more = f"; and {len(ordered) - n} more (plx.schema section links)"
+        item = f"{link_type} {direction}"
+        if len(head) + len("; ".join(shown + [item])) + len(more) > room:
+            return head + "; ".join(shown) + more
+        shown.append(item)
+    return head + "; ".join(shown)
+
 
 def navigation_hops(schema: Any, type_id: str, name: str) -> list[tuple[str, str]]:
     """The (link type, direction) pairs navigation name ``name`` walks from an object of

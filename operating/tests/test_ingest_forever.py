@@ -1156,6 +1156,26 @@ class SnapshotBuildTest(unittest.TestCase):
         self.assertNotIn(str(self.state), json.dumps(built))   # counts, never paths
         self.assertEqual(host_module.cycle_overlaps(host)["cycles_overlapping"], 0)
 
+    def test_builds_off_records_captures_and_never_builds(self) -> None:
+        """``ingest.builds`` ``off`` (docs/pg-cutover.md): the host captures and records,
+        the served generation stays, no generation is built."""
+        table = fake_table(self.script, "fast")
+        config = self.config({"fast": {"min_interval_seconds": 1}},
+                             ingest={"mode": forever.MODE, "grace_seconds": 1,
+                                     "builds": "off"})
+        host = self.host(config, table)
+        reports: list[dict] = []
+        with mock.patch.object(host_module, "build_projection",
+                               side_effect=AssertionError("built")):
+            done = host.ingest_continuous(stop_file=self.tmp / "stop", max_refreshes=2,
+                                          on_refresh=reports.append)
+        self.assertEqual(done["refreshes"], 2)
+        self.assertEqual({r["projection"]["state"] for r in reports}, {"skipped"})
+        self.assertEqual({tuple(r["projection"]["reasons"]) for r in reports},
+                         {("builds_off",)})
+        with self.assertRaises(forever.IngestError):
+            forever.ingest_settings({"mode": forever.MODE, "builds": "sometimes"})
+
     def ran_count(self, name: str) -> int:
         path = self.state / f"fake-{name}" / "ran"
         return len(path.read_text().splitlines()) if path.is_file() else 0

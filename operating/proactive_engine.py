@@ -241,6 +241,12 @@ def scan_threads(environ: Mapping[str, str] | None = None) -> int:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    from operating.pg import ontology_reader
+    if ontology_reader.serves(path):
+        # PLX_ONTOLOGY_PG: the Postgres ontology (current to the last delta layer), the
+        # detectors' SQL run as written (operating/pg/sqlite_compat.py)
+        from operating.pg.sqlite_compat import PgCompatConnection
+        return PgCompatConnection(ontology_reader.dsn())   # type: ignore[return-value]
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
     conn.row_factory = sqlite3.Row
     # No query of a detector may build a transient index over a whole table: on a

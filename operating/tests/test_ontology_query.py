@@ -115,6 +115,75 @@ class Query(unittest.TestCase):
         self.assertEqual(around["from"], "set:codes0001")
         self.assertIn("codes_not_found", [g["reason"] for g in out["gaps"]])
 
+    def test_per_code_lists_each_codes_reached_records_with_their_cited_values(self):
+        """A sheet's codes answered one by one: each code's records walked, the lines
+        reached listed through the host's value reads (rows), the summary's values cited
+        so a claim on one binds as evidence; a code no record holds is named."""
+        from operating import answer_gate
+        table, listed = Table(), []
+        line = {"l1_handle": "api://public.app_purchase_order_line/1@g",
+                "field_path": "row.unit_price", "digest": "b" * 64,
+                "lineage": "gold_etl_from_fm"}
+        price = {"property": "unit_price", "value_type": "money", "value": "0.541",
+                 "currency": "CAD", "citation": line, "markings": []}
+
+        def rows(arguments, actor):
+            listed.append(dict(arguments))
+            return {"count": 1, "rows": [], "summary": {"unit_price": {
+                "with_value": 1, "last": {"value": price}}}, "gaps": []}
+        tool = oq.QueryTool(oq.TableBackend(
+            table, lambda actor, ids: "set:codes0001", Schema(), None,
+            lambda actor, codes, object_type: (([SAGE] if codes != ["ZZ-9"] else []), []),
+            rows))
+        out = tool.call({"from": {"codes": ["AB-1", "ZZ-9"]}, "per_code": True,
+                         "traverse": [{"link_type": "SalesInvoiceLine.for_item",
+                                       "direction": "reverse"}],
+                         "rows": {"properties": ["unit_price"], "date": {
+                             "property": "order_date", "path": [{
+                                 "link_type": "SalesInvoiceLine.line_of",
+                                 "direction": "forward"}]}}}, "actor")
+        self.assertNotIn("error", out)
+        self.assertEqual([(e["code"], e["records"]) for e in out["by_code"]],
+                         [("AB-1", 1), ("ZZ-9", 0)])
+        self.assertEqual(out["by_code"][0]["rows"]["summary"]["unit_price"]["last"]["value"],
+                         price)
+        self.assertEqual(listed, [{"set": "set:lines0001", "properties": ["unit_price"],
+                                   "limit": 0, "date": {"property": "order_date", "path": [
+                                       {"link_type": "SalesInvoiceLine.line_of",
+                                        "direction": "forward"}]}}])
+        self.assertIn("codes_not_found", [g["reason"] for g in out["gaps"]])
+        self.assertEqual(answer_gate.evidence_handles("plx.query", out),
+                         {line["l1_handle"]})
+        # a walk the schema refuses is refused once for the whole list
+        def refusing(name, arguments, actor):
+            if name == "plx.around" and "link" in arguments["path"][0]:
+                return {"error": {"code": "undeclared_link", "message": "no link"}}
+            return table(name, arguments, actor)
+        tool.backend.call = refusing
+        bad = tool.call({"from": {"codes": ["AB-1", "AB-2"]}, "per_code": True,
+                         "traverse": [{"link": "purchased_on"}],
+                         "rows": {"properties": ["unit_price"]}}, "actor")
+        self.assertEqual(bad["error"]["code"], "undeclared_link")
+
+    def test_a_summary_names_the_newest_value_and_never_compares_two_currencies(self):
+        from operating.ontology_tools_aggregate import _row_summary
+
+        def row(n, value, date, currency="CAD"):
+            cite = {"l1_handle": f"api://x/{n}@g", "field_path": "row.p", "digest": "c" * 64,
+                    "lineage": "l"}
+            return {"object_id": f"L:{n}", "date": {"value": date},
+                    "values": {"p": {"value": value, "currency": currency, "citation": cite}}}
+        rows = [row(1, "0.60", "2026-09-30"), row(2, "0.50", "2026-05-01"),
+                row(3, "0.70", "2026-01-01")]
+        summary = _row_summary(rows, "p")
+        self.assertEqual((summary["with_value"], summary["last"]["value"]["value"],
+                          summary["last"]["date"]["value"], summary["lowest"]["value"],
+                          summary["highest"]["value"]), (3, "0.60", "2026-09-30", "0.50",
+                                                         "0.70"))
+        mixed = _row_summary(rows + [row(4, "9", "2025-01-01", "USD")], "p")
+        self.assertNotIn("lowest", mixed)
+        self.assertEqual(mixed["mixed"], ["CAD", "USD"])
+
     def test_a_window_never_adds_groups_of_different_units(self):
         groups = [{"key": {"d": {"untrusted_text": "2026-01-02"}}, "value": "5", "unit": "EA"},
                   {"key": {"d": {"untrusted_text": "2026-01-03"}}, "value": "2", "unit": "KG"}]
