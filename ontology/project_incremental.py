@@ -1108,15 +1108,16 @@ def can_clone(directory: str | Path) -> bool:
 
 def space_need(state_dir: str | Path, base: Generation | None = _CURRENT_GENERATION, *,
                dirty: Iterable[str] | None = None, units: Mapping[str, Any] | None = None,
-               clone: bool | None = None, scale: Mapping[str, float] | None = None
-               ) -> dict[str, Any]:
+               clone: bool | None = None, scale: Mapping[str, float] | None = None,
+               share: float | None = None) -> dict[str, Any]:
     """The bytes the next build of ``state_dir`` writes beside what is on disk, from the
     committed generation's measured sizes (``units.json`` ``bytes``):
 
     * incremental (``dirty``: the changed units, ``units``: the base's units.json): the
       seed (none when the file system clones it, else a byte copy of the base store), plus
       twice the changed units' share of the base store (their rows deleted and written
-      again inside one transaction) and that share of the last cold working-file peak;
+      again inside one transaction) and that share of the last cold working-file peak
+      (``share``: a share measured before, in place of ``dirty``'s);
     * cold: the last measured store of this format plus the last cold working-file peak;
       ``needed_bytes`` None when no store of this format was measured (a format change:
       only the running guard of the caller's ``checkpoint`` bounds it).
@@ -1130,9 +1131,9 @@ def space_need(state_dir: str | Path, base: Generation | None = _CURRENT_GENERAT
     sizes = measured.get("bytes") if isinstance(measured.get("bytes"), dict) else {}
     base_bytes = base.store.stat().st_size if base is not None and base.store.is_file() else 0
     work = _cold_work(sizes)
-    if dirty is not None and base is not None:
+    if (dirty is not None or share is not None) and base is not None:
         cloned = can_clone(state / "generations") if clone is None else clone
-        dirty = set(dirty)
+        dirty = set(dirty or ())
         fragments = measured.get("fragments") or {}
         keys = measured.get("keys") or {}
 
@@ -1142,8 +1143,9 @@ def space_need(state_dir: str | Path, base: Generation | None = _CURRENT_GENERAT
         total = sum(weight(u) for u in keys) or 1
         # A binding rebuilt object by object (``scale``: its changed objects' share)
         # rewrites that share of its rows.
-        share = min(1.0, sum(weight(u) * (scale or {}).get(u, 1.0) for u in dirty
-                             if u in keys) / total) if keys else 1.0
+        if share is None:
+            share = min(1.0, sum(weight(u) * (scale or {}).get(u, 1.0) for u in dirty
+                                 if u in keys) / total) if keys else 1.0
         seed = 0 if cloned else base_bytes
         needed = seed + int(2 * share * base_bytes) + int(share * work)
         return {"mode": "incremental", "seed": "clone" if cloned else "copy",
@@ -1167,23 +1169,29 @@ def build_context(normalizer: Normalizer | None, as_known_at: Any = None) -> str
             normalizer if normalizer is not None else _default_normalizer())}))
 
 
-def planned_need(state_dir: str | Path, *, schema_digest: str | None = None,
-                 normalizer: Normalizer | None = None, as_known_at: Any = None,
-                 changed_share: float | None = None) -> dict[str, Any]:
+def planned_need(state_dir: str | Path, *, schema: Any = None,
+                 schema_digest: str | None = None, normalizer: Normalizer | None = None,
+                 as_known_at: Any = None, changed_share: float | None = None
+                 ) -> dict[str, Any]:
     """The space estimate of the next build of ``state_dir`` before its captures are
-    fingerprinted (hours on a large store): the cold estimate (:func:`space_need`) when the
-    build is known to be cold or to change most units, else the least it writes (an
-    incremental build with no unit changed: its seed). Known when no generation is
-    committed, the base's keys are of another scheme (and name no commit to adopt), the
-    keys' shared context (:func:`build_context` of ``normalizer``, by default the build's,
-    and ``as_known_at``) or the schema (``schema_digest``, the store's ``schema_digest``
-    meta) differ from the base's, or a measured ``changed_share`` over the same base
-    exceeds ``COLD_SHARE``. ``predicted`` names the reason (None: the least)."""
+    fingerprinted (hours on a large store): the smallest mode that would run. Cold
+    (:func:`space_need`) when only a cold build can run: no generation committed, the
+    base's keys of another scheme (naming no commit to adopt), another shared context of
+    the keys (:func:`build_context` of ``normalizer``, by default the build's, and
+    ``as_known_at``), or another schema (``schema``'s digest, or ``schema_digest``,
+    against the store's ``schema_digest`` meta) the base cannot be rewritten under unit by
+    unit (``_rewritable``; with only a digest, assumed not). Else, when a ``changed_share``
+    measured over the same base exceeds ``COLD_SHARE``, the smaller of the cold estimate
+    and the incremental one at that share (a build takes the other mode where only that
+    fits); else the least an incremental build writes (its seed). ``predicted`` names the
+    reason (None: the least)."""
     state = Path(state_dir)
     context = build_context(normalizer if normalizer is not None else _default_normalizer(),
                             as_known_at)
     base = current_generation(state)
     units = _units_of(base) if base is not None else None
+    if schema is not None and schema_digest is None:
+        schema_digest = _get(schema, "digest") or None
     reason = None
     if base is None:
         reason = "no_generation"
@@ -1192,13 +1200,35 @@ def planned_need(state_dir: str | Path, *, schema_digest: str | None = None,
         reason = "key_scheme"
     elif units.get("scheme") == build_keys.KEY_SCHEME and units.get("context") != context:
         reason = "build_code"
-    elif schema_digest is not None and _schema_digest(base) not in (None, schema_digest):
+    elif schema_digest is not None and _schema_digest(base) not in (None, schema_digest) \
+            and not _rewritable(units, schema):
         reason = "schema_changed"
-    elif changed_share is not None and changed_share > COLD_SHARE:
-        reason = "changed_share"
-    if reason is None:
-        return {**space_need(state, base, dirty=(), units=units), "predicted": None}
-    return {**space_need(state, base, units=units), "predicted": reason}
+    if reason is not None:
+        return {**space_need(state, base, units=units), "predicted": reason}
+    if changed_share is not None and changed_share > COLD_SHARE:
+        cold = space_need(state, base, units=units)
+        partial = space_need(state, base, units=units, share=min(1.0, changed_share))
+        smaller = partial if cold["needed_bytes"] is UNKNOWN \
+            or partial["needed_bytes"] < cold["needed_bytes"] else cold
+        return {**smaller, "predicted": "changed_share",
+                "estimates": {"cold": cold, "incremental": partial}}
+    return {**space_need(state, base, dirty=(), units=units), "predicted": None}
+
+
+def _rewritable(units: Mapping[str, Any], schema: Any) -> bool:
+    """Whether a base of these ``units`` can be rewritten unit by unit under ``schema``
+    (as ``_build`` decides: an acyclic plan, ``_gone_units``); False without a schema."""
+    if schema is None or units.get("scheme") != build_keys.KEY_SCHEME:
+        return False
+    try:
+        the_plan = plan(schema)
+        if not the_plan.acyclic:
+            return False
+        shape = build_keys.SchemaParts(schema).shape()
+        return _gone_units(units, dict.fromkeys(the_plan.units, ""), the_plan,
+                           shape) is not None
+    except Exception:  # noqa: BLE001 - unknown: the build may be cold
+        return False
 
 
 def _schema_digest(generation: Generation) -> str | None:

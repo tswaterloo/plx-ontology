@@ -908,7 +908,9 @@ class ConcurrentIngestTest(unittest.TestCase):
         estimate came only once the changed units were known. A build known to be cold (the
         served generation was built under another schema) is checked against the cold
         estimate first: skipped at once, nothing fingerprinted or copied, the wait recorded;
-        the next cycles only measure free space until it is there."""
+        the next cycles only measure free space until it is there. A schema the base can be
+        rewritten under unit by unit, or most units changed where an incremental build
+        needs less, checks and waits for the smallest mode that would run."""
         from integrations import bc_read
         from integrations.live_source_guard import BoundedBackoff
         from integrations.tests.test_bc_capture import BOOKS, ENV, Clock, FakeBc
@@ -936,7 +938,23 @@ class ConcurrentIngestTest(unittest.TestCase):
         host.disk_free = lambda path: cold + margin - 1
         other = mock.patch("ontology.project_incremental._schema_digest",
                            return_value="sha256:" + "0" * 64)
-        with other, mock.patch.object(host_module, "build_projection") as build, \
+        # another schema the base can be rewritten under: an incremental build can run,
+        # so the check is the least it writes
+        with other, mock.patch("ontology.project_incremental._rewritable", return_value=True):
+            self.assertEqual(host.build_plan(first["cycle"])["needed_bytes"], least + margin)
+        # most units changed (measured) where an incremental build needs less than cold:
+        # that one is checked
+        partial = inc.space_need(state, share=0.6)["needed_bytes"]
+        need = inc.planned_need(state, changed_share=0.6)
+        self.assertEqual((need["needed_bytes"], need["predicted"]),
+                         (min(partial, cold), "changed_share"))
+        self.assertEqual(host_module.smallest_need(
+            {"needed_bytes": cold + margin + 5, "estimate": {
+                "needed_bytes": cold, "estimates": {"cold": {"needed_bytes": cold},
+                                                    "incremental": {"needed_bytes": 7}}}}),
+            7 + margin + 5)
+        cannot = mock.patch("ontology.project_incremental._rewritable", return_value=False)
+        with other, cannot, mock.patch.object(host_module, "build_projection") as build, \
                 mock.patch.object(host_module.Host, "snapshot_inputs") as copies:
             skipped = host.cycle()
         build.assert_not_called()   # nothing fingerprinted

@@ -1104,11 +1104,15 @@ class WorkspaceBackend(ActionsMixin):
                       f"{truth.late_claims} late POs contradicted by other systems")
         waits = build_wait_status(self.state_dir)
         served, digest = self._served_store()
-        documents = documents_pending(served, digest, handles) if served else None
+        documents = documents_pending(served, digest, handles,
+                                      state_dir=self.state_dir) if served else None
         if label and documents is not None:
-            label += (f"; {documents.files} document{'s' if documents.files != 1 else ''} "
-                      "not read yet" + ("; this record's document fields are pending"
-                                        if documents.this_record else ""))
+            label += ((f"; {documents.files} document{'s' if documents.files != 1 else ''} "
+                       "not read yet") if documents.files is not None else
+                      f"; documents of {documents.records} record"
+                      f"{'s' if documents.records != 1 else ''} not read yet") + (
+                "; this record's document fields are pending" if documents.this_record
+                else "")
         if label and waits is not None:
             label += f"; next build waits for {_gigabytes(waits.needed_bytes)} free" + (
                 f" ({_gigabytes(waits.free_bytes)} now)" if waits.free_bytes is not None
@@ -3080,13 +3084,19 @@ def _record_key(key: Any) -> str:
     return json.dumps(list(key) if isinstance(key, (list, tuple)) else key, sort_keys=True)
 
 
-def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str] = ()
+def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str] = (), *,
+                      state_dir: Optional[Path] = None,
+                      environ: Optional[Mapping[str, str]] = None
                       ) -> Optional[m.DocumentsPending]:
-    """The files the newest delta layer over the served generation (``digest``) left
-    pending (its pointer's ``documents``, counts) and, for ``handles`` (a record page's own
-    sources, which its reader sees), whether a record they cite is one holding them (the
-    layer's ``documents_pending`` meta). Never a record key: a reader learns only about
-    the record in front of them. None when nothing is pending or the delta cannot say."""
+    """The documents the newest delta layer over the served generation (``digest``) left
+    pending, counted without the excluded people's mail and OneDrives
+    (``excluded_records``): ``records``, the records holding them (the layer's
+    ``documents_pending`` meta) the exclusion clears; ``files`` and ``timed_out``, the
+    pointer's counts, only while no pending record is withheld (the layer does not say
+    which files a record holds). For ``handles`` (a record page's own sources, which its
+    reader sees), whether a record they cite is one holding them. Never a record key: a
+    reader learns only about the record in front of them. None when nothing (cleared) is
+    pending or the delta cannot say."""
     try:
         from operating import delta_overlay
         pointer = delta_overlay.read_pointer(delta_overlay.pointer_path(store))
@@ -3098,33 +3108,104 @@ def documents_pending(store: Path, digest: Optional[str], handles: Iterable[str]
     if not isinstance(counts, Mapping) or not isinstance(counts.get("pending"), int) \
             or counts["pending"] <= 0:
         return None
-    held = counts.get("held_open") if isinstance(counts.get("held_open"), Mapping) else {}
+    try:
+        conn = sqlite3.connect(f"file:{pointer['store']}?mode=ro", uri=True, timeout=1)
+        try:
+            row = conn.execute("SELECT value FROM store_meta WHERE key = "
+                               "'documents_pending'").fetchone()
+        finally:
+            conn.close()
+        records = (json.loads(row[0]) or {}).get("records") if row else {}
+        records = {source: [k for k in keys or ()] for source, keys in (records or {}).items()
+                   if isinstance(source, str)}
+    except (sqlite3.Error, ValueError, TypeError, AttributeError, KeyError):
+        return None
+    withheld = excluded_records(records, state_dir,
+                                os.environ if environ is None else environ)
+    kept = {(source, _record_key(key)) for source, keys in records.items() for key in keys
+            if (source, _record_key(key)) not in withheld}
+    if withheld and not kept:
+        return None   # all of it is the excluded people's: nothing is said
     this = None
     handles = [h for h in handles if isinstance(h, str)]
     if handles:
         this = False
         try:
             from ontology.delta import record_of_handle
-            conn = sqlite3.connect(f"file:{pointer['store']}?mode=ro", uri=True, timeout=1)
-            try:
-                row = conn.execute("SELECT value FROM store_meta WHERE key = "
-                                   "'documents_pending'").fetchone()
-            finally:
-                conn.close()
-            records = (json.loads(row[0]) or {}).get("records") if row else None
-            pending = {(source, _record_key(key)) for source, keys in (records or {}).items()
-                       for key in keys or ()}
             for handle in handles:
                 hit = record_of_handle(handle)
-                if hit is not None and (hit[0], _record_key(hit[1])) in pending:
+                if hit is not None and (hit[0], _record_key(hit[1])) in kept:
                     this = True
                     break
-        except (sqlite3.Error, ValueError, TypeError, AttributeError, KeyError):
+        except (ValueError, TypeError, AttributeError):
             this = None
+    whole = not withheld
     return m.DocumentsPending(
-        files=counts["pending"],
-        timed_out=counts.get("timed_out") if isinstance(counts.get("timed_out"), int) else 0,
-        records=sum(v for v in held.values() if isinstance(v, int)), this_record=this)
+        files=counts["pending"] if whole else None,
+        timed_out=(counts.get("timed_out") if isinstance(counts.get("timed_out"), int)
+                   else 0) if whole else None,
+        records=len(kept), this_record=this)
+
+
+def excluded_records(records: Mapping[str, Sequence[Any]], state_dir: Optional[Path],
+                     environ: Mapping[str, str]) -> set[tuple[str, str]]:
+    """The (source, record key) pairs of ``records`` that are an excluded person's: a mail
+    message of a mailbox the people exclusion does not clear (``Exclusion.identity_clear``
+    through the mail capture's directory), a SharePoint item of a OneDrive it does not
+    clear or whose drive the capture does not place. Undecided withholds."""
+    mail = [k for k in records.get("graph_mail") or () if isinstance(k, list) and k]
+    items = [k for k in records.get("sharepoint") or () if isinstance(k, list) and len(k) > 1]
+    if not mail and not items:
+        return set()
+    from integrations.people_exclusion import PeopleExclusion
+    from operating.chunking.permissions import Exclusion, onedrive_segment
+    directory: dict[str, str] = {}
+    domains: set[str] = set()
+    owners: dict[str, Optional[str]] = {}
+    state = Path(state_dir) if state_dir is not None else None
+    try:
+        if state is not None and mail and (state / "mail-capture" / "capture.db").is_file():
+            conn = sqlite3.connect(f"file:{state / 'mail-capture' / 'capture.db'}?mode=ro",
+                                   uri=True, timeout=1)
+            try:
+                for mailbox, upn, identities in conn.execute(
+                        "SELECT mailbox_id, upn, identities FROM mailboxes"):
+                    try:
+                        found = [upn, *json.loads(identities or "[]")]
+                    except ValueError:
+                        found = [upn]
+                    for address in found:
+                        if isinstance(address, str) and "@" in address:
+                            address = address.split(":", 1)[-1].lower()
+                            directory[address] = str(mailbox)
+                            domains.add(address.rsplit("@", 1)[1])
+            finally:
+                conn.close()
+        path = state / "sharepoint-capture" / "capture.db" if state is not None else None
+        if items and path is not None and path.is_file():
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            try:
+                for drive in {str(k[1]) for k in items}:
+                    row = conn.execute("SELECT json_extract(record, '$.original_url') FROM "
+                                       "items WHERE drive_id = ? LIMIT 1", (drive,)).fetchone()
+                    if row is not None:
+                        owners[drive] = onedrive_segment(row[0])
+            finally:
+                conn.close()
+    except sqlite3.Error:
+        directory, owners = {}, {}
+    exclusion = Exclusion(PeopleExclusion.from_env(environ), directory=directory,
+                          internal_domains=domains, drive_owners=owners)
+    out: set[tuple[str, str]] = set()
+    for key in mail:
+        if not exclusion.identity_clear(str(key[0])):
+            out.add(("graph_mail", _record_key(key)))
+    for key in items:
+        segment = owners.get(str(key[1]), None)
+        if str(key[1]) not in owners or segment is None \
+                or not exclusion.onedrive_clear(segment):
+            out.add(("sharepoint", _record_key(key)))
+    return out
 
 
 def with_search_coverage(sources: Sequence[m.FreshnessSource]) -> list[m.FreshnessSource]:

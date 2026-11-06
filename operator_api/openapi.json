@@ -2387,17 +2387,23 @@
       },
       "DocumentsPending": {
         "additionalProperties": false,
-        "description": "Documents the latest delta cycle has not read yet (its reading budget ran out or a\nfile timed out): the records holding them are current, their document fields pending;\nthe served generation's document objects stay served until a later cycle reads them.\nCounts only.",
+        "description": "Documents the latest delta cycle has not read yet (its reading budget ran out or a\nfile timed out): the records holding them are current, their document fields pending;\nthe served generation's document objects stay served until a later cycle reads them.\nCounts only, without the excluded people's mail or OneDrives.",
         "properties": {
           "files": {
-            "default": 0,
-            "description": "Files not read yet.",
-            "title": "Files",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Files not read yet; omitted when some are held by an excluded person's mail or OneDrive (the count could not leave theirs out).",
+            "title": "Files"
           },
           "records": {
             "default": 0,
-            "description": "Records whose document fields are pending.",
+            "description": "Records whose document fields are pending, not counting the excluded people's mail or OneDrives.",
             "title": "Records",
             "type": "integer"
           },
@@ -2414,10 +2420,16 @@
             "title": "This Record"
           },
           "timed_out": {
-            "default": 0,
-            "description": "Of those, files whose read timed out.",
-            "title": "Timed Out",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Of those, files whose read timed out; omitted with files.",
+            "title": "Timed Out"
           }
         },
         "title": "DocumentsPending",

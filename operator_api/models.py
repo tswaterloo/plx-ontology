@@ -203,10 +203,14 @@ class DocumentsPending(_Model):
     """Documents the latest delta cycle has not read yet (its reading budget ran out or a
     file timed out): the records holding them are current, their document fields pending;
     the served generation's document objects stay served until a later cycle reads them.
-    Counts only."""
-    files: int = Field(0, description="Files not read yet.")
-    timed_out: int = Field(0, description="Of those, files whose read timed out.")
-    records: int = Field(0, description="Records whose document fields are pending.")
+    Counts only, without the excluded people's mail or OneDrives."""
+    files: Optional[int] = Field(None, description="Files not read yet; omitted when some "
+                                 "are held by an excluded person's mail or OneDrive (the "
+                                 "count could not leave theirs out).")
+    timed_out: Optional[int] = Field(None, description="Of those, files whose read timed "
+                                     "out; omitted with files.")
+    records: int = Field(0, description="Records whose document fields are pending, not "
+                         "counting the excluded people's mail or OneDrives.")
     this_record: Optional[bool] = Field(
         None, json_schema_extra=_optional,
         description="On a record's page: whether this record's document fields are "

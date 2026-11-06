@@ -1540,7 +1540,7 @@ class Host:
         disk = self.build_plan(previous)
         if disk["free_bytes"] is None or disk["free_bytes"] < disk["needed_bytes"]:
             return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
-                    "disk": disk, "waits_for_bytes": disk["needed_bytes"]}
+                    "disk": disk, "waits_for_bytes": smallest_need(disk)}
         snapshot: dict[str, Any] | None = None
         with ExitStack() as stack:
             sources: dict[str, Any] = {}
@@ -1563,7 +1563,7 @@ class Host:
                                          on_timings=self._timings_sink(cycle_id))
             except DiskLow as low:   # the guard stopped it: nothing of it is left on disk
                 return {"state": "skipped", "generation": previous, "reasons": ["disk_low"],
-                        "disk": low.disk, "waits_for_bytes": low.disk.get("needed_bytes")}
+                        "disk": low.disk, "waits_for_bytes": smallest_need(low.disk)}
             except Exception as exc:  # noqa: BLE001 - the previous generation stays served
                 return {"state": "failed", "generation": previous, "reasons": [_reason(exc)]}
         inputs = {name: served[name]["generation"] for name in served}
@@ -1612,7 +1612,7 @@ class Host:
 
         try:
             need: dict[str, Any] | None = planned_need(
-                self.state_dir / PROJECTION_DIR, schema_digest=load_schema().digest,
+                self.state_dir / PROJECTION_DIR, schema=load_schema(),
                 changed_share=self._measured_share(previous))
         except Exception:  # noqa: BLE001 - unpredicted: the least, checked again later
             need = None
@@ -2193,6 +2193,17 @@ class Host:
         return done
 
 
+def smallest_need(disk: Mapping[str, Any]) -> int:
+    """The free bytes a skipped build waits for: the smallest mode that would run
+    (``disk.estimate.estimates``: each mode's estimate; the build takes whichever fits),
+    with the same margin and input copies as the check (``needed_bytes``)."""
+    estimate = disk.get("estimate") or {}
+    extra = int(disk["needed_bytes"]) - int(estimate.get("needed_bytes") or 0)
+    needs = [int(e["needed_bytes"]) for e in (estimate.get("estimates") or {}).values()
+             if isinstance(e, Mapping) and isinstance(e.get("needed_bytes"), int)]
+    return min(needs) + extra if needs else int(disk["needed_bytes"])
+
+
 def _measured(rows: Iterable[tuple[Any]], previous: int | None) -> float | None:
     """``Host._measured_share`` over the ledger's finished cycles, newest first."""
     for (raw,) in rows:
@@ -2256,7 +2267,12 @@ def _waited(rows: Iterable[tuple[Any, Any]]) -> dict[str, Any] | None:
             found = {"needed_bytes": needed, "free_bytes": disk.get("free_bytes"),
                      "checked_at": finished_at, "mode": None, "predicted": None}
         if estimate.get("mode") not in (None, "waiting"):   # the estimate the wait began on
-            found.update(mode=estimate.get("mode"), predicted=estimate.get("predicted"))
+            modes = {e.get("mode"): e.get("needed_bytes")
+                     for e in (estimate.get("estimates") or {}).values()
+                     if isinstance(e, dict) and isinstance(e.get("needed_bytes"), int)}
+            # the smallest mode that would run (``smallest_need``), else the one checked
+            mode = min(modes, key=modes.get) if modes else estimate.get("mode")
+            found.update(mode=mode, predicted=estimate.get("predicted"))
             break
     return found
 
