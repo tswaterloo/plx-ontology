@@ -1,27 +1,30 @@
-"""``python3 -m operating.embed follow --state D``: the search index follows the served data.
+"""``python3 -m operating.embed follow --state D --mode layers|generation``: the search
+index follows the served data.
 
-One run brings ``search.chunks`` and ``search.entities`` up to what readers are served,
-doing only what changed since the run before (its cursor, ``<state>/search/follow.json``
-unless ``--cursor``):
+Two runs that never wait on each other, each with its own lock and cursor, doing only
+what changed since its last run:
 
-1. **A new generation** (``projection/CURRENT`` names a content digest the cursor has not
-   indexed): one pass over it (``operating.embed run`` with ``--keep-index``): every
-   document chunked in ``--chunk-workers`` processes, mail of the last ``--window-days``
-   only, unchanged rows left as they are, rows whose source is gone deleted, people
-   entities written, duplicates re-clustered. The cursor records the digest only after
-   the pass ends, so a killed pass runs again (rows already written are unchanged then).
-2. **Each new row-delta layer** over that generation (``projection/delta/CURRENT.json``,
-   oldest first): the layer's own objects (``delta_owned``) chunked and written; the rows
-   an object had for its earlier version are deleted (``store.delete_replaced``); new
-   people are added (a stored person is left as it is). Recorded per layer, so a layer is
-   never indexed twice and a killed run continues with the next one.
-3. **Embedding**: pending rows, newest first, for at most ``--embed-seconds`` (each batch
-   is stored as it ends; the next run continues). Live searches keep the vector index.
+* ``--mode generation`` (one long run, no time limit; cursor
+  ``<state>/search/generation.json``): **a new generation** (``projection/CURRENT``
+  names a content digest the cursor has not indexed) gets one pass (``operating.embed run``
+  with ``--keep-index``): every document chunked in ``--chunk-workers`` processes, mail of
+  the last ``--window-days`` only, unchanged rows left as they are, rows whose source is
+  gone and that nobody wrote during the pass deleted, people entities written, duplicates
+  re-clustered. Then **the mail history** (``--history-days``): older mail, newest first,
+  one window at a time down to ``--history-floor``, each window recorded as it ends (rows
+  are written, nothing deleted; their vectors follow in the backfill's order).
+* ``--mode layers`` (short runs; cursor ``<state>/search/follow.json``): **each new
+  row-delta layer** over the served generation (``projection/delta/CURRENT.json``, oldest
+  first, at most ``--layer-seconds`` of new layers a run): the layer's own objects
+  (``delta_owned``) chunked and written, skipping any whose current version the index
+  already holds; the rows an object had for its earlier version deleted
+  (``store.delete_replaced``); new people added (a stored person is left as it is).
+  Recorded per layer. Then **embedding**: pending rows, newest first, for at most
+  ``--embed-seconds`` (left to ``operating.embed.backfill`` while one runs).
 
-The people exclusion is loaded first; without it nothing is written (exit 2). One run at
-a time (a lock beside the cursor); a run that finds another holding it ends at once.
-Prints one JSON report (counts and timings only). Exit: 0 done or nothing to do, 2
-refused, 1 failed.
+``--mode all`` does both in one run. The people exclusion is loaded first; without it
+nothing is written (exit 2). Prints one JSON report (counts and timings only). Exit: 0
+done or nothing to do, 2 refused, 1 failed.
 """
 
 from __future__ import annotations
@@ -129,8 +132,21 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any) -> dict[str,
     try:
         source = open_ro(layer)
         owned = frozenset(r[0] for r in source.execute("SELECT object_id FROM delta_owned"))
+        current = dict(source.execute(
+            "SELECT v.object_id, v.l1_handle FROM object_versions v JOIN delta_owned d ON "
+            "d.object_id = v.object_id WHERE v.superseded_at IS NULL").fetchall())
     except sqlite3.Error:
         return {"skipped": "not_a_delta_layer"}
+    # An object whose current version the index already holds is not chunked again: an
+    # hourly fold re-lists every change since the generation.
+    held = set(conn.execute(
+        "SELECT DISTINCT object_id, split_part(source_handle, '#', 1) FROM search.chunks "
+        "WHERE object_id = ANY(%s)", (sorted(owned),)).fetchall())
+    conn.commit()
+    indexed = {oid for oid, handle in held if current.get(oid) == handle}
+    owned_all, owned = owned, frozenset(owned - indexed)
+    # one version per object: an object held at its current version keeps no other
+    other_versions = st.delete_other_versions(conn, {oid: current[oid] for oid in indexed})
     counts = Counts()
     writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
     withheld = withheld_messages(source, exclusion)
@@ -146,14 +162,16 @@ def layer_pass(conn: Any, state: Path, layer: Path, exclusion: Any) -> dict[str,
     tally.take(noted(produce(state, layer, exclusion, counts, KINDS, None, objects=owned)),
                writer)
     report: dict[str, Any] = {
-        "owned": len(owned), "chunks": len(tally.seen), "inserted": writer.inserted,
+        "owned": len(owned_all), "already_indexed": len(indexed),
+        "other_versions_deleted": other_versions, "chunks": len(tally.seen), "inserted": writer.inserted,
         "updated": writer.updated, "unchanged": writer.unchanged,
         "replaced_deleted": st.delete_replaced(conn, produced, tally.seen),
         "withheld_units_deleted": writer.delete_units(counts.withheld),
         "sender_rows_purged": st.purge_objects(conn, withheld)}
     ecounts = Counts()
-    records = [e for e in entities(source, ecounts, exclusion=exclusion) if e.object_id in owned]
-    people = list(participants(source, ecounts, exclusion=exclusion))
+    records = [e for e in entities(source, ecounts, exclusion=exclusion)
+               if e.object_id in owned_all]
+    people = list(participants(source, ecounts, exclusion=exclusion)) if owned else []
     for start in range(0, max(len(records), len(people)), WRITE_BATCH):
         writer.write_entities(records[start:start + WRITE_BATCH])
         writer.write_entities(people[start:start + WRITE_BATCH], new_only=True)
@@ -167,54 +185,127 @@ def _free_gb(path: Path) -> float:
     return shutil.disk_usage(path).free / 1e9
 
 
-def follow(args: argparse.Namespace) -> dict[str, Any]:
-    state = Path(args.state)
-    cursor_path = Path(args.cursor) if args.cursor else state / CURSOR_NAME
-    report: dict[str, Any] = {"command": "follow", "started_at": _now()}
-    with held(cursor_path.with_name(cursor_path.name + ".lock")) as mine:
+GENERATION_CURSOR = Path("search") / "generation.json"
+
+
+def history_window(args: argparse.Namespace, store: Path, since: str, until: str,
+                   values: dict[str, str]) -> dict[str, Any]:
+    """Mail (and its attachments) sent in [since, until): chunked in parallel and written,
+    nothing deleted (an older window of the history; its vectors follow in the backfill's
+    order, newest first)."""
+    from concurrent.futures import ProcessPoolExecutor
+    import multiprocessing as mp
+    from .shards import chunk_shard
+    started = time.monotonic()
+    n = max(1, args.chunk_workers)
+    job = {"state": str(args.state), "projection": str(store), "kinds": ["attachment", "mail"],
+           "limit": None, "values": values, "dry": False,
+           "dsn": values.get("PLX_PG_DSN") or config.DEFAULT_DSN,
+           "window_since": since, "window_until": until}
+    with ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as pool:
+        parts = list(pool.map(chunk_shard, [(job, i, n) for i in range(n)]))
+    return {"since": since, "until": until,
+            "chunks": sum(len(p.seen) - len(p.outside) for p in parts),
+            "inserted": sum(p.written[0] for p in parts),
+            "updated": sum(p.written[1] for p in parts),
+            "seconds": round(time.monotonic() - started, 1)}
+
+
+def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[str, Any],
+                      values: dict[str, str], report: dict[str, Any]) -> None:
+    """Step 1 and the mail history, under their own lock and cursor (a long run that
+    never holds up the delta layers)."""
+    from .backfill import waited
+    path = state / GENERATION_CURSOR
+    with waited(path.with_name(path.name + ".lock"), 0) as mine:
         if not mine:
-            report["skipped"] = "another_follow_running"
-            return report
-        now_served = served(state)
-        if now_served is None:
-            report["skipped"] = "no_served_generation"
-            return report
-        values = config.settings()
-        exclusion = _exclusion(state, values)
-        if exclusion.unavailable and PERSON_KINDS & set(KINDS):
-            report["refused"] = f"people_exclusion_unavailable:{exclusion.unavailable}"
-            return report
-        cursor = load_cursor(cursor_path)
-        report["generation"] = now_served["generation"]
-        low = args.min_free_gb and _free_gb(state) < args.min_free_gb
+            report["generation_run"] = {"skipped": "another_generation_run"}
+            return
+        cursor = load_cursor(path)
+        if not cursor:
+            # a cursor written before the two runs were apart holds the generation done
+            old = load_cursor(Path(args.cursor) if args.cursor else state / CURSOR_NAME)
+            if old.get("generation_indexed_at"):
+                cursor = {k: old[k] for k in ("generation", "digest", "generation_indexed_at")
+                          if k in old}
         if cursor.get("digest") != now_served["digest"]:
-            if low:
+            if args.min_free_gb and _free_gb(state) < args.min_free_gb:
                 report["generation_pass"] = {"skipped": "disk_below_min_free"}
-                return report
+                return
             done = generation_pass(args, now_served["store"])
             report["generation_pass"] = done
             if done.get("refused"):
                 report["refused"] = done["refused"]
-                return report
-            cursor = {"generation": now_served["generation"], "digest": now_served["digest"],
-                      "generation_indexed_at": _now(), "layers": []}
+                return
+            cursor = dict(cursor, generation=now_served["generation"],
+                          digest=now_served["digest"], generation_indexed_at=_now())
+            save_cursor(path, cursor)
+        if not args.history_days or not args.window_days:
+            return
+        # the mail history, newest first, one window at a time (each recorded as it ends)
+        floor = dt.date.fromisoformat(args.history_floor)
+        until = dt.date.fromisoformat(cursor.get("history_until") or (
+            dt.date.today() - dt.timedelta(days=args.window_days)).isoformat())
+        report["history"] = []
+        while until > floor:
+            if args.min_free_gb and _free_gb(state) < args.min_free_gb:
+                report["history"].append({"stopped": "disk_below_min_free"})
+                return
+            since = max(floor, until - dt.timedelta(days=args.history_days))
+            report["history"].append(history_window(
+                args, now_served["store"], since.isoformat(), until.isoformat(), values))
+            until = since
+            cursor["history_until"] = until.isoformat()
+            save_cursor(path, cursor)
+            print(json.dumps({"history": report["history"][-1]}), flush=True)
+
+
+def layers_follow(args: argparse.Namespace, state: Path, now_served: dict[str, Any],
+                  values: dict[str, str], exclusion: Any, report: dict[str, Any]) -> None:
+    """Step 2 (oldest layer first, at most ``--layer-seconds`` of new layers a run, each
+    recorded as it ends) and step 3, under the follower's lock."""
+    from .backfill import running, waited
+    cursor_path = Path(args.cursor) if args.cursor else state / CURSOR_NAME
+    with waited(cursor_path.with_name(cursor_path.name + ".lock"), args.wait_seconds) as mine:
+        if not mine:
+            report["skipped"] = "another_follow_running"
+            return
+        cursor = load_cursor(cursor_path)
+        passed = load_cursor(state / GENERATION_CURSOR)
+        pass_done = passed.get("generation_indexed_at") \
+            if passed.get("digest") == now_served["digest"] else None
+        if cursor.get("digest") != now_served["digest"] or (
+                pass_done and cursor.get("after_pass") != pass_done):
+            # a new generation, or its pass just ended: its delta layers are indexed
+            # (again) from the first, so a version newer than the generation that the pass
+            # deleted as stale comes back and an older one beside it goes
+            cursor = dict(cursor, generation=now_served["generation"],
+                          digest=now_served["digest"], layers=[], after_pass=pass_done)
             save_cursor(cursor_path, cursor)
         conn = st.connect(values.get("PLX_PG_DSN") or config.DEFAULT_DSN)
         st.require_schema(conn)
         layers = delta_layers(state, now_served["digest"])
         indexed = [p for p in cursor.get("layers") or [] if p in layers]
         report["layers"] = {}
+        started = time.monotonic()
         for layer in layers:
             if layer in indexed or not Path(layer).is_file():
                 continue
+            if args.layer_seconds and time.monotonic() - started > args.layer_seconds:
+                report["layers_left"] = len([x for x in layers if x not in indexed])
+                break
             report["layers"][Path(layer).name] = layer_pass(conn, state, Path(layer), exclusion)
             indexed.append(layer)
             cursor["layers"] = indexed
             save_cursor(cursor_path, cursor)
-        wrote = "generation_pass" in report or any(
-            layer.get("inserted") or layer.get("updated") for layer in report["layers"].values())
+        report["layers_behind"] = len([x for x in layers if x not in indexed])
+        wrote = any(layer.get("inserted") or layer.get("updated")
+                    for layer in report["layers"].values())
+        low = args.min_free_gb and _free_gb(state) < args.min_free_gb
         if low:
             report["embed"] = {"skipped": "disk_below_min_free"}
+        elif running(state):
+            report["embed"] = {"skipped": "backfill_running"}   # it embeds, in turn
         elif args.embed_seconds and (wrote or cursor.get("pending_after") != 0):
             from .__main__ import embed
             report["embed"] = embed(conn, values, kinds=None, limit=None, order="recent",
@@ -228,6 +319,27 @@ def follow(args: argparse.Namespace) -> dict[str, Any]:
                 "SELECT kind, max(occurred_at) FROM search.chunks WHERE occurred_at <= now() "
                 "+ interval '1 hour' GROUP BY kind ORDER BY kind").fetchall()}
         conn.close()
+
+
+def follow(args: argparse.Namespace) -> dict[str, Any]:
+    state = Path(args.state)
+    report: dict[str, Any] = {"command": "follow", "mode": args.mode, "started_at": _now()}
+    now_served = served(state)
+    if now_served is None:
+        report["skipped"] = "no_served_generation"
+        return report
+    report["generation"] = now_served["generation"]
+    values = config.settings()
+    exclusion = _exclusion(state, values)
+    if exclusion.unavailable and PERSON_KINDS & set(KINDS):
+        report["refused"] = f"people_exclusion_unavailable:{exclusion.unavailable}"
+        return report
+    if args.mode in ("generation", "all"):
+        generation_follow(args, state, now_served, values, report)
+        if report.get("refused"):
+            return report
+    if args.mode in ("layers", "all"):
+        layers_follow(args, state, now_served, values, exclusion, report)
     return report
 
 
@@ -235,14 +347,25 @@ def parser() -> argparse.ArgumentParser:
     cores = os.cpu_count() or 8
     p = argparse.ArgumentParser(prog="python3 -m operating.embed follow")
     p.add_argument("--state", required=True)
+    p.add_argument("--mode", choices=("all", "layers", "generation"), default="all",
+                   help="layers: the delta layers and embedding (short runs); generation: "
+                        "a new generation's pass and the mail history (one long run)")
     p.add_argument("--cursor", help="the follow cursor (default <state>/search/follow.json)")
     p.add_argument("--window-days", type=int, default=30,
                    help="mail of the last N days in a generation pass (0: all mail)")
+    p.add_argument("--history-days", type=int, default=0,
+                   help="after the generation pass, index older mail N days at a time, "
+                        "newest first, down to --history-floor (0: no history)")
+    p.add_argument("--history-floor", default="2015-01-01")
+    p.add_argument("--layer-seconds", type=float, default=0.0,
+                   help="start no new delta layer after this long (0: all of them)")
     p.add_argument("--chunk-workers", type=int, default=max(1, cores // 2))
     p.add_argument("--workers", type=int, default=max(1, cores // 4),
                    help="embedding processes (each with PLX_EMBED_THREADS threads)")
     p.add_argument("--embed-seconds", type=float, default=900.0,
                    help="embed for at most this long per run (0: do not embed)")
+    p.add_argument("--wait-seconds", type=float, default=0.0,
+                   help="wait this long for a run holding the lock (a backfill slice)")
     p.add_argument("--min-free-gb", type=float, default=0.0,
                    help="write nothing heavy while the state disk has less free")
     return p

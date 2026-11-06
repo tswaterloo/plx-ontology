@@ -366,6 +366,83 @@ class FixtureChunkerTests(unittest.TestCase):
         self.assertEqual(counts.skipped["people_exclusion:sender"], 1)
         self.assertIn(f"teams:chat:{other}", counts.withheld)
 
+    def test_program_source_and_code_text_are_not_chunked_as_documents(self):
+        code = "#include <vector>\nnamespace rs {\n" + "  int frame_count = 0;\n" * 14 + "}\n"
+        for n, (name, text) in enumerate((
+                ("types.hpp", "Plain words in a header file name it as source code."),
+                ("notes.txt", code),
+                ("spec.pdf", "Carton spec: 350 gsm board, matte varnish, and the code\n"
+                             "int x = 0;\nis only quoted once in this document.\n" * 3),
+                ("export.txt", "sku;qty;price;\n" + "SOAP-1;12;3.40;\n" * 14))):
+            handle = f"sharepoint://drive-site/c{n}@1"
+            self.fx.obj(f"SharePointFile:c{n}", "SharePointFile", "sharepoint:drive-site",
+                        kind="sharepoint_file", handle=handle,
+                        text={"row.content_text": (handle, text)},
+                        values={"name": (name, "[]")})
+        chunks, counts = self.run_chunker(exclusion(drives={"drive-site": ""}))
+        self.assertEqual({c.object_id for c in chunks},
+                         {"SharePointFile:c2", "SharePointFile:c3"})
+        self.assertEqual((counts.skipped["not_a_document:program_file"],
+                          counts.skipped["not_a_document:code_text"]), (1, 1))
+
+    def test_a_card_or_bank_statement_is_marked_finance_and_pii_by_its_content(self):
+        texts = {
+            "s1": "Statement period Oct 1 - Oct 31. Previous balance 812.40. New balance "
+                  "1,020.15. Minimum payment 25.00 due Nov 21. Credit limit 5,000.",
+            "s2": "Please charge the deposit to Visa card 4532 0151 1283 0366, exp 09/28.",
+            "s3": "Invoice 1000111346: balance due 4,512.00, payment terms net 30, order "
+                  "4532015112830366, lot 22018837449911.",
+        }
+        for key, text in texts.items():
+            handle = f"sharepoint://drive-site/{key}@1"
+            self.fx.obj(f"SharePointFile:{key}", "SharePointFile", "sharepoint:drive-site",
+                        kind="sharepoint_file", handle=handle,
+                        text={"row.content_text": (handle, text)},
+                        values={"name": (f"{key}.pdf", "[]")})
+        chunks, counts = self.run_chunker(exclusion(drives={"drive-site": ""}))
+        marks = {c.object_id: tuple(c.markings) for c in chunks}
+        self.assertEqual(marks, {"SharePointFile:s1": ("finance", "pii"),
+                                 "SharePointFile:s2": ("finance", "pii"),
+                                 "SharePointFile:s3": ()})
+        self.assertEqual((counts.documents["marked_finance_pii:statement"],
+                          counts.documents["marked_finance_pii:card_number"]), (1, 1))
+
+    def test_a_meeting_is_chunked_unless_a_person_on_it_is_excluded(self):
+        staff = "staff.one@example-plx.com"
+        box = "0e0e0e0e-0000-4000-8000-0000000000b1"
+        for n, attendee in ((1, "buyer@customer-example.com"), (2, "gone@example-plx.com")):
+            oid = f"Meeting:m{n}"
+            handle = f"calendar-event://{box}/m{n}@1"
+            self.fx.obj(oid, "Meeting", f"meetings:calendar:{box}", handle=handle,
+                        kind="calendar_event",
+                        text={"row.body_preview": (handle, f"Agenda {n}: review the carton "
+                                                           "artwork proof and the ship date.")},
+                        values={"subject": ("Carton artwork review", "[]"),
+                                "start": ("2026-11-04T15:00:00Z", "[]"),
+                                "organizer": (json.dumps({"address": staff, "name": "S"}), "[]"),
+                                "attendees": (json.dumps([{"address": attendee,
+                                                           "name": "A"}]), "[]")})
+        handle = f"calendar-event://{box}/m3@1"     # no organiser address: no role
+        self.fx.obj("Meeting:m3", "Meeting", f"meetings:calendar:{box}", handle=handle,
+                    kind="calendar_event",
+                    text={"row.body_preview": (handle, "Agenda: carton artwork sign-off.")},
+                    values={"subject": ("Sign-off", "[]"),
+                            "organizer": (json.dumps({"name": "Room"}), "[]"),
+                            "attendees": (json.dumps([{"address": "buyer@customer-example.com",
+                                                       "name": "A"}]), "[]")})
+        excl = exclusion(directory={staff: "0e0e0e0e-0000-4000-8000-0000000000aa",
+                                    "gone@example-plx.com": EXCLUDED})
+        chunks, counts = self.run_chunker(excl)
+        m3 = [c for c in chunks if c.object_id == "Meeting:m3"]
+        self.assertNotIn("organised by", m3[0].header)
+        chunks = [c for c in chunks if c.object_id != "Meeting:m3"]
+        self.assertEqual([c.object_id for c in chunks], ["Meeting:m1"])
+        self.assertEqual(chunks[0].kind, "meeting")
+        self.assertEqual(chunks[0].occurred_at, "2026-11-04T15:00:00Z")
+        self.assertIn("Title: Carton artwork review", chunks[0].header)
+        self.assertNotIn("gone@", chunks[0].header + chunks[0].body)
+        self.assertEqual(counts.skipped["people_exclusion:meeting_person"], 1)
+
     def test_shards_partition_the_documents_and_teams_stay_in_shard_zero(self):
         for n in range(6):
             self.fx.obj(f"MCTask:T-{n}", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
@@ -615,6 +692,24 @@ class FixtureChunkerTests(unittest.TestCase):
         chunks = list(ProjectionChunker(conn, exclusion(), counts).chunks(since="2026-10-06"))
         self.assertEqual({c.object_id for c in chunks}, {"Email:new"})
         self.assertEqual(counts.skipped["before_window"], 3)
+
+    def test_a_history_window_reads_the_older_mail_and_leaves_the_newer(self):
+        box = "12345678-aaaa-bbbb-cccc-0000000000de"
+        for oid, sent in (("Email:jun", "2026-06-04"), ("Email:nov", "2026-11-03")):
+            self.email(oid, box, f"A message of {sent} about the soap order and cartons.")
+            self.fx.conn.execute("UPDATE object_versions SET recorded_at = "
+                                 "'2026-11-04T00:00:00Z' WHERE object_id = ?", (oid,))
+            self.fx.conn.execute("INSERT INTO object_values VALUES (?, 'received_at', ?, "
+                                 "'[]', NULL, 'h', 'row.received_at', 'text')",
+                                 (oid, sent + "T10:00:00Z"))
+        self.fx.done()
+        conn = open_ro(self.path)
+        self.addCleanup(conn.close)
+        counts = Counts()
+        chunks = list(ProjectionChunker(conn, exclusion(), counts).chunks(
+            since="2026-05-01", until="2026-10-06"))
+        self.assertEqual({c.object_id for c in chunks}, {"Email:jun"})
+        self.assertEqual(counts.skipped["after_window"], 1)
 
     def test_cross_unit_links_state_only_ids_the_text_names_and_never_labels(self):
         box = "12345678-aaaa-bbbb-cccc-0000000000aa"
@@ -1118,6 +1213,143 @@ class PostgresTests(unittest.TestCase):
             # one run at a time
             with fl.held(state / "search" / "follow.json.lock"):
                 self.assertEqual(fl.follow(args)["skipped"], "another_follow_running")
+            # an hourly fold lists the same change again: the version indexed is not re-read
+            fold = projection / "delta" / "delta-2.sqlite"
+            shutil.copy(layer, fold)
+            (projection / "delta" / "CURRENT.json").write_text(json.dumps(
+                {"format": "plx-delta/v1", "base_digest": "sha256:aaa", "store": str(fold),
+                 "layers": [{"store": str(fold), "owned": 1}]}))
+            again = fl.follow(args)["layers"]["delta-2.sqlite"]
+            self.assertEqual((again["already_indexed"], again["chunks"]), (1, 0))
+
+    def test_backfill_embeds_the_recent_and_the_undated_first_and_takes_turns(self):
+        from operating.embed import backfill as bf
+        now = dt.datetime.now(dt.timezone.utc)
+        rows = []
+        for n, (days, kind) in enumerate([(400, "mail"), (5, "mail"), (None, "record_text"),
+                                          (30, "teams"), (200, "sharepoint")]):
+            c = self.chunk(n, f"Distinct body {n} about cartons.", kind=kind)
+            at = None if days is None else (now - dt.timedelta(days=days)).isoformat()
+            rows.append(c.__class__(**{**c.__dict__, "occurred_at": at}))
+        self.st.ChunkWriter(self.conn).write(rows)
+        order = self.st.pending(self.conn, "m", order="backfill", recent_days=90)
+        sha = {r.content_sha: r.kind + str(i) for i, r in enumerate(rows)}
+        self.assertEqual([sha[s] for s in order],
+                         ["mail1", "teams3", "record_text2", "sharepoint4", "mail0"])
+        recent = self.st.pending(self.conn, "m", order="backfill", recent_days=90,
+                                 recent_only=True)
+        self.assertEqual([sha[s] for s in recent], ["mail1", "teams3", "record_text2"])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        state = Path(tmp.name)
+        self.assertFalse(bf.running(state))
+        with bf.waited(state / bf.BACKFILL_LOCK, 0) as mine:
+            self.assertTrue(mine)
+            self.assertTrue(bf.running(state))          # the follower leaves embedding
+            with bf.waited(state / bf.BACKFILL_LOCK, 0.2, poll=0.05) as second:
+                self.assertFalse(second)                # one backfill at a time
+        self.assertFalse(bf.running(state))
+
+    def test_a_pass_keeps_the_rows_another_run_wrote_while_it_ran(self):
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write([self.chunk(1, "Kept: this pass produced it."),
+                      self.chunk(2, "Gone: its source left before the pass.")])
+        started = self.conn.execute("SELECT now()").fetchone()[0]
+        self.conn.commit()
+        other = self.st.ChunkWriter(self.conn)
+        other.write([self.chunk(3, "A delta layer wrote this during the pass.")])
+        self.conn.execute("UPDATE search.chunks SET updated_at = now() + interval '1 second' "
+                          "WHERE object_id = 'O3'")
+        self.conn.commit()
+        writer = self.st.ChunkWriter(self.conn)
+        writer.write([self.chunk(1, "Kept: this pass produced it.")])
+        writer.delete_stale(["mail"], allow_shrink=True, written_before=started)
+        left = sorted(r[0] for r in self.conn.execute("SELECT object_id FROM search.chunks"))
+        self.assertEqual(left, ["O1", "O3"])
+
+    def test_backfill_slices_store_what_they_encoded_and_stop_on_time(self):
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor
+        from operating.embed import backfill as bf, models as md
+        rows = [self.chunk(n, f"Body {n} " + "x" * (n * 7)) for n in range(5)]
+        self.st.ChunkWriter(self.conn).write(rows)
+        dim = self.st.column_dim(self.conn)
+        shas = self.st.pending(self.conn, "fake", order="backfill")
+        with mock.patch.object(md, "_WORKER", md.Embedder(
+                "fake", dim, lambda texts: np.ones((len(texts), dim)))), \
+                ThreadPoolExecutor(2) as pool:
+            done, _ = bf.encode_sorted(self.conn, pool, "fake", dim, shas, call=2,
+                                       inflight_max=2, deadline=_time.monotonic() - 1)
+            self.assertEqual(done, set())                    # past its time: nothing
+            done, stored = bf.encode_sorted(self.conn, pool, "fake", dim, shas, call=2,
+                                            inflight_max=2, deadline=_time.monotonic() + 60)
+        self.assertEqual((done, stored), (set(shas), 5))
+        self.assertEqual(self.st.pending(self.conn, "fake"), [])
+        # entity names: short texts, embedded in their own phase
+        from operating.chunking.entities import Entity
+        self.st.ChunkWriter(self.conn).write_entities([Entity(
+            entity_id=f"e{n}", object_id=f"O{n}", type="supplier", name=f"Carton Co {n}",
+            alias=(), normalized=f"carton co {n}", audience_key="mail:box-a", markings=())
+            for n in range(3)])
+        name_dim = self.st.column_dim(self.conn, "entities", "name_embedding")
+        with mock.patch.object(md, "_WORKER", md.Embedder(
+                "fake", name_dim, lambda texts: np.ones((len(texts), name_dim)))), \
+                ThreadPoolExecutor(2) as pool:
+            got = bf.embed_names(self.conn, pool, "fake", name_dim,
+                                 deadline=_time.monotonic() + 60, inflight_max=2)
+        self.assertEqual(got, (3, 3))
+        self.assertEqual(self.st.pending_names(self.conn, "fake", 10), [])
+
+    def mc_version(self, n, version, body):
+        from operating.chunking import make_chunk
+        return make_chunk(kind="mc_task", parts=("mc:live/tasks/PRJ-X", f"T-{n}@{version}", "0"),
+                          source_handle=f"mc://live/tasks/T-{n}@{version}",
+                          object_id=f"MCTask:T-{n}", title=f"T-{n}", author_role=None,
+                          occurred_at=None, header="Source: x", body=body, linked_ids=[],
+                          audience_key="mc:live/tasks/PRJ-X", markings=())
+
+    def handles(self):
+        return sorted(r[0] for r in self.conn.execute(
+            "SELECT source_handle FROM search.chunks WHERE object_id = 'MCTask:T-1'"))
+
+    def test_a_layer_during_a_generation_pass_leaves_one_version_the_newest(self):
+        import time as _time
+        self.st.ChunkWriter(self.conn).write([self.mc_version(1, 1, "Task 1 is open.")])
+        started = self.conn.execute("SELECT now()").fetchone()[0]   # the pass starts
+        self.conn.commit()
+        _time.sleep(0.02)
+        layer = self.st.ChunkWriter(self.conn)                      # a layer: v3
+        layer.write([self.mc_version(1, 3, "Task 1 is cancelled.")])
+        self.st.delete_replaced(self.conn, [("MCTask:T-1", "mc_task")],
+                                [self.mc_version(1, 3, "x").chunk_id])
+        _time.sleep(0.02)
+        gen = self.st.ChunkWriter(self.conn)                        # the pass: its v2
+        gen.write([self.mc_version(1, 2, "Task 1 waits on cartons.")])
+        self.assertEqual(self.st.drop_overtaken(gen.conn, started), 1)
+        gen.delete_stale(["mc_task"], allow_shrink=True, written_before=started)
+        self.assertEqual(self.handles(), ["mc://live/tasks/T-1@3"])
+
+    def test_a_layer_run_after_a_pass_restores_the_newer_version_it_deleted(self):
+        from operating.embed import follow as fl
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        layer = Path(tmp.name) / "delta-1.sqlite"
+        fx = Fixture(layer)
+        fx.obj("MCTask:T-1", "MCTask", "mc:live/tasks/PRJ-X", kind="mc_task",
+               handle="mc://live/tasks/T-1@3",
+               text={"row.description": ("mc://live/tasks/T-1@3", "Task 1 is cancelled now.")})
+        fx.conn.execute("CREATE TABLE delta_owned (object_id TEXT PRIMARY KEY)")
+        fx.conn.execute("INSERT INTO delta_owned VALUES ('MCTask:T-1')")
+        fx.done()
+        # the pass left the generation's v2 alone (its stale deletion took a layer's v3)
+        self.st.ChunkWriter(self.conn).write([self.mc_version(1, 2, "Task 1 waits.")])
+        fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion())
+        self.assertEqual(self.handles(), ["mc://live/tasks/T-1@3"])
+        # a later fold lists v3 again (held, skipped) while a v2 row is back: it goes
+        self.st.ChunkWriter(self.conn).write([self.mc_version(1, 2, "Task 1 waits.")])
+        again = fl.layer_pass(self.conn, Path(tmp.name), layer, exclusion())
+        self.assertEqual((again["already_indexed"], again["other_versions_deleted"]), (1, 1))
+        self.assertEqual(self.handles(), ["mc://live/tasks/T-1@3"])
 
     def test_sender_purge_removes_an_excluded_senders_rows_in_any_unit(self):
         writer = self.st.ChunkWriter(self.conn)

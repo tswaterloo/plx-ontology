@@ -10,11 +10,10 @@ so a row the reader may not read never takes a slot of a retriever's list.
   of the candidates of an ambiguous entity.
 * ``dense``: pgvector HNSW kNN with iterative index scans (pgvector 0.8,
   ``hnsw.iterative_scan = relaxed_order``) so the permission filter keeps recall.
-* ``bm25``: Postgres full text with OR semantics (a tsquery of the question's lexemes
-  joined by ``|``, as ``websearch_to_tsquery`` reads ``a or b``: a document need not hold
-  every word; a lexeme in more than a quarter of the rows is left out while rarer ones
-  remain), candidates by ``ts_rank_cd``, then scored BM25 (k1 1.2, b 0.75) with document
-  frequencies counted over the rows this reader may read only.
+* ``bm25``: Okapi BM25 (k1 1.2, b 0.75) with OR semantics (a document need not hold every
+  word; a lexeme in more than a quarter of the rows is left out while rarer ones remain):
+  every readable row of each rare lexeme is a candidate, common lexemes come from the
+  column statistics, and candidates are ranked before any cut (``bm25``).
 * ``fuzzy``: trigram word similarity of the question's words to the chunk header (title,
   ids, what it is about): typo tolerance.
 
@@ -52,8 +51,6 @@ FUZZY_THRESHOLD = 0.5
 FUZZY_POOL = 3000
 COMMON_SHARE = 0.25
 COMMON_MIN_ROWS = 1000
-DF_CAP = 20000
-POOL_SCAN = 20000
 MAX_TERMS = 24
 # Chunks one source item (a document without its page, a message, a map) may hold in
 # one retriever's list, and how much deeper than its list a retriever reads to fill it:
@@ -240,93 +237,155 @@ def _lexemes(conn: Any, terms: Sequence[str]) -> list[str]:
         {"text": " ".join(terms), "codes": " ".join(codes)}).fetchall()]
 
 
-def _doc_freq(conn: Any, lexemes: Sequence[str], where: str, params: dict[str, Any]
-              ) -> dict[str, int]:
-    """Rows holding each lexeme, counted up to ``DF_CAP`` (a lexeme at the cap is common:
-    its exact count would read a large share of the table and barely moves its IDF)."""
-    return dict(conn.execute(
-        f"""SELECT l, (SELECT count(*) FROM (SELECT 1 FROM search.chunks c
-                       WHERE c.tsv @@ quote_literal(l)::tsquery AND {where}
-                       LIMIT {DF_CAP}) x)
-            FROM unnest(%(lexemes)s::text[]) AS l""",
-        dict(params, lexemes=list(lexemes))).fetchall())
+# A lexeme in at most this many readable rows is "rare": all of its rows are candidates,
+# read with its exact count and term frequencies in one index scan. Rarer than any word
+# Postgres keeps column statistics for (``most_common_elems``, about 1% of rows and up).
+RARE_CAP = 2000
 
 
-def _discriminating(df: Mapping[str, int], n: int) -> list[str]:
-    """The lexemes present, without those held by more than ``COMMON_SHARE`` of the rows
-    (an OR query on "order" matches nearly everything and says little) unless nothing
-    else is left; in a corpus under ``COMMON_MIN_ROWS`` rows every lexeme is kept."""
-    present = sorted(l for l, d in df.items() if d > 0)
-    if n < COMMON_MIN_ROWS:
-        return present   # a small corpus: every word still tells rows apart
-    rare = [l for l in present if df[l] <= COMMON_SHARE * n and df[l] < DF_CAP]
-    return rare or present
+class _Common:
+    """The table's most common lexemes and their row shares, from Postgres's own column
+    statistics of ``tsv`` (``pg_stats.most_common_elems``), kept 10 minutes: a common word
+    is never scanned to be counted."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held: dict[str, tuple[float, dict[str, float], float]] = {}
+
+    def get(self, conn: Any) -> tuple[dict[str, float], float]:
+        key = _db(conn)
+        now = time.monotonic()
+        with self._lock:
+            hit = self._held.get(key)
+            if hit is not None and now - hit[0] < 600:
+                return hit[1], hit[2]
+        row = conn.execute(
+            "SELECT most_common_elems::text::text[], most_common_elem_freqs FROM pg_stats "
+            "WHERE schemaname = 'search' AND tablename = 'chunks' AND attname = 'tsv'"
+        ).fetchone()
+        shares: dict[str, float] = {}
+        floor = 1.0
+        if row and row[0] and row[1]:
+            elems, freqs = list(row[0]), list(row[1])
+            shares = {e: float(f) for e, f in zip(elems, freqs[:len(elems)])}
+            floor = min(shares.values(), default=1.0)
+        with self._lock:
+            self._held[key] = (now, shares, floor)
+        return shares, floor
 
 
-# An OR query of lexemes: any one matches (never all of them).
-_OR_TSQUERY = ("array_to_string(ARRAY(SELECT quote_literal(l) FROM "
-               "unnest(%(lexemes)s::text[]) l), ' | ')::tsquery")
+COMMON = _Common()
+
+_COUNT_OF = f"""SELECT l, (SELECT count(*) FROM (SELECT 1 FROM search.chunks c
+                                WHERE c.tsv @@ quote_literal(l)::tsquery AND {PERM} {KINDS}
+                                LIMIT %(cap)s) x)
+                FROM unnest(%(scan)s::text[]) AS l"""
+_ROWS_OF = f"""SELECT l.lexeme, c.chunk_id, length(c.tsv),
+                   {_ITEM_KEY.replace("i.", "c.")},
+                   ARRAY(SELECT u.lexeme || ' ' || coalesce(array_length(u.positions, 1), 1)
+                         FROM unnest(c.tsv) u WHERE u.lexeme = ANY(%(lexemes)s::text[]))
+               FROM unnest(%(scan)s::text[]) AS l(lexeme),
+               LATERAL (SELECT c.chunk_id, c.tsv, c.source_handle FROM search.chunks c
+                        WHERE c.tsv @@ quote_literal(l.lexeme)::tsquery AND {PERM} {KINDS}
+                        LIMIT %(cap)s) c"""
 
 
 def bm25(conn: Any, scope: dict[str, Any], texts: Sequence[str], limit: int
          ) -> list[tuple[str, float]]:
-    """Okapi BM25 over the rows this reader may read: document frequencies, row count
-    and mean length are the readable rows', so a hidden row's words never shift a
-    visible row's score. Candidates are the rows holding ANY discriminating query
-    lexeme, the best ``BM25_POOL`` by ``ts_rank_cd`` (cover density), then scored."""
+    """Okapi BM25 over the rows this reader may read, ranked before anything is cut:
+
+    * a lexeme Postgres's column statistics hold as common (``COMMON``, 1% of the rows
+      or more) is never scanned; its document frequency is its share of the readable
+      rows (an aggregate of the column, never a hidden row's words);
+    * every other lexeme's readable rows are read in one index scan each, up to
+      ``RARE_CAP`` + 1: at most ``RARE_CAP`` is rare (its exact count over the readable
+      rows and every one of its rows a candidate, so a rare decisive token is never lost
+      to disk order), more is common (counted as between the cap and the statistics);
+    * only when the rare lexemes give fewer candidates than the pool are rows holding
+      every common lexeme added;
+    * every candidate is scored over all query lexemes; at most ``PER_ITEM`` chunks of
+      one source item are kept."""
     terms = words(texts)
     if not terms:
         return []
     lexemes = _lexemes(conn, terms)
     if not lexemes:
         return []
-    df = _doc_freq(conn, lexemes, f"{PERM} {KINDS}", scope)
     n, avgdl = STATS.get(conn, scope)
     n = max(n, 1)
-    keep = _discriminating(df, n)
-    if not keep:
-        return []
-    params = _params(scope, lexemes=keep, pool=max(BM25_POOL, limit * DEEP))
-    # Ranked among at most POOL_SCAN matching rows, so a query left with only common
-    # words stays bounded on a large table.
-    pool = conn.execute(
-        f"""SELECT c.chunk_id, length(c.tsv), {_ITEM_KEY.replace("i.", "c.")} FROM (
-                SELECT c.chunk_id, c.tsv, c.source_handle FROM search.chunks c
-                WHERE c.tsv @@ {_OR_TSQUERY} AND {PERM} {KINDS} LIMIT {POOL_SCAN}) c
-            ORDER BY ts_rank_cd(c.tsv, {_OR_TSQUERY}, 32) DESC, c.chunk_id
-            LIMIT %(pool)s""", params).fetchall()
-    if not pool:
-        return []
-    lengths = {r[0]: max(int(r[1]), 1) for r in pool}
-    item_of = {r[0]: r[2] for r in pool}
-    tf: dict[str, dict[str, int]] = {}
-    for chunk_id, lexeme, count in conn.execute(
-            """SELECT c.chunk_id, u.lexeme, coalesce(array_length(u.positions, 1), 1)
-               FROM search.chunks c, unnest(c.tsv) u
-               WHERE c.chunk_id = ANY(%(ids)s::text[]) AND u.lexeme = ANY(%(lexemes)s::text[])""",
-            {"ids": list(lengths), "lexemes": lexemes}).fetchall():
-        tf.setdefault(chunk_id, {})[lexeme] = int(count)
+    shares, floor = COMMON.get(conn)
+    total = max(_table_rows(conn), n)
+    common = {l: max(1, int(shares[l] * n)) for l in lexemes if l in shares}
+    scan = [l for l in lexemes if l not in common]
+    df: dict[str, int] = dict(common)
+    cand: dict[str, tuple[int, str, dict[str, int]]] = {}
+    if scan:
+        # first a capped count (the index and row visibility only), then the rows and term
+        # frequencies of the rare lexemes alone
+        counted = dict(conn.execute(_COUNT_OF, _params(scope, scan=scan, cap=RARE_CAP + 1)
+                                    ).fetchall())
+        rare_scan = [l for l in scan if 0 < int(counted.get(l) or 0) <= RARE_CAP]
+        for lexeme in scan:
+            got = int(counted.get(lexeme) or 0)
+            # common, though rarer than the statistics hold: between the two
+            df[lexeme] = got if got <= RARE_CAP else int(
+                math.sqrt(RARE_CAP * max(floor * total, RARE_CAP)))
+        if rare_scan:
+            for _lexeme, chunk_id, length, item, tfs in conn.execute(
+                    _ROWS_OF, _params(scope, lexemes=list(lexemes), scan=rare_scan,
+                                      cap=RARE_CAP)).fetchall():
+                cand[chunk_id] = (max(int(length), 1), item, {
+                    t.rsplit(" ", 1)[0]: int(t.rsplit(" ", 1)[1]) for t in tfs or ()})
+    pool = max(BM25_POOL, limit * DEEP)
+    present = [l for l in lexemes if df.get(l)]
+    if n >= COMMON_MIN_ROWS:
+        heavy = [l for l in present if df[l] > COMMON_SHARE * n]
+        if len(heavy) < len(present):
+            present = [l for l in present if l not in heavy]
+    rare = {l for l in present if df[l] <= RARE_CAP}
+    frequent = [l for l in present if l not in rare]
+    if len(cand) < pool and frequent:
+        both = " & ".join(f"'{l}'" for l in frequent)   # lexemes: no quote can occur
+        for chunk_id, length, item, tfs in conn.execute(
+                f"""SELECT c.chunk_id, length(c.tsv), {_ITEM_KEY.replace("i.", "c.")},
+                       ARRAY(SELECT u.lexeme || ' ' || coalesce(array_length(u.positions, 1), 1)
+                             FROM unnest(c.tsv) u WHERE u.lexeme = ANY(%(lexemes)s::text[]))
+                    FROM search.chunks c
+                    WHERE c.tsv @@ %(both)s::tsquery AND {PERM} {KINDS}
+                    LIMIT %(cap)s""",
+                _params(scope, lexemes=list(lexemes), both=both, cap=RARE_CAP)).fetchall():
+            cand.setdefault(chunk_id, (max(int(length), 1), item, {
+                t.rsplit(" ", 1)[0]: int(t.rsplit(" ", 1)[1]) for t in tfs or ()}))
+    scored_lexemes = set(present)
     scores = []
-    for chunk_id, length in lengths.items():
+    for chunk_id, (length, item, tfs) in cand.items():
         score = 0.0
-        for lexeme, freq in tf.get(chunk_id, {}).items():
+        for lexeme, freq in tfs.items():
+            if lexeme not in scored_lexemes:
+                continue
             d = int(df.get(lexeme) or 0)
             idf = math.log(1 + (n - d + 0.5) / (d + 0.5))
             score += idf * freq * (BM25_K1 + 1) / (
                 freq + BM25_K1 * (1 - BM25_B + BM25_B * length / avgdl))
         if score > 0:
-            scores.append((chunk_id, score))
+            scores.append((chunk_id, score, item))
     scores.sort(key=lambda kv: (-kv[1], kv[0]))
     kept: list[tuple[str, float]] = []
     per_item: dict[str, int] = {}
-    for chunk_id, score in scores:   # at most PER_ITEM chunks of one source item
-        item = item_of[chunk_id]
+    for chunk_id, score, item in scores:   # at most PER_ITEM chunks of one source item
         if per_item.get(item, 0) < PER_ITEM:
             per_item[item] = per_item.get(item, 0) + 1
             kept.append((chunk_id, score))
             if len(kept) >= limit:
                 break
     return kept
+
+
+def _table_rows(conn: Any) -> int:
+    """The table's row estimate (``pg_class.reltuples``), for the statistics' shares."""
+    row = conn.execute("SELECT reltuples FROM pg_class WHERE oid = 'search.chunks'::regclass"
+                       ).fetchone()
+    return max(int(row[0] or 0), 1) if row else 1
 
 
 def fuzzy(conn: Any, scope: dict[str, Any], question: str, limit: int

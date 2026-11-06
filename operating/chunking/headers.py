@@ -26,7 +26,7 @@ SYSTEMS = {"mail": "Email (Outlook)", "attachment": "Email attachment",
            "map_stage": "Process map", "original": "Case document",
            "teams": "Microsoft Teams", "mc_task": "Mission Control task",
            "portal_text": "Customer Portal record", "bc_text": "Business Central record",
-           "record_text": "Business record"}
+           "record_text": "Business record", "meeting": "Calendar meeting"}
 _LABELS = {"petra_po": "PO", "so_number": "SO", "ao_code": "AO", "mo_code": "MO",
            "lot_number": "Lot", "batch_code": "Batch", "item_code": "Item",
            "erp_item_code": "Item", "customer_erp_code": "Customer", "customer_po": "Customer PO",

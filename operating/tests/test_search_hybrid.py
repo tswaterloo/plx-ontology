@@ -92,6 +92,25 @@ class RerankTimeBoxTests(unittest.TestCase):
         scores, problem = boxed.score("q", ["p"] * 2, timeout=1.0)
         self.assertEqual((scores, problem), ([0.5, 0.5], None))
 
+    def test_a_timed_out_rerank_keeps_the_batches_it_finished(self):
+        import time as _time
+        from operating.search.models import TimeBoxed
+
+        class Partial:
+            def score(self, query, passages, should_stop=None, sink=None):
+                for start in range(0, len(passages), 2):
+                    if should_stop():
+                        raise TimeoutError("cancelled")
+                    _time.sleep(0.05)
+                    sink.extend([0.9 - start / 100] * 2)
+                return list(sink)
+
+        scores, problem = TimeBoxed(Partial()).score("q", ["p"] * 40, timeout=0.13)
+        self.assertGreaterEqual(len(scores), 2)
+        self.assertLess(len(scores), 40)
+        self.assertEqual(scores[:2], [0.9, 0.9])            # the best candidates first
+        self.assertEqual(problem, f"reranker_partial:{len(scores)}/40")
+
     def test_warm_loads_the_models_once_so_the_first_query_is_reranked(self):
         from operating.search import models, plug
 
@@ -302,6 +321,24 @@ class HybridSearchTests(unittest.TestCase):
         self.assertEqual(result.hidden, {"asked": False})
         self.assertNotIn("hidden", result.timings)
 
+    def test_bm25_keeps_every_row_of_a_rare_word_whatever_comes_first_on_disk(self):
+        unit = "mail:0e0e0e0e-0000-4000-8000-0000000000c5"
+        filler = [{"chunk_id": f"scan{n}#0", "source_handle": f"graph-mail://b/scan{n}@1",
+                   "kind": "mail", "header": "Source: mail", "audience_key": unit,
+                   "authority": 2, "body": f"The scanner shows box {n} on the dock scanner."}
+                  for n in range(12)]
+        target = {"chunk_id": "scanT#0", "source_handle": "graph-mail://b/scanT@1",
+                  "kind": "mail", "header": "Source: mail", "audience_key": unit,
+                  "authority": 2, "body": "Box for PO 5394 is not showing on the scanner."}
+        db = FixtureDb().__enter__()
+        self.addCleanup(db.__exit__, None, None, None)
+        db.add(filler + [target])     # the rows of common words written first
+        scope = {"allowed": [unit], "held": [], "kinds": None}
+        with psycopg.connect(db.dsn, autocommit=True) as conn, \
+                mock.patch.object(rt, "RARE_CAP", 3):     # "scanner" and "box" are common
+            ranked = rt.bm25(conn, scope, ["box for PO 5394 not showing on the scanner"], 5)
+        self.assertEqual(ranked[0][0], "scanT#0")
+
     def test_permission_filter_is_inside_every_retrievers_sql(self):
         """Rows the reader may not read (finance mailbox; a purchasing_prices marking
         the reader lacks) never reach Python from any retriever."""
@@ -487,6 +524,13 @@ class HybridSearchTests(unittest.TestCase):
         self.assertIn("reranker_timeout", timed.notes)
         self.assertEqual([h["chunk_id"] for h in timed.hits],
                          [h["chunk_id"] for h in plain.hits])
+        # Past the box with the best two scored: those two are reranked, the rest follow
+        half = mock.Mock()
+        half.score.return_value = ([0.0, 0.0], "reranker_partial:2/12")
+        part = self.run_search(question, who, reranker=half, weights=narrow, k=12)
+        self.assertIn("reranker_partial:2/12", part.notes)
+        self.assertEqual([h["signals"]["rerank"] is not None for h in part.hits][:3],
+                         [True, True, False])
 
     def test_authority_and_recency_follow_the_intent_weights(self):
         weights = load_weights()

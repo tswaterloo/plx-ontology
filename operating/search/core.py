@@ -231,10 +231,11 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             passages = [_passage(info[cid], weights.rerank_passage_chars) for cid, _ in top]
             scores, problem = reranker.score(query.question, passages,
                                              weights.rerank_timeout_s)
-            if scores is not None and len(scores) == len(top):
+            if scores is not None and 0 < len(scores) <= len(top):
+                # all of them, or (past the time box) the best candidates that finished
                 rerank_scores = {cid: min(max(float(s), 0.0), 1.0)
                                  for (cid, _), s in zip(top, scores)}
-            elif problem:
+            if problem:
                 notes.append(problem)
             timings["rerank"] = _ms(t)
         elif reranker is None:

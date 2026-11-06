@@ -40,7 +40,7 @@ from typing import Sequence
 # 2 email (and task systems), 1 chat.
 AUTHORITY = {"portal_text": 4, "bc_text": 4, "record_text": 4, "sharepoint": 3, "original": 3,
              "sheet_row": 3, "map_stage": 3, "mail": 2, "attachment": 2, "mc_task": 2,
-             "teams": 1}
+             "meeting": 2, "teams": 1}
 KINDS = tuple(sorted(AUTHORITY))
 # Body characters one chunk holds at most (about 400 tokens: retrieval quality and CPU
 # embedding cost both prefer short, whole units; a longer unit is split at structure).

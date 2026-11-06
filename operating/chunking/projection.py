@@ -35,15 +35,17 @@ from . import MIN_BODY, Chunk, make_chunk
 from . import headers as hd
 from .normalise import normalise
 from .permissions import Exclusion, family, parse_markings, valid_key
-from .split import is_workbook_text, mail_own_text, pack, sections, sheet_blocks
+from .sensitive import MARKS as SENSITIVE_MARKS, personal_financial
+from .split import (is_workbook_text, mail_own_text, not_a_document, pack, sections,
+                    sheet_blocks)
 
 # document_kind -> chunk kind (workbooks become sheet_row, maps map_stage, by content).
 DOCUMENT_KINDS = {"email": "mail", "attachment": "attachment", "sharepoint_file": "sharepoint",
                   "container_member": "attachment", "teams_message": "teams",
-                  "mc_task": "mc_task"}
+                  "mc_task": "mc_task", "calendar_event": "meeting"}
 # The object a shared version is chunked under: the captured item itself first.
 _PRIMARY = ("Email", "Attachment", "SharePointFile", "ContainerMember", "TeamsChatMessage",
-            "TeamsChannelMessage", "MCTask")
+            "TeamsChannelMessage", "MCTask", "Meeting")
 # Link types that lead from a captured item to the item it sits in (header context).
 _PARENT = {"Attachment.attached_to", "ContainerMember.in_attachment", "ContainerMember.in_file",
            "TeamsChatMessage.in_chat", "TeamsChannelMessage.in_channel"}
@@ -52,7 +54,7 @@ _META = ("id", "subject", "sender", "sent_at", "received_at", "conversation_id",
          "last_modified", "from", "created_at", "reply_to_id", "chat_id", "channel_id",
          "team_id", "title", "stage", "bucket", "task_id", "topic", "description",
          "display_name", "po_number", "order_number", "vendor_name", "lot_number", "code",
-         "erp_code")
+         "erp_code", "start", "organizer", "attendees", "is_cancelled")
 _NAME_PROPS = ("name", "vendor_name", "display_name", "title", "topic")
 _MAP_TITLE = re.compile(r"process[ _-]?map|\bmap\b|workflow|\bSOP\b|procedure", re.I)
 TEAMS_WINDOW = 4            # replies a Teams message carries with it
@@ -171,13 +173,16 @@ class ProjectionChunker:
     def documents(self, kinds: Sequence[str] | None = None,
                   shard: tuple[int, int] | None = None,
                   since: str | None = None,
-                  objects: frozenset[str] | None = None) -> list[_Doc]:
+                  objects: frozenset[str] | None = None,
+                  until: str | None = None) -> list[_Doc]:
         """The current captured versions holding text, grouped and keyed. ``shard`` (i,
         n): only the versions whose handle hashes to i of n (each process holds only its
         share in memory), every Teams message in shard 0. ``since`` (ISO date): mail
         versions recorded before it are left out (a message is recorded after it was
-        sent, so none sent since is lost; counted ``before_window``). ``objects``: only
-        the documents holding one of these objects (a row-delta layer's own)."""
+        sent, so none sent since is lost; counted ``before_window``). ``until`` (ISO date,
+        with ``since``): mail sent or received on or after it is left out too (an older
+        window of the mail history; counted ``after_window``). ``objects``: only the
+        documents holding one of these objects (a row-delta layer's own)."""
         wanted = None
         if kinds is not None:
             asked = set(kinds) | ({"sharepoint", "attachment"}
@@ -218,7 +223,7 @@ class ProjectionChunker:
                 row["document_kind"], row["sender_class"], row["markings"],
                 row["object_type"], row["audience_key"], row["version_markings"]))
         if since:
-            groups = self._inside_window(groups, since)
+            groups = self._inside_window(groups, since, until)
         if objects is not None:
             groups = {key: fields for key, fields in groups.items()
                       if any(f.object_id in objects for f in fields)}
@@ -231,8 +236,8 @@ class ProjectionChunker:
         out.sort(key=lambda d: (d.fields[0].document_kind, d.handle))
         return out
 
-    def _inside_window(self, groups: Mapping[tuple[str, str], list[_Field]], since: str
-                       ) -> dict[tuple[str, str], list[_Field]]:
+    def _inside_window(self, groups: Mapping[tuple[str, str], list[_Field]], since: str,
+                       until: str | None = None) -> dict[tuple[str, str], list[_Field]]:
         """The mail of ``groups`` sent or received on or after ``since`` (a message without
         a readable date is kept) and the attachments of the messages kept; every other
         document as given. A mailbox captured in one sweep records old mail recently, so
@@ -254,6 +259,9 @@ class ProjectionChunker:
             dates = [dated[f.object_id] for f in groups[key] if f.object_id in dated]
             if dates and max(dates)[:10] < since[:10]:
                 old.add(key[0])
+            elif until and dates and max(dates)[:10] >= until[:10]:
+                old.add(key[0])
+                self.counts.skip("after_window")
         out: dict[tuple[str, str], list[_Field]] = {}
         for key, fields in groups.items():
             if key[0] in old or (key[0].startswith(WINDOW_SCHEMES)
@@ -354,9 +362,10 @@ class ProjectionChunker:
 
     def chunks(self, kinds: Sequence[str] | None = None, limit: int | None = None,
                shard: tuple[int, int] | None = None, since: str | None = None,
-               objects: frozenset[str] | None = None) -> Iterator[Chunk]:
-        """``shard``, ``since`` and ``objects``: as ``documents``."""
-        docs = self.documents(kinds, shard, since, objects)
+               objects: frozenset[str] | None = None, until: str | None = None
+               ) -> Iterator[Chunk]:
+        """``shard``, ``since``, ``until`` and ``objects``: as ``documents``."""
+        docs = self.documents(kinds, shard, since, objects, until)
         teams = [d for d in docs if d.fields[0].document_kind == "teams_message"]
         other = [d for d in docs if d.fields[0].document_kind != "teams_message"]
         produced = 0
@@ -489,6 +498,7 @@ class ProjectionChunker:
                 continue
             texts[(f.citation, f.field_path)] = field_text(self.conn, f.field_id)
         full = "\n".join(texts.values())
+        self._mark_sensitive(doc, full)
         value = lambda prop, oid=primary: self._value(ctx, oid, prop, marks)  # noqa: E731
         parent = self._parent(ctx, primary)
         grand = self._parent(ctx, parent) if parent else None
@@ -496,8 +506,18 @@ class ProjectionChunker:
             yield from self._mail(doc, ctx, texts, full, value)
         elif kind == "mc_task":
             yield from self._mc(doc, ctx, texts, full, value)
+        elif kind == "meeting":
+            yield from self._meeting(doc, ctx, full, value)
         else:
             yield from self._file(doc, kind, ctx, texts, full, value, parent, grand)
+
+    def _mark_sensitive(self, doc: _Doc, text: str) -> None:
+        """A card or bank statement, or a text carrying a card or bank account number
+        (``sensitive.personal_financial``), is ``finance`` and ``pii`` in every chunk."""
+        reason = personal_financial(text)
+        if reason:
+            doc.markings = tuple(sorted(set(doc.markings) | set(SENSITIVE_MARKS)))
+            self.counts.documents[f"marked_finance_pii:{reason}"] += 1
 
     def _emit(self, doc: _Doc, kind: str, part: str, citation: str, title: str | None,
               date: str | None, role: str | None, about: str | None, where: str | None,
@@ -553,6 +573,48 @@ class ProjectionChunker:
             if chunk:
                 yield chunk
 
+    def _meeting(self, doc, ctx, full, value) -> Iterator[Chunk]:
+        """A calendar meeting's description, under its subject and start. Nothing of a
+        meeting whose organizer or any attendee the people exclusion does not clear (or
+        whose people cannot be read): a meeting with a person is about that person."""
+        people: list[str] = []
+        organizer_address = None
+        try:
+            organizer = json.loads(value("organizer") or "{}")
+            attendees = json.loads(value("attendees") or "[]")
+            for at, who in enumerate([organizer, *attendees]):
+                if not isinstance(who, Mapping):
+                    raise ValueError("person_unreadable")
+                who = who.get("email_address", who)
+                address = who.get("address") if isinstance(who, Mapping) else None
+                if address:
+                    people.append(str(address).lower())
+                    if at == 0:
+                        organizer_address = people[-1]
+        except (ValueError, TypeError, AttributeError):
+            self.counts.skip("people_exclusion:meeting_undecided")
+            return
+        if not all(self.exclusion.identity_clear(a) for a in people):
+            self.counts.skip("people_exclusion:meeting_person")
+            return
+        title = value("subject")
+        start = value("start")
+        # the organiser's role only from the organiser's own address, never an attendee's
+        role = hd.sender_role(organizer_address, None) if organizer_address else None
+        others = len(people) - (1 if organizer_address else 0)
+        about = (f"Calendar meeting organised by {role}" if role else "Calendar meeting") + (
+            f" with {others} attendees" if others > 0 else "") + (
+            ", cancelled" if str(value("is_cancelled") or "").lower() == "true" else "")
+        named = self._ids_and_names(ctx, doc, doc.objects, full)
+        citation = doc.fields[0].citation
+        for index, piece in enumerate(pack(full)):
+            chunk = self._emit(doc, "meeting", str(index), citation,
+                               title if isinstance(title, str) else None,
+                               start if isinstance(start, str) else None, role, about, None,
+                               piece, named)
+            if chunk:
+                yield chunk
+
     def message_sender_clear(self, ctx: Mapping[str, Any], doc: _Doc, mail: str | None
                              ) -> bool:
         """A mail-family file (attachment, container member) is chunked only when the
@@ -572,6 +634,10 @@ class ProjectionChunker:
         name = value("name") or value("path")
         path = value("path")
         date = value("last_modified")
+        reason = not_a_document(name if isinstance(name, str) else None, full)
+        if reason:
+            self.counts.skip(f"not_a_document:{reason}")
+            return
         context_title = None
         if parent is not None:
             mail = parent if ctx["values"].get(parent, {}).get("subject") else grand
@@ -665,6 +731,9 @@ class ProjectionChunker:
                                   for m in replies]
                 body = pack("\n\n".join(w for w in window if w))[0]
                 marks = parse_markings(doc.markings, *(m[1].markings for m in replies))
+                if marks is not None and personal_financial(body):
+                    marks = tuple(sorted(set(marks) | set(SENSITIVE_MARKS)))
+                    self.counts.documents["marked_finance_pii:teams"] += 1
                 parent = self._parent(ctx_all, doc.objects[0])
                 topic = (self._value(ctx_all, parent, "topic", doc.markings)
                          or self._value(ctx_all, parent, "display_name", doc.markings)

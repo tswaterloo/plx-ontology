@@ -280,3 +280,44 @@ def is_workbook_text(text: str) -> bool:
 
 
 __all__ = ["Section", "is_workbook_text", "mail_own_text", "pack", "sections", "sheet_blocks"]
+
+
+# Files that are not business documents: program source, build output and binaries, by
+# their file type, and any text that reads as program code whatever its name says. Their
+# words (identifiers, symbols) only crowd real documents out of search. (Text with few
+# letters is kept: CSV exports and forms full of blanks are business documents.)
+_PROGRAM_TYPES = frozenset("""
+a asm bat c cc class cmake cpp cs cxx dll dylib exe go gradle h hh hpp hxx java jar js jsx
+kt lib lua m mk mm o obj php pl ps1 py pyc pyd pyo r rb rs scala sh so swift ts tsx vb
+whl wasm""".split())
+_CODE_LINE = re.compile(
+    r"^\s*(#\s*(include|define|ifn?def|endif|pragma|import)\b|(import|from|package|using|"
+    r"namespace|template|typedef|struct|class|def|function|public|private|protected|static|"
+    r"const|var|let|return|if|for|while|switch|case|else)\b.*[;:{(]|//|/\*|\*/)"
+    r"|[;{}]\s*$")
+
+
+def not_a_document(name: str | None, text: str) -> str | None:
+    """Why a file's text is not chunked (``program_file``, ``code_text``), or None for a
+    document: by the file's type (its extension), then by the text itself (at least 12
+    lines of which 75% look like code; a document quoting some code keeps it)."""
+    if isinstance(name, str) and "." in name.rsplit("/", 1)[-1]:
+        ext = name.rsplit(".", 1)[-1].lower()
+        if ext in _PROGRAM_TYPES:
+            return "program_file"
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) >= 12 and not _delimited(lines) and \
+            sum(1 for line in lines if _CODE_LINE.search(line)) >= 0.75 * len(lines):
+        return "code_text"
+    return None
+
+
+def _delimited(lines: list[str]) -> bool:
+    """Rows of a delimiter-separated export (CSV with ``;``, ``,``, tab or ``|``): most
+    lines hold the same number, at least two, of one delimiter."""
+    for sep in (";", ",", "\t", "|"):
+        counts = [line.count(sep) for line in lines]
+        common = max(set(counts), key=counts.count)
+        if common >= 2 and counts.count(common) >= 0.6 * len(lines):
+            return True
+    return False

@@ -23,35 +23,36 @@ from operating.chunking.records import RecordChunker
 from . import store as st
 
 PERSON_KINDS = frozenset({"mail", "attachment", "sharepoint", "sheet_row", "map_stage",
-                          "original", "teams"})
+                          "original", "teams", "meeting"})
 WRITE_BATCH = 2000
 
 
-# A row-delta layer's own objects are chunked alone; a Teams message's chunk holds the
-# replies after it in its chat, which a layer does not carry, so Teams follow the
-# generation pass until the delta reads whole chats.
-LAYER_SKIPS = frozenset({"teams"})
+# A row-delta layer's own objects are chunked alone. A new Teams message is chunked with
+# the replies the layer holds after it (new ones too); an older message's window takes
+# its new replies at the next generation pass.
+LAYER_SKIPS: frozenset[str] = frozenset()
 
 
 def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
             kinds: Sequence[str], limit: int | None,
             shard: tuple[int, int] | None = None, since: str | None = None,
-            objects: frozenset[str] | None = None) -> Iterator[Chunk]:
+            objects: frozenset[str] | None = None, until: str | None = None
+            ) -> Iterator[Chunk]:
     """Every chunk of ``kinds`` (a limit is spread evenly over the kinds asked).
     ``shard`` (i, n): this process's share of the projection's documents; the record
     fields and the case originals (small) are shard 0's. ``objects``: a row-delta layer's
-    own objects, the only ones chunked (no Teams, no case originals: ``LAYER_SKIPS``)."""
+    own objects, the only ones chunked (no case originals; ``LAYER_SKIPS``)."""
     conn = open_ro(projection)
     per_kind = None if limit is None else max(1, math.ceil(limit / len(kinds)))
     projection_kinds = [k for k in kinds if k in {"mail", "attachment", "sharepoint", "sheet_row",
-                                                  "map_stage", "teams", "mc_task"}
+                                                  "map_stage", "teams", "mc_task", "meeting"}
                         and not (objects is not None and k in LAYER_SKIPS)]
     chunker = ProjectionChunker(conn, exclusion, counts)
     for kind in projection_kinds if per_kind is not None else [None]:
         asked = [kind] if kind else projection_kinds
         if asked:
             yield from chunker.chunks(asked, per_kind, shard=shard, since=since,
-                                      objects=objects)
+                                      objects=objects, until=until)
     if shard is not None and shard[0] != 0:
         return
     records = RecordChunker(conn, exclusion, counts)
@@ -60,7 +61,7 @@ def produce(state: Path, projection: Path, exclusion: Any, counts: Counts,
         for chunk in records.record_chunks(record_kinds, per_kind):
             if objects is None or chunk.object_id in objects:
                 yield chunk
-    if objects is not None:
+    if objects is not None or until is not None:
         return
     original_kinds = [k for k in kinds if k in {"original", "map_stage", "sheet_row"}]
     if original_kinds:
@@ -160,7 +161,8 @@ def chunk_shard(task: tuple[dict[str, Any], int, int]) -> _Tally:
     try:
         tally.take(produce(state, Path(job["projection"]), exclusion, tally.counts,
                            job["kinds"], job["limit"], shard=(index, total),
-                           since=job.get("window_since")), writer)
+                           since=job.get("window_since"), until=job.get("window_until")),
+                   writer)
     finally:
         if writer is not None:
             writer.conn.close()

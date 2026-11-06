@@ -100,10 +100,12 @@ class LocalReranker:
         self._load()
 
     def score(self, query: str, passages: Sequence[str],
-              should_stop: Callable[[], bool] | None = None) -> list[float]:
+              should_stop: Callable[[], bool] | None = None,
+              sink: list[float] | None = None) -> list[float]:
         """Relevance per passage, in batches of ``RERANK_BATCH``; ``should_stop`` is
         asked between batches (a timed-out call stops within one batch, so the worker is
-        free for the next query)."""
+        free for the next query); ``sink`` receives each batch's scores as it ends (what
+        a timed-out call finished still counts)."""
         if not passages:
             return []
         model = self._load()
@@ -116,6 +118,8 @@ class LocalReranker:
             scores = model.predict([(query, p) for p in batch], batch_size=len(batch),
                                    convert_to_numpy=True)
             out.extend(float(x) for x in scores)
+            if sink is not None:
+                sink.extend(float(x) for x in scores)
         return out
 
 
@@ -157,7 +161,8 @@ class OnnxReranker:
         self._load()
 
     def score(self, query: str, passages: Sequence[str],
-              should_stop: Callable[[], bool] | None = None) -> list[float]:
+              should_stop: Callable[[], bool] | None = None,
+              sink: list[float] | None = None) -> list[float]:
         import numpy as np
         if not passages:
             return []
@@ -172,7 +177,10 @@ class OnnxReranker:
             logits = session.run(None, {
                 "input_ids": enc["input_ids"].astype(np.int64),
                 "attention_mask": enc["attention_mask"].astype(np.int64)})[0][:, 0]
-            out.extend(float(x) for x in 1.0 / (1.0 + np.exp(-logits)))
+            batch_scores = [float(x) for x in 1.0 / (1.0 + np.exp(-logits))]
+            out.extend(batch_scores)
+            if sink is not None:
+                sink.extend(batch_scores)
         return out
 
 
@@ -201,14 +209,22 @@ class TimeBoxed:
 
     def score(self, query: str, passages: Sequence[str], timeout: float
               ) -> tuple[list[float] | None, str | None]:
+        """The scores of ``passages`` (best candidates first), or None and why. Past
+        ``timeout`` the scores of the batches already finished come back (a prefix, with
+        ``reranker_partial``): on a busy host the top candidates are still reranked."""
         if getattr(self.reranker, "loaded", True) is False:
             self.warm()   # loads in the background; this query ranks without it
             return None, "reranker_loading"
         stop = threading.Event()
+        done: list[float] = []
         with self._lock:
             if self._running is not None and not self._running.done():
                 return None, "reranker_busy"
-            if "should_stop" in inspect.signature(self.reranker.score).parameters:
+            takes = inspect.signature(self.reranker.score).parameters
+            if "sink" in takes:
+                future = self._pool.submit(self.reranker.score, query, list(passages),
+                                           stop.is_set, done)
+            elif "should_stop" in takes:
                 future = self._pool.submit(self.reranker.score, query, list(passages),
                                            stop.is_set)
             else:
@@ -218,6 +234,9 @@ class TimeBoxed:
             return future.result(timeout=timeout), None
         except cf.TimeoutError:
             stop.set()   # the worker stops after its current batch
+            finished = list(done)
+            if finished:
+                return finished, f"reranker_partial:{len(finished)}/{len(passages)}"
             return None, "reranker_timeout"
         except Exception as exc:  # noqa: BLE001 - the query ranks without it
             return None, "reranker_error:" + type(exc).__name__

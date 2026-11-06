@@ -8,7 +8,8 @@ and a cost/time estimate; nothing is written. Prints one JSON report (counts and
 only: never text, never an id of an excluded person, never a key).
 
 Other commands: ``embed`` (only embed pending rows), ``dedup`` (only re-cluster),
-``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``).
+``follow`` (follow the served generation and its row deltas: ``operating.embed.follow``),
+``backfill`` (embed the whole pending backlog beside it: ``operating.embed.backfill``).
 Exit codes: 0 done, 2 refused (people exclusion unavailable, remote embedding not
 allowed, schema missing), 1 failed.
 """
@@ -98,6 +99,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             report["purged"]["sender_withheld_objects"] = len(withheld)
             report["purged"]["sender_rows"] = st.purge_objects(conn, withheld)
         writer = st.ChunkWriter(conn, unit_of=lambda key: unit_row(key, exclusion))
+        pass_started = conn.execute("SELECT now()").fetchone()[0]
+        conn.commit()
     projection = _projection_path(state, args.projection)
     shards = max(1, int(getattr(args, "chunk_workers", 1) or 1))
     window = getattr(args, "window_days", None)
@@ -166,8 +169,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                        "withheld_units_deleted": writer.delete_units(counts.withheld)}
     full = args.limit is None
     if full:
+        report["overtaken_deleted"] = st.drop_overtaken(writer.conn, pass_started)
         report["stale"] = writer.delete_stale(kinds, allow_shrink=args.allow_shrink,
-                                              keep_before=since)
+                                              keep_before=since, written_before=pass_started)
     if not args.no_entities:
         ecounts = Counts()
         ebatch: list[Any] = []
@@ -314,6 +318,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv[:1] == ["follow"]:
         from .follow import main as follow_main
         return follow_main(argv[1:])
+    if argv[:1] == ["backfill"]:
+        from .backfill import main as backfill_main
+        return backfill_main(argv[1:])
     parser = argparse.ArgumentParser(prog="python3 -m operating.embed")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("reindex", help="rebuild the chunks' HNSW index (after a bulk load)")

@@ -209,15 +209,21 @@ class ChunkWriter:
         return n
 
     def delete_stale(self, kinds: Sequence[str], *, allow_shrink: bool = False,
-                     keep_before: str | None = None) -> dict[str, Any]:
+                     keep_before: str | None = None, written_before: Any = None
+                     ) -> dict[str, Any]:
         """Delete rows of ``kinds`` this full pass did not produce (module docstring).
         ``keep_before`` (ISO date, a windowed pass): mail rows dated before it, or
-        undated, were not read and are kept."""
+        undated, were not read and are kept. ``written_before`` (the pass's start): a row
+        another run wrote while the pass ran (a delta layer's) is newer than the pass and
+        kept."""
         out: dict[str, Any] = {}
         kept = ("" if not keep_before else
                 " AND NOT (c.source_handle LIKE ANY(%(windowed)s) AND (c.occurred_at IS NULL "
                 "OR c.occurred_at < %(before)s::date))")
-        params = {"windowed": [f"{s}%" for s in WINDOW_SCHEMES], "before": keep_before}
+        if written_before is not None:
+            kept += " AND c.updated_at < %(written_before)s"
+        params = {"windowed": [f"{s}%" for s in WINDOW_SCHEMES], "before": keep_before,
+                  "written_before": written_before}
         for kind in kinds:
             total, stale = self.conn.execute(
                 "SELECT count(*), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM seen_chunks "
@@ -250,6 +256,38 @@ class ChunkWriter:
                 "seen_entities s WHERE s.entity_id = e.entity_id)", (etype,)).rowcount}
         self.conn.commit()
         return out
+
+
+def drop_overtaken(conn: Any, written_before: Any) -> int:
+    """At the end of a generation pass (its ``seen_chunks`` on ``conn``): delete the rows
+    the pass wrote for an object of which another run (a delta layer, newer than the
+    generation) wrote a different version while the pass ran. One version per object,
+    the newest; a pass never leaves its older version beside a layer's."""
+    n = conn.execute(
+        "DELETE FROM search.chunks g USING seen_chunks s WHERE g.chunk_id = s.chunk_id "
+        "AND g.updated_at >= %(t)s AND g.object_id IS NOT NULL AND EXISTS (SELECT 1 FROM "
+        "search.chunks l WHERE l.object_id = g.object_id AND l.kind = g.kind AND "
+        "l.updated_at >= %(t)s AND split_part(l.source_handle, '#', 1) <> "
+        "split_part(g.source_handle, '#', 1) AND NOT EXISTS (SELECT 1 FROM seen_chunks s2 "
+        "WHERE s2.chunk_id = l.chunk_id))", {"t": written_before}).rowcount
+    conn.commit()
+    return n
+
+
+def delete_other_versions(conn: Any, current: dict[str, str]) -> int:
+    """Rows of each object in ``current`` (object id -> its current version handle) that
+    cite another version of it: a layer that finds an object already indexed at its
+    current version still leaves no older one beside it. Case originals are their own."""
+    if not current:
+        return 0
+    ids = sorted(current)
+    n = conn.execute(
+        "DELETE FROM search.chunks c USING unnest(%s::text[], %s::text[]) AS v(oid, handle) "
+        "WHERE c.object_id = v.oid AND split_part(c.source_handle, '#', 1) <> v.handle "
+        "AND c.source_handle NOT LIKE 'original://%%'",
+        (ids, [current[i] for i in ids])).rowcount
+    conn.commit()
+    return n
 
 
 def delete_replaced(conn: Any, produced: Iterable[tuple[str, str]], keep: Iterable[str]
@@ -329,25 +367,38 @@ PRIORITY = ("map_stage", "original", "sharepoint", "sheet_row", "teams", "mc_tas
 
 
 def pending(conn: Any, model: str, kinds: Sequence[str] | None = None,
-            limit: int | None = None, order: str = "recent") -> list[str]:
+            limit: int | None = None, order: str = "recent", recent_days: int = 90,
+            recent_only: bool = False) -> list[str]:
     """Content hashes still to embed with ``model``. ``recent``: newest first, system of
     record and documents before chat at equal dates. ``priority``: by ``PRIORITY`` kind
-    (a hash shared by kinds takes its best), newest first within a kind."""
+    (a hash shared by kinds takes its best), newest first within a kind. ``backfill``:
+    every text dated in the last ``recent_days`` and every undated record text first
+    (newest first, the undated after), then the rest, newest first; ``recent_only``: the
+    first part alone."""
     where = "(embedding IS NULL OR embed_model IS DISTINCT FROM %s)"
     params: list[Any] = [model]
     if kinds:
         where += " AND kind = ANY(%s)"
         params.append(list(kinds))
+    old = ("bool_and(occurred_at IS NOT NULL AND occurred_at < now() - "
+           "make_interval(days => %s))")
+    having = ""
+    if recent_only:
+        having = f" HAVING NOT {old}"
+        params.append(int(recent_days))
     if order == "priority":
         ranking = ("min(coalesce(array_position(%s::text[], kind), 99)), "
                    "max(occurred_at) DESC NULLS LAST, content_sha")
         params.append(list(PRIORITY))
     elif order == "recent":
         ranking = "max(occurred_at) DESC NULLS LAST, max(authority) DESC, content_sha"
+    elif order == "backfill":
+        ranking = f"{old}, max(occurred_at) DESC NULLS LAST, max(authority) DESC, content_sha"
+        params.append(int(recent_days))
     else:
         raise ValueError(f"embed_order_unknown:{order}")
-    sql = f"SELECT content_sha FROM search.chunks WHERE {where} GROUP BY content_sha " \
-          f"ORDER BY {ranking}"
+    sql = f"SELECT content_sha FROM search.chunks WHERE {where} GROUP BY content_sha" \
+          f"{having} ORDER BY {ranking}"
     if limit is not None:
         sql += " LIMIT %s"
         params.append(limit)
@@ -412,3 +463,22 @@ __all__ = ["ChunkWriter", "SchemaMissing", "bodies", "column_dim", "connect", "p
            "purge_excluded", "purge_objects",
            "require_schema", "reuse_embeddings", "store_embeddings", "texts_for",
            "vector_text", "write_groups"]
+
+
+def pending_names(conn: Any, model: str, limit: int) -> list[tuple[str, str]]:
+    """(entity_id, name) of entities whose name has no vector of ``model`` yet."""
+    return [(r[0], r[1]) for r in conn.execute(
+        "SELECT entity_id, name FROM search.entities WHERE name IS NOT NULL AND name <> '' "
+        "AND (name_embedding IS NULL OR name_embed_model IS DISTINCT FROM %s) "
+        "ORDER BY entity_id LIMIT %s", (model, limit)).fetchall()]
+
+
+def store_name_embeddings(conn: Any, model: str, dim: int, ids: Sequence[str],
+                          vectors: np.ndarray) -> int:
+    texts = [vector_text(v, dim) for v in vectors]
+    n = conn.execute(
+        f"UPDATE search.entities e SET name_embedding = u.vec::halfvec({dim}), "
+        "name_embed_model = %s FROM unnest(%s::text[], %s::text[]) AS u(id, vec) "
+        "WHERE e.entity_id = u.id", (model, list(ids), texts)).rowcount
+    conn.commit()
+    return n
