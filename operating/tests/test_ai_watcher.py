@@ -269,7 +269,59 @@ class MailTest(World):
                                     "max_chars": aw.READ_CHARS}), aw.reads_for(batch))
 
 
+    def test_an_excluded_colleagues_mail_teaches_nothing(self) -> None:
+        """With the real people exclusion (made-up ids and addresses): what an excluded
+        colleague sent, even as a copy in another mailbox, teaches no correspondent; a
+        colleague's own mail does. Digests are salted per store, the store is 0600."""
+        import os
+        from integrations.people_exclusion import PeopleExclusion
+        excluded_oid = "22222222-2222-4222-8222-222222222222"
+        pat_oid = "33333333-3333-4333-8333-333333333333"
+        guard = PeopleExclusion([excluded_oid])
+        guard.attach_directory([(excluded_oid, "ex@own.example", []),
+                                (pat_oid, "pat@own.example", [])])
+        self.base().build(self.served)
+        rows = Rows()
+        for n, sender, to in ((50, "ex@own.example", "quiet@partner.example"),
+                              (51, "pat@own.example", "buyer@customer.example")):
+            rows.obj(f"Email:fx:{n}", "Email", f"graph-mail://{pat_oid}/msg-{n}@v1",
+                     {"sent_at": ("timestamp", "2026-10-20T10:00:00Z"),
+                      "sender": ("text", sender), "to_addresses": ("text", to)},
+                     digest=f"e{n}", recorded=RECENT)
+        layer = make_layer(self.state / "projection" / "mail.sqlite", rows,
+                           [r["object_id"] for r in rows.rows["objects"]], self.served)
+        publish(self.served, [layer])
+        with closing(aw.open_store(self.watch)) as ws:
+            aw.discover(ws, self.served, now=NOW, guard=guard)
+            salt = aw.key_salt(ws)
+            learned = {r[0] for r in ws.execute("SELECT key FROM correspondents")}
+        self.assertEqual(learned, {aw._key("buyer@customer.example", salt),
+                                   aw._key("@customer.example", salt)})
+        # a store that has to learn again (a new salt) learns the layers it already saw
+        with closing(aw.open_store(self.watch)) as ws:
+            ws.execute("DELETE FROM correspondents")
+            ws.execute("DELETE FROM learned")
+            self.assertEqual(aw.discover(ws, self.served, now=NOW, guard=guard)["layers"], 0)
+            self.assertEqual({r[0] for r in ws.execute("SELECT key FROM correspondents")},
+                             learned)
+        self.assertNotIn(aw._key("quiet@partner.example", salt), learned)
+        self.assertNotEqual(aw._key("buyer@customer.example", salt),
+                            aw._key("buyer@customer.example", b"another store"))
+        self.assertEqual(os.stat(aw.store_path(self.watch)).st_mode & 0o777, 0o600)
+
+
 class PickTest(unittest.TestCase):
+    def test_within_a_tier_the_message_that_ages_out_first_is_read_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, closing(aw.open_store(Path(tmp))) as ws:
+            ws.execute("INSERT INTO correspondents VALUES ('k1', 1, 'x')")
+            for n, at in ((1, "2026-10-20T11:00:00"), (2, "2026-10-19T13:00:00"),
+                          (3, "2026-10-20T11:30:00")):
+                queued(ws, f"Email:fx:{n}", "Email", mail(n), event=at,
+                       traits={"sender": f"s{n}", "parties": ["k1"] if n < 3 else ["k9"]})
+            batch = aw.pick(ws, now=NOW, max_reads=12)
+        self.assertEqual([r["object_id"] for r in batch["entries"]],
+                         ["Email:fx:2", "Email:fx:1", "Email:fx:3"])
+
     def test_bulk_runs_are_one_line_and_the_budget_holds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, closing(aw.open_store(Path(tmp))) as ws:
             for n in range(30):   # one recompute: same type, same properties
@@ -385,6 +437,10 @@ class ProposalTest(unittest.TestCase):
         self.assertEqual(item["gate"], "not_passed:statement_unsupported")
         self.assertIn("statement_unsupported", item["refusals"])
         self.assertIn("retry", item)
+
+    def test_a_date_with_an_abbreviated_month_is_one_sentence(self) -> None:
+        self.assertEqual(aw._sentences("The holiday runs Jan. 30th to Feb. 14th. Order now."),
+                         ["The holiday runs Jan. 30th to Feb. 14th.", "Order now."])
 
     def test_a_session_cut_short_keeps_what_its_gate_passed(self) -> None:
         events = [gate_event("Hold on batch", "The batch is held.",
@@ -694,6 +750,55 @@ class ReadOnlyTest(unittest.TestCase):
                  {"name": "plx.act"}, {"name": "plx.send_mail"}, {"name": "plx.approve"}],
                 case_tools=agent.case_tools, proposals=agent.proposals)
             self.assertEqual(allowed, ["plx.read", "plx.case_get"])
+
+
+class IsolatedStateTest(unittest.TestCase):
+    def test_a_dry_run_state_writes_nothing_of_the_real_one(self) -> None:
+        """Small files and stores are copies, a large rollback store a hard link (what is
+        kept beside it lands beside the link), a WAL store and a large subtree symbolic
+        links; the watcher's own directory is not carried; the real state is unchanged."""
+        import os
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            real, scratch = Path(tmp) / "real", Path(tmp) / "scratch"
+            (real / "projection").mkdir(parents=True)
+            (real / "ai-watcher").mkdir()
+            (real / "ai-watcher" / "switch.json").write_text('{"state": "on"}')
+            (real / "label.json").write_text("{}")
+            big = real / "projection" / "ontology.sqlite"
+            with closing(sqlite3.connect(big)) as conn:
+                conn.execute("CREATE TABLE t (v)")
+                conn.executemany("INSERT INTO t VALUES (?)", [("x" * 500,)] * 50)
+                conn.commit()
+            with closing(sqlite3.connect(real / "projection" / "log.sqlite")) as conn:
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute("CREATE TABLE t (v)")
+                conn.executemany("INSERT INTO t VALUES (?)", [("y" * 500,)] * 50)
+                conn.commit()
+            with closing(sqlite3.connect(real / "small.sqlite")) as conn:
+                conn.execute("CREATE TABLE t (v)")
+                conn.commit()
+            (real / "blobs" / "ab").mkdir(parents=True)
+            for n in range(5):
+                (real / "blobs" / "ab" / f"{n}").write_text("blob")
+            with mock.patch.object(aw, "ISOLATE_DIR_ENTRIES", 4), \
+                    mock.patch.object(aw, "ISOLATE_COPY_SMALL", 1024):
+                aw.isolated_state(real, scratch, copy_bytes=8192)
+            linked = scratch / "projection" / "ontology.sqlite"
+            self.assertFalse(linked.is_symlink())
+            self.assertEqual(os.stat(linked).st_ino, os.stat(big).st_ino)
+            self.assertTrue((scratch / "projection" / "log.sqlite").is_symlink())
+            self.assertTrue((scratch / "blobs").is_symlink())
+            self.assertFalse((scratch / "ai-watcher").exists())
+            with closing(sqlite3.connect(scratch / "small.sqlite")) as conn:
+                conn.execute("INSERT INTO t VALUES (1)")
+                conn.commit()
+            (scratch / "label.json").write_text('{"changed": true}')
+            with closing(sqlite3.connect(real / "small.sqlite")) as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM t").fetchone()[0], 0)
+            self.assertEqual((real / "label.json").read_text(), "{}")
+            with self.assertRaises(ValueError):
+                aw.isolated_state(real, real / "inside")
 
 
 class Killed(BaseException):

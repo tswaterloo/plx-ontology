@@ -87,10 +87,12 @@ from contextlib import closing, contextmanager
 import datetime as dt
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import sys
 import time
@@ -251,6 +253,8 @@ CREATE TABLE IF NOT EXISTS message_keys (key TEXT PRIMARY KEY, object_id TEXT NO
   at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS correspondents (key TEXT PRIMARY KEY, n INTEGER NOT NULL,
   at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS learned (store TEXT NOT NULL, base_digest TEXT NOT NULL,
+  at TEXT NOT NULL, PRIMARY KEY (store, base_digest));
 CREATE TABLE IF NOT EXISTS item_states (item_id TEXT NOT NULL, reader TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('dismissed', 'snoozed')), until TEXT, reason TEXT,
   at TEXT NOT NULL, PRIMARY KEY (item_id, reader));
@@ -262,8 +266,15 @@ def store_path(directory: Path) -> Path:
 
 
 def open_store(directory: Path) -> sqlite3.Connection:
+    """The watcher's store, its owner's alone (0600: it keeps digests of addresses)."""
     path = store_path(directory)
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
+    for part in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        try:
+            os.chmod(part, 0o600)
+        except FileNotFoundError:
+            pass
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
@@ -279,7 +290,28 @@ def open_store(directory: Path) -> sqlite3.Connection:
     elif row[0] != SCHEMA:
         conn.close()
         raise ValueError("watcher_schema_mismatch")
+    if conn.execute("SELECT 1 FROM meta WHERE key = 'key_salt'").fetchone() is None:
+        # this store's own random salt for the address and message digests; digests kept
+        # before it (unsalted) are dropped, and queued messages rank as unknown senders
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if conn.execute("SELECT 1 FROM meta WHERE key = 'key_salt'").fetchone() is None:
+                conn.execute("INSERT INTO meta VALUES ('key_salt', ?)",
+                             (secrets.token_hex(32),))
+                conn.execute("DELETE FROM correspondents")
+                conn.execute("DELETE FROM learned")
+                conn.execute("DELETE FROM message_keys")
+                conn.execute("UPDATE queue SET traits = NULL WHERE traits IS NOT NULL")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
     return conn
+
+
+def key_salt(ws: sqlite3.Connection) -> bytes:
+    return bytes.fromhex(ws.execute("SELECT value FROM meta WHERE key = 'key_salt'"
+                                    ).fetchone()[0])
 
 
 @contextmanager
@@ -387,9 +419,11 @@ def _thread(values: Mapping[str, Sequence[Any]]) -> str | None:
 _ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
 
 
-def _key(text: str) -> str:
-    """A lowered address or domain as the watcher keeps it: a digest, never the text."""
-    return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()[:24]
+def _key(text: str, salt: bytes) -> str:
+    """A lowered address, domain or message id as the watcher keeps it: a keyed digest
+    under the store's own salt (``key_salt``), never the text."""
+    return hmac.new(salt, text.strip().lower().encode("utf-8"), hashlib.sha256
+                    ).hexdigest()[:32]
 
 
 def _addresses(values: Mapping[str, Sequence[Any]], props: Sequence[str]) -> list[str]:
@@ -397,24 +431,25 @@ def _addresses(values: Mapping[str, Sequence[Any]], props: Sequence[str]) -> lis
             if isinstance(v, str) for a in _ADDRESS.findall(v)]
 
 
-def _party_keys(address: str) -> list[str]:
+def _party_keys(address: str, salt: bytes) -> list[str]:
     """The keys a counterparty address is known by: itself, and its domain unless that
     is a shared mail provider's (one gmail writer says nothing of another)."""
     from ontology.mentions import shared_mail_domain
     domain = address.rsplit("@", 1)[1]
-    return [_key(address)] + ([] if shared_mail_domain(domain) else [_key("@" + domain)])
+    return [_key(address, salt)] + ([] if shared_mail_domain(domain)
+                                    else [_key("@" + domain, salt)])
 
 
-def _message_key(values: Mapping[str, Sequence[Any]]) -> str | None:
+def _message_key(values: Mapping[str, Sequence[Any]], salt: bytes) -> str | None:
     for prop in MESSAGE_KEY_PROPERTIES:
         for _, value in values.get(prop) or ():
             if isinstance(value, str) and value.strip():
-                return _key(value)
+                return _key(value, salt)
     return None
 
 
-def _traits(values: Mapping[str, Sequence[Any]], internal: frozenset[str], linked: int
-            ) -> dict[str, Any]:
+def _traits(values: Mapping[str, Sequence[Any]], internal: frozenset[str], linked: int,
+            salt: bytes) -> dict[str, Any]:
     """What the batch knows of a message before reading it (never shown as text): its
     sender's keys, whether the sender is a colleague (an address of the tenant's own
     domains) or automated (``capture_mail.automated_sender``), how many business records
@@ -424,14 +459,14 @@ def _traits(values: Mapping[str, Sequence[Any]], internal: frozenset[str], linke
     out: dict[str, Any] = {"linked": linked}
     if senders:
         sender = senders[0]
-        out.update(sender=_key(sender), parties=_party_keys(sender),
+        out.update(sender=_key(sender, salt), parties=_party_keys(sender, salt),
                    internal=sender.rsplit("@", 1)[1] in internal,
                    automated=automated_sender(sender))
     return out
 
 
 def learn_correspondents(ws: sqlite3.Connection, values: Mapping[str, Mapping[str, Any]],
-                         internal: frozenset[str], *, now: str,
+                         internal: frozenset[str], *, now: str, salt: bytes,
                          sender_excluded: Callable[[str], bool]) -> int:
     """Count, by digest, every outside address and domain a colleague wrote to in these
     messages (``correspondents``): who the company answers is who matters to it. A
@@ -444,7 +479,7 @@ def learn_correspondents(ws: sqlite3.Connection, values: Mapping[str, Mapping[st
             continue
         for address in set(_addresses(vals, RECIPIENT_PROPERTIES)):
             if address.rsplit("@", 1)[1] not in internal:
-                counts.update(_party_keys(address))
+                counts.update(_party_keys(address, salt))
     for key, n in counts.items():
         ws.execute("INSERT INTO correspondents VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE "
                    "SET n = n + excluded.n, at = excluded.at", (key, n, now))
@@ -488,7 +523,10 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     fresh = [layer for layer in layers if not ws.execute(
         "SELECT 1 FROM layers WHERE store = ? AND base_digest = ?",
         (layer, digest)).fetchone()]
-    if not fresh:
+    unlearned = [layer for layer in layers if not ws.execute(
+        "SELECT 1 FROM learned WHERE store = ? AND base_digest = ?",
+        (layer, digest)).fetchone()]
+    if not fresh and not (unlearned and guard is not None and internal):
         return {"layers": 0, **counts}
     since = _iso(now - dt.timedelta(hours=window_hours))
     newest: dict[str, tuple[str, sqlite3.Row]] = {}
@@ -500,24 +538,22 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                     newest.setdefault(row["object_id"], (layer, row))
     counts["owned"] = len(newest)
     now_text = _iso(now)
+    salt = key_salt(ws)
+    # what the layers' messages teach of who the company writes to, learned in the same
+    # transaction that marks the layers seen (a run that fails teaches nothing twice)
+    # every current layer not learned from yet, whether or not it is new to the queue (a
+    # store whose salt is new learns the layers it had already looked at)
+    teach: dict[str, dict[str, list[Any]]] = {}
     if guard is not None and internal:
-        for layer in fresh:
-            mine = [oid for oid, (lay, row) in newest.items() if lay == layer
-                    and is_message(row["l1_handle"]) and "#" not in row["l1_handle"]
-                    and not excluded(guard, row["l1_handle"])]
-            if not mine:
-                continue
+        for layer in unlearned:
             with closing(_ro(layer)) as conn:
-                vals = _values_of(conn, mine, SENDER_PROPERTIES + RECIPIENT_PROPERTIES)
-            ws.execute("BEGIN IMMEDIATE")
-            try:
-                counts["correspondents"] += learn_correspondents(
-                    ws, vals, internal, now=now_text,
-                    sender_excluded=lambda a: sender_excluded(guard, a))
-                ws.execute("COMMIT")
-            except BaseException:
-                ws.execute("ROLLBACK")
-                raise
+                owned = [r[0] for r in conn.execute("SELECT object_id FROM delta_owned")]
+                mine = [row["object_id"] for part in _chunks(owned)
+                        for row in conn.execute(_CURRENT, (json.dumps(list(part)),))
+                        if is_message(row["l1_handle"]) and "#" not in row["l1_handle"]
+                        and not excluded(guard, row["l1_handle"])]
+                teach.update(_values_of(conn, mine,
+                                        SENDER_PROPERTIES + RECIPIENT_PROPERTIES))
     held = {r["object_id"]: r for part in _chunks(sorted(newest)) for r in ws.execute(
         "SELECT object_id, digest, props FROM seen WHERE object_id IN (SELECT value FROM "
         "json_each(?))", (json.dumps(list(part)),))}
@@ -552,6 +588,10 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
         "SELECT object_id, thread, event_at FROM queue WHERE thread IS NOT NULL")}
     ws.execute("BEGIN IMMEDIATE")
     try:
+        if teach:
+            counts["correspondents"] += learn_correspondents(
+                ws, teach, internal, now=now_text, salt=salt,
+                sender_excluded=lambda a: sender_excluded(guard, a))
         for layer, ids in wanted.items():
             with closing(_ro(layer)) as conn:
                 values = _values(conn, ids)
@@ -578,7 +618,7 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                     counts["old_news"] += 1
                     continue
                 message = is_message(row["l1_handle"])
-                key = _message_key(vals) if message else None
+                key = _message_key(vals, salt) if message else None
                 if key is not None:   # another mailbox's copy of a message already queued
                     held_by = ws.execute("SELECT object_id FROM message_keys WHERE key = ?",
                                          (key,)).fetchone()
@@ -603,12 +643,16 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                     "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (oid, row["object_type"], row["l1_handle"], change, json.dumps(changed),
                      event, None if change == "new" else since, thread, now_text,
-                     json.dumps(_traits(vals, internal, linked.get(oid, 0)))
+                     json.dumps(_traits(vals, internal, linked.get(oid, 0), salt))
                      if message else None))
                 queued += 1
         for layer in fresh:
             ws.execute("INSERT OR REPLACE INTO layers VALUES (?, ?, ?)",
                        (layer, digest, now_text))
+        if guard is not None and internal:
+            for layer in unlearned:
+                ws.execute("INSERT OR REPLACE INTO learned VALUES (?, ?, ?)",
+                           (layer, digest, now_text))
         ws.execute("DELETE FROM message_keys WHERE at < ?",
                    (_iso(now - dt.timedelta(days=ITEM_DAYS)),))
         ws.execute("COMMIT")
@@ -659,7 +703,7 @@ def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, 
     """At most ``budget`` reads of ``rows`` (newest first): ``SHARES`` of it to messages,
     to the schema's curated business records and to its generated source mirrors, a
     share one stream leaves unused going to the others; messages are taken by their tier
-    (``_tier``), each tier newest first; records are taken round-robin
+    (``_tier``), each tier the one that ages out first; records are taken round-robin
     over their types, the type with the fewest changes first (one change among thousands
     of a bulk recompute says more), each type's newest first."""
     streams: dict[str, list[dict[str, Any]]] = {"message": [], "curated": [], "mirror": []}
@@ -670,7 +714,9 @@ def _balanced(rows: Sequence[dict[str, Any]], budget: int, origin: Mapping[str, 
     known = known or set()
     for row in streams["message"]:
         row["tier"] = _tier(row, known)
-    streams["message"].sort(key=lambda r: TIERS.index(r["tier"]))   # stable: newest first
+    # by tier, and within one the message that ages out first (a customer's mail of
+    # yesterday is read before it is lost, today's still has its day)
+    streams["message"].sort(key=lambda r: (TIERS.index(r["tier"]), r["event_at"]))
     for name in ("curated", "mirror"):
         by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in streams[name]:
@@ -1107,9 +1153,22 @@ def named(sentence: str, cited: str) -> bool:
                for token in _names(sentence))
 
 
+_SHORT_WORD_END = re.compile(r"(?:^|\s)[A-Z][a-z]{0,3}\.$")
+
+
 def _sentences(text: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])|\n+", text)
-            if s.strip()]
+    """Sentences; a period after a short capitalised word followed by a figure ("Jan. 30th",
+    "No. 5") ends none."""
+    out: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])|\n+", text):
+        part = part.strip()
+        if not part:
+            continue
+        if out and part[0].isdigit() and _SHORT_WORD_END.search(out[-1]):
+            out[-1] += " " + part
+        else:
+            out.append(part)
+    return out
 
 
 _PERCENT = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?%")
@@ -1784,6 +1843,88 @@ def last_status(directory: Path) -> str:
 
 # --------------------------------------------------------------------------- the run
 
+# ``isolated_state``: files up to this size are copied (whatever writes them writes the
+# copy), larger ones are linked read-only; a store's journal, lock and temp files are left
+# to the store.
+ISOLATE_COPY_BYTES = 64 * 1024 * 1024
+ISOLATE_COPY_SMALL = 1024 * 1024   # any other file up to this size is copied too
+ISOLATE_DIR_ENTRIES = 1000   # a subtree holding more is a content store: linked whole
+_SIDECAR = re.compile(r"(?:-wal|-shm|-journal|\.lock|\.tmp)$")
+
+
+def _rollback_store(path: Path) -> bool:
+    """A SQLite file in rollback-journal mode (its header's write version 1): readers write
+    nothing of it. A WAL store is read where it is (its live log is beside it)."""
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(20)
+    except OSError:
+        return False
+    return header[:16] == b"SQLite format 3\x00" and header[18] == 1
+
+
+def isolated_state(real: Path, scratch: Path, *, copy_bytes: int = ISOLATE_COPY_BYTES
+                   ) -> Path:
+    """A state directory for a dry run that writes nothing of ``real``: its directories
+    made anew under ``scratch``, every sqlite store up to ``copy_bytes`` and every other
+    file up to ``ISOLATE_COPY_SMALL`` copied (a store by its backup, so the copy is
+    whole), a large rollback-mode store (the served projection) hard linked (what the
+    tools keep beside a store lands beside the link), every other larger file or
+    subtree of more than ``ISOLATE_DIR_ENTRIES`` entries (the capture stores, blobs) a
+    symbolic link to the original, read only, and its symbolic links kept. Whatever the
+    run creates or rewrites lands in ``scratch``; this watcher's own directory is not
+    carried (the dry run keeps its own store). Returns ``scratch``."""
+    real, scratch = Path(real).resolve(), Path(scratch)
+    if scratch.resolve() == real or real in scratch.resolve().parents:
+        raise ValueError("isolated_state_inside_real")
+    scratch.mkdir(parents=True, exist_ok=True)
+    held: Counter = Counter()   # directory -> entries in its whole subtree
+    for here, dirs, files in os.walk(real, topdown=False):
+        held[here] += len(dirs) + len(files) + sum(held[os.path.join(here, d)]
+                                                    for d in dirs)
+    for here, dirs, files in os.walk(real):
+        rel = Path(here).relative_to(real)
+        if rel.parts[:1] == (WATCH_DIR,):
+            dirs[:] = []
+            continue
+        if rel.parts and held[here] > ISOLATE_DIR_ENTRIES:
+            # a content store (blobs by digest): read where it is, never walked
+            if not (scratch / rel).is_symlink():
+                (scratch / rel).symlink_to(here)
+            dirs[:] = []
+            continue
+        (scratch / rel).mkdir(parents=True, exist_ok=True)
+        os.chmod(scratch / rel, os.stat(here).st_mode & 0o777)
+        for name in [d for d in dirs if (Path(here) / d).is_symlink()] + files:
+            source, target = Path(here) / name, scratch / rel / name
+            if target.exists() or target.is_symlink() or _SIDECAR.search(name):
+                continue
+            if source.is_symlink():
+                target.symlink_to(os.path.realpath(source))
+            elif not source.is_file():
+                continue
+            elif _rollback_store(source) and source.stat().st_size > copy_bytes:
+                # a large store in rollback mode (the served projection): hard linked, as
+                # a run pins a generation, so what the tools keep beside the file they
+                # read (``PRAGMA database_list`` names the path, a symbolic link would
+                # name the original's directory) is kept beside the link; another
+                # filesystem: refused, never a link whose neighbours are the original's
+                if os.stat(source).st_dev != os.stat(scratch).st_dev:
+                    raise ValueError("isolated_state_other_filesystem")
+                os.link(source, target)
+            elif name.endswith((".sqlite", ".db")) and source.stat().st_size <= copy_bytes:
+                with closing(_ro(source)) as src, closing(sqlite3.connect(target)) as dst:
+                    src.backup(dst)
+                os.chmod(target, source.stat().st_mode & 0o777)
+            elif source.stat().st_size <= ISOLATE_COPY_SMALL:
+                import shutil
+                shutil.copy2(source, target)
+            else:   # a capture's content or a large store: read where it is
+                target.symlink_to(source)
+        dirs[:] = [d for d in dirs if not (Path(here) / d).is_symlink()]
+    return scratch
+
+
 def reader_identity(environ: Mapping[str, str]) -> tuple[dict[str, str] | None, str | None]:
     """(the watcher reader's identity claims, None), (None, None) for the declared eval
     principal (none named) or (None, why) for a named reader that is not valid. Never
@@ -2221,6 +2362,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     dry.add_argument("--runs", type=int, default=2)
     dry.add_argument("--transcripts", type=Path, default=None,
                      help="keep each session's transcript here (debugging only)")
+    dry.add_argument("--isolate", type=Path, default=None,
+                     help="run against an isolated copy of --state-dir built here "
+                          "(isolated_state): nothing of the real state is written")
     sw = sub.add_parser("switch", help="turn the watcher on, dry or off")
     sw.add_argument("state", choices=SWITCH_STATES)
     sw.add_argument("--state-dir", type=Path, required=True)
@@ -2246,6 +2390,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cmd == "run" and switch(args.state_dir) == "off":
         print(json.dumps({"status": "switched_off"}))
         return 0
+    if args.cmd == "dryrun" and args.isolate is not None:
+        args.state_dir = isolated_state(args.state_dir, args.isolate)
+        os.environ["PLX_WORKBENCH_STATE_DIR"] = str(args.state_dir)
     host = reader_host(args.state_dir, args.host_config, os.environ)
     if args.cmd == "run":
         summary = cycle(args.state_dir, host=host, max_reads=args.max_reads,
