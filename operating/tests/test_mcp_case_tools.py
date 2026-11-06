@@ -2167,6 +2167,9 @@ class ReturnedEvidenceTests(door_tests.EmployeeDoorTestCase):
                 elif name == "plx.object" and arguments["object_id"] == line_id:
                     cite = out["values"][0]["citation"]
                     seen["item"] = cite["l1_handle"]
+                    # a finance reader reads the cell itself: the injected one replaces it
+                    out["values"] = [v for v in out["values"]
+                                     if v["citation"].get("field_path") != "row.itemcost"]
                     out["values"].append({
                         "property": "item_cost", "value_type": "money", "value": "0.802",
                         "currency": currency, "citation": dict(cite, field_path="row.itemcost"),
@@ -2180,8 +2183,15 @@ class ReturnedEvidenceTests(door_tests.EmployeeDoorTestCase):
                     "value_claims": [{"value": "0.802", "citation": seen["item"],
                                       "field": "row.itemcost", "currency": currency}]}
 
+        def finance_reader() -> MCPServer:
+            # The line's item cost is a finance figure (source markings): the claim binds
+            # for a reader the host grants finance, as the gate reads rows with its markings.
+            server = self.server(OID_A)
+            server.ontology.marking_grants = {"finance": frozenset(server.actor.principals)}
+            return server
+
         def codes(currency: str) -> tuple[list[str], list[str]]:
-            console, seen = self.server(OID_A), {}
+            console, seen = finance_reader(), {}
             with injected(console, currency, seen):
                 result = agent_loop.run("What does the line cost?", console, lambda request: (
                     {"action": "call", "calls": reads} if not request["transcript"] else
@@ -2189,7 +2199,7 @@ class ReturnedEvidenceTests(door_tests.EmployeeDoorTestCase):
             # Checked, never dropped as citing what the run did not return.
             self.assertTrue(all(claim["reason"] == "claim_check_failed"
                                 for claim in result["unsupported_claims"]), result)
-            server, seen = self.server(OID_A), {}
+            server, seen = finance_reader(), {}
             with injected(server, currency, seen):
                 for read in reads:
                     self.tool(server, read["tool"], read["arguments"])
