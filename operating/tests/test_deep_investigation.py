@@ -283,6 +283,47 @@ class OpenPartsContinue(Temp):
         self.assertIsNone(budget.after_answer(   # a repair asked is the gate's own send-back
             {"structuredContent": {"outcome": "repair", "claims": []}}, time.time()))
 
+    def test_a_reply_that_drops_sentences_goes_back_once_even_after_research_time(self):
+        """An answered decision whose reply drops sentences of the submitted text (a
+        figure no passed claim states) goes back once with those sentences, while the
+        session has time for one more submission, research time or not; the session
+        does not end at it (GateEnd) and the next decision ends it."""
+        from operating import answer_gate
+        claims = [{"text": "count: at least 3", "value_claims": [{"value": "3"}],
+                   "check": {"status": "passed"}}]
+        text = ("SharePoint holds three versions of the 20ml spec sheet.\n"
+                "- Version v03 says Bottom.")
+        reply = answer_gate.final_reply(text, claims)
+        self.assertEqual(reply["dropped"],
+                         ["SharePoint holds three versions of the 20ml spec sheet."])
+        decision = {"outcome": "answered", "claims": [{"text": "c"}],
+                    "answerability": {"state": "answerable"},
+                    "text_check": {"passed": False, "uncovered": [
+                        {"code": "claim_unstructured",
+                         "value": {"untrusted_text": "20"}}]},
+                    "reply": {"text": {"untrusted_text": reply["text"]},
+                              "removed_sentences": reply["removed_sentences"],
+                              "dropped": [{"untrusted_text": d} for d in reply["dropped"]]}}
+        now = time.time()
+        budget = deep.Budget(deadline=now - 1, max_steps=30, ends_at=now + 60)
+        note = budget.after_answer({"structuredContent": decision}, now)
+        self.assertTrue(note[deep.CONTINUE_KEY])
+        self.assertEqual(note["dropped"], reply["dropped"])
+        self.assertEqual(note["uncovered"], ["20"])
+        self.assertIn("at least N", note["next"])
+        self.assertIsNone(budget.after_answer({"structuredContent": decision}, now))  # once
+        self.assertIsNone(deep.Budget(deadline=now - 1, ends_at=now + 10).after_answer(
+            {"structuredContent": decision}, now))   # no time for another submission
+        ends = agent_session.GateEnd()
+        sent = deep.with_answer_note({"structuredContent": decision}, note)
+        use = {"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "id": "t1", "name": "mcp__plx__plx_case_get",
+            "input": ANSWER}]}}
+        done = {"type": "user", "message": {"content": [{
+            "type": "tool_result", "tool_use_id": "t1",
+            "content": json.dumps(sent["structuredContent"])}]}}
+        self.assertFalse(ends(json.dumps(use)) or ends(json.dumps(done)))
+
     def test_no_time_left_or_nothing_open_ends_the_session_as_before(self):
         late = self.run_gate(deep.Budget(deadline=time.time() + deep.CONTINUE_SECONDS - 5,
                                          max_steps=30))

@@ -11,7 +11,12 @@ and ``plx.agenda`` do), so it applies exactly their permission gate, tiers and c
   ``match`` records of what it names, ``plx.find`` mode ``entities``,
   ``operating.entity_resolution``);
 * **traverse**: hops of ``plx.around`` (declared link types, or ``link`` navigation names),
-  walked one hop at a time from the set the previous hop returned; a start record whose
+  walked one hop at a time from the set the previous hop returned; a hop naming the type
+  it goes to (``to``, or a ``link`` that names a type rather than a link) walks the
+  records on along the declared links that lead there (``QueryTool._route``), each route
+  reaching it counted, the first reaching a record taken; a hop that reaches nothing
+  names the other declared routes (``other_routes``);
+  a start record whose
   type does not declare the first hop is left out of it (counted), never refused; ``where``
   filters the last hop's records; ``tier_floor`` as ``plx.around``'s (``lead`` follows
   lead links: what they reach is a lead);
@@ -40,12 +45,33 @@ from ontology.json_contract import validate
 TOOL_NAME = "plx.query"
 TOOL_NAMES = (TOOL_NAME,)
 MAX_HOPS = 6
-MAX_GROUPS_SHOWN = 60
 MAX_CITED = 50
+# The query's own answer bound: what the host sends (``mcp_server.MAX_RESULT_BYTES``, its
+# freshness and budget notes beside it) holds it. Past it rows and groups are cut to what
+# fits, each cut stated with what was left (``_fitted``), never a refused answer
+# (11-06 q20: 20 rows of 4 cited values were refused result_too_large).
+RESULT_BYTES = 40000
+# Past this many groups a result too large keeps each group's first inputs' citations
+# (these counts, in turn) before it drops a group.
+GROUPS_BEFORE_CITATIONS = 10
+CITED_PER_GROUP = (5, 1, 0)
 MAX_CODE_RECORDS = 200   # records a code list starts from
 ROWS_SHOWN = 10          # records ``rows`` lists by default (newest first)
 # by_code entries' share of the result (the rest of max_result_bytes: hops, gaps, meta)
 PER_CODE_BYTES = 38000
+# A hop that names the type it goes to (``{"to": "Supplier"}``) searches the records for a
+# way there: from what it walks from, each declared link that can still reach the type
+# within ``ROUTE_HOPS`` links (the schema's distance) is walked, and each link that
+# reaches records is walked on from them, nearest the type first, until a level reaches
+# it (that level's routes all listed, the first taken), at most ``MAX_ROUTE_CALLS`` links
+# walked. A link that reaches nothing ends its route: 11-06 q01, the quarantined lots'
+# receipts name no supplier and their receipt lines' PO lines do (4 links). Mention links
+# (a document naming a record) and identity links are no route.
+ROUTE_HOPS = 4
+MAX_ROUTES = 6            # schema routes a hop that reached nothing names
+MAX_ROUTE_CALLS = 24
+MAX_ROUTES_SHOWN = 24
+MAX_ROUTE_PATHS = 400     # partial routes a schema search keeps per length
 WALK_REFUSALS = frozenset({"undeclared_link", "ambiguous_link", "path_type_mismatch",
                            "invalid_input", "unknown_property"})
 
@@ -70,9 +96,13 @@ class TableBackend:
                  visible: Callable[[Any, list[str]], set[str]] | None = None,
                  codes: Callable[..., tuple[list[str], list[str]]] | None = None,
                  rows: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None,
-                 select: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None
+                 select: Callable[[Mapping[str, Any], Any], Mapping[str, Any]] | None = None,
+                 members: Callable[[Any, str], Sequence[str] | None] | None = None
                  ) -> None:
         self.call, self.new_set, self.schema = call, new_set, schema
+        # the records a set handle holds (the host's set registry), for the type a walk
+        # starts from
+        self.members = members
         # the records filters select, of a type or among a set's members
         # (``AggregateTools.select``)
         self.select = select
@@ -83,6 +113,87 @@ class TableBackend:
         # the ids among these this reader may read now (the store's own gate); None: the
         # walk's own gate decides (a fixture)
         self.visible = visible
+
+    def link_end(self, link_type: Any, direction: Any) -> str | None:
+        """The object type a declared link reaches in ``direction``."""
+        link = (getattr(self.schema, "link_types", None) or {}).get(link_type)
+        if not link:
+            return None
+        return link["to"] if direction == "forward" else link["from"]
+
+    def links_from(self, start: str) -> list[tuple[str, str, str]]:
+        """The declared links a walk may take from ``start`` (``(link_type, direction,
+        type reached)``), never a mention, identity or self link."""
+        links = getattr(self.schema, "link_types", None) or {}
+        out = []
+        for link_id in sorted(links):
+            spec = links[link_id]
+            if ".mentions_" in link_id or link_id.endswith(".same_record_as") \
+                    or spec.get("from") == spec.get("to"):
+                continue
+            if spec.get("from") == start:
+                out.append((link_id, "forward", spec["to"]))
+            if spec.get("to") == start:
+                out.append((link_id, "reverse", spec["from"]))
+        return out
+
+    def distances(self, goal: str) -> dict[str, int]:
+        """Per object type, the fewest declared links (``links_from``'s) from it to
+        ``goal``."""
+        links = getattr(self.schema, "link_types", None) or {}
+        near: dict[str, set[str]] = {}
+        for link_id, spec in links.items():
+            if ".mentions_" in link_id or link_id.endswith(".same_record_as") \
+                    or spec.get("from") == spec.get("to"):
+                continue
+            near.setdefault(spec["from"], set()).add(spec["to"])
+            near.setdefault(spec["to"], set()).add(spec["from"])
+        out, frontier = {goal: 0}, [goal]
+        while frontier:
+            grown = []
+            for here in frontier:
+                for other in near.get(here, ()):
+                    if other not in out:
+                        out[other] = out[here] + 1
+                        grown.append(other)
+            frontier = grown
+        return out
+
+    def routes(self, start: str, goal: str, hops: int = ROUTE_HOPS - 1
+               ) -> list[list[tuple[str, str, str]]]:
+        """Declared routes from ``start`` to ``goal`` (each ``(link_type, direction,
+        type reached)`` per hop): the shortest, then those one hop longer, never through a
+        mention or identity link, a type twice or back to ``start``; ordered by length,
+        then by name."""
+        links = getattr(self.schema, "link_types", None) or {}
+        out: list[list[tuple[str, str, str]]] = []
+        frontier: list[list[tuple[str, str, str]]] = [[]]
+        shortest = None
+        for depth in range(1, hops + 1):
+            if shortest is not None and depth > shortest + 1:
+                break
+            grown: list[list[tuple[str, str, str]]] = []
+            for path in frontier:
+                here = path[-1][2] if path else start
+                seen = {start} | {hop[2] for hop in path}
+                for link_id in sorted(links):
+                    spec = links[link_id]
+                    if ".mentions_" in link_id or link_id.endswith(".same_record_as") \
+                            or spec.get("from") == spec.get("to"):
+                        continue
+                    for direction, (a, b) in (("forward", (spec["from"], spec["to"])),
+                                              ("reverse", (spec["to"], spec["from"]))):
+                        if a != here:
+                            continue
+                        step = path + [(link_id, direction, b)]
+                        if b == goal:
+                            out.append(step)
+                        elif b not in seen and len(grown) < MAX_ROUTE_PATHS:
+                            grown.append(step)
+            if out and shortest is None:
+                shortest = depth
+            frontier = grown
+        return out
 
     def link_from_type(self, hop: Mapping[str, Any]) -> str | None:
         """The object type a hop starts from (None: a navigation name, decided by the
@@ -179,12 +290,12 @@ class QueryTool:
             out.update({"hops": [], "set": None, "results": [], "by_record": by_record})
             out["gaps"] = _fold(gaps + [g for r in by_record for g in r.pop("gaps", [])])[:20]
             out["meta"] = meta
-            return _clean(out)
+            return _fitted(_clean(out))
         root = start if records is None else self._set_of(records, actor)
         run = self._run(call, root, traverse, arguments, gaps, actor)
         out.update(run)
         out["gaps"] = _fold(out.get("gaps") or [])[:20]
-        return _clean(out)
+        return _fitted(_clean(out))
 
     def _run(self, call, root: Any, traverse: Sequence[Mapping[str, Any]],
              arguments: Mapping[str, Any], gaps: list[dict[str, Any]],
@@ -193,14 +304,26 @@ class QueryTool:
         reached: {hops, set, results, gaps, meta}."""
         common = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
         hops_out: list[dict[str, Any]] = []
+        routes: list[dict[str, Any]] = []
         current, meta = root, None
+        here = self._type_of(arguments, root, actor)
         for index, hop in enumerate(traverse):
-            args = {"from": current, "path": [_hop(hop)], "limit": 50, **common}
-            if arguments.get("tier_floor"):
-                args["tier_floor"] = arguments["tier_floor"]
-            if index == len(traverse) - 1 and arguments.get("where"):
-                args["filters"] = list(arguments["where"])
-            got = call("plx.around", args)
+            filters = list(arguments["where"]) \
+                if index == len(traverse) - 1 and arguments.get("where") else None
+            goal = hop.get("to") or (self._named_type(here, hop.get("link"))
+                                     if hop.get("link") else None)
+            if goal is not None:
+                walked = self._route(call, current, here, goal, filters, arguments, common,
+                                     index, actor)
+                routes += walked["routes"]
+                hops_out += walked["hops"]
+                gaps += walked["gaps"]
+                meta = walked["meta"] or meta
+                current, here = walked["set"], goal
+                if not current:
+                    break
+                continue
+            got = self._around(call, current, hop, filters, arguments, common)
             if got.get("error"):
                 raise _Refused(_error(got["error"].get("code") or "traverse_refused",
                                       f"hop {index + 1}: " + str(got["error"].get("message")),
@@ -210,11 +333,19 @@ class QueryTool:
                 hops_out.append({k: item[k] for k in ("link_type", "direction", "count",
                                                       "tiers") if k in item})
             gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+            last = (got.get("hops") or [{}])[-1]
+            reached = self.backend.link_end(last.get("link_type"), last.get("direction"))
             current = got.get("set")
-            if not current or not (got.get("hops") or [{}])[-1].get("count", 1):
+            if not current or not last.get("count", 1):
+                hint = self._other_routes(here, reached, last.get("link_type"))
+                if hint is not None:
+                    gaps.append(hint)
                 current = None
                 break
+            here = reached
         result: dict[str, Any] = {"hops": hops_out, "set": current, "results": []}
+        if routes:
+            result["routes"] = routes
         if not current:
             result["gaps"] = gaps + [{"state": "unknown", "reason": "nothing_reached",
                                       "subject": "traverse",
@@ -235,6 +366,166 @@ class QueryTool:
             r.pop("meta", None)
         result["gaps"], result["meta"] = gaps, meta
         return result
+
+    def _around(self, call, current: Any, hop: Mapping[str, Any],
+                filters: list[Any] | None, arguments: Mapping[str, Any],
+                common: Mapping[str, Any]) -> Mapping[str, Any]:
+        """One hop of ``plx.around`` from ``current`` (its last hop filtered)."""
+        args = {"from": current, "path": [_hop(hop)], "limit": 50, **common}
+        if arguments.get("tier_floor"):
+            args["tier_floor"] = arguments["tier_floor"]
+        if filters:
+            args["filters"] = filters
+        return call("plx.around", args)
+
+    def _type_of(self, arguments: Mapping[str, Any], root: Any, actor: Any) -> str | None:
+        """The object type a walk starts from: the start's own, its records', or a set's
+        members' when they are of one type; None: unknown or several."""
+        start = arguments.get("from") or {}
+        if start.get("object_type"):
+            return start["object_type"]
+        ids: Sequence[str] | None = None
+        if isinstance(root, str) and not root.startswith("set:"):
+            ids = [root]
+        elif isinstance(root, str) and self.backend.members is not None:
+            ids = self.backend.members(actor, root)
+        types = {oid.split(":", 1)[0] for oid in ids or ()}
+        return types.pop() if len(types) == 1 else None
+
+    def _named_type(self, here: str | None, name: Any) -> str | None:
+        """The object type a hop's ``link`` names when it names no link of ``here`` but
+        one type (``supplier``, ``Suppliers``): a hop to that type."""
+        links = getattr(self.backend.schema, "link_types", None) or {}
+        types = {spec[end] for spec in links.values() for end in ("from", "to")}
+        if not isinstance(name, str) or here is None:
+            return None
+        if any(link_id.split(".", 1)[0] == here and link_id.endswith("." + name)
+               or (spec.get("to") == here and spec.get("reverse_name") == name)
+               or (spec.get("from") == here and spec.get("name") == name)
+               for link_id, spec in links.items()):
+            return None   # a navigation name of the type: plx.around resolves it
+        wanted = re.sub(r"[^a-z0-9]", "", name.lower())
+        found = [t for t in types if t.lower() in (wanted, wanted.rstrip("s"),
+                                                  re.sub(r"ies$", "y", wanted))]
+        return found[0] if len(found) == 1 else None
+
+    def _route(self, call, current: Any, here: str | None, goal: str,
+               filters: list[Any] | None, arguments: Mapping[str, Any],
+               common: Mapping[str, Any], index: int, actor: Any = None) -> dict[str, Any]:
+        """A hop to the type ``goal``: the records ``current`` holds are walked on, link
+        by link (``links_from``), along the links that can still reach ``goal`` within
+        ``ROUTE_HOPS`` (``distances``), nearest it first, a link reaching nothing ending
+        its route, until a level reaches ``goal`` (``MAX_ROUTE_CALLS`` links at most).
+        Every route that reached ``goal``'s type is listed with what it reached and its
+        set (``filters`` on its last link); of the level's routes reaching a record, the
+        one reaching most is taken."""
+        if here is None:
+            raise _Refused(_error("invalid_input", f"hop {index + 1}: the records walked "
+                                  "from are of several types or none; name the link",
+                                  "plx.object a record to see its links"))
+        if here == goal or not current:
+            # nothing to walk from (a start its where selected none of): nothing walked
+            return {"routes": [], "hops": [], "gaps": [], "meta": None, "set": current}
+        far = self.backend.distances(goal)
+        if far.get(here) is None or far[here] > ROUTE_HOPS:
+            raise _Refused(_error("undeclared_link", f"hop {index + 1}: no declared route "
+                                  f"from {here} to {goal} within {ROUTE_HOPS} links",
+                                  "plx.schema section links lists the links of each type"))
+        listed: list[dict[str, Any]] = []
+        found: list[dict[str, Any]] = []
+        gaps: list[dict[str, Any]] = []
+        meta, calls, cut = None, 0, False
+        seen: set[tuple[str, frozenset[str]]] = set()
+        frontier: list[tuple[list[dict[str, Any]], Any, str]] = [([], current, here)]
+        for depth in range(1, ROUTE_HOPS + 1):
+            grown: list[tuple[list[dict[str, Any]], Any, str]] = []
+            for walked, handle, kind in frontier:
+                passed = {here} | {self.backend.link_end(h["link_type"], h["direction"])
+                                   for h in walked}
+                for link_type, direction, reached in self.backend.links_from(kind):
+                    last = reached == goal
+                    if not last and (reached in passed or far.get(reached) is None
+                                     or depth + far[reached] > ROUTE_HOPS):
+                        continue
+                    if calls >= MAX_ROUTE_CALLS:
+                        cut = True
+                        break
+                    calls += 1
+                    got = self._around(call, handle, {"link_type": link_type,
+                                                      "direction": direction},
+                                       filters if last else None, arguments, common)
+                    if got.get("error"):
+                        continue
+                    meta = got.get("meta") or meta
+                    hop = (got.get("hops") or [{}])[-1]
+                    step = walked + [{k: hop[k] for k in ("link_type", "direction", "count",
+                                                          "tiers") if k in hop}]
+                    count, made = hop.get("count", 0), got.get("set")
+                    if last:
+                        entry = {"path": [{"link_type": h["link_type"],
+                                           "direction": h["direction"]} for h in step],
+                                 "count": count if made else 0,
+                                 "set": made if count else None}
+                        listed.append(entry)
+                        if count and made:
+                            found.append({"hops": step, "set": made, "entry": entry,
+                                          "gaps": [g for g in got.get("gaps") or ()
+                                                   if isinstance(g, Mapping)]})
+                        continue
+                    if not count or not made:
+                        continue
+                    members = self.backend.members(actor, made) \
+                        if self.backend.members is not None else None
+                    if members is not None:
+                        key = (reached, frozenset(members))
+                        if key in seen:
+                            continue   # the same records reached another way
+                        seen.add(key)
+                    grown.append((step, made, reached))
+                if cut:
+                    break
+            if found or cut:
+                break
+            frontier = sorted(grown, key=lambda node: (far.get(node[2], ROUTE_HOPS),
+                                                       len(node[0])))
+            if not frontier:
+                break
+        if found:
+            # of the routes of the level that reached it, the one reaching most records
+            found.sort(key=lambda route: -route["entry"]["count"])
+            found[0]["entry"]["taken"] = True
+            gaps += found[0]["gaps"]
+        if cut:
+            gaps.append({"state": "unknown", "reason": "routes_not_walked",
+                         "subject": f"{here} to {goal}"[:700],
+                         "detail": f"the search stopped after {MAX_ROUTE_CALLS} links "
+                                   "walked; name the links of a longer route to walk it"})
+        if not found:
+            gaps.append({"state": "unknown", "reason": "nothing_reached",
+                         "subject": f"{here} to {goal}"[:700],
+                         "detail": f"no route of up to {ROUTE_HOPS} declared links from these "
+                                   f"records reaches a {goal} ({calls} links walked)"})
+        return {"routes": listed[:MAX_ROUTES_SHOWN],
+                "hops": found[0]["hops"] if found else [], "gaps": gaps, "meta": meta,
+                "set": found[0]["set"] if found else None}
+
+    def _other_routes(self, here: str | None, goal: str | None, link_type: Any
+                      ) -> dict[str, Any] | None:
+        """A hop that reached nothing: the other declared routes from ``here`` to the type
+        it would have reached, as a gap saying how to walk them; None when there are
+        none."""
+        if here is None or goal is None:
+            return None
+        others = [path for path in self.backend.routes(here, goal)
+                  if [hop[0] for hop in path] != [link_type]][:MAX_ROUTES]
+        if not others:
+            return None
+        said = "; ".join(" / ".join(f"{l} {d}" for l, d, _t in path) for path in others)
+        return {"state": "unknown", "reason": "other_routes",
+                "subject": f"{link_type} from {here}"[:700],
+                "detail": (f"this link reaches no {goal} from these records; other routes "
+                           f"from {here}: {said}. A hop {{\"to\": \"{goal}\"}} walks "
+                           "them")[:600]}
 
     def _rows(self, current: str, arguments: Mapping[str, Any],
               gaps: list[dict[str, Any]], actor: Any) -> dict[str, Any] | None:
@@ -423,21 +714,28 @@ class QueryTool:
             args["group_by"] = list(arguments["group_by"])
         if arguments.get("group_path"):
             args["path"] = [_hop(h) for h in arguments["group_path"]]
+        # every group is computed: a date's period, the groups a condition keeps, the
+        # page a cursor names (plx.aggregate's own)
+        for key in ("bucket", "having", "cursor"):
+            if arguments.get(key) is not None:
+                args[key] = arguments[key]
         got = call("plx.aggregate", args)
         if got.get("error"):
             return {"measure": dict(measure), "error": got["error"]}
         gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
         groups = list(got.get("groups") or ())
-        out: dict[str, Any] = {"measure": dict(measure), "groups": groups[:MAX_GROUPS_SHOWN],
+        out: dict[str, Any] = {"measure": dict(measure), "groups": groups,
                                "meta": got.get("meta")}
-        for key in ("completeness", "total", "withheld"):
+        for key in ("completeness", "total", "withheld", "summary", "refused"):
             if key in got:
                 out[key] = got[key]
-        if len(groups) > MAX_GROUPS_SHOWN:
-            out["more_groups"] = len(groups) - MAX_GROUPS_SHOWN
         window = arguments.get("window")
         if window:
             out["window"] = _window(groups, window, measure.get("op", "count"))
+            done = got.get("completeness") or {}
+            if done.get("total") is not None and done.get("total") > len(groups):
+                # a window totals the groups returned: the rest are named, never added
+                out["window"]["groups_not_returned"] = done["total"] - len(groups)
         return out
 
 
@@ -486,6 +784,88 @@ def _window(groups: Sequence[Mapping[str, Any]], window: Mapping[str, Any], op: 
     return out
 
 
+def _size(value: Any) -> int:
+    return len(json.dumps(value, default=str, separators=(",", ":")).encode("utf-8"))
+
+
+def _fitted(out: dict[str, Any], limit: int = RESULT_BYTES) -> dict[str, Any]:
+    """``out`` within ``limit`` bytes: a measure of many groups first keeps fewer input
+    citations per group (``inputs_citations_kept``); then the longest list first (listed
+    rows, a measure's groups, by-record walks), each cut to what fits and the cut stated
+    where it was made (``more_rows``; a measure's completeness truncated at
+    ``result_size`` with the next page's cursor; ``by_record_not_shown``); a summary over
+    every group stays whole."""
+    for keep in CITED_PER_GROUP:
+        # A list of many groups keeps every group before every input citation: each
+        # group's key stays cited (a name, a month), its first inputs are kept and the
+        # rest said (plx.aggregate of one group cites all its inputs).
+        if _size(out) <= limit:
+            return out
+        for holder in [out] + list(out.get("by_record") or ()):
+            for result in holder.get("results") or ():
+                groups = result.get("groups") or []
+                if len(groups) <= GROUPS_BEFORE_CITATIONS:
+                    continue
+                trimmed = 0
+                for group in groups:
+                    cites = group.get("inputs_citations")
+                    if isinstance(cites, list) and len(cites) > keep:
+                        trimmed += 1
+                        if keep:
+                            group["inputs_citations"] = cites[:keep]
+                        else:
+                            group.pop("inputs_citations")
+                if trimmed:
+                    result["inputs_citations_kept"] = keep
+    for _ in range(64):
+        if _size(out) <= limit:
+            return out
+        lists: list[tuple[int, Callable[[int], None], int]] = []
+        listed = out.get("rows")
+        if isinstance(listed, dict) and len(listed.get("rows") or ()) > 1:
+            def cut_rows(keep: int, listed: dict = listed) -> None:
+                gone = len(listed["rows"]) - keep
+                listed["rows"] = listed["rows"][:keep]
+                listed["more_rows"] = listed.get("more_rows", 0) + gone
+            lists.append((_size(listed["rows"]), cut_rows, len(listed["rows"])))
+        for holder in [out] + list(out.get("by_record") or ()):
+            for result in holder.get("results") or ():
+                groups = result.get("groups") or []
+                if len(groups) > 1:
+                    def cut_groups(keep: int, result: dict = result) -> None:
+                        done = dict(result.get("completeness") or {})
+                        start = _page_start(done, len(result["groups"]))
+                        result["groups"] = result["groups"][:keep]
+                        done.update(complete=False, truncated=True, reason="result_size",
+                                    returned=keep, next_cursor=f"g{start + keep}")
+                        result["completeness"] = done
+                    lists.append((_size(groups), cut_groups, len(groups)))
+        walked = out.get("by_record")
+        if isinstance(walked, list) and len(walked) > 1:
+            def cut_records(keep: int, walked: list = walked) -> None:
+                out["by_record_not_shown"] = out.get("by_record_not_shown", 0) \
+                    + len(walked) - keep
+                del walked[keep:]
+            lists.append((_size(walked), cut_records, len(walked)))
+        if not lists:
+            break
+        _bytes, cut, count = max(lists, key=lambda item: item[0])
+        cut(max(1, count // 2))
+    return out
+
+
+def _page_start(done: Mapping[str, Any], shown: int) -> int:
+    """The first group of a page plx.aggregate returned: its next cursor less what it
+    returned, or (the last page) its total less what it returned."""
+    returned = done.get("returned") if isinstance(done.get("returned"), int) else shown
+    found = re.fullmatch(r"g([0-9]{1,7})", done.get("next_cursor") or "") \
+        if isinstance(done.get("next_cursor"), (str, type(None))) else None
+    if found:
+        return max(0, int(found[1]) - returned)
+    total = done.get("total")
+    return max(0, total - returned) if isinstance(total, int) else 0
+
+
 def _fold(gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     seen, out = set(), []
     for gap in gaps:
@@ -524,7 +904,9 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
             return _error("tool_not_served", f"{name} is not served to plx.query")
         if not answers or answers[0].base is not base:
             answers[:] = [AggregateTools(base)]
-        return answers[0].call(name, dict(arguments), actor)
+        # the page whole: the query keeps every group of it before their citations
+        # (``_fitted``)
+        return answers[0].call(name, dict(arguments), actor, bounded=False)
 
     def visible(actor: Any, ids: list[str]) -> set[str]:
         with base.store.lock:
@@ -557,11 +939,15 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
             answers[:] = [AggregateTools(base)]
         return answers[0].select(arguments, actor)
 
+    def members(actor: Any, handle: str) -> Sequence[str] | None:
+        return base.resolve_set(handle, actor)
+
     backend = TableBackend(call, getattr(base, "_new_set", None), getattr(base, "schema", None),
                            visible if hasattr(base, "_visible_versions") else None,
                            codes if hasattr(base, "_visible_versions") else None,
                            rows if hasattr(base, "_visible_versions") else None,
-                           select if hasattr(base, "_filter_objects") else None)
+                           select if hasattr(base, "_filter_objects") else None,
+                           members if hasattr(base, "resolve_set") else None)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

@@ -4139,7 +4139,7 @@
       }
     },
     "plx.aggregate": {
-      "description": "Exact Decimal count/sum/min/max over a set, or an exact count of object_type matching filters (no scan cap), grouped by up to two properties; only what this reader may read counts. Mixed quantity roles, units or currencies, unknown units or currencies, or a sum across a fan-out hop is refused; a many-to-many hop splits only by reviewed allocations (plx.review allocate). Corrections in force are used, cited. Totals carry their inputs' markings.",
+      "description": "Exact Decimal count/sum/min/max over a set, or an exact count of object_type matching filters (no scan cap), grouped by up to two properties; only what this reader may read counts. Every group is computed: past 20 a summary covers all, pages via cursor. Mixed roles, units or currencies, unknown ones, or a sum across a fan-out hop is refused; a many-to-many hop splits only by reviewed allocations. Corrections in force are used, cited. Totals carry their inputs' markings.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4229,6 +4229,43 @@
             },
             "minItems": 1,
             "maxItems": 2
+          },
+          "bucket": {
+            "enum": [
+              "year",
+              "quarter",
+              "month",
+              "week",
+              "day"
+            ],
+            "description": "A date's period (key, count_distinct)"
+          },
+          "having": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "value"
+            ],
+            "properties": {
+              "op": {
+                "enum": [
+                  "eq",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte"
+                ]
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "description": "Groups whose value holds it"
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 16
           },
           "as_known_at": {
             "$ref": "#/$defs/as_known_at"
@@ -4392,6 +4429,55 @@
               },
               "completeness": {
                 "$ref": "#/$defs/completeness"
+              },
+              "summary": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Computed over every group (returned or not): how many, how many hold a value, lowest, highest, total, and how many groups hold each value.",
+                "properties": {
+                  "groups": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "with_value": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "lowest": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                  },
+                  "highest": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                  },
+                  "total": {
+                    "type": "string",
+                    "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                  },
+                  "value_counts": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"
+                        },
+                        "groups": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "groups",
+                  "with_value"
+                ]
               },
               "meta": {
                 "$ref": "#/$defs/meta"
@@ -7337,7 +7423,7 @@
       }
     },
     "plx.query": {
-      "description": "One read: from records, a list of codes (a sheet's items), an entity (a name or code: its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop; where; measures grouped by a property or a linked record's (group_path), in a window. Each group cites its inputs: claim a sum over them. rows lists what is reached (cited values, a date, newest first; last, lowest, highest); per_code answers each code on its own.",
+      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where; measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed: past 20 a summary covers all; cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7408,6 +7494,11 @@
                 },
                 "link": {
                   "type": "string"
+                },
+                "to": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Za-z0-9]{1,63}$",
+                  "description": "The object type this hop goes to: the records are walked on along the declared links that lead there (up to 4), each route reaching it listed and counted; the one reaching most records is taken."
                 }
               }
             },
@@ -7498,6 +7589,44 @@
                 "type": "string"
               }
             }
+          },
+          "bucket": {
+            "enum": [
+              "year",
+              "quarter",
+              "month",
+              "week",
+              "day"
+            ],
+            "description": "Group or count_distinct a date by this period (e.g. month: 2026-07)."
+          },
+          "having": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "value"
+            ],
+            "properties": {
+              "op": {
+                "enum": [
+                  "eq",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte"
+                ]
+              },
+              "value": {
+                "type": "number"
+              }
+            },
+            "description": "Only the groups whose measured value holds this, every one of them."
+          },
+          "cursor": {
+            "type": "string",
+            "maxLength": 16,
+            "description": "A measure's completeness.next_cursor: the next page of its groups."
           },
           "as_known_at": {
             "$ref": "#/$defs/as_known_at"
@@ -8299,6 +8428,26 @@
                     }
                   }
                 }
+              },
+              "routes": {
+                "type": "array",
+                "maxItems": 24,
+                "description": "Each route a to hop walked: its links, the records it reached and their set; taken marks the one walked on.",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "count", "set"],
+                  "properties": {
+                    "path": {"type": "array", "maxItems": 4, "items": {"type": "object", "additionalProperties": false, "properties": {"link_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]{1,63}\\.[a-z][a-z0-9_]{0,63}$"}, "direction": {"type": "string", "enum": ["forward", "reverse"]}}}},
+                    "count": {"type": "integer", "minimum": 0},
+                    "set": {"anyOf": [{"$ref": "#/$defs/root"}, {"type": "null"}]},
+                    "taken": {"type": "boolean"}
+                  }
+                }
+              },
+              "by_record_not_shown": {
+                "type": "integer",
+                "minimum": 1
               },
               "codes_next_offset": {
                 "type": "integer",

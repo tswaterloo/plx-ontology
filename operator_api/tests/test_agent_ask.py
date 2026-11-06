@@ -925,3 +925,25 @@ class ProgressWords(unittest.TestCase):
         self.assertEqual(p.citations(kept), [handle])
         uncited = {**kept, "claims": [{**kept["claims"][0], "citations": []}]}
         self.assertIsNone(p.citations(uncited))
+
+
+class ReplyProseTests(unittest.TestCase):
+    def test_the_research_stopped_line_leads_the_answer_never_replaces_it(self):
+        """A reply rendered from the gate's decision is only its answer block; a session
+        cut short puts the research-stopped line before it. The reader sees the line and
+        then the answer's text (11-06: a not-found answer showed the line alone)."""
+        from operating.deep_investigation import STOPPED_LINE
+        said = "No purchase order for that product from that supplier was found."
+        block = "```json\n" + json.dumps({"format": "plx-eval-answer/v1", "text": said}) \
+            + "\n```"
+        self.assertEqual(aa.reply_prose(STOPPED_LINE + "\n\n" + block, {"text": said}),
+                         STOPPED_LINE + "\n\n" + said)
+        # the agent's own prose around the block stays the reply
+        own = STOPPED_LINE + "\n\nThe order shipped on Monday.\n\n" + block
+        self.assertEqual(aa.reply_prose(own, {"text": said}),
+                         STOPPED_LINE + "\n\nThe order shipped on Monday.")
+        self.assertEqual(aa.reply_prose(block, {"text": said}), said)
+        # the answer's text saying it stopped itself is said once
+        own_stop = "I stopped researching at the time limit; the lots were not checked."
+        self.assertEqual(aa.reply_prose(STOPPED_LINE + "\n\n" + block, {"text": own_stop}),
+                         own_stop)

@@ -474,18 +474,65 @@ class AggregateTests(_Base):
         out = self.agg(STAFF, ids, {"op": "count"}, group_by=["description"])
         self.assertTrue(out["completeness"]["truncated"])
         self.assertFalse(out["completeness"]["complete"])
-        # More groups than one answer holds: the byte limit cuts first, and says so.
-        self.assertIn(out["completeness"]["reason"], ("group_cap", "result_size"))
+        # More groups than one answer holds: the byte limit cuts first, and says so,
+        # with where the next page starts and a summary over every group computed.
+        self.assertIn(out["completeness"]["reason"], ("group_page", "result_size"))
         self.assertEqual(out["completeness"]["total"], oa.MAX_GROUPS + 1)
         self.assertEqual(out["completeness"]["returned"], len(out["groups"]))
         self.assertLess(len(out["groups"]), oa.MAX_GROUPS + 1)
-        # Without the byte limit the group cap applies.
+        self.assertEqual(out["completeness"]["next_cursor"], f"g{len(out['groups'])}")
+        self.assertEqual(out["summary"], {"groups": oa.MAX_GROUPS + 1,
+                                          "with_value": oa.MAX_GROUPS + 1, "lowest": "1",
+                                          "highest": "1", "total": str(oa.MAX_GROUPS + 1),
+                                          "value_counts": [{"value": "1",
+                                                            "groups": oa.MAX_GROUPS + 1}]})
+        # Without the byte limit a page holds MAX_GROUPS; the next page holds the rest.
         self.tools.limits = dict(self.tools.limits, max_result_bytes=10**7)
-        out = self.call("plx.aggregate", {"set": self.set_of(STAFF, *ids),
-                                          "measure": {"op": "count"},
+        handle = self.set_of(STAFF, *ids)
+        out = self.call("plx.aggregate", {"set": handle, "measure": {"op": "count"},
                                           "group_by": ["description"]})
-        self.assertEqual(out["completeness"]["reason"], "group_cap")
+        self.assertEqual(out["completeness"]["reason"], "group_page")
         self.assertEqual(len(out["groups"]), oa.MAX_GROUPS)
+        rest = self.call("plx.aggregate", {"set": handle, "measure": {"op": "count"},
+                                           "group_by": ["description"],
+                                           "cursor": out["completeness"]["next_cursor"]})
+        self.assertEqual([g["key"]["description"]["untrusted_text"] for g in rest["groups"]],
+                         [f"item {oa.MAX_GROUPS:03d}"])
+        self.assertIsNone(rest["completeness"]["next_cursor"])
+        self.assertEqual(self.call("plx.aggregate", {
+            "set": handle, "measure": {"op": "count"}, "cursor": "page2"})["error"]["code"],
+            "invalid_input")
+
+    def test_dates_group_by_period_and_having_keeps_every_group_that_holds(self):
+        """"Every month": order dates grouped or counted by month (bucket), and only the
+        groups whose value holds a condition (having), every one of them, with a summary
+        over all groups computed; each group still cites its inputs."""
+        for po, day in ((PO1, "2026-01-05"), (PO2, "2026-01-28"), (PO3, "2026-03-02")):
+            self.store.val(po, "order_date", "date", day)
+        out = self.agg(STAFF, [PO1, PO2, PO3], {"op": "count"}, group_by=["order_date"],
+                       bucket="month")
+        self.assertEqual([(g["key"]["order_date"]["untrusted_text"], g["value"])
+                          for g in out["groups"]], [("2026-01", "2"), ("2026-03", "1")])
+        self.assertEqual(out["groups"][0]["key"]["order_date"]["origin"]["citation"],
+                         self.store.handles[PO1][0])
+        # the months each supplier was ordered from (count_distinct of a bucketed date)
+        out = self.agg(STAFF, [PO1, PO2, PO3], {"op": "count_distinct",
+                                                "property": "order_date"},
+                       group_by=["name"], bucket="month",
+                       path=[{"link_type": "PurchaseOrder.ordered_from",
+                              "direction": "forward"}])
+        self.assertEqual([(g["key"]["name"]["untrusted_text"], g["value"])
+                          for g in out["groups"]], [("Acme Packaging", "2"),
+                                                    ("Bolt Plastics", "1")])
+        kept = self.agg(STAFF, [PO1, PO2, PO3], {"op": "count_distinct",
+                                                 "property": "order_date"},
+                        group_by=["name"], bucket="month", having={"op": "gte", "value": 2},
+                        path=[{"link_type": "PurchaseOrder.ordered_from",
+                               "direction": "forward"}])
+        self.assertEqual([g["key"]["name"]["untrusted_text"] for g in kept["groups"]],
+                         ["Acme Packaging"])
+        self.assertEqual((kept["summary"]["groups"], kept["completeness"]["total"]), (1, 1))
+        self.assertEqual(len(kept["groups"][0]["inputs_citations"]), 2)
 
     def test_numeric_group_keys_group_by_value(self):
         self.store.val(L3, "received_quantity", "quantity", "20.00", unit="each", role="received")
@@ -645,6 +692,18 @@ class AggregateTests(_Base):
         self.assertEqual(out["error"]["code"], "measure_not_numeric")
         out = self.agg(STAFF, [L1], {"property": "no_such_property", "op": "sum"})
         self.assertEqual(out["error"]["code"], "unknown_property")
+        # The refusal names the declared properties a sum can take, the closest first,
+        # so the next call names one (q17 on 11-06: total_amount refused without them,
+        # the agent fell back to one system's vendor number and lost last year's POs).
+        out = self.agg(STAFF, [PO1], {"property": "total_amount", "op": "sum"})
+        hint = out["error"]["hint"]
+        self.assertTrue(hint.startswith("use as measure one of PurchaseOrder's properties: "
+                                        "total_cost"), hint)
+        self.assertNotIn("status", hint.split(";")[0])   # text is no measure
+        out = self.call("plx.aggregate", {"object_type": "Supplier", "filters": [
+            {"property": "vendor", "op": "eq", "value": "x"}], "measure": {"op": "count"}})
+        self.assertIn("filter on one of Supplier's properties: ", out["error"]["hint"])
+        self.assertIn("name", out["error"]["hint"])
         out = self.agg(STAFF, [L1], {"op": "sum"})
         self.assertEqual(out["error"]["code"], "invalid_input")
         out = self.call("plx.aggregate", {"set": "set:unknownhandle1", "measure": {"op": "count"}})

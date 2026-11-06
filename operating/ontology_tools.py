@@ -142,7 +142,7 @@ import sqlite3
 import threading
 import time
 import zlib
-from typing import Any, Callable, Iterable, Mapping, MutableMapping, Protocol, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, MutableMapping, Protocol, Sequence
 from urllib.parse import unquote
 
 from ontology import store_ddl
@@ -3139,7 +3139,7 @@ class OntologyTools:
             if unknown:
                 raise ToolError("unknown_property",
                                 f"{object_type} declares no property {', '.join(unknown)}",
-                                _valid_properties(object_type, declared))
+                                property_hint(self.schema, object_type, unknown))
             self._require_co_sourced(object_type, filters)
             filters = self._filters_as_stored(object_type, filters)
         notes: list[dict] = []
@@ -5155,9 +5155,11 @@ def _read_cursor(cursor: str, fingerprint: str) -> tuple[int, dt.datetime]:
     return offset, at
 
 
-def _valid_properties(object_type: str, names: Sequence[str]) -> str:
-    """The hint of ``unknown_property``: the type's declared properties, as many as fit."""
-    head = f"filter on one of {object_type}'s properties: "
+def _valid_properties(object_type: str, names: Sequence[str], verb: str = "filter on"
+                      ) -> str:
+    """The hint of ``unknown_property``: the type's declared properties, as many as fit,
+    in the order given (``property_hint``: the closest to the name asked first)."""
+    head = f"{verb} one of {object_type}'s properties: "
     tail = "; plx.schema with object_type lists them all"
     listed: list[str] = []
     for name in names:
@@ -5165,6 +5167,29 @@ def _valid_properties(object_type: str, names: Sequence[str]) -> str:
             return head + ", ".join(listed) + f" (+{len(names) - len(listed)} more)" + tail
         listed.append(name)
     return head + ", ".join(listed) if listed else f"{object_type} declares no properties"
+
+
+def property_hint(schema: Any, object_type: str, missing: Sequence[str], *,
+                  verb: str = "filter on", value_types: Collection[str] | None = None) -> str:
+    """``_valid_properties`` for ``object_type`` of ``schema`` (an L8 schema view), those
+    whose names are closest to the ``missing`` ones first (``vendor`` brings
+    ``vendor_name``, ``total_amount`` brings ``total_cost``), so the next call can name
+    one; only properties of ``value_types`` when given (a sum names a number, quantity or
+    money)."""
+    import difflib
+    specs = [p for p in (getattr(schema, "object_types", {}) or {}).get(object_type, {})
+             .get("properties", ()) if isinstance(p, Mapping) and p.get("name")]
+    if value_types is not None:
+        specs = [p for p in specs if p.get("value_type") in value_types]
+    names = sorted(dict.fromkeys(p["name"] for p in specs))
+    close: list[str] = []
+    for wanted in missing:
+        parts = set(wanted.split("_"))
+        close += difflib.get_close_matches(wanted, names, n=6, cutoff=0.5)
+        close += [n for n in names if parts & set(n.split("_")) and n not in close]
+    ranked = list(dict.fromkeys(close + names))
+    return _valid_properties(object_type, ranked) if verb == "filter on" \
+        else _valid_properties(object_type, ranked, verb)
 
 
 def _not_found_subject(query: str | None, object_type: str | None, filters: list[dict]) -> str:

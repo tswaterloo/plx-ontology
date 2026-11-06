@@ -1326,6 +1326,11 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     numbers = {claim_checks.to_decimal(value) for value in shown} - {None}
     covered = [value for value in shown if claim_checks.to_decimal(value) is None and value]
     days = {moment[0] for value in covered if (moment := claim_checks._moment(value))}
+    # A day a passed text value writes inside it ("Signed Sep 16, 2026 07:53 AM") backs
+    # the same day written in prose ("on Sep 16, 2026"), as the gate's text check reads
+    # it: the reply never drops a sentence that check passed for its date alone.
+    days |= {moment[0] for value in covered
+             for _written, moment, _iso in claim_checks.written_dates(value) if moment}
     held = " ".join(covered).lower()
     words = {match.group(0).lower() for said in refused if isinstance(said, str)
              for match in STATEMENT_WORD.finditer(said)}
@@ -1467,6 +1472,7 @@ REPLY_BREAK = re.compile(r"((?<=[.!?;])[ \t]+|[ \t]*\n+[ \t]*)")
 WITHHELD_WHY = "refused or not checked by the answer gate"
 WITHHELD_STATEMENTS = "Withheld: statements the answer gate did not pass."
 MAX_SHOWN_UNBACKED = 20
+MAX_SHOWN_DROPPED, MAX_DROPPED_CHARS = 6, 300   # dropped sentences a reply names
 
 
 def plain(value: Any) -> Any:
@@ -1543,7 +1549,8 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     back, ``WITHHELD_WHY``) and ``WITHHELD_STATEMENTS`` when a sentence was dropped. The
     ``unknowns`` are screened the same way, each one whole. ``{"text", "unknowns",
     "modified", "replaced", "sentences", "removed_sentences", "removed_unknowns",
-    "unbacked"}``. Deterministic; reads nothing. Fail closed: a text that is not a string
+    "unbacked", "dropped"}``; ``dropped``: the first ``MAX_SHOWN_DROPPED`` sentences
+    removed, as written, so a session can be told what its reply would lose. Deterministic; reads nothing. Fail closed: a text that is not a string
     or is too long (``MAX_REPLY_CHARS``) keeps nothing."""
     backed = backing(claims)
     percents = in_percent(claims)
@@ -1555,6 +1562,7 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     found: list[str] = []
     sentences = removed = dropped_units = 0
     kept: list[str] = []
+    gone: list[str] = []   # the sentences dropped, as written (``dropped``)
     for sentence, gap in _sentences(text if isinstance(text, str)
                                     and len(text) <= MAX_REPLY_CHARS else ""):
         if not sentence.strip():
@@ -1569,6 +1577,8 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
         if tokens:
             removed += 1
             found += [token for token in tokens if token not in found]
+            if len(gone) < MAX_SHOWN_DROPPED:
+                gone.append(" ".join(sentence.split())[:MAX_DROPPED_CHARS])
             # A dropped sentence keeps the line break after it, never its spaces.
             kept.append("\n" if "\n" in gap and "".join(kept).strip()
                         and not "".join(kept).endswith("\n") else "")
@@ -1600,7 +1610,8 @@ def final_reply(text: Any, claims: Sequence[Any], *, unsupported: Sequence[Any] 
     return {"text": "\n".join(out_lines) if modified else text,
             "unknowns": shown_unknowns, "modified": modified, "replaced": replaced,
             "sentences": sentences, "removed_sentences": removed,
-            "removed_unknowns": dropped, "unbacked": found[:MAX_SHOWN_UNBACKED]}
+            "removed_unknowns": dropped, "unbacked": found[:MAX_SHOWN_UNBACKED],
+            "dropped": gone}
 
 
 def _text_values(claims: Sequence[Any]) -> list[dict[str, Any]]:

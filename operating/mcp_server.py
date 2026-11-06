@@ -1819,7 +1819,7 @@ def answer_decision(answer: Any, server: Any, *, seen: set[str], returned: dict[
         + ([answer_gate.ANSWER_NOT_BLOCKED] if state != "blocked" else [])
         + ([answer_gate.WITHHOLD_REFUSED] if gated["unsupported"] else [])),
         "reply": {key: reply[key] for key in ("text", "unknowns", "removed_sentences",
-                                              "removed_unknowns")},
+                                              "removed_unknowns", "dropped")},
         # Each passed claim as a ready-to-copy answer value (``kept_value``'s form).
         "answer_values": answer_gate.answer_values(
             {"outcome": gated["outcome"], "claims": gated["claims"]})}

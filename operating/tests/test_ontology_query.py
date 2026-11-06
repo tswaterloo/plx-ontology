@@ -4,6 +4,7 @@ each system's record walked on its own. isolated-fixture (a scripted host table)
 
 from __future__ import annotations
 
+import copy
 import unittest
 
 from operating import ontology_query as oq
@@ -226,6 +227,142 @@ class Query(unittest.TestCase):
         alone = tool.call({"from": {"object_type": "Product"}}, "actor")
         self.assertEqual(alone["error"]["code"], "invalid_input")
         self.assertIn("where", alone["error"]["message"])
+
+    def test_every_group_is_kept_and_a_result_too_large_is_cut_where_it_says(self):
+        """No group is dropped by plx.query itself: plx.aggregate's page, summary,
+        bucket, having and cursor pass through; an answer past the result bound is cut
+        (rows, groups) to fit, each cut stated with what was left, never refused."""
+        table, asked = Table(), []
+        cite = {"l1_handle": "api://sage.oe_invoice_detail/1@g", "field_path": "row.q",
+                "digest": "a" * 64, "lineage": "sage_bronze"}
+        many = [{"key": {"name": {"untrusted_text": f"customer {n:04d}"}}, "value": "6",
+                 "inputs": 6, "markings": [], "inputs_citations": [cite] * 6}
+                for n in range(150)]
+
+        def call(name, arguments, actor):
+            if name == "plx.aggregate":
+                asked.append(dict(arguments))
+                return {"groups": copy.deepcopy(many), "partial": False, "summary": {
+                    "groups": 400, "with_value": 400}, "completeness": {
+                        "complete": False, "truncated": True, "returned": 150,
+                        "total": 400, "next_cursor": "g250", "reason": "group_page"}}
+            return table(name, arguments, actor)
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:new00001", Schema()))
+        out = tool.call({"from": {"set": "set:lines0001"},
+                         "measures": [{"op": "count_distinct", "property": "order_date"}],
+                         "group_by": ["name"], "bucket": "month",
+                         "having": {"op": "eq", "value": 6}, "cursor": "g100"}, "actor")
+        self.assertNotIn("error", out)
+        self.assertEqual({k: asked[0][k] for k in ("bucket", "having", "cursor")},
+                         {"bucket": "month", "having": {"op": "eq", "value": 6},
+                          "cursor": "g100"})
+        [result] = out["results"]
+        self.assertEqual(result["summary"]["groups"], 400)
+        self.assertLessEqual(len(oq.json.dumps(out)), oq.RESULT_BYTES)
+        # every group of the page kept, each with its first input citations
+        self.assertEqual(len(result["groups"]), 150)
+        self.assertIn(result["inputs_citations_kept"], (1, 0))
+        self.assertLessEqual(len(result["groups"][0].get("inputs_citations", [])), 1)
+        self.assertEqual(result["groups"][0]["key"], many[0]["key"])
+        self.assertEqual(result["completeness"]["next_cursor"], "g250")
+        # groups too large even without citations are cut, the cut said
+        for group in many:
+            group["key"]["name"]["untrusted_text"] = "x" * 400
+        out = tool.call({"from": {"set": "set:lines0001"},
+                         "measures": [{"op": "count_distinct", "property": "order_date"}],
+                         "group_by": ["name"], "cursor": "g100"}, "actor")
+        [result] = out["results"]
+        shown = len(result["groups"])
+        self.assertTrue(0 < shown < 150)
+        self.assertEqual(result["inputs_citations_kept"], 0)
+        self.assertEqual(result["completeness"]["reason"], "result_size")
+        self.assertEqual(result["completeness"]["next_cursor"], f"g{100 + shown}")
+        # rows past the bound are cut, the cut counted, never result_too_large
+        value = {"property": "p", "value_type": "text", "value": "x" * 900,
+                 "citation": cite, "markings": []}
+
+        def rows(arguments, actor):
+            return {"count": 20, "rows": [{"object_id": f"L:{n}", "values": {
+                p: value for p in ("a", "b", "c", "d")}} for n in range(20)],
+                "summary": {}, "gaps": []}
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:new00001",
+                                            Schema(), rows=rows))
+        out = tool.call({"from": {"set": "set:lines0001"},
+                         "rows": {"properties": ["a", "b", "c", "d"], "limit": 20}}, "actor")
+        self.assertLessEqual(len(oq.json.dumps(out)), oq.RESULT_BYTES)
+        self.assertEqual(len(out["rows"]["rows"]) + out["rows"]["more_rows"], 20)
+
+    def test_a_hop_to_a_type_walks_each_declared_route_and_takes_the_first_reaching(self):
+        """Quarantined lots to their suppliers: the lots' receipts name no supplier
+        (Receipt.supplied_by reaches nothing), their POs do. A hop {"to": "Supplier"}
+        walks the declared routes, shortest first and one longer, counts each and takes
+        the first that reaches a record; a link named by its type ("supplier") does the
+        same; an explicit hop that reaches nothing names the other routes."""
+        class Links:
+            link_types = {
+                "Lot.received_in": {"from": "Lot", "to": "Receipt",
+                                    "name": "received_in", "reverse_name": "received_lots"},
+                "Receipt.supplied_by": {"from": "Receipt", "to": "Supplier",
+                                        "name": "supplied_by", "reverse_name": "receipts"},
+                "Receipt.receives": {"from": "Receipt", "to": "PurchaseOrder",
+                                     "name": "receives", "reverse_name": "receipts"},
+                "PurchaseOrder.ordered_from": {"from": "PurchaseOrder", "to": "Supplier",
+                                               "name": "ordered_from",
+                                               "reverse_name": "purchase_orders"},
+                "Email.mentions_supplier": {"from": "Email", "to": "Supplier"},
+                "Lot.same_record_as": {"from": "Lot", "to": "Lot"}}
+        reach = {"Lot.received_in": ("set:receipts", 7), "Receipt.supplied_by": (None, 0),
+                 "Receipt.receives": ("set:orders01", 7),
+                 "PurchaseOrder.ordered_from": ("set:supplier", 3)}
+        walked = []
+
+        def call(name, arguments, actor):
+            if name == "plx.aggregate":   # the default count of what is reached
+                return {"groups": [{"key": {}, "value": "3", "inputs": 0, "markings": []}]}
+            hop = arguments["path"][0]
+            walked.append((arguments["from"], hop.get("link_type") or hop.get("link")))
+            handle, count = reach[hop["link_type"]]
+            return {"set": handle, "hops": [{"link_type": hop["link_type"],
+                                             "direction": hop["direction"],
+                                             "count": count}]}
+
+        def select(arguments, actor):
+            return {"ids": ["Lot:x:1", "Lot:x:2"], "gaps": []}
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:lots0001", Links(),
+                                            lambda a, ids: set(ids), select=select))
+        quarantined = {"object_type": "Lot", "where": [
+            {"property": "qc_status", "op": "eq", "value": "Quarantine"}]}
+        out = tool.call({"from": quarantined, "traverse": [{"to": "Supplier"}]}, "actor")
+        self.assertNotIn("error", out)
+        self.assertEqual(out["set"], "set:supplier")
+        self.assertEqual([(r["path"][-1]["link_type"], r["count"], r.get("taken", False))
+                          for r in out["routes"]],
+                         [("Receipt.supplied_by", 0, False),
+                          ("PurchaseOrder.ordered_from", 3, True)])
+        self.assertEqual([h["link_type"] for h in out["hops"]],
+                         ["Lot.received_in", "Receipt.receives", "PurchaseOrder.ordered_from"])
+        self.assertNotIn("Email.mentions_supplier", {link for _f, link in walked})
+        named = tool.call({"from": quarantined, "traverse": [{"link": "supplier"}]}, "actor")
+        self.assertEqual(named["set"], "set:supplier")
+        # an explicit hop that reaches nothing names the other routes to its type
+        tried = tool.call({"from": quarantined, "traverse": [
+            {"link_type": "Lot.received_in", "direction": "forward"},
+            {"link_type": "Receipt.supplied_by", "direction": "forward"}]}, "actor")
+        [hint] = [g for g in tried["gaps"] if g["reason"] == "other_routes"]
+        self.assertIn("Receipt.receives forward / PurchaseOrder.ordered_from forward",
+                      hint["detail"])
+        self.assertIn('{"to": "Supplier"}', hint["detail"])
+        none = tool.call({"from": quarantined, "traverse": [{"to": "Customer"}]}, "actor")
+        self.assertEqual(none["error"]["code"], "undeclared_link")
+        # a start its where selects nothing of walks nothing
+        walked.clear()
+        empty = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:lots0001",
+                                             Links(), lambda a, ids: set(ids),
+                                             select=lambda arguments, actor: {"ids": [],
+                                                                              "gaps": []}))
+        out = empty.call({"from": quarantined, "traverse": [{"to": "Supplier"}]}, "actor")
+        self.assertEqual(walked, [])
+        self.assertIn("nothing_selected", [g["reason"] for g in out["gaps"]])
 
     def test_a_bad_request_is_refused_by_the_contract(self):
         tool = oq.QueryTool(oq.TableBackend(Table(), None, Schema()))

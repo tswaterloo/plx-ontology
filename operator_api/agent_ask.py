@@ -480,9 +480,17 @@ def reply_prose(final_text: str, answer: Optional[Mapping[str, Any]]) -> str:
     answer's own text; never the json block."""
     from operating.answer_contract import _JSON_FENCE
 
+    from operating.deep_investigation import STOPPED_LINE, STOPPED_WORDS
+
     prose = _JSON_FENCE.sub(" ", final_text or "")
     prose = "\n".join(line.rstrip() for line in prose.strip().splitlines())
     while "\n\n\n" in prose:
         prose = prose.replace("\n\n\n", "\n\n")
     text = str((answer or {}).get("text") or "").strip()
+    if prose.strip() == STOPPED_LINE and text:
+        # The research-stopped line is all the message says around the block (a reply
+        # rendered from the gate's decision): it leads the answer's text, never stands
+        # in for it (a not-found answer showed only "I stopped researching ...").
+        # (the agent's own words when its text says it stopped: never twice)
+        return text if STOPPED_WORDS in text.casefold() else STOPPED_LINE + "\n\n" + text
     return prose.strip() or text

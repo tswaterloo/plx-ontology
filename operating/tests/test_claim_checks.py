@@ -3068,6 +3068,15 @@ class AskClaimFormTests(unittest.TestCase):
                 self.assertEqual(codes(gate("12 receipts.", cited, [twelve], rows=rows,
                                             calculations=(), returned=entry)),
                                  ["claim_value_mismatch"])
+        # A page of the groups (paged, kept by having, or cut at the result size) leaves
+        # other groups out, never a member of a group shown: its groups bind exactly.
+        for reason in ("group_page", "result_size"):
+            with self.subTest(page=reason):
+                paged = aggregate_count(seen, completeness={
+                    "complete": False, "truncated": True, "returned": 1, "total": 40,
+                    "next_cursor": "g1", "reason": reason})
+                self.assertTrue(gate("12 receipts.", cited, [twelve], rows=rows,
+                                     calculations=(), returned=paged)["passed"])
         # The close outcome states a lower-bound count only as one, too; in words below
         # ten as well (counts per order are mostly small), never another number's word.
         handles = seen[:3]

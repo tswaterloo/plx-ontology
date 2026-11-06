@@ -1039,8 +1039,10 @@ class TraverseTools:
                         .get("properties", ())}
             unknown = sorted({f["property"] for f in filters} - declared)
             if unknown:
+                from operating.ontology_tools import property_hint
                 raise ToolError("unknown_property", f"{target} declares no property "
-                                f"{', '.join(unknown)}", "call plx.schema with object_type")
+                                f"{', '.join(unknown)}",
+                                property_hint(self.schema, target, unknown))
         frontier = sorted({oid for oid in roots if oid.split(":", 1)[0] == hops[0][2]})
         lap("root")
         gaps: list[dict] = list(root_gaps)

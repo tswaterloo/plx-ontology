@@ -336,6 +336,20 @@ class FinalReplyGateTests(unittest.TestCase):
         self.assertEqual((screened["unknowns"], screened["removed_unknowns"]),
                          (["not in the record: the ship date"], 2))
 
+    def test_a_day_a_passed_text_value_writes_backs_the_same_day_in_prose(self):
+        """A passed claim quoting "Signed Sep 16, 2026 07:53 AM" backs "on Sep 16, 2026"
+        in the reply (the gate's text check passes it too: 11-06 q39 lost its lead
+        sentence to the reply screen alone); another day is still dropped."""
+        claims = [{"id": "s1", "check": {"status": "passed"},
+                   "text": "status: Signed Sep 16, 2026 07:53 AM",
+                   "value_claims": [{"value": "Plx signed: Signed Sep 16, 2026 07:53 AM",
+                                     "citation": MAP, "field": "row.content_text"}]}]
+        reply = answer_gate.final_reply(
+            "Both sides signed it on Sep 16, 2026.\nIt was countersigned on Sep 18, 2026.",
+            claims)
+        self.assertEqual(reply["dropped"], ["It was countersigned on Sep 18, 2026."])
+        self.assertTrue(reply["text"].startswith("Both sides signed it on Sep 16, 2026."))
+
     def test_a_name_the_run_returned_is_no_figure_a_figure_beside_it_still_is(self):
         # dev F29-0022/0049/0055/0044 on main-d98492: "1-Shoppe", "SO-FM-388",
         # "QT-FM-QT-0001", "SPF50" were read as unclaimed figures and their sentences cut.

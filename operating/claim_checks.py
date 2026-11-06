@@ -2192,10 +2192,15 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
     # still the tool's exact count: it lists a sample of its records, all distinct.
     gaps = [gap for gap in result.get("gaps") or () if isinstance(gap, Mapping)]
     capped = bool(gaps) and all(gap.get("reason") == CITATIONS_CAPPED for gap in gaps)
+    # A page of the groups (``group_page``: paged, or only those ``having`` keeps; or cut
+    # at the result size) leaves other groups out, never a member of a group shown: each
+    # group returned is whole as the tool computed it over all of its members.
+    done = result.get("completeness") or {}
     whole = (result.get("partial") is False and (not gaps or capped)
              and len(gaps) == len(result.get("gaps") or ())
              and not {"refused", "withheld"} & set(result)
-             and (result.get("completeness") or {}).get("complete") is True)
+             and (done.get("complete") is True
+                  or done.get("reason") in GROUP_PAGE_REASONS))
     now = "as_known_at" not in arguments
     # A count of a set's members (no property, no grouping) cites no value rows: its
     # records are those the complete listing that issued the set showed (``_note_listing``).
@@ -2288,6 +2293,9 @@ def _note_listing(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
 # states past it: a count group listing that many records under that gap alone counts more.
 MAX_COUNT_CITATIONS = 50
 CITATIONS_CAPPED = "citations_capped"
+# Why an aggregate returned only some of its groups, each of them whole
+# (``ontology_tools_aggregate``: a page, the groups ``having`` keeps, a size cut).
+GROUP_PAGE_REASONS = frozenset({"group_page", "result_size"})
 
 
 def _home_late_count(home: Mapping[str, Any], arguments: Any, into: dict[str, Any]) -> None:

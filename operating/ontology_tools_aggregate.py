@@ -151,6 +151,7 @@ from operating.ontology_tools import (
     LIVE_LOOKUP_HINT,
     OntologyTools,
     REMOVAL_REASONS,
+    property_hint,
     ToolError,
     _HANDLE,
     _IDENTITY_TIERS,
@@ -312,10 +313,21 @@ class AggregateTools:
 
     # ------------------------------------------------------------------ entry
 
-    def call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
-        """Run one tool for ``actor``; the result always satisfies the contract."""
+    def call(self, name: str, arguments: Any, actor: Actor, *, bounded: bool = True
+             ) -> dict[str, Any]:
+        """Run one tool for ``actor``; the result always satisfies the contract.
+        ``bounded=False``: a caller that bounds the answer itself (``plx.query``, which
+        keeps every group of a page before their citations) gets the page whole, past
+        the result byte limit."""
         if name not in TOOL_NAMES:
             raise KeyError(name)
+        self._bounded = bounded
+        try:
+            return self._call(name, arguments, actor)
+        finally:
+            self._bounded = True
+
+    def _call(self, name: str, arguments: Any, actor: Actor) -> dict[str, Any]:
         contract = self.contracts["tools"][name]
         if not isinstance(arguments, dict):
             return self._checked(name, _error("invalid_input", "arguments must be an object"))
@@ -410,7 +422,7 @@ class AggregateTools:
             if unknown:
                 raise ToolError("unknown_property",
                                 f"{object_type} declares no property {', '.join(unknown)}"
-                                [:600], "call plx.schema for the type's properties")
+                                [:600], property_hint(self.schema, object_type, unknown))
             base._require_co_sourced(object_type, arguments["filters"])
             filters = base._filters_as_stored(object_type, list(arguments["filters"]))
             passing, unsure = base._filter_objects(found, ids, filters)
@@ -491,7 +503,8 @@ class AggregateTools:
         if problems:
             return _error("contract_violation", ("output failed the contract: "
                                                  + "; ".join(problems))[:600])
-        if _envelope_bytes(result) > self.limits["max_result_bytes"]:
+        if getattr(self, "_bounded", True) \
+                and _envelope_bytes(result) > self.limits["max_result_bytes"]:
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the set, group by fewer properties or compare fewer properties")
         return result
@@ -513,7 +526,8 @@ class AggregateTools:
         return is_unit_price(self._declared(row["object_id"].split(":", 1)[0])
                              .get(row["property"]))
 
-    def _require_declared(self, types: Iterable[str], names: Iterable[str], what: str) -> None:
+    def _require_declared(self, types: Iterable[str], names: Iterable[str], what: str,
+                          numeric: bool = False) -> None:
         if self.schema is None:
             raise ToolError("schema_unavailable", "the compiled ontology schema is not loaded, "
                             "so properties cannot be checked",
@@ -525,8 +539,11 @@ class AggregateTools:
                 raise ToolError("unknown_property",
                                 f"{object_type} declares no {what} property "
                                 f"{', '.join(missing)}",
-                                "call plx.schema with object_type; aggregate a set of one "
-                                "object type that declares it")
+                                property_hint(self.schema, object_type, missing,
+                                              verb=f"{what} by" if what == "group_by"
+                                              else f"use as {what}",
+                                              value_types=NUMERIC if what == "measure"
+                                              and numeric else None))
 
     def _require_declared_by_any(self, types: Iterable[str], names: Iterable[str]) -> None:
         """Every name is declared by at least one of ``types`` (the other side may simply
@@ -540,7 +557,10 @@ class AggregateTools:
         if missing:
             raise ToolError("unknown_property",
                             f"{' / '.join(sorted(types))} declares no property "
-                            f"{', '.join(missing)}", "call plx.schema with object_type")
+                            f"{', '.join(missing)}",
+                            property_hint(self.schema, sorted(types)[0], missing,
+                                          verb="list") if len(set(types)) == 1
+                            else "call plx.schema with object_type")
 
     def _values(self, scope: Any, ids: Sequence[str], properties: Sequence[str],
                 handle: str | None = None
@@ -897,7 +917,7 @@ class AggregateTools:
         if unknown:
             raise ToolError("unknown_property",
                             f"{object_type} declares no property {', '.join(unknown)}"[:600],
-                            "call plx.schema for the type's properties")
+                            property_hint(self.schema, object_type, unknown))
         base._require_co_sourced(object_type, arguments["filters"])
         filters = base._filters_as_stored(object_type, list(arguments["filters"]))
         found_scope = base._scope(actor, base._as_known_at(arguments))
@@ -941,6 +961,8 @@ class AggregateTools:
         op, prop = measure["op"], measure.get("property")
         group_by = list(arguments.get("group_by", ()))
         path = list(arguments.get("path", ()))
+        bucket = arguments.get("bucket")
+        offset = _group_offset(arguments.get("cursor"))
         if op != "count" and prop is None:
             raise ToolError("invalid_input", f"measure op {op} needs a property")
         if path and not group_by:
@@ -984,7 +1006,8 @@ class AggregateTools:
         root_types = {oid.split(":", 1)[0] for oid in roots}
         roots = [oid for oid in roots if oid not in asserted]
         if prop is not None:
-            self._require_declared(root_types, [prop], "measure")
+            self._require_declared(root_types, [prop], "measure",
+                                   numeric=op in ("sum", "min", "max"))
             if op in ("sum", "min", "max"):
                 for object_type in root_types:
                     spec = self._declared(object_type)[prop]
@@ -1157,9 +1180,11 @@ class AggregateTools:
                                  "(plx.review correct_value); it is grouped by it, citing the "
                                  "correction (plx.object shows it beside the source value)")
                     number = to_decimal(row["value"]) if row["value_type"] in NUMERIC else None
-                    key.append((name, (row["value_type"],
+                    label = _bucketed(row, bucket)
+                    key.append((name, (row["value_type"], label if label is not None else
                                        row["value"] if number is None else _plain(number))))
-                    shown[name] = _group_display(row, limit)
+                    shown[name] = _group_display(row, limit) if label is None else \
+                        _envelope(label, row["l1_handle"], row["field_path"], limit)
                     if fix is not None and isinstance(shown[name], dict) and fix["citations"]:
                         # The person's value is no text of the source field: it is shown as
                         # read where the correction cites it first.
@@ -1248,7 +1273,7 @@ class AggregateTools:
             # shows no value; with group_by their groups are unknown: values stand and
             # the answer is partial.
             lost = not group_by and (bool(lost_gaps) or skipped > 0)
-            out, incomplete = self._group_out(group, op, prop, gaps, lost)
+            out, incomplete = self._group_out(group, op, prop, gaps, lost, bucket)
             partial = partial or incomplete
             used_rows.extend(group["rows"])
             out_groups.append(out)
@@ -1258,32 +1283,44 @@ class AggregateTools:
             # count unknown, never 0.
             out_groups.append({"key": {}, "value": "0" if op in ("count", "count_distinct")
                                and not lost_gaps else None, "inputs": 0, "markings": []})
+        having = arguments.get("having")
+        if having is not None:
+            # Groups whose value holds the condition, every one of them (a group with no
+            # value holds none): the set a "which groups ..." question asks for.
+            out_groups = [g for g in out_groups if _holds(g.get("value"), having)]
         total = len(out_groups)
-        truncated = total > MAX_GROUPS
-        out_groups = out_groups[:MAX_GROUPS]
+        summary = _groups_summary(out_groups, op) \
+            if total > SUMMARY_FROM or offset or having is not None else None
+        shown_groups = out_groups[offset:offset + MAX_GROUPS]
+        truncated = offset + len(shown_groups) < total
         if withheld_props or withheld_objects or withheld_links:
             partial = True
         meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots))
         gaps.extend(fresh)
-        complete = not truncated and not partial
-        completeness: dict[str, Any] = {"complete": complete, "truncated": truncated,
-                                        "returned": len(out_groups), "total": total,
-                                        "next_cursor": None}
+        complete = not truncated and not offset and not partial
+        completeness: dict[str, Any] = {
+            "complete": complete, "truncated": truncated, "returned": len(shown_groups),
+            "total": total, "next_cursor": _group_cursor(offset + len(shown_groups))
+            if truncated else None}
         if not complete:
-            completeness["reason"] = "group_cap" if truncated else "partial_inputs"
-        result: dict[str, Any] = {"groups": out_groups, "partial": partial,
+            completeness["reason"] = "partial_inputs" if partial else "group_page"
+        result: dict[str, Any] = {"groups": shown_groups, "partial": partial,
                                   "gaps": gaps.out(), "completeness": completeness,
                                   "meta": meta}
+        if summary is not None:
+            result["summary"] = summary
         if withheld_props or withheld_objects or withheld_links:
             result["withheld"] = {"properties": withheld_props, "objects": None,
                                   "reason": _reason_of(reasons)}
-        return self._fit(result, "groups")
+        return self._fit(result, "groups", offset)
 
-    def _fit(self, result: dict[str, Any], key: str) -> dict[str, Any]:
+    def _fit(self, result: dict[str, Any], key: str, offset: int | None = None
+             ) -> dict[str, Any]:
         """The longest prefix of ``result[key]`` that fits the result byte limit; a cut
-        is stated as ``truncated`` with reason ``result_size`` (never silent)."""
+        is stated as ``truncated`` with reason ``result_size`` (never silent), and a
+        paged list (``offset``: groups) says where the next page starts."""
         limit = self.limits["max_result_bytes"]
-        if _envelope_bytes(result) <= limit:
+        if not getattr(self, "_bounded", True) or _envelope_bytes(result) <= limit:
             return result
         items = result[key]
         low, high, best = 0, len(items), None
@@ -1291,7 +1328,8 @@ class AggregateTools:
             mid = (low + high) // 2
             trial = dict(result, **{key: items[:mid]}, completeness=dict(
                 result["completeness"], complete=False, truncated=True, returned=mid,
-                reason="result_size"))
+                reason="result_size", **({"next_cursor": _group_cursor(offset + mid)}
+                                         if offset is not None else {})))
             if _envelope_bytes(trial) <= limit:
                 best, low = trial, mid + 1
             else:
@@ -1302,7 +1340,8 @@ class AggregateTools:
         return best
 
     def _group_out(self, group: Mapping[str, Any], op: str, prop: str | None,
-                   gaps: _Gaps, set_lost: bool) -> tuple[dict[str, Any], bool]:
+                   gaps: _Gaps, set_lost: bool, bucket: str | None = None
+                   ) -> tuple[dict[str, Any], bool]:
         """One group as the contract's group. ``set_lost``: members of the set that
         belong to this group were left out (no longer readable, not in the projection
         or not groupable), so it shows no value."""
@@ -1346,7 +1385,9 @@ class AggregateTools:
             if lacking or set_lost:
                 value, incomplete = None, True
             elif op == "count_distinct":
-                value = str(len({_value_key(r) for r in rows}))
+                # a date counted per bucket (``bucket``: the months it falls in)
+                value = str(len({_value_key(r) if (label := _bucketed(r, bucket)) is None
+                                 else ("bucket", label) for r in rows}))
             elif not rows:
                 value = None
             elif op == "sum":
@@ -1610,6 +1651,84 @@ def _allocations(row: Mapping[str, Any], supply: str) -> list[Mapping[str, Any]]
         return []
     return [f for f in features if isinstance(f, dict) and f.get("feature") == ALLOCATED
             and f.get("supply") == supply and isinstance(f.get("property"), str)]
+
+
+# Groups past which (or paged, or filtered by ``having``) an aggregate states a summary
+# over every group it computed, the ones not returned included (``_groups_summary``).
+SUMMARY_FROM = 20
+MAX_VALUE_COUNTS = 12
+_CURSOR = re.compile(r"g([0-9]{1,7})")
+BUCKETS = ("year", "quarter", "month", "week", "day")
+
+
+def _group_cursor(offset: int) -> str:
+    return f"g{offset}"
+
+
+def _group_offset(cursor: Any) -> int:
+    """The first group a page starts at (``completeness.next_cursor`` of the page
+    before); a cursor of another form is refused."""
+    if cursor is None:
+        return 0
+    found = _CURSOR.fullmatch(cursor) if isinstance(cursor, str) else None
+    if found is None:
+        raise ToolError("invalid_input", "cursor is the next_cursor of an earlier page of "
+                        "the same aggregate")
+    return int(found[1])
+
+
+def _bucketed(row: Mapping[str, Any], bucket: str | None) -> str | None:
+    """A date or timestamp value as its ``bucket`` (``2026-07`` for month, ``2026-Q3``,
+    ``2026-W28``, ``2026``, ``2026-07-15``); None: no bucket, or not a date."""
+    if bucket is None or row["value_type"] not in ("date", "timestamp"):
+        return None
+    raw = row["value"]
+    try:
+        day = dt.date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+    if bucket == "year":
+        return f"{day.year:04d}"
+    if bucket == "quarter":
+        return f"{day.year:04d}-Q{(day.month - 1) // 3 + 1}"
+    if bucket == "month":
+        return f"{day.year:04d}-{day.month:02d}"
+    if bucket == "week":
+        year, week, _ = day.isocalendar()
+        return f"{year:04d}-W{week:02d}"
+    return day.isoformat()
+
+
+def _holds(value: Any, having: Mapping[str, Any]) -> bool:
+    """Whether a group's value holds ``having`` (op against a number)."""
+    number, wanted = to_decimal(value), to_decimal(having.get("value"))
+    if number is None or wanted is None:
+        return False
+    return {"eq": number == wanted, "gt": number > wanted, "gte": number >= wanted,
+            "lt": number < wanted, "lte": number <= wanted}.get(having.get("op"), False)
+
+
+def _groups_summary(groups: Sequence[Mapping[str, Any]], op: str) -> dict[str, Any]:
+    """What every group computed says together, returned or not: how many groups, how
+    many hold a value, the lowest and highest value, their total (a count, or a sum in
+    one unit and currency) and how many groups hold each value (the most frequent first,
+    ``MAX_VALUE_COUNTS``): computed from the groups, never a figure of a source."""
+    values = [(g, n) for g in groups if (n := to_decimal(g.get("value"))) is not None]
+    out: dict[str, Any] = {"groups": len(groups), "with_value": len(values)}
+    if not values:
+        return out
+    numbers = [n for _g, n in values]
+    out["lowest"], out["highest"] = _plain(min(numbers)), _plain(max(numbers))
+    kinds = {(g.get("unit"), g.get("currency")) for g, _n in values}
+    if op in ("count", "count_distinct") or (op == "sum" and len(kinds) == 1):
+        out["total"] = _plain(sum(numbers, Decimal(0)))
+    counted: dict[Decimal, int] = {}
+    for number in numbers:
+        counted[number] = counted.get(number, 0) + 1
+    ranked = sorted(counted.items(), key=lambda item: (-item[1], -item[0]))
+    out["value_counts"] = [{"value": _plain(number), "groups": count}
+                           for number, count in ranked[:MAX_VALUE_COUNTS]]
+    return out
 
 
 def _sort_key(key: tuple) -> tuple:

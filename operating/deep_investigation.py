@@ -118,6 +118,16 @@ MAX_CONTINUES = 2
 CONTINUE_SECONDS = 25     # research seconds left for a continuation to be worth it
 CONTINUE_STEPS = 4        # tool calls left for one
 MAX_OPEN_SHOWN = 8
+# A decision that passed claims but whose reply drops sentences of the submitted text (a
+# number, date or name no passed claim states: ``answer_gate.final_reply``) goes back once
+# with those sentences, research or not, while the session has time for one more
+# submission (``TEXT_REPAIR_SECONDS``: composing it and the gate's decision). Measured
+# 2026-11-06 (intel-5, 42 questions): 11 replies lost sentences, 6 of them at a decision
+# that ended the session, e.g. "SharePoint holds three versions ... 20ml ..." went because
+# its count was a lower bound and "20ml" was part of a file name no claim stated, so the
+# reply opened on its second bullet.
+MAX_TEXT_REPAIRS = 1
+TEXT_REPAIR_SECONDS = 25
 
 
 
@@ -170,11 +180,17 @@ RECORDS_FIRST = (
     "component's purchases); follow the "
     "ones the question needs with plx.around (up to 3 hops per call, filters on the "
     "objects reached, e.g. a date or status; call it again from the set it returns to go "
-    "further). When firm links run out, follow lead links with tier_floor \"lead\" and "
-    "call what they reach leads. "
+    "further). To reach a type several links away (a lot's suppliers, an order's "
+    "receipts), plx.query traverse [{\"to\": \"<type>\"}] walks every declared route "
+    "there from the records you have and says what each reached; a hop that reaches "
+    "nothing names the other routes. When firm links run out, follow lead links with "
+    "tier_floor \"lead\" and call what they reach leads. "
     "(c) Total: plx.query does resolve, walk and total in one call (from an entity, its "
     "records walked one by one; traverse several hops; where; measures; group_by with "
-    "group_path for a linked record's date; window for a period): each group lists the "
+    "group_path for a linked record's date; bucket for a date's year, quarter, month, "
+    "week or day; having for the groups whose value holds a condition; window for a "
+    "period; every group is computed, a summary covers them all and cursor pages them): "
+    "each group lists the "
     "citations of its inputs, so claim a total as {\"op\": \"sum\", \"of\": [each "
     "input's l1_handle as citation and field_path as field]} with its unit and the "
     "claim's name saying what it totals (no role). plx.aggregate sums, "
@@ -541,6 +557,7 @@ class Budget:
         self.repair_reads, self.grace_calls = repair_reads, grace_calls
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
         self.continues = 0   # decisions sent back with their open parts (``after_answer``)
+        self.text_repairs = 0   # decisions sent back for the sentences their reply drops
         self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
         # a stopped call no research call was forwarded after (``cut_short``)
         self.timeout_open = False
@@ -654,48 +671,73 @@ class Budget:
         return out
 
     def after_answer(self, result: Any, now: float) -> dict[str, Any] | None:
-        """The note an answer-gate decision carries when research should go on: the
+        """The note an answer-gate decision carries when the session should go on: the
         decision passed claims (``answered``) but leaves parts of the question open
         (``open_parts``), research time and steps are left for at least one more link
         (``CONTINUE_SECONDS``, ``CONTINUE_STEPS``), and no decision was sent back before
-        (``MAX_CONTINUES``). The note says ``continue`` and lists the open parts; the
-        session does not end at this decision (``agent_session.GateEnd``) and the next
-        submission replaces it. None: the decision ends the session as before."""
-        if self.continues >= MAX_CONTINUES or self.deadline is None:
-            return None
-        if self.deadline - now < CONTINUE_SECONDS:
-            return None
-        if self.max_steps is not None and self.max_steps - self.steps < CONTINUE_STEPS:
-            return None
+        (``MAX_CONTINUES``); or its reply drops sentences of the submitted text
+        (``dropped_text``) while the session has time for one more submission
+        (``TEXT_REPAIR_SECONDS``, ``MAX_TEXT_REPAIRS``). The note says ``continue`` and
+        lists the open parts and the dropped sentences; the session does not end at this
+        decision (``agent_session.GateEnd``) and the next submission replaces it. None:
+        the decision ends the session as before."""
         decision = decision_body(result)
         if not isinstance(decision, Mapping) \
                 or decision.get("outcome") not in ("answered", "abstained"):
             return None
+        research = self.continues < MAX_CONTINUES and self.deadline is not None \
+            and self.deadline - now >= CONTINUE_SECONDS \
+            and (self.max_steps is None or self.max_steps - self.steps >= CONTINUE_STEPS)
         # An abstained decision established nothing (every claim refused, or none given):
         # with research time left the whole question is still open (measured 11-06: three
         # sessions gave up at 60-85 s of a 180 s budget, a minute and more unspent).
         nothing = decision.get("outcome") == "abstained"
-        parts = open_parts(decision) or (
-            ["the whole question: nothing is established yet"] if nothing else [])
-        if not parts:
+        parts = (open_parts(decision) or (
+            ["the whole question: nothing is established yet"] if nothing else [])) \
+            if research else []
+        ends = self.ends_at if self.ends_at is not None else self.deadline
+        uncovered, dropped = dropped_text(decision) \
+            if self.text_repairs < MAX_TEXT_REPAIRS and ends is not None \
+            and ends - now >= TEXT_REPAIR_SECONDS else ([], [])
+        if not parts and not dropped:
             return None
-        self.continues += 1
-        left = int(self.deadline - now)
         note = self.note(now)
-        said = ("this decision establishes nothing of the question" if nothing else
-                "this decision leaves the parts listed in open unsettled")
-        note.update({CONTINUE_KEY: True, "open": parts[:MAX_OPEN_SHOWN], "next": (
-            f"Research is not over: {left} seconds are left and {said}. A part no read so "
-            "far settled may be reached another way: the records of a type selected by a "
-            "status or a date, the links of records you read, the text of a message or "
-            "file you found. Do not write your reply yet. This decision "
-            "stays your answer if nothing more is found. For each open part, take the "
-            "next record, link or document that could settle it: the links of the records "
-            "you already read (plx.object counts them; plx.query walks several hops from "
-            "many records at once), the lines and the records that made, used, received "
-            "or shipped them, the attachments of a message you found. A claim refused as "
-            "off the question needs \"via\". Then submit again with every claim, the ones "
-            "passed here included: the later decision replaces this one.")})
+        said: list[str] = []
+        if parts:
+            self.continues += 1
+            left = int(self.deadline - now)
+            what = ("this decision establishes nothing of the question" if nothing else
+                    "this decision leaves the parts listed in open unsettled")
+            said.append(
+                f"Research is not over: {left} seconds are left and {what}. A part no read "
+                "so far settled may be reached another way: the records of a type selected "
+                "by a status or a date, the links of records you read, the text of a "
+                "message or file you found. Do not write your reply yet. This decision "
+                "stays your answer if nothing more is found. For each open part, take the "
+                "next record, link or document that could settle it: the links of the "
+                "records you already read (plx.object counts them; plx.query walks several "
+                "hops from many records at once), the lines and the records that made, "
+                "used, received or shipped them, the attachments of a message you found. A "
+                "claim refused as off the question needs \"via\". Then submit again with "
+                "every claim, the ones passed here included: the later decision replaces "
+                "this one.")
+        if dropped:
+            self.text_repairs += 1
+            said.append(
+                "Your reply as submitted loses the sentences listed in dropped: each states "
+                "something no passed claim states (listed in uncovered: a number, date or "
+                "name). Keep each sentence's point: add the cited claim that states it (a "
+                "count the gate bounds is written \"at least N\"; a name or title holding "
+                "a figure is a text claim of the field that holds it), or write the "
+                "sentence without it. Then submit again with every claim, the ones passed "
+                "here included" + ("." if parts else "; this decision stays your answer if "
+                                    "you do not."))
+        note.update({CONTINUE_KEY: True, "open": (parts + [
+            f"dropped from the reply: {sentence}"[:200] for sentence in dropped]
+        )[:MAX_OPEN_SHOWN], "next": " ".join(said)})
+        if dropped:
+            note["dropped"] = dropped[:MAX_OPEN_SHOWN]
+            note["uncovered"] = uncovered[:MAX_OPEN_SHOWN]
         return note
 
     def summary(self) -> dict[str, Any]:
@@ -704,7 +746,8 @@ class Budget:
                 "grace_calls": self.grace, "timed_out": self.timed_out,
                 "cut_short": self.cut_short,
                 "submissions": self.submissions,
-                **({"continues": self.continues} if self.continues else {})}
+                **({"continues": self.continues} if self.continues else {}),
+                **({"text_repairs": self.text_repairs} if self.text_repairs else {})}
 
 
 def _plain(value: Any) -> Any:
@@ -730,6 +773,25 @@ def decision_body(result: Any) -> Mapping[str, Any] | None:
             return None
     body, _note = strip_note(body)
     return body if isinstance(body, Mapping) else None
+
+
+def dropped_text(decision: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """What an answered decision's reply loses of its submitted text: (the values its
+    text check left uncovered, the sentences its reply drops: ``answer_gate.final_reply``'s
+    ``dropped``). Nothing dropped: ([], [])."""
+    reply = decision.get("reply")
+    if decision.get("outcome") != "answered" or not isinstance(reply, Mapping):
+        return [], []
+    dropped = [text.strip() for item in reply.get("dropped") or ()
+               if isinstance(text := _plain(item), str) and text.strip()]
+    if not dropped:
+        return [], []
+    check = decision.get("text_check")
+    uncovered = [str(value) for entry in ((check or {}).get("uncovered") or ()
+                                          if isinstance(check, Mapping) else ())
+                 if isinstance(entry, Mapping)
+                 and isinstance(value := _plain(entry.get("value")), (str, int, float))]
+    return list(dict.fromkeys(uncovered)), dropped
 
 
 def open_parts(decision: Mapping[str, Any]) -> list[str]:
