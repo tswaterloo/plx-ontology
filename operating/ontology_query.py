@@ -293,9 +293,21 @@ class QueryTool:
                 raise _Refused(_error("undeclared_link", "no start record's type declares "
                                       f"{traverse[0].get('link_type') or traverse[0].get('link')}",
                                       "plx.object a start record to see its link types"))
-            by_record, meta = [], None
+            by_record, meta, unroutable = [], None, []
             for record in starts:
-                run = self._run(call, record, traverse, arguments, [], actor)
+                try:
+                    run = self._run(call, record, traverse, arguments, [], actor)
+                except _Refused as refused:
+                    # One system's record of the thing (a Sage vendor beside its supplier
+                    # records) may declare no route the walk takes: it is left out and
+                    # named, never the refusal of its twins' walks.
+                    if refused.result["error"].get("code") != "undeclared_link":
+                        raise
+                    unroutable.append(refused)
+                    gaps.append({"state": "unknown", "reason": "no_route",
+                                 "subject": record[:700],
+                                 "detail": str(refused.result["error"].get("message"))[:600]})
+                    continue
                 meta = run.pop("meta", None) or meta
                 if run["hops"] and all(h.get("count") for h in run["hops"]):
                     by_record.append({"record": record, **run})
@@ -304,6 +316,8 @@ class QueryTool:
                                  "subject": record[:700],
                                  "detail": "this record of the thing reaches nothing on the "
                                            "path"})
+            if len(unroutable) == len(starts):
+                raise unroutable[0]
             out.update({"hops": [], "set": None, "results": [], "by_record": by_record})
             out["gaps"] = _fold(gaps + [g for r in by_record for g in r.pop("gaps", [])])[:20]
             out["meta"] = meta
@@ -641,7 +655,8 @@ class QueryTool:
         if got.get("error"):
             gaps.append({"state": "unknown", "reason": "rows_refused",
                          "subject": str(got["error"].get("code"))[:700],
-                         "detail": str(got["error"].get("message"))[:600]})
+                         "detail": " ".join(str(got["error"].get(k)) for k in ("message", "hint")
+                                            if got["error"].get(k))[:600]})
             return None
         gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
         return {k: got[k] for k in ("count", "rows", "more_rows", "summary") if k in got}

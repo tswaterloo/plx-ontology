@@ -356,10 +356,40 @@ class PagedRead:
         if problems:
             return _error("contract_violation", ("output failed the contract: "
                                                  + "; ".join(problems))[:600])
+        if not self._fits(result):
+            result = self._fewer_listed(result)
         if ot._envelope_bytes(result) > self.limits["max_result_bytes"]:
             return _error("result_too_large", "the answer does not fit one response",
                           "page it: text_offset (with field_path for one field) or "
                           "column_offset")
+        return result
+
+    def _fewer_listed(self, result: dict[str, Any]) -> dict[str, Any]:
+        """A read too large for one response only for what travels with it (a long
+        thread's attachments, their find hits) keeps the text and lists as many of them
+        as fit, saying how many are left out: the message is never refused whole for its
+        attachment list."""
+        for key in ("attachment_matches", "attachments"):
+            listed = result.get(key)
+            if self._fits(result) or not isinstance(listed, list) or not listed:
+                continue
+            total = len(listed)
+
+            def build(count: int, key: str = key, listed: list = listed,
+                      total: int = total) -> dict[str, Any]:
+                out = {k: v for k, v in result.items() if k != key}
+                if count:
+                    out[key] = listed[:count]
+                out["gaps"] = [*(result.get("gaps") or [])][:19] + [_gap(
+                    "unknown", f"{key}_cut", str(result.get("citation") or key)[:700],
+                    f"{count} of {total} {key.replace('_', ' ')} listed; the rest do not "
+                    "fit one response: read one by its citation, or find a phrase in one")]
+                return out
+            low, high = 0, total - 1     # the most that fit
+            while low < high:
+                middle = (low + high + 1) // 2
+                low, high = (middle, high) if self._fits(build(middle)) else (low, middle - 1)
+            result = build(low)
         return result
 
     def _fits(self, result: dict[str, Any]) -> bool:

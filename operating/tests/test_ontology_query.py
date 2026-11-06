@@ -461,3 +461,71 @@ class Query(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OnePartNeverRefusesTheRead(unittest.TestCase):
+    def test_an_undeclared_property_is_named_and_the_declared_ones_still_listed(self):
+        """A row listing asking for one property the type does not declare lists the
+        ones it declares and names the unknown one with the valid names; a listing of
+        undeclared names alone stays refused, and plx.query passes the hint on."""
+        from operating import ontology_tools_aggregate as oa
+        from operating.tests.test_find_scan_resume import READER, _oid, listing_store
+        from tests.test_ontology_tools import tools
+        store = listing_store(2)
+        self.addCleanup(store.conn.close)
+        t = tools(store)
+        agg = oa.AggregateTools(t)
+        some = t._new_set(READER, [_oid("bulk-0000a"), _oid("bulk-0001a")])
+        got = agg.rows({"set": some, "properties": ["po_number", "line_amount_x"]}, READER)
+        self.assertNotIn("error", got, got)
+        self.assertEqual(sorted(r["values"]["po_number"]["value"] for r in got["rows"]),
+                         ["PO300000", "PO300001"])
+        [gap] = [g for g in got["gaps"] if g["reason"] == "unknown_property"]
+        self.assertEqual(gap["subject"], "line_amount_x")
+        self.assertIn("po_number", gap["detail"])
+        empty = agg.rows({"set": t._new_set(READER, []), "properties": ["po_number"],
+                          "date": {"property": "order_date"}}, READER)
+        self.assertNotIn("error", empty, empty)
+        self.assertEqual((empty["count"], empty["rows"]), (0, []))
+        refused = agg.rows({"set": some, "properties": ["line_amount_x"]}, READER)
+        self.assertEqual(refused["error"]["code"], "unknown_property")
+        self.assertIn("po_number", refused["error"]["hint"])
+
+        tool = oq.QueryTool(oq.TableBackend(Table(), lambda actor, ids: "set:new00001",
+                                            Schema(), rows=lambda a, actor: refused))
+        out = tool.call({"from": {"set": "set:lines0001"},
+                         "rows": {"properties": ["line_amount_x"]}}, "actor")
+        [gap] = [g for g in out["gaps"] if g["reason"] == "rows_refused"]
+        self.assertIn("po_number", gap["detail"])
+
+    def test_an_entity_record_no_route_leaves_is_named_and_its_twins_still_walked(self):
+        """A name held by a supplier record and a vendor record of a system no route
+        leaves: the supplier is walked, the other is named (no_route), never the
+        refusal of the whole walk; when no record routes, the walk is refused."""
+        class Links:
+            link_types = {"Lot.of_item": {"from": "Lot", "to": "Product"},
+                          "Note.mentions_product": {"from": "Note", "to": "Product"}}
+        names = {"Acme": ["Lot:fm:1", "Note:n:1"], "Solo": ["Note:n:1"]}
+
+        def call(name, arguments, actor):
+            if name == "plx.find":
+                return {"status": "resolved", "entities": [{
+                    "mention": arguments["text"], "status": "match", "records": [
+                        {"object": {"object_id": oid}, "status": "match"}
+                        for oid in names[arguments["text"]]]}]}
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": "2", "inputs": 0, "markings": []}]}
+            hop = arguments["path"][0]
+            return {"set": "set:prods001", "hops": [{"link_type": hop["link_type"],
+                                                     "direction": hop["direction"],
+                                                     "count": 2}]}
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:x0000001", Links(),
+                                            lambda a, ids: set(ids)))
+        out = tool.call({"from": {"entity": "Acme"}, "traverse": [{"to": "Product"}]}, "actor")
+        self.assertNotIn("error", out, out)
+        self.assertEqual([r["record"] for r in out["by_record"]], ["Lot:fm:1"])
+        self.assertIn(("no_route", "Note:n:1"),
+                      [(g["reason"], g["subject"]) for g in out["gaps"]])
+        refused = tool.call({"from": {"entity": "Solo"}, "traverse": [{"to": "Product"}]},
+                            "actor")
+        self.assertEqual(refused["error"]["code"], "undeclared_link")

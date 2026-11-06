@@ -1363,6 +1363,40 @@ class AttachmentFind(unittest.TestCase):
         served = [cited for cited, _field, _v, _s in mcp_server._served_texts(out)]
         self.assertIn([attached[0]], served)
 
+    def test_a_message_too_large_for_its_attachment_list_keeps_its_text(self):
+        """A long thread whose attachment listing alone overflows one response is read
+        with its text and as many attachments as fit, the rest counted in a gap; it is
+        never refused whole (11-06 hard q15: a complaint thread read result_too_large)."""
+        from operating import case_tools_host as cth
+        listing = [{"citation": f"{self.MESSAGE}#attachment=img{n:03d}&sha256={'f' * 64}",
+                    "name": {"untrusted_text": f"image{n:03d}.png", "origin": {
+                        "citation": self.MESSAGE, "field_path": "row.name"}},
+                    "content_type": "image/png",
+                    "text_read": False} for n in range(30)]
+        result = {"citation": self.MESSAGE, "status": "resolved", "digest": "b" * 64,
+                  "lineage": "mail", "gaps": [], "content": {
+                      "untrusted_text": "Please find the Customer Complaint Form attached.",
+                      "origin": {"citation": self.MESSAGE, "field_path": "row.body_text"}},
+                  "attachments": listing,
+                  "completeness": {"complete": True, "truncated": False, "returned": 1,
+                                   "total": 1, "next_cursor": None},
+                  "meta": {"schema_digest": "a" * 64, "as_known_at": "2026-11-06T00:00:00Z",
+                           "freshness": []}}
+        paged = cth.PagedRead.__new__(cth.PagedRead)
+        paged.contracts = CONTRACTS
+        whole = cth.ot._envelope_bytes(result)
+        paged.limits = {"max_result_bytes": whole - 4000}
+        out = paged._checked(dict(result))
+        self.assertNotIn("error", out, out)
+        self.assertEqual(out["content"], result["content"])
+        kept = len(out["attachments"])
+        self.assertTrue(0 < kept < 30, kept)
+        self.assertEqual(out["attachments"], listing[:kept])
+        [gap] = [g for g in out["gaps"] if g["reason"] == "attachments_cut"]
+        self.assertIn(f"{kept} of 30", gap["detail"])
+        self.assertEqual(validate(out, CONTRACTS["tools"]["plx.read"]["output"],
+                                  root=CONTRACTS), [])
+
     def test_the_claim_gate_reads_an_attachments_text_as_plx_read_serves_it(self):
         """A claim quoting a mail attachment's text is checked against the text the reader
         was served (``row.content_text``), read through the runtime's one mail resolver;

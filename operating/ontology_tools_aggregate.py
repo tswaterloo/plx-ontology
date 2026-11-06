@@ -456,7 +456,24 @@ class AggregateTools:
         roots = [oid for oid in roots if removed.get(oid) != "source_soft_delete"]
         root_types = {oid.split(":", 1)[0] for oid in roots}
         props = list(dict.fromkeys(arguments.get("properties") or ()))
-        if props:
+        if props and root_types and self.schema is not None:
+            # A property no member type declares is named (with the declared ones) and
+            # left out; the rows still list the declared ones, so one mistyped name never
+            # costs the whole read. Nothing declared at all is still a refusal.
+            declared = {n for object_type in root_types for n in self._declared(object_type)}
+            unknown = [n for n in props if n not in declared]
+            if unknown and len(unknown) < len(props):
+                props = [n for n in props if n in declared]
+                types = sorted(root_types)
+                gaps.add("unknown", "unknown_property", ", ".join(unknown),
+                         f"{' / '.join(types)} declares no property {', '.join(unknown)}; "
+                         "listed without it. " + (property_hint(self.schema, types[0], unknown,
+                                                                verb="list")
+                                                  if len(types) == 1 else
+                                                  "call plx.schema with object_type"))
+        if props and root_types:
+            # an empty set lists no rows; it never says its (absent) members' type
+            # declares none of the properties
             self._require_declared_by_any(root_types, props)
         values, withheld = self._values(scope, roots, props)
         corrections = self._corrections(actor, scope.at, roots, props)
@@ -474,7 +491,8 @@ class AggregateTools:
                 reached, _marks, _hidden, _several, _offered = self._dimensions(
                     scope, roots, hops, gaps)
             else:
-                self._require_declared_by_any(root_types, [date["property"]])
+                if root_types:
+                    self._require_declared_by_any(root_types, [date["property"]])
                 reached = {oid: oid for oid in roots}
             targets = sorted({oid for oid in reached.values() if isinstance(oid, str)})
             found, hidden = self._values(scope, targets, [date["property"]])
