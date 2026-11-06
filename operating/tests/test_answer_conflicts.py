@@ -192,6 +192,16 @@ class NotADisagreement(unittest.TestCase):
         self.assertIsNone(self.resolve("total cost", "827.11", "375.04926",
                                        ("row.totalAmountIncludingTax", "row.total_cost")))
 
+    def test_an_integer_of_a_decimal_is_one_quantity_never_one_amount(self):
+        def resolve(left, right, **kw):
+            return ac.resolve("ordered boxes", [ac.Reading(value=left, handle=self.BC, **kw),
+                                                ac.Reading(value=right, handle=self.PORTAL, **kw)])
+        for left, right in (("32", "32.5"), ("0", "0.926"), ("157", "156.4")):
+            self.assertIsNone(resolve(left, right, unit="box"), (left, right))
+        self.assertIsNotNone(resolve("31", "32.5", unit="box"))     # not its floor or ceiling
+        self.assertIsNotNone(resolve("32", "32.5", currency="CAD"))  # money: two amounts
+        self.assertIsNotNone(resolve("32", "32.5"))                 # no unit: not known a count
+
     def test_real_differences_still_disagree(self):
         for field, left, right in (("ordered boxes", "1200", "1257.17"),
                                    ("ordered boxes", "0", "0.4"),

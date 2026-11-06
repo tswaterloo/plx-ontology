@@ -21,7 +21,7 @@ import re
 import unittest
 from unittest import mock
 
-from operating import answer_gate, fast_answer
+from operating import answer_gate, fast_answer, stock_state
 from operating.agent_session import ANSWER_GATE_TOOL
 from operating.answer_contract import parse_answer
 from operating.tests import test_changes_and_mo_identity as changes_fixture
@@ -330,7 +330,9 @@ class FastAnswerTests(EmployeeDoorTestCase):
         self.assertIn("REVISED", said)                    # its status, cited and passed
         answer, _error = parse_answer(ran.final_text)
         self.assertEqual(answer["answerability"], "partial")
-        self.assertIn("no_receipt_verdict", [g["reason"] for g in answer["gaps"]])
+        # the shared verdict's own gap (asked by name for an order not open), never a
+        # status word read here
+        self.assertIn("status_unknown", [g["reason"] for g in answer["gaps"]])
         gate = [e for e in ran.events if e["name"] == ANSWER_GATE_TOOL]
         self.assertEqual(gate[0]["result"]["outcome"], "answered")
         # B may not read purchasing: a bare number is no "no such PO" and says nothing
@@ -522,17 +524,26 @@ class SharedPoNumberTests(unittest.TestCase):
              "matched": {"raw": "PO100040", "normalized": "PO100040"}}
             for oid in (self.PORTAL, self.BC)]}
 
+    joined = False   # whether a settled identity link joins the two records
+
     def answers(self, name, arguments):
         if name == "plx.find":
             return self.found()
+        if name == "plx.around" and arguments["path"][0]["link_type"] in (
+                "PurchaseOrder.same_record_as", "PurchaseOrder.bc_posted_as"):
+            # the one PO reader's identity reads (``po_status.copies``), read whole
+            other = {self.BC: self.PORTAL, self.PORTAL: self.BC}.get(arguments["from"])
+            linked = self.joined and other \
+                and arguments["path"][0]["link_type"] == "PurchaseOrder.same_record_as"
+            return {"objects": [{"object_id": other, "object_type": "PurchaseOrder"}]
+                    if linked else [], "edges": [], "completeness": {"complete": True}}
         return {}
 
     def test_different_orders_sharing_the_number_are_each_said_never_one_silently(self):
         ask = fast_answer.Ask("po_status", "PO100040", None)
-        with mock.patch("operating.why_trail.same_records", return_value=False):
-            reads = StubReads(self.answers)
-            picked = fast_answer._po_root(reads, ask, self.found(),
-                                          ("bc.purchase_orders", "portal.app_purchase_order"))
+        reads = StubReads(self.answers)
+        picked = fast_answer._po_root(reads, ask, self.found(),
+                                      ("bc.purchase_orders", "portal.app_purchase_order"))
         # the recipe's own system first; the other order is kept to be said beside it
         self.assertEqual(picked["object"]["object_id"], self.BC)
         self.assertEqual([o["object"]["object_id"] for o in reads.shared_others],
@@ -552,7 +563,7 @@ class SharedPoNumberTests(unittest.TestCase):
 
     def test_a_supplier_named_in_the_question_narrows_the_order_or_declines(self):
         prefer = ("portal.app_purchase_order", "bc.purchase_orders")
-        with mock.patch("operating.why_trail.same_records", return_value=False):
+        if True:   # no identity link joins them
             for question, want in (("synthetic po PO100040 status", self.BC),
                                    ("quillon PO100040 - late?", self.PORTAL)):
                 reads = StubReads(self.party_answers)
@@ -571,10 +582,18 @@ class SharedPoNumberTests(unittest.TestCase):
 
     def test_one_order_held_in_both_systems_is_read_as_one(self):
         ask = fast_answer.Ask("po_status", "PO100040", None)
-        with mock.patch("operating.why_trail.same_records", return_value=True):
-            picked = fast_answer._po_root(StubReads(self.answers), ask, self.found(),
-                                          ("portal.app_purchase_order", "bc.purchase_orders"))
+        self.joined = True
+        reads = StubReads(self.answers)
+        picked = fast_answer._po_root(reads, ask, self.found(),
+                                      ("portal.app_purchase_order", "bc.purchase_orders"))
         self.assertEqual(picked["object"]["object_id"], self.PORTAL)
+        self.assertEqual(reads.shared_others, [])   # one order, never "different orders"
+        # a shared number alone joins nothing: two orders
+        self.joined = False
+        reads = StubReads(self.answers)
+        fast_answer._po_root(reads, ask, self.found(),
+                             ("portal.app_purchase_order", "bc.purchase_orders"))
+        self.assertEqual([o["object"]["object_id"] for o in reads.shared_others], [self.BC])
 
 
 class SharedNumberStatusTests(SharedPoNumberTests):
@@ -624,8 +643,7 @@ class SharedNumberStatusTests(SharedPoNumberTests):
     def test_each_order_is_said_with_its_system_supplier_and_verdict(self):
         reads, draft = StubReads(self.status_answers), fast_answer.Draft()
         reads.question = "whats going on w/ po PO100040"
-        with mock.patch("operating.why_trail.same_records", return_value=False):
-            fast_answer.po_status(reads, fast_answer.Ask("po_status", "PO100040", None), draft)
+        fast_answer.po_status(reads, fast_answer.Ask("po_status", "PO100040", None), draft)
         text = " ".join(draft.sentences)
         self.assertIn("Different purchase orders carry this number", text)
         self.assertIn("PO100040 in the Portal (Quillon Labs Inc) is not due", text)
@@ -638,6 +656,59 @@ class SharedNumberStatusTests(SharedPoNumberTests):
                       "lines still open; the Portal records the order as received in full) and "
                       "Business Central governs it", text)
         self.assertEqual({r["object_id"] for r in draft.roots}, {self.BC, self.PORTAL})
+
+
+class ClosedOrderVerdictTests(unittest.TestCase):
+    """An order the shared definition does not call open gets no receipt verdict from an
+    unnamed ``plx.process``: its verdict is the delivery process's, asked by name, never a
+    status word read here ("every system says Complete" was said "received" whether or
+    not it came after its due date)."""
+
+    PO = 'PurchaseOrder:portal.app_purchase_order:{"id":"cm-9"}'
+
+    def answers(self, name, arguments):
+        handle = "api://public.app_purchase_order/cm-9@g"
+        if name == "plx.process" and arguments.get("process") != "po_delivery_window":
+            return {"lateness": []}
+        if name == "plx.process":
+            due = {"property": "expected_date", "value": "2026-03-01",
+                   "citation": {"l1_handle": handle, "field_path": "row.expected_date"}}
+            return {"lateness": [{"stage": "receipt", "root": self.PO, "late": self.late,
+                                  "state": "late" if self.late else "not_applicable",
+                                  "measured_against": "received" if self.late else None,
+                                  "governing_date": "2026-03-01", "values": [due]}]
+                    if self.late is not None else []}
+        if name == "plx.object":
+            return {"values": [{"property": "status", "value": {"untrusted_text": "Complete"},
+                                "citation": {"l1_handle": handle, "field_path": "row.status"}}]}
+        return None
+
+    def said(self, late):
+        self.late = late
+        reads, draft = StubReads(self.answers), fast_answer.Draft()
+        picked = {"object": {"object_id": self.PO, "object_type": "PurchaseOrder",
+                             "display": _cell("PO100099", "api://x@g", "row.po_number")}}
+        fast_answer._po_status_of(reads, fast_answer.Ask("po_status", "PO100099", None),
+                                  draft, picked)
+        return " ".join(draft.sentences), draft
+
+    def test_a_complete_order_is_judged_by_the_shared_verdict(self):
+        text, _ = self.said(True)
+        self.assertIn("has been received, after its due date 2026-03-01", text)
+        text, draft = self.said(None)   # no verdict at all: said unsettled, never received
+        self.assertNotIn("has been received", text)
+        self.assertIn("no_receipt_verdict", [g["reason"] for g in draft.gaps])
+
+
+def batch_profile(counts=(("Allocated", "On-Hold", 20), ("Cancelled", "On-Hold", 20),
+                           ("Realized", "Released", 30), ("Realized", "On-Hold", 2))):
+    """FileMaker's batches counted by (status, QC status), as the grouped aggregate
+    returns them: every unmade batch carries On-Hold, a few made ones are still held."""
+    return {"groups": [{"key": {"status": _cell(st, "api://public.batch/p", "row.status"),
+                                "quality_status": _cell(qc, "api://public.batch/p",
+                                                        "row.statusqc")},
+                        "value": str(n), "inputs": n} for st, qc, n in counts],
+            "partial": False, "completeness": {"complete": True}, "gaps": []}
 
 
 class NewRecipeTests(unittest.TestCase):
@@ -658,6 +729,8 @@ class NewRecipeTests(unittest.TestCase):
         out.update(result)
 
         def answers(name, args):
+            if name == "plx.aggregate" and args.get("group_by"):
+                return batch_profile()
             if name == "plx.read":   # a counted record's own batch code
                 return _read_member(args, handles, "row.namebatch_c", "BC-26{:03d}A")
             if name == "plx.find":
@@ -680,7 +753,7 @@ class NewRecipeTests(unittest.TestCase):
         draft, reads = _run(fast_answer.batch_hold_count, answers, ask)
         counted = [a for n, a in reads.calls if n == "plx.aggregate"]
         self.assertIn({"property": "batch_code", "op": "ne", "value": "BC-00A"},
-                      counted[0]["filters"])
+                      counted[-1]["filters"])
         self.assertIn("placeholder code", " ".join(draft.sentences))
         answers, _handles = self.held(5, 5, unnamed=tuple(f"X{i}" for i in range(11)))
         with self.assertRaises(fast_answer.Unanswerable):
@@ -720,9 +793,13 @@ class NewRecipeTests(unittest.TestCase):
                 draft, reads = _run(fast_answer.batch_hold_count, answers, ask)
                 # one count, then at most three counted records read to name them
                 self.assertEqual([c[0] for c in reads.calls],
-                                 ["plx.find", "plx.aggregate"] + ["plx.read"] * min(codes, 3))
-                filters = {(f["property"], f["op"]) for f in reads.calls[1][1]["filters"]}
-                self.assertIn(("batch_number", "absent"), filters)   # FileMaker's records
+                                 ["plx.aggregate", "plx.find", "plx.aggregate"]
+                                 + ["plx.read"] * min(codes, 3))
+                filters = reads.calls[2][1]["filters"]
+                self.assertIn({"property": "batch_number", "op": "absent"}, filters)
+                # only states where On-Hold is no default: made batches, not unmade ones
+                self.assertIn({"property": "status", "op": "in", "value": ["Realized"]},
+                              filters)
                 values = {v["name"]: v for v in draft.values}
                 self.assertEqual(values["on_hold_count"]["value"], str(codes))
                 self.assertEqual(values["on_hold_count"]["calculation"]["op"],
@@ -773,7 +850,7 @@ class NewRecipeTests(unittest.TestCase):
 
         def portal(name, args):                 # a cited record that is no FileMaker batch
             out = answers(name, args)
-            if name == "plx.aggregate":
+            if name == "plx.aggregate" and not args.get("group_by"):
                 out["groups"][0]["inputs_citations"][1]["l1_handle"] = \
                     "api://public.app_batch_record/c1@g"
             return out
@@ -863,12 +940,23 @@ class NewRecipeTests(unittest.TestCase):
         gate (N=1/10/60, past the citation cap too), the window said with its days; a
         cited record not FileMaker's raw receiving line or none counted declines."""
         now = datetime(2026, 11, 4, 15, 0, tzinfo=timezone.utc)
-        for question in ("how many released raw lots expire before January 1?",
-                         "# raw lots expiring before January 1"):
+        for question in ("# raw lots expiring before January 1",
+                         "how many released raw lots expire before January 1?"):
             ask = fast_answer.understand(question, now)
             self.assertEqual(ask.intent, "lots_expiring_count")
             self.assertEqual((str(ask.window.start), str(ask.window.end)),
                              ("2026-11-04", "2026-12-31"))
+        # lots asked without "released": every lot whose QC status says it holds stock
+        # (the one lot rule, operating.stock_state), released or in quarantine
+        bare = fast_answer.understand("# raw lots expiring before January 1", now)
+        answers, _h = self.quarantined(2, 2)
+        draft, reads = _run(fast_answer.lots_expiring_count, lambda n, a: answers(n, {
+            **a, "filters": [{"property": "qc_status", "op": "eq", "value": "Quarantine"}]}),
+            bare)
+        self.assertEqual(reads.calls[0][1]["filters"][0],
+                         {"property": "qc_status", "op": "in",
+                          "value": sorted(stock_state.STOCK_LOT)})
+        self.assertIn("2 raw lots still holding stock", " ".join(draft.sentences))
         for lines, lots in ((1, 1), (10, 10), (60, 60), (90, 83)):
             with self.subTest(lines=lines, lots=lots):
                 answers, handles = self.quarantined(lines, lots)
@@ -1059,6 +1147,8 @@ class NewRecipeTests(unittest.TestCase):
                             "row.status_qc": qc}
 
         def answers(name, args):
+            if name == "plx.aggregate":
+                return batch_profile()
             if name == "plx.find":
                 self.assertEqual(args["filters"], [
                     {"property": "batch_code", "op": "in", "value": [code]}])
@@ -1076,13 +1166,17 @@ class NewRecipeTests(unittest.TestCase):
         grades the reply correct and a reply of the Portal's stale hold wrong."""
         from evals import live_ops as scorer, live_ops_keys as keys
         ask = fast_answer.Ask("batch_status", "bc-26100a", None)
-        held, released = ("Allocated", "On-Hold"), ("Realized", "Released")
-        cases = {"on_hold": ([held], [released]), "released": ([released], [held]),
-                 "not_on_hold": ([("Realized", "Rejected")], [held]),
-                 "cancelled": ([("Cancelled", "On-Hold")], [held]),
-                 "no_filemaker_batch": ([], [held])}
-        for fact_id, (fm, portal) in cases.items():
-            with self.subTest(fact_id):
+        # a made batch still on hold is held; the On-Hold every unmade batch carries
+        # (FileMaker's profile: every Allocated batch On-Hold) is that state's default
+        held, released = ("Realized", "On-Hold"), ("Realized", "Released")
+        unmade = ("Allocated", "On-Hold")
+        cases = [("on_hold", [held], [released]), ("released", [released], [held]),
+                 ("not_on_hold", [("Realized", "Rejected")], [held]),
+                 ("not_on_hold", [unmade], [unmade]),
+                 ("cancelled", [("Cancelled", "On-Hold")], [held]),
+                 ("no_filemaker_batch", [], [held])]
+        for fact_id, fm, portal in cases:
+            with self.subTest(fact_id, fm=fm):
                 draft, _reads = _run(fast_answer.batch_status, self.one_batch(fm, portal), ask)
                 said = " ".join(draft.sentences)
                 self.assertIn("FileMaker, the system of record", said)
@@ -1091,8 +1185,11 @@ class NewRecipeTests(unittest.TestCase):
                     for i, (s, q) in enumerate(fm)], [
                     {"row": {"status": s, "status_qc": q},
                      "citation": f"api://public.app_batch_record/c{i}"}
-                    for i, (s, q) in enumerate(portal)])
+                    for i, (s, q) in enumerate(portal)], frozenset({"Allocated"}))
                 self.assertEqual(fact["id"], fact_id)
+                if fm == [unmade]:
+                    self.assertIn("not on hold", said)
+                    self.assertIn("like every Allocated batch there", said)
                 values = [v["value"] for v in draft.values]
                 self.assertTrue(scorer.stated(fact, said, values))
                 self.assertEqual(scorer.contradicted(fact, said, draft.values, ""), [])
@@ -2146,13 +2243,45 @@ class VendorOpenPosTests(unittest.TestCase):
             return {"candidates": [{"object": vendor, "tier": "verified", "matched": {
                 "raw": _cell("Acme Aromatics", "bc://v/1", "row.displayName"),
                 "binding": "bc.vendors"}}], "completeness": {"complete": True}}
+        twin = 'PurchaseOrder:portal.app_purchase_order:{"id":"p0"}'
+        if name == "plx.object" and args["object_id"] == twin:
+            # the Portal's record of o0: Complete, every line received
+            return {"object": {"object_id": twin}, "values": [
+                {"property": "status", "value": "Complete",
+                 "citation": {"l1_handle": "api://po/p0", "field_path": "row.status"}}]}
+        if name == "plx.object" and args["object_id"].startswith("PurchaseOrder:bc."):
+            return {"object": {"object_id": args["object_id"]}, "values": [
+                {"property": "bc_status", "value": "Released",
+                 "citation": {"l1_handle": "bc://po/x", "field_path": "row.status"}},
+                {"property": "bc_fully_received", "value": False,
+                 "citation": {"l1_handle": "bc://po/x", "field_path": "row.fullyReceived"}}]}
         if name == "plx.object":
             return {"object": vendor, "values": []}
-        if name == "plx.around":
+        if name == "plx.around" and args["from"] == self.VENDOR:
             return {"objects": orders, "set": "set:1", "completeness": {"complete": True}}
+        if name == "plx.around":
+            # o0's Portal copy (a firm twin link); no other twin, line or link
+            link = args["path"][0]["link_type"]
+            found = [twin] if self.received_elsewhere and link == "PurchaseOrder.bc_posted_as" \
+                and args["from"] == orders[0]["object_id"] else []
+            return {"objects": [{"object_id": o, "object_type": "PurchaseOrder"}
+                                for o in found], "edges": [],
+                    "completeness": {"complete": True}}
         if name == "plx.aggregate":
             return {"groups": [{"value": 10}]}
         return None
+
+    received_elsewhere = False
+
+    def test_an_order_received_in_another_copy_is_not_open(self):
+        """A receipt in any copy closes the order (``po_status.read``): a BC order its
+        own system still holds open, whose Portal copy is Complete, is not listed."""
+        self.received_elsewhere = True
+        draft, _reads = _run(fast_answer.vendor_open_pos, self.answers,
+                             fast_answer.understand("open POs with Acme Aromatics?"))
+        said = " ".join(draft.sentences)
+        self.assertIn("has 9 open purchase orders", said)
+        self.assertNotIn("PO100000", said)
 
     def test_ten_open_orders_are_named_and_counted_within_the_claim_bound(self):
         from operating.answer_gate import MAX_CITATIONS_PER_CLAIM

@@ -4,7 +4,7 @@ import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown,
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview } from "@/components/late/overview";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
-import { AgeRing, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
+import { AgeRing, DoneRing, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { Monogram } from "@/components/ui/monogram";
 import { LoadProblem } from "@/components/ui/notice";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
@@ -153,7 +153,7 @@ function Row({ po, on, onPick }: { po: LatePo; on: boolean; onPick: (() => void)
             </span>
             {eta && (
               <span className="ml-auto shrink-0" title={eta.label} data-testid="late-eta" data-status={eta.status}>
-                <OpenRing size={13} tone="neutral" />
+                {po.confirmation === "confirmed" ? <DoneRing size={13} /> : <OpenRing size={13} tone="neutral" />}
                 <span className="sr-only">{eta.label}</span>
               </span>
             )}

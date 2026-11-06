@@ -119,6 +119,25 @@ class DetectorTest(Case):
         self.assertEqual(found[confirmed]["event"]["days"], 10)
         self.assertEqual(len(found[confirmed]["citations"]), 2)   # both confirmations
 
+    def test_a_default_date_rewrite_or_a_closed_order_is_no_slip(self):
+        """The one PO reader decides: a date moved to the day a bulk share of its records
+        hold (a sync's re-write) is no promise moving, and an order closed by the shared
+        status (received) never slips."""
+        w = World()
+        for _ in range(10):   # the bulk day a re-sync wrote on every order
+            po_with(w, expected_date="2026-07-14")
+        rewritten = po_with(w, expected_date="2026-07-14")
+        revise(w, rewritten, "expected_date", "2026-07-01", "2026-10-12T00:00:00.000000Z")
+        received = po(w, "Complete", "2026-10-25", lines=(("10", "10"),))
+        revise(w, received, "expected_date", "2026-10-15", "2026-10-12T00:00:00.000000Z")
+        moved = po(w, "Pending", "2026-10-25")
+        revise(w, moved, "expected_date", "2026-10-15", "2026-10-12T00:00:00.000000Z")
+        summary = self.run_engine(w)
+        found = {g["object_id"] for g in self.events()["eta_slipped"]}
+        self.assertEqual(found, {moved})
+        self.assertEqual(summary["not_evaluated"]["eta_slipped"],
+                         {"default_date": 1, "order_not_open": 1})
+
     def per_item_world(self, n_lines=2):
         """One PO whose lines two supplier confirmations (mailbox a) each promise their own
         dates: line 0 moves 2026-10-01 -> 2026-10-11, every other line moves earlier."""
@@ -204,10 +223,10 @@ class DetectorTest(Case):
     def test_lot_near_expiry_and_an_active_batch_on_hold(self):
         w = World()
         soon = w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=10)).isoformat(),
-                             "lot_number": "SYNTH-L1"})
+                             "lot_number": "SYNTH-L1", "qc_status": "Released"})
         w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=40)).isoformat()})
         w.obj("Lot", {"expiry_date": (AS_OF - timedelta(days=1)).isoformat()})
-        held = w.obj("Batch", {"quality_status": "On-Hold", "status": "Allocated"})
+        held = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"})
         w.obj("Batch", {"quality_status": "On-Hold", "status": "Cancelled"})
         w.obj("Batch", {"quality_status": "Released", "status": "Allocated"})
         w.obj("Batch", {"quality_status": "On-Hold", "status": "SYNTH-word"})   # unmapped
@@ -218,6 +237,83 @@ class DetectorTest(Case):
         self.assertEqual(found["lot_near_expiry"][0]["summary"], "Expires on 2026-10-29, in 10 days")
         self.assertEqual([g["object_id"] for g in found["lot_on_hold"]], [held])
         self.assertEqual(summary["not_evaluated"]["lot_attention"], {"status_unmapped": 1})
+
+    def test_a_lot_near_expiry_is_claimed_only_while_its_status_holds_stock(self):
+        """A used-up, rejected or expired lot has nothing left to expire; a lot whose QC
+        status is missing or unknown is not judged, and says so."""
+        w = World()
+        day = (AS_OF + timedelta(days=5)).isoformat()
+        stock = [w.obj("Lot", {"expiry_date": day, "qc_status": word})
+                 for word in ("Released", "Quarantine")]
+        for word in ("Finished", "Rejected", "Expired"):
+            w.obj("Lot", {"expiry_date": day, "qc_status": word})
+        w.obj("Lot", {"expiry_date": day})                              # no status
+        w.obj("Lot", {"expiry_date": day, "qc_status": "SYNTH-word"})   # unmapped
+        summary = self.run_engine(w)
+        found = self.events()["lot_near_expiry"]
+        self.assertEqual(sorted(g["object_id"] for g in found), sorted(stock))
+        self.assertEqual(summary["not_evaluated"]["lot_attention"],
+                         {"lot_status_unknown": 1, "lot_status_unmapped": 1})
+
+    def test_a_hold_every_batch_in_its_state_carries_is_no_hold(self):
+        """The QC value a whole lifecycle state carries in one system (every unmade batch
+        "On-Hold" before release) is that state's default, never claimed; a made batch
+        still on hold is, and a cancelled one never is. Another system is profiled on its
+        own batches, a state too small there over every system's."""
+        w = World()
+        for _ in range(12):
+            w.obj("Batch", {"quality_status": "On-Hold", "status": "Allocated"},
+                  binding="sysA")
+            w.obj("Batch", {"quality_status": "On-Hold", "status": "Cancelled"},
+                  binding="sysA")
+            w.obj("Batch", {"quality_status": "Released", "status": "Realized"},
+                  binding="sysA")
+        made = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"},
+                     binding="sysA")
+        # sysB holds back one allocated batch of twelve: that one is a decision
+        other = [w.obj("Batch", {"quality_status": "Released", "status": "Allocated"},
+                       binding="sysB") for _ in range(11)]
+        held = w.obj("Batch", {"quality_status": "On-Hold", "status": "Allocated"},
+                     binding="sysB")
+        self.assertEqual(len(other), 11)
+        # sysC has too few Generated batches to profile its own: every system's are read
+        # (sysA's twelve, all On-Hold: the default); a lone unmade state none profiles
+        # is not judged, and says so
+        for _ in range(12):
+            w.obj("Batch", {"quality_status": "On-Hold", "status": "Generated"},
+                  binding="sysA")
+        for _ in range(2):
+            w.obj("Batch", {"quality_status": "On-Hold", "status": "Generated"},
+                  binding="sysC")
+        w.obj("Batch", {"quality_status": "On-Hold", "status": "Committed"}, binding="sysC")
+        summary = self.run_engine(w)
+        found = {g["object_id"]: g for g in self.events()["lot_on_hold"]}
+        self.assertEqual(sorted(found), sorted([made, held]))
+        self.assertEqual(summary["not_evaluated"]["lot_attention"], {"state_unprofiled": 1})
+        self.assertEqual(found[made]["summary"],
+                         "Made but never released: Quality still holds the batch")
+
+    def test_a_batch_and_its_migrated_copy_are_one_hold(self):
+        """A batch copied into another system (``Batch.same_record_as``, origin to copy)
+        is counted once, on its origin, the copy's values cited beside it; the copy is
+        decided by its origin even when the copy alone still says hold."""
+        w = World()
+        origin = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"},
+                       binding="fm")
+        copy = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"},
+                     binding="gold")
+        w.link("Batch.same_record_as", origin, copy)
+        released = w.obj("Batch", {"quality_status": "Released", "status": "Realized"},
+                         binding="fm")
+        stale = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"},
+                      binding="gold")
+        w.link("Batch.same_record_as", released, stale)
+        lone = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"},
+                     binding="gold")                       # no origin: judged on its own
+        self.run_engine(w)
+        found = {g["object_id"]: g for g in self.events()["lot_on_hold"]}
+        self.assertEqual(sorted(found), sorted([origin, lone]))
+        self.assertIn(handle(int(copy.rsplit(":", 1)[1])), found[origin]["citations"])
 
     def test_accepted_quote_with_no_order_needs_every_sales_order_grant(self):
         w = World()
@@ -260,6 +356,34 @@ class DetectorTest(Case):
         self.assertIn("Invoiced 8 ea of an item, received 5 ea", found[0]["summary"])
         self.assertEqual(summary["not_evaluated"]["invoice_quantity_mismatch"],
                          {"unit_not_stated": 1})
+
+    def test_received_is_read_on_every_copy_of_the_order(self):
+        """An invoice linked to one record of an order is compared with what any copy of
+        the order received (each copy on its own, never added): the order's other system
+        recording the goods received is no billing above receipt."""
+        w = World()
+        item = w.obj("Product", {})
+        orders = []
+        for n, got in enumerate(("8", "5")):   # the other copy received 8, or only 5
+            order = po_with(w, po_number=f"PO10{n}")
+            copy = po_with(w, po_number=f"PO10{n}")
+            w.link("PurchaseOrder.same_record_as", order, copy)
+            for record, qty in ((order, "5"), (copy, got)):
+                line = w.obj("PurchaseOrderLine", {"received_quantity": (qty, "ea",
+                                                                         "received")})
+                w.link("PurchaseOrderLine.line_of", line, record)
+                w.link("PurchaseOrderLine.for_item", line, item)
+            invoice = w.obj("PurchaseInvoice", {"status": "Open"})
+            w.link("PurchaseInvoice.invoices", invoice, order)
+            billed = w.obj("PurchaseInvoiceLine", {"invoiced_quantity": ("8", "ea",
+                                                                         "invoiced")})
+            w.link("PurchaseInvoiceLine.line_of", billed, invoice)
+            w.link("PurchaseInvoiceLine.for_item", billed, item)
+            orders.append(order)
+        self.run_engine(w)
+        found = self.events()["invoice_quantity_mismatch"]
+        self.assertEqual([g["object_id"] for g in found], [orders[1]])
+        self.assertIn("Invoiced 8 ea of an item, received 5 ea", found[0]["summary"])
 
     def test_vendor_terms_events_through_the_callers_investigations(self):
         w = World()
@@ -376,6 +500,37 @@ class DetectorTest(Case):
         self.assertEqual(blind["detector_reasons"]["vendor_no_reply"],
                          ["people_exclusion_unavailable"])
         self.assertNotIn("vendor_no_reply", self.events())
+
+    def test_a_mention_of_a_reused_number_ties_no_mail_to_the_order(self):
+        """A number-text mention (a lead) of an order whose number another order also
+        holds may be the other order's: it is no request waiting on this order."""
+        for reused in (False, True):
+            with self.subTest(reused=reused):
+                w = World()
+                order = w.obj("PurchaseOrder", {"status": "Pending",
+                                                "expected_date": "2026-11-30",
+                                                "po_number": "PO4820"})
+                w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": ("10", "ea"),
+                    "received_quantity": ("0", "ea", "received")}), order)
+                if reused:   # another order, no twin link, the same number
+                    w.obj("PurchaseOrder", {"status": "Pending", "po_number": "4820"})
+                for sent, sender, preview in (
+                        ("2026-09-20T10:00:00Z", "sales@synth-vendor.example", "Got it."),
+                        ("2026-10-01T10:00:00Z", "ops@synth-tenant.example",
+                         "Could you please confirm the delivery date?")):
+                    mail = w.obj("Email", {"conversation_id": "c1", "sent_at": sent,
+                                           "sender": sender, "subject": "RE: PO4820",
+                                           "body_preview": preview}, audience=BOX_OURS)
+                    w.link("Email.mentions_purchase_order", mail, order, "lead")
+                if self.inbox.exists():
+                    self.inbox.unlink()
+                summary = self.run_engine(w)
+                found = self.events().get("vendor_no_reply", [])
+                self.assertEqual([g["object_id"] for g in found], [] if reused else [order])
+                if reused:
+                    self.assertEqual(summary["not_evaluated"]["vendor_no_reply"],
+                                     {"mention_of_reused_number": 2})
 
     def test_vendor_no_reply_cardinality_one_ten_sixty(self):
         for n in (1, 10, 60):
@@ -698,7 +853,7 @@ class DetectorTest(Case):
         request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c1"},
                         audience="mail:box")
         w.link("Email.mentions_purchase_order", request, order, "lead")
-        w.obj("Lot", {"expiry_date": "2026-10-25"})
+        w.obj("Lot", {"expiry_date": "2026-10-25", "qc_status": "Released"})
         w.build(self.store)
         calls = []
 
@@ -763,7 +918,7 @@ class DetectorTest(Case):
         request = w.obj("Email", {"sent_at": "2026-10-05T10:00:00Z", "conversation_id": "c"},
                         audience="mail:box")
         w.link("Email.mentions_purchase_order", request, order, "lead")
-        w.obj("Lot", {"expiry_date": "2026-10-25"})
+        w.obj("Lot", {"expiry_date": "2026-10-25", "qc_status": "Released"})
         w.build(self.store)
         now, budgets = [0.0], []
 
@@ -856,7 +1011,8 @@ class DetectorTest(Case):
             with self.subTest(n=n):
                 w = World()
                 lots = {w.obj("Lot", {"expiry_date": (AS_OF + timedelta(days=i % 30))
-                                      .isoformat()}) for i in range(n)}
+                                      .isoformat(), "qc_status": "Released"})
+                        for i in range(n)}
                 self.run_engine(w)
                 found = [g["object_id"] for g in self.events()["lot_near_expiry"]]
                 self.assertEqual((len(found), set(found)), (n, lots))
@@ -876,7 +1032,7 @@ class BriefingTest(Case):
         revise(w, ids["no_amount"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
         ids["secret"] = po_with(w, "50.00", audience="api:secret", expected_date="2026-10-30")
         revise(w, ids["secret"], "expected_date", "2026-10-20", "2026-10-12T00:00:00.000000Z")
-        ids["hold"] = w.obj("Batch", {"quality_status": "On-Hold", "status": "Committed"})
+        ids["hold"] = w.obj("Batch", {"quality_status": "On-Hold", "status": "Realized"})
         return w, ids
 
     def test_ranked_by_cited_amount_then_days_with_the_basis_stated(self):

@@ -39,6 +39,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating import impact_chain as ic
+from operating import po_status as ps
 
 PROCESS = "po_delivery_window"
 _GRAPH = Path(__file__).resolve().parent.parent / "ontology" / "schema" / "process" / \
@@ -56,6 +57,16 @@ MAX_MATERIAL_POS = 60      # lateness verdicts one materials walk asks for
 MAX_ROWS = 40              # rows the app shows (materials() returns every row)
 MAX_PO_TRAILS = 3          # full trails in one materials answer
 STALE_CONFIRMATION_DAYS = 7
+# Where a due date comes from (the lateness entry's ``governing``, ``po_status``
+# ``Need.basis``) and how a trail says a labelled one.
+DUE_BASIS = {"expected": "requested", "vendor_promise": "vendor_eta",
+             "lead_time": "lead_time"}
+DUE_WORDS = {"vendor_eta": "the supplier's confirmed date: no record states a requested-by "
+                           "date",
+             "lead_time": "the order date plus the order's lead time: no record states a "
+                          "requested-by date or a confirmed date"}
+LEAD_TIME_PROPS = ("order_date", ps.LEAD_TIME)
+LINE_EXPECTED = ps.LINE_EXPECTED
 # Step kinds in the order a PO trail states them (within a kind: by date, undated last).
 KINDS = ("due_date", "po_issued", "confirmation", "revision", "lead", "follow_up",
          "shipped", "receipt", "verdict", "claim")
@@ -186,7 +197,7 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
                            "days_late": None, "verdict": None, "vendor_verdict": None,
                            "eta": None, "vendor_promise": None, "steps": [],
                            "hidden": 0, "may_hide": False, "gaps": [],
-                           "next_action": None}
+                           "next_action": None, "due": None, "vendor_number": None}
     hidden: list[int | None] = []
     proc = call("plx.process", {"from": oid, "process": PROCESS})
     entry = next((e for e in (proc.get("lateness") or ()) if isinstance(e, Mapping)
@@ -201,11 +212,16 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
     steps: list[dict[str, Any]] = []
     values = [v for v in entry.get("values") or () if isinstance(v, Mapping)]
 
-    # ---- the requested-by date and who set it (every cited due date, governing first)
+    # ---- the due date and its basis, as the one PO reader decided it (``po_status``
+    # ``Need.basis`` through the lateness entry's ``governing``): a requested-by date a
+    # record states, else the supplier's confirmed date, else the order's lead time;
+    # never a default date (the reader leaves those out), never re-decided here
     governing = entry.get("governing_date")
+    basis = DUE_BASIS.get(str(entry.get("governing")))
     top = min((v["authority_rank"] for v in values if v.get("property") in PROPS["due"]
                and isinstance(v.get("authority_rank"), int)), default=None)
     seen_due: set[tuple[str, str]] = set()
+    due_handle = None
     for v in values:
         prop, day = v.get("property"), day_of(v.get("value"))
         if day is None or prop in PROPS["promised"] or prop in PROPS["received"] \
@@ -213,35 +229,64 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
             continue   # a promise or receipt is its own step; one step per date per field
         seen_due.add((prop, day))
         if prop in PROPS["due"]:
-            governs = day == governing and v.get("authority_rank") == top
+            governs = basis == "requested" and day == governing and \
+                v.get("authority_rank") == top
             steps.append(step("due_date", f"Requested by {day}", handle=handle_of(v),
                               date=day, governs=bool(governs),
                               detail=("the governing requested-by date" if governs else
                                       "another system's requested-by date (lower "
                                       "precedence)")))
-        else:   # a line's expected date (it follows the supplier's promise when one is set)
+            due_handle = due_handle or (handle_of(v) if governs else None)
+        elif prop == LINE_EXPECTED and basis == "requested" and day == governing:
+            # an open line's own expected date governs only when no header states one
+            # (the reader's line rule); any other line date is no due date of the order
             steps.append(step("due_date", f"Expected on a line by {day}",
-                              handle=handle_of(v), date=day, governs=day == governing,
-                              detail="a line's expected receipt date: the due date only "
-                                     "when no header records a requested-by date"))
+                              handle=handle_of(v), date=day, governs=True,
+                              detail="an open line's expected receipt date: the due date, "
+                                     "as no header records a requested-by date"))
+            due_handle = due_handle or handle_of(v)
+    if basis in ("vendor_eta", "lead_time") and governing:
+        # a labelled due date: the first governing value the entry cites (the supplier's
+        # confirmed date, or the order date and lead time it is counted from)
+        cited = next((handle_of(v) for v in values if handle_of(v) and (
+            basis == "lead_time" and v.get("property") in LEAD_TIME_PROPS
+            or basis == "vendor_eta" and v.get("property") in PROPS["promised"]
+            and day_of(v.get("value")) == governing)), None)
+        steps.append(step("due_date", f"Due by {governing}", handle=cited, date=governing,
+                          governs=True, detail=DUE_WORDS[basis]))
+        due_handle = cited
+    out["due"] = ({"date": governing, "basis": basis, "handle": due_handle}
+                  if governing and basis and due_handle else None)
 
-    # ---- the PO's own record events and its twins (issued, shipped), as the reader
+    # ---- the PO's own record events and its copies (issued, shipped), as the reader:
+    # every record of the order the one PO reader reads (``po_status.copies``)
     members = [oid]
     card: Any = None
     confirmations: dict[str, str] = {}
     read: list[tuple[str | None, str, str]] = []
     read_complete = False
+    shared: dict[str, Any] = {}
     try:
         card = call("plx.object", {"object_id": oid})
         if _ok(card):
-            for edge in card.get("identity") or ():
-                other = edge.get("to") if edge.get("from") == oid else edge.get("from")
-                if edge.get("tier") in FIRM and isinstance(other, str) and other not in members:
-                    members.append(other)
             hidden.append(_withheld_count(card))
             if out["label"] is None:
                 out["label"] = text_of((card.get("object") or {}).get("display"))
+        source = ps.ToolSource(call)
+        budget.check()
+        members, blind = ps.copies(source, oid)
+        if blind:
+            hidden.append(None)   # a twin link this reader can't read may join another copy
         members = members[:1 + MAX_TWINS]
+        # the order's confirmations by the one rule, on every copy: settled, a lead, none
+        budget.check()
+        links = source.confirm_links(members)
+        collides = links is None or (any(l["tier"] not in ps.CONFIRMING for l in links)
+                                     and source.colliding(members))
+        shared = {"links": None if links is None else ps.counted_confirmations(
+            links, lambda _oid: collides), "collides": collides}
+        # the number the supplier knows, read on every copy (``po_status.vendor_facing``)
+        out["vendor_number"] = _vendor_number(call, members, budget)
         seen_events: set[tuple[str, str]] = set()
         for member in members:
             budget.check()
@@ -266,11 +311,14 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
         # ---- when each supplier confirmation was issued (its own cited document date)
         dates, read, read_complete = _confirmations(call, proc, budget)
         confirmations.update(dates)
-        if "confirmation_lead_only" in (entry.get("reasons") or ()):
-            steps += _confirmation_leads(call, members[:1], budget, hidden)
+        counted = shared.get("links")
+        if counted is not None and ps.confirmation_state(counted) == ps.FOUND_UNVERIFIED:
+            steps += _confirmation_leads(call, counted, budget, hidden)
 
-        # ---- follow-ups: mail and Teams messages naming the PO (or a twin), newest last
-        steps += _follow_ups(call, members, budget, hidden)
+        # ---- follow-ups: mail and Teams messages naming the PO (or a copy), newest last;
+        # a number-text mention of a number another order holds is never this order's
+        steps += _follow_ups(call, members, budget, hidden,
+                             leads=not shared.get("collides", True))
     except TrailCut:
         out["gaps"].append({"reason": "trail_cut", "what": "Part of this trail",
                             "where": "the trail's time limit was reached while reading the "
@@ -329,7 +377,8 @@ def po_trail(call: Callable[[str, Mapping[str, Any]], Any], oid: str, *,
                days_late=entry.get("days_late"), verdict=verdict,
                vendor_verdict=vendor[0] if vendor else None,
                at_risk=entry.get("at_risk"), today=today)
-    out["eta"] = eta_check(entry, steps, promises_whole=promises_whole)
+    out["eta"] = shared_eta(eta_check(entry, steps, promises_whole=promises_whole),
+                            shared.get("links"), steps)
     out["vendor_promise"] = vendor_promise(call, entry.get("vs_vendor_promise"), budget)
     out["steps"] = ordered(steps)[:MAX_STEPS]
     out["hidden"] = sum(h for h in hidden if h)
@@ -651,38 +700,94 @@ def promise_steps(entry: Mapping[str, Any], values: Sequence[Mapping[str, Any]],
     return out, complete
 
 
-def _confirmation_leads(call: Callable, members: Sequence[str], budget: _Budget,
-                        hidden: list[int | None]) -> list[dict[str, Any]]:
-    """The lead-tier confirmations naming the PO (``SupplierConfirmation.confirms``
-    below the tier floor): shown as leads with their own cited values, never counted."""
+def _confirmation_leads(call: Callable, links: Sequence[Mapping[str, Any]],
+                        budget: _Budget, hidden: list[int | None]) -> list[dict[str, Any]]:
+    """The lead-tier confirmations of the order (the counted confirmation links of every
+    copy, ``po_status.counted_confirmations``): shown as leads with their own cited
+    values, never counted as a confirmation."""
     out = []
-    for member in members:
+    docs = list(dict.fromkeys(str(l["from_object"]) for l in links
+                              if l["tier"] not in ps.CONFIRMING))
+    for doc in docs[:3]:
         budget.check()
-        got = call("plx.around", {"from": member, "path": [
-            {"link_type": "SupplierConfirmation.confirms", "direction": "reverse"}],
-            "tier_floor": "lead", "limit": 5})
-        if not _ok(got):
+        card = call("plx.object", {"object_id": doc})
+        if not _ok(card):
             continue
-        hidden.append(_withheld_count(got))
-        for obj in (got.get("objects") or ())[:3]:
-            card = call("plx.object", {"object_id": obj["object_id"]})
-            if not _ok(card):
-                continue
-            rows = [v for v in card.get("values") or () if isinstance(v, Mapping)
-                    and handle_of(v)]
-            sent = next((day_of(v.get("value")) for v in rows
-                         if v.get("property") == "document_date"), None)
-            if rows:
-                out.append(step("lead", "A document that looks like a vendor confirmation "
-                                        "names this PO (unconfirmed link)", at=sent,
-                                handle=handle_of(rows[0]), check="lead"))
+        hidden.append(_withheld_count(card))
+        rows = [v for v in card.get("values") or () if isinstance(v, Mapping)
+                and handle_of(v)]
+        sent = next((day_of(v.get("value")) for v in rows
+                     if v.get("property") == "document_date"), None)
+        if rows:
+            out.append(step("lead", "Confirmation found, unverified: a document that looks "
+                                    "like a vendor confirmation names this PO (unconfirmed "
+                                    "link)", at=sent, handle=handle_of(rows[0]),
+                            check="lead"))
     return out
 
 
+def _vendor_number(call: Callable, members: Sequence[str], budget: _Budget
+                   ) -> dict[str, Any] | None:
+    """The order number the supplier knows (``po_status.vendor_facing`` over every copy's
+    value as this reader reads it), with its handle; None when none or several."""
+    found: list[tuple[Any, str]] = []
+    for member in members:
+        budget.check()
+        card = call("plx.object", {"object_id": member,
+                                   "properties": [ps.VENDOR_NUMBER_PROP]})
+        if not _ok(card):
+            continue
+        found += [(text_of(v.get("value")), handle_of(v)) for v in card.get("values") or ()
+                  if isinstance(v, Mapping) and v.get("property") == ps.VENDOR_NUMBER_PROP
+                  and handle_of(v)]
+    handle = ps.vendor_facing(found)
+    if handle is None:
+        return None
+    return {"value": next(str(v).strip() for v, h in found if h == handle), "handle": handle}
+
+
+def shared_eta(eta: dict[str, Any] | None, links: Sequence[Mapping[str, Any]] | None,
+               steps: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """The ETA check made to agree with the one confirmation rule over every copy of the
+    order (``po_status.confirmation_state``): a confirmation linked to another system's
+    record of the order is never "none"; a lead is "confirmation found, unverified"; a
+    lead on a number another order holds counts for nothing. ``links``: the counted
+    links (None: a listing not read whole, so "none" is never said)."""
+    if eta is None or eta.get("state") in ("not_applicable", "withheld",
+                                            "promises_disagree"):
+        return eta
+    negative = eta.get("state") in ("no_confirmation", "no_confirmation_found")
+    if links is None:
+        if negative or eta.get("state") == "lead_only":
+            return {"state": "not_determined",
+                    "text": "Not determined: the confirmations of every record of this "
+                            "order are not all readable here."}
+        return eta
+    state = ps.confirmation_state(links)
+    if state == ps.CONFIRMED and (negative or eta.get("state") == "lead_only"):
+        return {"state": "not_determined",
+                "text": "A vendor confirmation is linked to a record of this order, but its "
+                        "date is not read here, so the ETA is not decided."}
+    if state == ps.FOUND_UNVERIFIED and eta.get("state") != "confirmed":
+        leads = [s for s in steps if s["kind"] == "lead"]
+        return {"state": "lead_only",
+                "text": "Confirmation found, unverified: a document that looks like the "
+                        "vendor's confirmation names this PO, but its link to the PO is not "
+                        "confirmed, so its date does not count.",
+                "handle": leads[0]["handle"] if leads else None}
+    if state == ps.NONE_FOUND and eta.get("state") == "lead_only":
+        return {"state": "not_determined",
+                "text": "Not determined: the only document that looks like a confirmation "
+                        "names a number another order also holds, so it is not counted."}
+    return eta
+
+
 def _follow_ups(call: Callable, members: Sequence[str], budget: _Budget,
-                hidden: list[int | None]) -> list[dict[str, Any]]:
-    """Mail and Teams messages that name the PO or a twin (stored mention links, a lead:
-    a machine-read reference), each dated and cited by its own record, newest kept."""
+                hidden: list[int | None], *, leads: bool = True) -> list[dict[str, Any]]:
+    """Mail and Teams messages that name the PO or a copy (stored mention links, a lead:
+    a machine-read reference), each dated and cited by its own record, newest kept.
+    ``leads`` false (the order's number is another order's too): only a message a settled
+    link ties to the order; a number-text mention may be the other order's."""
     found: list[tuple[str, str]] = []   # (message object id, type)
     for member in members[:MAX_MESSAGE_ROOTS]:
         for mtype in MESSAGE_TYPES:
@@ -696,8 +801,11 @@ def _follow_ups(call: Callable, members: Sequence[str], budget: _Budget,
             if not _ok(got):
                 continue
             hidden.append(_withheld_count(got))
+            settled = {e.get("from") for e in got.get("edges") or () if isinstance(e, Mapping)
+                       and e.get("tier") in ps.CONFIRMING}
             found += [(o["object_id"], mtype) for o in got.get("objects") or ()
-                      if isinstance(o.get("object_id"), str)]
+                      if isinstance(o.get("object_id"), str)
+                      and (leads or o["object_id"] in settled)]
     found = list(dict.fromkeys(found))
     read: list[dict[str, Any]] = []
     copies: set[str] = set()

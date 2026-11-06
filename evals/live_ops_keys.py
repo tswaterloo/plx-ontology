@@ -50,7 +50,9 @@ CUSTOMER = "public.app_customer"
 # Batch statuses of a batch still in the works (``app_batch_record.status``), the QC hold
 # value (``status_qc``) and the released one.
 OPEN_BATCH = frozenset({"Allocated", "Committed"})
-# Any batch not cancelled (in the works or finished) may sit on QC hold.
+# Any batch not cancelled (in the works or finished) may carry the QC value On-Hold: the
+# statuses whose batches the one-batch question is asked about. Whether that value is a
+# hold is the hold rule's (``_hold_verdicts``).
 HELD_BATCH = frozenset({"Allocated", "Committed", "Generated", "Realized"})
 # Posted purchase invoices (BC ``purchaseInvoices.status``): what was actually billed.
 POSTED_INVOICE = frozenset({"Open", "Paid"})
@@ -467,21 +469,37 @@ def late_po_count(world: World) -> list[Candidate]:
 
 
 def vendor_open_pos(world: World) -> list[Candidate]:
-    """A BC vendor's open purchase orders (status Open, not fully received)."""
-    by_vendor: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for record in world.bc_set("purchaseOrders"):
-        fields = record["fields"]
-        if fields.get("status") == "Open" and str(fields.get("fullyReceived")).lower() == "false":
-            by_vendor[str(fields.get("vendorName") or "")].append(record)
+    """A BC vendor's open purchase orders: issued (not Draft) and not fully received in BC,
+    and open by every copy of the order: the lateness oracle's own group verdict, by its
+    own code, says no copy recorded the goods received and it is no test record (the
+    truth rules of 2026-11-06, ``evals.oracle.keys.TRUTH_RULES_CITE``). A vendor any of
+    whose candidate orders no copy decides is left out (the answer declines there)."""
+    group_of: dict[str, Mapping[str, Any]] = {}
     aliases: dict[str, list[str]] = {}
     for group in world.lateness()["groups"]:
         for head in group["headers"]:
             r = world.record(head["citation"]) if head["system"] == "bc" else None
             if r is not None:
-                aliases[str(r["fields"].get("number"))] = list(group.get("numbers") or [])
+                number = str(r["fields"].get("number"))
+                aliases[number] = list(group.get("numbers") or [])
+                group_of[number] = group
+    by_vendor: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    undecided: set[str] = set()
+    for record in world.bc_set("purchaseOrders"):
+        fields = record["fields"]
+        if str(fields.get("status") or "").strip().upper() == "DRAFT" \
+                or str(fields.get("fullyReceived")).lower() != "false":
+            continue
+        vendor = str(fields.get("vendorName") or "")
+        group = group_of.get(str(fields.get("number")))
+        if group is not None and (group.get("received_anywhere") or group.get("test")):
+            continue   # received in another copy, or a test record: not open
+        if group is not None and not group.get("open"):
+            undecided.add(vendor)
+        by_vendor[vendor].append(record)
     out = []
     for vendor, orders in by_vendor.items():
-        if not vendor or not 2 <= len(orders) <= LIST_MAX:
+        if not vendor or vendor in undecided or not 2 <= len(orders) <= LIST_MAX:
             continue
         numbers = sorted(str(r["fields"]["number"]) for r in orders)
         members = [sorted({*po_forms(n), *(f for a in aliases.get(n, []) for f in po_forms(a))})
@@ -489,8 +507,10 @@ def vendor_open_pos(world: World) -> list[Candidate]:
         out.append(Candidate(vendor, "Supplier", {"vendor": vendor}, [
             _fact("set", "open_orders", [r["citation"] for r in orders], ("bc", "api"),
                   members=members, pattern=PO_TOKEN)],
-            ["BC purchaseOrders where vendorName = vendor, status = Open, "
-             "fullyReceived = false"], "the vendor's open BC purchase orders"))
+            ["BC purchaseOrders where vendorName = vendor, status not Draft, fullyReceived "
+             "= false, and the lateness oracle's group verdict: no copy received the goods "
+             "(FileMaker items, a Portal-native receipt, BC lines), no test record"],
+            "the vendor's open BC purchase orders, open in every copy"))
     return out
 
 
@@ -1100,10 +1120,36 @@ def _batches(world: World, status: frozenset[str], qc: str
     return out, disagree
 
 
-def _held_reads(disagree: int) -> list[str]:
+def _hold_verdicts(world: World) -> dict[str, str]:
+    """FileMaker status -> what a batch in it carrying On-Hold is, by the eval side's own
+    hold rule (``evals.oracle.keys.batch_hold_verdict``: never the product's code)
+    profiled over every FileMaker batch row."""
+    if "hold_verdicts" not in world._cache:
+        from evals.oracle import keys as K
+        pairs = [(i["row"].get("status"), i["row"].get("statusqc"))
+                 for i in world.rows(FM_BATCH)]
+        world._cache["hold_verdicts"] = {
+            status: K.batch_hold_verdict(status, ON_HOLD, pairs)
+            for status in {s for s, _q in pairs if isinstance(s, str)}}
+    return world._cache["hold_verdicts"]
+
+
+def _hold_defaults(world: World) -> frozenset[str]:
+    """The FileMaker statuses where On-Hold is the status's default, not a hold."""
+    return frozenset(s for s, v in _hold_verdicts(world).items() if v == "state_default")
+
+
+def _real_hold_states(world: World) -> frozenset[str]:
+    return frozenset(s for s, v in _hold_verdicts(world).items() if v == "hold")
+
+
+def _held_reads(disagree: int, defaults: frozenset[str] = frozenset()) -> list[str]:
     return ["FileMaker public.batch (system of record): status not Cancelled, statusqc = "
             "On-Hold, matched to the Portal's app_batch_record by batch code (namebatch_c = "
-            f"batch_name); {disagree} batches the two disagree on follow FileMaker"]
+            f"batch_name); {disagree} batches the two disagree on follow FileMaker; "
+            "statuses where On-Hold is the default (evals.oracle.keys.batch_hold_verdict: "
+            "95% of at least 10 batches in the status) are not holds: "
+            f"{', '.join(sorted(defaults)) or 'none'}"]
 
 
 # What the one-batch answer says where FileMaker does not hold the batch on QC hold.
@@ -1119,7 +1165,9 @@ BATCH_NOT_HELD_FORMS = {
 
 
 def _one_batch_fact(code: str, fm: Sequence[Mapping[str, Any]],
-                    portal: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], str] | None:
+                    portal: Sequence[Mapping[str, Any]], defaults: frozenset[str] = frozenset(),
+                    unjudged: frozenset[str] = frozenset()
+                    ) -> tuple[dict[str, Any], str] | None:
     """The fact answering "is batch ``code`` on hold?" by FileMaker (its rule's words), or
     None where FileMaker's own records of the code disagree or read a status the rule
     does not know (no key: not decidable)."""
@@ -1143,6 +1191,14 @@ def _one_batch_fact(code: str, fm: Sequence[Mapping[str, Any]],
                 "FileMaker (the system of record) records the batch Cancelled: not on hold")
     if status not in HELD_BATCH or not isinstance(qc, str) or not qc.strip():
         return None
+    if qc == ON_HOLD and status in unjudged:
+        return None   # a state too small to profile: the rule does not judge it
+    if qc == ON_HOLD and status in defaults:
+        return (_fact("claim", "not_on_hold", cites, ("api",), value="not on hold",
+                      **BATCH_NOT_HELD_FORMS["not_on_hold"], **marks),
+                f"FileMaker (the system of record) records the batch {status} with QC "
+                f"status On-Hold, the value every {status} batch carries before release: "
+                "not on hold")
     if qc == ON_HOLD:
         return (_fact("claim", "on_hold", cites, ("api",), value="on hold",
                       **FORMS["on_hold"], **marks),
@@ -1167,7 +1223,8 @@ def batch_on_hold(world: World) -> list[Candidate]:
         if not any(_fm_is(i["row"], HELD_BATCH, ON_HOLD) for i in fm) \
                 and not any(_portal_is(i["row"], HELD_BATCH, ON_HOLD) for i in portal):
             continue
-        decided = _one_batch_fact(code, fm, portal)
+        decided = _one_batch_fact(code, fm, portal, _hold_defaults(world), frozenset(
+            s for s, v in _hold_verdicts(world).items() if v == "state_unprofiled"))
         if decided is None:
             continue
         fact, why = decided
@@ -1202,21 +1259,26 @@ def batch_released(world: World) -> list[Candidate]:
 
 
 def batches_on_hold_count(world: World) -> list[Candidate]:
-    held, disagree = _batches(world, HELD_BATCH, ON_HOLD)
+    held, disagree = _batches(world, _real_hold_states(world), ON_HOLD)
     return [Candidate("live-ops:batches-on-hold", "Batch", {}, [
         _fact("number", "on_hold_count", [i["citation"] for _c, fm, _p in held for i in fm],
               ("api",), value=str(len(held)), label=LABELS["batch_count"], tolerance="0",
               markings=["quality_controlled"])],
-        _held_reads(disagree),
-        "count of batches (in the works or finished) on QC hold: " + BATCH_RULE)] \
+        _held_reads(disagree, _hold_defaults(world)),
+        "count of batches (in the works or finished) on QC hold, a status's default QC "
+        "value no hold: " + BATCH_RULE)] \
         if held else []
 
 
-def _released_lots(world: World) -> list[tuple[str, date, list[str]]]:
-    """(lot number, expiry day, its receipt rows) of every released raw lot: a lot on
-    several receipt rows is one lot, kept only when every row agrees it is Released and on
-    one expiry day (rows that disagree make no key). The status is FileMaker's (system of
-    record), the schema's ``Lot.qc_status``: marked ``quality_controlled`` there and here."""
+def _stock_lots(world: World) -> list[tuple[str, date, list[str]]]:
+    """(lot number, expiry day, its receipt rows) of every raw lot still holding stock: a
+    lot on several receipt rows is one lot, kept when any of its rows' FileMaker QC status
+    says it holds stock (Released or Quarantine; a lot used up on one line and released on
+    another still holds stock) and every row states one expiry day (rows that disagree make
+    no key). The status is FileMaker's (system of record), the schema's ``Lot.qc_status``:
+    marked ``quality_controlled`` there and here; whether a status holds stock is the eval
+    side's own rule (``evals.oracle.keys.lot_holds_stock``, never the product's code)."""
+    from evals.oracle import keys as K
     by_lot: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in world.rows(RAW_LOT):
         lot = str(item["row"].get("lotnoqc") or "").strip()
@@ -1225,8 +1287,8 @@ def _released_lots(world: World) -> list[tuple[str, date, list[str]]]:
     out = []
     for lot, rows in by_lot.items():
         days = {instant(i["row"].get("expirydate")) for i in rows}
-        if {i["row"].get("status_c") for i in rows} != {"Released"} or len(days) != 1 \
-                or None in days:
+        if not any(K.lot_holds_stock(i["row"].get("status_c")) for i in rows) \
+                or len(days) != 1 or None in days:
             continue
         out.append((lot, next(iter(days)).date(), [i["citation"] for i in rows]))
     return out
@@ -1234,15 +1296,15 @@ def _released_lots(world: World) -> list[tuple[str, date, list[str]]]:
 
 def lot_expiry(world: World) -> list[Candidate]:
     out = []
-    for lot, day, cites in _released_lots(world):
+    for lot, day, cites in _stock_lots(world):
         if not 0 <= (day - world.as_of).days <= LOT_WINDOW_DAYS:
             continue
         out.append(Candidate(lot, "Lot", {"lot": lot}, [
             _fact("date", "expiry", cites, ("api",), value=day.isoformat(), label="expir",
                   markings=["quality_controlled"])],
-            ["portal mirror receipt_raw_material: status_c Released on every row of the "
-             "lotnoqc, one expirydate"],
-            f"a released raw lot expiring within {LOT_WINDOW_DAYS} days"))
+            ["portal mirror receipt_raw_material: status_c Released or Quarantine on a row "
+             "of the lotnoqc, one expirydate on every row"],
+            f"a raw lot still holding stock expiring within {LOT_WINDOW_DAYS} days"))
     return out
 
 

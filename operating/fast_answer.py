@@ -73,6 +73,8 @@ from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from .display_numbers import display_reply
 from . import po_status as ps
+from . import sales_order_status as so_status
+from . import stock_state
 from .customer_profit import normal_name
 
 ANSWER_FORMAT = "plx-eval-answer/v1"
@@ -246,6 +248,7 @@ class Ask:
     within: Optional[int] = None  # lots_expiring: days from today the window ends
     window: Any = None           # a windowed count or total: its ``time_window.Window``
     asks_next: bool = False      # po_followup: the question asks what to do (a proposal)
+    released_only: bool = False  # lots_expiring_count: the question asks for released lots
 
 
 # Ranking words of a list question: what it is ranked by, and which end first. One grammar
@@ -438,7 +441,8 @@ def understand(question: str, now: Optional[datetime] = None) -> Optional[Ask]:
             and rank is None and not _NEGATION.search(folded):
         until = _expiry_until(folded, now)
         if until is not None:   # "how many lots expire before January 1": one count
-            return Ask("lots_expiring_count", "", system, window=until)
+            return Ask("lots_expiring_count", "", system, window=until,
+                       released_only=bool(re.search(r"\breleased\b", folded)))
     if intent.name == "lots_expiring":
         within = _within(folded, now)
         if tokens or within is None or _NEGATION.search(folded):
@@ -1337,15 +1341,25 @@ def batch_status(reads: Reads, ask: Ask, draft: Draft) -> None:
     row = fm[0]
     name = draft.value("batch", row.get("row.namebatch_c"), row["citation"], "row.namebatch_c")
     status = draft.value("batch_status", row.get("row.status"), row["citation"], "row.status")
-    if status.casefold() == "cancelled":
+    verdict = stock_state.batch_hold(row.get("row.status"), row.get("row.statusqc"),
+                                     _batch_hold_profile(reads)) \
+        if stock_state.word(status) not in stock_state.CLOSED_BATCH else stock_state.CLOSED
+    if verdict in (stock_state.UNMAPPED, stock_state.UNPROFILED):
+        raise Unanswerable(verdict)
+    if verdict == stock_state.CLOSED:
         said = (f"Batch {name} is {status} in FileMaker, the system of record for batch QC "
                 "status, so it is not on hold")
     else:
         qc = draft.value("qc_status", row.get("row.statusqc"), row["citation"], "row.statusqc")
-        held = qc.strip().casefold() == BATCH_ON_HOLD.casefold()
-        said = (f"Batch {name} is {'on QC hold' if held else 'not on hold'} in FileMaker, the "
-                f"system of record for batch QC status: its QC status there is {qc} "
-                f"(batch status {status})")
+        held = verdict == stock_state.HOLD
+        if verdict == stock_state.STATE_DEFAULT:
+            said = (f"Batch {name} is not on hold in FileMaker, the system of record for "
+                    f"batch QC status: like every {status} batch there before release, it "
+                    f"carries the QC status {qc}, a default and not a hold Quality placed")
+        else:
+            said = (f"Batch {name} is {'on QC hold' if held else 'not on hold'} in FileMaker, "
+                    f"the system of record for batch QC status: its QC status there is {qc} "
+                    f"(batch status {status})")
     said += "."
     if copy is not None and (copy.get("row.status"), copy.get("row.status_qc")) \
             != (row.get("row.status"), row.get("row.statusqc")):
@@ -1476,21 +1490,27 @@ def _po_root(reads: Reads, ask: Ask, found: Mapping[str, Any], prefer: Sequence[
 
 def _same_groups(reads: Reads, picks: Sequence[Mapping[str, Any]]
                  ) -> list[list[Mapping[str, Any]]]:
-    """``picks`` grouped into one group per order: the Portal's and FileMaker's records of
-    a number stay one (the Portal's app records carry FileMaker's orders, the first of
-    ``prefer`` answering, as before); a Business Central record joins a Portal one only by
-    an established identity link (either way round); a link that cannot be read joins
-    nothing."""
-    from .why_trail import same_records
+    """``picks`` grouped into one group per order: records of one number in different
+    systems are one order only when the one PO reader reads one as a copy of the other
+    (``po_status.copies``: a settled identity twin, or another system's record a firm
+    twin link joins, as this reader reads the links); a shared number alone joins
+    nothing (a Portal number FileMaker or Business Central reused is another order), nor
+    does a link that cannot be read."""
+    source = ps.ToolSource(reads.call)
+    copies_of: dict[str, set[str]] = {}
+
+    def copies(oid: str) -> set[str]:
+        if oid not in copies_of:
+            try:
+                copies_of[oid] = set(ps.copies(source, oid)[0])
+            except Unanswerable:
+                raise   # out of time: never said as different orders
+            except Exception:  # noqa: BLE001 - unread: joined to nothing
+                copies_of[oid] = {oid}
+        return copies_of[oid]
 
     def same(a: str, b: str) -> bool:
-        if _binding({"object": {"object_id": a}}).startswith("bc.") == \
-                _binding({"object": {"object_id": b}}).startswith("bc."):
-            return True
-        try:
-            return same_records(reads.call, [a, b]) or same_records(reads.call, [b, a])
-        except Exception:  # noqa: BLE001 - unread: not known to be one order
-            return False
+        return b in copies(a) or a in copies(b)
     groups: list[list[Mapping[str, Any]]] = []
     for pick in picks:
         oid = pick["object"]["object_id"]
@@ -1503,10 +1523,19 @@ def _same_groups(reads: Reads, picks: Sequence[Mapping[str, Any]]
     return groups
 
 
-def _receipt_verdict(reads: Reads, root: str, required: bool = True
+# The process whose receipt stage judges a purchase order's lateness by the shared
+# definition (``po_status.read`` over the reader's context), open or not.
+DELIVERY_PROCESS = "po_delivery_window"
+
+
+def _receipt_verdict(reads: Reads, root: str, required: bool = True,
+                     process_id: Optional[str] = None
                      ) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
-    """(``plx.process`` of the order, its one receipt lateness verdict or None)."""
-    process = reads.call("plx.process", {"from": root})
+    """(``plx.process`` of the order, its one receipt lateness verdict or None).
+    ``process_id``: the process named (unnamed, an order the shared definition does not
+    call open gets a process with no receipt verdict)."""
+    process = reads.call("plx.process", {"from": root, **(
+        {"process": process_id} if process_id else {})})
     lateness = [x for x in process.get("lateness") or () if x.get("stage") == "receipt"]
     if len(lateness) > 1 or (required and not lateness):
         raise Unanswerable("no_receipt_verdict")
@@ -1629,20 +1658,21 @@ def _po_status_of(reads: Reads, ask: Ask, draft: Draft, picked: Mapping[str, Any
     # the order's own status in each system, cited: the facts beside any verdict
     card = reads.call("plx.object", {"object_id": root,
                                      "properties": list(PO_STATUS_PROPERTIES)})
-    statuses, words = [], set()
+    statuses = []
     for prop in PO_STATUS_PROPERTIES:
         for value, handle, field_path in _object_values(card, prop)[:1]:
             if isinstance(value, str) and value.strip():
                 text = draft.value(f"{prop}", value, handle, field_path)
                 statuses.append(f"{text} in {PO_STATUS_PROPERTIES[prop]}")
-                words.add(ps.word(value))
     if verdict is None:
-        # no receipt verdict (an order the shared definition no longer tracks): an order
-        # every system calls complete has been received; anything else is said as read
-        verdict = {"late": False, "measured_against": "received"} \
-            if statuses and words == {ps.COMPLETE} else \
-            {"gap": {"state": "unknown", "reason": "no_receipt_verdict",
-                     "subject": "receipt lateness"}}
+        # an order the shared definition does not call open (received in any copy,
+        # closed, cancelled, a draft, or unknown): its receipt verdict is still the shared
+        # one, asked of the delivery process by name; never a status word read here
+        process, verdict = _receipt_verdict(reads, root, required=False,
+                                            process_id=DELIVERY_PROCESS)
+    if verdict is None:
+        verdict = {"gap": {"state": "unknown", "reason": "no_receipt_verdict",
+                           "subject": "receipt lateness"}}
     late, state = verdict.get("late"), verdict.get("state")
     due_value = _date_value(verdict, verdict.get("governing_date"))
     due = None
@@ -1808,9 +1838,12 @@ def receipt_vs_po(reads: Reads, ask: Ask, draft: Draft) -> None:
 
 
 def vendor_open_pos(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """A Business Central vendor's open purchase orders (status Open, not fully received),
-    read in one ``plx.around`` filtered on both, numbered by each order's own number and
-    counted by ``plx.aggregate`` over the same set."""
+    """A Business Central vendor's open purchase orders, open by the one PO definition
+    (``po_status.read`` as this reader reads every copy of the order: a receipt in any
+    copy closes it, a Draft is not issued, an order whose status is not decided is not
+    listed as open but declines): its BC orders not fully received are read in one
+    ``plx.around`` (the only ones the definition can call open; counted by
+    ``plx.aggregate`` over the same set), each judged, numbered by its own number."""
     found = by_name(reads, ask.mention, "bc.vendors", "Supplier")
     if isinstance(found, Choices):
         raise _Choice(found)
@@ -1818,20 +1851,29 @@ def vendor_open_pos(reads: Reads, ask: Ask, draft: Draft) -> None:
     named = _said(draft, "vendor", {"object": vendor}, ask.mention)
     around = reads.call("plx.around", {"from": vendor["object_id"], "limit": 50, "path": [
         {"link_type": "PurchaseOrder.ordered_from", "direction": "reverse"}], "filters": [
-        {"property": "bc_status", "op": "eq", "value": "Open"},
         {"property": "bc_fully_received", "op": "eq", "value": False}]})
     if (around.get("completeness") or {}).get("truncated") or _withheld(around):
         raise Unanswerable("orders_cut_or_withheld")
-    orders = [o for o in around.get("objects") or ()
+    listed = [o for o in around.get("objects") or ()
               if str(o.get("object_id")).startswith("PurchaseOrder:bc.purchase_orders:")]
-    if not orders or len(orders) != len(around.get("objects") or ()) \
-            or len(orders) > MAX_ORDERS_READ:
+    if not listed or len(listed) != len(around.get("objects") or ()) \
+            or len(listed) > MAX_ORDERS_READ:
         raise Unanswerable("orders_not_listable")
-    numbers = _numbered(orders, draft, "open_order")
     count = reads.call("plx.aggregate", {"set": around["set"], "measure": {"op": "count"}})
     groups = count.get("groups") or ()
-    if len(groups) != 1 or str(groups[0].get("value")) != str(len(orders)):
+    if len(groups) != 1 or str(groups[0].get("value")) != str(len(listed)):
         raise Unanswerable("count_differs")
+    source = ps.ToolSource(reads.call)
+    orders = []
+    for obj in listed:
+        status = ps.read(source, str(obj["object_id"]), dates=False).status
+        if status.cls == ps.UNKNOWN:
+            raise Unanswerable("order_status_unknown")   # never listed open on a guess
+        if status.cls == ps.OPEN:
+            orders.append(obj)
+    if not orders:
+        raise Unanswerable("no_open_order")   # none open is no listing of an empty set
+    numbers = _numbered(orders, draft, "open_order")
     # a claim cites at most the gate's per-claim citations (more: refused whole, and the
     # count was said uncited); the count is bound to the aggregate over the same set
     from .answer_gate import MAX_CITATIONS_PER_CLAIM
@@ -1841,7 +1883,8 @@ def vendor_open_pos(reads: Reads, ask: Ask, draft: Draft) -> None:
                                  :MAX_CITATIONS_PER_CLAIM]}})
     draft.sentences.append(
         f"{named} has {len(orders)} open purchase order"
-        f"{'' if len(orders) == 1 else 's'} in Business Central (open, not fully received): "
+        f"{'' if len(orders) == 1 else 's'} in Business Central (open, not received in any "
+        "system): "
         + ", ".join(n for n, _h in numbers) + ".")
     draft.roots.append({"object_id": vendor["object_id"], "object_type": "Supplier",
                         "mention": ask.mention})
@@ -2305,8 +2348,10 @@ def _cited_number(reads: Reads, draft: Draft, name: str, obj: Mapping[str, Any],
     return draft.value(name, value, handle, field_path)
 
 
-# The Portal's sales order statuses that are still to ship (``app_sales_order.status``).
-OPEN_PORTAL_ORDER = frozenset({"Open", "OPEN", "READY_TO_SHIP"})
+# The Portal's sales order statuses that are still to ship (``app_sales_order.status``): the
+# one sales-order definition's open words, in the spellings the Portal stores
+# (``sales_order_status.spellings``). The answer is what that one system says.
+OPEN_PORTAL_ORDER = so_status.spellings("status")
 
 
 # --------------------------------------------------------------------------- prices
@@ -3169,6 +3214,37 @@ HELD_BATCH_FILTERS = (
     {"property": "status", "op": "ne", "value": "Cancelled"},
     {"property": "batch_code", "op": "present"},
     {"property": "batch_number", "op": "absent"})
+# FileMaker's batch records (no Portal display number), profiled by lifecycle state.
+FM_BATCH_FILTERS = ({"property": "batch_number", "op": "absent"},)
+
+
+def _batch_profile(reads: Reads) -> dict[tuple[str, str], int]:
+    """FileMaker's batch records counted by (status, QC status): one grouped aggregate,
+    read whole or ``Unanswerable``."""
+    result = reads.call("plx.aggregate", {
+        "object_type": "Batch", "filters": [dict(f) for f in FM_BATCH_FILTERS],
+        "group_by": ["status", "quality_status"], "measure": {"op": "count"}})
+    if not isinstance(result, Mapping) or not _aggregate_whole(result) \
+            or (result.get("completeness") or {}).get("truncated"):
+        raise Unanswerable("batch_profile_cut")
+    out: dict[tuple[str, str], int] = {}
+    for group in result.get("groups") or ():
+        key = group.get("key") if isinstance(group, Mapping) else None
+        count = group.get("value") if isinstance(group, Mapping) else None
+        if not isinstance(key, Mapping) or not isinstance(count, str) or not count.isdigit():
+            raise Unanswerable("batch_profile_cut")
+        status, qc = plain(key.get("status")), plain(key.get("quality_status"))
+        if isinstance(status, str) and isinstance(qc, str):
+            out[(status, qc)] = out.get((status, qc), 0) + int(count)
+    return out
+
+
+def _batch_hold_profile(reads: Reads, profile: Mapping[tuple[str, str], int] | None = None
+                        ) -> dict:
+    """FileMaker's batches by status word and QC word (``stock_state.hold_profile``):
+    what ``stock_state.batch_hold`` reads a state's default from."""
+    profile = _batch_profile(reads) if profile is None else profile
+    return stock_state.hold_profile(pair for pair, n in profile.items() for _ in range(n))
 
 
 MAX_UNNAMED_CODES = 10   # placeholder codes one hold count leaves out, at most
@@ -3176,7 +3252,7 @@ MAX_HELD_PAGES = 24      # pages of held batch records one hold count lists, at 
 HELD_PAGE = 20           # held records one page lists (a fuller page is trimmed to fit, uncursored)
 
 
-def _unnamed_batch_codes(reads: Reads) -> list[str]:
+def _unnamed_batch_codes(reads: Reads, states: Sequence[str]) -> list[str]:
     """The codes on FileMaker's held batch records that the batch-code grammar does not
     read as a batch code (a placeholder a generated batch carries before it is named, on
     many records at once): no one batch, so never counted as one. Read from the held
@@ -3186,7 +3262,9 @@ def _unnamed_batch_codes(reads: Reads) -> list[str]:
     ``MAX_UNNAMED_CODES`` is ``Unanswerable``."""
     from ontology import identifiers
     arguments: dict[str, Any] = {"object_type": "Batch", "limit": HELD_PAGE,
-                                 "filters": [dict(f) for f in HELD_BATCH_FILTERS]}
+                                 "filters": [dict(f) for f in HELD_BATCH_FILTERS] + [
+                                     {"property": "status", "op": "in",
+                                      "value": list(states)}]}
     out: list[str] = []
     for _page in range(MAX_HELD_PAGES):
         found = reads.call("plx.find", arguments)
@@ -3224,9 +3302,15 @@ def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     here (``batch_status`` compares them for one batch). An aggregate cut short, a value
     withheld, any group but one, a cited record not FileMaker's or none held is the
     agent's."""
-    unnamed = _unnamed_batch_codes(reads)
+    profile = _batch_profile(reads)
+    states = stock_state.held_states(_batch_hold_profile(reads, profile),
+                                     sorted({status for status, _qc in profile}), BATCH_ON_HOLD)
+    if not states:
+        raise Unanswerable("nothing_counted")   # none found is no proof none exist
+    unnamed = _unnamed_batch_codes(reads, states)
     result = reads.call("plx.aggregate", {
         "object_type": "Batch", "filters": [dict(f) for f in HELD_BATCH_FILTERS] + [
+            {"property": "status", "op": "in", "value": states}] + [
             {"property": "batch_code", "op": "ne", "value": code} for code in unnamed],
         "measure": {"op": "count_distinct", "property": "batch_code"}})
     reasons = {g.get("reason") if isinstance(g, Mapping) else None
@@ -3273,8 +3357,9 @@ def batch_hold_count(reads: Reads, ask: Ask, draft: Draft) -> None:
                                "than one record counts once.")
     _members_said(reads, draft, inputs, "row.namebatch_c", "batch")
     draft.sentences.append(
-        "Records with no batch code yet are not counted, and the Portal's copies of these "
-        "batches were not compared in this count.")
+        "A QC status every batch in one state carries before release (such as an unmade "
+        "batch's) is no hold and is not counted; records with no batch code yet are not "
+        "counted, and the Portal's copies of these batches were not compared in this count.")
     draft.sentences.append("Source: FileMaker batches.")
 
 
@@ -3438,14 +3523,19 @@ LOT_RELEASED = "Released"   # FileMaker's QC status (status_c) of a lot cleared 
 
 
 def lots_expiring_count(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """How many released raw lots expire in ``ask.window`` (today through its last day,
-    ``_expiry_until``), each lot once: ``_lot_count`` over the Lots whose QC status
-    (``Lot.qc_status``, FileMaker's own) is Released and whose expiry date is in the
-    window, said and bound as ``lot_quarantine_count`` says its count, the window with its
-    days. A lot received on several lines counts once when any of its lines is Released
-    with an expiry in the window."""
+    """How many raw lots still holding stock expire in ``ask.window`` (today through its
+    last day, ``_expiry_until``), each lot once: ``_lot_count`` over the Lots whose QC
+    status (``Lot.qc_status``, FileMaker's own) says the lot holds stock
+    (``stock_state.STOCK_LOT``: released or in quarantine; Released alone when the
+    question asks for released lots) and whose expiry date is in the window, said and
+    bound as ``lot_quarantine_count`` says its count, the window with its days. A lot
+    received on several lines counts once when any of its lines qualifies. Used up,
+    rejected or expired lots, and lots with no or an unknown status, are not counted."""
     window = ask.window
-    filters = [{"property": "qc_status", "op": "eq", "value": LOT_RELEASED},
+    status = ({"property": "qc_status", "op": "eq", "value": LOT_RELEASED}
+              if ask.released_only else
+              {"property": "qc_status", "op": "in", "value": sorted(stock_state.STOCK_LOT)})
+    filters = [status,
                {"property": "expiry_date", "op": "gte", "value": window.start.isoformat()},
                {"property": "expiry_date", "op": "lt",
                 "value": (window.end + timedelta(days=1)).isoformat()}]
@@ -3453,20 +3543,25 @@ def lots_expiring_count(reads: Reads, ask: Ask, draft: Draft) -> None:
     draft.values.append({"name": "expiring_lots", "value": str(lots),
                          "calculation": {"op": "count_distinct", "inputs": inputs}})
     many = lots != 1
-    said = f"{lots} released raw lot{'s' if many else ''}"
+    kind = "released raw lot" if ask.released_only else "raw lot"
+    held = "" if ask.released_only else " still holding stock"
+    said = f"{lots} {kind}{'s' if many else ''}{held}"
     if records != lots:
         draft.values.append({"name": "expiring_lines", "value": str(records),
                              "calculation": {"op": "count", "inputs": inputs}})
-        said = f"{lots} distinct released raw lot{'s' if many else ''}"
+        said = f"{lots} distinct {kind}{'s' if many else ''}{held}"
+    basis = "Released" if ask.released_only else "Released or Quarantine"
     draft.sentences.append(
-        f"{said} you can see expire {window.said}, by FileMaker's own QC status (Released, "
+        f"{said} you can see expire {window.said}, by FileMaker's own QC status ({basis}, "
         "status_c on its raw-material receiving lines, the system of record for lot QC "
         "status) and each line's expiry date, each lot counted once by its lot number.")
     if records != lots:
         draft.sentences.append(_LINES_SAID.format(records))
     _members_said(reads, draft, inputs, "row.lotnoqc", "lot")
-    draft.sentences.append("Lots in quarantine, rejected or used up are not counted. "
-                           "Source: FileMaker raw-material receiving lines.")
+    draft.sentences.append(
+        ("Lots in quarantine, rejected or used up are not counted. " if ask.released_only
+         else "Lots rejected, used up or expired, or with no QC status, are not counted. ")
+        + "Source: FileMaker raw-material receiving lines.")
 
 
 def _quarantine_copy_said(reads: Reads, draft: Draft, filters: list[dict[str, Any]]) -> None:

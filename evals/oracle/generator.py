@@ -311,22 +311,30 @@ def fm_po_lineage(relation: str, row: Mapping[str, Any], portal: Any) -> str:
 
 
 def closed(relation: str, row: Mapping[str, Any], portal: Any) -> bool:
-    """A transaction whose answer should not move (09 R7 d), read the way the Portal reads
-    its status: sales orders by ``keys.so_finished`` (gold vocabulary or FM status text) or,
-    Sage-backed, by their Sage header's complete flag (``keys.SAGE_COMPLETE``); purchase
-    orders by their fulfillment code over their lines (``keys.PO_STATUS_CITE``); assembly
-    orders realized; receipts released/rejected."""
+    """A transaction whose answer should not move (09 R7 d), closed in any copy of it
+    (``keys.TRUTH_RULES_CITE``): sales orders by ``keys.so_closed_by_copies`` (the Portal's
+    or its FileMaker order entry's finished word, or a shipment that shipped; a Sage
+    completion code alone never); purchase orders by their fulfillment code over their
+    lines (``keys.PO_STATUS_CITE``) or their FileMaker order received in full
+    (``keys.fm_order_received``); assembly orders realized; receipts released/rejected."""
     if relation == K.SO:
-        if K.so_finished(row.get("status")):
-            return True
-        uniq = _custom(row, "sageOrdUniq") or _custom(row, "sageSourceOrdUniq")
-        if key_text(uniq) is None:
-            return False
-        headers = portal.lookup(K.SAGE_ORDER, "orduniq", uniq)
-        return len(headers) == 1 and sql_trim(key_text(headers[0].get("complete")) or "") \
-            in K.SAGE_COMPLETE
+        # closed in ANY copy (keys.so_closed_by_copies): the Portal's word, its FileMaker
+        # order entry's (custom_fields.fmId, a stored key), or a shipment of it that
+        # shipped; a Sage header's completion code alone closes nothing
+        fm_id = _custom(row, "fmId")
+        fm_rows = _copies(portal, K.FM_OE, "id", fm_id) if key_text(fm_id) else []
+        shipped = any(K.shipped(s.get("status"))
+                      for s in _copies(portal, K.SHIPMENT, "sales_order_id", row.get("id")))
+        return K.so_closed_by_copies([row.get("status"), *(r.get("status") for r in fm_rows)],
+                                     shipped)
     if relation == K.PO:
-        return bool(key_text(row.get("closed_at"))) or po_code(row, portal) == K.PO_CLOSED_CODE
+        if bool(key_text(row.get("closed_at"))) or po_code(row, portal) == K.PO_CLOSED_CODE:
+            return True
+        # a receipt in any copy closes it: its FileMaker order (fmGeneratedPoId, a stored
+        # key) with every item settled (keys.fm_order_received)
+        fm_id = _custom(row, "fmGeneratedPoId")
+        items = _copies(portal, K.FM_PO_ITEM, "idpogen", fm_id) if key_text(fm_id) else []
+        return K.fm_order_received(items)
     if relation == K.MO:
         return (row.get("deleted_at") in (None, "") and
                 (K.assembly_status(row.get("status")) == "Realized" or
@@ -336,6 +344,17 @@ def closed(relation: str, row: Mapping[str, Any], portal: Any) -> bool:
     if relation == K.FM_RECEIPT_RAW:
         return K.receipt_status(row.get("status_c")) in K.RECEIPT_CLOSED
     return False
+
+
+def _copies(portal: Any, relation: str, field: str, value: Any) -> list[Mapping[str, Any]]:
+    """Another copy's rows by a stored key; a copy whose relation could not be read
+    states nothing (never closes an order on a failed read)."""
+    from .source import ReadFailed
+
+    try:
+        return portal.lookup(relation, field, value)
+    except ReadFailed:
+        return []
 
 
 def po_code(row: Mapping[str, Any], portal: Any) -> str:

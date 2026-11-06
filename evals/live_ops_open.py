@@ -236,7 +236,7 @@ def _ground(world: lk.World, question: str, cache: dict[str, Any]
                      silent=_by_identifier(lk.po_no_vendor_mail(world)),
                      people=_by_identifier(lk._more.fm_po_people(world)),
                      lots=wide._lots(world), batches=_by_identifier(lk.batch_on_hold(world)),
-                     expiry={lot: (day, cites) for lot, day, cites in lk._released_lots(world)})
+                     expiry={lot: (day, cites) for lot, day, cites in lk._stock_lots(world)})
     groups = {id(g): g for k in lk.po_mentions(question) if (g := cache["po"].get(k))}
     lots = {t for t in set(wide.LOT_TOKEN.findall(question)) if t in cache["lots"]}
     batches = {t.upper() for t in re.findall(r"[A-Za-z0-9-]{4,}", question)
@@ -705,7 +705,7 @@ def po_late_and_confirmation(world: lk.World) -> list[lk.Candidate]:
 def lot_status_and_expiry(world: lk.World) -> list[lk.Candidate]:
     """Two asks at once on a raw lot: its QC status (Released on every row) and expiry."""
     out = []
-    for lot, day, cites in lk._released_lots(world):
+    for lot, day, cites in lk._stock_lots(world):
         if not wide.lot_token(lot) or not 0 <= (day - world.as_of).days <= 400:
             continue
         word, accept, against = LOT_WORDS["Released"]

@@ -79,6 +79,14 @@ def priced_lines(s, so, key, *, lines=(("1000.00", "100"), ("250.00", "10")), qt
     return out
 
 
+def staggered(day: str | None, n: int) -> str | None:
+    """Order ``n``'s required date: ``day`` less ``n`` days (``n`` 0: ``day``; earlier, so
+    an order at risk stays at risk). Many orders all required the same day are what a
+    migration writes (``operating.source_defaults``: a bulk default, no requested date),
+    so each order of a fixture is required its own day."""
+    return None if day is None else (date.fromisoformat(day) - timedelta(days=n)).isoformat()
+
+
 def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_status="CONFIRMED",
                   ao_status="Committed", value="1250.50", key="ic",
                   planned="2099-01-15", promise="2099-01-20", margin=None, posted=None,
@@ -140,10 +148,10 @@ def chain_fixture(s, *, orders=1, required="2099-01-25", alloc_line=True, so_sta
         if alloc_line:
             s.link("AssemblyOrderAllocation.for_order_line", alloc, sol)
         fm_so = s.obj(f"SalesOrder:portal.fm_order_entry:oe-{key}-{n:03d}", "fm_bronze")
-        s.val(fm_so, "required_date", "date", required, path="row.datereq")
+        s.val(fm_so, "required_date", "date", staggered(required, n), path="row.datereq")
         s.link("SalesOrderLine.line_of", sol, fm_so)
         so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n:03d}")
-        s.val(so, "required_date", "date", required)
+        s.val(so, "required_date", "date", staggered(required, n))
         s.val(so, "status", "text", so_status)
         if value is not None:
             s.val(so, "total_amount", "money", value, currency="CAD", markings='["finance"]')
@@ -937,13 +945,14 @@ class ScanAndProactiveTests(unittest.TestCase):
                 first = chain_fixture(s, key=f"c{n}-0", planned="2099-03-01", promise=None,
                                       required="2099-02-20", description="Item number 000")
                 ids = [first] + [chain_fixture(s, key=f"c{n}-{i}", po=first["po"],
-                                               required="2099-02-20",
+                                               required=staggered("2099-02-20", -i),
                                                description=f"Item number {i:03d}")
                                  for i in range(1, n)]
-                # every line promised after its order's need, by i + 1 days
+                # every line promised after its order's need (each order its own day), by
+                # i + 1 days
                 lined(s, first["po"], f"per{n}", [
                     block(str(10 * (i + 1)), f"Item number {i:03d} 300{i:05d}",
-                          (date(2099, 2, 21) + timedelta(days=i)).isoformat())
+                          (date(2099, 2, 21) + timedelta(days=2 * i)).isoformat())
                     for i in range(n)])
                 path = store_file(s, self.dir.name)
                 st = pe._Store(path)
@@ -1020,9 +1029,9 @@ class ScanAndProactiveTests(unittest.TestCase):
         money = next(g for g in staff["gaps"] if g["kind"] == "po_impact_margin")
         self.assertEqual(money["summary"], "affects 2 sales orders, 1070.00 CAD margin at "
                                            "stake (recorded unit cost, excludes freight/duty), "
-                                           "worst 12 days at risk")
+                                           "worst 13 days at risk")   # order 1: a day earlier
         plain = next(g for g in ops["gaps"] if g["kind"] == "po_impact")
-        self.assertEqual(plain["summary"], "affects 2 sales orders, worst 12 days at risk")
+        self.assertEqual(plain["summary"], "affects 2 sales orders, worst 13 days at risk")
         self.assertNotIn("1070", json.dumps(ops))
         self.assertNotIn("6.50", json.dumps(ops))
         home = {name: mcp_server._home_answer(got, (), None, None)["home"]["gaps"]
@@ -1327,7 +1336,7 @@ def demand_fixture(s, *, key="dm", orders=1, required="2099-01-25", ordered=None
     for n in range(orders):
         so = s.obj(f"SalesOrder:portal.app_sales_order:so-{key}-{n:03d}")
         if required is not None:
-            s.val(so, "required_date", "date", required)
+            s.val(so, "required_date", "date", staggered(required, n))
         if ordered is not None:
             s.val(so, "order_date", "date", ordered)
         if so_status is not None:

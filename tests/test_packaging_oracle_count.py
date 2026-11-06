@@ -240,21 +240,30 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
         s = tp.Store()
         expected = {}
         for i in range(n):
-            done = self.po(s, f"done-{i}", "Complete", "2099-01-15")
+            # each order's dates a few days apart: one day on a bulk share of the orders
+            # would be a sync default, dating nothing (``operating.source_defaults``)
+            k = i % 10
+
+            def day(base: str, k: int = k) -> str:
+                from datetime import date, timedelta
+                return (date.fromisoformat(base) + timedelta(days=k)).isoformat()
+            done = self.po(s, f"done-{i}", "Complete", day("2099-01-15"))
             twin = self.pl.bc_po(s, key=f"bc-{i}", fully_received="true", status="Open")
             s.link("PurchaseOrder.same_record_as", done, twin, tier="verified",
                    kind="same_record")
             # plx.process measures a received PO on its receipt date: on time, neither
             self.pl.receipt(s, done, f"rc-{i}", "2099-01-10")
-            late = self.po(s, f"late-{i}", "Pending", "2099-01-20", promise="2099-01-25")
-            risky = self.po(s, f"risk-{i}", "Pending", "2099-02-10", promise="2099-02-20")
+            late = self.po(s, f"late-{i}", "Pending", day("2099-01-20"),
+                           promise=day("2099-01-25"))
+            risky = self.po(s, f"risk-{i}", "Pending", day("2099-02-10"),
+                            promise=day("2099-02-20"))
             # a BC order dated only by its open line's expectedReceiptDate, and the Portal
             # order its number matches capped at lead (bc_company_not_known), as live:
             # the lead is no twin, so its later header date never governs in any caller
             bc_late = self.pl.bc_po(s, key=f"bc-late-{i}", fully_received="false")
             self.pl.line(s, bc_late, f"bc-late-{i}-1", "100", "0",
-                         binding="bc.purchase_order_lines", due="2099-01-12")
-            lead = self.po(s, f"lead-{i}", "Complete", "2099-03-01", ordered=("10", "10"))
+                         binding="bc.purchase_order_lines", due=day("2099-01-12"))
+            lead = self.po(s, f"lead-{i}", "Complete", day("2099-03-01"), ordered=("10", "10"))
             s.link("PurchaseOrder.same_record_as", lead, bc_late, tier="lead",
                    kind="same_record")
             expected.update({done: ("closed", "RECEIVED", "neither"),
@@ -379,3 +388,34 @@ class OneReaderAcrossCallersTest(unittest.TestCase):
         from datetime import date
 
         return date.fromisoformat(self.TODAY)
+
+
+class FileMakerItemStateThroughToolsTest(unittest.TestCase):
+    """FileMaker's item receiving state (``fm_receiving_status``, text: Complete, B.Order)
+    read through the real plx tools as one principal calls them (``plx.around`` and
+    ``plx.object`` answered by the registered handlers over a store): a word, never a
+    quantity, so a real value never fails the read. Settled items close the order; a
+    back-ordered item keeps it open, partly received. Evidence label: isolated-fixture."""
+
+    setUpClass = OneReaderAcrossCallersTest.__dict__["setUpClass"]
+    oracle_call = OneReaderAcrossCallersTest.oracle_call
+
+    def test_item_words_read_as_text_decide_the_order(self):
+        from operating import po_status
+
+        for word, cls, code in (("Complete", po_status.CLOSED, po_status.RECEIVED),
+                                ("B.Order", po_status.OPEN, po_status.PARTIAL)):
+            with self.subTest(word=word):
+                s = self.pl.tp.Store()
+                po = self.pl.portal_po(s, key="p1", status="B.Order", number="PO-p1")
+                fm = s.obj("PurchaseOrder:portal.fm_generated_purchase_order:f1", "fm_bronze")
+                s.val(fm, "fm_status", "text", "B.Order")
+                s.link("PurchaseOrder.same_record_as", po, fm, kind="same_record")
+                item = s.obj("PurchaseOrderLine:portal.fm_generated_purchase_order_item:i1",
+                             "fm_bronze")
+                s.val(item, "ordered_quantity", "quantity", "10", unit="each", role="ordered")
+                s.val(item, "fm_receiving_status", "text", word)
+                s.link("PurchaseOrderLine.line_of", item, fm)
+                call = self.oracle_call(s, self.pl.STAFF)
+                read = po_status.read(po_status.ToolSource(call), po, dates=False)
+                self.assertEqual((read.status.cls, read.status.code), (cls, code))

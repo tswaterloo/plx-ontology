@@ -21,10 +21,13 @@ derives its fulfillment code from the header and the summed line quantities
   **closed** (``RECEIVED``) once it covers it, within the Portal's ``EPS``;
 * the gold received quantity of an FM-mirrored PO is ETL-seeded 0 (open-po-lines/
   route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20): when the Portal lines say 0
-  and the PO has an FM twin, the FM QC receiving log (the receipt rows' ``sumqty`` by
-  ``idpogenitem``, the stand-in for ``noitemsqc``) is the received quantity, provided the
-  FM items' ordered total is the gold one (the only proof the unit-less QC quantity is in
-  the gold unit); otherwise the quantities are unknown;
+  and the PO has an FM twin, FileMaker's own receiving state of each item
+  (``generated_purchase_order_item.status``, ``fm_receiving_status``: Complete, OverPO or
+  Cancel settled, B.Order partly received, Pending or Generated nothing yet) decides what
+  was received, provided the FM items' ordered total is the gold one; any other item word
+  or FM total leaves the quantities unknown. The QC receiving log's ``sumqty`` is never
+  read as a quantity: on the mirror it is a FileMaker running total across the whole log
+  (each export's rows in id order), not one receipt's quantity;
 * a null or unmapped word (Revised, Generated, anything new), quantities that are not
   readable in one unit, or no ordered quantity at all is **unknown**, with its reason,
   and counted by every reader, never guessed;
@@ -78,8 +81,8 @@ from __future__ import annotations
 import argparse
 import functools
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import json
 import os
@@ -312,7 +315,7 @@ def record(values: Mapping[str, Sequence[Any]],
                   and header_class(text) == ISSUED else (None, None))
         if prop == "status" and fm_lines is not None:
             totals = _fm_received(totals, fm_lines)
-        statuses.append(classify(text, *totals))
+        statuses.append(classify_received(text, *totals))
     if values.get("bc_status") or values.get("bc_fully_received"):
         heads = {word(v) for v in values.get("bc_status") or ()}
         flags = {_flag(v) for v in values.get("bc_fully_received") or ()}
@@ -324,30 +327,46 @@ def record(values: Mapping[str, Sequence[Any]],
     return combine(statuses)
 
 
+def classify_received(raw: Any, ordered: Decimal | None, received: Any) -> PoStatus:
+    """``classify``, with a received quantity FileMaker states only as partly received
+    (``PARTIAL_RECEIPT``): an issued word is open ``PARTIAL``, a Complete one closed
+    ``COMPLETE`` (its remainder unread)."""
+    if received is PARTIAL_RECEIPT:
+        if word(raw) in COMPLETE_WORDS:
+            return PoStatus(CLOSED, COMPLETE)
+        return classify(raw, None, None) if header_class(raw) != ISSUED \
+            else PoStatus(OPEN, PARTIAL)
+    return classify(raw, ordered, received)
+
+
 def _fm_received(totals: tuple[Decimal | None, Decimal | None], fm_lines: Any
-                 ) -> tuple[Decimal | None, Decimal | None]:
-    """The gold ``(ordered, received)`` with the FM QC receiving log as the received
-    quantity when gold received nothing (``record``); unchanged otherwise."""
+                 ) -> tuple[Decimal | None, Any]:
+    """The gold ``(ordered, received)`` with FileMaker's item receiving states as the
+    received quantity when gold received nothing (``record``); unchanged otherwise. A
+    partly received item makes the received ``PARTIAL_RECEIPT`` (some, not all)."""
     ordered, received = totals
     if ordered is None or received is None or received > EPS:
         return totals
     if fm_lines is UNREAD:
         return None, None
     fm_lines = list(fm_lines)
-    qc = Decimal(0)
+    got_total, partial = Decimal(0), False
     for _, got, _ in fm_lines:
         if got is UNREAD:
             return None, None
+        if got is PARTIAL_RECEIPT:
+            partial = True
+            continue
         got = Decimal(0) if got is None else _number(got)
         if got is None:
             return None, None
-        qc += max(Decimal(0), got)
-    if qc <= EPS:
-        return totals   # nothing in the QC log: the gold 0 stands
+        got_total += max(Decimal(0), got)
+    if got_total <= EPS and not partial:
+        return totals   # FileMaker received nothing either: the gold 0 stands
     fm_ordered, _ = line_totals((want, None, None) for want, _, _ in fm_lines)
     if fm_ordered is None or abs(fm_ordered - ordered) > EPS:
-        return None, None   # no proof the QC quantity is in the gold unit
-    return ordered, qc
+        return None, None   # no proof the FileMaker quantities are in the gold unit
+    return (ordered, PARTIAL_RECEIPT) if partial else (ordered, got_total)
 
 
 def _flag(raw: Any) -> bool | None:
@@ -373,6 +392,87 @@ class _Unread:
 
 
 UNREAD = _Unread()   # a quantity or unit not readable (absent, withheld, disputed)
+
+
+class _Partial:
+    def __repr__(self) -> str:
+        return "PARTIAL"
+
+
+PARTIAL_RECEIPT = _Partial()   # an item FileMaker says is partly received (amount unread)
+# FileMaker's receiving state of a PO item (``generated_purchase_order_item.status``):
+# settled (nothing outstanding: received in full, over-received or the item cancelled),
+# partly received (a back order), nothing received yet; any other word is unread.
+FM_RECEIVING = "fm_receiving_status"
+FM_ITEM_SETTLED = frozenset({"COMPLETE", "OVERPO", "CANCEL"})
+FM_ITEM_CANCELLED = frozenset({"CANCEL"})
+FM_ITEM_PARTIAL = frozenset({"B.ORDER"})
+FM_ITEM_NOTHING = frozenset({"PENDING", "GENERATED"})
+
+
+# A FileMaker QC lot's status that says the goods never arrived usable (QC refused them):
+# any other QC status (released, quarantined, finished, expired) is goods received.
+FM_LOT_REFUSED = frozenset({"REJECTED"})
+
+
+def fm_item_received(status: Any, ordered: Any, receipt: bool | None = None) -> Any:
+    """What an FM item received by FileMaker's own state of it: its ordered quantity when
+    settled, ``PARTIAL_RECEIPT`` when partly received, None when nothing yet; ``UNREAD``
+    for any other word (or a settled item whose ordered quantity is unread).
+
+    ``receipt``: whether FileMaker records goods received against the item (a receiving
+    row, or a QC lot whose status is not a refusal: ``FM_LOT_REFUSED``); None when not
+    read. FileMaker's own item state decides whenever it is served; where no state is
+    served at all, a recorded receipt says the item was received (a receipt in any
+    record closes it), and no receipt leaves it unread (never guessed open)."""
+    text = word(status) if status is not UNREAD else None
+    if text in FM_ITEM_CANCELLED and ordered in (None, UNREAD):
+        return Decimal(0)   # cancelled: nothing outstanding, whatever it ordered
+    # settled; with no readable ordered quantity what arrived is not stated in a
+    # quantity, so unread (the header decides)
+    if text in FM_ITEM_SETTLED:
+        return UNREAD if ordered is UNREAD or ordered is None else ordered
+    # a partial receipt never closes the item (owner, 2026-11-06): a back-ordered item,
+    # or one FileMaker still calls waiting while goods are recorded against it, is partly
+    # received; the order stays open
+    if text in FM_ITEM_PARTIAL or (text in FM_ITEM_NOTHING and receipt):
+        return PARTIAL_RECEIPT
+    if text in FM_ITEM_NOTHING:
+        return None
+    # no word served: a receipt alone does not say whether all arrived, so unread
+    return UNREAD
+
+
+def fm_rollup(items: Any) -> "PoStatus | None":
+    """A FileMaker order's status rolled up from its items (``(ordered, received by
+    fm_item_received, unit)`` each), never its header word, which FileMaker leaves stale
+    (B.Order over items all Complete): every item settled is closed ``RECEIVED``; any item
+    outstanding is open (``PARTIAL`` once something arrived, else ``SUBMITTED``). None
+    when an item is unread or there are none: the header word then decides."""
+    if items is None or items is UNREAD:
+        return None
+    items = list(items)
+    if not items:
+        return None
+    got_any = open_any = False
+    for want, got, _unit in items:
+        if got is UNREAD or want is UNREAD:
+            return None
+        if got is PARTIAL_RECEIPT:
+            got_any = open_any = True
+            continue
+        if got is None:
+            open_any = True
+            continue
+        number, ordered = _number(got), _number(want)
+        if number is None:
+            return None
+        if ordered is not None and number + EPS < ordered:
+            open_any = True
+        got_any = got_any or number > EPS
+    if not open_any:
+        return PoStatus(CLOSED, RECEIVED)
+    return PoStatus(OPEN, PARTIAL if got_any else SUBMITTED)
 
 
 def line_totals(lines: Iterable[tuple[Any, Any, Any]]) -> tuple[Decimal | None, Decimal | None]:
@@ -417,15 +517,27 @@ def lateness_verdict(status: PoStatus | str, requested: date | None,
 
 # --------------------------------------------------------------------------- the one reader
 
-PO_TYPE, LINE_TYPE, RECEIPT_LINE_TYPE = "PurchaseOrder", "PurchaseOrderLine", "ReceiptLine"
+PO_TYPE, LINE_TYPE = "PurchaseOrder", "PurchaseOrderLine"
 CONFIRMATION_TYPE = "SupplierConfirmation"
 SAME_RECORD = "PurchaseOrder.same_record_as"
 # the BC order the Portal posted a gold PO as (the entity map's join, served at verified)
 POSTED = "PurchaseOrder.bc_posted_as"
 TWIN_LINKS = (SAME_RECORD, POSTED)
 LINE_OF = "PurchaseOrderLine.line_of"
-RECEIVES_LINE = "ReceiptLine.receives_line"
 CONFIRMS = "SupplierConfirmation.confirms"
+# Every link by which a supplier's own document answers an order: its confirmation, and
+# its invoice for the order (an invoice confirms the order was taken and shipped).
+CONFIRMATION_LINKS = (CONFIRMS, "SupplierInvoice.for_purchase_order")
+# The order numbers a record is known by (a number another order also holds collides).
+NUMBER_PROPS = ("po_number", "fm_po_number")
+
+
+def _number_key(raw: Any) -> str:
+    """An order number compared across systems: letters and digits, upper-cased, the
+    leading "PO"/"#" marks and zeros dropped (PO#4442, PO4442 and 4442 are one number)."""
+    text = re.sub(r"[^0-9A-Z]", "", str(raw or "").upper())
+    text = re.sub(r"^PO", "", text)
+    return text.lstrip("0") or text
 ORDERED, RECEIVED_QTY = "ordered_quantity", "received_quantity"
 NEED_PROP, PROMISE_PROP, PROMISE_ORDER = "expected_date", "delivery_date", "document_date"
 # Every property a confirmation states its arrival promise in: its document's, and the
@@ -437,11 +549,22 @@ LINE_PROMISES = "line_promises"
 # read only where no header tier holds a date.
 LINE_EXPECTED = "bc_expected_receipt_date"
 PORTAL_BINDING = "portal.app_purchase_order"
+# FileMaker's receiving rows and QC lots against an item (``fm_item_received``'s receipt
+# evidence): the receiving row's own status, and the QC status of the lot it received.
+RECEIPT_TYPE, LOT_TYPE = "Receipt", "Lot"
+RECEIPT_RECEIVES_LINE, QC_RECEIVES_LINE = "Receipt.receives_line", "ReceiptLine.receives_line"
+RECEIVED_LOT = "ReceiptLine.received_lot"
+FM_RECEIPT_BINDINGS = frozenset({"portal.fm_receipt", "portal.fm_receipt_raw_material",
+                                 "portal.fm_receipt_packaging"})
+RECEIPT_STATUS, LOT_QC = "fm_status", "qc_status"
+# A record's own days: the date a form or import set to the day it wrote the record is no
+# requested date (``source_defaults.own_day``).
+# BC's last-modified day is not one: any later edit or receipt posting rewrites it.
+OWN_DAY_PROPS = ("order_date", "portal_created_at", "fm_created_at")
+# The supplier a record is ordered from, as each system stores it (number collisions).
+VENDOR_NUMBER_PROPS = ("vendor_number", "vendor_name")
 FM_BINDING = "portal.fm_generated_purchase_order"
 FM_ITEM_BINDING = "portal.fm_generated_purchase_order_item"
-# The FM QC receiving log: receipt rows by idpogenitem (ReceiptLine.receives_line), their
-# sumqty the stand-in for noitemsqc, which the Portal does not serve.
-FM_QC_BINDINGS = frozenset({"portal.fm_receipt_raw_material", "portal.fm_receipt_packaging"})
 # Identity tiers that join twins (the store and tool readers; the process context reads
 # its own ``_IDENTITY_TIERS``), and the tiers a confirmation link counts at.
 SETTLED = ("verified", "reviewed")
@@ -533,6 +656,13 @@ class Need:
     others: tuple = ()
     unparseable: tuple = ()
     undated: tuple = ()   # open lines holding no readable date (``line_need``)
+    # where the due date comes from: ``requested`` (a requested-by date a record states),
+    # or, only when no record states one, a labelled source: ``vendor_eta`` (the
+    # supplier's confirmed date) or ``lead_time`` (the order day plus its lead time)
+    basis: str = "requested"
+    marks: tuple = ()     # markings of the links a labelled due date is read through
+    # dates the records hold that are defaults (a bulk import day, the record's own day)
+    defaulted: tuple = ()
 
 
 def need_date(dated: Iterable[tuple[int, date | None, Any]]) -> Need:
@@ -670,10 +800,28 @@ def _read_side(source: Any, records: Sequence[str],
     """One side of a PO (its settled twins, or the firm twins linked to them) by the one
     definition: the combined status, its evidence and link marks, whether a part is
     hidden, and each record's lines as read ``(triples or None, evidence)``. ``notes``:
-    each record's ``record_note`` is appended."""
+    each record's ``record_note`` is appended.
+
+    A FileMaker record's status is rolled up from its items (``fm_rollup``: FileMaker
+    leaves the header stale), and a Portal record joined to a FileMaker one is FileMaker's
+    mirror: once FileMaker's items decide, the mirror's copied header and ETL-seeded line
+    quantities decide nothing of their own."""
     fm = [m for m in records if reads[m][0].get("fm_status")]
     statuses, cited, marks, blind = [], [], [], False
     lines_of: dict[str, tuple[Any, list]] = {}
+    rolled: dict[str, PoStatus] = {}
+    logs: dict[str, Any] = {}
+    for twin in fm:
+        found, evidence, hidden, link_marks = source.fm_lines(twin)
+        logs[twin] = found
+        status = fm_rollup(found)
+        if status is not None:
+            rolled[twin] = status
+            cited += evidence
+            marks += link_marks
+        else:
+            blind = blind or (hidden and found is UNREAD)
+    fm_status = combine(rolled.values()) if rolled else None
     for member in records:
         values, evidence, hidden = reads[member]
         blind = blind or hidden
@@ -688,17 +836,17 @@ def _read_side(source: Any, records: Sequence[str],
             lines_of[member] = (lines, list(evidence))
             totals = line_totals(lines) if lines is not None else (None, None)
             if fm and totals[1] is not None and totals[1] <= EPS:
-                logs = []
-                for twin in fm:
-                    found, evidence, hidden, link_marks = source.fm_lines(twin)
-                    blind = blind or (hidden and found is UNREAD)
-                    cited += evidence
-                    marks += link_marks
-                    logs.append(found)
-                fm_lines = _one_log(logs)
-        statuses.append(record(values, lines, fm_lines))
+                fm_lines = _one_log([logs[twin] for twin in fm])
+        if member in rolled:
+            statuses.append(rolled[member])
+        elif fm_status is not None and values.get("status") and \
+                header_class(next(iter(words), None)) in (ISSUED, UNMAPPED):
+            statuses.append(fm_status)   # FileMaker's mirror: FileMaker's items decide
+        else:
+            statuses.append(record(values, lines, fm_lines))
         if notes is not None:
-            notes.append((values, lines, fm_lines))
+            notes.append((values, lines, fm_lines if fm_lines is not None
+                          else logs.get(member)))
     return combine(statuses), cited, marks, blind, lines_of
 
 
@@ -758,15 +906,17 @@ def record_note(values: Mapping[str, Sequence[Any]], lines: Any, fm_lines: Any =
                          + (f" {unit}" if unit and _is_unit(unit) else "")
                          + (" (the FileMaker import seeds 0)" if seeded else ""))
     if fm_lines is UNREAD:
-        parts.append("FileMaker QC log not readable")
+        parts.append("FileMaker item receiving states not readable")
     elif fm_lines is not None:
-        logged = [_number(got) for _w, got, _u in fm_lines if got is not None]
+        settled = sum(1 for _w, got, _u in fm_lines
+                      if got is not None and got is not PARTIAL_RECEIPT)
+        partly = sum(1 for _w, got, _u in fm_lines if got is PARTIAL_RECEIPT)
+        waiting = len(fm_lines) - settled - partly
         fm_ordered, _ = line_totals((want, None, None) for want, _g, _u in fm_lines)
-        qc = sum((n for n in logged if n is not None), Decimal(0))
-        parts.append(("FileMaker QC log records no receipt" if qc <= EPS else
-                      f"FileMaker QC log {_qty(qc)} received")
-                     + (f" against a FileMaker ordered total of {_qty(fm_ordered)}"
-                        if fm_ordered is not None and qc > EPS else ""))
+        parts.append(f"FileMaker items: {settled} received or closed, {partly} partly "
+                     f"received, {waiting} not received"
+                     + (f", a FileMaker ordered total of {_qty(fm_ordered)}"
+                        if fm_ordered is not None else ""))
     return ", ".join(parts) or "no status recorded"
 
 
@@ -778,30 +928,36 @@ def describe(po: "PoRead", limit: int = 400) -> str:
 
 
 # A side's receipt state, as the two systems are compared: fully received (a Portal or FM
-# Complete counts) against open lines outstanding. Draft, cancelled and unknown compare
-# nothing: no receipt state is stated.
+# Complete counts, a FileMaker order whose items are all received, a completed Sage
+# order) against open lines outstanding. Draft, cancelled and unknown compare nothing: no
+# receipt state is stated.
 FULLY_RECEIVED, OPEN_LINES = "fully_received", "open_lines_outstanding"
-# Who governs a field the systems disagree on (BC lines govern receipt
-# state; late = requested date passed and not fully received). The requested-by date ranks
-# by the declared precedence (``PurchaseOrder.expected_date``'s authority).
-RECEIPT_AUTHORITY = "bc"
+# The system whose records are copies of orders created elsewhere (the Portal posts its
+# orders to BC; FileMaker-era orders were migrated into it): a BC record is compared with
+# the other systems' records of the same order, never combined with them. No system is
+# the receipt authority (owner, 2026-11-06): goods recorded received in ANY copy close the
+# order for lateness, and an open copy of a received order is a reconciliation note, never
+# a late alert. BC's own lines decide alone only for an order created natively in BC
+# (no other system holds a copy of it). The requested-by date ranks by the declared
+# precedence (``PurchaseOrder.expected_date``'s authority).
+POSTED_COPY = "bc"
 CONFLICT_FIELDS = ("receipt_state", "received_quantity", "expected_date")
 
 
 def receipt_state(status: PoStatus) -> str | None:
     if status.cls == OPEN:
         return OPEN_LINES
-    if status.cls == CLOSED and status.code in (RECEIVED, COMPLETE):
+    if status.cls == CLOSED and status.code in (RECEIVED, COMPLETE, HISTORICAL_SAGE):
         return FULLY_RECEIVED
     return None
 
 
 def compared_twin(a: str, b: str) -> bool:
-    """Whether a twin link joins the receipt authority's record (BC) to another system's:
-    such a twin is compared (``_compare``: BC lines govern receipt state) at any tier from
-    ``FIRM`` up, never a settled member whose status joins the other's (``combine`` would
-    dispute the Portal's Complete against BC's open lines)."""
-    return (system_of(a) == RECEIPT_AUTHORITY) != (system_of(b) == RECEIPT_AUTHORITY)
+    """Whether a twin link joins a BC copy (``POSTED_COPY``) to another system's record:
+    such a twin is compared (``_compare``: a receipt in any copy closes the order) at any
+    tier from ``FIRM`` up, never a settled member whose status joins the other's
+    (``combine`` would dispute the Portal's Complete against BC's open lines)."""
+    return (system_of(a) == POSTED_COPY) != (system_of(b) == POSTED_COPY)
 
 
 def _directions(link: str, member: str) -> tuple[str, ...]:
@@ -809,15 +965,15 @@ def _directions(link: str, member: str) -> tuple[str, ...]:
     declared from the Portal order to the BC order, so one side reads it forward and the
     other reverse; ``SAME_RECORD`` joins records of either system both ways."""
     if link == POSTED:
-        return ("reverse",) if system_of(member) == RECEIPT_AUTHORITY else ("forward",)
+        return ("reverse",) if system_of(member) == POSTED_COPY else ("forward",)
     return ("forward", "reverse")
 
 
 def side_receipt(records: Sequence[str],
                  reads: Mapping[str, tuple[dict[str, list[Any]], list, bool]],
                  status: PoStatus, lines: Mapping[str, tuple[Any, list]]) -> str | None:
-    """A side's receipt state. BC lines govern receipt state of an
-    issued BC order: a BC record with readable lines is open while any line's received
+    """A side's receipt state. A BC copy states its own receipt state by its lines: a BC
+    record with readable lines is open while any line's received
     quantity is below its ordered one, else fully received; with no readable line its
     ``fullyReceived`` flag states it. A BC ``Draft`` never received against (no line
     records a received quantity above 0: the Portal posts its orders to BC as Draft, live
@@ -827,7 +983,7 @@ def side_receipt(records: Sequence[str],
     lines' receipt state, conflicts and all; so does one whose lines are unreadable. Any
     other side by the one definition's status. A missing, unparseable or disputed flag
     and BC records that disagree state none, never a guess."""
-    bc_records = [r for r in records if system_of(r) == RECEIPT_AUTHORITY]
+    bc_records = [r for r in records if system_of(r) == POSTED_COPY]
     if not bc_records:
         return receipt_state(status)
     if any(unreceived_draft(reads[r][0], lines.get(r)) for r in bc_records):
@@ -901,8 +1057,19 @@ def _side_entry(system: str, records: Sequence[str], value: str, items: Sequence
     return {"system": system, "records": list(records), "value": value, "items": list(items)}
 
 
+def system_name(object_id: str) -> str:
+    """The system a record's own source is, as a reader names it: ``bc``, ``filemaker``
+    and ``sage`` (served through the Portal's mirror) or ``portal``."""
+    binding = binding_of(object_id) or ""
+    if binding.startswith("portal.fm_"):
+        return "filemaker"
+    if binding.startswith("portal.sage_"):
+        return "sage"
+    return system_of(object_id)
+
+
 def _systems(records: Sequence[str]) -> str:
-    return "+".join(sorted({system_of(r) for r in records}))
+    return "+".join(sorted({system_name(r) for r in records}))
 
 
 def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]],
@@ -911,9 +1078,10 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     """Compare this PO's settled side with its firm twins' (another system's record of the
     same order, linked as this reader may read it): receipt state and received quantity.
     A disagreement is a named conflict with both values, each side's own cited items, and
-    who governs; BC lines govern receipt state, so a disagreement BC governs decides the
-    status (its evidence then joins the status's); with no governing side the status is
-    disputed. A side this reader cannot read states nothing, so nothing is compared."""
+    the side that holds. Goods recorded received in either copy close the order (its
+    evidence then joins the status's) and the other copy's open lines are a reconciliation
+    note (``reconcile``), never a late order. A side this reader cannot read states
+    nothing, so nothing is compared."""
     reads = {t: source.values(t) for t in firm}
     fm_members = [r for r, read in (*mine_reads.items(), *reads.items())
                   if read[0].get("fm_status")]
@@ -935,27 +1103,31 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     other_lines = side_lines(firm, their_lines)
     mine = side_receipt(out.members, mine_reads, out.status, mine_lines)
     other = side_receipt(firm, reads, theirs, other_lines)
-    mine_bc = RECEIPT_AUTHORITY in mine_side.split("+")
-    their_bc = RECEIPT_AUTHORITY in their_side.split("+")
-    # BC lines govern receipt state whichever record is asked: when the one BC side reads
-    # fully received, the order is received even though its own header word (Open, a
-    # fullyReceived flag still false) says otherwise, and both sides agree with it
-    bc_state = mine if mine_bc and not their_bc else other if their_bc and not mine_bc else None
-    if bc_state == FULLY_RECEIVED and out.status != PoStatus(CLOSED, RECEIVED):
+    mine_bc = any(system_of(r) == POSTED_COPY for r in out.members)
+    their_bc = any(system_of(r) == POSTED_COPY for r in firm)
+    # a receipt in ANY copy closes the order (owner, 2026-11-06): whichever side records
+    # the goods received decides, whatever the other copy's header or lines still say
+    received_by = (mine_side if mine == FULLY_RECEIVED else
+                   their_side if other == FULLY_RECEIVED else None)
+    if received_by is not None and out.status != PoStatus(CLOSED, RECEIVED):
         out.status = PoStatus(CLOSED, RECEIVED)
-        bc_lines = mine_lines if mine_bc else other_lines
-        out.evidence += [e for _t, ev in bc_lines.values() for e in ev
-                         if isinstance(e, Mapping) and e.get("property") == RECEIVED_QTY
-                         and not any(e is x for x in out.evidence)]
-        if their_bc:
+        if received_by == their_side:
+            bc_lines = other_lines if their_bc else {}
+            out.evidence += [e for e in [*their_evidence, *(
+                e for _t, ev in bc_lines.values() for e in ev)]
+                if isinstance(e, Mapping) and (e.get("property") in SOURCE_OF
+                                               or e.get("property") == RECEIVED_QTY)
+                and not any(e is x for x in out.evidence)]
             out.marks += [*their_marks, *firm_marks]
+        elif mine_bc:
+            out.evidence += [e for _t, ev in mine_lines.values() for e in ev
+                             if isinstance(e, Mapping) and e.get("property") == RECEIVED_QTY
+                             and not any(e is x for x in out.evidence)]
     if mine is not None and other is not None and mine != other:
-        governs = (mine_side if mine_bc and not their_bc else
-                   their_side if their_bc and not mine_bc else None)
 
         def cited(evidence: Sequence[Any], side_lines_: Mapping[str, tuple[Any, list]],
                   bc_side: bool) -> list:
-            # the status values, and a BC side's line quantities (its lines govern)
+            # the status values, and a BC side's line quantities (its own receipt record)
             items = [e for e in evidence if isinstance(e, Mapping)
                      and e.get("property") in SOURCE_OF]
             if bc_side:
@@ -964,23 +1136,13 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
             return items
         mine_items = cited(out.evidence, mine_lines, mine_bc)
         their_items = cited(their_evidence, other_lines, their_bc)
+        # one copy received, the other still open: a reconciliation note on the open copy
+        # (``reconcile``), never a delivery risk; the received side is the one that holds
         out.conflicts.append({
-            "field": "receipt_state", "governs": governs, "marks": list(firm_marks),
+            "field": "receipt_state", "governs": received_by, "reconcile": True,
+            "marks": list(firm_marks),
             "sides": [_side_entry(mine_side, out.members, mine, mine_items),
                       _side_entry(their_side, firm, other, their_items)]})
-        if governs is None:
-            out.status = PoStatus(UNKNOWN, reason="status_disputed")
-        elif governs == mine_side:
-            # this record is BC's: its lines decide, whatever its header word (Draft)
-            if mine == OPEN_LINES and out.status.cls != OPEN:
-                out.status = PoStatus(OPEN)
-        elif governs == their_side:
-            # the governing side's receipt state decides: open lines keep the order open
-            # (its own open code when it has one), fully received closes it received
-            out.status = (PoStatus(CLOSED, RECEIVED) if other == FULLY_RECEIVED else
-                          theirs if theirs.cls == OPEN else PoStatus(OPEN))
-            out.evidence += [e for e in their_items if not any(e is x for x in out.evidence)]
-            out.marks += [*their_marks, *firm_marks]
     # received quantity where both systems record one in the same unit
     a = _recorded_received(mine_lines.values())
     b = _recorded_received(other_lines.values())
@@ -988,16 +1150,21 @@ def _compare(source: Any, out: "PoRead", lines_of: Mapping[str, tuple[Any, list]
     # an FM-mirrored Portal order's received 0 is ETL-seeded, not a recorded receipt;
     # a BC draft never received against records no receipt at all
     def seeded(records: Sequence[str], got: Any) -> bool:
-        return got is not None and got[0] <= EPS and any(r in fm_members for r in records)
+        # FileMaker's mirror: its line quantities are copies (seeded 0, container counts,
+        # another unit), never a recorded receipt of their own
+        return got is not None and any(r in fm_members for r in records)
     drafts = [r for r, read in (*mine_reads.items(), *reads.items())
-              if system_of(r) == RECEIPT_AUTHORITY
+              if system_of(r) == POSTED_COPY
               and unreceived_draft(read[0], mine_lines.get(r) or other_lines.get(r))]
     if seeded(out.members, a) or seeded(firm, b) or drafts:
         return
-    if a is not None and b is not None and a[1] == b[1] and abs(a[0] - b[0]) > EPS:
+    from .answer_conflicts import same_quantity   # the one rule of one quantity
+
+    if a is not None and b is not None and a[1] == b[1] and abs(a[0] - b[0]) > EPS \
+            and same_quantity([str(a[0]), str(b[0])], quantity=True) is None:
         out.conflicts.append({
-            "field": "received_quantity", "governs": (
-                RECEIPT_AUTHORITY if RECEIPT_AUTHORITY in (mine_side, their_side) else None),
+            "field": "received_quantity", "governs": received_by,
+            "reconcile": out.status.cls == CLOSED,
             "unit": a[1], "marks": list(firm_marks),
             "sides": [_side_entry(mine_side, out.members, str(a[0]), a[2]),
                       _side_entry(their_side, firm, str(b[0]), b[2])]})
@@ -1073,7 +1240,7 @@ def _undating_drafts(source: Any, records: Sequence[str],
     out: set[str] = set()
     handles: set[str] = set()
     for record_id in records:
-        if system_of(record_id) != RECEIPT_AUTHORITY:
+        if system_of(record_id) != POSTED_COPY:
             continue
         values, evidence, _hidden = reads.get(record_id) or source.values(record_id)
         if not bc_draft(values):
@@ -1086,6 +1253,150 @@ def _undating_drafts(source: Any, records: Sequence[str],
             out.add(record_id)
             handles |= {h for h in (_item_handle(e) for e in evidence) if h}
     return out, handles
+
+
+def _item_prop(item: Any) -> str | None:
+    if isinstance(item, Mapping):
+        found = item.get("property")
+        return found if isinstance(found, str) else None
+    return None
+
+
+def _default_date(defaults: "DateDefaults | None", item: Any, day: date,
+                  own: set[date]) -> bool:
+    """Whether a dated item's day is a default rather than a requested date: one of the
+    order's own days, or a day a bulk share of its property's records hold."""
+    from operating.source_defaults import own_day
+
+    if own_day(day, own):
+        return True
+    record_id, prop = _item_record(item), _item_prop(item)
+    return bool(defaults is not None and record_id and prop
+                and defaults.is_default(prop, binding_of(record_id) or "", day))
+
+
+def is_default_date(defaults: "DateDefaults | None", item: Any, day: date,
+                    own: set[date]) -> bool:
+    """Whether a dated item's day is a default rather than a stated date (one of the
+    order's own days, or a day a bulk share of its property's records hold): the one test
+    every reader of a date asks (``read``, the slip rule)."""
+    return _default_date(defaults, item, day, own)
+
+
+def _labelled_due(source: Any, stated: "Promise", records: Sequence[str],
+                  defaults: "DateDefaults | None", need: "Need") -> "Need":
+    """The due date of an order no record states a requested-by date for, from a labelled
+    source only: the supplier's confirmed delivery date (a settled confirmation's,
+    ``vendor_eta``), else the order day plus the order's own lead time (``lead_time``; a
+    lead time a bulk share of the orders carry is a default and dates nothing). None
+    found: ``need`` unchanged (undated)."""
+    if stated.latest is not None:
+        rows = tuple(row for row, _link in (i for i in stated.items if isinstance(i, tuple))
+                     if isinstance(row, Mapping) and day_of(row.get("value")) == stated.latest)
+        marks = tuple(link.get("markings") for _row, link in (
+            i for i in stated.items if isinstance(i, tuple)) if isinstance(link, Mapping))
+        return replace(need, lo=stated.latest, hi=stated.latest, basis="vendor_eta",
+                       governing=rows or tuple(stated.items[-1:]), marks=marks)
+    if not hasattr(source, "lead_time"):
+        return need
+    for record_id in records:
+        found = source.lead_time(record_id)
+        if found is None:
+            continue
+        start, days, items = found
+        if defaults is not None and defaults.is_default(
+                LEAD_TIME, binding_of(record_id) or "", days):
+            continue
+        if days > 0:
+            due = start + timedelta(days=int(days))
+            return replace(need, lo=due, hi=due, basis="lead_time", governing=tuple(items))
+    return need
+
+
+LEAD_TIME = "lead_time_days"
+
+
+def _lead_time(props: Mapping[str, Sequence[Mapping[str, Any]]]
+               ) -> tuple[date, Decimal, list] | None:
+    days = {_number(r["value"]) for r in props.get(LEAD_TIME, ()) if r.get("value") not in
+            (None, "")}
+    starts = {day_of(r["value"]) for r in props.get("order_date", ())
+              if r.get("value") not in (None, "")}
+    if len(days) != 1 or len(starts) != 1 or None in days or None in starts:
+        return None
+    rows = [*props.get("order_date", ()), *props.get(LEAD_TIME, ())]
+    return next(iter(starts)), next(iter(days)), [r for r in rows if r.get("value")]
+
+
+def _join_marks(*texts: Any) -> str:
+    """The union of markings (each a JSON array as stored)."""
+    found: set[str] = set()
+    for text in texts:
+        try:
+            found |= set(json.loads(text)) if isinstance(text, str) else set(text or ())
+        except (TypeError, ValueError):
+            found.add("unreadable")
+    return json.dumps(sorted(found))
+
+
+@dataclass
+class DateDefaults:
+    """The default values of each date (or lead-time) property, by source binding: the
+    days a bulk share of that property's records hold (``source_defaults``). Built from
+    the rows a reader holds (``of_rows``) or read from the store (``of_store``, counts
+    only, cached per store generation), so every reader asks the same test."""
+    values: dict[tuple[str, str], frozenset] = field(default_factory=dict)
+
+    @staticmethod
+    def _key(prop: str, raw: Any) -> Any:
+        if prop == LEAD_TIME:
+            return _number(raw)
+        return day_of(raw)
+
+    @classmethod
+    def of_pairs(cls, pairs: Iterable[tuple[str, str, Any]]) -> "DateDefaults":
+        from operating.source_defaults import DATE_SHARE, bulk_values
+
+        grouped: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for prop, binding, raw in pairs:
+            grouped[(prop, binding)].append(cls._key(prop, raw))
+        return cls({key: found for key, vals in grouped.items()
+                    if (found := bulk_values(vals, share=DATE_SHARE))})
+
+    @classmethod
+    def of_rows(cls, rows: Iterable[tuple[str, Mapping[str, Any]]]) -> "DateDefaults":
+        return cls.of_pairs((row["property"], binding_of(oid) or "", row["value"])
+                            for oid, row in rows if row.get("value") not in (None, ""))
+
+    @classmethod
+    def of_store(cls, conn: Any) -> "DateDefaults":
+        digest = None
+        try:
+            found = conn.execute("SELECT value FROM store_meta WHERE key = "
+                                 "'content_digest'").fetchone()
+            digest = found[0] if found else None
+        except Exception:  # noqa: BLE001 - a store without meta: not cached
+            pass
+        if digest is not None and digest in _DEFAULTS_CACHE:
+            return _DEFAULTS_CACHE[digest]
+        props = (NEED_PROP, LINE_EXPECTED, LEAD_TIME)
+        rows = conn.execute(
+            "SELECT o.object_id, v.property, v.value FROM objects o JOIN object_values v "
+            "ON v.object_id = o.object_id WHERE o.object_type IN (?, ?) AND v.property IN "
+            "(SELECT value FROM json_each(?)) AND v.superseded_at IS NULL AND v.value IS NOT "
+            "NULL AND v.value <> ''", (PO_TYPE, LINE_TYPE, json.dumps(props)))
+        made = cls.of_pairs((prop, binding_of(oid) or "", value) for oid, prop, value in rows)
+        if digest is not None:
+            _DEFAULTS_CACHE.clear()
+            _DEFAULTS_CACHE[digest] = made
+        return made
+
+    def is_default(self, prop: str, binding: str, raw: Any) -> bool:
+        key = raw if isinstance(raw, (date, Decimal)) else self._key(prop, raw)
+        return key is not None and key in self.values.get((prop, binding), frozenset())
+
+
+_DEFAULTS_CACHE: dict[str, DateDefaults] = {}
 
 
 def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True) -> PoRead:
@@ -1132,18 +1443,45 @@ def read(source: Any, oid: str, today: date | None = None, *, dates: bool = True
         raw = [entry for entry in source.need_dates(oid, dated)
                if _item_record(entry[2]) not in drafts
                and _item_handle(entry[2]) not in draft_handles]
+        # date provenance: a date a bulk share of its property's records hold (a sync's
+        # or migration's day), or one of the order's own days (created, migrated,
+        # ordered), is a default, never a requested-by date (``source_defaults``)
+        defaults = source.date_defaults() if hasattr(source, "date_defaults") else None
+        own: set[date] = set()
+        if hasattr(source, "own_days"):
+            for record_id in [*members, *firm]:
+                own |= source.own_days(record_id)
+        defaulted = [e[2] for e in raw if e[1] is not None
+                     and _default_date(defaults, e[2], e[1], own)]
+        raw = [e for e in raw if not any(e[2] is d for d in defaulted)]
         out.need = need_date(raw)
         found = _date_conflict(raw)
         if found is not None:
             out.conflicts.append({**found, "marks": list(firm_marks)})
         if out.need.lo is None:   # no header date: the open lines' own expected dates
-            out.need = line_need(source.line_dates(dated), today)
-        stated = source.promises(oid, members)
+            lines = []
+            for day, item in source.line_dates(dated):
+                if day is not None and _default_date(defaults, item, day, own):
+                    defaulted.append(item)
+                    day = None   # a default day dates nothing: the line is undated
+                lines.append((day, item))
+            out.need = line_need(lines, today)
+        # confirmations linked to ANY copy of the order (its settled twins and every
+        # other system's record of it), never only the record asked about
+        stated = source.promises(oid, [*members, *(t for t in firm if t not in members)])
         # None: a confirmation listing this reader may not read in full; a promise it
         # cannot see may be later than the need date, so never "neither" from a part
         out.promise = promise(stated) if stated is not None else Promise(
             reason="promises_unread")
-        out.verdict = verdict(out.status, out.need, out.promise.latest, today)
+        if out.need.lo is None:
+            # no record states a requested-by date: a due date only from a labelled
+            # source, the supplier's own confirmed date, else the order's lead time
+            out.need = _labelled_due(source, out.promise, [*members, *firm], defaults,
+                                     out.need)
+        if defaulted:
+            out.need = replace(out.need, defaulted=tuple(defaulted))
+        out.verdict = verdict(out.status, out.need, out.promise.latest
+                              if out.need.basis == "requested" else None, today)
         if stated is None and out.verdict == (NEITHER, None):
             out.verdict = (UNKNOWN, "promises_unread")
     elif today is not None:
@@ -1155,14 +1493,81 @@ def _one_log(logs: Sequence[Any]) -> Any:
     """The FM QC log of a PO with one or more FM twins: unread when any is unread or more
     than one twin logs a receipt (two logs of one order are not summed); the one twin's
     that logs one; otherwise (no QC receipt anywhere) the first, which decides nothing."""
-    if any(log is UNREAD or any(got is UNREAD or got is not None and _number(got) is None
-                                for _, got, _ in log) for log in logs):
+    if any(log is UNREAD or any(got is UNREAD or got is not None and got is not PARTIAL_RECEIPT
+                                and _number(got) is None for _, got, _ in log)
+           for log in logs):
         return UNREAD
     logged = [log for log in logs if any(
-        got is not None and (_number(got) or Decimal(0)) > EPS for _, got, _ in log)]
+        got is PARTIAL_RECEIPT or got is not None and (_number(got) or Decimal(0)) > EPS
+        for _, got, _ in log)]
     if len(logged) > 1:
         return UNREAD
     return logged[0] if logged else (logs[0] if logs else None)
+
+
+# ---- the order's copies and its confirmations (every reader's one rule)
+
+def copies(source: Any, oid: str) -> tuple[list[str], bool]:
+    """Every record of the order ``oid`` as the one reader reads it: its settled identity
+    twins (``twins``) and every other system's record a firm or compared twin link joins
+    to them (``date_twins``), the root first; and whether a twin link is hidden from this
+    reader (a fuller grant might join another copy). A copy is the order's for its
+    confirmations, receipts and dates, never for its status (``read`` decides that)."""
+    members, blind, _marks = source.twins(oid)
+    firm, _firm_marks = (source.date_twins(oid, members)
+                         if hasattr(source, "date_twins") else ([], []))
+    return [*members, *(t for t in firm if t not in members)], bool(blind)
+
+
+def counted_confirmations(links: Iterable[Mapping[str, Any]],
+                          colliding: Callable[[str], bool]) -> list[dict[str, Any]]:
+    """The confirmation links (``CONFIRMATION_LINKS``) that count for the order they point
+    to: every settled one (``CONFIRMING`` tiers) and every lead, except a lead to a record
+    whose order number another order also holds (``colliding``): a number-text match on a
+    reused number may be the other order's, so it confirms nothing here."""
+    return [dict(link) for link in links
+            if link["tier"] in CONFIRMING or not colliding(str(link["to_object"]))]
+
+
+VENDOR_NUMBER_PROP = "fm_po_number"
+
+
+def vendor_facing(numbers: Iterable[tuple[Any, Any]]) -> Any:
+    """The order number the supplier knows, of ``(value, item)`` the order's copies hold
+    in ``VENDOR_NUMBER_PROP`` (a FileMaker-era order's FileMaker PO number, held by its
+    FileMaker and Portal copies): the first item when exactly one number is held, else
+    None (the copy's own number is said instead)."""
+    held = [(str(value).strip(), item) for value, item in numbers
+            if value is not None and str(value).strip()]
+    return held[0][1] if len({v for v, _ in held}) == 1 else None
+
+
+CONFIRMED, FOUND_UNVERIFIED, NONE_FOUND = "confirmed", "found_unverified", "none_found"
+# a lead exists, but on a number another order also holds: it cannot be tied to this
+# order, so neither "found" nor "none" is said (owner, 2026-11-06)
+NEEDS_CHECK = "needs_check"
+
+
+def reused_leads(links: Iterable[Mapping[str, Any]],
+                 colliding: Callable[[str], bool]) -> list[dict[str, Any]]:
+    """The leads ``counted_confirmations`` leaves out: on a record whose number another
+    order also holds."""
+    return [dict(link) for link in links
+            if link["tier"] not in CONFIRMING and colliding(str(link["to_object"]))]
+
+
+def confirmation_state(links: Iterable[Mapping[str, Any]],
+                       reused: Iterable[Mapping[str, Any]] = ()) -> str:
+    """What the counted confirmation links of an order's copies say of it: ``confirmed``
+    (a settled link), ``found_unverified`` (only leads: never "none"), ``needs_check``
+    (only leads on a reused number, ``reused``: evidence exists but cannot be tied to
+    this order), ``none_found``."""
+    links = list(links)
+    if any(link["tier"] in CONFIRMING for link in links):
+        return CONFIRMED
+    if links:
+        return FOUND_UNVERIFIED
+    return NEEDS_CHECK if list(reused) else NONE_FOUND
 
 
 # ---- the process reader context (plx.process: the reader's grant, scope and floor)
@@ -1345,19 +1750,10 @@ class ContextSource:
         out = []
         for item in sorted(r for r in reach.records if ctx.obj(r)["object_type"] == LINE_TYPE):
             want, _unit = self._quantities(item, (ORDERED,))
-            qc = self._reach(LINE_TYPE, item, [[{"link": RECEIVES_LINE,
-                                                 "direction": "reverse"}]],
-                             RECEIPT_LINE_TYPE, FM_QC_BINDINGS)
-            if not qc.proven or qc.truncated:
-                return UNREAD, [], op._HIDDEN in qc.causes, []
-            got: Any = None
-            for row in sorted(r for r in qc.records
-                              if ctx.obj(r)["object_type"] == RECEIPT_LINE_TYPE):
-                amount, _unit = self._quantities(row, (RECEIVED_QTY,))
-                number = None if amount in (None, UNREAD) else _number(amount)
-                if number is None:
-                    return UNREAD, [], amount is UNREAD, []
-                got = (got or Decimal(0)) + number
+            state, _none = self._quantities(item, (FM_RECEIVING,))
+            got = fm_item_received(state, want)
+            if got is UNREAD:
+                return UNREAD, [], state is UNREAD or want is UNREAD, []
             out.append((want, got, None))
         return out, [], False, []
 
@@ -1598,6 +1994,23 @@ class ContextSource:
         return [(self.promised.order.get(r), day, value) for r in self.promised.records
                 for day, value in self.promised.dates[r]]
 
+    def date_defaults(self) -> "DateDefaults":
+        """The store's default days per date property (counts only, never a record)."""
+        return DateDefaults.of_store(self.tools.base.store.conn)
+
+    def _own(self, oid: str) -> dict[str, list]:
+        values = self.ctx.values(oid) if self.ctx.visible([oid]) else {}
+        return {p: [r for r in values.get(p, ()) if isinstance(r, Mapping)]
+                for p in (*OWN_DAY_PROPS, LEAD_TIME)}
+
+    def own_days(self, oid: str) -> set[date]:
+        own = self._own(oid)
+        return {d for prop in OWN_DAY_PROPS for r in own.get(prop, ())
+                if (d := day_of(r.get("value"))) is not None}
+
+    def lead_time(self, oid: str) -> tuple[date, Decimal, list] | None:
+        return _lead_time(self._own(oid))
+
 
 @dataclass
 class Records:
@@ -1626,15 +2039,17 @@ class StoreSource:
     set-wise: every PurchaseOrder with its status, need-date and number values, its
     settled identity clusters (``SAME_RECORD`` at ``SETTLED`` within a system; a settled
     twin across BC is a firm one, ``compared_twin``), its lines (``LINE_OF`` at
-    ``CONFIRMING``) and their quantities, the FM QC receipt lines (``RECEIVES_LINE`` at
-    ``CONFIRMING``) and every confirmation link at any tier with its dates. Evidence is
+    ``CONFIRMING``) and their quantities and FileMaker receiving states, and every
+    confirmation link at any tier with its dates. Evidence is
     the store's value rows; marks are the links' markings (the engine cites with them)."""
 
     STATUS_PROPS = tuple(SOURCE_OF)
 
     def __init__(self, st: Any) -> None:
         self.st = st
-        self.pos = st.values((PO_TYPE,), (*SOURCE_OF, NEED_PROP, "po_number"))
+        self.pos = st.values((PO_TYPE,), (*SOURCE_OF, NEED_PROP, "po_number",
+                                          *VENDOR_NUMBER_PROPS, *OWN_DAY_PROPS,
+                                          LEAD_TIME))
         settled = st.links(TWIN_LINKS, SETTLED)
         same = [l for l in settled if not compared_twin(l["from_object"], l["to_object"])]
         crossing = [l for l in settled if compared_twin(l["from_object"], l["to_object"])]
@@ -1657,19 +2072,99 @@ class StoreSource:
             self.lines_of[link["to_object"]].append((link["from_object"], link["markings"]))
             self.po_of[link["from_object"]].append(link["to_object"])
         wanted = sorted({line for found in self.lines_of.values() for line, _ in found})
-        self.line_values = st.values((LINE_TYPE,), (ORDERED, RECEIVED_QTY, LINE_EXPECTED),
+        self.line_values = st.values((LINE_TYPE,), (ORDERED, RECEIVED_QTY, LINE_EXPECTED,
+                                                    FM_RECEIVING),
                                      objects=wanted) if wanted else {}
-        self.qc_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
-        for link in st.links((RECEIVES_LINE,), CONFIRMING):
-            if binding_of(link["from_object"]) in FM_QC_BINDINGS:
-                self.qc_of[link["to_object"]].append((link["from_object"], link["markings"]))
-        qc = sorted({r for found in self.qc_of.values() for r, _ in found})
-        self.qc_values = st.values((RECEIPT_LINE_TYPE,), (RECEIVED_QTY,),
-                                   objects=qc) if qc else {}
+        # what FileMaker recorded received against each item: its receiving rows and its
+        # QC lots (``fm_item_received``'s receipt evidence), each with its cited status
+        self.fm_receipts: dict[str, list[tuple[dict[str, Any], str]]] = defaultdict(list)
+        fm_items = {line for fm, found in self.lines_of.items()
+                    if binding_of(fm) == FM_BINDING for line, _ in found}
+        receipt_links = [l for l in st.links((RECEIPT_RECEIVES_LINE, QC_RECEIVES_LINE),
+                                             CONFIRMING)
+                         if l["to_object"] in fm_items
+                         and binding_of(l["from_object"]) in FM_RECEIPT_BINDINGS]
+        lot_links: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        if receipt_links:
+            for link in st.links((RECEIVED_LOT,), CONFIRMING):
+                lot_links[link["from_object"]].append((link["to_object"], link["markings"]))
+        receipts = st.values((RECEIPT_TYPE,), (RECEIPT_STATUS,), objects=sorted(
+            {l["from_object"] for l in receipt_links
+             if l["from_object"].startswith(RECEIPT_TYPE + ":")})) if receipt_links else {}
+        lots = st.values((LOT_TYPE,), (LOT_QC,), objects=sorted(
+            {lot for found in lot_links.values() for lot, _ in found})) if lot_links else {}
+        for link in receipt_links:
+            found = receipts.get(link["from_object"])
+            for row in ((found or {"props": {}})["props"].get(RECEIPT_STATUS) or []):
+                if row["value"] not in (None, ""):
+                    self.fm_receipts[link["to_object"]].append((row, link["markings"]))
+            for lot, lot_marks in lot_links.get(link["from_object"], []):
+                for row in ((lots.get(lot) or {"props": {}})["props"].get(LOT_QC) or []):
+                    if row["value"] not in (None, "") and word(row["value"]) \
+                            not in FM_LOT_REFUSED:
+                        self.fm_receipts[link["to_object"]].append(
+                            (row, _join_marks(link["markings"], lot_marks)))
+        # an order number held by more than one order (records no settled or compared
+        # twin link joins): a lead matched on that number may be the other order's, so
+        # it confirms nothing here (number collisions; joins only on stored identifiers)
+        order_root = clusters([*((l["from_object"], l["to_object"]) for l in settled),
+                               *((a, b) for a, found in self.firm.items() for b, _ in found)],
+                              self.pos)
+        holders: dict[str, set[str]] = defaultdict(set)
+        for oid, entry in self.pos.items():
+            for prop in NUMBER_PROPS:
+                for row in entry["props"].get(prop, []):
+                    if word(row["value"]):
+                        holders[_number_key(row["value"])].add(order_root.get(oid, oid))
+        self.colliding = {oid for oid, entry in self.pos.items()
+                          if any(len(holders.get(_number_key(r["value"]), ())) > 1
+                                 for p in NUMBER_PROPS for r in entry["props"].get(p, [])
+                                 if word(r["value"]))}
         self.confirms_of: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for link in st.links((CONFIRMS,)):
+        self.reused_of: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        every = st.links(CONFIRMATION_LINKS)
+        for link in counted_confirmations(every, lambda oid: oid in self.colliding):
             self.confirms_of[link["to_object"]].append(link)
+        for link in reused_leads(every, lambda oid: oid in self.colliding):
+            self.reused_of[link["to_object"]].append(link)
+        # each confirming document's own record versions (handle, markings): what a
+        # claim about a confirmation cites
+        self.documents: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        sources = sorted({l["from_object"] for found in (*self.confirms_of.values(),
+                                                         *self.reused_of.values())
+                          for l in found})
+        for start in range(0, len(sources), 5000):
+            for row in st.versions(objects=sources[start:start + 5000]):
+                self.documents[row["object_id"]].append(row)
         self.confirmations = st.values((CONFIRMATION_TYPE,), (*PROMISE_PROPS, PROMISE_ORDER))
+        # the days a bulk share of each date property's records hold, by source binding
+        # (``source_defaults``): a sync's or migration's day, never a requested date
+        self.defaults = DateDefaults.of_rows(
+            [(oid, row) for oid, entry in self.pos.items()
+             for row in entry["props"].get(NEED_PROP, [])]
+            + [(oid, row) for oid, entry in self.line_values.items()
+               for row in entry["props"].get(LINE_EXPECTED, [])]
+            + [(oid, row) for oid, entry in self.pos.items()
+               for row in entry["props"].get(LEAD_TIME, [])])
+
+    def date_defaults(self) -> "DateDefaults":
+        return self.defaults
+
+    def lead_time(self, oid: str) -> tuple[date, Decimal, list] | None:
+        """The record's order day and lead time in days, with their rows; None when
+        either is not one readable value."""
+        return _lead_time(self.props(oid))
+
+    def own_days(self, oid: str) -> set[date]:
+        """The record's own days (created, migrated, ordered)."""
+        props = self.props(oid)
+        return {d for p in OWN_DAY_PROPS for r in props.get(p, [])
+                if (d := day_of(r["value"])) is not None}
+
+    def vendor(self, oid: str) -> set[str]:
+        props = self.props(oid)
+        return {word(r["value"]) for p in VENDOR_NUMBER_PROPS for r in props.get(p, [])
+                if word(r["value"])}
 
     def props(self, oid: str) -> dict[str, list[dict[str, Any]]]:
         return (self.pos.get(oid) or {"props": {}})["props"]
@@ -1748,18 +2243,20 @@ class StoreSource:
         for item, link_marks in self.lines_of.get(fm, []):
             props = (self.line_values.get(item) or {"props": {}})["props"]
             want = self._one(props.get(ORDERED, []))
-            rows += props.get(ORDERED, [])
+            states = {word(r["value"]) for r in props.get(FM_RECEIVING, [])
+                      if r["value"] is not None}
+            got_rows = self.fm_receipts.get(item, [])
+            rows += props.get(ORDERED, []) + props.get(FM_RECEIVING, [])
             marks.append(link_marks)
-            got: Any = None
-            for receipt, qc_marks in self.qc_of.get(item, []):
-                found = self._one((self.qc_values.get(receipt) or {"props": {}})["props"]
-                                  .get(RECEIVED_QTY, []))
-                if found is None or found is UNREAD:
-                    return UNREAD, rows, False, marks   # a QC row with no quantity: unread
-                rows += self.qc_values[receipt]["props"][RECEIVED_QTY]
-                marks.append(qc_marks)
-                got = (got or Decimal(0)) + found[0]
-            out.append((UNREAD if want is UNREAD else want[0] if want else None, got, None))
+            ordered = UNREAD if want is UNREAD else want[0] if want else None
+            state = UNREAD if len(states) > 1 else next(iter(states), None)
+            got = fm_item_received(state, ordered, bool(got_rows))
+            if got is UNREAD:
+                return UNREAD, rows, False, marks   # an item state FileMaker does not say
+            if got_rows:   # the receipt the item's state rests on is cited with it
+                rows += [row for row, _m in got_rows]
+                marks += [m for _r, m in got_rows]
+            out.append((ordered, got, None))
         return out, rows, False, marks
 
     def need_dates(self, oid: str, members: Sequence[str]) -> list[tuple[int, date | None, Any]]:
@@ -1769,6 +2266,10 @@ class StoreSource:
     def confirm_links(self, members: Sequence[str]) -> list[dict[str, Any]]:
         """Every confirmation link to a member, at any tier (the engine settles them)."""
         return [link for m in members for link in self.confirms_of.get(m, [])]
+
+    def reused_links(self, members: Sequence[str]) -> list[dict[str, Any]]:
+        """The leads to a member on a number another order also holds (``reused_leads``)."""
+        return [link for m in members for link in self.reused_of.get(m, [])]
 
     def promises(self, oid: str, members: Sequence[str]) -> list[tuple[Any, date, Any]]:
         """The delivery dates of the confirmations linked at ``CONFIRMING`` tiers, each
@@ -1900,6 +2401,21 @@ class ToolSource:
             return (UNREAD,) * (len(names) + 1)
         return (*(value for value, _ in read), unit)
 
+    def _word(self, oid: str, name: str) -> tuple[Any] | None:
+        """One text property as this principal reads it (a status word, never a quantity):
+        ``(word,)``, ``(None,)`` when none is stored, ``(UNREAD,)`` when two differ; None
+        when the answer withholds or cannot read it."""
+        values = tool_values(self.call("plx.object", {"object_id": oid,
+                                                      "properties": [name]}))
+        if values is None:
+            return None
+        found = {str(v[0] if isinstance(v, tuple) else v).strip()
+                 for v in values.get(name, []) if (v[0] if isinstance(v, tuple) else v)
+                 not in (None, "")}
+        if len(found) > 1:
+            return (UNREAD,)
+        return (next(iter(found), None),)
+
     def lines(self, oid: str) -> tuple[list | None, list, bool, list]:
         ids, withheld = self._around(oid, LINE_OF, "reverse", f"{LINE_TYPE}:")
         if ids is None:
@@ -1919,19 +2435,12 @@ class ToolSource:
         out = []
         for item in items:
             want = self._quantities(item, (ORDERED,))
-            receipts, withheld = self._around(item, RECEIVES_LINE, "reverse",
-                                              f"{RECEIPT_LINE_TYPE}:")
-            if want is None or receipts is None:
-                return UNREAD, [], withheld or want is None, []
-            got: Any = None
-            for receipt in receipts:
-                if binding_of(receipt) not in FM_QC_BINDINGS:
-                    continue
-                read = self._quantities(receipt, (RECEIVED_QTY,))
-                number = None if read is None or read[0] in (None, UNREAD) else _number(read[0])
-                if number is None:
-                    return UNREAD, [], read is None, []
-                got = (got or Decimal(0)) + number
+            state = self._word(item, FM_RECEIVING)
+            if want is None or state is None:
+                return UNREAD, [], True, []
+            got = fm_item_received(state[0], want[0])
+            if got is UNREAD:
+                return UNREAD, [], False, []
             out.append((want[0], got, None))
         return out, [], False, []
 
@@ -1968,6 +2477,75 @@ class ToolSource:
                     out.append((rank_of(member), day_of(raw), (member, raw)))
         return out
 
+    def _edges(self, oid: str, link: str, direction: str, floor: str
+               ) -> list[dict[str, Any]] | None:
+        """Every ``link`` edge one hop from ``oid`` this principal reads, every page; None
+        when the listing is withheld in part or not complete (never decided from a part)."""
+        from operating import ontology_tools_traverse as tt
+
+        edges: list[dict[str, Any]] = []
+        cursor = None
+        for _ in range(PAGES):
+            page = self.call("plx.around", {
+                "from": oid, "limit": 50, "path": [{"link_type": link, "direction": direction}],
+                "tier_floor": floor, **({"cursor": cursor} if cursor else {})})
+            lost = {(g or {}).get("reason") for g in page.get("gaps") or ()} \
+                & tt.PERMISSION_LOSSES
+            if "error" in page or lost or (page.get("withheld") or {}).get("objects"):
+                return None
+            edges += [e for e in page.get("edges") or () if isinstance(e, Mapping)
+                      and e.get("link_type") == link]
+            completeness = page.get("completeness") or {}
+            cursor = completeness.get("next_cursor")
+            if not cursor:
+                return edges if completeness.get("complete") is True else None
+        return None
+
+    def confirm_links(self, members: Sequence[str]) -> list[dict[str, Any]] | None:
+        """Every confirmation link (``CONFIRMATION_LINKS``) to a member at any tier down to
+        a lead, as ``StoreSource.confirm_links`` lists them; None when a listing is not
+        read whole for this principal."""
+        out: list[dict[str, Any]] = []
+        for member in members:
+            for link in CONFIRMATION_LINKS:
+                edges = self._edges(member, link, "reverse", "lead")
+                if edges is None:
+                    return None
+                out += [{"link_type": link, "from_object": e.get("from"), "to_object": member,
+                         "tier": e.get("tier"), "markings": e.get("markings") or []}
+                        for e in edges if e.get("to") == member
+                        and isinstance(e.get("from"), str)]
+        return out
+
+    def colliding(self, members: Sequence[str]) -> bool:
+        """Whether an order number a member holds is held by a purchase order no twin link
+        joins to them (``StoreSource.colliding``), as this principal finds it; a number it
+        cannot read, or a find it does not read whole, collides (a lead confirms nothing
+        on a guess)."""
+        numbers: set[str] = set()
+        for member in members:
+            values = tool_values(self.call("plx.object", {"object_id": member,
+                                                          "properties": list(NUMBER_PROPS)}))
+            if values is None:
+                return True
+            numbers |= {str(v) for p in NUMBER_PROPS for v in values.get(p, ()) if word(v)}
+        for number in sorted(numbers):
+            # untyped: the identifier lookup over every system (a typed find scans)
+            found = self.call("plx.find", {"query": number[:200], "limit": 20})
+            if "error" in found or (found.get("withheld") or {}).get("objects") or (
+                    found.get("completeness") or {}).get("truncated"):
+                return True
+            for cand in found.get("candidates") or ():
+                obj = (cand or {}).get("object") or {}
+                other = obj.get("object_id") if obj.get("object_type") == PO_TYPE else None
+                matched = (cand.get("matched") or {}) if isinstance(cand, Mapping) else {}
+                said = matched.get("raw")
+                said = said.get("value") if isinstance(said, Mapping) else said
+                if isinstance(other, str) and other not in members \
+                        and _number_key(matched.get("normalized") or said) == _number_key(number):
+                    return True
+        return False
+
     def promises(self, oid: str, members: Sequence[str]) -> list[tuple[Any, date, Any]]:
         out = []
         for member in members:
@@ -1995,12 +2573,9 @@ class ToolSource:
 RELATIONS = {"portal_po": "public.app_purchase_order",
              "portal_line": "public.app_purchase_order_line",
              "fm_po": "public.generated_purchase_order", "sage_po": "sage.po_header",
-             # the FM QC receiving log: items (gpi.idpogen = gpo.id, qty) and the receipt
-             # details against them (idpogenitem = gpi.id, sumqty: the noitemsqc stand-in)
-             "fm_item": "public.generated_purchase_order_item",
-             "fm_receipt_raw": "public.receipt_raw_material",
-             "fm_receipt_pack": "public.receipt_packaging"}
-FM_RECEIPTS = ("fm_receipt_raw", "fm_receipt_pack")
+             # the FM items (gpi.idpogen = gpo.id, qty, status: FileMaker's own
+             # receiving state of the item, fm_item_received)
+             "fm_item": "public.generated_purchase_order_item"}
 MAX_ROWS = 50_000
 MAX_WORD = 40
 # The engine's rule before this definition (header codes only), for the before/after count.
@@ -2031,35 +2606,23 @@ def _fm_id(raw: Any) -> str | None:
 
 
 def _fm_log(scans: Mapping[str, Mapping[str, Any]]) -> Callable[[str], Any]:
-    """FM PO id -> its items as ``(qty, QC received or None, None)`` from the scans; the
-    log is ``UNREAD`` for every PO when the FM PO or item scan is not complete, and for a
-    PO an item of which a receipt scan cannot prove (not complete, or a receipt row
-    against it with no ``sumqty``: the packaging catalog lacks it)."""
+    """FM PO id -> its items as ``(qty, received by FileMaker's item state, None)`` from
+    the scans (``fm_item_received``); ``UNREAD`` for every PO when the FM PO or item scan
+    is not complete."""
     fm_scan, item_scan = scans.get("fm_po") or {}, scans.get("fm_item") or {}
     if not (fm_scan.get("complete") and item_scan.get("complete")):
         return lambda fm_id: UNREAD
     fm_ids = {str(r.get("id")) for r in fm_scan.get("rows") or ()}
-    items: dict[str, list[tuple[str, Any]]] = defaultdict(list)
+    items: dict[str, list[tuple[Any, Any]]] = defaultdict(list)
     for row in item_scan.get("rows") or ():
-        items[str(row.get("idpogen"))].append((str(row.get("id")), row.get("qty", UNREAD)))
-    got: dict[str, Any] = {}
-    unproven = False
-    for name in FM_RECEIPTS:
-        scan = scans.get(name) or {}
-        unproven = unproven or not scan.get("complete")
-        for row in scan.get("rows") or ():
-            item = str(row.get("idpogenitem"))
-            raw = row.get("sumqty", UNREAD)   # no such column: unread, never 0
-            amount = None if raw is UNREAD else _number(raw)
-            if amount is None or got.get(item) is UNREAD:
-                got[item] = UNREAD   # a receipt detail against it with no quantity
-            else:
-                got[item] = got.get(item, Decimal(0)) + amount
+        qty = row.get("qty", UNREAD)
+        items[str(row.get("idpogen"))].append(
+            (qty, fm_item_received(row.get("status", UNREAD), qty)))
 
     def log(fm_id: str) -> Any:
-        if fm_id not in fm_ids or unproven:
+        if fm_id not in fm_ids:
             return UNREAD
-        return [(qty, got.get(item), None) for item, qty in items.get(fm_id, ())]
+        return [(qty, got, None) for qty, got in items.get(fm_id, ())]
     return log
 
 
@@ -2106,8 +2669,9 @@ def vocabulary(scans: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
                     ordered, received = _fm_received((ordered, received), log)
                     qc["mirrored_zero_received"] += 1
                     qc["unread" if received is None else
-                       "qc_received" if received > EPS else "qc_none"] += 1
-            status = classify(raw, ordered, received)
+                       "qc_received" if received is PARTIAL_RECEIPT or received > EPS
+                       else "qc_none"] += 1
+            status = classify_received(raw, ordered, received)
             if word(raw) in COMPLETE_WORDS and status.cls == OPEN:
                 out["complete_open"] += 1
             if status.canceled_remainder is not None and status.canceled_remainder > EPS:
@@ -2195,7 +2759,8 @@ __all__ = ["AT_RISK", "CANCELLED_WORDS", "CLASSES", "CLOSED", "CLOSED_WORDS", "C
            "HISTORICAL_SAGE", "ISSUED_WORDS", "LATE", "NEITHER", "Need", "OPEN",
            "PAST_ORDERED", "PoRead", "PoStatus", "Promise", "StoreSource", "ToolSource",
            "UNKNOWN", "UNKNOWN_REASONS",
-           "UNREAD", "bc", "classify", "clusters", "combine", "header_class",
+           "UNREAD", "bc", "classify", "clusters", "combine", "confirmation_state", "copies",
+           "counted_confirmations", "header_class", "is_default_date", "vendor_facing",
            "NEVER_LATE_SKIPS", "late_count_exact", "lateness_verdict", "line_totals", "need_date", "promise", "read", "record",
            "sage", "vendor_verdict", "verdict", "vocabulary", "word"]
 

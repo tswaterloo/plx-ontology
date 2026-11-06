@@ -100,6 +100,41 @@ class Drafts(unittest.TestCase):
         self.assertNotIn(SECRET, json.dumps(hidden))
         self.assertIn("The vendor's contact address.", hidden["missing"])
 
+    def test_the_due_date_number_and_confirmation_are_the_shared_ones(self):
+        """The draft's due date and its basis are the one PO reader's (the trail's
+        ``due``), never the earliest line date; its number is the one the supplier knows;
+        a confirmation found only as a lead is "found, unverified", never "none on file"."""
+        src = {"handle": H + "#due", "label": "PO", "system": "BC", "open_url": "/o"}
+        po = trail({"state": "lead_only", "text": "Confirmation found, unverified: ...",
+                    "source": {"handle": MAIL, "label": "Email", "system": "Email",
+                               "open_url": "/s"}})
+        po["trails"][0]["due"] = {"date": "2026-08-01", "basis": "vendor_eta", "source": src}
+        po["trails"][0]["vendor_number"] = {"value": "4820", "source": {**src,
+                                                                        "handle": H + "#fm"}}
+        draft = {"facts": [   # a line's own (default) date: never the order's due date
+            {"fact": "ordered_quantity", "value": "5", "unit": "kg", "line_id": "L1",
+             "citation": H + "#1"},
+            {"fact": "received_quantity", "value": "0", "unit": "kg", "line_id": "L1",
+             "citation": H + "#1"},
+            {"fact": "expected_receipt", "value": "2026-07-14", "line_id": "L1",
+             "citation": H + "#1"}]}
+        out = card([item(1, summary="An open purchase order")], trails={PO: po},
+                   late_drafts={PO: draft})["suggestions"][0]
+        body = out["draft"]["body"]
+        self.assertIn("Our purchase order 4820 was due by 2026-08-01, your confirmed date",
+                      body)
+        self.assertNotIn("was needed by 2026-07-14", body)
+        self.assertNotIn("confirmation from you on file", body)
+        self.assertIn("confirmation found, unverified", out["headline"])
+        facts = {f["fact"]: f for f in out["draft"]["facts"]}
+        self.assertEqual((facts["need_date"]["value"], facts["need_date"]["citation"]),
+                         ("2026-08-01", H + "#due"))
+        self.assertEqual(facts["order_number"]["citation"], H + "#fm")
+        # no trail due and no draft due: no due date at all, never the line's date
+        out = card([item(1, summary="An open purchase order")],
+                   late_drafts={PO: draft})["suggestions"][0]
+        self.assertIn("Our purchase order PO100 is open.", out["draft"]["body"])
+
     def test_unknown_eta_never_claims_there_is_no_confirmation(self):
         out = card([item(1)])["suggestions"][0]
         self.assertEqual(out["eta"]["answer"], "unknown")

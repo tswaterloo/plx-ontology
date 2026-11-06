@@ -12,7 +12,7 @@ import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref,
 import { activityTitle, factMap, groupLinked, groupRelated, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
-import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
+import type { ActionResult, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, LinkedItem, ObjectPage, ObjectRef, ObjectSection, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
 import { conflictSentence, ConflictCard, FreshnessLabel, HiddenNotice, missingText, SourceLine } from "./answer-parts";
 import { CostBreakdown, MarginHeadline, NoMargin, ProfitabilityView, SageMargin } from "./cost-breakdown";
 import { CustodyRail } from "./custody-rail";
@@ -767,16 +767,27 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     setObj(null);
     setPending(new Set());
     setFailed(new Set());
+    // the margin is a customer's or a sales order's only
+    const sectionsOf = (t: string) => PAGE_SECTIONS.filter((n) => n !== "margin" || t === "Customer" || t === "SalesOrder");
+    // A whole object id of this type names its record already: its sections are asked for
+    // beside the quick read (the same calls the quick read would lead to), not after it.
+    const early = new Map<SectionName, Promise<ObjectSection>>();
+    if (id.startsWith(`${type}:`))
+      for (const name of sectionsOf(type)) {
+        const p = getObjectSection(name, type, id, c.signal);
+        p.catch(() => undefined);
+        early.set(name, p);
+      }
     getObject(type, id, c.signal, true)
       .then((first) => {
         if (c.signal.aborted) return;
         setObj(first);
         if (first.complete !== false) return;
-        // the margin is a customer's or a sales order's only
-        const names = PAGE_SECTIONS.filter((n) => n !== "margin" || first.type === "Customer" || first.type === "SalesOrder");
+        const names = sectionsOf(first.type);
         setPending(new Set(names));
+        const same = first.type === type && first.object_id === id;
         for (const name of names) {
-          getObjectSection(name, first.type, first.object_id, c.signal)
+          ((same && early.get(name)) || getObjectSection(name, first.type, first.object_id, c.signal))
             .then((sec) => {
               if (!c.signal.aborted) setObj((o) => (o ? mergeSection(o, sec) : o));
             })
@@ -812,13 +823,16 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     setCardState(null);
     if (!objectId || !/^(PurchaseOrder|SalesOrder|Customer)$/.test(objType ?? "")) return;
     const c = new AbortController();
+    // the cards and their action states are read at once, not one after the other
+    const states = getActionStates(c.signal);
+    states.catch(() => undefined);
     getSuggestions(c.signal)
       .then((s) => {
         if (c.signal.aborted || s?.status !== "read") return;
         const mine = (s.items ?? []).find((x) => x.subject?.object_id === objectId) ?? null;
         setCard(mine);
         if (mine)
-          getActionStates(c.signal)
+          states
             .then((r) => !c.signal.aborted && setCardState(r.cards?.[mine.id] ?? null))
             .catch(() => undefined);
       })

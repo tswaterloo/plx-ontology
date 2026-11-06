@@ -111,13 +111,16 @@ let lateOnce: Promise<LatePo[]> | null = null;
 export function loadLate(fresh = false): Promise<LatePo[]> {
   if (fresh || !lateOnce) {
     lateOnce = (async () => {
-      const all: LatePo[] = [];
-      let offset = 0;
-      for (let i = 0; i < 3; i++) {
-        const page = await getLateList(offset, undefined, 100);
+      const first = await getLateList(0, undefined, 100);
+      const all: LatePo[] = [...(first.items ?? [])];
+      if (!first.more || first.next_offset == null) return all;
+      // the next pages at once: a page ends where the next starts (offset + 100)
+      const step = first.next_offset;
+      const offsets = [step, 2 * step].filter((o) => o < (first.total ?? 0));
+      const pages = await Promise.all(offsets.map((o) => getLateList(o, undefined, 100)));
+      for (const page of pages) {
         all.push(...(page.items ?? []));
-        if (!page.more || page.next_offset == null) break;
-        offset = page.next_offset;
+        if (!page.more) break;
       }
       return all;
     })();

@@ -153,6 +153,15 @@ class DetectorTest(unittest.TestCase):
             with self.subTest(answer["object"]["object_type"], values=answer["values"][:1]):
                 self.assertEqual(pg.detect(answer, AS_OF), [])
 
+    def test_a_quantity_conflict_on_a_closed_record_is_not_raised(self):
+        def kinds(status):
+            return self.kinds(card("AssemblyOrderPacket", values=[value("status", status, 13)],
+                                   conflicts=[disagreement("100", "120")]))
+        for status in ("Realized", "CANCELLED", "closed"):
+            self.assertEqual(kinds(status), [], status)
+        for status in ("Allocated", "Released", None):   # open, ambiguous or unknown
+            self.assertEqual(kinds(status), ["conflicting_quantity"], status)
+
     def test_a_quote_with_no_outcome_field_is_flagged_outcome_unknown_never_as_unused(self):
         [sent] = pg.detect(quote("Quote", "2026-01-31", status="SENT"), AS_OF)
         [forwarder] = pg.detect(quote("ForwarderQuote", "2026-01-31"), AS_OF)
@@ -616,8 +625,9 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class WholePartTest(unittest.TestCase):
-    """A count one source keeps whole is one quantity; every other disagreement stays."""
+class IntegerOfDecimalTest(unittest.TestCase):
+    """A decimal one source stores as an integer is one quantity; every other
+    disagreement stays."""
 
     @staticmethod
     def raised(unit, *values):
@@ -627,13 +637,16 @@ class WholePartTest(unittest.TestCase):
         skipped = Counter()
         return len(pg._conflicting_quantities([conflict], skipped)), dict(skipped)
 
-    def test_only_a_whole_count_beside_its_fraction_is_suppressed(self):
-        self.assertEqual(self.raised("box", "32", "32.5"), (0, {"whole_part_only": 1}))
-        self.assertEqual(self.raised("box", "-19", "-19.75"), (0, {"whole_part_only": 1}))
+    def test_only_an_integer_beside_the_decimal_it_stores_is_suppressed(self):
+        for case in (("box", "32", "32.5"),           # floor
+                     ("box", "-19", "-19.75"),
+                     ("box", "0", "0.926"),           # floor at zero
+                     ("box", "157", "156.4"),         # ceiling
+                     ("kg", "32", "32.9")):           # in any unit
+            self.assertEqual(self.raised(*case), (0, {"integer_of_decimal": 1}), case)
         for case in (("kg", "32", "32.5", "32.9"),   # two fractional sources disagree
-                     ("kg", "32", "32.9"),            # a measured unit is not counted whole
-                     ("kg", "0", "0.75"),             # nothing against part received
-                     ("box", "0", "0.75"),            # zero is not a whole part kept
                      ("box", "32", "32.5", "32.9"),   # three values
-                     ("box", "31", "32.5")):          # not its whole part
+                     ("box", "31", "32.5"),           # not its floor, round or ceiling
+                     ("each", "12", "65000"),         # real differences
+                     ("each", "50000", "65000")):
             self.assertEqual(self.raised(*case), (1, {}), case)

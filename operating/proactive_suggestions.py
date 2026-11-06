@@ -54,15 +54,40 @@ KIND_OF_TYPE = {
     "po_late": "vendor_chase", "po_due": "vendor_chase", "eta_slipped": "vendor_chase",
     "vendor_no_reply": "vendor_chase", "po_undated": "vendor_chase",
     "customer_order_at_risk": "customer_update", "negative_margin": "margin_review",
+    "customer_order_late": "customer_update",
 }
 # Which finding leads a merged card (lower first): the one that names the problem best.
 _LEAD = {"po_late": 0, "eta_slipped": 1, "vendor_no_reply": 2, "po_due": 3,
-         "customer_order_at_risk": 4, "po_undated": 5, "negative_margin": 0}
+         "customer_order_at_risk": 4, "po_undated": 5, "negative_margin": 0,
+         "customer_order_late": 0}
 ETA_ANSWERS = {"confirmed": "yes", "no_confirmation": "no", "no_confirmation_found": "no",
                "lead_only": "possibly", "promises_disagree": "conflicting",
                "withheld": "hidden"}
 _DAY = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
-_NEEDED = re.compile(r"(?:needed by|need date) (\d{4}-\d{2}-\d{2})")
+# Where a due date comes from, as a card says it (``po_status`` ``Need.basis``).
+_BASIS_SAID = {"requested": "the requested-by date on the order",
+               "vendor_eta": "the supplier's confirmed date; no requested-by date is on record",
+               "lead_time": "the order date plus its lead time; no requested-by date is on "
+                            "record"}
+
+
+def _summary_due(summary: str) -> tuple[str, str] | None:
+    """The due date and its basis a late or unconfirmed finding's own summary states, as
+    the engine words it (``proactive_engine._late_summary``, ``_unconfirmed_summary``);
+    None when it states none."""
+    from datetime import date as _date
+    from .proactive_engine import _late_summary, _unconfirmed_summary
+    marker = _date(1, 1, 1)
+    for basis in _BASIS_SAID:
+        for words in (_late_summary, _unconfirmed_summary):
+            head, _, tail = words(basis, marker).partition(marker.isoformat())
+            found = re.match(re.escape(head) + r"(\d{4}-\d{2}-\d{2})" + re.escape(tail),
+                             summary)
+            if found:
+                return found.group(1), basis
+    return None
+
+
 _REQUIRED = re.compile(r"required date (\d{4}-\d{2}-\d{2})")
 
 
@@ -143,14 +168,6 @@ def last_vendor_message(po: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return best
 
 
-def _step_day(po: Mapping[str, Any] | None, kind: str) -> tuple[str, dict] | None:
-    for step in (po or {}).get("steps") or ():
-        if isinstance(step, Mapping) and step.get("kind") == kind \
-                and isinstance(step.get("at"), str) and _src(step.get("source")):
-            return step["at"][:10], _src(step.get("source"))
-    return None
-
-
 # --------------------------------------------------------------------------- drafts
 
 def _draft_facts(draft: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -167,6 +184,8 @@ def _draft_facts(draft: Mapping[str, Any] | None) -> dict[str, Any]:
             row[name] = (value, fact.get("unit"), fact["citation"])
         elif name in ("supplier", "order_number", "confirmed_delivery_date"):
             out[name] = (value, fact["citation"])
+        elif name == "due_date" and fact.get("basis") in _DUE_SAID:
+            out["due_date"], out["due_basis"] = (value, fact["citation"]), fact["basis"]
     return out
 
 
@@ -175,12 +194,20 @@ def _qty(entry: Any) -> str:
     return f"{value} {unit}".strip() if unit else str(value)
 
 
+# How a draft states the due date by its basis (``po_status`` ``Need.basis``).
+_DUE_SAID = {"requested": "was needed by {}", "vendor_eta": "was due by {}, your confirmed date",
+             "lead_time": "was due by {} (its lead time)"}
+
+
 def vendor_draft(*, po_number: str, supplier: str | None, need_date: str | None,
                  eta: Mapping[str, Any], contact: Mapping[str, Any] | None,
                  last_message: Mapping[str, Any] | None, lines: Sequence[Mapping[str, Any]],
-                 cited: Sequence[Mapping[str, Any]], received_any: bool | None = None
-                 ) -> dict[str, Any]:
-    """The follow-up message to a vendor, from cited facts only (never sent)."""
+                 cited: Sequence[Mapping[str, Any]], received_any: bool | None = None,
+                 need_basis: str = "requested") -> dict[str, Any]:
+    """The follow-up message to a vendor, from cited facts only (never sent). ``need_date``
+    is the order's due date with its ``need_basis`` (the one PO reader's), never a line's
+    default date; "no confirmation on file" is said only when ``eta`` says none is linked
+    to any copy of the order."""
     if contact and contact.get("address"):
         to = {"name": supplier, "address": contact["address"], "basis": contact["basis"],
               "source": contact.get("source")}
@@ -194,7 +221,8 @@ def vendor_draft(*, po_number: str, supplier: str | None, need_date: str | None,
                    f"{eta['when']}. We have not received it in full yet.")
     else:
         subject = f"{po_number}: please confirm the delivery date"
-        opening = (f"Our purchase order {po_number} was needed by {need_date}"
+        opening = (f"Our purchase order {po_number} "
+                   + _DUE_SAID.get(need_basis, _DUE_SAID["requested"]).format(need_date)
                    if need_date else f"Our purchase order {po_number} is open")
         opening += (" and is not yet received in full." if need_date else ".")
         if eta.get("answer") == "no":
@@ -353,9 +381,10 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
     action_text = str(_get(lead.get("next_action"), "text") or "")
     action_rule = str(_get(lead.get("next_action"), "rule") or "")
     if po is not None:
-        due = _step_day(po, "due_date")
-        if due:
-            reason(f"Needed by {due[0]} (requested-by date on the order).", due[1])
+        due = _get(po, "due")
+        if isinstance(due, Mapping) and _src(due.get("source")) and due.get("date"):
+            said = _BASIS_SAID.get(str(due.get("basis")), _BASIS_SAID["requested"])
+            reason(f"Due by {due['date']} ({said}).", due["source"])
         if isinstance(po.get("verdict"), str):
             reason(po["verdict"])
         if eta and eta["answer"] != "unknown":
@@ -385,7 +414,12 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
         if m.get("why"):
             reason(str(m["why"]))
     if kind == "vendor_chase":
+        # the number the supplier knows: the late-order draft's (the engine's), else the
+        # trail's (both ``po_status.vendor_facing``), else the record's own label
         number = facts.get("order_number")
+        known = _get(po, "vendor_number")
+        if number is None and isinstance(known, Mapping) and _src(known.get("source")):
+            number = (str(known["value"]), known["source"]["handle"])
         po_number = number[0] if number else label
         if number:
             cite("order_number", number[0], number[1])
@@ -414,20 +448,24 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             if "expected_receipt" in line:
                 cite("expected_receipt", line["expected_receipt"][0],
                      line["expected_receipt"][2])
-        need = _step_day(po, "due_date")
-        need_date = need[0] if need else min(
-            (line["expected_receipt"][0] for line in facts["lines"].values()
-             if "expected_receipt" in line), default=None)
-        if need:
-            cite("need_date", need[0], need[1]["handle"])
-        elif need_date is None:
-            # the finding's own summary states the need date it was judged on (cited)
+        # the due date and its basis are the one PO reader's (the trail's ``due``, else
+        # the late-order draft's, else the finding's own summary), never a line's date
+        need_date, need_basis = None, "requested"
+        due = _get(po, "due")
+        if isinstance(due, Mapping) and _src(due.get("source")) and due.get("date"):
+            need_date, need_basis = str(due["date"]), str(due.get("basis") or "requested")
+            cite("need_date", need_date, due["source"]["handle"])
+        elif facts.get("due_date"):
+            need_date, need_basis = facts["due_date"][0], facts["due_basis"]
+            cite("need_date", need_date, facts["due_date"][1])
+        else:
+            # the finding's own summary states the due date it was judged on (cited)
             for m in own:
-                found = _NEEDED.search(str(m.get("summary") or ""))
+                found = _summary_due(str(m.get("summary") or ""))
                 handle = next((h for h in m.get("citations") or () if isinstance(h, str)),
                               None)
                 if found and handle:
-                    need_date = found.group(1)
+                    need_date, need_basis = found
                     cite("need_date", need_date, handle)
                     break
         message = last_vendor_message(po)
@@ -457,7 +495,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             missing.append("The vendor's contact address.")
         draft = vendor_draft(po_number=po_number, supplier=supplier[0] if supplier else None,
                              need_date=need_date, eta=eta or {}, contact=contact,
-                             last_message=message, lines=lines, cited=cited)
+                             last_message=message, lines=lines, cited=cited,
+                             need_basis=need_basis)
     elif kind == "customer_update":
         event = lead.get("links") or {}
         required = event.get("required") if isinstance(event.get("required"), str) else None
@@ -512,7 +551,8 @@ def _address(text: str) -> str | None:
 # Business impact first: a card that holds up customer orders, then a late, slipped,
 # unanswered or loss-making one, then one due today, then one with no due date.
 _TIERS = {"po_late": 1, "eta_slipped": 1, "vendor_no_reply": 1, "negative_margin": 1,
-          "customer_order_at_risk": 0, "po_due": 2, "po_undated": 3}
+          "customer_order_at_risk": 0, "po_due": 2, "po_undated": 3,
+          "customer_order_late": 1}
 
 
 def _tier(members: Sequence[Mapping[str, Any]]) -> int:
@@ -566,12 +606,15 @@ def _headline(kind: str, label: str, days: int | None, eta: Mapping[str, Any] | 
         answer = (eta or {}).get("answer")
         text += {"yes": f"; vendor confirmed {eta.get('when')}" if eta and eta.get("when")
                  else "; vendor confirmed", "no": "; vendor has not confirmed",
-                 "possibly": "; vendor confirmation not linked for sure",
+                 "possibly": "; confirmation found, unverified",
                  "conflicting": "; vendor's dates disagree"}.get(answer or "", "")
         if orders:
             text += f"; holds up {orders} customer order{'s' if orders != 1 else ''}"
             text += f" (worst {_days(risk_days)} at risk)" if risk_days else ""
         return text
+    if etype == "customer_order_late":
+        return (f"Customer order {label} is past its required date"
+                + (f" ({_days(days)} late)" if days else ""))
     if kind == "customer_update":
         return (f"Customer order {label} is at risk"
                 + (f" ({_days(risk_days)} at risk)" if risk_days else "")

@@ -250,7 +250,9 @@ FOLLOW_UP_GAP_ACTION = "workbench.follow_up.record"
 FOLLOW_UP_STATES = ("absent_in_source", "inaccessible", "stale", "not_ingested", "unknown")
 FOLLOW_UP_PRIORITIES = ("urgent", "high", "medium", "low")
 FOLLOW_UP_FIELDS = frozenset({"object_id", "missing", "why", "who_can_answer", "state",
-                              "priority", "case_id", "draft"})
+                              "priority", "case_id", "draft",
+                              # enum words of a late purchase order (the engine's ``_gap``)
+                              "confirmation", "due_basis"})
 # A follow-up's late-order supplier draft (``operating.proactive_engine.late_order_draft``)
 # as a client sends it back: only a request, checked for shape; the console words it again
 # from the store and records its own wording on the case, never sent, approved or sent to MC.
@@ -767,6 +769,27 @@ class ObjectWorkspace:
                 raise FileNotFoundError("store_not_configured")
             return pe.record_visit(pe.inbox_path(path) if inbox is None else inbox,
                                    pe.reader_key(self.actor))
+
+    def watcher_item_state(self, item_id: str, state: str, *, until: str | None = None,
+                           reason: str | None = None) -> dict[str, Any]:
+        """This reader dismisses or snoozes one AI watcher item of their briefing (``open``
+        undoes it): ``operating.ai_watcher.set_item_state`` under this reader's grant and
+        reader key, as the briefing's own "seen" mark is kept. ``KeyError`` for an item this
+        reader may not see; ``FileNotFoundError`` without a store."""
+        from operating import ai_watcher
+        from operating import proactive_engine as pe
+
+        with self._request():
+            self._base()
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                raise FileNotFoundError("store_not_configured")
+            may_read, held = grant()
+            return ai_watcher.set_item_state(
+                Path(path), item_id, reader=pe.reader_key(self.actor), state=state,
+                may_read=may_read, held=held, decide=self.access.decide, until=until,
+                reason=reason)
 
     def status_card(self, object_id: str | None = None, *, object_type: str | None = None,
                     reference: str | None = None, as_of: date | None = None

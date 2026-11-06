@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import * as api from "@/lib/api";
 import type { Briefing, BriefingItem } from "@/lib/types";
 import { BriefingCard, BriefingRow, itemFacts } from "./briefing";
 
@@ -220,5 +221,49 @@ describe("shortSummary", () => {
     const { shortSummary } = await import("./briefing");
     expect(shortSummary("An open purchase order needed by 2026-07-14 has no supplier confirmation")).toBe("Needed by 14 Jul; no supplier date.");
     expect(shortSummary("An open purchase order has no due date recorded")).toBe("No due date on record.");
+  });
+});
+
+describe("a watcher item", () => {
+  const flagged = item({
+    id: "aw-0000000000000001",
+    event_type: "watcher_attention",
+    label: "Flagged from new changes",
+    summary: "The customer asked to add 2 test cases to the shipment.",
+    why: "The shipment leaves Friday, so it must be settled first.",
+  });
+
+  it("states its reason and can be dismissed, then undone", async () => {
+    const set = vi
+      .spyOn(api, "setWatcherItemState")
+      .mockResolvedValueOnce({ item_id: flagged.id, state: "dismissed", at: "2099-01-01T00:00:00Z" })
+      .mockResolvedValueOnce({ item_id: flagged.id, state: "open", at: "2099-01-01T00:00:01Z" });
+    render(<ul><BriefingRow item={flagged} /></ul>);
+    expect(screen.getByTestId("watcher-why").textContent).toBe("The shipment leaves Friday, so it must be settled first.");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.getByTestId("briefing-item").textContent).toContain("dismissed"));
+    expect(set).toHaveBeenCalledWith(flagged.id, "dismissed");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy());
+    expect(set).toHaveBeenLastCalledWith(flagged.id, "open");
+    set.mockRestore();
+  });
+
+  it("snoozes a week and says until when; a failure is said, never hidden", async () => {
+    const set = vi
+      .spyOn(api, "setWatcherItemState")
+      .mockRejectedValueOnce(new Error("503"))
+      .mockResolvedValueOnce({ item_id: flagged.id, state: "snoozed", until: "2099-01-08", at: "2099-01-01T00:00:00Z" });
+    render(<ul><BriefingRow item={flagged} /></ul>);
+    fireEvent.click(screen.getByRole("button", { name: "Snooze a week" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("Couldn't save"));
+    fireEvent.click(screen.getByRole("button", { name: "Snooze a week" }));
+    await waitFor(() => expect(screen.getByTestId("briefing-item").textContent).toContain("snoozed until"));
+    set.mockRestore();
+  });
+
+  it("offers no dismiss or snooze on a rule-based item", () => {
+    render(<ul><BriefingRow item={item({})} /></ul>);
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 });

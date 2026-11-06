@@ -76,6 +76,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 SCHEMA = "plx-briefing/v2"
@@ -132,6 +133,18 @@ EVENT_TYPES: dict[str, dict[str, Any]] = {
                                "label": "Late PO hits a customer order",
                                "departments": ("ACCTMGMT", "SALES", "OPS", "PROC"),
                                "check": ("orders_at_risk",)},
+    # a customer order open past its own required date (whatever holds it up)
+    "customer_order_late": {"kinds": ("late_customer_order",),
+                            "label": "Customer order past its required date",
+                            "departments": ("ACCTMGMT", "SALES", "OPS"),
+                            "check": ("late_customer_order",)},
+    # what the AI watcher raised from a cycle of changes (``operating.ai_watcher``), shown
+    # only while its switch is on (``optional``: the type and its check are listed only
+    # when the check reports a run): routed by the departments the item names, and never
+    # counted for a reader who may not open it (it may rest on mail)
+    "watcher_attention": {"kinds": ("watcher_attention",), "label": "Flagged from new changes",
+                          "departments": (), "check": ("ai_watcher",), "hidden": "none",
+                          "optional": True},
 }
 TYPE_OF_KIND = {kind: name for name, spec in EVENT_TYPES.items() for kind in spec["kinds"]}
 EVENT_KINDS = tuple(TYPE_OF_KIND)
@@ -155,7 +168,9 @@ CHECK_WORDS = {"late_or_unconfirmed_po": "late purchase orders",
                "accepted_quote_no_order": "accepted quotes",
                "po_receipt_quantity_mismatch": "received against ordered quantities",
                "invoice_quantity_mismatch": "invoiced against received quantities",
-               "orders_at_risk": "customer orders hit by late purchase orders"}
+               "orders_at_risk": "customer orders hit by late purchase orders",
+               "late_customer_order": "customer orders past their required date",
+               "ai_watcher": "new mail, chat and record changes"}
 REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most recent were read",
                 "impact_bound": "only the first ones were followed",
                 "card_bound": "only the first ones were read",
@@ -197,6 +212,11 @@ NEXT_ACTIONS = {
     "customer_order_at_risk": ("Confirm with the customer's account owner whether the "
                                "required date still holds, and chase the late material.",
                                "at_risk_confirm_date"),
+    "customer_order_late": ("Check whether the order shipped; if it did, close it in the "
+                            "system that still shows it open, else agree a new date with "
+                            "the customer.", "late_order_ship_or_close"),
+    "watcher_attention": ("Open the cited sources and decide whether anyone needs to act "
+                          "(nothing is sent).", "watcher_review"),
 }
 # The next step in the words of the department that acts on it, for a reader routed by
 # department (an Executive or admin reader, routed every type, gets the general step above):
@@ -421,7 +441,9 @@ def _check_state(inbox: Mapping[str, Any], name: str) -> tuple[str, str]:
 def _checks(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Each check behind the event types with this run's state."""
     out = []
-    for name in dict.fromkeys(d for spec in EVENT_TYPES.values() for d in spec["check"]):
+    ran = inbox.get("detectors") or {}
+    for name in dict.fromkeys(d for spec in EVENT_TYPES.values() for d in spec["check"]
+                              if not spec.get("optional") or d in ran):
         state, words = _check_state(inbox, name)
         out.append({"check": name, "label": CHECK_WORDS.get(name, name), "status": state,
                     "words": f"{CHECK_WORDS.get(name, name)}: {words}"})
@@ -436,6 +458,8 @@ def _types(inbox: Mapping[str, Any]) -> list[dict[str, Any]]:
     kinds = inbox.get("kind_history") or {}
     out = []
     for name, spec in EVENT_TYPES.items():
+        if spec.get("optional") and not set(spec["check"]) & set(inbox.get("detectors") or {}):
+            continue   # a check switched off is not this reader's briefing
         states = [_check_state(inbox, d) for d in spec["check"]]
         state = min((s for s, _ in states), key=order.index)
         quiet = HIDDEN_POLICY[name] == "none"
@@ -546,9 +570,14 @@ def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[s
     ``held``/``decide``."""
     from . import proactive_engine as pe
 
+    from . import ai_watcher
+
     found = pe.read_inbox(inbox, store, reader=reader, may_read=may_read, held=held,
                           decide=decide, states=("open", "acknowledged"), limit=MAX_READ,
                           kinds=EVENT_KINDS)
+    # the AI watcher's open items this reader may see, only while its switch is on
+    found = ai_watcher.merge_briefing(found, Path(store), may_read=may_read, held=held,
+                                      decide=decide, reader=reader)
     hidden = pe.hidden_counts(inbox, store, kinds=EVENT_KINDS, may_read=may_read, held=held,
                               decide=decide) if found.get("status") == "read" else None
     return build(found, routing=routing, hidden=hidden, last_visit=pe.last_visit(inbox, reader),
@@ -586,6 +615,10 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
     spec = EVENT_TYPES[item.event_type]
     text, rule = next_action(item.event_type, routing)
     follow_up = gap.get("follow_up") or {}
+    if item.event_type == "watcher_attention" and isinstance(follow_up.get("next_step"), str) \
+            and follow_up["next_step"].strip():
+        # the watcher's own suggestion, screened by the answer gate (never sent)
+        text = follow_up["next_step"].strip()[:400] + " (Suggestion only; nothing is sent.)"
     if item.event_type == "po_late" and isinstance(follow_up.get("draft"), Mapping):
         text += " A draft supplier message is ready to review (not sent)."
     facts: dict[str, Any] = {}
@@ -675,6 +708,10 @@ TODAY_WORDS = {
     "quantity_mismatch": ("quantity mismatch", "quantity mismatches", "found", "open"),
     "customer_order_at_risk": ("customer order", "customer orders",
                                "now at risk from late POs", "at risk from late POs"),
+    "customer_order_late": ("customer order", "customer orders", "went past its required date",
+                            "past their required date"),
+    "watcher_attention": ("change", "changes", "flagged for attention",
+                          "flagged for attention"),
 }
 TODAY_PARTS = 3   # the line names the worst types; the rest are "and N more"
 

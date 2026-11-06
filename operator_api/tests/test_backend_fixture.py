@@ -1233,6 +1233,29 @@ class SuggestionRankingTests(unittest.TestCase):
         cache.kept(View(), None, read, lambda v: v["handles"])
         self.assertEqual(len(reads), 3)          # no key, never kept
 
+    def test_a_seen_mark_keeps_every_key_but_that_readers_briefing(self):
+        import sqlite3
+        tmp = Path(tempfile.mkdtemp(prefix="inbox-stamp-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        store = tmp / "ontology.sqlite"
+        inbox = proactive_engine.inbox_path(store)
+        with contextlib.closing(sqlite3.connect(inbox)) as conn, conn:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT INTO meta VALUES ('schema', ?)", (proactive_engine.INBOX_SCHEMA,))
+            conn.execute("CREATE TABLE gaps (gap_id TEXT PRIMARY KEY, state TEXT)")
+            conn.execute("INSERT INTO gaps VALUES ('g1', 'open')")
+        view = SimpleNamespace(store_status=SimpleNamespace(store_path=store),
+                               actor=SimpleNamespace(tenant="plx", principals=["user:a"]))
+        before, visit = be.inbox_stamp(view), be.last_visit_of(view)
+        time.sleep(0.01)
+        proactive_engine.record_visit(inbox, proactive_engine.reader_key(view.actor))
+        self.assertEqual(be.inbox_stamp(view), before)        # Home, lists, cards: kept
+        self.assertNotEqual(be.last_visit_of(view), visit)    # the briefing: read again
+        time.sleep(0.01)
+        with contextlib.closing(sqlite3.connect(inbox)) as conn, conn:
+            conn.execute("UPDATE gaps SET state = 'resolved'")   # a run: every key is new
+        self.assertNotEqual(be.inbox_stamp(view), before)
+
 
 class LateRowAndSameNameTests(unittest.TestCase):
     """The late list's row carries the order's due date and its total only as the inbox
@@ -1420,7 +1443,8 @@ class KnownReaderWarmTests(unittest.TestCase):
         backend.identity_for = identity_for
         self.assertEqual(backend.warm_known(), 1)
         self.assertEqual(made, [("29e05178-0bd1-49b9-be6e-b01be1975f70", now + 3600)])
-        self.assertEqual(backend.warmer.jobs.qsize(), 3)   # Home, briefing, pages
+        # Home, the briefing and its groups, the suggestion cards, the late list, pages
+        self.assertEqual(backend.warmer.jobs.qsize(), 5)
         # signed out: never read ahead for again
         backend.forget_reader(be.Reader(SimpleNamespace(
             principals=frozenset(), employee=SimpleNamespace(

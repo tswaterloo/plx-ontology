@@ -351,6 +351,16 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         """Mark your briefing seen now: the next "since your last visit" starts here."""
         return backend.briefing_seen(who)
 
+    @app.post("/api/briefing/watcher/{item_id}", response_model=m.WatcherItemState,
+              tags=["home"], responses={400: {"model": m.ErrorResponse},
+                                        401: {"model": m.ErrorResponse},
+                                        404: {"model": m.ErrorResponse}})
+    def watcher_item_state(item_id: str, body: m.WatcherItemStateRequest,
+                           who: Reader = Depends(reader)) -> m.WatcherItemState:
+        """Dismiss or snooze one item the AI watcher flagged in your briefing (``open``
+        undoes it). Only your own briefing changes; nothing is sent."""
+        return backend.watcher_item_state(who, item_id, body)
+
     @app.get("/api/object/{object_type}/{object_id:path}", response_model=m.ObjectPage,
              tags=["object"], responses={401: {"model": m.ErrorResponse},
                                          404: {"model": m.ErrorResponse}})

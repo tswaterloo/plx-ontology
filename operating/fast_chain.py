@@ -11,8 +11,11 @@ its orders' lateness), answered by the same deterministic reads and answer gate 
   the vendor's latest message naming the order (mail from the rep's domains, else from
   the supplier's addresses); and, when the question asks what to do, a proposed next step
   built only from those cited facts. Nothing is ever sent or changed: the answer proposes.
-* **A vendor's confirmation** (``po_confirmed``): the vendor's first message naming the
-  order whose subject is an order confirmation (``CONFIRMATION``), its day and subject.
+* **A vendor's confirmation** (``po_confirmed``): the one confirmation rule
+  (``po_status.confirmation_state``): a supplier confirmation or invoice linked to any
+  copy of the order, settled (confirmed, its first document's date) or a lead
+  ("confirmation found, unverified"); none linked and no message naming the order: none
+  on record (partial).
 * **The original behind an order** (``po_first_mail``): the first message naming the
   order, from its vendor or one of us, on or after the day the order was created.
 * **Anything late from a vendor** (``vendor_late``): every purchase order of the vendor's
@@ -63,15 +66,6 @@ MAX_VENDOR_ORDERS = 60      # purchase orders one vendor answer judges, each rea
 # FileMaker-era orders, judged on the Portal's record).
 VENDOR_SYSTEMS = ("bc.vendors", "portal.app_supplier")
 MAX_VENDOR_CARDS = 3        # same-named supplier cards (one per system) one answer reads
-# A vendor's order confirmation, by its subject ("Order Confirmation for PO ...",
-# "Confirmation for your P.O. # ...", "PO123 - order confirmed", "Order acknowledgement");
-# never a pricing confirmation or a request to confirm.
-CONFIRMATION = re.compile(
-    r"\border\s+(?:confirmation|confirmed|conf|acknowledg(?:e)?ment)\b|"
-    r"\bconfirmation\s+(?:for|of)\s+(?:your\s+)?(?:p\.?\s?o\b|purchase|order)|"
-    r"\b(?:po|p\.o\.)\W*\d+\W+(?:-\s*)?(?:order\s+)?confirmed\b", re.I)
-NOT_CONFIRMATION = re.compile(r"\bpre-?confirmation\b|\bpric(?:e|ing)\s+confirmation\b|"
-                              r"\bplease\s+confirm\b|\bcan you confirm\b", re.I)
 # What a follow-up question asks for beyond the order's status: a proposal is made only
 # when it asks what to do.
 ASKS_NEXT = re.compile(r"\b(next|what (?:should|do|can|would) (?:we|i) do|chase|call|"
@@ -354,21 +348,6 @@ def _say_mail(reads: Reads, draft: Draft, doc: Mapping[str, Any], lead: str, tag
     return day
 
 
-def _earliest(found: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    """The oldest message a person sent of ``found``; two at its instant with different
-    subjects, or none, is ``Unanswerable`` (copies of one message are that message)."""
-    mail = [(fa._instant(d.get("date")), d) for d in found if d.get("kind") == "email"
-            and not fa._AUTOMATIC.search(str(plain(d.get("title")) or ""))]
-    mail = [(at, d) for at, d in mail if at is not None]
-    if not mail:
-        raise Unanswerable("no_message_read")
-    first = min(at for at, _d in mail)
-    tied = [d for at, d in mail if at == first]
-    if len({plain(d.get("title")) for d in tied}) != 1:
-        raise Unanswerable("messages_tie")
-    return min(tied, key=lambda d: str(d.get("citation")))
-
-
 def _order(reads: Reads, ask: Ask) -> tuple[str, Mapping[str, Any]]:
     """The purchase order the question names (as ``po_status`` resolves it): (root, its
     find candidate)."""
@@ -455,47 +434,112 @@ def po_vendor_last_mail(reads: Reads, ask: Ask, draft: Draft) -> None:
 
 
 def po_confirmed(reads: Reads, ask: Ask, draft: Draft) -> None:
-    """Whether the vendor confirmed a purchase order, and when: the first message from
-    the vendor naming it whose subject is an order confirmation. When no message at all
-    names the order (none from the vendor's mail, none the projection links to the
-    order), that is said: no confirmation is on record in the mail the reader can see
-    (partial: mail captured since the last refresh is not linked yet). Any other miss
-    declines (a vendor's messages with no confirmation subject may still confirm it)."""
+    """Whether the vendor confirmed a purchase order, and when, by the one confirmation
+    rule (``po_status.confirmation_state``): a supplier confirmation or supplier invoice
+    linked to ANY copy of the order (``po_status.copies``) at a settled tier confirms it;
+    one linked only as a lead is a confirmation found but unverified (never "none"),
+    unless the order's number is another order's too (a number-text lead may be the
+    other's). Each is said with its own cited document. When no confirmation is linked
+    and no message at all names the order (none from the vendor's mail, none the
+    projection links to it), that is said: none is on record in what the reader can see
+    (partial). Any other miss declines (a message naming the order may still confirm it)."""
+    from . import po_status as ps
     root, picked = _order(reads, ask)
     po = fa._said(draft, "po_number", picked, ask.mention)
+    source = ps.ToolSource(reads.call)
+    copies, blind = ps.copies(source, root)
+    links = source.confirm_links(copies)
+    if links is None or blind:
+        raise Unanswerable("confirmations_unread")   # a copy or link this reader can't read
+    collides = bool(getattr(reads, "shared_others", None)) or (
+        any(link["tier"] not in ps.CONFIRMING for link in links)
+        and source.colliding(copies))
+    counted = ps.counted_confirmations(links, lambda _oid: collides)
+    state = ps.confirmation_state(counted, ps.reused_leads(links, lambda _oid: collides))
+    if state == ps.NEEDS_CHECK:
+        draft.sentences.append(
+            f"Needs check: a document that looks like the vendor's confirmation names {po}'s "
+            "number, but another order holds that number too, so it cannot be tied to this "
+            "order.")
+        draft.gaps.append({"state": "unknown", "reason": "confirmation_on_reused_number",
+                           "subject": "SupplierConfirmation.confirms"})
+        draft.answerability = "partial"
+        draft.roots.append({"object_id": root, "object_type": "PurchaseOrder",
+                            "mention": ask.mention})
+        return
+    if state != ps.NONE_FOUND:
+        settled = state == ps.CONFIRMED
+        docs = sorted({str(link["from_object"]) for link in counted
+                       if (link["tier"] in ps.CONFIRMING) == settled})
+        dated = [_document(reads, doc) for doc in docs[:MAX_CONFIRMATIONS_READ]]
+        dated = [d for d in dated if d is not None]
+        if not dated:
+            raise Unanswerable("confirmation_uncited")
+        first = min(dated, key=lambda d: (d[0] is None, d[0] or "", d[1]))
+        tag = "confirmation" if settled else "unverified_confirmation"
+        cited = draft.value(f"{tag}_{'date' if first[0] else 'document'}",
+                            first[0] or first[1], first[2], first[3])
+        what = (f"dated {cited}" if first[0] else f"({cited})")
+        if settled:
+            draft.sentences.append(
+                f"Yes, the vendor confirmed {po}: the first confirmation on record that you "
+                f"can see is {what}.")
+        else:
+            draft.sentences.append(
+                f"A confirmation for {po} was found, unverified: a document {what} that "
+                "looks like the vendor's confirmation names the order, but its link to the "
+                "order is not confirmed.")
+            draft.gaps.append({"state": "unknown", "reason": "confirmation_lead_only",
+                               "subject": "SupplierConfirmation.confirms"})
+            draft.answerability = "partial"
+        draft.roots.append({"object_id": root, "object_type": "PurchaseOrder",
+                            "mention": ask.mention})
+        return
     supplier = _supplier(reads, root)
     _contact_said, domains = _contact(reads, draft, root, say=False)
     unread: list[str] = []
     found = _vendor_mail(reads, draft, po, domains, supplier, unread, pages=MAX_MAIL_PAGES)
-    confirming = [d for d in found if CONFIRMATION.search(str(plain(d.get("title")) or ""))
-                  and not NOT_CONFIRMATION.search(str(plain(d.get("title")) or ""))]
-    if not confirming:
-        # a message of theirs naming the order may confirm it in its text; one the search
-        # matched on a digit run alone does not name it (a message naming it anywhere in
-        # its text is linked to the order, read next)
-        names = _Naming(reads, po)
-        if any(_mentions(d, po) or names(d) for d in found) \
-                or _linked_mail(reads, draft, root, unread, po):
-            raise Unanswerable("no_confirmation_found")
-        draft.sentences.append(
-            f"I found no message naming {po} in the mail you can see, none from the vendor "
-            "and none linked to the order, so no vendor confirmation is on record.")
-        draft.gaps.append({"state": "unknown", "reason": "no_vendor_message_found",
-                           "subject": "source:graph_mail"})
-        draft.answerability = "partial"
-        _newer_unsearched(draft, unread)
-        draft.sentences.append("Not settled: " + "; ".join(dict.fromkeys(unread)) + ".")
-        draft.roots.append({"object_id": root, "object_type": "PurchaseOrder",
-                            "mention": ask.mention})
-        return
-    first = _earliest(confirming)
-    _say_mail(reads, draft, first, f"Yes, the vendor confirmed {po}: their first order "
-              "confirmation you can see was sent", "confirmation")
-    if unread:
-        draft.sentences.append("Not settled: " + "; ".join(dict.fromkeys(unread)) + ".")
-        draft.answerability = "partial"
+    # a message of theirs naming the order may confirm it in its text (not yet linked
+    # as a confirmation): the agent reads it; one the search matched on a digit run alone
+    # does not name it (a message naming it anywhere in its text is linked to the order)
+    names = _Naming(reads, po)
+    if any(_mentions(d, po) or names(d) for d in found) \
+            or _linked_mail(reads, draft, root, unread, po):
+        raise Unanswerable("no_confirmation_found")
+    draft.sentences.append(
+        f"I found no message naming {po} in the mail you can see, none from the vendor "
+        "and none linked to the order, so no vendor confirmation is on record.")
+    draft.gaps.append({"state": "unknown", "reason": "no_vendor_message_found",
+                       "subject": "source:graph_mail"})
+    draft.answerability = "partial"
+    _newer_unsearched(draft, unread)
+    draft.sentences.append("Not settled: " + "; ".join(dict.fromkeys(unread)) + ".")
     draft.roots.append({"object_id": root, "object_type": "PurchaseOrder",
                         "mention": ask.mention})
+
+
+MAX_CONFIRMATIONS_READ = 6   # confirming documents of one order read for their dates
+
+
+def _document(reads: Reads, doc: str) -> Optional[tuple[Optional[str], str, str, str]]:
+    """A confirming document as the reader reads it: (its own document date or None, its
+    shown name, the handle and field the said value is cited by); None when it states
+    nothing citable to this reader."""
+    card = reads.call("plx.object", {"object_id": doc})
+    if "error" in card or fa._withheld(card):
+        return None
+    days = {str(v)[:10] for v, _h, _f in fa._object_values(card, "document_date")
+            if re.match(r"\d{4}-\d{2}-\d{2}", str(v or ""))}
+    if len(days) == 1:
+        value, handle, field = next((v, h, f) for v, h, f in fa._object_values(
+            card, "document_date") if str(v)[:10] in days)
+        return str(value)[:10], str(value)[:10], handle, field
+    display = (card.get("object") or {}).get("display")
+    origin = display.get("origin") if isinstance(display, Mapping) else None
+    if isinstance(origin, Mapping) and isinstance(origin.get("citation"), str) \
+            and plain(display):
+        return None, str(plain(display)), origin["citation"], str(origin.get("field_path"))
+    return None
 
 
 LINKED_READ = 10   # messages linked to an order read for whether one names it
@@ -773,12 +817,15 @@ def _listed(reads: Reads, arguments: Mapping[str, Any]) -> list[Mapping[str, Any
 
 
 def _open_orders(reads: Reads, card: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    """The supplier card's purchase orders that may be open by the shared status rule
-    (``po_status``): on Business Central's card, the orders not fully received; on the
-    Portal's, those whose header word is an issued word other than Complete (the words
-    read from a grouped count of every order of the card, so a stored spelling is never
-    missed). Every other order is closed, cancelled, a draft or of a word that never
-    makes an order late; none of them can be late."""
+    """The supplier card's purchase orders the shared status rule (``po_status``) may call
+    open; each is then judged by its own verdict, so this only leaves out orders the rule
+    can never call open, whatever another copy says. On Business Central's card: the
+    orders not fully received (BC's own receipt closes the order). On the Portal's: those
+    whose header word is an issued word other than Complete; and, since FileMaker's items
+    decide a FileMaker order's status over its stale header (``po_status.fm_rollup``),
+    every FileMaker-mirrored order whose header is Complete, unmapped or missing. A
+    cancelled, closed or draft header never becomes open (the words read from a grouped
+    count of every order of the card, so a stored spelling is never missed)."""
     from . import po_status as ps
     path = [{"link_type": "PurchaseOrder.ordered_from", "direction": "reverse"}]
     base = {"from": card["object"]["object_id"], "limit": 50, "path": path}
@@ -794,15 +841,34 @@ def _open_orders(reads: Reads, card: Mapping[str, Any]) -> list[Mapping[str, Any
             or (counted.get("completeness") or {}).get("complete") is False:
         raise Unanswerable("statuses_uncounted")
     issued = ps.ISSUED_WORDS - ps.COMPLETE_WORDS
-    words = []
+    words, mirrored = [], []
     for group in counted.get("groups") or ():
         raw = plain((group.get("key") or {}).get("status"))
-        if isinstance(raw, str) and ps.word(raw) in issued and raw not in words:
+        if not isinstance(raw, str):
+            continue
+        if ps.word(raw) in issued:
             words.append(raw)
-    if not words:
-        return []
-    return _listed(reads, dict(base, filters=[{"property": "status", "op": "in",
-                                               "value": words}]))
+        elif ps.header_class(raw) in (ps.ISSUED, ps.UNMAPPED):
+            mirrored.append(raw)   # Complete or unmapped: FileMaker's items may decide
+    mirror = {"property": FM_MIRROR, "op": "present"}
+    out: dict[str, Mapping[str, Any]] = {}
+    for filters in ([{"property": "status", "op": "in", "value": sorted(set(words))}]
+                    if words else None,
+                    [{"property": "status", "op": "in", "value": sorted(set(mirrored))},
+                     mirror] if mirrored else None,
+                    [{"property": "status", "op": "absent"}, mirror]):
+        if filters is None:
+            continue
+        for obj in _listed(reads, dict(base, filters=filters)):
+            out.setdefault(str(obj["object_id"]), obj)
+        if len(out) > MAX_VENDOR_ORDERS:
+            raise Unanswerable("too_many_orders")
+    return list(out.values())
+
+
+# The Portal order's FileMaker order id: a Portal record holding it mirrors a FileMaker
+# order, whose items decide its status (``po_status``'s FileMaker mirror rule).
+FM_MIRROR = "fm_generated_po_id"
 
 
 def vendor_late(reads: Reads, ask: Ask, draft: Draft) -> None:

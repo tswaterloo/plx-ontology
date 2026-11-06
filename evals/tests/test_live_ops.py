@@ -448,9 +448,9 @@ def world(changed: int = 0, **extra) -> lk.World:
                                          "product_id": "pr1", "quantity": "10",
                                          "quantity_received": "0"})],
         lk.BATCH: [mirror(lk.BATCH, {"id": "b1", "batch_number": "BC-26101A", "batch_name": "BC-26101A",
-                                     "status": "Allocated", "status_qc": "On-Hold"})],
+                                     "status": "Realized", "status_qc": "On-Hold"})],
         lk.FM_BATCH: [mirror(lk.FM_BATCH, {"id": 11, "namebatch_c": "BC-26101A",
-                                           "status": "Allocated", "statusqc": "On-Hold"})],
+                                           "status": "Realized", "statusqc": "On-Hold"})],
         lk.RAW_LOT: [mirror(lk.RAW_LOT, {"id": 5, "lotnoqc": "LOT-55", "status_c": "Released",
                                          "expirydate": "2026-12-03"})],
     }
@@ -603,9 +603,9 @@ class KeyTests(unittest.TestCase):
         do); a Portal-only copy, a code-less record, a placeholder code or a staging test
         batch is no key."""
         w = world()
-        fm = lambda i, code, status="Allocated", qc="On-Hold": mirror(lk.FM_BATCH, {
+        fm = lambda i, code, status="Realized", qc="On-Hold": mirror(lk.FM_BATCH, {
             "id": i, "namebatch_c": code, "status": status, "statusqc": qc})
-        portal = lambda i, code, status="Allocated", qc="On-Hold": mirror(lk.BATCH, {
+        portal = lambda i, code, status="Realized", qc="On-Hold": mirror(lk.BATCH, {
             "id": f"g{i}", "batch_number": code, "batch_name": code, "status": status,
             "status_qc": qc})
         w.portal = {**w.portal,
@@ -615,12 +615,18 @@ class KeyTests(unittest.TestCase):
                                   # a generated batch's placeholder, on many rows, is no
                                   # batch code (the schema's grammar): never one batch
                                   fm(7, "BC-00A", status="Generated"),
-                                  fm(8, "BC-00A", status="Generated")],
+                                  fm(8, "BC-00A", status="Generated")]
+                    # every unmade batch carries On-Hold before release: that state's
+                    # default (operating.stock_state), no hold: keyed not on hold, never
+                    # counted
+                    + [fm(100 + i, f"BC-261{i:02d}A", status="Allocated") for i in range(10)],
                     lk.BATCH: [portal(1, "BC-26001A"), portal(2, "BC-26002A"), portal(3, "BC-26003A"),
                                portal(4, "BC-26004A"), portal(5, "BC-26005A", qc="Released")]}
         # "is it on hold?" of every batch either system shows held, answered by FileMaker:
         # released, cancelled there or no FileMaker batch at all is a key of its own
         asked = {c.identifier: c.facts[0] for c in lk.batch_on_hold(w)}
+        unmade = {code: asked.pop(code)["id"] for code in list(asked) if code >= "BC-261"}
+        self.assertEqual(unmade, {f"BC-261{i:02d}A": "not_on_hold" for i in range(10)})
         self.assertEqual({code: (f["kind"], f["id"]) for code, f in asked.items()}, {
             "BC-26001A": ("claim", "on_hold"), "BC-26002A": ("claim", "released"),
             "BC-26003A": ("claim", "cancelled"), "BC-26004A": ("absent", "no_filemaker_batch"),
@@ -642,7 +648,7 @@ class KeyTests(unittest.TestCase):
         quantities FileMaker cannot vouch for, is never late; a released BC order outranks
         a Portal DRAFT."""
         def late(status="Pending", expected=None, received="0", fm_status="Pending",
-                 fm_qty="10", qc=None, bc_status="Draft", fully=True):
+                 fm_qty="10", item="Pending", qc=None, bc_status="Draft", fully=True):
             w = world()
             w.portal = {**w.portal, lk.PO: [mirror(lk.PO, {
                 "id": "p1", "po_number": "PO#7001", "status": status,
@@ -651,7 +657,7 @@ class KeyTests(unittest.TestCase):
                 lk.FM_PO: [mirror(lk.FM_PO, {"id": 70, "ponumber": "PO#7001",
                                              "status": fm_status})],
                 lk.FM_PO_ITEM: [mirror(lk.FM_PO_ITEM, {"id": 701, "idpogen": 70,
-                                                       "qty": fm_qty})],
+                                                       "qty": fm_qty, "status": item})],
                 lk.RAW_LOT: [mirror(lk.RAW_LOT, {"id": 9, "idpogenitem": 701, "sumqty": qc})]
                 if qc else []}
             order = bc("purchaseOrders", {"id": "o1", "number": "PO100700", "status": bc_status,
@@ -665,13 +671,34 @@ class KeyTests(unittest.TestCase):
         self.assertEqual(late(expected="2026-09-15"), 1)        # its own date: late
         self.assertEqual(late(expected="2026-09-15", fm_status="Complete"), 0)   # rule 2
         self.assertEqual(late(expected="2026-09-15", fm_qty="12"), 0)            # rule 2
-        self.assertEqual(late(expected="2026-09-15", qc="10"), 0)   # FileMaker received all
+        # FileMaker's item received in full (its own item state): closed, never late; the
+        # QC log's sumqty, a running total across the log, decides nothing
+        self.assertEqual(late(expected="2026-09-15", item="Complete"), 0)
+        self.assertEqual(late(expected="2026-09-15", item="B.Order"), 1)
+        self.assertEqual(late(expected="2026-09-15", qc="35847482.0"), 1)
         # a Draft received against is real activity:
         # its open line keeps the order open and its date dates it
         self.assertEqual(late(received="4"), 1)
         self.assertEqual(late(expected="2026-09-15", received="4"), 1)
         self.assertEqual(late(expected="2026-09-15", received="10"), 0)   # received in full
         self.assertEqual(late(status="DRAFT", bc_status="Open", fully=False), 1)  # rule 3
+
+    def test_a_vendors_open_orders_leave_out_one_received_in_another_copy(self):
+        """Truth rules 2026-11-06: an order open in BC but received in its FileMaker copy
+        is no open order; a Draft is not issued; the rest are listed."""
+        w = world()
+        w.portal = {**w.portal, lk.PO: [mirror(lk.PO, {
+            "id": "p1", "po_number": "PO#7001", "status": "B.Order",
+            "custom_fields": {"fmGeneratedPoId": 70, "renumberedTo": "PO100701"}})],
+            lk.FM_PO: [mirror(lk.FM_PO, {"id": 70, "ponumber": "PO#7001", "status": "B.Order"})],
+            lk.FM_PO_ITEM: [mirror(lk.FM_PO_ITEM, {"id": 701, "idpogen": 70, "qty": "10",
+                                                   "status": "Complete"})]}
+        orders = [bc("purchaseOrders", {"id": f"o{n}", "number": f"PO10070{n}", "status": word,
+                                        "fullyReceived": False, "vendorName": "Acme"}, 40 + n)
+                  for n, word in ((1, "Open"), (2, "Open"), (3, "Open"), (4, "Draft"))]
+        w.bc = [*w.bc, *orders]
+        (found,) = [c for c in lk.vendor_open_pos(w) if c.identifier == "Acme"]
+        self.assertEqual(found.facts[0]["records"], [o["citation"] for o in orders[1:3]])
 
     def test_changed_since_yesterday_at_one_ten_and_sixty_records(self):
         self.assertEqual(lk.po_changed(world(0))[0].facts[0]["kind"], "absent")

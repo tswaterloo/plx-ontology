@@ -22,6 +22,16 @@ read at a time), so ``scanned`` is the whole store; each says ``complete``, ``tr
   quantity, requested-by date), ONE gap per pair and field naming both values and who
   governs; each side's citations are their own group, so a reader of one side never
   sees it. A BC side that governs receipt state also joins the late gap's evidence;
+* ``late_customer_order``: a customer order open past its own required date, ONE gap per
+  order across its records (settled ``SalesOrder`` identity links only): open when every
+  record stating a status is open by its own system's word, closed when any record is
+  closed (a closed word, BC fully shipped or kept only as posted documents) or a settled
+  shipment or invoice is linked to any; an unknown word, no status, a lead twin that is
+  closed or a lead shipment is ``not_evaluated``, never open. Its required date must be a
+  requested one (``operating.source_defaults``: never a bulk default of its source nor the
+  record's own creation or order day; such an order is undated, never late). Cited by the
+  date and each status value (each its own group); it rests on no closure being recorded,
+  so it is a ``REQUIRES_GRANT`` rule (every audience of orders, shipments and invoices);
 * ``po_receipt_quantity_mismatch``: the received quantity of a PO line (its receipt
   lines through settled ``receives_line`` links, one quantity per receipt line identity)
   above the ordered one, or below it on an order recorded as fully received (closed
@@ -115,6 +125,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import threading
@@ -125,7 +136,9 @@ from ontology import store as ostore
 from ontology.units import unit_token
 
 from . import po_status
+from . import test_records as test_records_rule
 from . import proactive_gaps as pg
+from . import sales_order_status as so_status
 from . import suspect_money
 
 SCHEMA = "plx-proactive-engine/v1"
@@ -160,7 +173,7 @@ PRIORITY = ("high", "medium", "low")
 # An open purchase order with no requested-by date: never late, its own Home group.
 UNDATED_KIND = "undated_po"
 LATE_RULE = "late_or_unconfirmed_po"   # the rule Home's late count is read from
-DETECTORS = ("late_or_unconfirmed_po",
+DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # the store-only proactive events (``operating.proactive_events``)
              "eta_slipped", "lot_attention", "accepted_quote_no_order",
              "invoice_quantity_mismatch",
@@ -191,7 +204,8 @@ SET_BASED = frozenset(DETECTORS) - CALLING
 STATES = ("open", "acknowledged", "resolved")
 # Detectors whose claim rests on what sources do not hold (an absence), so on the run
 # principal's grant: their gaps show only to a reader granted every recorded audience.
-REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor_no_reply"})
+REQUIRES_GRANT = frozenset({"orders_at_risk", "accepted_quote_no_order", "vendor_no_reply",
+                            "late_customer_order"})
 # Gap kinds whose wording sums over the whole run (money at stake): an open one is reworded
 # only by a ``complete`` run of its detector.
 WHOLE_ONLY = frozenset({"po_impact_margin"})
@@ -498,15 +512,17 @@ def _day(raw: Any) -> date | None:
 def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *,
          summary: str, missing: str, why: str, priority: str, about: tuple[str, str],
          groups: Sequence[Sequence[Cite]], extra: Sequence[Cite] = (),
-         days_late: int | None = None, event: Mapping[str, Any] | None = None
-         ) -> dict[str, Any] | None:
+         days_late: int | None = None, event: Mapping[str, Any] | None = None,
+         **facts: Any) -> dict[str, Any] | None:
     """``days_late``: the days a purchase order open by the one status definition is past its
     requested-by date (None: not late; ``late_order``'s line-level lateness is another gap
     kind and never carries it); the inbox lists every late purchase order first, longest late
     first, whatever its kind's priority. ``event``: the facts the briefing ranks by
     (``days``: days between two cited dates; ``amount``: a cited figure, shown only with
     every group or, with a ``handle``, only to a reader who may open that citation;
-    ``orders_affected``: a count of cited records), kept beside the follow-up."""
+    ``orders_affected``: a count of cited records), kept beside the follow-up. ``facts``:
+    enum words the pages read (``confirmation``: ``none_found``, ``found_unverified`` or
+    ``confirmed``; ``due_basis``: where the due date comes from)."""
     groups = [list(group) for group in groups]
     if not groups or not all(groups):
         return None   # a claim with an uncited part is not raised
@@ -521,7 +537,9 @@ def _gap(kind: str, detector: str, object_id: str, object_type: str, key: str, *
                           "why": why, "who_can_answer": who, "state": "unknown",
                           "priority": priority,
                           **({"days_late": days_late} if days_late is not None else {}),
-                          **({"event": dict(event)} if event else {})}}
+                          **({"event": dict(event)} if event else {}),
+                          # enums only (``confirmation``, ``due_basis``): never a value
+                          **{k: v for k, v in facts.items() if v is not None}}}
 
 
 Part = tuple  # (object_id, canonical markings): one record a skip's cause reads
@@ -601,9 +619,12 @@ def _run_link_types() -> list[str]:
                             spec["party"][1] if (spec.get("party") or ("",))[0] == "link"
                             else None) if name]
     return list(dict.fromkeys([
-        *po_status.TWIN_LINKS, po_status.LINE_OF, po_status.RECEIVES_LINE,
-        po_status.CONFIRMS, *RECEIPT_LINKS, *_identity_link_types(), *declared_qc_links(),
-        pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *ev.LINK_TYPES,
+        *po_status.TWIN_LINKS, po_status.LINE_OF, po_status.RECEIPT_RECEIVES_LINE,
+        po_status.QC_RECEIVES_LINE, po_status.RECEIVED_LOT, *po_status.CONFIRMATION_LINKS,
+        *TEST_ORDER_LINKS, *TEST_TWIN_LINKS, *RECEIPT_LINKS, *_identity_link_types(),
+        *declared_qc_links(),
+        pg.LINE_LINK, pg.SUPPLIER_LINK, CONFIRMATION_LINK, *so_status.twin_links(),
+        *so_status.FULFILLED_LINKS, *ev.LINK_TYPES,
         *ic.LINK_TYPES, ic.LINE_SELLS, *ic.LEAD_ROUTE_TYPES, *amounts]))
 
 
@@ -668,8 +689,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
         members = po.members
         order = root.get(members[0], members[0])
         # BC's record governs; among others the least record id, so the choice is pinned
-        rank = [0 if any(po_status.system_of(m) == po_status.RECEIPT_AUTHORITY
-                         for m in members) else 1, min(members)]
+        # the copy that holds the number the supplier knows (a FileMaker-era order's
+        # FileMaker PO number) is shown first, then a BC copy, then the least record id
+        rank = [0 if any(src.props(m).get("fm_po_number") for m in members) else
+                1 if any(po_status.system_of(m) == po_status.POSTED_COPY for m in members)
+                else 2, min(members)]
 
         def order_gap(gap: Any, _order: str = order, _rank: list = rank) -> None:
             if gap is not None:
@@ -691,7 +715,11 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             if not records or (conflict["field"], records) in disagreeing:
                 continue   # the same disagreement read again from the other record's side
             disagreeing.add((conflict["field"], records))
-            gaps.append(_systems_disagree(name, conflict, records, [*marks, *po.marks]))
+            # an open copy of an order another copy records received is a reconciliation
+            # note (a receipt in any system closes the order), never a delivery risk
+            gaps.append((_receipt_reconciliation if conflict.get("reconcile")
+                         else _systems_disagree)(name, conflict, records,
+                                                 [*marks, *po.marks]))
 
         def rows(prop: str) -> list[dict[str, Any]]:
             return [r for m in members for r in src.props(m).get(prop, [])]
@@ -723,10 +751,13 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             status_cites = [[cite] for cite in _cites(po.evidence, *marks, *po.marks)]
             undated_reads[order].append((order, rank, _gap(
                 UNDATED_KIND, name, rep, "PurchaseOrder", "undated",
-                summary="An open purchase order has no due date recorded",
+                summary="An open purchase order has no due date recorded"
+                        + (" (its only dates are import or record-creation defaults)"
+                           if po.need is not None and po.need.defaulted else ""),
                 missing="What is the requested-by date of this open purchase order?",
-                why="The order is open, but no requested-by date is recorded on it or "
-                    "on any released system record of it, so it is never counted late.",
+                why="The order is open, but no requested-by date, supplier-confirmed "
+                    "date or lead time is recorded on it or on any released system record "
+                    "of it, so it is never counted late.",
                 priority="low", about=("PurchaseOrder", "expected_date"),
                 groups=status_cites,
                 extra=_cites(rows("po_number"), *marks)) if status_cites else None))
@@ -736,44 +767,83 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
             skip("need_date_disputed")
             continue
         need = po.need.hi
-        need_cites = _cites(po.need.governing, *marks)
+        need_cites = _cites(po.need.governing, *marks, *po.need.marks)
+        basis = po.need.basis
         # every status record and line quantity the verdict rests on is its own evidence:
         # a reader who may not open one of them sees no gap (none is an alternative)
         status_cites = [[cite] for cite in _cites(po.evidence, *marks, *po.marks)] or [[]]
-        number = _cites(rows("po_number"), *marks) + _cites(
-            [r for t in po.date_twins for r in src.props(t).get("po_number", [])],
-            *marks, *po.marks)
-        links = src.confirm_links(members)
+        number = _cites(rows("po_number") + rows("fm_po_number"), *marks) + _cites(
+            [r for t in po.date_twins for p in ("po_number", "fm_po_number")
+             for r in src.props(t).get(p, [])], *marks, *po.marks)
+        # confirmations linked to ANY copy of the order (its twins in every system)
+        links = src.confirm_links([*members, *(t for t in po.date_twins if t not in members)])
         linked = [(link["from_object"], _markings(link["markings"], *marks)) for link in links]
+        settled = [link for link in links if link["tier"] in CONFIRMING]
         late_now = verdict == po_status.LATE
         if late_now or not links:   # decided without a confirmation (none is at risk)
             counts["evaluated"] += count("evaluated")
             counts["late"] += count("late") if late_now else 0
+        if late_now and links and not settled:
+            # a confirmation is linked, but only as an unverified lead: never "none"
+            counts["confirmation_unverified"] += count("confirmation_unverified")
+            found = _link_cites(src, links)
+            order_gap(_gap(
+                "late_po", name, rep, "PurchaseOrder", "overdue",
+                summary=_late_summary(basis, need),
+                missing=f"When will the purchase order due {need.isoformat()} be received?",
+                why="The order is still open after its due date.",
+                priority="medium", about=("PurchaseOrder", "expected_date"),
+                groups=[need_cites, *status_cites], extra=number + found,
+                days_late=(as_of - need).days,
+                # "found, unverified" only to a reader who may open one of the found
+                # confirmations (``_shown``); never "none"
+                confirmation="found_unverified", confirmation_cites=[c[0] for c in found],
+                due_basis=basis))
+            continue
+        reused = [] if links else src.reused_links(
+            [*members, *(t for t in po.date_twins if t not in members)])
+        if late_now and reused:
+            # only leads on a number another order also holds: evidence that cannot be
+            # tied to this order, so "needs check", never "none found"
+            found = _link_cites(src, reused)
+            counts["confirmation_needs_check"] += count("confirmation_needs_check")
+            order_gap(_gap(
+                "late_po", name, rep, "PurchaseOrder", "overdue",
+                summary=_late_summary(basis, need),
+                missing=f"When will the purchase order due {need.isoformat()} be received?",
+                why="The order is still open after its due date. A document that may be its "
+                    "supplier's confirmation names a number another order also holds.",
+                priority="medium", about=("PurchaseOrder", "expected_date"),
+                groups=[need_cites, *status_cites], extra=number + found,
+                days_late=(as_of - need).days, confirmation=po_status.NEEDS_CHECK,
+                confirmation_cites=[c[0] for c in found], due_basis=basis))
+            continue
         if not links:
             if need <= as_of:
                 counts["unconfirmed"] += count("unconfirmed")
                 order_gap(_gap(
                     "unconfirmed_po", name, rep, "PurchaseOrder", "unconfirmed",
-                    summary=f"An open purchase order needed by {need.isoformat()} has no "
-                            "supplier confirmation",
-                    missing=f"Has the supplier confirmed the purchase order needed by "
+                    summary=_unconfirmed_summary(basis, need),
+                    missing=f"Has the supplier confirmed the purchase order due "
                             f"{need.isoformat()}?",
-                    why="The order is open, its need date has come and no supplier "
-                        "confirmation is linked to it in the store.",
+                    why="The order is open, its due date has come and no supplier "
+                        "confirmation is linked to any copy of it in the store.",
                     priority="high", about=("PurchaseOrder", "expected_date"),
                     groups=[need_cites, *status_cites], extra=number,
-                    days_late=(as_of - need).days if late_now else None))
+                    days_late=(as_of - need).days if late_now else None,
+                    confirmation="none_found", due_basis=basis))
             continue
         if late_now:   # late on the requested-by date alone, whatever was confirmed
             order_gap(_gap(
                 "late_po", name, rep, "PurchaseOrder", "overdue",
-                summary=f"An open purchase order is past its need date {need.isoformat()}",
-                missing=f"When will the purchase order needed by {need.isoformat()} be "
+                summary=_late_summary(basis, need),
+                missing=f"When will the purchase order due {need.isoformat()} be "
                         "received?",
-                why="The order is still open after its need date.",
+                why="The order is still open after its due date.",
                 priority="medium", about=("PurchaseOrder", "expected_date"),
-                groups=[need_cites, *status_cites], extra=number,
-                days_late=(as_of - need).days))
+                groups=[need_cites, *status_cites], extra=number + _link_cites(src, settled),
+                days_late=(as_of - need).days, confirmation="confirmed",
+                confirmation_cites=[c[0] for c in _link_cites(src, settled)], due_basis=basis))
             continue
         if any(link["tier"] not in CONFIRMING for link in links):
             skip("confirmation_unsettled", *linked)
@@ -837,6 +907,64 @@ def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     return result
 
 
+# where an order's due date comes from (``po_status.Need.basis``), as a gap words it
+_DUE_WORDS = {"requested": "its need date",
+              "vendor_eta": "the supplier's confirmed date",
+              "lead_time": "its lead-time due date"}
+
+
+def _late_summary(basis: str, need: date) -> str:
+    return f"An open purchase order is past {_DUE_WORDS[basis]} {need.isoformat()}"
+
+
+def _unconfirmed_summary(basis: str, need: date) -> str:
+    due = ("needed by" if basis == "requested" else "due by its lead time on"
+           if basis == "lead_time" else "due by")
+    return f"An open purchase order {due} {need.isoformat()} has no supplier confirmation"
+
+
+def _receipt_reconciliation(name: str, conflict: Mapping[str, Any], records: Iterable[str],
+                            marks: Sequence[str]) -> dict[str, Any] | None:
+    """A ``receipt_reconciliation`` note: one copy of a purchase order records the goods
+    received while another copy (a BC order, say) still shows them outstanding. A receipt
+    in any system closes the order, so this is never a late or at-risk claim: the open
+    copy needs reconciling. Each side's citations are their own group."""
+    field, sides = conflict["field"], conflict["sides"]
+    received = conflict.get("governs")
+    groups = [_cites(side["items"], *marks, *conflict.get("marks", ())) for side in sides]
+    open_side = next((side for side in sides if side["system"] != received), sides[-1])
+    subject = (open_side["records"] or [min(records)])[0]
+    unit = f" {conflict['unit']}" if conflict.get("unit") else ""
+
+    def said(side: Mapping[str, Any]) -> str:
+        value = side["value"]
+        return (_STATE_WORDS.get(value, value) if field == "receipt_state"
+                else f"{value}{unit}")
+    return _gap(
+        "receipt_reconciliation", name, subject, "PurchaseOrder",
+        f"{field}|{'|'.join(sorted(records))}",
+        summary=(f"A received purchase order still shows {_FIELD_WORDS[field]} differently "
+                 "in another copy: " + "; ".join(
+                     f"{side['system']} says {said(side)}" for side in sides)
+                 + (f" ({received} records the goods received; the other copy needs "
+                    "reconciling)" if received else "")),
+        missing=f"Can the open copy of this received purchase order be closed or "
+                f"corrected ({_FIELD_WORDS[field]})?",
+        why="A receipt in any system closes the order; the copy that still shows it open "
+            "is a bookkeeping difference, not a late delivery.",
+        priority="low",
+        about=("PurchaseOrder", "status"), groups=groups)
+
+
+def _link_cites(src: po_status.StoreSource, links: Sequence[Mapping[str, Any]]
+                ) -> list[Cite]:
+    """The confirming documents' own records, each cited through its link's markings."""
+    out: list[Cite] = []
+    for link in links:
+        out += _cites(src.documents.get(link["from_object"], []), link["markings"])
+    return list({c[0]: c for c in out}.values())
+
+
 _FIELD_WORDS = {"receipt_state": "whether it is fully received",
                 "received_quantity": "the quantity received",
                 "expected_date": "the requested-by date"}
@@ -859,8 +987,9 @@ def _systems_disagree(name: str, conflict: Mapping[str, Any], records: Iterable[
         return (_STATE_WORDS.get(value, value) if field == "receipt_state"
                 else f"{value}{unit}")
     groups = [_cites(side["items"], *marks, *conflict.get("marks", ())) for side in sides]
-    rule = ("BC lines govern receipt state" if field != "expected_date" and governs
-            else "the declared date precedence governs" if governs else "no system governs")
+    rule = ("the declared date precedence governs" if field == "expected_date" and governs
+            else f"{governs} records the goods received" if governs
+            else "no system governs")
     subject = next((side["records"][0] for side in sides
                     if side["system"] == governs and side["records"]), min(records))
     return _gap(
@@ -876,6 +1005,150 @@ def _systems_disagree(name: str, conflict: Mapping[str, Any], records: Iterable[
         priority="medium",
         about=("PurchaseOrder", "expected_date" if field == "expected_date" else "status"),
         groups=groups)
+
+
+# --------------------------------------------------------------------------- customer orders
+
+LATE_SO = "late_customer_order"
+SO_NUMBERS = ("order_number", "fm_erp_code")
+SO_PROPS = (*so_status.READ_PROPS, so_status.DATE_PROP, *so_status.OWN_DAYS, *SO_NUMBERS)
+# the records whose absence the verdict rests on (a shipment or invoice not linked, a
+# closing status not held): a reader must be granted every audience they sit in
+SO_ABSENCE_TYPES = (so_status.TYPE, "Shipment", "SalesInvoice")
+
+
+def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
+    """A customer order open past its own required date by the one sales-order definition
+    (``operating.sales_order_status``): ONE gap per order across its records, joined by
+    settled identity links only. A lead twin that is closed, or a lead shipment or invoice,
+    leaves it unjudged; an unknown status is ``not_evaluated``, never open; an order whose
+    every required date is a source default is undated, never late. Late when its
+    requested date is before the business day ``as_of``: cited by the date and by each
+    status value it is open by (each its own group), and shown only to a reader granted
+    every audience the absence of a closure rests on (``REQUIRES_GRANT``)."""
+    name = LATE_SO
+    found = st.values((so_status.TYPE,), SO_PROPS)
+    binding = {oid: po_status.binding_of(oid) for oid in found}
+    twins = st.links(so_status.twin_links())
+    settled = [l for l in twins if l["tier"] in SETTLED
+               and l["from_object"] in found and l["to_object"] in found]
+    root = _clusters(((l["from_object"], l["to_object"]) for l in settled), found)
+    members: dict[str, list[str]] = defaultdict(list)
+    for oid in sorted(found):
+        members[root[oid]].append(oid)
+    marks: dict[str, list[str]] = defaultdict(list)
+    for link in settled:
+        marks[root[link["from_object"]]].append(link["markings"])
+    fulfilled: dict[str, bool] = {}   # record -> a settled (True) or lead shipment/invoice
+    for link in st.links(so_status.FULFILLED_LINKS):
+        if link["to_object"] in found:
+            fulfilled[link["to_object"]] = fulfilled.get(link["to_object"], False) \
+                or link["tier"] in SETTLED
+    lead_twins: dict[str, set[tuple[str, str]]] = defaultdict(set)   # order -> (twin, link)
+    for link in twins:
+        ends = (link["from_object"], link["to_object"])
+        if link["tier"] not in SETTLED and all(e in found for e in ends) \
+                and root[ends[0]] != root[ends[1]]:
+            lead_twins[root[ends[0]]].add((ends[1], link["markings"]))
+            lead_twins[root[ends[1]]].add((ends[0], link["markings"]))
+    defaults = so_status.date_defaults(_grouped(
+        (binding[oid], _day(r.get("value"))) for oid, entry in found.items()
+        for r in entry["props"].get(so_status.DATE_PROP, ())))
+    state = {oid: so_status.record_status(entry["props"], binding=binding[oid],
+                                          fulfilled=fulfilled.get(oid, False))
+             for oid, entry in found.items()}
+    requires = sorted({r[0] for r in st.conn.execute(
+        "SELECT DISTINCT audience_key FROM objects WHERE object_type IN "
+        "(SELECT value FROM json_each(?))", (json.dumps(list(SO_ABSENCE_TYPES)),))}) or \
+        ["sales_order:none_stored"]
+    skipped = _Skips()
+    classes: Counter = Counter()
+    counts: Counter = Counter()
+    gaps = []
+    for top, group in sorted(members.items()):
+        link_marks = marks.get(top, [])
+
+        def rows(*names: str) -> list[dict[str, Any]]:
+            return [r for m in group for n in names for r in found[m]["props"].get(n, ())]
+        read: list[Part] = [(m, _markings(*link_marks)) for m in group] + _parts(
+            rows(*so_status.READ_PROPS, so_status.DATE_PROP), *link_marks)
+        order = so_status.order_status(state[m] for m in group)
+        if order.cls == so_status.CLOSED:
+            classes["closed"] += 1
+            continue
+        if any(m in fulfilled for m in group):   # a lead shipment or invoice only
+            classes["unknown"] += 1
+            skipped.note("fulfilment_unsettled", group, read)
+            continue
+        leads = sorted(lead_twins.get(top, ()))
+        if any(state[t].cls == so_status.CLOSED or t in fulfilled for t, _m in leads):
+            # a lead (a number match) may be this order's closed record: never judged open
+            classes["unknown"] += 1
+            skipped.note("closed_in_unsettled_twin", group,
+                         [*read, *((t, _markings(m, *link_marks)) for t, m in leads)])
+            continue
+        if order.cls == so_status.UNKNOWN:
+            classes["unknown"] += 1
+            skipped.note(order.reason, group, read)
+            continue
+        if order.cls == so_status.DRAFT:
+            classes["draft"] += 1
+            continue
+        classes["open"] += 1
+        wanted = so_status.requested_date([
+            (found[m]["props"].get(so_status.DATE_PROP, ()),
+             [r.get("value") for n in so_status.OWN_DAYS for r in found[m]["props"].get(n, ())],
+             defaults.get(binding[m], ())) for m in group])
+        if wanted.day is None:
+            if wanted.reason != "required_date_disputed":
+                counts["undated"] += 1
+            skipped.note(wanted.reason, group, read)
+            continue
+        required = wanted.day
+        counts["evaluated"] += 1
+        if required >= as_of:
+            continue
+        counts["late"] += 1
+        late = (as_of - required).days
+        by_system: dict[str, set[str]] = defaultdict(set)
+        for row in order.open_by:
+            by_system[so_status.SYSTEM_OF[row["property"]]].add(str(row["value"]).strip())
+        said = "; ".join(f"{system}: {', '.join(sorted(words))}"
+                         for system, words in sorted(by_system.items()))
+        made = _gap(
+            LATE_SO, name, min(r["object_id"] for r in wanted.governing), so_status.TYPE,
+            "overdue",
+            summary=f"A customer order is open {late} day{'' if late == 1 else 's'} past its "
+                    f"required date {required.isoformat()} (open in {said})",
+            missing=f"Has the customer order required by {required.isoformat()} shipped, and "
+                    "if not, what date can the customer now expect?",
+            why="Every record of the order that states a status says it is open, none is "
+                "closed, shipped or invoiced, and no shipment or invoice is linked to it, "
+                "while its required date has passed.",
+            priority="medium", about=(so_status.TYPE, so_status.DATE_PROP),
+            groups=[_cites(wanted.governing, *link_marks),
+                    *[[cite] for cite in _cites(order.open_by, *link_marks)]],
+            extra=_cites(rows(*SO_NUMBERS), *link_marks),
+            event={"days": late, "required": required.isoformat()})
+        if made is not None:
+            made["requires"] = requires
+        gaps.append(made)
+    result = _result(gaps, not_evaluated=skipped)
+    # every order is closed, a draft, judged on its date, or counted unjudged by reason
+    judged = classes["closed"] + classes["draft"] + counts["evaluated"]
+    result["coverage"] = _coverage(len(members), judged, dict(skipped), unit="sales_orders")
+    result["counts"] = {"orders": len(members),
+                        "classes": {c: classes.get(c, 0)
+                                    for c in ("open", "closed", "draft", "unknown")},
+                        **{k: counts.get(k, 0) for k in ("evaluated", "late", "undated")}}
+    return result
+
+
+def _grouped(pairs: Iterable[tuple[Any, Any]]) -> dict[Any, list[Any]]:
+    out: dict[Any, list[Any]] = defaultdict(list)
+    for key, value in pairs:
+        out[key].append(value)
+    return out
 
 
 def _quantity(rows: Sequence[Mapping[str, Any]]) -> tuple[Decimal, str] | None | bool:
@@ -1141,6 +1414,10 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[(root[row["object_id"]], row["object_type"], row["property"])].append(dict(row))
+    disputed = {top: {m["object_id"] for m in members}
+                for (top, _t, _p), members in grouped.items()
+                if len({m["l1_handle"] for m in members}) >= 2}
+    closed = _closed_clusters(st, disputed, {row["object_type"] for row in rows})
     gaps = []
     skipped: Counter[str] = Counter()
     for (top, object_type, prop), members in sorted(grouped.items()):
@@ -1152,7 +1429,11 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
             {"value_type": "quantity", "value": m["value"], "unit": unit_token(m["unit"]),
              "quantity_role": m["quantity_role"], "citation": {"l1_handle": m["l1_handle"]}}
             for m in members]}
-        for item in pg._conflicting_quantities([conflict], skipped):
+        items = pg._conflicting_quantities([conflict], skipped)
+        if items and top in closed:
+            skipped["record_closed"] += len(items)
+            continue   # a finished or cancelled record: nothing left to act on
+        for item in items:
             gaps.append(_gap(
                 item["kind"], "conflicting_quantity", top, object_type, item["key"],
                 summary=item["summary"], missing=item["missing"], why=item["why"],
@@ -1160,6 +1441,19 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
                 groups=[_cites((by_handle[h] for h in group), *marks.get(top, []))
                         for group in item["requires"]]))
     return _result(gaps, not_evaluated=skipped)
+
+
+def _closed_clusters(st: _Store, disputed: Mapping[str, set[str]],
+                     types: Iterable[str]) -> set[str]:
+    """The clusters (of ``disputed``: root -> its objects holding the disputed values) any
+    of whose records' own ``status`` says closed (``proactive_gaps.status_closed``)."""
+    owner = {object_id: top for top, members in disputed.items() for object_id in members}
+    if not owner:
+        return set()
+    found = st.values(sorted(types), ("status",), objects=sorted(owner))
+    return {owner[object_id] for object_id, entry in found.items()
+            if any(pg.status_closed(row["value"])
+                   for row in entry["props"].get("status", []))}
 
 
 def _card_of(object_id: str, object_type: str, props: Mapping[str, Any]) -> dict[str, Any]:
@@ -1329,6 +1623,7 @@ def _worded(facts: Mapping[str, Any], roles: Sequence[str],
                                                     *line["item_cite"])]
     every += [f[1] for f in (facts["number"], facts["supplier"]) if f is not None]
     every += [c for _day_text, c in (*facts["confirmed"], *facts["corroborated"])]
+    every += [facts["due"][2]] if facts.get("due") else []
     shown = {c[0] for c in every} if readable is None else readable(every)
     opens = lambda cites: bool(cites) and all(c[0] in shown for c in cites)  # noqa: E731
     lines = []
@@ -1361,6 +1656,8 @@ def _worded(facts: Mapping[str, Any], roles: Sequence[str],
         told["internal_notes"] = [{"note": "confirmed_date:corroborated_only",
                                    "value": corroborated[0][0],
                                    "citation": corroborated[0][1][0]}]
+    due = facts.get("due")
+    told["due"] = (due[0], due[1], due[2][0]) if due is not None and opens([due[2]]) else None
     told["unresolved"] = unresolved
     return late_order_draft(lines, told, roles)
 
@@ -1407,10 +1704,16 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
     else:
         order_text, subject = ("our purchase order (its number is not readable here)",
                                "Please confirm the delivery date for our purchase order")
+    due = facts.get("due")
     if confirmed is not None:
         fact("confirmed_delivery_date", confirmed[0], confirmed[1])
         basis = (f"Your confirmation gives the delivery date {confirmed[0]}, and these lines "
                  "are not fully received:\n")
+    elif due is not None:
+        fact("due_date", due[0], due[2], basis=due[1])
+        words = {"requested": "our requested date", "vendor_eta": "your confirmed date",
+                 "lead_time": "the order's lead time, due"}[due[1]]
+        basis = f"These lines are past {words} {due[0]} and not fully received:\n"
     else:
         basis = "These lines are past our expected date and not fully received:\n"
     head = (f"{DRAFT_LABEL}\nTo: {to_text}\nSubject: {subject}\n\nHello,\n\n"
@@ -1426,7 +1729,7 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
             fact("line_item", item[0], item[1], line_id=line_id)
         name = item[0] if item else "a line (the record names no item)"
         when = ""
-        if confirmed is None:
+        if confirmed is None and due is None:
             day = line["day"].isoformat()
             fact("expected_receipt", day, line["date_handle"], line_id=line_id)
             when = f"our expected date {day}, "
@@ -1447,10 +1750,23 @@ def late_order_draft(lines: Sequence[Mapping[str, Any]], facts: Mapping[str, Any
     return {"label": DRAFT_LABEL, "status": DRAFT_STATUS, "sent": False, "to": to,
             "subject": pg._clip(subject, 200), "text": pg._clip(head + body + tail,
                                                                  MAX_DRAFT_TEXT),
-            "date_basis": "confirmed" if confirmed is not None else "expected",
+            "date_basis": "confirmed" if confirmed is not None else
+            ("due" if due is not None else "expected"),
             "internal_notes": [dict(n) for n in facts.get("internal_notes") or ()],
             "facts": listed, "citations": citations, "lines_late": len(ordered),
             "lines_listed": shown, "unresolved": list(facts.get("unresolved") or ())}
+
+
+def _vendor_facing(src: po_status.StoreSource, po: po_status.PoRead,
+                   facts: dict[str, Any]) -> None:
+    """The order number the supplier knows (the number on the document we sent: a
+    FileMaker-era order's FileMaker PO number, held by its FileMaker and Portal copies),
+    in place of a copy's own internal number, when exactly one is readable and cited."""
+    row = po_status.vendor_facing(
+        (r.get("value"), r) for m in (*po.members, *po.date_twins)
+        for r in src.props(m).get(po_status.VENDOR_NUMBER_PROP, []))
+    if row is not None:
+        facts["number"] = (str(row["value"]).strip(), _cites([row])[0])
 
 
 def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
@@ -1462,7 +1778,33 @@ def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
         return _result([], status="not_configured", reasons=["rule_not_declared"])
     orders, skipped = found
     gaps = []
+    src = _po_source(st)
     for facts in orders:
+        # the order is late only by the one purchase-order definition (a receipt in any
+        # copy closes it; a default date dates nothing): a late line of an order that
+        # rule does not call late is no claim (one rule, never a second copy of it)
+        po = po_status.read(src, facts["order"], as_of)
+        if po.verdict is None or po.verdict[0] != po_status.LATE:
+            skipped.note("order_not_late", [facts["order"]],
+                         [(facts["order"], _markings(*po.identity_marks))])
+            continue
+        _vendor_facing(src, po, facts)
+        by_lines = all(isinstance(r, Mapping) and r.get("property") == pg.LINE_DATE
+                       for r in po.need.governing)
+        due_cites = _cites(po.need.governing, *po.need.marks)
+        if due_cites and not by_lines:
+            # dated by its header or a labelled source: the draft states that one date
+            facts["due"] = (po.need.hi.isoformat(), po.need.basis, due_cites[0])
+        # a line whose own date is a default (``po_status``'s date provenance) is never
+        # stated as its expected date
+        defaulted = {(r.get("object_id"), str(r.get("value"))) for r in po.need.defaulted
+                     if isinstance(r, Mapping)}
+        facts["lines"] = [line for line in facts["lines"] if not by_lines
+                          or (line.get("line_id"), line["day"].isoformat()) not in defaulted]
+        if not facts["lines"]:
+            skipped.note("order_not_late", [facts["order"]],
+                         [(facts["order"], _markings(*po.identity_marks))])
+            continue
         rows = facts["lines"]
         groups = [[c for line in rows for c in line["evidence"][prop]]
                   for prop in (pg.LINE_DATE, pg.LINE_ORDERED, pg.LINE_RECEIVED)]
@@ -1471,14 +1813,15 @@ def _late_order(st: _Store, as_of: date) -> dict[str, Any]:
         extra += [c for _d, c in facts["confirmed"]]
         count = len(rows)
         noun = "line" if count == 1 else "lines"
-        latest = max(line["day"] for line in rows).isoformat()
+        due = po.need.hi.isoformat()
         gap = _gap(
             "late_order", name, facts["order"], facts["order_type"], "late_lines",
-            summary=f"{count} {noun} expected by {latest} not fully received",
-            missing="Confirm a new delivery date for the lines past their expected receipt",
-            why=pg._clip(f"{count} {noun} of the order had an expected receipt date before "
-                         f"the check date (latest {latest}) and a received quantity below "
-                         "the ordered quantity, as cited."),
+            summary=f"{count} {noun} not fully received past {_DUE_WORDS[po.need.basis]} "
+                    f"{due}",
+            missing="Confirm a new delivery date for the lines not yet received",
+            why=pg._clip(f"The order is past {_DUE_WORDS[po.need.basis]} {due} and {count} "
+                         f"{noun} still have a received quantity below the ordered "
+                         "quantity in every copy of the order, as cited."),
             priority="high", about=(pg.LINE_TYPE, pg.LINE_DATE), groups=groups,
             extra=list({c[0]: c for c in extra}.values()))
         if gap is not None:
@@ -1984,16 +2327,19 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
         found = orders()
         if found is None:
             return _result([], status="blocked", reasons=["order_status_not_read"])
+        src = _po_source(st)
         return ev.vendor_no_reply(st, as_of, people=people(), orders=found,
-                                  order_key=_ORDER, **common)
+                                  order_key=_ORDER, colliding=src.colliding.__contains__,
+                                  **common)
     return {
         "eta_slipped": lambda: ev.eta_slipped(
             st, as_of, settled=SETTLED, confirming=CONFIRMING,
-            caveat=functools.partial(_caveat_all, unless=_promise_audiences(st)), **common),
+            caveat=functools.partial(_caveat_all, unless=_promise_audiences(st)),
+            orders=_po_source(st), **common),
         "lot_attention": lambda: ev.lot_attention(st, as_of, **common),
         "accepted_quote_no_order": lambda: ev.accepted_quote_no_order(st, as_of, **common),
         "invoice_quantity_mismatch": lambda: ev.invoice_quantity_mismatch(
-            st, as_of, settled=SETTLED, **common),
+            st, as_of, settled=SETTLED, orders=_po_source(st), **common),
         "vendor_no_reply": no_reply,
         "vendor_terms_unapplied": lambda: ev.vendor_mail(
             st, as_of, call, family="F27", cache=(cache or {}).get("vendor_terms_unapplied"),
@@ -2402,6 +2748,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                                   order)
         steps: dict[str, Callable[[], dict[str, Any]]] = {
             "late_or_unconfirmed_po": lambda: _late_or_unconfirmed_po(st, as_of),
+            "late_customer_order": lambda: _late_customer_order(st, as_of),
             "po_receipt_quantity_mismatch": lambda: _po_receipt_quantity_mismatch(st, as_of),
             "receipt_without_qc": lambda: _receipt_without_qc(
                 st, as_of, declared_qc_links() if qc_link_types is None else qc_link_types),
@@ -2464,6 +2811,13 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
         _with_amounts(st, results)
+        # one test-record filter for every detector (never a page's own): a claim about a
+        # test, UAT, demo or proof record, a go-live first document or a carried-over old
+        # empty draft is not a business claim
+        try:
+            _drop_test_records(st, results, as_of)
+        except sqlite3.Error:
+            pass   # the store could not be read for it: the gaps stand as found
         # the bound is spent on the detectors and the amounts only: the run's record (scope,
         # digest) is always read whole, so a run cut short still folds what it found
         st.watch(None)
@@ -2487,6 +2841,140 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             conn.execute("ROLLBACK")
             raise
     return summary
+
+
+# The one test-record rule (``operating.test_records``): marks, names and numbers that say a
+# record is a test or placeholder. The engine reads the marks on the documents an order owns
+# (BC invoices, receipts, sales orders' external numbers, order lines) and the names on the
+# order and its party; a record carrying one, or the order it belongs to, is no claim.
+TEST_MARK = test_records_rule.TEST_MARK
+# Where a test mark is read: (record type, property).
+TEST_MARK_PROPS = (("PurchaseInvoice", "vendor_invoice_number"),
+                   ("PurchaseOrderLine", "description"),
+                   ("SalesOrder", "customer_po"),
+                   ("SalesInvoice", "external_document_number"),
+                   ("SalesInvoice", "customer_po"),
+                   ("Receipt", "vendor_invoice_number"))
+# An order's own numbers and names the name rules read, and the links to its party.
+TEST_NAME_PROPS = ("po_number", "fm_po_number", "order_number")
+TEST_PARTY_LINKS = ("PurchaseOrder.ordered_from", "SalesOrder.ordered_by")
+# The links from a marked record to the order it belongs to (each system's own stored
+# order reference) and the identity links joining an order's copies.
+TEST_ORDER_LINKS = (po_status.LINE_OF, "PurchaseInvoice.invoices", "PurchaseInvoice.names_order",
+                    "Receipt.receives")
+TEST_TWIN_LINKS = (*po_status.TWIN_LINKS, "SalesOrder.same_record_as")
+# A carried-over draft: an order whose Portal copy is a draft ordering nothing, last changed
+# more than this many days before the run's day (an old draft carried into BC at go-live).
+OLD_DRAFT_DAYS = 365
+# Number series: the letters (or leading digits) of a document number before its running
+# number, and the run's width (a BC series ``106001``: series ``106``, first ``001``).
+_SERIES = re.compile(r"^(.*?)(\d{3})$")
+
+
+def test_records(st: _Store, as_of: date) -> dict[str, str]:
+    """object id -> why it is a test or carried-over record (``mark``, ``go_live_first``,
+    ``old_empty_draft``), every copy of the order included: the one filter every detector
+    and every page shares (``_drop_test_records``; the operator API reads it too)."""
+    return st.memo(f"test_records:{as_of.isoformat()}", lambda: _find_test_records(st, as_of))
+
+
+def _find_test_records(st: _Store, as_of: date) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for kind, prop in TEST_MARK_PROPS:
+        for oid, entry in st.values((kind,), (prop,)).items():
+            if any(TEST_MARK.search(str(r["value"] or "")) for r in entry["props"].get(prop, [])):
+                found.setdefault(oid, "mark")
+    links = st.links(TEST_ORDER_LINKS, (*CONFIRMING, "stored_by_text_join"))
+    for link in links:
+        if link["from_object"] in found:
+            found.setdefault(link["to_object"], found[link["from_object"]])
+    pos = st.values(("PurchaseOrder",), ("po_number", "order_date", "status",
+                                          "portal_updated_at"))
+    # an order with a line that orders something (a line of nothing is an empty line)
+    line_links = st.links((po_status.LINE_OF,), CONFIRMING)
+    ordered = st.values(("PurchaseOrderLine",), ("ordered_quantity",), objects=sorted(
+        {l["from_object"] for l in line_links}))
+    lines = {l["to_object"] for l in line_links if any(
+        (pg._decimal(r["value"]) or 0) > 0
+        for r in (ordered.get(l["from_object"]) or {"props": {}})["props"].get(
+            "ordered_quantity", []))}
+    # go-live first documents: in each BC number series, the first number the series
+    # issued (its running number 001) and the documents of the series dated that same day
+    twins = st.links(TEST_TWIN_LINKS, (*SETTLED, "corroborated"))
+    twinned = {end for link in twins for end in (link["from_object"], link["to_object"])}
+    series: dict[str, list[tuple[str, int, date | None]]] = defaultdict(list)
+    for oid, entry in pos.items():
+        # a BC-native document (no other system holds a copy): a copy's number is the
+        # other system's series, whose first document is a real order
+        if not oid.startswith("PurchaseOrder:bc.") or oid in twinned:
+            continue
+        for row in entry["props"].get("po_number", []):
+            m = _SERIES.match(str(row["value"] or "").strip())
+            if m:
+                days = {_day(r["value"]) for r in entry["props"].get("order_date", [])}
+                series[m.group(1)].append((oid, int(m.group(2)),
+                                           next(iter(days)) if len(days) == 1 else None))
+    for members in series.values():
+        first = [m for m in members if m[1] == 1]
+        if len(first) == 1 and first[0][2] is not None:
+            for oid, _n, day in members:
+                if day == first[0][2]:
+                    found.setdefault(oid, "go_live_first")
+    # old empty drafts: a Portal draft ordering nothing, untouched for a year
+    for oid, entry in pos.items():
+        props = entry["props"]
+        kinds = {po_status.header_class(r["value"]) for r in props.get("status", [])}
+        changed = [_day(r["value"]) for r in props.get("portal_updated_at", [])]
+        if kinds == {po_status.NOT_ISSUED} and oid not in lines and changed and all(
+                d is not None and (as_of - d).days > OLD_DRAFT_DAYS for d in changed):
+            found.setdefault(oid, "old_empty_draft")
+    # names and numbers that say so (``operating.test_records.is_test``): an order's own
+    # number or name (a "(DO NOT USE)" marker, a TEST name, a UAT- prefixed number, the
+    # deployment's own list named by ``PLX_APP_TEST_RECORDS``), or its supplier's or
+    # customer's TEST name (a party's "(DO NOT USE)" marks a retired card, never a test)
+    named = test_records_rule.listed(None)
+    parties = {oid: [str(r["value"]) for r in entry["props"].get("name", []) if r["value"]]
+               for oid, entry in st.values(("Supplier", "Customer"), ("name",)).items()}
+    party_of: dict[str, list[str]] = defaultdict(list)
+    for link in st.links(TEST_PARTY_LINKS, (*SETTLED, "corroborated")):
+        party_of[link["from_object"]] += parties.get(link["to_object"], [])
+    orders = st.values(("PurchaseOrder", "SalesOrder"), TEST_NAME_PROPS)
+    for oid in sorted({*orders, *party_of}):
+        entry = orders.get(oid) or {"props": {}}
+        texts = [str(r["value"]) for p in TEST_NAME_PROPS for r in entry["props"].get(p, [])
+                 if r["value"]]
+        if test_records_rule.is_test(texts, named, party_of.get(oid, ())):
+            found.setdefault(oid, "name")
+    # every copy of a test order is the same test order
+    for _ in range(2):
+        for link in twins:
+            a, b = link["from_object"], link["to_object"]
+            if a in found and b not in found:
+                found[b] = found[a]
+            elif b in found and a not in found:
+                found[a] = found[b]
+    return found
+
+
+def _drop_test_records(st: _Store, results: dict[str, dict[str, Any]], as_of: date) -> None:
+    """Remove every gap about a test record (its subject, or the order it is about) from
+    every detector's result, counted ``test_record`` in its coverage."""
+    tests = test_records(st, as_of)
+    if not tests:
+        return
+    for result in results.values():
+        kept, dropped = [], 0
+        for gap in result.get("gaps") or ():
+            order = ((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key")
+            if gap.get("object_id") in tests or order in tests:
+                dropped += 1
+            else:
+                kept.append(gap)
+        if dropped:
+            result["gaps"] = kept
+            skipped = result.setdefault("not_evaluated", {})
+            if isinstance(skipped, dict):
+                skipped["test_record"] = skipped.get("test_record", 0) + dropped
 
 
 def _summary(results: Mapping[str, Mapping[str, Any]], gaps: Mapping[str, Mapping[str, Any]],
@@ -3039,6 +3527,9 @@ def _shown(row: Mapping[str, Any], citations: Sequence[str], state: str,
                 # that the total was not checked against them
                 amount["lines"] = {"verdict": "not_open"} if hidden else {
                     k: v for k, v in lines.items() if k in ("verdict", "lines_sum")}
+    shown_by = follow_up.pop("confirmation_cites", None)
+    if isinstance(shown_by, list) and not set(shown_by) & set(citations):
+        follow_up.pop("confirmation", None)   # a confirmation this reader may not open
     draft = follow_up.get("draft")
     if isinstance(draft, dict) and not set(draft.get("citations") or ()) <= set(citations):
         follow_up.pop("draft")   # a fact it states is not this reader's to open

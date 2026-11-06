@@ -37,6 +37,7 @@ tests); live-unverified until the verifier runs the app over the host's state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -76,6 +77,10 @@ MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
 ASK_TIMEOUT_SECONDS = 600
 ASK_WORKERS = 2
+# Page reads served at once: the owner thread and helpers, each its own runtime and thread
+# on one shared queue, so one slow read (a briefing read again after a visit, a cold
+# list) never holds up another reader's or another route's kept answer.
+READ_WORKERS = 3
 MAX_QUEUED_ASKS = 8
 READ_TIMEOUT_SECONDS = 60
 # A record page reads its trail and plans: the first page a reader opens after a start
@@ -112,6 +117,7 @@ WARM_RECENT_PAGES = 4
 READER_CACHE_SECONDS = 1200
 REWARM_SECONDS = 900
 READER_CACHE_KEPT = 512
+CARD_WORDS_KEPT = 20000
 # The readers warmed at start and again on each new projection generation: employees whose
 # last real session is unexpired and not revoked, at most KNOWN_READERS (object id, when
 # seen, that session's reference and expiry, and the record pages they opened last; no
@@ -540,6 +546,7 @@ class WorkspaceBackend(ActionsMixin):
         self.ask_served = ask_served
         self.today = today
         self.reads = Worker(objects_for)
+        self.read_helpers: list[Worker] = []   # more read workers on the same queue
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
         self.ask_workers: list[Worker] = []
@@ -549,6 +556,9 @@ class WorkspaceBackend(ActionsMixin):
         self._lock = threading.Lock()
         self._pool: Any = None
         self.page_cache = ReaderCache()   # pages, Home lists, briefings: per reader
+        # each record's label and supplier as a reader reads them (Home, the late list,
+        # the briefing and its cards name the same orders)
+        self.cards = ReaderCache(CARD_WORDS_KEPT)
         self.warmer: Optional[Worker] = None   # the warm worker (``add_warm_worker``)
         # employee object id -> its session now, resolved as a sign-in is (None: no
         # known reader is warmed at start)
@@ -557,6 +567,21 @@ class WorkspaceBackend(ActionsMixin):
         self.revoked: Callable[[str], bool] = lambda ref: True
         self.reader_mode = "dev"
         self._pages_seen: dict[str, list[tuple[str, str]]] = {}
+
+    def add_read_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
+        """One more read worker on the read queue (its own runtime, built by the caller on
+        the thread that runs its ``loop``); it stops with the owner thread's."""
+        worker = Worker(objects_for, self.reads.jobs)
+        worker.stopped = self.reads.stopped
+        self.read_helpers.append(worker)
+        return worker
+
+    def reads_idle_for(self) -> float:
+        """How long every read worker has been idle (0: a read is queued or running)."""
+        workers = [self.reads, *self.read_helpers]
+        if any(w.running > 0 for w in workers) or not self.reads.jobs.empty():
+            return 0.0
+        return time.monotonic() - max(w.last_done for w in workers)
 
     def add_ask_worker(self, objects_for: Callable[[Any], Any]) -> Worker:
         """A worker of the Ask pool; the caller runs its ``loop`` on the thread that built
@@ -691,21 +716,30 @@ class WorkspaceBackend(ActionsMixin):
         return warmed
 
     def watch_generation(self, stop: threading.Event) -> None:
-        """Warm the known readers again whenever a new projection generation is served,
-        and every ``REWARM_SECONDS`` while their sessions last (before what was read for
-        them expires)."""
-        from operating.ontology_host import _file_identity
-        seen = _file_identity(self.store_path) if self.store_path else None
+        """Warm the known readers again whenever a new projection generation is served or
+        the gap inbox's findings change (a run, an acknowledgement; not a "seen" mark), and
+        every ``REWARM_SECONDS`` while their sessions last (before what was read for them
+        expires)."""
+        seen = self._served_state()
         last = time.monotonic()
         while not stop.wait(GENERATION_POLL_SECONDS):
-            now = _file_identity(self.store_path) if self.store_path else None
+            now = self._served_state()
             if now != seen or time.monotonic() - last >= REWARM_SECONDS:
                 seen, last = now, time.monotonic()
                 self.warm_known()
 
+    def _served_state(self) -> Optional[tuple]:
+        """The served store file's identity and the gap inbox's findings (``inbox_state``)."""
+        if not self.store_path:
+            return None
+        from operating.ontology_host import _file_identity
+        from operating.proactive_engine import inbox_path
+        return _file_identity(self.store_path), inbox_state(inbox_path(self.store_path))
+
     def warm(self, reader: Reader, *, force: bool = False) -> bool:
         """Read ahead for ``reader`` on the warm worker, at most once per
-        ``WARM_SECONDS`` (``force``: now): Home's list, the briefing, the first late
+        ``WARM_SECONDS`` (``force``: now): what Today reads (Home's list, the briefing and
+        its groups' next items, the suggestion cards, the late list), the first late
         orders' pages and the pages they opened last. False when nothing was queued."""
         warmer = self.warmer
         if warmer is None or warmer.stopped.is_set():
@@ -738,10 +772,30 @@ class WorkspaceBackend(ActionsMixin):
                 except Exception:  # noqa: BLE001 - a page that fails is read when opened
                     continue
 
-        for job in (self._attention_cached,
-                    lambda view: self._briefing_cached(view, reader, since_visit=False),
-                    pages):
+        for job in (self._attention_cached, self._briefing_ahead(reader),
+                    self._suggestions_cached, self._late_held, pages):
             warmer.submit(reader, self.yielding(job))
+        return True
+
+    def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
+        """The briefing as Today reads it: the briefing, then each group's first page of
+        further items (``/api/briefing/items``, as the app asks for it)."""
+        def job(view: Any) -> None:
+            found = self._briefing_cached(view, reader, since_visit=False)
+            for group in found.groups:
+                if group.event_type != "po_late" and group.count > group.in_top:
+                    self._briefing_items_cached(view, group.event_type, offset=0,
+                                                limit=BRIEFING_ITEMS_PAGE, since_visit=False)
+        return job
+
+    def warm_briefing(self, reader: Reader) -> bool:
+        """Read the reader's briefing ahead again (its "new since your visit" marks are
+        keyed on the visit, so a "seen" mark reads it anew): queued on the warm worker
+        behind live requests. False when there is no warm worker."""
+        warmer = self.warmer
+        if warmer is None or warmer.stopped.is_set():
+            return False
+        warmer.submit(reader, self.yielding(self._briefing_ahead(reader)))
         return True
 
     def yielding(self, job: Callable[[Any], Any]) -> Callable[[Any], Any]:
@@ -755,7 +809,7 @@ class WorkspaceBackend(ActionsMixin):
         """Wait (on the warm-up) until the read worker and the section pool have been idle ``WARM_IDLE_SECONDS``,
         then a short pause; returns at once when the backend stops."""
         while not self.reads.stopped.is_set() and \
-                (self.reads.idle_for() < WARM_IDLE_SECONDS
+                (self.reads_idle_for() < WARM_IDLE_SECONDS
                  or (self.sections is not None and self.sections.busy())):
             time.sleep(0.05)
         time.sleep(WARM_PAUSE_SECONDS)
@@ -2023,7 +2077,8 @@ class WorkspaceBackend(ActionsMixin):
     # ---- home ---------------------------------------------------------------------------
 
     @staticmethod
-    def _attention(view: Any) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+    def _attention(view: Any, cards: Optional[ReaderCache] = None
+                   ) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
         """The reader's gap inbox (``ObjectWorkspace.gap_inbox``), each gap subject's
         display label and each late purchase order's supplier as this reader reads it
         (``supplier_of``): what Home's needs-attention and the late-PO answer both read."""
@@ -2050,12 +2105,9 @@ class WorkspaceBackend(ActionsMixin):
                     # orders that move up when a test record is left out (``without_tests``)
                     continue
                 wanted[late] += 1
-                card = view._call("plx.object", {"object_id": oid})
-                labels[oid] = plain((card.get("object") or {}).get("display")) or ""
-                if late:
-                    name = supplier_of(view, oid, card)
-                    if name:
-                        suppliers[oid] = name
+                labels[oid], name = card_words(view, oid, supplier=late, cards=cards)
+                if name:
+                    suppliers[oid] = name
         return inbox, labels, suppliers
 
     def _attention_cached(self, view: Any) -> tuple[dict[str, Any], dict[str, str],
@@ -2064,7 +2116,8 @@ class WorkspaceBackend(ActionsMixin):
         its listed gaps cite still opens for them; else read now and kept."""
         with view._request():
             key = reader_key(view, ("attention",))
-        return self.page_cache.kept(view, key, lambda: self._attention(view), lambda held: (
+        return self.page_cache.kept(view, key, lambda: self._attention(view, self.cards),
+                                    lambda held: (
             h for g in held[0].get("gaps") or () for h in g.get("citations") or ()
             if isinstance(h, str)))
 
@@ -2101,39 +2154,46 @@ class WorkspaceBackend(ActionsMixin):
                 and isinstance(inbox.get("checked_on"), str) else None),
             recent_questions=recent, freshness=self.freshness(inbox))
 
+    def _late_held(self, view: Any) -> tuple[Any, list[Mapping[str, Any]], dict[str, str],
+                                             dict[str, str]]:
+        """Every late order this reader may see, in Home's order, with each one's label and
+        supplier (the inbox read, the ordered gaps, labels, suppliers), kept per reader
+        (``reader_key``) for the late list's pages and its read-ahead."""
+        with view._request():
+            key = reader_key(view, ("late_list",))
+        held = self.page_cache.get(key)
+        if held is None:
+            inbox, _, _ = without_tests(view.gap_inbox(limit=LATE_COUNT_LIMIT), {}, {},
+                                        named=self.test_named())
+            inbox = aged_to_today(inbox, self.today() if self.today else None)
+            seen: dict[str, Mapping[str, Any]] = {}   # one line per order, as Home
+            for gap in inbox.get("gaps") or ():
+                oid = gap.get("object_id")
+                if gap.get("days_late") is not None and isinstance(oid, str) \
+                        and oid not in seen:
+                    seen[oid] = gap
+            labels: dict[str, str] = {}
+            suppliers: dict[str, str] = {}
+            with view._request():
+                for oid in list(seen)[:LATE_LABEL_LIMIT]:   # each order's own name
+                    labels[oid], name = card_words(view, oid, supplier=True,
+                                                   cards=self.cards)
+                    if name:
+                        suppliers[oid] = name
+            # test records known by their label are left out of the list and its
+            # total alike, so the total is the same on every page
+            kept, _, _ = without_tests({"gaps": list(seen.values())}, labels, suppliers,
+                                       named=self.test_named())
+            held = (inbox, kept["gaps"], labels, suppliers)
+            self.page_cache.put(key, held)
+        return held
+
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         """Every late purchase order the reader may see, a page at a time, in Home's order
         (longest late first): Home and the late-list answer show the first
         ``LATE_LIST_LIMIT``; "show all" pages through the rest."""
         def job(view: Any) -> tuple[list[m.LatePo], int, Optional[str]]:
-            with view._request():
-                key = reader_key(view, ("late_list",))
-            held = self.page_cache.get(key)
-            if held is None:
-                inbox, _, _ = without_tests(view.gap_inbox(limit=LATE_COUNT_LIMIT), {}, {},
-                                            named=self.test_named())
-                inbox = aged_to_today(inbox, self.today() if self.today else None)
-                seen: dict[str, Mapping[str, Any]] = {}   # one line per order, as Home
-                for gap in inbox.get("gaps") or ():
-                    oid = gap.get("object_id")
-                    if gap.get("days_late") is not None and isinstance(oid, str) \
-                            and oid not in seen:
-                        seen[oid] = gap
-                labels: dict[str, str] = {}
-                suppliers: dict[str, str] = {}
-                with view._request():
-                    for oid in list(seen)[:LATE_LABEL_LIMIT]:   # each order's own name
-                        card = view._call("plx.object", {"object_id": oid})
-                        labels[oid] = plain((card.get("object") or {}).get("display")) or ""
-                        name = supplier_of(view, oid, card)
-                        if name:
-                            suppliers[oid] = name
-                # test records known by their label are left out of the list and its
-                # total alike, so the total is the same on every page
-                kept, _, _ = without_tests({"gaps": list(seen.values())}, labels, suppliers,
-                                           named=self.test_named())
-                held = (inbox, kept["gaps"], labels, suppliers)
-                self.page_cache.put(key, held)
+            held = self._late_held(view)
             inbox, ordered, labels, suppliers = held
             window = ordered[offset:offset + limit]
             with view._request():
@@ -2178,7 +2238,7 @@ class WorkspaceBackend(ActionsMixin):
 
         with view._request():
             key = reader_key(view, ("briefing", since_visit,
-                                    tuple(sorted(self.test_named()))))
+                                    tuple(sorted(self.test_named())), last_visit_of(view)))
         # kept without the reader's name (a read-ahead does not know it): the greeting
         # in the digest is written for the reader now
         found, top, labels, tests_hidden = self.page_cache.kept(
@@ -2200,7 +2260,7 @@ class WorkspaceBackend(ActionsMixin):
         # test and placeholder records are left out (judged on the label each reads as,
         # in the top and among every late order, as Home judges them), the count says how
         # many fewer there are
-        found, labels = briefing_without_tests(view, found, named)
+        found, labels = briefing_without_tests(view, found, named, cards=self.cards)
         items = (found.get("items") or [])[:bf.TOP_ITEMS]
         trails: dict[str, Any] = {}
         with view._request():
@@ -2220,8 +2280,7 @@ class WorkspaceBackend(ActionsMixin):
                 oid = item["object_id"]
                 if item.get("object_type") == "PurchaseOrder" and oid not in suppliers:
                     try:
-                        card = view._call("plx.object", {"object_id": oid})
-                        name = supplier_of(view, oid, card)
+                        _, name = card_words(view, oid, supplier=True, cards=self.cards)
                     except Exception:  # noqa: BLE001 - no supplier shown rather than a wrong one
                         name = None
                     if name:
@@ -2236,19 +2295,34 @@ class WorkspaceBackend(ActionsMixin):
         """One event type's items of this reader's briefing, a page at a time (a group's
         "+N more": its items past the top ones), each with its record's label; no trail
         (the item's page has it)."""
+        return self.reads.run(reader, lambda view: self._briefing_items_cached(
+            view, event_type, offset=offset, limit=limit, since_visit=since_visit),
+            timeout=READ_TIMEOUT_SECONDS)
+
+    def _briefing_items_cached(self, view: Any, event_type: str, *, offset: int, limit: int,
+                               since_visit: bool) -> m.BriefingItems:
+        """``_briefing_items`` as read last for this reader (keyed as the briefing is, its
+        last visit included), when every source it shows still opens for them; else read
+        now and kept."""
+        with view._request():
+            key = reader_key(view, ("briefing_items", event_type, offset, limit, since_visit,
+                                    tuple(sorted(self.test_named())), last_visit_of(view)))
+        return self.page_cache.kept(view, key, lambda: self._briefing_items(
+            view, event_type, offset=offset, limit=limit, since_visit=since_visit),
+            page_handles, copy=lambda model: model.model_copy(deep=True))
+
+    def _briefing_items(self, view: Any, event_type: str, *, offset: int, limit: int,
+                        since_visit: bool) -> m.BriefingItems:
         from operating import briefing as bf
 
-        def job(view: Any) -> tuple[list[Any], list[Any], dict[str, str]]:
-            found, _ = briefing_without_tests(view, view.briefing(since_visit=since_visit),
-                                              self.test_named())
-            # the group's "+N more": its items past the top ones (those are shown already;
-            # a test record left out moves the next item into the top)
-            ranked = sorted(found.get("items") or (), key=lambda i: i["rank"])
-            members = [i for i in ranked[bf.TOP_ITEMS:] if i["event_type"] == event_type]
-            page = members[offset:offset + limit]
-            return members, page, briefing_labels(view, page)
-
-        members, page, labels = self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        found, _ = briefing_without_tests(view, view.briefing(since_visit=since_visit),
+                                          self.test_named(), cards=self.cards)
+        # the group's "+N more": its items past the top ones (those are shown already;
+        # a test record left out moves the next item into the top)
+        ranked = sorted(found.get("items") or (), key=lambda i: i["rank"])
+        members = [i for i in ranked[bf.TOP_ITEMS:] if i["event_type"] == event_type]
+        page = members[offset:offset + limit]
+        labels = briefing_labels(view, page, cards=self.cards)
         return m.BriefingItems(event_type=event_type, total=len(members), offset=offset,
                                items=[briefing_item(i, labels, None) for i in page],
                                more=offset + len(page) < len(members))
@@ -2261,13 +2335,16 @@ class WorkspaceBackend(ActionsMixin):
         cited values only (never sent), confidence and what is missing. Purchase order
         trails are read as the reader within ``SUGGESTION_TRAIL_SECONDS``; a card whose
         trail did not fit says so (low confidence), never guesses."""
-        def job(view: Any) -> m.Suggestions:
-            with view._request():
-                key = reader_key(view, ("suggestions", tuple(sorted(self.test_named()))))
-            return self.page_cache.kept(view, key, lambda: self._suggestions(view),
-                                        page_handles,
-                                        copy=lambda model: model.model_copy(deep=True))
-        return self.reads.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+        return self.reads.run(reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS)
+
+    def _suggestions_cached(self, view: Any) -> m.Suggestions:
+        """The reader's suggestion cards as read last for them (``reader_key``), when every
+        source they show still opens for them; else read now and kept."""
+        with view._request():
+            key = reader_key(view, ("suggestions", tuple(sorted(self.test_named()))))
+        return self.page_cache.kept(view, key, lambda: self._suggestions(view),
+                                    page_handles,
+                                    copy=lambda model: model.model_copy(deep=True))
 
     def _suggestions(self, view: Any) -> m.Suggestions:
         from operating import briefing as bf
@@ -2278,7 +2355,8 @@ class WorkspaceBackend(ActionsMixin):
             status = "not_configured" if found.get("status") in (
                 "not_configured", "not_scheduled") else "unavailable"
             return m.Suggestions(status=status, total=0, note=SUGGESTIONS_NOTE)
-        found, labels = briefing_without_tests(view, found, self.test_named())
+        found, labels = briefing_without_tests(view, found, self.test_named(),
+                                               cards=self.cards)
         items = list(found.get("items") or ())
         named = self.test_named()
         for _ in range(SUGGESTION_TEST_PASSES):
@@ -2291,7 +2369,7 @@ class WorkspaceBackend(ActionsMixin):
                       if isinstance(o, str) and o not in labels]
             labels = {**labels, **briefing_labels(view, [h for h in heads
                                                          if h["object_id"] not in labels]
-                                                  + orders)}
+                                                  + orders, cards=self.cards)}
             tests = {i["object_id"] for i in items if briefing_test(i, labels, named)}
             if not tests:
                 break
@@ -2299,7 +2377,8 @@ class WorkspaceBackend(ActionsMixin):
         groups = ps.wanted(items)
         heads = [g[0] for g in groups]
         labels = {**labels, **briefing_labels(view, [h for h in heads
-                                                     if h["object_id"] not in labels])}
+                                                     if h["object_id"] not in labels],
+                                              cards=self.cards)}
         pos = [h["object_id"] for h in heads if h.get("object_type") == "PurchaseOrder"]
         drafts: dict[str, Any] = {}
         if pos:
@@ -2336,7 +2415,24 @@ class WorkspaceBackend(ActionsMixin):
                                 timeout=READ_TIMEOUT_SECONDS)
         except (FileNotFoundError, ValueError):
             return m.BriefingSeen(ok=False)
+        self.warm_briefing(reader)   # the next visit's briefing is ready
         return m.BriefingSeen(ok=True, at=at)
+
+    def watcher_item_state(self, reader: Reader, item_id: str,
+                           request: m.WatcherItemStateRequest) -> m.WatcherItemState:
+        """Dismiss or snooze one AI watcher item of the reader's briefing
+        (``ObjectWorkspace.watcher_item_state``); an item they may not see is not found."""
+        try:
+            done = self.reads.run(reader, lambda view: view.watcher_item_state(
+                item_id, request.state, until=request.until, reason=request.reason),
+                timeout=READ_TIMEOUT_SECONDS)
+        except (KeyError, FileNotFoundError):
+            raise errors.UserFacing("item_not_found", "That item isn't in your briefing.",
+                                    404) from None
+        except ValueError:
+            raise errors.UserFacing("snooze_invalid", "Snooze until a day after today, "
+                                    "within a year.", 400) from None
+        return m.WatcherItemState(**done)
 
     # ---- object page ---------------------------------------------------------------------
 
@@ -2503,6 +2599,7 @@ class WorkspaceBackend(ActionsMixin):
 
 # Briefing: of the top items, the first ones get a trail read as the reader.
 BRIEFING_TRAILS = 3
+BRIEFING_ITEMS_PAGE = 25   # a group's further items the app asks for at once (api.ts)
 BRIEFING_TRAIL_SECONDS = 30.0
 # The why-trail question per event type that is not about a purchase order's lateness
 # (``operating.why_trail.select`` picks the plan covering the record's type).
@@ -2513,6 +2610,7 @@ BRIEFING_QUESTIONS = {
     "negative_margin": "Why did this order change, and how do we know?",
     "quote_accepted_no_order": "Why was this decided, and how do we know?",
     "customer_order_at_risk": "Why did this order change, and how do we know?",
+    "customer_order_late": "Why is this order still open, and how do we know?",
 }
 
 
@@ -2542,7 +2640,8 @@ def briefing_test(item: Mapping[str, Any], labels: Mapping[str, str],
     return is_test((labels.get(oid),), named, ((suppliers or {}).get(oid),))
 
 
-def briefing_without_tests(view: Any, found: Mapping[str, Any], named: frozenset[str]
+def briefing_without_tests(view: Any, found: Mapping[str, Any], named: frozenset[str],
+                           cards: Optional["ReaderCache"] = None
                            ) -> tuple[dict[str, Any], dict[str, str]]:
     """The briefing without its test and placeholder records (``briefing_test``), judged
     on the top items (with ``BRIEFING_TEST_SLACK``) and on every late order, as Home
@@ -2554,11 +2653,11 @@ def briefing_without_tests(view: Any, found: Mapping[str, Any], named: frozenset
     judged = list({i["object_id"]: i for i in [
         *items[:bf.TOP_ITEMS + BRIEFING_TEST_SLACK],
         *(i for i in items if i.get("event_type") == "po_late")]}.values())
-    labels = briefing_labels(view, judged)
+    labels = briefing_labels(view, judged, cards=cards)
     with view._request():
-        makers = {i["object_id"]: supplier_of(view, i["object_id"], view._call(
-            "plx.object", {"object_id": i["object_id"]})) or ""
-            for i in judged if i.get("object_type") == "PurchaseOrder"}
+        makers = {i["object_id"]: card_words(view, i["object_id"], supplier=True,
+                                             cards=cards)[1] or ""
+                  for i in judged if i.get("object_type") == "PurchaseOrder"}
     tests = {i["object_id"] for i in judged if briefing_test(i, labels, named, makers)}
     if not tests:
         return dict(found), labels
@@ -2583,16 +2682,33 @@ def briefing_without_tests(view: Any, found: Mapping[str, Any], named: frozenset
     return out, labels
 
 
-def briefing_labels(view: Any, items: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+def briefing_labels(view: Any, items: Sequence[Mapping[str, Any]],
+                    cards: Optional["ReaderCache"] = None) -> dict[str, str]:
     """Each item's record display label as this reader reads it."""
     labels: dict[str, str] = {}
     with view._request():
         for item in items:
             oid = item["object_id"]
             if oid not in labels:
-                card = view._call("plx.object", {"object_id": oid})
-                labels[oid] = plain((card.get("object") or {}).get("display")) or ""
+                labels[oid] = card_words(view, oid, cards=cards)[0]
     return labels
+
+
+def card_words(view: Any, oid: str, *, supplier: bool = False,
+               cards: Optional["ReaderCache"] = None) -> tuple[str, Optional[str]]:
+    """(the record's display label, with ``supplier`` a purchase order's supplier,
+    ``supplier_of``) as this reader reads them, inside its ``_request``; kept in ``cards``
+    per reader, record and generation (``page_key``), as the pages that show them are."""
+    key = page_key(view, ("card", oid, supplier)) if cards is not None else None
+    held = cards.get(key) if key is not None else None
+    if held is not None:
+        return held
+    card = view._call("plx.object", {"object_id": oid})
+    words = (plain((card.get("object") or {}).get("display")) or "",
+             supplier_of(view, oid, card) if supplier else None)
+    if key is not None:
+        cards.put(key, words)
+    return words
 
 
 def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
@@ -2984,7 +3100,7 @@ def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
                                  supplier=suppliers.get(oid), reason=reason,
                                  due_date=need_date(gap), amount=amount,
                                  amount_suspect=suspect,
-                                 confirmation=LIST_CONFIRMATION.get(str(gap.get("kind"))),
+                                 confirmation=list_confirmation(gap),
                                  open_url=object_url(kind, oid), sources=sources))
         elif gap.get("days_late") is None and len(risk) < limit:
             risk.append(m.AtRisk(object_id=oid, label=label, kind=str(gap.get("kind")),
@@ -2999,9 +3115,21 @@ def attention_items(inbox: Mapping[str, Any], labels: Mapping[str, str],
 # reader may not be allowed to see: nothing is said (the order's page decides it as the
 # reader).
 LIST_CONFIRMATION = {"unconfirmed_po": "none_found"}
+# What the engine's late gap says of the order's confirmations, as this reader may read
+# them (``proactive_engine._shown`` drops the word when the reader may not open one of the
+# confirmations): linked to any copy of the order, found but unverified, or none at all.
+CONFIRMATION_WORDS = frozenset({"none_found", "found_unverified", "needs_check", "confirmed"})
 
 
-_NEED_DATE = re.compile(r"\b(?:need date|needed by) (\d{4}-\d{2}-\d{2})\b")
+def list_confirmation(gap: Mapping[str, Any]) -> Optional[str]:
+    said = (gap.get("follow_up") or {}).get("confirmation")
+    if said in CONFIRMATION_WORDS:
+        return str(said)
+    return LIST_CONFIRMATION.get(str(gap.get("kind")))
+
+
+_NEED_DATE = re.compile(r"\b(?:need date|needed by|confirmed date|lead-time due date|"
+                        r"lead time on|due by) (\d{4}-\d{2}-\d{2})\b")
 
 
 def need_date(gap: Mapping[str, Any]) -> Optional[str]:
@@ -3032,15 +3160,15 @@ def late_amount(gap: Mapping[str, Any]) -> tuple[Optional[m.Money], Optional[str
 
 def rounded_alike(reason: str) -> bool:
     """Whether a conflicting-quantity gap's values (its summary's "(1257, 1257.1666 box)"
-    or "(1257 box and 1257.17 box)") differ only by rounding
-    (``answer_conflicts.rounding_only``)."""
-    from operating.answer_conflicts import rounding_only
+    or "(1257 box and 1257.17 box)") are one quantity, rounded or kept as an integer
+    (``answer_conflicts.same_quantity``, the gap's values being quantities)."""
+    from operating.answer_conflicts import same_quantity
 
     found = re.search(r"\(([^()]*)\)\s*$", reason or "")
     if not found:
         return False
     numbers = re.findall(r"-?\d+(?:\.\d+)?", found.group(1))
-    return len(numbers) >= 2 and rounding_only(numbers)
+    return len(numbers) >= 2 and same_quantity(numbers, quantity=True) is not None
 
 
 def _quantities_in_words(found: re.Match) -> str:
@@ -5026,20 +5154,32 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
 
 def reader_key(view: Any, what: tuple) -> Optional[tuple]:
     """``page_key`` of ``what`` for this reader (inside its ``_request``), with the state
-    of the gap inbox beside the store (a new run, an acknowledgement or a "seen" mark is
-    a new key); None: never cached."""
+    of the gap inbox beside the store (a new run or an acknowledgement is a new key; a
+    "seen" mark only in the briefing's, ``last_visit_of``); None: never cached."""
     key = page_key(view, what)
-    return None if key is None else key + (inbox_stamp(view),)
+    return None if key is None else key + (inbox_stamp(view), watcher_stamp(view))
+
+
+def watcher_stamp(view: Any) -> Optional[tuple]:
+    """The AI watcher's state beside the store (a run, a dismissal or its switch is a new
+    key; ``operating.ai_watcher.stamp``), or None without a store."""
+    from operating import ai_watcher
+    path = getattr(getattr(view, "store_status", None), "store_path", None)
+    return None if path is None else ai_watcher.stamp(Path(path))
 
 
 def inbox_stamp(view: Any) -> Optional[tuple]:
-    """The gap inbox file's state now (its and its write-ahead log's change time and
-    size), or None when the workspace names no store."""
+    """The gap inbox's content now, but for the readers' "seen" marks (``inbox_content``),
+    or None when the workspace names no store. A "seen" mark changes no list, count or
+    card but the briefing's, whose key also holds the reader's own last visit
+    (``last_visit_of``): one reader's visit never makes every reader's Home read again."""
     from operating.proactive_engine import inbox_path
     path = getattr(getattr(view, "store_status", None), "store_path", None)
-    if path is None:
-        return None
-    inbox = inbox_path(path)
+    return None if path is None else inbox_state(inbox_path(path))
+
+
+def inbox_state(inbox: Path) -> tuple:
+    """``inbox_content`` of the inbox file as it is now."""
     out = []
     for file in (inbox, inbox.with_name(inbox.name + "-wal")):
         try:
@@ -5047,7 +5187,64 @@ def inbox_stamp(view: Any) -> Optional[tuple]:
             out.append((found.st_mtime_ns, found.st_size))
         except OSError:
             out.append(None)
-    return tuple(out)
+    return inbox_content(inbox, tuple(out))
+
+
+# What a "seen" mark writes (``proactive_engine.record_visit``): left out of the inbox's
+# content stamp.
+INBOX_VISIT_TABLES = frozenset({"visits"})
+_INBOX_CONTENT: dict[tuple, tuple] = {}   # (inbox, file state) -> its content stamp
+_INBOX_CONTENT_LOCK = threading.Lock()
+
+
+def inbox_content(inbox: Path, files: tuple) -> tuple:
+    """A digest of every table of the inbox but the "seen" marks, read once per file
+    state ``files`` (the file's and its write-ahead log's change time and size); the file
+    state itself when there is no inbox or it cannot be read (a change is then a new
+    key, as any write is)."""
+    if files[0] is None:
+        return files
+    key = (str(inbox), files)
+    with _INBOX_CONTENT_LOCK:
+        held = _INBOX_CONTENT.get(key)
+    if held is not None:
+        return held
+    try:
+        conn = sqlite3.connect(f"file:{inbox}?mode=ro", uri=True, timeout=30)
+    except sqlite3.Error:
+        return files
+    try:
+        digest = hashlib.blake2b(digest_size=16)
+        conn.execute("BEGIN")   # one snapshot of every table
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            if row[0] not in INBOX_VISIT_TABLES]
+        for table in tables:
+            digest.update(b"\0table\0" + table.encode())
+            rows = sorted(repr(tuple(row)) for row in conn.execute(
+                'SELECT * FROM "' + table.replace('"', '""') + '"'))
+            for row in rows:
+                digest.update(row.encode() + b"\0")
+        stamp = ("content", digest.hexdigest())
+    except sqlite3.Error:
+        return files
+    finally:
+        conn.close()
+    with _INBOX_CONTENT_LOCK:
+        if len(_INBOX_CONTENT) >= 64:
+            _INBOX_CONTENT.clear()
+        _INBOX_CONTENT[key] = stamp
+    return stamp
+
+
+def last_visit_of(view: Any) -> tuple:
+    """("visit", when this reader last marked its briefing seen): the briefing's own key
+    part (its "new since your visit" marks and counts read it)."""
+    from operating.proactive_engine import inbox_path, last_visit, reader_key as visitor
+    path = getattr(getattr(view, "store_status", None), "store_path", None)
+    if path is None:
+        return ("visit", None)
+    return ("visit", last_visit(inbox_path(path), visitor(view.actor)))
 
 
 def page_oid(backend: WorkspaceBackend, view: Any, object_type: str, object_id: str) -> str:
@@ -6012,6 +6209,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                             "(agent_ask.LOOKUP_MODEL; empty: the session's model)")
     group.add_argument("--ask-workers", type=int, default=ASK_WORKERS,
                        help="Asks answered at once (each its own runtime and thread)")
+    group.add_argument("--read-workers", type=int, default=READ_WORKERS,
+                       help="page reads served at once (each its own runtime and thread "
+                            "on one queue); 1: the owner thread only")
     group.add_argument("--section-workers", type=int, default=SECTION_WORKERS,
                        help="page sections read at once (each its own process and "
                             "runtime); 0: the read worker reads them")
@@ -6122,6 +6322,9 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
             pass   # read by the first page that needs it
         threads = [start_ask_worker(backend, argv, fixtures, planner, n)
                    for n in range(max(0, args.ask_workers) if args.ask else 0)]
+        if fixtures is None and planner is None:
+            threads += [start_read_worker(backend, argv, n)
+                        for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
         if getattr(args, "section_workers", 0) > 0 and fixtures is None and planner is None:
             from . import section_pool
             backend.sections = section_pool.SectionPool(
@@ -6161,6 +6364,28 @@ def start_ask_worker(backend: WorkspaceBackend, argv: list[str], fixtures: Any, 
             logging.getLogger("operator_api").error("ask worker %s did not start: %s",
                                                     number, type(error).__name__)
     thread = threading.Thread(target=run_stack, name=f"app-ask-{number}", daemon=True)
+    thread.start()
+    return thread
+
+
+def start_read_worker(backend: WorkspaceBackend, argv: list[str],
+                      number: int) -> threading.Thread:
+    """One more read worker: the console's builder run again on its own thread (its own
+    case runtime and stores, every check again), serving reads from the read queue once
+    it is up; until then the owner thread serves them all."""
+    from operator_ui import case_console
+
+    def serve_reads(ctx: Mapping[str, Any]) -> int:
+        backend.add_read_worker(ctx["objects_for"]).loop()
+        return 0
+
+    def run_stack() -> None:
+        try:
+            case_console.main(argv, serve_with=serve_reads)
+        except BaseException as error:  # noqa: BLE001 - logged; the others serve the reads
+            logging.getLogger("operator_api").error("read worker %s did not start: %s",
+                                                    number, type(error).__name__)
+    thread = threading.Thread(target=run_stack, name=f"app-read-{number}", daemon=True)
     thread.start()
     return thread
 

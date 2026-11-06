@@ -89,6 +89,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import threading
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -161,10 +162,22 @@ def report_store_for(runtime: CaseRuntime, path: Path, recorders: Sequence[Actor
 ONTOLOGY_FILE = "ontology.sqlite"
 
 
+# One status per store and state directory in this process: every reader's workspace on
+# every worker reads it, and each new one would otherwise describe every capture again
+# (the status is kept for the store generation and capture files it was read for).
+_STATUSES: dict[tuple[str, str], "objects.StoreStatus"] = {}
+_STATUSES_LOCK = threading.Lock()
+
+
 def checked_store_status(store_path: Path, state_dir: Path) -> "objects.StoreStatus":
-    """The store's status against DIR's captures (``objects.StoreStatus``); a foreign or
-    unverifiable store is refused (ValueError) before anything is served."""
-    status = objects.StoreStatus(store_path, state_dir)
+    """The store's status against DIR's captures (``objects.StoreStatus``, one per store
+    and directory in this process); a foreign or unverifiable store is refused
+    (ValueError) before anything is served."""
+    key = (os.path.abspath(store_path), os.path.abspath(state_dir))
+    with _STATUSES_LOCK:
+        status = _STATUSES.get(key)
+        if status is None:
+            status = _STATUSES[key] = objects.StoreStatus(store_path, state_dir)
     state = status.read()
     if state.get("state") in ("foreign", "unknown"):
         raise ValueError(f"ontology store refused ({state.get('state')}): "

@@ -63,7 +63,7 @@ from decimal import Decimal
 import re
 from typing import Any, Mapping, Sequence
 
-from . import po_reference
+from . import keys, po_reference
 from .keys import FM_PO, FM_PO_ITEM, FM_RECEIPT_RAW, PO, PO_FM_SOURCES, PO_LINE, RECEIPT
 from .source import decimal_of, field_value, instant, key_text
 
@@ -83,7 +83,6 @@ PORTAL_CLOSED = frozenset({"DRAFT", "RECEIVED", "CANCELLED", "CANCELED", "CANCEL
 BC_ORDERS, BC_LINES, BC_RECEIPTS = "purchaseOrders", "purchaseOrderLines", "purchaseReceipts"
 BC_REFERENCES = "purchaseOrderReferences"   # ODataV4 Page 50: No, Your_Reference
 ENTITY_MAP = "public.app_bc_entity_map"     # the Portal's own BC identity bridge
-FM_RECEIPT_PACK = "public.receipt_packaging"  # FileMaker QC receiving log, packaging
 _FM_CLASH = re.compile(r"-fm-?\d+$")       # PO2-FM-106: an FM clash-series number
 ZERO = decimal_of("0")
 EPS = decimal_of("0.0001")   # the Portal's received-in-full tolerance (po-fulfillment-status.ts)
@@ -152,15 +151,22 @@ def _decides(group: Mapping[str, Any]) -> bool:
     return says_open and not says_closed
 
 
+# FileMaker's receiving state of a PO item (``generated_purchase_order_item.status``) that
+# leaves nothing outstanding (received in full, over-received, the item cancelled); the
+# product's rule (``operating.po_status.FM_ITEM_SETTLED``).
+FM_ITEM_SETTLED = keys.FM_ITEM_SETTLED
+
+
 def _not_late_by_fm(group: Mapping[str, Any], portal_lines: Mapping[str, Sequence[Any]],
-                      fm_items: Mapping[str, Sequence[Any]],
-                      qc_received: Mapping[str, Decimal]) -> bool:
+                      fm_items: Mapping[str, Sequence[Any]]) -> bool:
     """A Portal order whose lines say nothing received while it has a FileMaker twin: the
-    Portal's received quantity is ETL-seeded 0, so FileMaker's QC receiving log (receipt
-    rows' ``sumqty`` by ``idpogenitem``) is the received quantity, when the FileMaker
-    items' ordered total is the Portal's (the only proof the QC quantity is in its unit):
-    the product's rule (``operating/po_status.py`` module doc), so an order FileMaker
-    received in full is closed, never late.
+    Portal's received quantity is ETL-seeded 0, so FileMaker's own receiving state of
+    each item (``generated_purchase_order_item.status``) says what was received, when the
+    FileMaker items' ordered total is the Portal's: the product's rule
+    (``operating/po_status.py`` module doc), so an order whose every FileMaker item is
+    settled (``FM_ITEM_SETTLED``) is closed, never late. The QC receiving log's
+    ``sumqty`` is never read as a quantity: on the mirror it is a running total across
+    the whole log, not one receipt's.
 
     Needs check (decision 2026-11-01, rule 2): a Pending or B.Order order whose
     FileMaker twin disagrees on its status (FileMaker Complete or Cancel) or whose received
@@ -181,9 +187,68 @@ def _not_late_by_fm(group: Mapping[str, Any], portal_lines: Mapping[str, Sequenc
         return False
     if not items or fm_ordered != ordered:
         return word in PORTAL_ISSUED   # quantities unknown: needs check
-    fm_received = sum((qc_received.get(key_text(i["row"].get("id")) or "", ZERO)
-                       for i in items), ZERO)
-    return fm_received + EPS >= ordered
+    return all(str(i["row"].get("status") or "").strip().upper() in FM_ITEM_SETTLED
+               for i in items)
+
+
+# The rules of 2026-11-06 (owner, after the cross-system audit), applied here by the
+# oracle's own code over raw rows:
+# * a receipt in ANY copy closes the order: every FileMaker item settled (its own state,
+#   else a receiving row or a QC lot QC did not reject), a Portal-native order received
+#   in full, or BC's lines received; an open copy of a received order is never late;
+# * a date a bulk share of its field's records hold (``BULK_SHARE`` and ``BULK_MIN``), or
+#   one of the order's own days (created, migrated, ordered), is no
+#   requested-by date: the order is undated, never late. With no requested date, the
+#   order's own lead time (FileMaker ``lt`` days from its order date, a bulk-default lead
+#   time dating nothing) is a labelled due date;
+# * a test, proof, UAT or demo record (a mark on an invoice, receipt or line), a go-live
+#   first document of a BC-native number series, or an old empty Portal draft twin is no
+#   business order.
+BULK_SHARE, BULK_MIN = 0.10, 10
+OLD_DRAFT_DAYS = 365
+FM_RECEIPT = "public.receipt"
+FM_RECEIPT_PACK = "public.receipt_packaging"
+PORTAL_RECEIVED = frozenset({"COMPLETE", "RECEIVED"})
+TEST_MARK = re.compile(r"(?:\binvoice ?test|\btest ?invoice|(?:\b|-)uat(?:-[a-z0-9-]*\d|\s*$)|\bdemo-|[- ]demo\b|"
+                       r"pipeline[- ]proof|\bo2c[- ]proof|\bbanktest|\bproof line\b|"
+                       r"\bplx-val-|\btest ?po\b)", re.I)
+_SERIES = re.compile(r"^(.*?)(\d{3})$")
+
+
+def _bulk(values: Sequence[Any]) -> frozenset:
+    counts = Counter(v for v in values if v is not None)
+    total = sum(counts.values())
+    return frozenset(v for v, n in counts.items()
+                     if total and n >= BULK_MIN and n / total >= BULK_SHARE)
+
+
+def _word(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _received_anywhere(group: Mapping[str, Any], judged: Mapping[str, Any],
+                       portal_lines: Mapping[str, Sequence[Any]],
+                       fm_items: Mapping[str, Sequence[Any]],
+                       receipts: Mapping[str, Sequence[Any]],
+                       lots: Mapping[str, Sequence[Any]],
+                       bc_line_open: Any) -> bool:
+    for fm in group["fm"]:
+        items = fm_items.get(key_text(fm["row"].get("id")) or "", ())
+        if keys.fm_order_received([i["row"] for i in items]):
+            return True
+    if not group["fm"]:
+        for p in group["portal"]:
+            if _word(p["row"].get("status")) in PORTAL_RECEIVED:
+                return True
+            lines = portal_lines.get(key_text(p["row"].get("id")) or "", ())
+            if lines and not any(_open_quantity(i["row"].get("quantity"),
+                                                i["row"].get("quantity_received"))
+                                 for i in lines):
+                return True
+    for h in judged["bc"]:
+        if not _draft(h) and bc_line_open(h) is False:
+            return True
+    return False
 
 
 def _draft(record: Mapping[str, Any]) -> bool:
@@ -250,25 +315,81 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
     fm_items: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in portal.get(FM_PO_ITEM) or ():
         fm_items[key_text(item["row"].get("idpogen")) or ""].append(item)
-    qc_received: dict[str, Decimal] = defaultdict(Decimal)
-    for relation in (FM_RECEIPT_RAW, FM_RECEIPT_PACK):
-        for item in portal.get(relation) or ():
-            got = decimal_of(item["row"].get("sumqty"))
-            if got is not None:
-                qc_received[key_text(item["row"].get("idpogenitem")) or ""] += got
     portal_receipts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for item in portal.get(RECEIPT) or ():
         portal_receipts[key_text(item["row"].get("purchase_order_id")) or ""].append(item)
     bc_lines: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     bc_receipts: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    marked: set[tuple[str, str]] = set()   # (company, BC order number or id) with a mark
     for record in bc:
         company = str(record.get("company_id") or "").lower()
+        f = record["fields"]
         if record["entity_set"] == BC_LINES:
-            bc_lines[(company, str(record["fields"].get("documentId") or "").lower())
-                     ].append(record)
+            bc_lines[(company, str(f.get("documentId") or "").lower())].append(record)
+            if TEST_MARK.search(str(f.get("description") or "")):
+                marked.add((company, str(f.get("documentId") or "").lower()))
         elif record["entity_set"] == BC_RECEIPTS:
-            bc_receipts[(company, str(record["fields"].get("orderNumber") or ""))
-                        ].append(record)
+            bc_receipts[(company, str(f.get("orderNumber") or ""))].append(record)
+        if record["entity_set"] in ("purchaseInvoices", BC_RECEIPTS) and any(
+                TEST_MARK.search(str(f.get(k) or "")) for k in (
+                    "vendorInvoiceNumber", "vendorShipmentNumber")):
+            marked.add((company, str(f.get("orderNumber") or "")))
+    # FileMaker's receiving rows and QC lots, by the item they name
+    fm_receipts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for item in portal.get(FM_RECEIPT) or ():
+        fm_receipts[key_text(item["row"].get("idgenpoitem")) or ""].append(item)
+    fm_lots: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for relation in (FM_RECEIPT_RAW, FM_RECEIPT_PACK):
+        for item in portal.get(relation) or ():
+            fm_lots[key_text(item["row"].get("idpogenitem")) or ""].append(item)
+    # the default days and lead times: a value a bulk share of its field's records hold
+    defaults = {
+        "bc_line": _bulk([_day(r["fields"].get("expectedReceiptDate")) for r in bc
+                          if r["entity_set"] == BC_LINES]),
+        "bc_header": _bulk([_day(r["fields"].get("requestedReceiptDate")) for r in bc_orders]),
+        "fm": _bulk([_day(i["row"].get("datearrive")) for i in portal.get(FM_PO) or ()]),
+        "portal": _bulk([_day(i["row"].get("expected_date")) for i in pos]),
+        "lt": _bulk([decimal_of(i["row"].get("lt")) for i in portal.get(FM_PO) or ()]),
+    }
+    # go-live first documents: a BC-native number series' first number (running number
+    # 001) and the series' documents dated that same day
+    joined_ids = {id(r) for g in groups for r in g["bc"] if g["portal"]}
+    series: dict[str, list[tuple[Any, int, date | None]]] = defaultdict(list)
+    for record in bc_orders:
+        found = _SERIES.match(str(record["fields"].get("number") or "").strip())
+        if found and id(record) not in joined_ids:
+            series[found.group(1)].append((id(record), int(found.group(2)),
+                                           _day(record["fields"].get("orderDate"))))
+    go_live: set[int] = set()
+    for members in series.values():
+        first = [m for m in members if m[1] == 1]
+        if len(first) == 1 and first[0][2] is not None:
+            go_live |= {rid for rid, _n, day in members if day == first[0][2]}
+
+    def is_test(group: Mapping[str, Any]) -> bool:
+        for h in group["bc"]:
+            company = str(h.get("company_id") or "").lower()
+            if id(h) in go_live or (company, str(h["fields"].get("number") or "")) in marked \
+                    or (company, str(h["fields"].get("id") or "").lower()) in marked:
+                return True
+        for p in group["portal"]:
+            changed = _day(p["row"].get("updated_at"))
+            if _word(p["row"].get("status")) == "DRAFT" and changed is not None \
+                    and (as_of - changed).days > OLD_DRAFT_DAYS \
+                    and not any((decimal_of(i["row"].get("quantity")) or ZERO) > ZERO
+                                for i in portal_lines.get(key_text(p["row"].get("id")) or "",
+                                                          ())):
+                return True
+        return False
+
+    def own_days(group: Mapping[str, Any]) -> set[date]:
+        days = {_day(i["row"].get(k)) for i in group["portal"]
+                for k in ("created_at", "date_generated")}
+        days |= {_day(i["row"].get(k)) for i in group["fm"]
+                 for k in ("dategenerated_c", "audittimestampcreated")}
+        # BC's last-modified day is no own day (a later edit or posting rewrites it)
+        days |= {_day(r["fields"].get("orderDate")) for r in group["bc"]}
+        return {d for d in days if d is not None}
 
     out_groups, late, opened, undated = [], [], 0, 0
     for group in groups:
@@ -320,16 +441,32 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
                   "records": sorted({h["citation"] for h in headers}
                                     | {line[1] for line in lines} | set(receipts))}
         out_groups.append(record)
-        if not _decides(judged) or _not_late_by_fm(group, portal_lines, fm_items,
-                                                     qc_received):
+        def bc_line_open(h: Mapping[str, Any]) -> bool | None:
+            found = own_lines(h)
+            return any(_open_quantity(r["fields"].get("quantity"),
+                                      r["fields"].get("receivedQuantity"))
+                       for r in found) if found else None
+        # the group's own verdict, on its record (the live-ops keys read it): a test
+        # record, received in any copy, or open by its records
+        record["test"] = is_test(group)
+        record["received_anywhere"] = _received_anywhere(
+            group, judged, portal_lines, fm_items, fm_receipts, fm_lots, bc_line_open)
+        record["open"] = (not record["test"] and not record["received_anywhere"]
+                          and _decides(judged)
+                          and not _not_late_by_fm(group, portal_lines, fm_items))
+        if not record["open"]:
             continue
         opened += 1
-        record["open"] = True   # an open order (late or not): the families' "open" PO
+        own = own_days(group)
+
+        def real(day: date | None, field: str) -> date | None:
+            # a bulk default day, or one of the order's own days, dates nothing
+            return None if day is None or day in own or day in defaults[field] else day
         # The governing header date by precedence, with the record it is read from.
         header_date: tuple[date, str] | None = None
-        for item, field in ([(i, "datearrive") for i in group["fm"]]
-                            + [(i, "expected_date") for i in group["portal"]]):
-            day = _day(item["row"].get(field))
+        for item, field, kind in ([(i, "datearrive", "fm") for i in group["fm"]]
+                                  + [(i, "expected_date", "portal") for i in group["portal"]]):
+            day = real(_day(item["row"].get(field)), kind)
             if day is not None:
                 header_date = (day, item["citation"])
                 break
@@ -337,8 +474,20 @@ def late_orders(portal: Mapping[str, Sequence[Mapping[str, Any]]],
         # A Draft twin's dates never date the order (decision 2026-11-01, rule 1): the
         # BC dates are the issued (judged) BC records' only.
         bc_header = next(((d, r["citation"]) for r in judged["bc"]
-                          for d in [_day(r["fields"].get("requestedReceiptDate"))]
+                          for d in [real(_day(r["fields"].get("requestedReceiptDate")),
+                                         "bc_header")]
                           if d is not None), None)
+        lines = [line if line[0] != "bc" else (*line[:4], real(line[4], "bc_line"))
+                 for line in lines]
+        if header_date is None:
+            # no requested date anywhere: the order's own lead time, a labelled due date
+            for item in group["fm"]:
+                start = _day(item["row"].get("dategenerated_c"))
+                lead = decimal_of(item["row"].get("lt"))
+                if start is not None and lead is not None and lead > ZERO \
+                        and lead not in defaults["lt"]:
+                    header_date = (start + timedelta(days=int(lead)), item["citation"])
+                    break
         bc_dates = {(line[4], line[1]) for line in lines if line[0] == "bc" and line[4]}
         if not bc_dates and bc_header is not None:
             bc_dates = {bc_header}

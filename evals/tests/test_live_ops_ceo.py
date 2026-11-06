@@ -115,6 +115,24 @@ class FamilyTests(unittest.TestCase):
                          ("m2", "2026-08-03"))
         self.assertEqual(ceo.po_vendor_confirmed(po_world(messages[:1])), [])
 
+    def test_a_confirmation_naming_another_copys_number_counts_and_a_reused_one_does_not(self):
+        """Truth rules 2026-11-06: the order's BC copy (joined by renumberedTo, a stored
+        key) is the same order, so the vendor confirming its BC number confirms it; a number
+        another order also holds confirms nothing."""
+        def found(bc_number: str, other: bool) -> list:
+            w = po_world([mail(1, f"Order Confirmation for {bc_number}", "rep@vendor.test",
+                               "2026-08-03T15:00:00Z")])
+            w.portal[lk.PO][0]["row"]["custom_fields"]["renumberedTo"] = bc_number
+            if other:   # a different Portal order using the same number
+                w.portal[lk.PO].append(base.mirror(lk.PO, {"id": "p9", "po_number": bc_number,
+                                                           "status": "SUBMITTED"}))
+            w.bc = [*w.bc, base.bc("purchaseOrders", {"id": "o1", "number": bc_number,
+                                                      "status": "Open",
+                                                      "fullyReceived": False}, 60)]
+            return ceo.po_vendor_confirmed(w)
+        self.assertEqual(len(found("PO100701", other=False)), 1)
+        self.assertEqual(found("PO100701", other=True), [])
+
     def test_the_original_email_is_the_first_in_the_vendor_exchange_after_the_po(self):
         messages = [mail(1, "PO#7001 old thread", "rep@vendor.test", "2026-07-01T15:00:00Z"),
                     mail(2, "New PO#7001", "buyer@us.test", "2026-08-01T16:00:00Z"),

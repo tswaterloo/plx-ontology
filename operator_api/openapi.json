@@ -1284,7 +1284,9 @@
               "quote_accepted_no_order",
               "quantity_mismatch",
               "customer_order_at_risk",
-              "po_undated"
+              "po_undated",
+              "customer_order_late",
+              "watcher_attention"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1367,7 +1369,9 @@
               "quote_accepted_no_order",
               "quantity_mismatch",
               "customer_order_at_risk",
-              "po_undated"
+              "po_undated",
+              "customer_order_late",
+              "watcher_attention"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1485,7 +1489,9 @@
               "quote_accepted_no_order",
               "quantity_mismatch",
               "customer_order_at_risk",
-              "po_undated"
+              "po_undated",
+              "customer_order_late",
+              "watcher_attention"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1645,7 +1651,9 @@
               "quote_accepted_no_order",
               "quantity_mismatch",
               "customer_order_at_risk",
-              "po_undated"
+              "po_undated",
+              "customer_order_late",
+              "watcher_attention"
             ],
             "title": "Event Type",
             "type": "string"
@@ -1775,6 +1783,24 @@
           "outbound"
         ],
         "title": "CardActionOffer",
+        "type": "object"
+      },
+      "CitedText": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "title": "CitedText",
         "type": "object"
       },
       "Conflict": {
@@ -2403,6 +2429,38 @@
           "basis"
         ],
         "title": "DraftTo",
+        "type": "object"
+      },
+      "DueDate": {
+        "additionalProperties": false,
+        "description": "The order's due date as the one PO reader decides it, with where it comes from.",
+        "properties": {
+          "basis": {
+            "description": "requested: a requested-by date a record states; vendor_eta: the supplier's confirmed date (no record states one); lead_time: the order date plus the order's lead time. A default date is never a due date.",
+            "enum": [
+              "requested",
+              "vendor_eta",
+              "lead_time"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "date": {
+            "description": "The due date (ISO).",
+            "title": "Date",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source",
+            "description": "The cited value it rests on, opened for this reader."
+          }
+        },
+        "required": [
+          "date",
+          "basis",
+          "source"
+        ],
+        "title": "DueDate",
         "type": "object"
       },
       "EntraConfig": {
@@ -3285,14 +3343,19 @@
           "confirmation": {
             "anyOf": [
               {
-                "const": "none_found",
+                "enum": [
+                  "none_found",
+                  "found_unverified",
+                  "needs_check",
+                  "confirmed"
+                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "none_found: no supplier confirmation is linked to the order. Null: the list's entry does not say (the order's page decides it).",
+            "description": "none_found: no supplier confirmation is linked to any copy of the order. found_unverified: one is linked, only as an unverified lead. needs_check: a lead names a number another order also holds, so it cannot be tied to this order. confirmed: a settled confirmation is linked. Null: the list's entry does not say (the order's page decides it).",
             "title": "Confirmation"
           },
           "days_late": {
@@ -4340,6 +4403,17 @@
             ],
             "title": "Days Late"
           },
+          "due": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DueDate"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The due date and its basis; omitted when none is decided or its value is not this reader's to open."
+          },
           "eta": {
             "anyOf": [
               {
@@ -4401,6 +4475,17 @@
           },
           "subject": {
             "$ref": "#/components/schemas/ObjectRef"
+          },
+          "vendor_number": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CitedText"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The order number the supplier knows (a FileMaker-era order's FileMaker PO number), when every copy holds one; omitted otherwise."
           },
           "verdict": {
             "anyOf": [
@@ -6377,6 +6462,91 @@
         ],
         "title": "VerdictEvent",
         "type": "object"
+      },
+      "WatcherItemState": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "dismissed",
+              "snoozed",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "item_id",
+          "state",
+          "at"
+        ],
+        "title": "WatcherItemState",
+        "type": "object"
+      },
+      "WatcherItemStateRequest": {
+        "additionalProperties": false,
+        "description": "Dismiss or snooze one item the AI watcher flagged in your briefing; ``open`` undoes\neither. Only your own briefing changes; nothing is sent.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "enum": [
+              "dismissed",
+              "snoozed",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A snooze's last day (YYYY-MM-DD, after today); absent: a week from today.",
+            "title": "Until"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "WatcherItemStateRequest",
+        "type": "object"
       }
     }
   },
@@ -6899,7 +7069,9 @@
                 "quote_accepted_no_order",
                 "quantity_mismatch",
                 "customer_order_at_risk",
-                "po_undated"
+                "po_undated",
+                "customer_order_late",
+                "watcher_attention"
               ],
               "title": "Event Type",
               "type": "string"
@@ -7009,6 +7181,89 @@
           }
         },
         "summary": "Briefing Seen",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/briefing/watcher/{item_id}": {
+      "post": {
+        "description": "Dismiss or snooze one item the AI watcher flagged in your briefing (``open``\nundoes it). Only your own briefing changes; nothing is sent.",
+        "operationId": "watcher_item_state_api_briefing_watcher__item_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatcherItemStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatcherItemState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Watcher Item State",
         "tags": [
           "home"
         ]

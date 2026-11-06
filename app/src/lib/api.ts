@@ -19,6 +19,8 @@ import type { LateList,
   BriefingItems,
   BriefingSeen,
   BriefingView,
+  WatcherItemState,
+  WatcherItemStateRequest,
   DevLoginResponse,
   FeedbackRequest,
   FeedbackResponse,
@@ -108,6 +110,18 @@ export function getBriefingItems(
 /** Marks your briefing seen: the next "since your last visit" starts now. */
 export async function markBriefingSeen(): Promise<BriefingSeen> {
   return (await (await call("/api/briefing/seen", { method: "POST" })).json()) as BriefingSeen;
+}
+
+/** Dismiss or snooze one item the AI watcher flagged in your briefing ("open" undoes it).
+ * Only your own briefing changes; nothing is sent. */
+export async function setWatcherItemState(
+  itemId: string,
+  state: WatcherItemStateRequest["state"],
+  until?: string,
+): Promise<WatcherItemState> {
+  const json: WatcherItemStateRequest = until ? { state, until } : { state };
+  const path = `/api/briefing/watcher/${encodeURIComponent(itemId)}`;
+  return (await (await call(path, { method: "POST", json })).json()) as WatcherItemState;
 }
 
 /** Every late purchase order you may see, a page at a time, longest late first ("show all"). */

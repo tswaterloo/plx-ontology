@@ -178,7 +178,9 @@ class Mapper:
         eta = raw.get("eta") or None
         action = raw.get("next_action") or None
         vendor = raw.get("vendor_promise") or None
-        handles += [(eta or {}).get("handle"), (action or {}).get("contact_handle")]
+        due, number = raw.get("due") or None, raw.get("vendor_number") or None
+        handles += [(eta or {}).get("handle"), (action or {}).get("contact_handle"),
+                    (due or {}).get("handle"), (number or {}).get("handle")]
         if vendor:
             handles += [vendor.get("handle")] + [ln.get("handle")
                                                  for ln in vendor.get("lines") or ()]
@@ -224,8 +226,16 @@ class Mapper:
             action_model = m.NextAction(text=text[:400], rule=str(action["rule"]),
                                         contact=contact if shown else None,
                                         contact_source=contact_source if shown else None)
+        due_source = self.source(due["handle"], decided) if due and isinstance(
+            due.get("handle"), str) else None
+        number_source = self.source(number["handle"], decided) if number and isinstance(
+            number.get("handle"), str) else None
         self.hidden += hidden
         return m.PoTrail(
+            due=m.DueDate(date=str(due["date"]), basis=due["basis"], source=due_source)
+            if due_source is not None else None,
+            vendor_number=m.CitedText(value=str(number["value"])[:60], source=number_source)
+            if number_source is not None else None,
             subject=_ref(raw["subject"], raw.get("label"), self.url), state=raw.get("state"),
             days_late=raw.get("days_late"), verdict=raw.get("verdict"), eta=eta_model,
             steps=steps, hidden_steps=hidden,

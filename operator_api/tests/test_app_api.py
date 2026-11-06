@@ -418,3 +418,51 @@ class CardActionsRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatcherItemStateRoute(unittest.TestCase):
+    """POST /api/briefing/watcher/{item_id} over the real backend method: the reader's own
+    view decides it; an item they may not see is 404, a bad snooze 400, a bad state 422."""
+
+    def test_dismiss_snooze_and_refusals(self):
+        from operator_api.backend import WorkspaceBackend
+        calls = []
+
+        class View:
+            def watcher_item_state(self, item_id, state, *, until=None, reason=None):
+                calls.append((item_id, state, until))
+                if item_id != "aw-0000000000000001":
+                    raise KeyError("item_not_found")
+                if state == "snoozed" and until == "2000-01-01":
+                    raise ValueError("snooze_until_invalid")
+                return {"item_id": item_id, "state": state,
+                        "until": "2099-01-08" if state == "snoozed" else None,
+                        "at": "2099-01-01T00:00:00Z"}
+
+        class Reads:
+            def run(self, reader, job, timeout=None):
+                return job(View())
+
+        class Backend(MockBackend):
+            reads = Reads()
+            watcher_item_state = WorkspaceBackend.watcher_item_state
+
+        client = TestClient(create_app(Backend(), DevAuth(
+            fixture_identity("plx", ["staff:demo"]), mode="mock"), secure_cookie=False),
+            base_url="http://testserver")
+        url = "/api/briefing/watcher/aw-0000000000000001"
+        self.assertEqual(client.post(url, json={"state": "dismissed"}).status_code, 401)
+        self.assertEqual(client.post("/api/auth/dev-login", json={}).status_code, 200)
+        done = client.post(url, json={"state": "dismissed", "reason": "handled"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual(conforms(done.json(), component("WatcherItemState")), [])
+        self.assertEqual(done.json()["state"], "dismissed")
+        snoozed = client.post(url, json={"state": "snoozed"}).json()
+        self.assertEqual((snoozed["state"], snoozed["until"]), ("snoozed", "2099-01-08"))
+        hidden = client.post("/api/briefing/watcher/aw-ffffffffffffffff",
+                             json={"state": "dismissed"})
+        self.assertEqual((hidden.status_code, hidden.json()["error"]["code"]), (404, "item_not_found"))
+        bad = client.post(url, json={"state": "snoozed", "until": "2000-01-01"})
+        self.assertEqual((bad.status_code, bad.json()["error"]["code"]), (400, "snooze_invalid"))
+        self.assertEqual(client.post(url, json={"state": "deleted"}).status_code, 422)
+        self.assertEqual(calls[0], ("aw-0000000000000001", "dismissed", None))

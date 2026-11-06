@@ -650,7 +650,10 @@ def record_party(call: Callable[[str, dict], Any], object_id: str) -> Optional[s
         if isinstance(raw, str) and raw.strip():
             return raw.strip()[:120]
     kind = object_id.split(":", 1)[0]
+    declared = default_schema().link_types
     for link in (f"{kind}.ordered_from", f"{kind}.ordered_by"):
+        if link not in declared:
+            continue   # a link its type does not have reaches nothing (never asked)
         got = call("plx.around", {"from": object_id, "limit": 1,
                                   "path": [{"link_type": link, "direction": "forward"}]}) or {}
         for obj in got.get("objects") or ():

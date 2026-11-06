@@ -1354,14 +1354,16 @@ class MailCaptures(Reopenable):
         from integrations.capture_mail import terminal_reason
         folders = self._conn.execute(
             "SELECT status, reason, last_run_at, last_complete_at FROM folders").fetchall()
-        truncated = self._conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE superseded_at IS NULL AND "
-            "attachments_status IN ('truncated', 'truncated_capped')").fetchone()[0]
         last = self._conn.execute("SELECT MAX(version_id) FROM messages").fetchone()[0]
         runs = [f["last_run_at"] for f in folders
                 if f["last_run_at"] and not terminal_reason(f["reason"])]
-        whole = bool(folders) and truncated == 0 and all(
-            f["status"] == "complete" and f["last_complete_at"] for f in folders)
+        # the truncated-listing check scans every message (no index serves it): asked only
+        # when every folder is complete, and stopped at the first truncated listing
+        whole = bool(folders) and all(
+            f["status"] == "complete" and f["last_complete_at"] for f in folders) and \
+            self._conn.execute(
+                "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE superseded_at IS NULL AND "
+                "attachments_status IN ('truncated', 'truncated_capped'))").fetchone()[0] == 1
         state = {"last_refresh_at": min(runs) if runs else None, "last_capture_id": last,
                  "last_full_traversal_at": (min(f["last_complete_at"] for f in folders)
                                             if whole else None)}

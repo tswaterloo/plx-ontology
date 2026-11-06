@@ -493,10 +493,10 @@ def teams_po_discussion(world: lk.World) -> list[lk.Candidate]:
 
 
 def sharepoint_lot_file(world: lk.World) -> list[lk.Candidate]:
-    """The one SharePoint file whose name holds a released lot's number and says it is a
+    """The one SharePoint file whose name holds the number of a lot still holding stock and says it is a
     document of that lot (``operating.fast_answer.lot_document_name``: a COA, a
     receiving document), never a file that only shares the number."""
-    lots = {lot for lot, _day, _c in lk._released_lots(world)
+    lots = {lot for lot, _day, _c in lk._stock_lots(world)
             if len(lot) >= 6 and not re.fullmatch(r"(?:19|20)\d{6}", lot)}
     from operating.fast_answer import lot_document_name
     by_lot: dict[str, list[Mapping[str, Any]]] = defaultdict(list)

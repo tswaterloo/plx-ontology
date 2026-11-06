@@ -256,10 +256,12 @@ def _by_rule(readings: Sequence[Reading], governs: str | None
 # Not every difference is a disagreement. Three kinds never are, and are never shown as
 # "the sources disagree" (``not_a_disagreement``):
 #
-# * rounding: numbers that agree once the more precise is rounded to the places the
+# * one quantity (``same_quantity``, the one rule every caller uses):
+#   rounding: numbers that agree once the more precise is rounded to the places the
 #   least precise states (1257 and 1257.17; 1257.17 and 1257.1666666666667), within
 #   ``ROUNDING_SHARE`` of their size (0 and 0.4 still disagree), and only within one
-#   currency (1000 CAD and 1000.4 USD are two amounts);
+#   currency (1000 CAD and 1000.4 USD are two amounts); and, for a quantity with a unit
+#   (never money), an integer one source keeps of the other's decimal (32 and 32.5 boxes);
 # * currency spellings: ``CAD`` and the Portal's ``CAD$`` are one currency
 #   (``ontology.units.currency_code``, the one currency table);
 # * each system's own number: a record's number or id field (a PO number)
@@ -309,6 +311,33 @@ def rounding_only(values: Sequence[Any]) -> bool:
     return size > 0 and spread <= size * ROUNDING_SHARE
 
 
+def integer_of_decimal(values: Sequence[Any]) -> bool:
+    """Whether two numbers are one quantity one source stores as an integer: exactly two
+    distinct values, one a whole number and the other a value with a fraction whose floor,
+    round or ceiling it is (32 and 32.5, 0 and 0.926, 157 and 156.4). Anything else is not:
+    three values, two fractions, a whole number further off (31 and 32.5)."""
+    numbers = [_number(v) for v in values]
+    if any(n is None for n in numbers) or len(set(numbers)) != 2:
+        return False
+    whole = [n for n in set(numbers) if n == n.to_integral_value()]  # type: ignore[union-attr]
+    if len(whole) != 1:
+        return False
+    (part,) = [n for n in set(numbers) if n != whole[0]]
+    return abs(part - whole[0]) < 1   # type: ignore[operator]  # floor or ceiling; round is one
+
+
+def same_quantity(values: Sequence[Any], *, quantity: bool) -> str | None:
+    """The one rule for whether differing numbers are one value, every caller's (agent
+    answers, the proactive rules, the console): ``"rounding"`` (``rounding_only``), else,
+    for a ``quantity`` (a count or measure with a unit, never money), ``"integer_of_decimal"``
+    (``integer_of_decimal``); None: they disagree."""
+    if rounding_only(values):
+        return "rounding"
+    if quantity and integer_of_decimal(values):
+        return "integer_of_decimal"
+    return None
+
+
 def currency_key(value: Any) -> str | None:
     """A currency cell's ISO code by the one currency table, else None."""
     from ontology.units import currency_code
@@ -330,8 +359,10 @@ def not_a_disagreement(field: str, readings: Sequence[Reading]) -> bool:
     system's own number (the tolerances above)."""
     values = [r.value for r in readings]
     currencies = {currency_key(r.currency) or r.currency for r in readings if r.currency}
-    if len(currencies) <= 1 and rounding_only(values):
-        # a sub-unit difference within one currency; 1000 CAD and 1000.4 USD differ
+    quantity = not currencies and all(r.unit for r in readings)
+    if len(currencies) <= 1 and same_quantity(values, quantity=quantity):
+        # a sub-unit difference within one currency (1000 CAD and 1000.4 USD differ), or
+        # a quantity one source keeps as an integer (32 and 32.5 boxes)
         return True
     if "currency" in field.lower():
         codes = {currency_key(v) for v in values}

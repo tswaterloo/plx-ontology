@@ -72,8 +72,9 @@ SAGE_RECEIPT = "sage.po_receipt_header"
 BATCH, FM_BATCH = "public.app_batch_record", "public.batch"
 MO = "public.app_manufacturing_order"
 SALES_ORDER = "public.app_sales_order"
+FM_ORDER_ENTRY = "public.order_entry"
 RELATIONS = (PO, PO_LINE, ENTITY_MAP, FM_PO, FM_PO_ITEM, FM_RECEIPT, FM_RAW_LOT, FM_PACK_LOT,
-             SAGE_PO, SAGE_RECEIPT, BATCH, FM_BATCH, MO, SALES_ORDER)
+             SAGE_PO, SAGE_RECEIPT, BATCH, FM_BATCH, MO, SALES_ORDER, FM_ORDER_ENTRY)
 BC_SETS = ("purchaseOrders", "purchaseOrderLines", "purchaseReceipts",
            "purchaseReceiptLines", "purchaseInvoices", "purchaseOrderReferences")
 
@@ -192,7 +193,9 @@ class Sources:
         return self.portal.get(relation) or ()
 
     def index(self) -> dict[str, Any]:
-        if self._ix:
+        # built once; other caches share ``_ix`` (``_row_of``'s rows_by_id), so a lot or
+        # batch claim checked first must never leave a partial index behind
+        if self._ix.get("_built"):
             return self._ix
         ix = self._ix
         by = lambda: defaultdict(list)  # noqa: E731
@@ -250,6 +253,7 @@ class Sources:
         for i in self.rows(SAGE_RECEIPT):
             ix["sage_rcpt"][_norm(i["row"].get("ponumber"))].append(i)
         ix["bulk_days"] = bulk_days(self)
+        ix["_built"] = True
         return ix
 
 
@@ -460,19 +464,24 @@ def po_evidence(src: Sources, g: Group) -> dict[str, Any]:
 
 
 def _fm_received(fm: Mapping[str, Any]) -> tuple[bool, list[str], list[str]]:
-    """(every live item received or closed with a receipt somewhere, the receipt and lot
-    citations, the items still open without any). A QC lot counts as a receipt only once
-    QC gave it a status: a status-less packaging lot row is a placeholder, not goods."""
+    """(every live item settled by FileMaker, the receipt and lot citations, the items
+    still open: not settled, a partial receipt included). A QC lot counts as a receipt
+    only once QC gave it a status: a status-less packaging lot row is a placeholder."""
     cites, open_items = [], []
     live = [i for i in fm["items"] if _norm(i["status"]) not in FM_ITEM_CANCEL]
     for item in live:
         got = [r["citation"] for r in item["receipts"]] + [l["citation"] for l in item["lots"]
                                                            if l["status"]]
-        if not got and _norm(item["status"]) in FM_ITEM_DONE:
-            got = [item["citation"]]   # FileMaker closed the item itself (Complete, OverPO)
-        cites += got
-        if not got and _norm(item["status"]) not in FM_ITEM_DONE:
+        word = _norm(item["status"])
+        if word in FM_ITEM_DONE:
+            cites += got or [item["citation"]]   # FileMaker closed the item itself
+        elif word or not got:
+            # a partial receipt never closes an item (owner, 2026-11-06): a back-ordered
+            # or waiting item is open, partly received when goods are recorded against it
+            cites += got
             open_items.append(item["citation"])
+        else:
+            cites += got   # no word served: its receipts are the only evidence
     return bool(live) and not open_items and bool(cites), cites, open_items
 
 
@@ -500,7 +509,8 @@ def po_verdict(src: Sources, object_id: str, need: str | None = None) -> dict[st
                    f"(header says {fm['status']!r})", [fm["citation"], *cites])
         elif cites and open_items:
             reason("P1-fm-partial", f"FileMaker {fm['number']}: {len(open_items)} item(s) "
-                   "still open with no receipt; others received", [fm["citation"], *cites])
+                   "still open (none or part received); others received",
+                   [fm["citation"], *cites])
         if fm["items"] and all(_norm(i["status"]) in FM_ITEM_CANCEL for i in fm["items"]):
             reason("P2-fm", f"FileMaker {fm['number']}: every item cancelled", [fm["citation"]])
     for p in ev["portal"]:
@@ -675,16 +685,33 @@ def at_risk_verdict(src: Sources, gap: Mapping[str, Any], cites: Sequence[Mappin
 
 def probes(src: Sources, claims: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """False negatives: what the sources say that no open claim reports (general rules)."""
-    claimed = {c["object_id"] for c in claims}
+    def ident(object_id: Any) -> tuple[str, str, str] | None:
+        # an object id compared by its parts, never its JSON spelling ({"id": 1} and
+        # {"id":1} and {"id":"1"} name one record)
+        if not isinstance(object_id, str):
+            return None
+        kind, binding, key = parse_object(object_id)
+        return (kind, binding, str(key.get("id"))) if key.get("id") is not None else None
+
+    def named(kinds: set[str]) -> set[tuple[str, str, str]]:
+        # every record a claim of these kinds is about or cites (a claim on a twin cites
+        # the other copy beside it)
+        out_ = set()
+        for c in claims:
+            if c.get("kind") in kinds:
+                out_ |= {i for i in [ident(c["object_id"]), *(ident(x.get("object_id"))
+                                                              for x in c.get("cites") or ())]
+                         if i is not None}
+        return out_
     out = []
     # L6: a batch made but never released by QC is a real hold
     for relation, qc_field, binding in ((BATCH, "status_qc", "portal.app_batch_record"),
                                         (FM_BATCH, "statusqc", "portal.fm_batch")):
         held = [i for i in src.rows(relation) if _norm(i["row"].get("status")) == "realized"
                 and _norm(i["row"].get(qc_field)) not in {"released", "rejected", ""}]
-        missed = [i for i in held if f'Batch:{binding}:{json.dumps({"id": i["row"].get("id")})}'
-                  not in claimed and f'Batch:{binding}:{json.dumps({"id": str(i["row"].get("id"))})}'
-                  not in claimed]
+        holds = named({"lot_on_hold"})
+        missed = [i for i in held
+                  if ("Batch", binding, str(i["row"].get("id"))) not in holds]
         if missed:
             out.append({"rule": "L6", "kind": "lot_on_hold", "count": len(missed),
                         "text": f"{len(missed)} {relation} batches were made but never "
@@ -703,13 +730,24 @@ def probes(src: Sources, claims: Sequence[Mapping[str, Any]]) -> list[dict[str, 
     today = src.as_of.isoformat()
     overdue = [i for i in src.rows(SALES_ORDER) if _norm(i["row"].get("status")) in {
         "open", "ready_to_ship"} and (_day(i["row"].get("required_date")) or "9999") < today]
-    at_risk = {c["object_id"] for c in claims if c.get("kind") == "order_at_risk"}
-    unclaimed = [i for i in overdue if not any(str(i["row"].get("id")) in oid
-                                               for oid in at_risk)]
+    # any claim about the order credits it (an overdue customer order, or one at risk);
+    # an order its FileMaker copy (custom_fields.fmId, a stored key) has closed is not open
+    about = named({"order_at_risk", "late_customer_order", "po_impact"})
+    fm_closed = {str(i["row"].get("id")) for i in src.rows(FM_ORDER_ENTRY)
+                 if any(stem in _norm(i["row"].get("status"))
+                        for stem in ("complet", "closed", "realiz", "shipped", "cancel"))}
+    unclaimed = []
+    for i in overdue:
+        cf = i["row"].get("custom_fields") if isinstance(i["row"].get("custom_fields"),
+                                                         dict) else {}
+        if str(cf.get("fmId")) in fm_closed and cf.get("fmId") is not None:
+            continue
+        if ("SalesOrder", "portal.app_sales_order", str(i["row"].get("id"))) not in about:
+            unclaimed.append(i)
     if unclaimed:
         out.append({"rule": "C2", "kind": "late_customer_order", "count": len(unclaimed),
                     "text": f"{len(unclaimed)} Portal sales orders are open past their "
-                    "required date and no claim reports them (no detector checks this)",
+                    "required date (and not closed in FileMaker) and no claim reports them",
                     "citations": [i["citation"] for i in unclaimed[:10]]})
     return out
 

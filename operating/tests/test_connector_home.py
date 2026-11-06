@@ -411,7 +411,10 @@ class HomeModeTest(Base):
         for count in (1, 10, 60):
             with self.subTest(count=count):
                 world = World()
-                made = {po(world, "Pending", "2026-10-01") for _ in range(count)}
+                # each order its own past day: one day on a bulk share of the orders would
+                # be a sync default, dating nothing (``operating.source_defaults``)
+                made = {po(world, "Pending", f"2026-09-{1 + i % 28:02d}")
+                        for i in range(count)}
                 self.engine(world)
                 started = monotonic()
                 found = self.find(Host(self.store), {"query": "late purchase orders",

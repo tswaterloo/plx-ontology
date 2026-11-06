@@ -2,8 +2,9 @@
 Business Central still has open lines; the received quantity; the requested-by date) are a
 named conflict, never one side silently picked: ``operating.po_status.read``'s
 ``conflicts``, ``plx.process``'s lateness entry ``systems_disagree`` and the proactive
-engine's ``systems_disagree`` gap on the home list. BC lines govern receipt state (owner
-decision: late = requested date passed and not fully received).
+engine's gap on the home list. A receipt in any copy closes the order (owner, 2026-11-06):
+an open copy of a received order is a reconciliation note (``receipt_reconciliation``),
+never late; BC's own lines decide alone only for an order no other system holds.
 
 Evidence label: ``isolated-fixture``. ``ProcessTest`` builds a store through the real
 projector and compiled schema from synthetic Portal and BC rows (the BC-Portal link from
@@ -13,6 +14,7 @@ the engine's synthetic ``World``. No source is read.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 import json
 import sqlite3
 import tempfile
@@ -199,12 +201,13 @@ class ProcessTest(unittest.TestCase):
         self.assertEqual((alone["state"], alone["late"]), ("not_applicable", False), alone)
         self.assertEqual(alone["note"], "closed short: 4 of 10 EA received; the rest is "
                                         "cancelled")
-        # open BC lines under a Portal Complete keep it open (BC governs receipt state):
-        # still late, never closed short
+        # open BC lines under a Portal Complete received in full: the receipt in the
+        # Portal closes the order; BC's open copy is a reconciliation note, never late
         governed, _ = self.lateness(self.world(status="Complete", bc_received="4",
                                                portal_lines=[("10", "10")]), FULL)
-        self.assertEqual((governed["state"], governed["late"]), ("late", True), governed)
-        self.assertNotIn("note", governed)
+        self.assertIsNot(governed["late"], True, governed)
+        (state,) = [c for c in governed["systems_disagree"] if c["field"] == "receipt_state"]
+        self.assertEqual((state["governs"], state.get("reconcile")), ("portal", True))
 
     def test_a_verdict_reads_every_line_aggregated_and_lists_a_few(self):
         # live 2026-11-02: a BC order of many lines and receipts (58,000 ordered) was
@@ -212,8 +215,8 @@ class ProcessTest(unittest.TestCase):
         # their aggregated quantities, a few are listed, the rest page through plx.around
         for n in (1, 10, 60):
             with self.subTest(n=n):
-                lines = [("1000", "800" if i % 3 else "1000") for i in range(n)]
-                # BC's open lines govern: open, its requested-by date long past
+                lines = [("1000", "1000" if i % 3 else "800") for i in range(n)]
+                # open in every copy (BC lines and the Portal's), its date long past
                 path = self.world(status="Pending", portal_lines=lines, bc_received="4")
                 entry, text = self.lateness(path, FULL)
                 self.assertEqual((entry["state"], entry["late"]), ("late", True), entry)
@@ -274,12 +277,14 @@ class ProcessTest(unittest.TestCase):
         self.assertNotIn("header", entry["gap"]["detail"])
         self.assertNotIn(BC_HANDLE, text)
 
-    def test_complete_against_open_bc_lines_is_named_cited_both_sides_and_bc_governs(self):
+    def test_complete_against_open_bc_lines_is_named_cited_both_sides_and_the_receipt_holds(
+            self):
         entry, _text = self.lateness(self.world(), FULL)
         conflicts = {c["field"]: c for c in entry["systems_disagree"]}
         self.assertEqual(set(conflicts), {"receipt_state", "received_quantity"})
         state = conflicts["receipt_state"]
-        self.assertEqual(state["governs"], "bc")
+        # the copy that records the goods received holds; BC's open lines are a note
+        self.assertEqual((state["governs"], state.get("reconcile")), ("portal", True))
         sides = {s["system"]: s for s in state["sides"]}
         self.assertEqual((sides["portal"]["value"], sides["bc"]["value"]),
                          (ps.FULLY_RECEIVED, ps.OPEN_LINES))
@@ -294,8 +299,14 @@ class ProcessTest(unittest.TestCase):
         qty = {s["system"]: s["value"] for s in conflicts["received_quantity"]["sides"]}
         self.assertEqual(qty, {"portal": "10", "bc": "4"})
         self.assertEqual(conflicts["received_quantity"]["unit"], "EA")
-        # BC governs receipt state: not fully received and the requested date has passed
-        self.assertEqual((entry["state"], entry["late"]), ("late", True))
+        # a receipt in any copy closes the order: never late on BC's open copy
+        self.assertIsNot(entry["late"], True, entry)
+        self.assertNotEqual(entry["state"], "late")
+
+    def test_a_received_integer_of_the_other_systems_decimal_is_one_quantity(self):
+        entry, _text = self.lateness(self.world(portal_received="4.5", bc_received="4"), FULL)
+        self.assertNotIn("received_quantity",
+                         {c["field"] for c in entry.get("systems_disagree") or []})
 
     def test_a_verified_posted_as_twin_is_compared_and_bc_governs_never_disputed(self):
         # live 2026-10-27: the entity map's verified bc_posted_as joined a Portal order
@@ -305,7 +316,10 @@ class ProcessTest(unittest.TestCase):
         # the corroborated Your Reference link, and the home engine reads it the same way
         # the live shape: BC's header word Open, a requested date both systems state
         path = self.world(posted=True, bc_status="Open", bc_expected="2026-09-01")
-        self.assert_late_from_both(path)
+        self.assert_received_from_both(path)
+        # open in both copies: compared (never disputed) and late from either record
+        self.assert_late_from_both(self.world(posted=True, bc_status="Open", status="Pending",
+                                              portal_received="4", bc_expected="2026-09-01"))
 
     def test_a_bc_draft_twin_states_no_receipt_and_never_reopens_a_complete_order(self):
         # live 2026-10-30: the Portal posts its orders to BC as Draft (never released, so
@@ -351,7 +365,8 @@ class ProcessTest(unittest.TestCase):
         # API does not carry it), and every PO's lateness went unstated. Not served at
         # all: the verdict stands with a caveat. Served on some orders and absent on this
         # one: still not stated (fails closed)
-        open_bc = dict(bc_status="Open", bc_received="4", bc_expected="2026-09-01")
+        open_bc = dict(bc_status="Open", bc_received="4", bc_expected="2026-09-01",
+                       status="Pending", portal_received="4")
         entry, _ = self.lateness(self.world(renumbered="unserved", **open_bc), FULL,
                                  po("bc", 1))
         self.assertEqual((entry["state"], entry["late"]), ("late", True), entry)
@@ -380,7 +395,8 @@ class ProcessTest(unittest.TestCase):
         # though this order's own FM twin is linked by its key. Only a key that could
         # point at this order (the far side) leaves the twins unproven. The due date is
         # the BC lines' expected receipt date (no header holds one).
-        path = self.world(fm_twin=True, portal_expected=None, line_expected="2026-09-01")
+        path = self.world(fm_twin=True, portal_expected=None, line_expected="2026-09-01",
+                          status="Pending", portal_received="4")
         with sqlite3.connect(path) as conn:
             report = json.loads(conn.execute("SELECT value FROM store_meta WHERE key = "
                                              "'build_report'").fetchone()[0])
@@ -439,7 +455,7 @@ class ProcessTest(unittest.TestCase):
                     _, text = self.lateness(path, PORTAL_ONLY, fm_root)
                     self.assertNotIn(BC_HANDLE, text)
 
-    def assert_late_from_both(self, path):
+    def assert_received_from_both(self, path):
         for root in (po("api", 1), po("bc", 1)):
             with self.subTest(root=root.split(":")[1]):
                 entry, _ = self.lateness(path, FULL, root)
@@ -447,8 +463,16 @@ class ProcessTest(unittest.TestCase):
                                     entry)
                 (state,) = [c for c in entry["systems_disagree"]
                             if c["field"] == "receipt_state"]
-                self.assertEqual(state["governs"], "bc")
-                self.assertEqual((entry["state"], entry["late"]), ("late", True))
+                self.assertEqual((state["governs"], state.get("reconcile")), ("portal", True))
+                self.assertIsNot(entry["late"], True, entry)
+
+    def assert_late_from_both(self, path):
+        for root in (po("api", 1), po("bc", 1)):
+            with self.subTest(root=root.split(":")[1]):
+                entry, _ = self.lateness(path, FULL, root)
+                self.assertNotEqual((entry.get("gap") or {}).get("reason"), "status_unknown",
+                                    entry)
+                self.assertEqual((entry["state"], entry["late"]), ("late", True), entry)
         # a reader of the Portal side only still sees nothing of BC through the posting
         entry, text = self.lateness(path, PORTAL_ONLY)
         self.assertNotIn("systems_disagree", entry)
@@ -473,14 +497,19 @@ class ProcessTest(unittest.TestCase):
 
     def test_bc_lines_govern_over_its_own_fully_received_flag(self):
         # live shape 2026-10-27: the BC header reads fullyReceived true while every line
-        # received 0; the lines govern, and both are cited on the BC side
+        # received 0; BC's own lines state its copy's receipt state, both cited on its side
         entry, _ = self.lateness(self.world(fully=True, bc_received="0"), FULL)
         (state,) = [c for c in entry["systems_disagree"] if c["field"] == "receipt_state"]
         bc = next(s for s in state["sides"] if s["system"] == "bc")
         self.assertEqual(bc["value"], ps.OPEN_LINES)
         self.assertLessEqual({"bc_fully_received", "received_quantity"},
                              {v["property"] for v in bc["values"]})
-        self.assertEqual(entry["state"], "late")
+        # the Portal's receipt closes the order all the same
+        self.assertNotEqual(entry["state"], "late")
+        # open in the Portal too: BC's open lines (not its flag) keep it open, late
+        both, _ = self.lateness(self.world(fully=True, bc_received="0", status="Pending",
+                                           portal_received="4"), FULL)
+        self.assertEqual(both["state"], "late", both)
 
     def test_records_that_agree_state_no_conflict(self):
         entry, _ = self.lateness(self.world(bc_received="10", fully=True), FULL)
@@ -543,16 +572,25 @@ class ProcessTest(unittest.TestCase):
         self.assertNotIn(BC_HANDLE, text)
 
 
+RECONCILE = "receipt_reconciliation"
+
+
 class EngineTest(Engine):
-    """The home list's ``systems_disagree`` gap, per reader."""
+    """The home list's ``receipt_reconciliation`` note (an open copy of an order another
+    copy records received) and late items, per reader."""
 
     def pair(self, w: World, *, bc_fully: str = "false", portal_audience: str = "api:a",
              bc_audience: str = "bc:x", tier: str = "corroborated", bc_status: str = "Open",
-             link: str = "PurchaseOrder.same_record_as"):
-        portal = w.obj("PurchaseOrder", {"status": "Complete", "expected_date": "2026-10-01"},
+             link: str = "PurchaseOrder.same_record_as", portal_status: str = "Complete",
+             portal_received: str = "10"):
+        # each order its own past day: one day on a bulk share of the orders would be a
+        # sync's default, never a requested-by date (``source_defaults``)
+        day = (date(2026, 9, 1) + timedelta(days=w.n % 28)).isoformat()
+        portal = w.obj("PurchaseOrder", {"status": portal_status, "expected_date": day},
                        audience=portal_audience, binding="portal.app_purchase_order")
         w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
-            "ordered_quantity": ("10", "ea"), "received_quantity": ("10", "ea", "received")},
+            "ordered_quantity": ("10", "ea"),
+            "received_quantity": (portal_received, "ea", "received")},
             audience=portal_audience), portal)
         bc = w.obj("PurchaseOrder", {"bc_status": bc_status, "bc_fully_received": bc_fully},
                    audience=bc_audience, binding="bc.purchase_orders")
@@ -564,20 +602,17 @@ class EngineTest(Engine):
         portal, bc = self.pair(w)
         self.run_engine(w)
         gaps = self.read()["gaps"]
-        found = [g for g in gaps if g["kind"] == "systems_disagree"]
+        found = [g for g in gaps if g["kind"] == RECONCILE]
         self.assertEqual(len(found), 1)   # once, though both records are read as roots
         gap = found[0]
-        self.assertEqual(gap["object_id"], bc)   # the governing record
+        self.assertEqual(gap["object_id"], bc)   # the copy that needs reconciling
         self.assertIn("portal says fully received", gap["summary"])
         self.assertIn("bc says open lines still outstanding", gap["summary"])
-        self.assertIn("BC lines govern receipt state", gap["summary"])
+        self.assertIn("portal records the goods received", gap["summary"])
         n = lambda oid: int(oid.rsplit(":", 1)[1])   # noqa: E731
         self.assertLessEqual({handle(n(portal)), handle(n(bc))}, set(gap["citations"]))
-        # BC governs: the order is open and late, listed once on its BC record, citing
-        # the BC flag and the Portal twin
-        late = [g for g in gaps if g["kind"] != "systems_disagree"]
-        self.assertEqual([(g["kind"], g["object_id"]) for g in late], [("unconfirmed_po", bc)])
-        self.assertLessEqual({handle(n(bc)), handle(n(portal))}, set(late[0]["citations"]))
+        # a receipt in any copy closes the order: no late item, no systems_disagree alert
+        self.assertEqual([g for g in gaps if g["kind"] != RECONCILE], [])
 
     def test_one_late_item_per_order_on_its_governing_record_citing_the_twin(self):
         # The BC record and its Portal twin each raised a late or
@@ -587,7 +622,8 @@ class EngineTest(Engine):
             with self.subTest(n=count):
                 w = World()
                 pairs = [self.pair(w, bc_status="Open", link="PurchaseOrder.bc_posted_as",
-                                   tier="verified") for _ in range(count)]
+                                   tier="verified", portal_status="Pending",
+                                   portal_received="0") for _ in range(count)]
                 result = self.run_engine(w)
                 late = [g for g in self.read(limit=1000)["gaps"]
                         if g["kind"] in ("late_po", "unconfirmed_po")]
@@ -614,13 +650,14 @@ class EngineTest(Engine):
                                     tier=("verified", "corroborated")[i % 2])
                           for i in range(count)]
                 issued = [self.pair(w, bc_status="Open", link="PurchaseOrder.bc_posted_as",
-                                    tier="verified") for _ in range(count)]
+                                    tier="verified", portal_status="Pending",
+                                    portal_received="0") for _ in range(count)]
                 self.run_engine(w)
                 gaps = self.read(limit=1000)["gaps"]
                 late = sorted(g["object_id"] for g in gaps
                               if g["kind"] in ("late_po", "unconfirmed_po"))
                 self.assertEqual(late, sorted(bc for _, bc in issued))
-                disagree = {r for g in gaps if g["kind"] == "systems_disagree"
+                disagree = {r for g in gaps if g["kind"] in ("systems_disagree", RECONCILE)
                             for r in (g["object_id"],)}
                 self.assertFalse(disagree & {r for pair in drafts for r in pair})
                 self.store.unlink()
@@ -699,10 +736,13 @@ class EngineTest(Engine):
                     draft = w.obj("PurchaseOrder", {"bc_status": "Draft",
                                                     "bc_fully_received": "false"},
                                   audience="bc:x", binding="bc.purchase_orders")
+                    # each its own past day: a day a bulk share of the lines holds would be
+                    # a sync default, dating nothing (``source_defaults``)
+                    day = (date(2026, 1, 1) + timedelta(days=i)).isoformat()
                     w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
                         "ordered_quantity": ("10", "ea"),
                         "received_quantity": (str(4 * received), "ea", "received"),
-                        "bc_expected_receipt_date": "2026-07-14"}, audience="bc:x"), draft)
+                        "bc_expected_receipt_date": day}, audience="bc:x"), draft)
                     w.link("PurchaseOrder.bc_posted_as", portal, draft, "verified")
                     (dated if received else undated).append((portal, draft))
                 summary = self.run_engine(w)
@@ -748,7 +788,9 @@ class EngineTest(Engine):
 
     def test_a_draft_twins_lines_are_never_late_lines(self):
         # decision 2026-11-01 (lead, on the review's open question): rule 1 covers the
-        # line-level late_order rule too; a Draft received against keeps its line dates
+        # line-level late_order rule too. A line is late only on an order the one purchase
+        # order rule calls late: a BC Draft (alone, received against or not) is not issued,
+        # so neither order's lines are late lines
         w = World()
         orders = {}
         for received in ("0", "4"):
@@ -764,8 +806,9 @@ class EngineTest(Engine):
         line_late = {g["object_id"] for g in self.read(limit=1000)["gaps"]
                      if g["kind"] == "late_order"}
         self.assertNotIn(orders["0"], line_late)
-        self.assertIn(orders["4"], line_late)
+        self.assertNotIn(orders["4"], line_late)
         self.assertEqual(summary["not_evaluated"]["late_order"]["draft_dates_nothing"], 1)
+        self.assertEqual(summary["not_evaluated"]["late_order"]["order_not_late"], 1)
 
     def test_one_bc_order_with_two_portal_twins_is_one_order(self):
         w = World()
@@ -782,10 +825,8 @@ class EngineTest(Engine):
         portal, bc = self.pair(w, bc_status="Open")
         self.run_engine(w)
         gaps = self.read()["gaps"]
-        self.assertEqual([g["object_id"] for g in gaps if g["kind"] == "systems_disagree"],
-                         [bc])
-        self.assertIn(bc, {g["object_id"] for g in gaps
-                           if g["kind"] != "systems_disagree"})
+        self.assertEqual([g["object_id"] for g in gaps if g["kind"] == RECONCILE], [bc])
+        self.assertEqual([g for g in gaps if g["kind"] != RECONCILE], [])   # never late
         self.assertNotIn(portal, {g["object_id"] for g in gaps})   # one item per order
 
     def test_a_settled_portal_bc_twin_is_compared_the_same_way(self):
@@ -799,10 +840,9 @@ class EngineTest(Engine):
                 portal, bc = self.pair(w, bc_status="Open", link=link, tier=tier)
                 self.run_engine(w)
                 gaps = self.read()["gaps"]
-                self.assertEqual([g["object_id"] for g in gaps
-                                  if g["kind"] == "systems_disagree"], [bc])
-                self.assertIn(bc, {g["object_id"] for g in gaps
-                                   if g["kind"] != "systems_disagree"})
+                self.assertEqual([g["object_id"] for g in gaps if g["kind"] == RECONCILE],
+                                 [bc])
+                self.assertEqual([g for g in gaps if g["kind"] != RECONCILE], [])
                 self.assertNotIn(portal, {g["object_id"] for g in gaps})   # one item per order
                 self.store.unlink()
                 self.inbox.unlink(missing_ok=True)
@@ -814,7 +854,7 @@ class EngineTest(Engine):
                 portal, _bc = self.pair(w, **kw)
                 self.run_engine(w)
                 gaps = self.read()["gaps"]
-                self.assertFalse([g for g in gaps if g["kind"] == "systems_disagree"])
+                self.assertFalse([g for g in gaps if g["kind"] in ("systems_disagree", RECONCILE)])
                 self.assertNotIn(portal, {g["object_id"] for g in gaps})   # complete
                 self.store.unlink()
                 self.inbox.unlink(missing_ok=True)
@@ -827,7 +867,7 @@ class EngineTest(Engine):
             with self.subTest(reader_of=audience):
                 view = self.read(may_read=lambda key, a=audience: key == a)
                 text = json.dumps(view)
-                self.assertFalse([g for g in view["gaps"] if g["kind"] == "systems_disagree"])
+                self.assertFalse([g for g in view["gaps"] if g["kind"] in ("systems_disagree", RECONCILE)])
                 self.assertNotIn(portal, {g["object_id"] for g in view["gaps"]})
                 hidden = bc if audience == "api:a" else portal
                 self.assertNotIn(handle(int(hidden.rsplit(":", 1)[1])), text)
@@ -837,7 +877,7 @@ class EngineTest(Engine):
         portal, _ = self.pair(w, bc_fully="maybe")
         self.run_engine(w)
         gaps = self.read()["gaps"]
-        self.assertFalse([g for g in gaps if g["kind"] == "systems_disagree"])
+        self.assertFalse([g for g in gaps if g["kind"] in ("systems_disagree", RECONCILE)])
         self.assertNotIn(portal, {g["object_id"] for g in gaps})
 
     def test_cardinality_one_gap_per_disagreeing_pair(self):
@@ -849,7 +889,7 @@ class EngineTest(Engine):
                 self.run_engine(w)
                 self.assertLess(time.monotonic() - started, 10)
                 found = sorted(g["object_id"] for g in self.read(limit=1000)["gaps"]
-                               if g["kind"] == "systems_disagree")
+                               if g["kind"] == RECONCILE)
                 self.assertEqual(found, sorted(bc for _, bc in pairs))
                 self.store.unlink()
                 self.inbox.unlink(missing_ok=True)
@@ -858,7 +898,7 @@ class EngineTest(Engine):
 class ReaderTest(unittest.TestCase):
     """``po_status.read`` with no governing side: the status is disputed, never picked."""
 
-    def test_two_non_bc_systems_disagreeing_is_disputed(self):
+    def test_a_receipt_in_one_non_bc_copy_closes_the_order(self):
         class Src:
             def twins(self, oid):
                 return [oid], False, []
@@ -878,15 +918,15 @@ class ReaderTest(unittest.TestCase):
                 return [], [], False, []
 
         po_read = ps.read(Src(), "PurchaseOrder:portal.app_purchase_order:p", dates=False)
-        self.assertEqual(po_read.status, ps.PoStatus(ps.UNKNOWN, reason="status_disputed"))
+        self.assertEqual(po_read.status, ps.PoStatus(ps.CLOSED, ps.RECEIVED))
         (conflict,) = [c for c in po_read.conflicts if c["field"] == "receipt_state"]
-        self.assertIsNone(conflict["governs"])
+        self.assertEqual((conflict["governs"], conflict["reconcile"]), ("portal", True))
 
-    def test_unknown_quantities_name_the_qc_log_against_both_ordered_totals(self):
-        # the Portal lines received 0 (seeded) of 10,000; the FileMaker QC log holds 3,180
-        # against a FileMaker ordered total of 9,000, so the QC quantity is not proven in
-        # the Portal's unit: unknown, with the numbers that say why; a header word that is
-        # not one short word is never quoted
+    def test_filemakers_items_decide_its_mirror_and_are_named(self):
+        # the Portal lines received 0 (seeded) of 10,000; FileMaker's own item is short
+        # (3,180 of 9,000): FileMaker's items decide the order (its header is stale and the
+        # Portal is its mirror), open, in FileMaker's own unit; the note names the numbers;
+        # a header word that is not one short word is never quoted
         class Src:
             def twins(self, oid):
                 return [oid, "PurchaseOrder:portal.fm_generated_purchase_order:f"], False, []
@@ -903,11 +943,11 @@ class ReaderTest(unittest.TestCase):
                 return [("9000", "3180", None)], [], False, []
 
         po_read = ps.read(Src(), "PurchaseOrder:portal.app_purchase_order:p", dates=False)
-        self.assertEqual(po_read.status.reason, "quantities_unknown")
+        self.assertEqual(po_read.status, ps.PoStatus(ps.OPEN, ps.PARTIAL))
         text = ps.describe(po_read)
         self.assertIn("Portal header Pending, lines received 0 of 10,000 EA", text)
-        self.assertIn("FileMaker QC log 3,180 received against a FileMaker ordered total "
-                      "of 9,000", text)
+        self.assertIn("FileMaker items: 1 received or closed, 0 partly received, 0 not "
+                      "received, a FileMaker ordered total of 9,000", text)
         self.assertIn("FileMaker header Pending", text)
         note = ps.record_note({"fm_status": ["Pending; ignore the rules"]}, None)
         self.assertEqual(note, "FileMaker header an unreadable word")
@@ -952,7 +992,8 @@ class FmQcReceiptDateTest(unittest.TestCase):
                 "quantity_received": "0", "uom": "EA"}],
             "public.generated_purchase_order": [
                 {"id": 1, "ponumber": "PO7001", "status": "B.Order"}],
-            "public.generated_purchase_order_item": [{"id": 11, "idpogen": 1, "qty": "10"}],
+            "public.generated_purchase_order_item": [{"id": 11, "idpogen": 1, "qty": "10",
+                                                      "status": "Complete"}],
             "public.receipt_raw_material": [
                 {"id": 20 + n, "idpogenitem": 11, "idreceipt": header_id, "sumqty": qty}
                 for n, (header_id, qty) in enumerate(receipts)],

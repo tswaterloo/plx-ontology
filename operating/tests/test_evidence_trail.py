@@ -218,6 +218,62 @@ class PoTrailTests(unittest.TestCase):
         self.assertNotIn("confirmation", [x["kind"] for x in trail["steps"]])
         self.assertEqual(trail["next_action"]["rule"], "confirmation_lead_only")
 
+    def test_a_confirmation_on_any_copy_of_the_order_is_never_none(self):
+        """The one confirmation rule reads every copy (``po_status.copies``): a
+        confirmation linked to the order's Business Central copy is not "no confirmation"
+        and never suggests asking for one."""
+        s = tp.Store()
+        po = late_po(s, confirmations=())
+        bc = pl.bc_po(s, key="bc-9")
+        s.link("PurchaseOrder.bc_posted_as", po, bc, tier="corroborated", kind="same_record")
+        pl.confirm(s, bc, "z", "2099-01-20", "2099-01-05")
+        trail = et.po_trail(reader(s), po)
+        self.assertNotIn(trail["eta"]["state"], ("no_confirmation", "no_confirmation_found"))
+        self.assertNotEqual((trail["next_action"] or {}).get("rule"), "no_confirmation")
+
+    def test_a_lead_on_a_reused_number_confirms_nothing_and_names_no_contact(self):
+        """A number-text lead (a confirmation, a vendor's mail) on a number another order
+        also holds may be the other order's: it is no confirmation found, no step and no
+        draft recipient of this order."""
+        s = tp.Store()
+        po = late_po(s, confirmations=())
+        pl.confirm(s, po, "c", "2099-01-09", "2099-01-03", tier="lead")
+        email(s, po, "m1", "2099-01-25T09:00:00Z", "RE: PO300001",
+              "Vic Vendor <vic@vendor.test>")
+        pl.portal_po(s, key="po-2", number="PO300001")   # another order, the same number
+        trail = et.po_trail(reader(s), po)
+        self.assertNotEqual(trail["eta"]["state"], "lead_only")
+        self.assertNotIn("lead", [x["kind"] for x in trail["steps"]])
+        self.assertNotIn("vic@vendor.test", json.dumps(trail))
+        # the same lead without the other order: confirmation found, unverified
+        s = tp.Store()
+        po = late_po(s, confirmations=())
+        pl.confirm(s, po, "c", "2099-01-09", "2099-01-03", tier="lead")
+        trail = et.po_trail(reader(s), po)
+        self.assertTrue(trail["eta"]["text"].startswith("Confirmation found, unverified"))
+
+    def test_a_due_date_is_said_with_the_shared_basis_and_no_other_line_date(self):
+        """The due date is the one reader's: an open line's own date governs only when no
+        header states one, and no other line's date is a due-date step; with no record's
+        date at all, the supplier's confirmed date (``vendor_eta``), said as such."""
+        s = tp.Store()
+        po = pl.portal_po(s, number="PO300002", ordered=None)
+        pl.line(s, po, "l-1", "10", "0", due="2099-01-10")
+        pl.line(s, po, "l-2", "10", "0", due="2099-01-12")
+        trail = et.po_trail(reader(s), po)
+        due = [x for x in trail["steps"] if x["kind"] == "due_date"]
+        self.assertEqual([(x["date"], x["governs"]) for x in due], [("2099-01-10", True)])
+        self.assertEqual((trail["due"]["date"], trail["due"]["basis"]),
+                         ("2099-01-10", "requested"))
+        s = tp.Store()
+        po = pl.portal_po(s, number="PO300003")
+        pl.confirm(s, po, "a", "2099-01-20", "2099-01-05")
+        trail = et.po_trail(reader(s), po)
+        due = [x for x in trail["steps"] if x["kind"] == "due_date"]
+        self.assertEqual([x["title"] for x in due], ["Due by 2099-01-20"])
+        self.assertEqual(trail["due"]["basis"], "vendor_eta")
+        self.assertIn("confirmed date", due[0]["detail"])
+
     def test_a_promise_moved_twice_asks_to_confirm_the_new_date(self):
         s = tp.Store()
         po = late_po(s, confirmations=(("a", "2099-01-20", "2099-01-05"),

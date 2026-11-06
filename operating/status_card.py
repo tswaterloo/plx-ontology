@@ -193,7 +193,8 @@ DISAGREE_WORDS = {"receipt_state": "whether it is fully received",
                   "expected_date": "the requested-by date"}
 STATE_WORDS = {"fully_received": "fully received",
                "open_lines_outstanding": "open lines still outstanding"}
-SYSTEM_LABELS = {"portal": "the Portal", "bc": "Business Central"}
+SYSTEM_LABELS = {"portal": "the Portal", "bc": "Business Central", "filemaker": "FileMaker",
+                 "sage": "Sage"}
 
 
 def system_label(system: Any) -> str:
@@ -455,8 +456,9 @@ class _Card:
                        if field == "receipt_state" else f"{s.get('value')}{unit}")
                     for s in sides]
             governs = conflict.get("governs")
-            rule = ("Business Central's lines govern" if governs and field != "expected_date"
-                    else "the declared date precedence governs" if governs
+            rule = ("the declared date precedence governs" if governs and field == "expected_date"
+                    else f"{system_label(governs)} records the goods received; a receipt in any "
+                    "system closes the order and the other copy needs reconciling" if governs
                     else "no system governs, so it is not decided")
             self.fact(f"Systems disagree on {DISAGREE_WORDS[field]}: " + "; ".join(said)
                       + f" ({rule}).", {"governs": governs, "values": [

@@ -160,32 +160,27 @@ def shown_numbers(numbers: list[Decimal]) -> list[str]:
     return [format(n.normalize(), "f") for n in numbers]
 
 
-# Units that count whole things: a source recording them in a whole-number field cannot
-# state the part of one (half a box), so it keeps the whole part of the other's count.
-COUNT_UNITS = frozenset({"box", "boxes", "ea", "each", "pc", "pcs", "piece", "pieces",
-                         "case", "cases", "carton", "cartons"})
+# A record whose lifecycle is over: the words every closed-status vocabulary of the
+# codebase agrees on (``impact_chain.CLOSED_ORDER`` and ``CLOSED_ASSEMBLY``,
+# ``proactive_events.CLOSED_BATCH``). Words closed for one type and open for another
+# (a released purchase order is issued; a released batch is in stock) are left out.
+CLOSED_STATUS = frozenset({"closed", "cancelled", "canceled", "completed", "complete",
+                           "realized"})
 
 
-def whole_part_only(numbers: Sequence[Decimal], unit: str | None) -> bool:
-    """Whether two values are one count that one source keeps whole: exactly two distinct
-    values, in a unit that counts whole things (``COUNT_UNITS``), one a non-zero whole
-    number and the other a fraction it is the whole part of (toward zero): 32 and 32.5
-    boxes. Anything else stays a conflict: three values, a measured unit (32 and 32.9
-    kg), or zero against a part (0 and 0.75: nothing against part of one)."""
-    if (unit or "").strip().lower() not in COUNT_UNITS or len(set(numbers)) != 2:
-        return False
-    whole = [n for n in numbers if n == n.to_integral_value()]
-    if len(whole) != 1 or whole[0] == 0:
-        return False
-    (part,) = [n for n in numbers if n != whole[0]]
-    return part.to_integral_value(rounding="ROUND_DOWN") == whole[0]
+def status_closed(value: Any) -> bool:
+    """Whether a record's own ``status`` value says its lifecycle is over (``CLOSED_STATUS``,
+    any case). Anything else, unreadable included, is not known closed."""
+    if isinstance(value, Mapping):
+        value = value.get("untrusted_text")
+    return isinstance(value, str) and value.strip().strip('"').lower() in CLOSED_STATUS
 
 
 def _conflicting_quantities(conflicts: Any, skipped: Any = None
                             ) -> list[dict[str, Any]]:
     """``skipped``: a Counter told how many value sets were not raised and why
-    (``whole_part_only``), so none is left out silently."""
-    from .answer_conflicts import rounding_only
+    (``integer_of_decimal``), so none is left out silently."""
+    from .answer_conflicts import same_quantity
 
     out = []
     for conflict in conflicts if isinstance(conflicts, list) else []:
@@ -208,12 +203,11 @@ def _conflicting_quantities(conflicts: Any, skipped: Any = None
                         for number in distinct]
             if len(distinct) < 2 or not all(requires):
                 continue   # every disagreeing value must be cited
-            if rounding_only([format(n, "f") for n in distinct]):
-                continue   # 1257 and 1257.1666...: one quantity, rounded differently
-            if whole_part_only(distinct, unit):
-                if skipped is not None:
-                    skipped["whole_part_only"] += 1
-                continue   # 32 and 32.5 boxes: one source holds whole boxes only
+            how = same_quantity([format(n, "f") for n in distinct], quantity=True)
+            if how == "integer_of_decimal" and skipped is not None:
+                skipped[how] += 1   # 32 and 32.5: one source stores it as an integer
+            if how:
+                continue   # one quantity (1257 and 1257.1666...: rounded differently)
             shown = " and ".join(f"{n} {unit}" for n in shown_numbers(distinct))
             name = f"{role} quantity" if role else "quantity"
             out.append({
@@ -299,9 +293,18 @@ def _detect(card: Mapping[str, Any], as_of: date
     if not isinstance(object_id, str) or not isinstance(object_type, str):
         return []
     found = [*_missing_in_record(card.get("leads")),
-             *_conflicting_quantities(card.get("conflicts")),
+             *([] if _closed_record(card.get("values"))
+               else _conflicting_quantities(card.get("conflicts"))),
              *_expired_quote(object_type, card.get("values"), as_of)]
     return [(_gap_of(object_id, object_type, item), item["requires"]) for item in found]
+
+
+def _closed_record(values: Any) -> bool:
+    """Whether any copy's ``status`` on the card says the record is closed: a disagreement
+    on it leaves nothing to act on."""
+    return any(isinstance(item, Mapping) and item.get("property") == "status"
+               and status_closed(item.get("value"))
+               for item in (values if isinstance(values, list) else []))
 
 
 def _gap_of(object_id: str, object_type: str, item: Mapping[str, Any]) -> dict[str, Any]:

@@ -202,6 +202,8 @@ def systems_disagree(po: ps.PoRead) -> list[dict[str, Any]]:
                           "value": side["value"], "values": cited})
         if all(side["values"] for side in sides):
             out.append({"field": conflict["field"], "governs": conflict["governs"],
+                        # one copy received, the other still open: a reconciliation note
+                        **({"reconcile": True} if conflict.get("reconcile") else {}),
                         # $defs/unit or null: a source unit outside the grammar is
                         # source text and never leaves as a bare unit
                         **({"unit": conflict["unit"] if is_unit(conflict["unit"]) else None}
@@ -581,15 +583,19 @@ def lateness(tools: "ProcessTools", ctx: "_Ctx", graph: Mapping[str, Any], oid: 
     lo, hi = need.lo, need.hi
     governing_values: list[dict[str, Any]] = list(need.governing)
     if lo is not None:
-        entry["governing"] = "expected"
+        # a requested-by date a record states, else a labelled due date (owner,
+        # 2026-11-06): the supplier's own confirmed date, or the order's lead time
+        entry["governing"] = {"vendor_eta": "vendor_promise", "lead_time": "lead_time"
+                              }.get(need.basis, "expected")
         if lo != hi:
             reasons.add("expected_dates_disagree")
     elif blocking is None:
         # the requested-by date is the reference: a supplier promise never stands in
         reasons.add("no_expected_date")
         blocking = _gap("absent_in_source", "no_due_date", subject,
-                        "no planned (requested-by) date is recorded in any source; a "
-                        "supplier promise is never put in its place")
+                        "no planned (requested-by) date, settled supplier-confirmed date "
+                        "or lead time is recorded in any source (a date a bulk import or the "
+                        "record's own creation wrote is no date)")
     if latest is not None and (latest != first and first is not None and latest > first
                                or hi is not None and entry.get("governing") == "expected"
                                and latest > hi):

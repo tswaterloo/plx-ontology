@@ -290,18 +290,20 @@ class PromiseTests(Base):
         self.assertEqual((entry["promised_date"], entry["revised_date"]),
                          ("2099-01-28", "2099-01-20"))
 
-    def test_a_promise_never_stands_in_for_a_missing_requested_by_date(self):
+    def test_with_no_requested_date_the_suppliers_confirmed_date_is_a_labelled_due_date(self):
         s = tp.Store()
         po = portal_po(s)
         confirm(s, po, "a", "2099-01-20", "2099-01-02")
         confirm(s, po, "b", "2099-01-28", "2099-01-08")
         entry = self.late(s, po)
-        # the requested-by date is the reference or it is reported missing (Vince)
-        self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
-                         ("undetermined", None, "no_due_date"))
-        for key in ("governing", "governing_date", "measured_on", "at_risk", "days_late"):
-            self.assertNotIn(key, entry)
-        self.assertEqual(entry["reasons"], ["no_expected_date", "promise_slipped"])
+        # owner 2026-11-06: no record states a requested-by date, so the supplier's own
+        # latest confirmed date is the due date, labelled as such (never "expected")
+        self.assertEqual((entry["state"], entry["late"], entry["governing"],
+                          entry["governing_date"], entry["days_late"]),
+                         ("late", True, "vendor_promise", "2099-01-28", 4))
+        self.assertNotIn("gap", entry)
+        self.assertIn("promise_slipped", entry["reasons"])
+        self.assertNotIn("no_expected_date", entry["reasons"])
         self.assertEqual((entry["promised_date"], entry["revised_date"]),
                          ("2099-01-20", "2099-01-28"))
 
@@ -408,9 +410,10 @@ class VendorPromiseTests(Base):
         confirm(s, po, "a", "2099-01-20", "2099-01-02")
         confirm(s, po, "b", "2099-01-28", "2099-01-08", binding=FILES)
         entry, vendor = self.vendor(s, po)
-        # our verdict is unchanged: no requested-by date, so none is stated
-        self.assertEqual((entry["state"], entry["late"], entry["gap"]["reason"]),
-                         ("undetermined", None, "no_due_date"))
+        # no requested-by date: the supplier's latest confirmed date is the labelled due
+        self.assertEqual((entry["state"], entry["late"], entry["governing"],
+                          entry["governing_date"]), ("late", True, "vendor_promise",
+                                                     "2099-01-28"))
         # against the vendor's latest (revised) promise: today 2099-02-01 is 4 days past
         self.assertEqual((vendor["basis"], vendor["link"], vendor["state"], vendor["late"],
                           vendor["promised_date"], vendor["days_late"],

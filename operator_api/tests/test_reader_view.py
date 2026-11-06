@@ -220,7 +220,11 @@ class TestRecords(unittest.TestCase):
 
     def test_the_rule_names_only_what_says_it_is_a_test(self):
         for text in ("Lorpon Labels (DO NOT USE)", "Crown Grooming (Do Not Use)", "TEST",
-                     "Laura TEST", "UAT-SO100004", "uat-AO-26001A"):
+                     "Laura TEST", "UAT-SO100004", "uat-AO-26001A",
+                     # the engine's one marks rule (``proactive_engine.TEST_MARK``), read
+                     # on a label as on a document: never a second list of marks
+                     "INVOICETEST-2", "DEMO-SO1001", "PLX-VAL-0003", "UAT-SH100034",
+                     "INVOICE-PO100106-UAT"):
             self.assertTrue(test_records.is_test([text]), text)
         for party in ("TEST", "Laura TEST"):
             self.assertTrue(test_records.is_test([], parties=[party]), party)

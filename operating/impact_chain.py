@@ -71,7 +71,9 @@ Per affected customer order (an order cluster: an order and its recorded twins):
   currency, their sum and basis: ``operating.proactive_engine`` raises it as ``po_impact``
   (no money) and ``po_impact_margin`` (finance-marked citations: finance readers only).
 
-Orders whose every readable status is closed (``CLOSED_ORDER``) and assembly orders whose
+Orders closed by the one sales-order definition (``operating.sales_order_status``: closed
+in any record of the order, its own system's word, a BC fully shipped flag or a linked
+shipment or invoice) and assembly orders whose
 status is done or cancelled (``CLOSED_ASSEMBLY``; the record of the strongest authority the
 reader can read decides, so a stale Portal copy never reopens a realized FileMaker AO) put
 nothing at risk and
@@ -97,6 +99,8 @@ import json
 import re
 from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
+from . import sales_order_status as so_status
+
 ENGINE = "impact_chain"
 FIRM_TIERS = ("verified", "reviewed", "corroborated")
 LEAD_TIERS = ("stored_by_text_join", "lead")
@@ -104,8 +108,6 @@ MAX_TWINS = 32
 MAX_CHAINS = 400          # chains walked from one purchase order before the walk is cut
 MAX_STEP_CHARS = 400
 MAX_GAP_SUBJECTS = 5
-CLOSED_ORDER = frozenset({"shipped", "invoiced", "closed", "cancelled", "canceled",
-                          "completed", "complete", "delivered"})
 # FileMaker's words, then the Portal manufacturing order's post-production states (its
 # status transitions: COMPLETED -> RELEASED -> CLOSED, REJECTED -> CLOSED; the FM migration
 # writes a realized AO as RELEASED).
@@ -156,9 +158,12 @@ CHAIN_BASES = {
                "link)",
 }
 INFER_WINDOW_DAYS = 90
-# An order a lead may pair with must state an open status: none of these (closed, or made
-# and waiting only to ship, so no open assembly order is still making it).
-NOT_AWAITING_SUPPLY = CLOSED_ORDER | {"ready_to_ship", "ready to ship", "released"}
+# An order a lead may pair with must be open by the one sales-order definition and not
+# made and waiting only to ship (no open assembly order is still making it).
+MADE_AWAITING_SHIPMENT = frozenset({"ready to ship", "ready"})
+# ``order_status``'s key, beside its properties, for a record a settled shipment or invoice
+# is linked to (``so_status.FULFILLED_LINKS``)
+FULFILLED = "_fulfilled"
 # The planned date of an assembly order, by the first event type that dates it.
 PLANNED_EVENTS = ("AssemblyOrder.scheduled", "AssemblyOrder.portal_scheduled_start")
 # Margin at stake: an order's lines (ORDER_LINE reversed), the item each sells and its twins.
@@ -275,6 +280,8 @@ _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _LATE_KEYS = ("po", "state", "governing", "measured", "revised", "received", "at_risk",
               "promised")
 ARG_KEYS = {"lateness", "required", "order_status", "value", "currency", "assembly_status"}
+# the order records' own days (a required date equal to one is no requested date)
+OPTIONAL_ARG_KEYS = {"order_own_days"}
 # Optional: all three or none (no margin is computed without them).
 MARGIN_ARG_KEYS = {"line_amount": ("SalesOrderLine",), "line_quantity": ("SalesOrderLine",),
                    "item_cost": ("Product",)}
@@ -707,7 +714,7 @@ def walk(po: str, graph: Graph, per_line: bool = False
 
 def infer_demand(graph: Graph, *, planned: Mapping[str, Sequence[tuple[date, str, str]]],
                  required: Mapping[str, Sequence[tuple[date, str]]],
-                 order_status: Mapping[str, Sequence[Any]],
+                 order_status: Mapping[str, Mapping[str, Any]],
                  assembly_status: Mapping[str, Sequence[Any]],
                  ordered: Mapping[str, Sequence[tuple[date, str]]] | None = None,
                  window: int = INFER_WINDOW_DAYS) -> dict[str, list[Demand]]:
@@ -718,9 +725,10 @@ def infer_demand(graph: Graph, *, planned: Mapping[str, Sequence[tuple[date, str
     strongest-authority status, ``_assembly_closed``), has no firm order line or allocation
     of its own, makes one item cluster and has one planned date (``planned``: object id ->
     [(date, event type, l1 handle)], the first of ``PLANNED_EVENTS`` that dates it), and an
-    order that states a status, none of them ``NOT_AWAITING_SUPPLY`` (an order with no
-    readable status is never paired), and one date: its required date, else (none recorded)
-    its order date (``ordered``). Every hop is a recorded firm
+    order open by the one sales-order definition (``_order_state``), none of its words
+    ``MADE_AWAITING_SHIPMENT`` (an order with no readable status is never paired), and one
+    date: its requested date, else (none recorded) its order date (``ordered``, a lead
+    pairing only: an order with no requested date is never at risk). Every hop is a recorded firm
     link; the pairing alone is inferred, so each chain over it is lead, never firm."""
     supply: dict[str, list[tuple[str, str, Edge, date, tuple[str, ...]]]] = {}
     seen: set[str] = set()
@@ -759,9 +767,10 @@ def infer_demand(graph: Graph, *, planned: Mapping[str, Sequence[tuple[date, str
                     continue   # its supply is recorded
                 for so, _e in graph.fwd(ORDER_LINE, line):
                     members = graph.cluster(ORDER_TWIN, so)
-                    said = [word.lower() for x in members for v in order_status.get(x, ())
-                            if (word := _text(v)) is not None]
-                    if not said or any(w in NOT_AWAITING_SUPPLY for w in said):
+                    state = _order_state(members, order_status)
+                    if state.cls != so_status.OPEN or any(
+                            so_status.word(v) in MADE_AWAITING_SHIPMENT
+                            for v in state.open_by):
                         continue
                     due = {d for x in members for d, _r in required.get(x, ())} or {
                         d for x in members for d, _r in (ordered or {}).get(x, ())}
@@ -791,6 +800,29 @@ def _text(value: Any) -> str | None:
     if isinstance(value, Mapping):
         value = value.get("untrusted_text")
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _order_state(members: Iterable[str], order_status: Mapping[str, Any]
+                 ) -> "so_status.Status":
+    """An order's state by the one sales-order definition from its records' values
+    (``order_status``: object id -> {property: [values]}; a ``FULFILLED`` key true when a
+    settled shipment or invoice is linked to it)."""
+    return so_status.order_status(
+        so_status.record_status(values, binding=_binding(m),
+                                fulfilled=bool(values.get(FULFILLED)))
+        for m in members if isinstance(values := order_status.get(m), Mapping))
+
+
+def _by_binding(pairs: Iterable[tuple[Any, Any]]) -> dict[Any, list[Any]]:
+    out: dict[Any, list[Any]] = {}
+    for key, value in pairs:
+        out.setdefault(key, []).append(value)
+    return out
+
+
+def _binding(object_id: str) -> str | None:
+    parts = str(object_id).split(":", 2)
+    return parts[1] if len(parts) == 3 else None
 
 
 def _closed(statuses: Iterable[Any], closed: frozenset[str]) -> bool:
@@ -835,13 +867,14 @@ def _assembly_closed(statuses: Iterable[Any]) -> bool:
 
 def assess(late: Mapping[str, Late], graph: Graph, *,
            required: Mapping[str, Sequence[tuple[date, str]]],
-           order_status: Mapping[str, Sequence[str]],
+           order_status: Mapping[str, Mapping[str, Any]],
            assembly_status: Mapping[str, Sequence[Any]]) -> Assessment:
     """Walk every late or slipping PO and put days at risk on each order it feeds.
 
-    ``required``: order object id -> [(required date, its reference)]; ``order_status``:
-    object id -> readable status texts; ``assembly_status``: object id -> readable statuses,
-    each a text or (text, lineage) (``_assembly_closed``)."""
+    ``required``: order object id -> [(requested date, its reference)] (never a source
+    default: ``so_status.is_requested``); ``order_status``: object id -> its values by
+    property (``so_status.READ_PROPS``, ``_order_state``); ``assembly_status``: object id ->
+    readable statuses, each a text or (text, lineage) (``_assembly_closed``)."""
     excluded = {"po_not_late": 0, "order_closed": 0, "assembly_order_closed": 0,
                 "line_not_late": 0}
     considered: list[str] = []
@@ -880,7 +913,7 @@ def assess(late: Mapping[str, Late], graph: Graph, *,
                 excluded["assembly_order_closed"] += 1
                 continue
             members = graph.cluster(ORDER_TWIN, chain.order)
-            if _closed([s for m in members for s in order_status.get(m, ())], CLOSED_ORDER):
+            if _order_state(members, order_status).cls == so_status.CLOSED:
                 excluded["order_closed"] += 1
                 continue
             if verdict.material(chain.line)[0] is None:
@@ -954,7 +987,7 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
     if not isinstance(args, Mapping):
         return ["engine_args must be an object"]
     out = [f"unknown engine argument {k}"
-           for k in sorted(set(args) - ARG_KEYS - set(MARGIN_ARG_KEYS))]
+           for k in sorted(set(args) - ARG_KEYS - set(MARGIN_ARG_KEYS) - OPTIONAL_ARG_KEYS)]
     out += [f"missing engine argument {k}" for k in sorted(ARG_KEYS - set(args))]
     items = {e["name"]: e for e in doc["evidence"][:index]}
     margin = set(args) & set(MARGIN_ARG_KEYS)
@@ -976,7 +1009,9 @@ def plan_check(args: Mapping[str, Any], doc: Mapping[str, Any], index: int,
                 out.append(f"lateness.{key} must name a select item per root listed before it")
     for key, type_id in (("required", "SalesOrder"), ("order_status", "SalesOrder"),
                          ("value", "SalesOrder"), ("currency", "SalesOrder"),
-                         ("assembly_status", "AssemblyOrder")):
+                         ("assembly_status", "AssemblyOrder"),
+                         *((("order_own_days", "SalesOrder"),)
+                           if "order_own_days" in args else ())):
         item = items.get(args.get(key))
         if item is None or item["kind"] != "property" or item.get("object_type") != type_id:
             out.append(f"{key} must name a {type_id} property item listed before it")
@@ -1288,8 +1323,18 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     required_entries = by_object("required")
     required = {oid: [(d, e["name"]) for e in got if (d := _day(e.get("value"))) is not None]
                 for oid, got in required_entries.items()}
-    statuses = {oid: [e.get("value") for e in got]
-                for oid, got in by_object("order_status").items()}
+    statuses: dict[str, dict[str, list[Any]]] = {}
+    for oid, got in by_object("order_status").items():
+        for e in got:
+            statuses.setdefault(oid, {}).setdefault(str(e.get("property")), []).append(
+                e.get("value"))
+    # a required date that is the record's own day is no requested date (the plan reads
+    # no population, so a bulk default is decided by the scheduled scan only)
+    own = {oid: [e.get("value") for e in got] for oid, got in by_object("order_own_days")
+           .items()} if args.get("order_own_days") else {}
+    required = {oid: [(d, ref) for d, ref in got
+                      if so_status.is_requested(d, own=own.get(oid, ()))]
+                for oid, got in required.items()}
     ao_statuses = {oid: [(e.get("value"), (e.get("citation") or {}).get("lineage"))
                          for e in got]
                    for oid, got in by_object("assembly_status").items()}
@@ -1600,16 +1645,30 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
                    if visible is None or (e.frm in visible and e.to in visible)),
                   LINK_TYPES + (LINE_SELLS,) + LEAD_ROUTE_TYPES)
     sales = {oid: entry for oid, entry in st.values(
-        ("SalesOrder",), ("required_date", "order_date", "status", "fm_status",
-                          "bc_status")).items()
+        ("SalesOrder",), (so_status.DATE_PROP, *so_status.OWN_DAYS,
+                          *so_status.READ_PROPS)).items()
         if visible is None or oid in visible}
+    shipped = {link["to_object"] for link in st.links(so_status.FULFILLED_LINKS, FIRM_TIERS)
+               if visible is None or (link["from_object"] in visible
+                                      and link["to_object"] in visible)}
     aos = {oid: entry for oid, entry in st.values(("AssemblyOrder",), ("status",)).items()
            if visible is None or oid in visible}
-    required = {oid: [(d, row["l1_handle"]) for row in entry["props"].get("required_date", ())
-                      if (d := _day(row.get("value"))) is not None]
+    # the requested dates only (``so_status.is_requested``): never a day a bulk share of
+    # the binding's records hold, nor the record's own creation or order day
+    defaults = so_status.date_defaults(_by_binding(
+        (_binding(oid), _day(row.get("value"))) for oid, entry in sales.items()
+        for row in entry["props"].get(so_status.DATE_PROP, ())))
+    required = {oid: [(d, row["l1_handle"])
+                      for row in entry["props"].get(so_status.DATE_PROP, ())
+                      if so_status.is_requested(
+                          d := _day(row.get("value")),
+                          own=[r.get("value") for n in so_status.OWN_DAYS
+                               for r in entry["props"].get(n, ())],
+                          defaults=defaults.get(_binding(oid), ()))]
                 for oid, entry in sales.items()}
-    statuses = {oid: [row.get("value") for p in ("status", "fm_status", "bc_status")
-                      for row in entry["props"].get(p, ())] for oid, entry in sales.items()}
+    statuses = {oid: {**{p: [row.get("value") for row in entry["props"].get(p, ())]
+                         for p in so_status.READ_PROPS}, FULFILLED: oid in shipped}
+                for oid, entry in sales.items()}
     ao_statuses = {oid: [(row.get("value"), row.get("lineage"))
                          for row in entry["props"].get("status", ())]
                    for oid, entry in aos.items()}

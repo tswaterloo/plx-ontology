@@ -229,6 +229,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/briefing/watcher/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Watcher Item State
+         * @description Dismiss or snooze one item the AI watcher flagged in your briefing (``open``
+         *     undoes it). Only your own briefing changes; nothing is sent.
+         */
+        post: operations["watcher_item_state_api_briefing_watcher__item_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/feedback": {
         parameters: {
             query?: never;
@@ -933,7 +954,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
             /** First Found */
             first_found?: string | null;
             /**
@@ -965,7 +986,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
             /** In Top */
             in_top: number;
             /** Label */
@@ -1015,7 +1036,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
             /**
              * Evidence
              * @description 'live': a recorded run of this event's check over this data has found one; else 'fixture-only'.
@@ -1076,7 +1097,7 @@ export type components = {
              * Event Type
              * @enum {string}
              */
-            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+            event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
             /** Items */
             items?: components["schemas"]["BriefingItem"][];
             /**
@@ -1125,6 +1146,12 @@ export type components = {
             label: string;
             /** Outbound */
             outbound: boolean;
+        };
+        /** CitedText */
+        CitedText: {
+            source: components["schemas"]["Source"];
+            /** Value */
+            value: string;
         };
         /** Conflict */
         Conflict: {
@@ -1338,6 +1365,25 @@ export type components = {
             name?: string | null;
             source?: components["schemas"]["Source"] | null;
         };
+        /**
+         * DueDate
+         * @description The order's due date as the one PO reader decides it, with where it comes from.
+         */
+        DueDate: {
+            /**
+             * Basis
+             * @description requested: a requested-by date a record states; vendor_eta: the supplier's confirmed date (no record states one); lead_time: the order date plus the order's lead time. A default date is never a due date.
+             * @enum {string}
+             */
+            basis: "requested" | "vendor_eta" | "lead_time";
+            /**
+             * Date
+             * @description The due date (ISO).
+             */
+            date: string;
+            /** @description The cited value it rests on, opened for this reader. */
+            source: components["schemas"]["Source"];
+        };
         /** EntraConfig */
         EntraConfig: {
             /**
@@ -1497,6 +1543,8 @@ export type components = {
             label?: string | null;
             /** Sources */
             sources?: components["schemas"]["FreshnessSource"][];
+            /** @description The latest truth check's counts; the label names a late list the evidence disputes. */
+            truth?: components["schemas"]["TruthFlag"] | null;
         };
         /** FreshnessSource */
         FreshnessSource: {
@@ -1505,15 +1553,15 @@ export type components = {
             /** As Of */
             as_of?: string | null;
             /**
-             * Searchable To
-             * @description With hybrid search on: the newest text of this source search can find (ISO). Captured records after it are not searchable yet.
-             */
-            searchable_to?: string | null;
-            /**
              * Capture
              * @description How the last capture of this source ended: failed and never_captured are stale whatever their age; partial (a budgeted capture continuing next cycle) is judged by age.
              */
             capture?: ("complete" | "partial" | "failed" | "never_captured") | null;
+            /**
+             * Searchable To
+             * @description With hybrid search on: the newest text of this source search can find (ISO). Captured records after it are not searchable yet.
+             */
+            searchable_to?: string | null;
             /**
              * Stale
              * @default false
@@ -1670,9 +1718,9 @@ export type components = {
             amount_suspect?: string | null;
             /**
              * Confirmation
-             * @description none_found: no supplier confirmation is linked to the order. Null: the list's entry does not say (the order's page decides it).
+             * @description none_found: no supplier confirmation is linked to any copy of the order. found_unverified: one is linked, only as an unverified lead. needs_check: a lead names a number another order also holds, so it cannot be tied to this order. confirmed: a settled confirmation is linked. Null: the list's entry does not say (the order's page decides it).
              */
-            confirmation?: "none_found" | null;
+            confirmation?: ("none_found" | "found_unverified" | "needs_check" | "confirmed") | null;
             /** Days Late */
             days_late?: number | null;
             /** Due Date */
@@ -2017,6 +2065,8 @@ export type components = {
         PoTrail: {
             /** Days Late */
             days_late?: number | null;
+            /** @description The due date and its basis; omitted when none is decided or its value is not this reader's to open. */
+            due?: components["schemas"]["DueDate"] | null;
             eta?: components["schemas"]["EtaCheck"] | null;
             /**
              * Hidden Steps
@@ -2041,6 +2091,8 @@ export type components = {
             /** Steps */
             steps?: components["schemas"]["TrailStep"][];
             subject: components["schemas"]["ObjectRef"];
+            /** @description The order number the supplier knows (a FileMaker-era order's FileMaker PO number), when every copy holds one; omitted otherwise. */
+            vendor_number?: components["schemas"]["CitedText"] | null;
             /**
              * Verdict
              * @description The verdict and its rule in one sentence.
@@ -2725,6 +2777,54 @@ export type components = {
              */
             title: string;
         };
+        /**
+         * TruthFlag
+         * @description The latest cross-system truth check (``operating.truth_check``): how many of the
+         *     open claims the engine makes the other systems' evidence contradicts.
+         */
+        TruthFlag: {
+            /**
+             * Checked At
+             * @description When the truth check ran (ISO).
+             */
+            checked_at: string;
+            /**
+             * Claims
+             * @description Every open claim checked.
+             * @default 0
+             */
+            claims: number;
+            /**
+             * Contradicted
+             * @description Every open claim contradicted by evidence.
+             * @default 0
+             */
+            contradicted: number;
+            /**
+             * Detectors Incomplete
+             * @description Detectors whose latest run did not complete (their claims are partly checked).
+             * @default 0
+             */
+            detectors_incomplete: number;
+            /**
+             * Late Claims
+             * @description Purchase orders claimed late (past their need date), one per order; unconfirmed orders not yet due are not counted.
+             * @default 0
+             */
+            late_claims: number;
+            /**
+             * Late Contradicted
+             * @description Of those, the orders contradicted by evidence in another system (received, cancelled, a test record, a draft twin, or a need date that is a default).
+             * @default 0
+             */
+            late_contradicted: number;
+            /**
+             * Stale
+             * @description The check is older than TRUTH_MAX_AGE (2 hours): its counts are not stated in the label.
+             * @default false
+             */
+            stale: boolean;
+        };
         /** UnderstandingEvent */
         UnderstandingEvent: {
             /** Entities */
@@ -2835,6 +2935,39 @@ export type components = {
         VerdictEvent: {
             /** Text */
             text: string;
+        };
+        /** WatcherItemState */
+        WatcherItemState: {
+            /** At */
+            at: string;
+            /** Item Id */
+            item_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "dismissed" | "snoozed" | "open";
+            /** Until */
+            until?: string | null;
+        };
+        /**
+         * WatcherItemStateRequest
+         * @description Dismiss or snooze one item the AI watcher flagged in your briefing; ``open`` undoes
+         *     either. Only your own briefing changes; nothing is sent.
+         */
+        WatcherItemStateRequest: {
+            /** Reason */
+            reason?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "dismissed" | "snoozed" | "open";
+            /**
+             * Until
+             * @description A snooze's last day (YYYY-MM-DD, after today); absent: a week from today.
+             */
+            until?: string | null;
         };
     };
     responses: never;
@@ -3228,7 +3361,7 @@ export interface operations {
     briefing_items_api_briefing_items_get: {
         parameters: {
             query: {
-                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated";
+                event_type: "po_late" | "po_due" | "eta_slipped" | "vendor_no_reply" | "vendor_terms_unapplied" | "negative_margin" | "lot_near_expiry" | "lot_on_hold" | "quote_accepted_no_order" | "quantity_mismatch" | "customer_order_at_risk" | "po_undated" | "customer_order_late" | "watcher_attention";
                 offset?: number;
                 limit?: number;
                 view?: "all" | "since_visit";
@@ -3293,6 +3426,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    watcher_item_state_api_briefing_watcher__item_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatcherItemStateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatcherItemState"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

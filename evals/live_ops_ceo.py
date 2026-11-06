@@ -56,7 +56,7 @@ NOT_CONFIRMATION = re.compile(r"\bpre-?confirmation\b|\bpric(?:e|ing)\s+confirma
 DRIVER_LEAD = Decimal("1.25")
 FORMS: dict[str, dict[str, list[str]]] = {
     "confirmed": {"accept": ["confirmed", "sent a confirmation", "order confirmation",
-                             "acknowledged"],
+                             "acknowledged", "confirmation found"],
                   "contradicts": ["not confirmed", "no confirmation", "never confirmed",
                                   "has not confirmed", "hasn't confirmed",
                                   "nothing from the vendor"]},
@@ -184,12 +184,34 @@ def po_first_mail(world: lk.World) -> list[lk.Candidate]:
 
 # --------------------------------------------------------------------------- vendor confirmed
 
+def _order_numbers(world: lk.World) -> Any:
+    """``(Portal row item, its number) -> the numbers of every copy of its order``: the
+    lateness oracle's order groups (joined on stored identifiers only), less any number
+    two groups hold (truth rules 2026-11-06, ``keys.TRUTH_RULES_CITE``)."""
+    groups = world.lateness()["groups"]
+    holders: dict[str, int] = {}
+    for group in groups:
+        for key in {lk.po_mention_key(n) for n in group.get("numbers") or ()} - {None}:
+            holders[key] = holders.get(key, 0) + 1
+    by_record = {c: g for g in groups for c in g.get("records") or ()}
+
+    def numbers(item: Mapping[str, Any], number: str) -> list[str]:
+        group = by_record.get(item["citation"])
+        found = list(group.get("numbers") or ()) if group else [number]
+        return sorted({n for n in found if holders.get(lk.po_mention_key(n) or "", 1) <= 1})
+    return numbers
+
+
 def po_vendor_confirmed(world: lk.World) -> list[lk.Candidate]:
     """A PO its vendor confirmed by mail: the vendor's messages naming the PO whose subject
     is an order confirmation (``CONFIRMATION``); the first one's day is when."""
     out = []
-    for number, _item, vendor in _po_rows(world):
-        naming = lk._mail_naming(world, number)
+    numbers_of = _order_numbers(world)
+    for number, item, vendor in _po_rows(world):
+        # every copy's number (FileMaker, Portal, BC joined by stored keys), never one
+        # another order also holds (a reused number names some other order's mail)
+        naming = list({m["message_id"]: m for n in numbers_of(item, number)
+                       for m in lk._mail_naming(world, n)}.values())
         confirming = [m for m in naming if _sender_domain(m) in vendor
                       and CONFIRMATION.search(str(m.get("subject") or ""))
                       and not NOT_CONFIRMATION.search(str(m.get("subject") or ""))
@@ -207,7 +229,8 @@ def po_vendor_confirmed(world: lk.World) -> list[lk.Candidate]:
                      quote=str(first.get("subject"))[:300], mail=True),
             lk._fact("date", "confirmed_on", records, ("graph-mail",),
                      value=day.isoformat(), mail=True)],
-            ["mail capture: messages naming the PO from a domain of the FileMaker PO's "
+            ["mail capture: messages naming any copy's number of the PO (the oracle's order "
+             "group, a number two orders hold left out) from a domain of the FileMaker PO's "
              "emailrep/emailcsr whose subject is an order confirmation (CONFIRMATION, not "
              "NOT_CONFIRMATION); the earliest, its received day (America/New_York = UTC)"],
             "the vendor confirmed the order by mail; when: its first confirmation"))
@@ -315,8 +338,9 @@ def late_po_vendor_story(world: lk.World) -> list[lk.Candidate]:
 
 
 def lot_expiry_file(world: lk.World) -> list[lk.Candidate]:
-    """Multi-hop: a released lot's expiry (FileMaker QC) and its file on SharePoint."""
-    expiry = {lot: (day, cites) for lot, day, cites in lk._released_lots(world)}
+    """Multi-hop: the expiry of a lot still holding stock (FileMaker QC) and its file on
+    SharePoint."""
+    expiry = {lot: (day, cites) for lot, day, cites in lk._stock_lots(world)}
     out = []
     for found in lk.FAMILIES["sharepoint_lot_file"](world):
         if found.identifier not in expiry:
@@ -325,9 +349,9 @@ def lot_expiry_file(world: lk.World) -> list[lk.Candidate]:
         out.append(lk.Candidate(found.identifier, "Lot", dict(found.slots), [
             lk._fact("date", "expiry", cites, ("api",), value=day.isoformat(), label="expir",
                      markings=["quality_controlled"]), *found.facts],
-            ["portal mirror receipt_raw_material: status_c Released on every row of the "
-             "lotnoqc, one expirydate", *found.reads],
-            "a released raw lot's expiry (any day); " + found.rule))
+            ["portal mirror receipt_raw_material: status_c Released or Quarantine on a row "
+             "of the lotnoqc, one expirydate on every row", *found.reads],
+            "a raw lot still holding stock: its expiry (any day); " + found.rule))
     return out
 
 

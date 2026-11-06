@@ -181,7 +181,15 @@ class StepMemoEquivalenceTests(unittest.TestCase):
                      "ontology/identifiers.py", "ontology/project_graph.py",
                      "operating/doc_metadata_taxonomy.py", "integrations/captured_pages.py",
                      "integrations/captured_text.py"):
-            self.assertEqual((tree / path).read_bytes(), (ROOT / path).read_bytes(), path)
+            listed = ce.STEP_FILE_CHANGES.get(path)
+            if listed is None:
+                self.assertEqual((tree / path).read_bytes(), (ROOT / path).read_bytes(), path)
+                continue
+            # differs only in the listed definitions, each of them changed
+            then_defs, now_defs = _definitions(tree / path), _definitions(ROOT / path)
+            self.assertEqual({n for n in set(then_defs) | set(now_defs)
+                              if then_defs.get(n) != now_defs.get(n)}, set(listed), path)
+        self.assertLessEqual(set(ce.STEP_FILE_CHANGES), {"integrations/captured_text.py"})
         store_then = _definitions(tree / "ontology/store.py")
         store_now = _definitions(ROOT / "ontology/store.py")
         self.assertEqual(store_then["held_stretches"], store_now["held_stretches"])

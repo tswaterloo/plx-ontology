@@ -307,6 +307,22 @@ class NextAction(_Model):
     suggestion_only: Literal[True] = True
 
 
+class DueDate(_Model):
+    """The order's due date as the one PO reader decides it, with where it comes from."""
+    date: str = Field(description="The due date (ISO).")
+    basis: Literal["requested", "vendor_eta", "lead_time"] = Field(
+        description="requested: a requested-by date a record states; vendor_eta: the "
+                    "supplier's confirmed date (no record states one); lead_time: the order "
+                    "date plus the order's lead time. A default date is never a due date.")
+    source: Source = Field(description="The cited value it rests on, opened for this "
+                                       "reader.")
+
+
+class CitedText(_Model):
+    value: str
+    source: Source
+
+
 class PoTrail(_Model):
     subject: ObjectRef
     state: Optional[str] = Field(None, description="plx.process lateness state: late, "
@@ -323,6 +339,14 @@ class PoTrail(_Model):
                                                    "read may hold more steps (not counted).")
     next_action: Optional[NextAction] = None
     not_found: list[NotFound] = Field(default_factory=list)
+    due: Optional[DueDate] = Field(None, json_schema_extra=_optional,
+                                   description="The due date and its basis; omitted when "
+                                               "none is decided or its value is not this "
+                                               "reader's to open.")
+    vendor_number: Optional[CitedText] = Field(
+        None, json_schema_extra=_optional,
+        description="The order number the supplier knows (a FileMaker-era order's "
+                    "FileMaker PO number), when every copy holds one; omitted otherwise.")
 
 
 class MaterialRow(_Model):
@@ -522,10 +546,15 @@ class LatePo(_Model):
     amount_suspect: Optional[str] = Field(None, description="Why the total is suspect "
                                           "(shown as a check, never as fact).")
     reason: str
-    confirmation: Optional[Literal["none_found"]] = Field(
+    confirmation: Optional[Literal["none_found", "found_unverified", "needs_check",
+                                   "confirmed"]] = Field(
         None, json_schema_extra=_optional,
-        description="none_found: no supplier confirmation is linked to the order. Null: "
-                    "the list's entry does not say (the order's page decides it).")
+        description="none_found: no supplier confirmation is linked to any copy of the "
+                    "order. found_unverified: one is linked, only as an unverified lead. "
+                    "needs_check: a lead names a number another order also holds, so it "
+                    "cannot be tied to this order. confirmed: a settled confirmation is "
+                    "linked. Null: the list's entry does not say (the order's page decides "
+                    "it).")
     open_url: str
     sources: list[Source] = Field(default_factory=list)
 
@@ -988,7 +1017,8 @@ AnyEvent = Union[UnderstandingEvent, StatusEvent, SourcesEvent, TokenEvent, Answ
 EventType = Literal["po_late", "po_due", "eta_slipped", "vendor_no_reply",
                     "vendor_terms_unapplied", "negative_margin", "lot_near_expiry",
                     "lot_on_hold", "quote_accepted_no_order", "quantity_mismatch",
-                    "customer_order_at_risk", "po_undated"]
+                    "customer_order_at_risk", "po_undated", "customer_order_late",
+                    "watcher_attention"]
 
 
 class BriefingItem(_Model):
@@ -1133,6 +1163,22 @@ class BriefingItems(_Model):
 class BriefingSeen(_Model):
     ok: bool
     at: Optional[str] = None
+
+
+class WatcherItemStateRequest(_Model):
+    """Dismiss or snooze one item the AI watcher flagged in your briefing; ``open`` undoes
+    either. Only your own briefing changes; nothing is sent."""
+    state: Literal["dismissed", "snoozed", "open"]
+    until: Optional[str] = Field(None, max_length=10, description="A snooze's last day "
+                                 "(YYYY-MM-DD, after today); absent: a week from today.")
+    reason: Optional[str] = Field(None, max_length=500)
+
+
+class WatcherItemState(_Model):
+    item_id: str
+    state: Literal["dismissed", "snoozed", "open"]
+    until: Optional[str] = None
+    at: str
 
 
 # ---- proactive suggestions ("needs your attention: what to do") -------------------------

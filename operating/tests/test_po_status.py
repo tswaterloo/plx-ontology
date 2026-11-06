@@ -86,10 +86,17 @@ class VocabularyTest(unittest.TestCase):
             self.assertEqual(ps.header_class(raw), ps.IGNORED, raw)
             self.assertEqual(ps.record({"fm_status": [raw]}, None).code, "CANCELLED", raw)
 
-    def test_an_fm_mirrored_line_with_gold_zero_is_received_by_its_qc_receipts(self):
+    def test_an_fm_mirrored_line_with_gold_zero_is_received_by_filemakers_item_states(self):
         # The gold quantity_received is ETL-seeded 0 for FM-mirrored POs (upstream
-        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20): the FM
-        # QC receiving log (receipt sumqty by idpogenitem) is the received quantity.
+        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20):
+        # FileMaker's own receiving state of each item says what was received
+        # (fm_item_received: settled = its ordered quantity, B.Order partly, Pending none).
+        self.assertEqual([ps.fm_item_received(w, "10") for w in (
+            "Complete", "OverPO", "Cancel", " b.order ", "Pending", "Generated")],
+            ["10", "10", "10", ps.PARTIAL_RECEIPT, None, None])
+        for word in ("Revised", "InProcess", None, "", ps.UNREAD):
+            self.assertIs(ps.fm_item_received(word, "10"), ps.UNREAD, word)
+        self.assertIs(ps.fm_item_received("Complete", ps.UNREAD), ps.UNREAD)
         gold = [("10", "0", "ea")]
         self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", "10", None)]),
                          ps.PoStatus(ps.CLOSED, ps.RECEIVED))
@@ -98,7 +105,14 @@ class VocabularyTest(unittest.TestCase):
         self.assertEqual(ps.record({"status": ["Complete"]}, gold, [("6", "3", None),
                                                                   ("4", None, None)]),
                          ps.PoStatus(ps.CLOSED, ps.COMPLETE, canceled_remainder=D(7)))
-        # no QC row: the gold quantity stands; no FM twin: it stands too
+        # an item FileMaker says is partly received: open PARTIAL; Complete: closed, its
+        # remainder unread
+        partly = [("6", "6", None), ("4", ps.PARTIAL_RECEIPT, None)]
+        self.assertEqual(ps.record({"status": ["Pending"]}, gold, partly),
+                         ps.PoStatus(ps.OPEN, ps.PARTIAL))
+        self.assertEqual(ps.record({"status": ["Complete"]}, gold, partly),
+                         ps.PoStatus(ps.CLOSED, ps.COMPLETE))
+        # nothing received by FileMaker: the gold quantity stands; no FM twin: it stands too
         self.assertEqual(ps.record({"status": ["Pending"]}, gold, [("10", None, None)]),
                          ps.PoStatus(ps.OPEN, ps.SUBMITTED))
         self.assertEqual(ps.record({"status": ["Pending"]}, gold, None),
@@ -628,11 +642,12 @@ class VocabularySummaryTest(unittest.TestCase):
                               "unknown": 5 * copies})
             self.assertEqual(out["unmapped_rows"], 0)
 
-    def test_an_fm_mirrored_po_takes_received_from_the_qc_log_or_fails_closed(self):
+    def test_an_fm_mirrored_po_takes_received_from_filemakers_item_states_or_fails_closed(self):
         # gold quantity_received is ETL-seeded 0 for FM-mirrored POs (upstream
-        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20): the FM
-        # QC receiving log (sumqty, the noitemsqc stand-in) is the received quantity
-        def run(receipts_raw, receipts_pack=(), items=None, complete=True, fields=None):
+        # open-po-lines/route.ts:117-120, po-queries.ts:529-533,572-574 @5afa0a20):
+        # FileMaker's own receiving state of each item says what was received. The QC
+        # log's sumqty is never read: on the mirror it is a running total across the log.
+        def run(status="Complete", items=None, complete=True, fields=None, receipts=()):
             heads = [{"id": "po-m", "status": "Pending",
                       "custom_fields": fields if fields is not None
                       else json.dumps({"fmGeneratedPoId": 77})}]
@@ -641,29 +656,36 @@ class VocabularySummaryTest(unittest.TestCase):
             scans = {"portal_po": _scan(heads), "portal_line": _scan(lines),
                      "fm_po": _scan([{"id": 77, "status": "Pending"}]),
                      "fm_item": _scan(items if items is not None
-                                      else [{"id": 701, "idpogen": 77, "qty": "10"}], complete),
-                     "fm_receipt_raw": _scan(list(receipts_raw)),
-                     "fm_receipt_pack": _scan(list(receipts_pack))}
+                                      else [{"id": 701, "idpogen": 77, "qty": "10",
+                                             "status": status}], complete),
+                     # a running total far above the order: never a received quantity
+                     "fm_receipt_raw": _scan([{"idpogenitem": 701, "sumqty": q}
+                                              for q in receipts])}
             out = ps.vocabulary(scans)
             return out["classes"]["portal_po"], out["fm_qc"], out["classes_before_fm_qc"]
 
-        received = [{"idpogenitem": 701, "sumqty": "6"}, {"idpogenitem": 701, "sumqty": "4"}]
-        classes, qc, before = run(received)
+        classes, qc, before = run("Complete")
         self.assertEqual((classes["closed"], classes["open"]), (1, 0))
         self.assertEqual((before["open"], before["closed"]), (1, 0))   # the gold 0 alone
         self.assertEqual(qc, {"mirrored_zero_received": 1, "qc_received": 1, "qc_none": 0,
                               "unread": 0})
-        self.assertEqual(run(received[:1])[0]["open"], 1)               # 6 of 10: partial
-        self.assertEqual(run([])[0]["open"], 1)                         # no QC: the 0 stands
-        self.assertEqual(run([], fields={})[1]["mirrored_zero_received"], 0)   # not mirrored
+        self.assertEqual(run("B.Order")[0]["open"], 1)                  # partly received
+        self.assertEqual(run("Pending")[0]["open"], 1)                  # nothing: the 0 stands
+        self.assertEqual(run("Pending")[1]["qc_none"], 1)
+        self.assertEqual(run(fields={})[1]["mirrored_zero_received"], 0)   # not mirrored
+        # the receiving log's running totals decide nothing: a Pending item stays open
+        # however large a sumqty against it, a Complete one closed however small
+        self.assertEqual(run("Pending", receipts=["35847482.0", "35848982.0"])[0]["open"], 1)
+        self.assertEqual(run("Complete", receipts=["1"])[0]["closed"], 1)
         # fail closed: unknown, never open or closed, on any part not proven
         for case, args in {
-                "packaging row without sumqty": ([], [{"idpogenitem": 701}]),
-                "null sumqty": ([{"idpogenitem": 701, "sumqty": None}],),
-                "garbage sumqty": ([{"idpogenitem": 701, "sumqty": "ten"}],),
-                "FM ordered differs": (received, (), [{"id": 701, "idpogen": 77, "qty": "9"}]),
-                "FM qty column missing": (received, (), [{"id": 701, "idpogen": 77}]),
-                "item scan incomplete": (received, (), None, False)}.items():
+                "an item word FileMaker gives no receipt state by": ("Revised",),
+                "no item status": (None,),
+                "FM ordered differs": ("Complete", [{"id": 701, "idpogen": 77, "qty": "9",
+                                                     "status": "Complete"}]),
+                "FM qty column missing": ("Complete", [{"id": 701, "idpogen": 77,
+                                                        "status": "Complete"}]),
+                "item scan incomplete": ("Complete", None, False)}.items():
             classes, qc, _ = run(*args)
             self.assertEqual((classes["unknown"], qc["unread"]), (1, 1), case)
 
@@ -784,11 +806,11 @@ class LiveCheckTest(unittest.TestCase):
                 self.spec, code, summary, self.spec["expect_blocked"]), [], (state, summary))
         self.assertNotEqual(lv.check_expectations(self.spec, code, summary), [])
 
-    def test_an_fm_mirrored_po_received_in_the_qc_log_is_closed_live_shaped(self):
+    def test_an_fm_mirrored_po_filemaker_received_is_closed_live_shaped(self):
         from operating.tests import order_fixture as fixture
 
         fake = self.fake()
-        fake.catalog["public.generated_purchase_order_item"]["columns"].insert(2, "qty")
+        fake.catalog["public.generated_purchase_order_item"]["columns"][2:2] = ["qty", "status"]
         fake.tables["public.app_purchase_order"].append(fixture._po(
             "po-m", "PO300099", "sup-1", "Pending", "20", {"fmGeneratedPoId": 3399}))
         fake.tables["public.app_purchase_order_line"].append(fixture._row(
@@ -797,20 +819,17 @@ class LiveCheckTest(unittest.TestCase):
         fake.tables["public.generated_purchase_order"].append(
             fixture._fm(3399, ponumber="PO300099", status="Pending"))
         fake.tables["public.generated_purchase_order_item"] = [
-            fixture._fm(3499, idpogen=3399, qty="10")]
-        fake.tables["public.receipt_packaging"] = []
-        fake.tables["public.receipt_raw_material"] = [
-            fixture._fm(3599, idpogenitem=3499, idreceipt=78, sumqty="10")]
+            fixture._fm(3499, idpogen=3399, qty="10", status="Complete")]
         code, summary, _text = self.run_spec(fetch=fake)
         self.assertEqual(lv.check_expectations(self.spec, code, summary), [], summary)
         self.assertEqual(summary["fm_qc"]["qc_received"], 1, summary["fm_qc"])
         self.assertEqual(summary["classes"]["portal_po"]["closed"], 4)
         self.assertEqual(summary["classes_before_fm_qc"]["closed"], 3)
         self.assertEqual(summary["complete_open"], 0)
-        # a packaging receipt against the item: the served catalog lacks sumqty, unread
-        fake.tables["public.receipt_packaging"] = [
-            fixture._fm(3598, idpogenitem=3499, idreceipt=79)]
-        code, summary, _text = self.run_spec(fetch=fake, state="pack")
+        # an item word FileMaker gives no receipt state by: unread, the PO unknown
+        fake.tables["public.generated_purchase_order_item"] = [
+            fixture._fm(3499, idpogen=3399, qty="10", status="Revised")]
+        code, summary, _text = self.run_spec(fetch=fake, state="revised")
         self.assertEqual(summary["fm_qc"]["unread"], 1, summary["fm_qc"])
         self.assertEqual(summary["classes"]["portal_po"]["unknown"], 4)
 

@@ -5,7 +5,6 @@ import { LateShape } from "@/components/late-shape";
 import { AgeRing, OpenRing } from "@/components/ui/glyphs";
 import { cn } from "@/lib/cn";
 import { formatMoney, objectHref, recordLabel, safeHref } from "@/lib/format";
-import { listShown } from "@/lib/eta";
 import { valueOf } from "@/lib/late";
 import type { LatePo } from "@/lib/types";
 
@@ -56,7 +55,9 @@ export function LateOverview({
 }) {
   if (parts === "chart") return items.length > 1 ? <LateShape items={items} picked={picked} onSupplier={onSupplier} onPick={onPick} className={className} /> : null;
   const oldest = items.reduce<LatePo | null>((o, p) => ((p.days_late ?? -1) > (o?.days_late ?? -1) ? p : o), null);
-  const unconfirmed = items.filter((p) => listShown(p)).length;
+  // no supplier confirmation on any copy of the order (found-unverified, needs-check and
+  // confirmed rows have one)
+  const unconfirmed = items.filter((p) => p.confirmation === "none_found").length;
   const money = totals(items);
   return (
     <div className={cn("space-y-8", className)} data-testid="late-summary">

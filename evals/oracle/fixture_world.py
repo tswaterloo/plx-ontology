@@ -56,7 +56,8 @@ DECLARED_COLUMNS = {
                                 "updated_at"),
     "public.receipt_raw_material": ("id", "idlabid", "idpogenitem", "status_c",
                                     "audittimestampmodified"),
-    "public.generated_purchase_order_item": ("id", "idpogen", "audittimestampmodified"),
+    "public.generated_purchase_order_item": ("id", "idpogen", "qty", "status",
+                                             "audittimestampmodified"),
 }
 
 

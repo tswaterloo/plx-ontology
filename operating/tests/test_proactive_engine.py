@@ -195,6 +195,11 @@ def seeded(world: World | None = None, *, receipt_markings: str = "[]") -> tuple
               w.obj("ReceiptLine", {"received_quantity": ("32", "box", "received")},
                     audience="api:b"))
     w.link("ReceiptLine.same_record_as", *halves)
+    # a real difference on a record one copy says is cancelled: nothing to act on
+    w.link("AssemblyOrder.same_record_as",
+           w.obj("AssemblyOrder", {"ordered_pieces": ("50000", "each"), "status": "Allocated"}),
+           w.obj("AssemblyOrder", {"ordered_pieces": ("65000", "each"), "status": "CANCELLED"},
+                 audience="api:b"))
     # receipt_without_qc
     ids["no_qc"] = w.obj("Receipt", {"received_date": "2026-10-10"}, markings=receipt_markings)
     inspected = w.obj("Receipt", {"received_date": "2026-10-10"})
@@ -306,7 +311,7 @@ class DetectorTest(Engine):
         self.assertEqual(summary["not_evaluated"]["receipt_without_qc"],
                          {"qc_link_unsettled": 1})
         self.assertEqual(summary["not_evaluated"]["conflicting_quantity"],
-                         {"whole_part_only": 1})
+                         {"integer_of_decimal": 1, "record_closed": 1})
         self.assertEqual(summary["not_evaluated"]["order_without_customer_po"],
                          {"not_projected": 1})
         for gap in self.read()["gaps"]:
@@ -343,7 +348,9 @@ class LateOrderWorld(Engine):
 
     def world(self, n_late=2):
         w = World()
-        order = w.obj("PurchaseOrder", {"po_number": "PO-77"}, audience="api:a")
+        # an issued order open by its own status (the one PO definition): its lines late
+        order = w.obj("PurchaseOrder", {"po_number": "PO-77", "bc_status": "Open",
+                                        "bc_fully_received": "false"}, audience="api:a")
         supplier = w.obj("Supplier", {"name": "Acme Resins"}, audience="api:a")
         w.link("PurchaseOrder.ordered_from", order, supplier)
         late = []
@@ -500,7 +507,9 @@ class LateOrderTest(LateOrderWorld):
         def world(*, number=True, suppliers=1, name=True, mail=False, other=False,
                   customer=False):
             w = World()
-            order = w.obj("PurchaseOrder", {"po_number": "PO-9"} if number else {"x": "1"})
+            # open by its own status (the one PO definition); its number read last
+            order = w.obj("PurchaseOrder", {"bc_status": "Open", "bc_fully_received": "false", **({"po_number": "PO-9"} if number
+                                                    else {"x": "1"})})
             values = w.rows["object_values"]
             if other:   # a second, different reading of the number on the record
                 values.append({**values[-1], "value": "PO-OTHER", "field_path": "row.po_alt"})
@@ -547,7 +556,7 @@ class LateOrderTest(LateOrderWorld):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 w = World()
-                order = w.obj("PurchaseOrder", {"po_number": "PO-5"})
+                order = w.obj("PurchaseOrder", {"bc_status": "Open", "bc_fully_received": "false", "po_number": "PO-5"})
                 for i in range(n):
                     line = w.obj("PurchaseOrderLine", {
                         "bc_expected_receipt_date": f"2026-09-{1 + i % 28:02d}",
@@ -587,17 +596,21 @@ class LateOrderTest(LateOrderWorld):
                     path.unlink()
                 w = World()
                 wanted = set()
-                for _ in range(n):
-                    order = w.obj("PurchaseOrder", {"po_number": "PO"})
+                for i in range(n):
+                    order = w.obj("PurchaseOrder", {"po_number": "PO", "bc_status": "Open",
+                                                    "bc_fully_received": "false"})
                     wanted.add(order)
+                    # each order its own past day: one day on a bulk share of the lines is
+                    # a sync default, dating nothing (``source_defaults``)
+                    day = (date(2026, 9, 1) + timedelta(days=i % 28)).isoformat()
                     for _line in range(2):
                         line = w.obj("PurchaseOrderLine", {
-                            "bc_expected_receipt_date": "2026-10-01",
+                            "bc_expected_receipt_date": day,
                             "ordered_quantity": ("9", "kg"), "received_quantity": ("1", "kg")})
                         w.link("PurchaseOrderLine.line_of", line, order)
                 start = time.monotonic()
                 self.run_engine(w)
-                shown = [g for g in self.read(limit=100)["gaps"] if g["kind"] == "late_order"]
+                shown = [g for g in self.read(limit=1000)["gaps"] if g["kind"] == "late_order"]
                 self.assertLess(time.monotonic() - start, 5.0)
                 self.assertEqual([g["object_id"] for g in shown].__len__(), n)
                 self.assertEqual({g["object_id"] for g in shown}, wanted)
@@ -1011,8 +1024,9 @@ class PoLatenessTest(Engine):
 
     def test_an_open_lines_expected_date_stands_in_only_below_every_header_date(self):
         """No header date: the open line's own expected date is the lowest tier (the
-        lateness oracle's source), so the order is late on it, whatever was confirmed. A
-        supplier's confirmation alone is never a requested-by date."""
+        lateness oracle's source), so the order is late on it, whatever was confirmed.
+        With no date of any kind, the supplier's own confirmed date is a labelled due date
+        (owner, 2026-11-06), never a requested-by date: late past it, said so."""
         w = World()
         dated = po(w, "Pending")
         w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
@@ -1022,11 +1036,14 @@ class PoLatenessTest(Engine):
         bare = po(w, "Pending")
         self.confirm(w, bare, "2026-10-03")   # promise only: no date of any kind
         summary = self.run_engine(w)
-        self.assertEqual({(g["kind"], g["object_id"]) for g in self.read()["gaps"]},
-                         {("late_po", dated), ("undated_po", bare)})
-        self.assertEqual(summary["not_evaluated"]["late_or_unconfirmed_po"],
-                         {"no_need_date": 1})
-        self.assertEqual(summary["po_lateness"]["evaluated"], 1)
+        gaps = {g["object_id"]: g for g in self.read()["gaps"]}
+        self.assertEqual({(g["kind"], oid) for oid, g in gaps.items()},
+                         {("late_po", dated), ("late_po", bare)})
+        self.assertIn("past its need date 2026-10-02", gaps[dated]["summary"])
+        self.assertIn("past the supplier's confirmed date 2026-10-03", gaps[bare]["summary"])
+        self.assertEqual(gaps[bare]["follow_up"]["due_basis"], "vendor_eta")
+        self.assertNotIn("late_or_unconfirmed_po", summary["not_evaluated"])
+        self.assertEqual(summary["po_lateness"]["evaluated"], 2)
 
     def test_a_reader_who_cannot_read_the_line_quantities_does_not_see_the_gap(self):
         w = World()
@@ -1055,8 +1072,8 @@ class PoLatenessTest(Engine):
         for n in (1, 10, 60):
             with self.subTest(n=n):
                 w = World()
-                ids = {po(w, "Pending", "2026-10-01", lines=(("10", str(i % 5)),))
-                       for i in range(n)}
+                ids = {po(w, "Pending", (date(2026, 9, 1) + timedelta(days=i % 28)).isoformat(),
+                          lines=(("10", str(i % 5)),)) for i in range(n)}
                 started = time.monotonic()
                 summary = self.run_engine(w)
                 self.assertLess(time.monotonic() - started, 5)
@@ -1382,10 +1399,13 @@ class HomeLateRecallTest(Engine):
 
     def test_line_level_late_orders_never_crowd_out_a_late_purchase_order(self):
         # live: 330 orders held a past line date (kind late_order, high priority) beside 23
-        # open late POs; the late PO is the one status definition's, the line kind is not
+        # open late POs; the late PO is the one status definition's. A line-level item
+        # is raised only on an order that definition calls late, and every late order
+        # (days late) is listed before any line-level item
         w = World()
         for n in range(4):
-            order = w.obj("PurchaseOrder", {"po_number": f"PO-{n}"})
+            order = w.obj("PurchaseOrder", {"po_number": f"PO-{n}", "bc_status": "Open",
+                                            "bc_fully_received": "false"})
             w.link("PurchaseOrder.ordered_from", order, w.obj("Supplier", {"name": "Acme"}))
             w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
                 "bc_expected_receipt_date": "2026-09-01", "ordered_quantity": ("100", "kg"),
@@ -1393,11 +1413,13 @@ class HomeLateRecallTest(Engine):
         late = po(w, "Pending", "2026-10-18")
         self.confirm(w, late, "2026-10-17")      # medium priority: behind every high gap
         self.run_engine(w)
-        shown = self.read(limit=2)["gaps"]
-        self.assertEqual(shown[0]["object_id"], late)
-        self.assertEqual(shown[0]["days_late"], 1)
-        self.assertNotIn("days_late", shown[1])
-        self.assertEqual(shown[1]["kind"], "late_order")
+        shown = self.read(limit=100)["gaps"]
+        kinds = [g["kind"] for g in shown]
+        first_line = kinds.index("late_order")
+        self.assertTrue(all("days_late" in g for g in shown[:first_line]))
+        self.assertTrue(all("days_late" not in g for g in shown[first_line:]))
+        self.assertIn(late, [g["object_id"] for g in shown[:first_line]])
+        self.assertEqual(next(g for g in shown if g["object_id"] == late)["days_late"], 1)
 
     def test_a_late_order_without_a_confirmation_ranks_with_the_late_ones(self):
         w = World()

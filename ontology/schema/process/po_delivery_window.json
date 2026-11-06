@@ -285,6 +285,54 @@
          "link": "SupplierConfirmation.confirms",
          "direction": "reverse"
         }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.bc_posted_as",
+         "direction": "forward"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.bc_posted_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.bc_posted_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "forward"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
+       ],
+       [
+        {
+         "link": "PurchaseOrder.bc_posted_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "PurchaseOrder.same_record_as",
+         "direction": "reverse"
+        },
+        {
+         "link": "SupplierConfirmation.confirms",
+         "direction": "reverse"
+        }
        ]
       ],
       "event_types": [

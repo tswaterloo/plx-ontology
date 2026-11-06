@@ -812,7 +812,7 @@ HOME_KINDS = ("unconfirmed_po", "late_po", "po_receipt_quantity_mismatch", "rece
               "po_impact_margin", "systems_disagree", "eta_slipped", "lot_near_expiry",
               "lot_on_hold", "quote_accepted_no_order", "invoice_quantity_mismatch",
               "vendor_no_reply", "vendor_terms_unapplied", "negative_margin",
-              "undated_po")
+              "undated_po", "late_customer_order")
 LATE_PO_KINDS = ("late_po", "unconfirmed_po")
 NARROWED_READ = 20000   # inbox items a kind-narrowed home question reads
 _PURCHASE_ORDERS = r"(?:purchase orders|pos)"
@@ -839,8 +839,11 @@ _HOME_PHRASES: tuple[tuple[re.Pattern[str], tuple[str, ...] | None], ...] = tupl
         (rf"(?:which |what )?{_PURCHASE_ORDERS} (?:should i worry about|need attention|"
          rf"have problems)", ("late_po", "unconfirmed_po", "po_receipt_quantity_mismatch",
                               "systems_disagree")),
-        (rf"(?:which |what )?(?:sales )?orders (?:are )?{_LATE}", ("late_order",)),
-        (rf"(?:show me |show |list )?{_LATE} sales orders", ("late_order",)),
+        # a customer order past its own required date (``late_order`` is PO lines)
+        (rf"(?:which |what )?(?:sales |customer )?orders (?:are )?{_LATE}",
+         ("late_customer_order", "late_order")),
+        (rf"(?:show me |show |list )?{_LATE} (?:sales|customer) orders",
+         ("late_customer_order",)),
         (r"(?:which |what )?quotes (?:have )?(?:expired|lapsed)", ("expired_quote",)),
         (r"(?:show me |show |list )?(?:expired|lapsed) quotes", ("expired_quote",)),
         (r"(?:which |what |any )?lots (?:are )?(?:expiring|near(?:ing)? expiry|about to "

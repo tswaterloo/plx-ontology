@@ -706,6 +706,18 @@
           }
         },
         {
+          "name": "lead_time_days",
+          "value_type": "decimal",
+          "description": "The order's own lead time in days, as FileMaker stored it when it generated the PO (generated_purchase_order.lt): with the order date, a labelled due date for an order no record states a requested-by date for (operating/po_status.py _labelled_due). A lead time a bulk share of the orders carry is a form default and dates nothing (operating/source_defaults.py).",
+          "sources": [
+            {
+              "binding": "portal.fm_generated_purchase_order",
+              "path": "lt",
+              "parser": "decimal_text"
+            }
+          ]
+        },
+        {
           "name": "vendor_number",
           "value_type": "identifier",
           "description": "BC vendor No. (vendorNumber) of a BC purchase order. The Portal sends app_supplier.code as the BC vendor No. only when it is Sage-style (has a letter), cut to 20 characters (identifiers.json supplier_code carrier sent_to); a pure-digit code is never sent, so it cannot be compared. Read by the PO twin corroboration (ontology.identity_scoring.corroborate_po_twins) as the supplier's number on the BC side.",
@@ -1615,6 +1627,18 @@
                   }
                 ]
               }
+            }
+          ]
+        },
+        {
+          "name": "fm_receiving_status",
+          "value_type": "text",
+          "description": "FileMaker's own receiving state of a PO item (Complete, OverPO, B.Order, Pending, Generated, Cancel, ...): what FileMaker says was received, read where the Portal's received quantity is the ETL-seeded 0 (operating/po_status.py fm_item_received). The QC receiving log's sumqty is not a receipt quantity: on the mirror it is a FileMaker running total across the log.",
+          "sources": [
+            {
+              "binding": "portal.fm_generated_purchase_order_item",
+              "path": "status",
+              "parser": "trim"
             }
           ]
         },
@@ -2618,28 +2642,6 @@
           "quantity_role": "received",
           "sources": [
             {
-              "binding": "portal.fm_receipt_raw_material",
-              "path": "sumqty",
-              "parser": "decimal_text",
-              "unit_unknown": {
-                "reason": "No unit column is served for FM raw receipts (receiving converts kg to the purchase UoM, but the stored unit is not served).",
-                "evidence": [
-                  {
-                    "kind": "ref",
-                    "id": "portal.receive_qty_to_purchase_uom"
-                  }
-                ]
-              }
-            },
-            {
-              "binding": "portal.fm_receipt_packaging",
-              "path": "sumqty",
-              "parser": "decimal_text",
-              "unit_unknown": {
-                "reason": "No unit column is served for FM packaging receipts."
-              }
-            },
-            {
               "binding": "portal.sage_po_receipt_detail",
               "path": "rqreceived",
               "parser": "decimal_text",
@@ -2674,7 +2676,6 @@
               },
               {
                 "lineage": [
-                  "fm_bronze",
                   "sage_bronze"
                 ],
                 "evidence": [

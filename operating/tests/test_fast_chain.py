@@ -17,6 +17,36 @@ VENDOR_BC = 'Supplier:bc.vendors:{"id":"v1"}'
 BC_PO = "bc://production/c1/purchaseOrders/bc1@g-1"
 
 
+def _links_around(args, confirmations=(), twins=()):
+    """``plx.around`` over an order's identity and confirmation links, read whole: the
+    settled twins ``twins`` (same_record_as), and ``confirmations`` ((document id, tier,
+    the order record it is linked to), ...) on SupplierConfirmation.confirms."""
+    link = args["path"][0]["link_type"]
+    if link == "PurchaseOrder.same_record_as":
+        objs = [{"object_id": t, "object_type": "PurchaseOrder",
+                 "display": _cell("7", "api://fm/7", "row.id")} for t in twins
+                if t != args["from"]]
+        return {"objects": objs, "edges": [], "completeness": {"complete": True}}
+    if link in ("SupplierConfirmation.confirms", "SupplierInvoice.for_purchase_order"):
+        found = [(d, t) for d, t, to in confirmations if to == args["from"]
+                 and link == "SupplierConfirmation.confirms"]
+        return {"objects": [{"object_id": d, "object_type": "SupplierConfirmation"}
+                            for d, _t in found],
+                "edges": [{"link_type": link, "from": d, "to": args["from"], "tier": t}
+                          for d, t in found], "completeness": {"complete": True}}
+    if link == "PurchaseOrder.bc_posted_as":
+        return {"objects": [], "edges": [], "completeness": {"complete": True}}
+    return None
+
+
+def _confirmation_card(doc, day):
+    handle = f"graph-mail://conf/{doc[-3]}"
+    return {"object": {"object_id": doc, "object_type": "SupplierConfirmation",
+                       "display": _cell("Order confirmation", handle, "row.subject")},
+            "values": [{"property": "document_date", "value": day,
+                        "citation": {"l1_handle": handle, "field_path": "row.document_date"}}]}
+
+
 class ChainUnderstandTests(unittest.TestCase):
     def test_the_owners_chained_questions_name_their_intent_and_record(self):
         cases = {
@@ -135,12 +165,55 @@ class VendorLateTests(unittest.TestCase):
                             truncated=True)
 
 
+    def test_a_filemaker_order_under_a_complete_portal_header_is_still_judged(self):
+        """FileMaker's items decide a FileMaker order's status over its stale header
+        (``po_status.fm_rollup``): a Portal order mirroring one whose header says
+        Complete is judged by its own verdict, never left out by the header word."""
+        card = {"object": {"object_id": 'Supplier:portal.app_supplier:{"id":"s1"}',
+                           "object_type": "Supplier",
+                           "display": _cell("Acme Labels", "api://s/1", "row.name")},
+                "matched": {"raw": _cell("Acme Labels", "api://s/1", "row.name")}}
+        mirror = 'PurchaseOrder:portal.app_purchase_order:{"id":"m1"}'
+        listed = []
+
+        def answers(name, args):
+            if name == "plx.find":
+                return {"candidates": [card]}
+            if name == "plx.object":
+                return {"object": card["object"]}
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {"status": _cell("Complete", "api://x", "row.s")}},
+                                   {"key": {"status": _cell("Cancelled", "api://x", "row.s")}}],
+                        "completeness": {"complete": True}}
+            if name == "plx.around" and args["from"] == card["object"]["object_id"]:
+                if args.get("limit") == 1:
+                    return {"set": "set:1", "objects": []}
+                listed.append(args["filters"])
+                held = {"property": "fm_generated_po_id", "op": "present"} in args["filters"] \
+                    and {"property": "status", "op": "in", "value": ["Complete"]} \
+                    in args["filters"]
+                return {"objects": [{"object_id": mirror, "object_type": "PurchaseOrder",
+                                     "display": _cell("PO#7001", "api://po/m1")}]
+                        if held else [], "completeness": {"complete": True}}
+            if name == "plx.around":
+                return {"objects": [], "edges": []}
+            if name == "plx.process":
+                return {"lateness": [_verdict(True, "late", "2026-07-14")]}
+            return None
+        draft, _ = _run_ask(fc.vendor_late, answers,
+                            fa.Ask("vendor_late", "Acme Labels", None))
+        said = " ".join(draft.sentences)
+        self.assertIn("this purchase order is overdue: PO#7001, due 2026-07-14", said)
+        # a cancelled header is never listed: no listing asks for it
+        self.assertNotIn("Cancelled", str(listed))
+
+
 PO_ROOT = 'PurchaseOrder:portal.app_purchase_order:{"id":"p1"}'
 FM_ROOT = 'PurchaseOrder:portal.fm_generated_purchase_order:{"id":7}'
 
 
 class PoChainTests(unittest.TestCase):
-    def answers(self, mail, *, late=True):
+    def answers(self, mail, *, late=True, confirmations=(), docs=None, others=()):
         po_cell = _cell("PO#4820", "api://po/p1", "row.po_number")
         rows = {BC_PO: {"row.vendorName": "Acme Labels Ltd"},
                 "api://fm/7": {"row.contactrep": "Pat Rep", "row.emailrep": "pat@acme.com",
@@ -154,12 +227,21 @@ class PoChainTests(unittest.TestCase):
                                                    "object_type": "PurchaseOrder",
                                                    "display": po_cell},
                                         "tier": "verified",
-                                        "matched": {"raw": po_cell, "normalized": "PO4820"}}]}
+                                        "matched": {"raw": po_cell, "normalized": "PO4820"}},
+                                       *({"object": {"object_id": o,
+                                                     "object_type": "PurchaseOrder"},
+                                          "tier": "verified",
+                                          "matched": {"raw": "4820", "normalized": "4820"}}
+                                         for o in others)]}
             if name == "plx.process":
                 return {"lateness": [_verdict(True, "late", "2026-07-14") if late else
                                      _verdict(False, "not_due", "2026-12-01")]}
+            if name == "plx.object" and args["object_id"] in (docs or {}):
+                return docs[args["object_id"]]
             if name == "plx.object":
                 return {"object": {"object_id": PO_ROOT}, "values": [
+                    {"property": "po_number", "value": "PO#4820",
+                     "citation": {"l1_handle": "api://po/p1", "field_path": "row.po_number"}},
                     {"property": "status", "value": "B.Order",
                      "citation": {"l1_handle": "api://po/p1", "field_path": "row.status"}},
                     {"property": "bc_status", "value": "Open",
@@ -167,6 +249,8 @@ class PoChainTests(unittest.TestCase):
             if name == "plx.around" and args["path"][0]["link_type"].endswith("ordered_from"):
                 return {"objects": [{"object_id": VENDOR_BC, "object_type": "Supplier",
                                      "display": _cell("Acme", "bc://v/1", "row.displayName")}]}
+            if name == "plx.around" and "tier_floor" in args:
+                return _links_around(args, confirmations, twins=(PO_ROOT, FM_ROOT))
             if name == "plx.around":
                 return {"objects": [{"object_id": FM_ROOT, "object_type": "PurchaseOrder",
                                      "display": _cell("7", "api://fm/7", "row.id")}]}
@@ -207,17 +291,40 @@ class PoChainTests(unittest.TestCase):
             "PO#4820: who is the vendor, how late is it, and what did they last email us"))
         self.assertNotIn("Proposed next step", " ".join(draft.sentences))
 
-    def test_a_confirmation_is_the_vendors_first_one_and_none_found_declines(self):
+    def test_a_confirmation_is_one_linked_to_any_copy_and_a_lead_is_found_unverified(self):
         ask = fa.understand("did the vendor confirm PO#4820? when")
-        mail = self.mail("Order Confirmation for PO 4820", "Order Confirmation for PO 4820 rev",
-                         "Please confirm PO 4820")
-        draft, _ = _run_ask(fc.po_confirmed, self.answers(mail), ask)
+        c1 = 'SupplierConfirmation:graph_mail.supplier_confirmations:{"id":"c1"}'
+        c2 = 'SupplierConfirmation:graph_mail.supplier_confirmations:{"id":"c2"}'
+        docs = {c1: _confirmation_card(c1, "2026-02-03"),
+                c2: _confirmation_card(c2, "2026-01-20")}
+        # settled confirmations on the FileMaker copy, none on the record asked about:
+        # confirmed, the first document's own date cited (a mail subject decides nothing)
+        mail = self.mail("Please confirm PO 4820")
+        draft, _ = _run_ask(fc.po_confirmed, self.answers(
+            mail, docs=docs, confirmations=[(c1, "corroborated", FM_ROOT),
+                                            (c2, "verified", FM_ROOT)]), ask)
         said = " ".join(draft.sentences)
         self.assertIn("Yes, the vendor confirmed PO#4820", said)
-        self.assertIn('2026-01-10, subject "Order Confirmation for PO 4820"', said)
-        # a request to confirm is no confirmation; a search never proves there is none
-        with self.assertRaises(fa.Unanswerable):
-            _run_ask(fc.po_confirmed, self.answers(self.mail("Please confirm PO 4820")), ask)
+        self.assertIn("dated 2026-01-20", said)
+        value = {v["name"]: v for v in draft.values}["confirmation_date"]
+        self.assertEqual(value["citations"][0]["l1_handle"], "graph-mail://conf/2")
+        # only a lead links one: found, unverified, never "none" and never "confirmed"
+        draft, _ = _run_ask(fc.po_confirmed, self.answers(
+            mail, docs=docs, confirmations=[(c1, "lead", PO_ROOT)]), ask)
+        said = " ".join(draft.sentences)
+        self.assertIn("A confirmation for PO#4820 was found, unverified", said)
+        self.assertNotIn("Yes, the vendor confirmed", said)
+        self.assertEqual(draft.answerability, "partial")
+        # the same lead on a number another order also holds confirms nothing here, but
+        # it is evidence: "needs check", never "none found" (owner, 2026-11-06)
+        other = 'PurchaseOrder:bc.purchase_orders:{"id":"x9"}'
+        draft, _ = _run_ask(fc.po_confirmed, self.answers(
+            self.mail("RE: PO#4820 dates"), docs=docs,
+            confirmations=[(c1, "lead", PO_ROOT)], others=[other]), ask)
+        said = " ".join(draft.sentences)
+        self.assertIn("Needs check", said)
+        self.assertNotIn("no vendor confirmation", said)
+        self.assertEqual(draft.answerability, "partial")
 
 
 class _VendorMail:
@@ -252,6 +359,8 @@ class _VendorMail:
             if name == "plx.around" and args["path"][0]["link_type"].endswith("ordered_from"):
                 return {"objects": [{"object_id": VENDOR_BC, "object_type": "Supplier",
                                      "display": _cell("Acme", "bc://v/1", "row.displayName")}]}
+            if name == "plx.around" and "tier_floor" in args:
+                return _links_around(args, twins=(PO_ROOT, FM_ROOT))
             if name == "plx.around":
                 return {"objects": [{"object_id": FM_ROOT, "object_type": "PurchaseOrder",
                                      "display": _cell("7", "api://fm/7", "row.id")}]}

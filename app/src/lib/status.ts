@@ -78,6 +78,8 @@ const BRIEFING: Record<string, Shown> = {
   quote_accepted_no_order: { status: "risk", label: "Quote not ordered" },
   quantity_mismatch: { status: "suspect", label: "Quantities differ" },
   customer_order_at_risk: { status: "risk", label: "Order at risk" },
+  customer_order_late: { status: "late", label: "Order past due" },
+  watcher_attention: { status: "risk", label: "Needs a look" },
 };
 
 /** A briefing item's kind. A suspect total outranks the kind: the data is the problem. */

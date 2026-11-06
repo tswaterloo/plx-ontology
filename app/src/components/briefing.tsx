@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useListKeys } from "@/lib/list-keys";
 import { EvidenceTrailCard } from "@/components/evidence-trail";
-import { getBriefing, getBriefingItems } from "@/lib/api";
+import { getBriefing, getBriefingItems, setWatcherItemState } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
 import { briefingKind } from "@/lib/status";
@@ -71,8 +71,44 @@ function chaseWho(item: BriefingItem, supplier?: string | null): string | null {
  * money and days on the right with the kind drawn as a glyph. The whole row opens the record;
  * the chase link and the evidence sit on top of it. The next step lives on the record page.
  */
+const WATCHER = "watcher_attention";
+
+/** A watcher item set aside by this reader: what was done, and an undo. */
+function SetAside({ item, state, until, onUndo, busy, testId }: { item: BriefingItem; state: string; until?: string | null; onUndo: () => void; busy: boolean; testId: string }) {
+  return (
+    <li className="flex items-baseline gap-2 px-3 py-2 text-[12px] leading-4 text-muted" data-testid={testId}>
+      <span className="min-w-0 truncate">
+        {recordLabel(item.object_type, item.subject_label)}: {state === "snoozed" && until ? `snoozed until ${formatDate(until, { short: true })}` : "dismissed"}
+      </span>
+      <button type="button" onClick={onUndo} disabled={busy} className="shrink-0 font-medium text-fg hover:underline disabled:opacity-60 cursor-pointer">
+        Undo
+      </button>
+    </li>
+  );
+}
+
 function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo?: LatePo; grouped: boolean; testId: string }) {
   const [open, setOpen] = useState(false);
+  // a watcher item this reader dismissed or snoozed (kept per reader on the server)
+  const [aside, setAside] = useState<{ state: string; until?: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const watcher = item.event_type === WATCHER;
+  async function setState(state: "dismissed" | "snoozed" | "open") {
+    setBusy(true);
+    setFailed(null);
+    try {
+      const done = await setWatcherItemState(item.id, state);
+      setAside(done.state === "open" ? null : { state: done.state, until: done.until });
+    } catch {
+      setFailed(state === "open" ? "Couldn't undo. Try again." : "Couldn't save that. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (watcher && aside) {
+    return <SetAside item={item} state={aside.state} until={aside.until} onUndo={() => setState("open")} busy={busy} testId={testId} />;
+  }
   const href = safeHref(item.open_url) ?? objectHref(item.object_type, item.object_id);
   const kind = briefingKind(item.event_type, { amountSuspect: !!(item.amount && item.amount_suspect), fallbackLabel: item.label });
   const supplier = latePo?.supplier ?? item.counterpart ?? null;
@@ -128,6 +164,16 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
                 {open ? "Hide evidence" : "Evidence"}
               </button>
             )}
+            {watcher && (
+              <span className="relative z-10 flex shrink-0 items-baseline gap-2.5">
+                <button type="button" onClick={() => setState("snoozed")} disabled={busy} className="font-medium text-fg hover:underline disabled:opacity-60 cursor-pointer">
+                  Snooze a week
+                </button>
+                <button type="button" onClick={() => setState("dismissed")} disabled={busy} className="font-medium text-fg hover:underline disabled:opacity-60 cursor-pointer">
+                  Dismiss
+                </button>
+              </span>
+            )}
             <Link
               href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`}
               className="relative z-10 max-w-[40%] shrink-0 truncate font-medium text-fg hover:underline max-sm:hidden lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
@@ -135,6 +181,17 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
               {who ? `Chase ${who}` : "Open"}
             </Link>
           </div>
+          {/* a watcher item's reason, as the answer gate's claims back it */}
+          {watcher && item.why && (
+            <p className="mt-0.5 text-[12px] leading-4 text-fg/80" data-testid="watcher-why">
+              {item.why}
+            </p>
+          )}
+          {failed && (
+            <p role="alert" className="relative z-10 mt-0.5 text-[12px] leading-4 text-fg">
+              {failed}
+            </p>
+          )}
         </div>
       </div>
       {open && item.trail && (

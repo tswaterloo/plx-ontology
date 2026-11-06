@@ -65,9 +65,13 @@ export function lineShown(l: PromiseLine, link: VendorPromise["link"]): EtaShown
 
 export const MATCHED_BY: Record<string, string> = { item_code: "matched by item code", description: "matched by description" };
 
-/** A late-list row's confirmation, as the list's own entry says it: only "none found" (no
- * confirmation is linked at all); otherwise the order's own page decides, as the reader. */
+/** A late-list row's confirmation, as the list's own entry says it (linked to any copy of
+ * the order): none found, found but unverified (never "none"), or confirmed; otherwise the
+ * order's own page decides, as the reader. */
 export function listShown(po: Pick<LatePo, "confirmation">): EtaShown | null {
   if (po.confirmation === "none_found") return { status: "risk", label: "No supplier confirmation found" };
+  if (po.confirmation === "found_unverified") return { status: "suspect", label: "Confirmation found, unverified" };
+  if (po.confirmation === "needs_check") return { status: "suspect", label: "Possible confirmation on a reused number: needs check" };
+  if (po.confirmation === "confirmed") return { status: "ok", label: "Confirmed by supplier" };
   return null;
 }

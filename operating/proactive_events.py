@@ -24,8 +24,16 @@ Set-based detectors (one pass over the store):
   event tells a reader who may not read every source a promise sits in that a later
   one it cannot see may exist (``caveat``);
 * ``lot_attention``: a lot whose expiry date falls within ``EXPIRY_DAYS`` of the run's day
-  (``lot_near_expiry``), and a batch on quality hold whose status is still active
-  (``lot_on_hold``; a closed status is skipped, an unmapped one ``not_evaluated``);
+  and whose QC status says it still holds stock (``lot_near_expiry``; a used-up, rejected
+  or expired lot is skipped, a lot with no, a disputed or an unmapped status is
+  ``not_evaluated``, never claimed), and a batch on quality hold (``lot_on_hold``): a
+  hold is claimed only where it is not the default of the batch's lifecycle state in its
+  own system (``stock_state.batch_hold`` over every batch of that system, by status; a
+  state too small there read over every system's), so a made batch never released is a
+  hold and an unmade one carrying the pre-release default is not; a cancelled batch is
+  never claimed, an unmapped status or an unmade batch in a state too small to profile
+  is ``not_evaluated``. A copy of a batch (``Batch.same_record_as``: the migrated record a
+  source batch was copied into) is decided by its origin and counted once, on it;
 * ``accepted_quote_no_order``: a quote accepted (its status word or its accepted time)
   that no sales order converts (no ``Quote.converted_to`` or
   ``SalesOrder.created_from_quote`` link, no converted order number). The absence is the
@@ -68,6 +76,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ontology import store as ostore
 from ontology.units import unit_token
 
+from . import stock_state
+
 REVISION_DAYS = 14
 EXPIRY_DAYS = 30
 MAIL_DAYS = 30
@@ -83,10 +93,6 @@ REVISED_DATES = {"PurchaseOrder": ("expected_date",),
                  "PurchaseOrderLine": ("bc_expected_receipt_date",)}
 DATE_WORDS = {"expected_date": "requested-by date",
               "bc_expected_receipt_date": "expected receipt date"}
-HOLD_WORDS = frozenset({"on-hold", "on hold", "hold", "onhold"})
-CLOSED_BATCH = frozenset({"cancelled", "canceled", "realized", "closed"})
-ACTIVE_BATCH = frozenset({"allocated", "committed", "generated", "scheduled", "planned",
-                          "in progress", "released"})
 ACCEPTED_WORDS = frozenset({"accepted"})
 POSTED_INVOICE = frozenset({"open", "paid"})
 
@@ -98,7 +104,8 @@ INVOICE_LINKS = ("PurchaseInvoice.invoices", "PurchaseInvoiceLine.line_of",
                  "PurchaseOrderLine.for_item")
 # Every link type these rules read (the engine reads them in one scan, ``_Store.links``).
 LINK_TYPES = ("PurchaseOrderLine.line_of", "SupplierConfirmation.confirms",
-              *QUOTE_ORDER_LINKS, *INVOICE_LINKS, MAIL_PO_LINK, INVOICE_LINK)
+              *QUOTE_ORDER_LINKS, *INVOICE_LINKS, MAIL_PO_LINK, INVOICE_LINK,
+              stock_state.BATCH_TWIN_LINK)
 
 
 def _day(raw: Any) -> date | None:
@@ -132,11 +139,17 @@ def _word(row: Mapping[str, Any] | None) -> str:
 
 def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result: Callable,
                 settled: Sequence[str], confirming: Sequence[str],
-                caveat: Callable[[Any], None] = lambda _gap: None) -> dict[str, Any]:
+                caveat: Callable[[Any], None] = lambda _gap: None,
+                orders: Any = None) -> dict[str, Any]:
     """``caveat(gap)``: records on a gap resting on supplier promises that a reader who
-    may not read every promise is told a later one may exist (the engine's)."""
+    may not read every promise is told a later one may exist (the engine's). ``orders``:
+    the one PO reader over the store (``po_status.StoreSource``): an order it calls closed
+    or a draft never slips (nothing is due), and a revised date either side of which is a
+    default (a bulk share of its property's records, a sync's re-write, or one of the
+    order's own days: ``po_status.is_default_date``) is no slip of a promise."""
     gaps = []
     skipped: Counter = Counter()
+    settled_state = _OrderState(orders)
     since = (as_of - timedelta(days=REVISION_DAYS)).isoformat()
     lines_of: dict[str, tuple[str, str]] = {}
     for link in st.links(["PurchaseOrderLine.line_of"], settled):
@@ -176,6 +189,10 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
                         skipped["line_without_order"] += 1
                         continue
                     subject, extra_marks = lines_of[oid]
+                why_not = settled_state.no_slip(subject, [(now, new_day), (prev, old_day)])
+                if why_not is not None:
+                    skipped[why_not] += 1
+                    continue
                 days = (new_day - old_day).days
                 words = DATE_WORDS.get(prop, prop)
                 made = gap(
@@ -198,6 +215,11 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     for link in st.links(["SupplierConfirmation.confirms"], confirming):
         confirms[link["to_object"]].append((link["from_object"], link["markings"]))
     several = {po: c for po, c in confirms.items() if len(c) > 1}
+    for po in sorted(several):
+        why_not = settled_state.no_slip(po, [])   # a closed order's promise moves nothing
+        if why_not is not None:
+            skipped[why_not] += 1
+            del several[po]
     revised = len(gaps)   # the source field revisions above rest on no promise read
     if several:
         found = st.values(["SupplierConfirmation"],
@@ -240,6 +262,40 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
     for made in gaps[revised:]:
         caveat(made)
     return result(gaps, not_evaluated=skipped)
+
+
+class _OrderState:
+    """The one PO reader's verdict on an order for a slip (``po_status``): closed or a
+    draft by the shared status (a receipt in any copy closes it) is never a slip, nor is a
+    date moved to or from a default. Without a reader (``orders`` None) nothing is
+    skipped."""
+
+    def __init__(self, orders: Any) -> None:
+        self.src = orders
+        self.read: dict[str, Any] = {}
+
+    def no_slip(self, order: str, dated: Sequence[tuple[Mapping[str, Any], date]]
+                ) -> str | None:
+        if self.src is None:
+            return None
+        from . import po_status as ps
+        if order not in self.read:
+            try:
+                status = ps.read(self.src, order, dates=False).status
+            except Exception:  # noqa: BLE001 - an order the reader does not hold
+                status = None
+            copies = ps.copies(self.src, order)[0] if status is not None else [order]
+            own: set[date] = set()
+            for record in copies:
+                own |= self.src.own_days(record)
+            self.read[order] = (status, own)
+        status, own = self.read[order]
+        if status is not None and status.cls in (ps.CLOSED, ps.DRAFT):
+            return "order_not_open"
+        defaults = self.src.date_defaults()
+        if any(ps.is_default_date(defaults, row, day, own) for row, day in dated):
+            return "default_date"
+        return None
 
 
 LINE_PROMISES = "line_promises"
@@ -328,10 +384,21 @@ def _line_slips(st: Any, several: Mapping[str, Sequence[tuple[str, str]]],
 
 def lot_attention(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                   result: Callable) -> dict[str, Any]:
-    gaps = []
+    gaps: list = []
     skipped: Counter = Counter()
+    _lots_near_expiry(st, as_of, gaps, skipped, gap=gap, cites=cites)
+    _batches_on_hold(st, gaps, skipped, gap=gap, cites=cites)
+    return result(gaps, not_evaluated=skipped)
+
+
+def _lots_near_expiry(st: Any, as_of: date, gaps: list, skipped: Counter, *,
+                      gap: Callable, cites: Callable) -> None:
+    """A lot expiring within ``EXPIRY_DAYS`` is claimed only while its QC status says it
+    holds stock: a lot used up, rejected or expired has nothing left to expire, and a lot
+    whose status is missing, disputed or unmapped is not judged (``lot_status_*``)."""
     horizon = as_of + timedelta(days=EXPIRY_DAYS)
-    for oid, entry in sorted(st.values(["Lot"], ("expiry_date", "lot_number")).items()):
+    for oid, entry in sorted(st.values(["Lot"], ("expiry_date", "lot_number",
+                                                 "qc_status")).items()):
         props = entry["props"]
         expiry = _one(props.get("expiry_date"))
         if expiry is None:
@@ -345,6 +412,17 @@ def lot_attention(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             continue
         if not as_of <= day <= horizon:
             continue
+        status = _one(props.get("qc_status"))
+        if status is None:
+            stated = [r for r in props.get("qc_status") or () if r.get("value") not in (None, "")]
+            skipped["lot_status_disputed" if stated else "lot_status_unknown"] += 1
+            continue
+        stock = stock_state.lot_holds_stock(status["value"])
+        if stock is False:
+            continue
+        if stock is None:
+            skipped["lot_status_unmapped"] += 1
+            continue
         days = (day - as_of).days
         number = _one(props.get("lot_number"))
         gaps.append(gap(
@@ -352,32 +430,66 @@ def lot_attention(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             summary=f"Expires on {day}, " + ("today" if days == 0 else
                                                f"in {days} day{'' if days == 1 else 's'}"),
             missing="Whether this lot is used, reworked or written off before it expires",
-            why=f"The lot's recorded expiry date is {day}, within {EXPIRY_DAYS} days.",
+            why=f"The lot's recorded expiry date is {day}, within {EXPIRY_DAYS} days, and "
+                f"its QC status ({status['value']}) says it still holds stock.",
             priority="high" if days <= 7 else "medium", about=("Lot", "expiry_date"),
-            groups=[cites([expiry])], extra=cites([number]) if number else (),
-            event={"days": days}))
-    for oid, entry in sorted(st.values(["Batch"], ("quality_status", "status",
-                                                   "lot_number")).items()):
+            groups=[cites([expiry]), cites([status])],
+            extra=cites([number]) if number else (), event={"days": days}))
+
+
+def _batches_on_hold(st: Any, gaps: list, skipped: Counter, *, gap: Callable,
+                     cites: Callable) -> None:
+    """A batch really on quality hold (``stock_state.batch_hold``: a hold word that is not
+    its lifecycle state's default over every batch of its own system); a copy of a batch
+    (``stock_state.BATCH_TWIN_LINK``) is decided by its origin and counted once, on it,
+    the copy's values cited beside it."""
+    batches = st.values(["Batch"], ("quality_status", "status", "lot_number"))
+    read: dict[str, tuple] = {}
+    for oid, entry in batches.items():
         props = entry["props"]
-        hold = _one(props.get("quality_status"))
-        if hold is None or _word(hold) not in HOLD_WORDS:
+        read[oid] = (_one(props.get("quality_status")), _one(props.get("status")))
+        if read[oid][0] is None and any(r.get("value") not in (None, "")
+                                        for r in props.get("quality_status") or ()):
+            skipped["quality_status_disputed"] += 1
+    systems: dict[str, list] = defaultdict(list)
+    for oid, (hold, status) in read.items():
+        if hold is not None and status is not None:
+            systems[ostore.object_segment(oid)].append((status["value"], hold["value"]))
+    profiles = {system: stock_state.hold_profile(pairs) for system, pairs in systems.items()}
+    every = stock_state.pooled(*profiles.values())
+    origins: set[str] = set()
+    copies: dict[str, set[str]] = defaultdict(set)    # origin -> its copies
+    for link in st.links([stock_state.BATCH_TWIN_LINK]):
+        origin, copy = link["from_object"], link["to_object"]
+        if origin in read and copy in read and origin != copy:
+            origins.add(copy)
+            copies[origin].add(copy)
+    for oid in sorted(read):
+        hold, status = read[oid]
+        if oid in origins or hold is None:
+            continue   # a copy: its origin decides, and it is counted once there
+        verdict = stock_state.batch_hold(status["value"] if status else None, hold["value"],
+                                         profiles.get(ostore.object_segment(oid), {}), every)
+        if verdict in (stock_state.UNMAPPED, stock_state.UNPROFILED):
+            skipped[verdict] += 1
+        if verdict != stock_state.HOLD:
             continue
-        status = _one(props.get("status"))
-        word = _word(status)
-        if word in CLOSED_BATCH:
-            continue
-        if status is None or word not in ACTIVE_BATCH:
-            skipped["status_unmapped"] += 1
-            continue
+        made = stock_state.made(status["value"])
+        twins = sorted(copies.get(oid, ()))
         gaps.append(gap(
             "lot_on_hold", "lot_attention", oid, "Batch", "hold",
-            summary="On quality hold while the batch is still active",
+            summary=("Made but never released: Quality still holds the batch" if made
+                     else "On quality hold while the batch is still active"),
             missing="Why the batch is held and when Quality will decide its release",
-            why="The batch's quality status is a hold and its status is not closed "
-                "(both cited).",
+            why=("The batch's status says it was made and its quality status is still a "
+                 "hold (both cited)" if made else
+                 "The batch's quality status is a hold and its status is not closed "
+                 "(both cited)")
+                + "; a hold is claimed only where it is not what every batch in that "
+                  "state carries in its system.",
             priority="high", about=("Batch", "quality_status"),
-            groups=[cites([hold]), cites([status])]))
-    return result(gaps, not_evaluated=skipped)
+            groups=[cites([hold]), cites([status])],
+            extra=cites([row for twin in twins for row in read[twin] if row is not None])))
 
 
 # --------------------------------------------------------------------------- quotes
@@ -422,7 +534,14 @@ def accepted_quote_no_order(st: Any, as_of: date, *, gap: Callable, cites: Calla
 # --------------------------------------------------------------------------- invoices
 
 def invoice_quantity_mismatch(st: Any, as_of: date, *, gap: Callable, cites: Callable,
-                              result: Callable, settled: Sequence[str]) -> dict[str, Any]:
+                              result: Callable, settled: Sequence[str],
+                              orders: Any = None) -> dict[str, Any]:
+    """Per purchase order and item, billed above received. What the order received is
+    read on every copy of it (``orders``: the one PO reader, ``po_status.copies``): the
+    invoice's own order record and every other system's record of the same order, each
+    copy's received quantity on its own (copies of one receipt are never added); billed
+    above what every readable copy received, in one unit, is a mismatch, cited by the copy
+    that received the most."""
     gaps = []
     skipped: Counter = Counter()
     links = st.links(list(INVOICE_LINKS), settled)
@@ -442,6 +561,10 @@ def invoice_quantity_mismatch(st: Any, as_of: date, *, gap: Callable, cites: Cal
                                              "PurchaseOrderLine.for_item")
                for l in by_type[t]}
     pos = {l["to_object"] for ls in invoice_po.values() for l in ls}
+    from . import po_status as ps
+    copies_of = {po: (ps.copies(orders, po)[0] if orders is not None else [po])
+                 for po in sorted(pos)}
+    pos |= {c for found in copies_of.values() for c in found}
     po_lines = defaultdict(list)
     for link in by_type["PurchaseOrderLine.line_of"]:
         if link["to_object"] in pos:
@@ -472,24 +595,38 @@ def invoice_quantity_mismatch(st: Any, as_of: date, *, gap: Callable, cites: Cal
             billed[(to_po[0]["to_object"], item["to_object"])].append(
                 (qty, status, [to_po[0]["markings"], line["markings"], item["markings"]]))
     for (po, item), rows in sorted(billed.items()):
-        received = []
-        for line in po_lines.get(po, ()):
-            line_item = item_of.get(line["from_object"])
-            if line_item is None or line_item["to_object"] != item:
-                continue
-            qty = _one(props(line["from_object"]).get("received_quantity"))
-            if qty is None:
-                received = None
+        # each copy's received quantity of the item, read whole in one unit, else None
+        # (a copy whose quantity is not readable may hold the receipt: none is judged)
+        per_copy: list | None = []
+        for copy in copies_of.get(po, [po]):
+            got: list | None = []
+            for line in po_lines.get(copy, ()):
+                line_item = item_of.get(line["from_object"])
+                if line_item is None or line_item["to_object"] != item:
+                    continue
+                qty = _one(props(line["from_object"]).get("received_quantity"))
+                if qty is None:
+                    got = None
+                    break
+                got.append((qty, [line["markings"], line_item["markings"]]))
+            if got is None:
+                per_copy = None
                 break
-            received.append((qty, [line["markings"], line_item["markings"]]))
-        if not received:
+            if got:
+                per_copy.append(got)
+        if not per_copy:
             skipped["receipt_quantity_unknown"] += 1
             continue
         units = {unit_token(r[0].get("unit")) for r in rows} | {
-            unit_token(q.get("unit")) for q, _ in received}
+            unit_token(q.get("unit")) for got in per_copy for q, _ in got}
         if len(units) != 1 or None in units or "" in units:
             skipped["unit_not_stated"] += 1
             continue
+        if any(_decimal(q["value"]) is None for got in per_copy for q, _ in got):
+            skipped["quantity_unreadable"] += 1
+            continue
+        received = max(per_copy, key=lambda got: sum(
+            (_decimal(q["value"]) for q, _ in got), Decimal(0)))
         total_billed = sum((_decimal(q["value"]) or Decimal(0) for q, _, _ in rows),
                            Decimal(0))
         total_received = sum((_decimal(q["value"]) or Decimal(0) for q, _ in received),
@@ -508,7 +645,7 @@ def invoice_quantity_mismatch(st: Any, as_of: date, *, gap: Callable, cites: Cal
                     f"{unit}",
             missing="Whether the supplier billed goods not yet received",
             why="The posted supplier invoices of this purchase order bill more of the item "
-                "than its lines record received (each quantity cited).",
+                "than any record of the order records received (each quantity cited).",
             priority="high", about=("PurchaseOrder", "invoice"),
             groups=[cites([q, s], *m) for q, s, m in rows]
                    + [cites([q], *m) for q, m in received]))
@@ -845,7 +982,8 @@ def _instant(raw: Any) -> datetime | None:
 
 def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     result: Callable, people: Any, orders: Mapping[str, tuple[str, str]],
-                    order_key: str = "order") -> dict[str, Any]:
+                    order_key: str = "order",
+                    colliding: Callable[[str], bool] = lambda _oid: False) -> dict[str, Any]:
     """F28 over the whole store, set-based: every OPEN purchase order (``orders``: record ->
     (its order across systems, that order's class), the late rule's join) whose mail shows
     a request of ours to the outside, within ``NO_REPLY_WINDOW_DAYS``, unanswered for
@@ -866,7 +1004,9 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     order (its longest wait), citing our message; it requires a grant on every audience the
     conversation's cleared copies sit in (the absence of a reply is the run's verdict). The
     rule's ``coverage``: open orders, judged (some cleared conversation names them) and not
-    (by reason)."""
+    (by reason). ``colliding(record)``: the order's number is another order's too
+    (``po_status.StoreSource.colliding``): a number-text mention of it (a lead link) may be
+    the other order's, so it ties no message to this order."""
     if people is None or getattr(people, "unavailable", None):
         return result([], status="blocked", reasons=["people_exclusion_unavailable"])
     domains = tuple(getattr(people, "internal", ()) or ())
@@ -895,8 +1035,12 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             audience[oid] = key
     named: dict[str, set[str]] = defaultdict(set)
     lead: dict[tuple[str, str], bool] = {}
+    reused = 0
     for link in st.links([MAIL_PO_LINK], held=False):
         mail, po, tier = link["from_object"], link["to_object"], link["tier"]
+        if tier not in ("verified", "reviewed", "corroborated") and colliding(po):
+            reused += mail in audience   # a reused number's mention: not this order's
+            continue
         if mail in audience:
             named[mail].add(po)
             lead[(mail, po)] = lead.get((mail, po), True) and tier not in (
@@ -930,6 +1074,8 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                 threads[row["conversation_id"]].append(oid)
     since = as_of - timedelta(days=NO_REPLY_WINDOW_DAYS)
     skipped: Counter = Counter()
+    if reused:
+        skipped["mention_of_reused_number"] += reused
     judged: set[str] = set()
     uncleared: set[str] = set()
     waiting: dict[str, tuple[int, str, str, bool, list[str]]] = {}

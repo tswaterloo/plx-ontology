@@ -2929,10 +2929,11 @@
                         "invoice_quantity_mismatch",
                         "vendor_no_reply",
                         "vendor_terms_unapplied",
-                        "negative_margin"
+                        "negative_margin",
+                        "late_customer_order"
                       ]
                     },
-                    "maxItems": 21
+                    "maxItems": 23
                   },
                   "as_of": {
                     "type": [
@@ -2982,10 +2983,11 @@
                         "invoice_quantity_mismatch",
                         "vendor_no_reply",
                         "vendor_terms_unapplied",
-                        "negative_margin"
+                        "negative_margin",
+                        "late_customer_order"
                       ]
                     },
-                    "maxItems": 16
+                    "maxItems": 17
                   },
                   "rules": {
                     "type": "array",
@@ -3018,7 +3020,8 @@
                             "invoice_quantity_mismatch",
                             "vendor_no_reply",
                             "vendor_terms_unapplied",
-                            "negative_margin"
+                            "negative_margin",
+                            "late_customer_order"
                           ]
                         },
                         "status": {
@@ -3051,7 +3054,7 @@
                         }
                       }
                     },
-                    "maxItems": 16
+                    "maxItems": 17
                   },
                   "scanned": {
                     "type": "integer",
@@ -3138,7 +3141,8 @@
                             "invoice_quantity_mismatch",
                             "vendor_no_reply",
                             "vendor_terms_unapplied",
-                            "negative_margin"
+                            "negative_margin",
+                            "late_customer_order"
                           ]
                         },
                         "priority": {
@@ -5001,7 +5005,9 @@
                     "governing": {
                       "type": "string",
                       "enum": [
-                        "expected"
+                        "expected",
+                        "vendor_promise",
+                        "lead_time"
                       ]
                     },
                     "governing_date": {
@@ -5194,7 +5200,7 @@
                     "systems_disagree": {
                       "type": "array",
                       "maxItems": 3,
-                      "description": "Linked records of two systems (a firm Portal-BC twin, or precedence tiers of the requested-by date) that disagree on receipt_state (fully_received vs open_lines_outstanding), received_quantity (one unit) or expected_date: both values, each side cited as this reader reads it, and who governs (BC governs receipt state and decides the status; the declared precedence governs the requested-by date; null: no side governs and the status is disputed). Never one side silently picked; a side this reader cannot read states no conflict.",
+                      "description": "Linked records of two systems (a firm Portal-BC twin, or precedence tiers of the requested-by date) that disagree on receipt_state (fully_received vs open_lines_outstanding), received_quantity (one unit) or expected_date: both values, each side cited as this reader reads it, and who governs (receipt state: the side that records the goods received, since a receipt in any system closes the order and the open copy is a reconciliation note, reconcile true; the declared precedence governs the requested-by date; null: no side governs). Never one side silently picked; a side this reader cannot read states no conflict.",
                       "items": {
                         "type": "object",
                         "additionalProperties": false,
@@ -5202,6 +5208,7 @@
                         "properties": {
                           "field": {"type": "string", "enum": ["receipt_state", "received_quantity", "expected_date"]},
                           "governs": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9_+]{0,63}$"},
+                          "reconcile": {"type": "boolean", "const": true},
                           "unit": {"anyOf": [{"$ref": "#/$defs/unit"}, {"type": "null"}]},
                           "sides": {
                             "type": "array",

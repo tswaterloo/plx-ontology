@@ -70,10 +70,25 @@ READER_CHANGES: Mapping[tuple[str, str], tuple[str | None, str | None]] = {
         "587d753455518abfd3190368770b29af5eb8bdf25951cf3367d4f613b8aee4ad"),
     # The mail attachments read by mailbox ranges on threads of their own, under the
     # snapshot's file marks: the same rows in the same order, else one
-    # read as before (ontology/tests/test_build_prints.py SplitMailReadTests).
+    # read as before (ontology/tests/test_build_prints.py SplitMailReadTests); and its
+    # freshness description asks for a truncated attachment listing only once every folder
+    # is complete, stopping at the first (232ffd993a): the same freshness, no row read.
     ("ontology.project", "MailCaptures"): (
         "8a8512cebea3f48b03cc546271ac5bc89ea16509cf4db0393cad63644039b1c9",
-        "4e35c9f8d667ae647772fdd338639bb06be4c17e1f10ca0b35f805fa7a13f97e"),
+        "1273574965b8d5fafe301a5682c12df7794d5907695173e03209cef3f2cf9c00"),
+    # Mail images worth OCR-reading (1aeab3f6af, the mail-image pass): new definitions of
+    # integrations.captured_text the readers reach with the module but never call;
+    # capture_text, the text every reader takes, is unchanged (STEP_FILE_CHANGES).
+    ("integrations.captured_text", "MAIL_IMAGE_MIN_BYTES"): (
+        None, "069517eb20f1a60f173afa11d17f50ba902565b7878b6b33ce0fba67ca486eca"),
+    ("integrations.captured_text", "MAIL_IMAGE_MIN_HEIGHT"): (
+        None, "065b3debc2c8358f31f93c99fae680c1f2d6716b416225e4995a39b072aa653f"),
+    ("integrations.captured_text", "MAIL_IMAGE_MIN_PIXELS"): (
+        None, "94e0856499c8d30c530a1daaddc8568dd28443e308e3ece5242277ba8ff4707a"),
+    ("integrations.captured_text", "MAIL_IMAGE_MIN_WIDTH"): (
+        None, "77491c6a321ddfcfd65423a21f429ee1435d54e97098b8e06c7fe7a5f407f080"),
+    ("integrations.captured_text", "image_worth_reading"): (
+        None, "49d74fe8d0edaefd66ce44a2b2b65a150f6d5119bcd7251dc6609290ace8e375"),
     # The parallel projection's scheduling: the bindings over one derived relation are one
     # task that reads it once, a sharded binding cut into pieces (dd6d87e5a3, ROWS_CODE_DIGESTS); the relation
     # names it groups by (already defined at BASE_COMMIT, newly reached).
@@ -238,6 +253,16 @@ def equivalent_derivation_code(files: Iterable[tuple[str, str]]) -> str | None:
 
 # ------------------------------------------------------------------ step memo code
 
+# path -> the definitions in which a file the finishing steps' memos rest on differs from
+# BASE_COMMIT's; every other file they rest on is byte for byte BASE_COMMIT's
+# (``ontology/tests/test_code_equivalence.py``). captured_text.py gains the mail-image
+# size test (1aeab3f6af): no step calls it, and capture_text is unchanged.
+STEP_FILE_CHANGES: Mapping[str, frozenset[str]] = {
+    "integrations/captured_text.py": frozenset({
+        "MAIL_IMAGE_MIN_BYTES", "MAIL_IMAGE_MIN_HEIGHT", "MAIL_IMAGE_MIN_PIXELS",
+        "MAIL_IMAGE_MIN_WIDTH", "image_worth_reading"}),
+}
+
 # kind -> {the value this code gives: BASE_COMMIT's value}: the keys the finishing steps'
 # memos (``ontology.mention_memo``) hold their entries under. Each value digests the
 # bytes of whole files, so a pair holds only for these exact files (and, for
@@ -273,5 +298,5 @@ def earlier_value(kind: str, value: str) -> str:
     return VALUE_EQUIVALENTS.get(kind, {}).get(value, value)
 
 
-__all__ = ["BASE_COMMIT", "VALUE_EQUIVALENTS", "earlier_value", "DERIVATION_CHANGES", "READER_CHANGES", "derivation_differences",
+__all__ = ["BASE_COMMIT", "STEP_FILE_CHANGES", "VALUE_EQUIVALENTS", "earlier_value", "DERIVATION_CHANGES", "READER_CHANGES", "derivation_differences",
            "equivalent_derivation_code", "reader_differences", "reader_equivalent"]

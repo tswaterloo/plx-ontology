@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import threading
 from typing import Any, Mapping
 
 FORMAT = "plx-delta/v1"
@@ -188,6 +189,28 @@ def open_overlay(pointer: Path, stamp: tuple, base: Any) -> Overlay | None:
     return Overlay(layers, stamp)
 
 
+# What every host of this process reads of one layer file (its owned ids and audience
+# keys), kept per file identity: a layer file is never rewritten, and every host opens
+# every layer again whenever the pointer changes (each delta cycle).
+_LAYER_FACTS: dict[tuple, tuple[frozenset[str], tuple[str, ...]]] = {}
+_LAYER_FACTS_LOCK = threading.Lock()
+_LAYER_FACTS_KEPT = 256
+
+
+def _layer_identity(store: str) -> tuple | None:
+    """The layer file's identity (device, inode, size, change time, and its WAL's size);
+    None when it cannot be read (its facts are then read, never kept)."""
+    try:
+        found = os.stat(store)
+        try:
+            wal = os.stat(store + "-wal").st_size
+        except FileNotFoundError:
+            wal = 0
+    except OSError:
+        return None
+    return (store, found.st_dev, found.st_ino, found.st_size, found.st_mtime_ns, wal)
+
+
 def _open_layer(store: str, served: Mapping[str, str], base: Any) -> Layer | None:
     from .ontology_tools import OntologyTools, StoreReader
     reader = StoreReader.open(store)
@@ -198,8 +221,15 @@ def _open_layer(store: str, served: Mapping[str, str], base: Any) -> Layer | Non
                 or reader.format_problem() is not None):
             reader.conn.close()
             return None
-        owned = frozenset(row[0] for row in reader.conn.execute(
-            "SELECT object_id FROM delta_owned"))
+        identity = _layer_identity(store)
+        with _LAYER_FACTS_LOCK:
+            kept = _LAYER_FACTS.get(identity) if identity is not None else None
+        if kept is None:
+            owned = frozenset(row[0] for row in reader.conn.execute(
+                "SELECT object_id FROM delta_owned"))
+        else:
+            owned = kept[0]
+            reader.remember_audience_keys(kept[1])
         tools = OntologyTools(
             reader, base.policy, item_gate=base.item_gate, schema=base.schema,
             grammar=base.grammar, contracts=base.contracts, clock=base.clock,
@@ -208,7 +238,12 @@ def _open_layer(store: str, served: Mapping[str, str], base: Any) -> Layer | Non
             freshness_bounds=base.freshness_bounds, freshness_clock=base.freshness_clock)
         # One set registry: a handle a layer's plx.around makes is a root for the host.
         tools.sets = base.sets
-        reader.audience_keys()   # read now, not on the first reader's call
+        keys = reader.audience_keys()   # read now, not on the first reader's call
+        if kept is None and identity is not None and identity == _layer_identity(store):
+            with _LAYER_FACTS_LOCK:
+                if len(_LAYER_FACTS) >= _LAYER_FACTS_KEPT:
+                    _LAYER_FACTS.clear()
+                _LAYER_FACTS[identity] = (owned, tuple(keys))
     except Exception:
         reader.conn.close()
         raise

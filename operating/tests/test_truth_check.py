@@ -60,6 +60,14 @@ class PurchaseOrderRules(unittest.TestCase):
         self.assertIn("D1", rules)   # the import day on most lines is no requested date
         self.assertTrue(all(r["citations"] for r in out["reasons"]))
 
+    def test_a_back_ordered_item_with_a_receipt_is_partly_received_not_received(self):
+        src = _world(fm_item_status="B.Order")
+        src.portal[tc.FM_RECEIPT] = [_row(tc.FM_RECEIPT, id=701, idgenpoitem=70,
+                                          datereceived="2025-07-04", status="Received")]
+        out = tc.po_verdict(src, BC_PO)
+        self.assertNotEqual(out["verdict"], "received_elsewhere")
+        self.assertNotIn("P1-fm", {r["rule"] for r in out["reasons"]})
+
     def test_open_everywhere_with_a_real_date_is_supported(self):
         world = _world(fm_item_status="B.Order", lines_dates=())
         out = tc.po_verdict(world, BC_PO, "2026-08-01")
@@ -108,6 +116,34 @@ class OtherClaims(unittest.TestCase):
                                         "summary": "sources report different values "
                                                    "(32 box and 32.5 box)"})
         self.assertTrue(out["contradicted"])
+
+
+class ProbesAndOrder(unittest.TestCase):
+    def test_a_lot_claim_checked_first_never_leaves_a_partial_index(self):
+        src = _world()
+        lot = {"kind": "lot_near_expiry", "object_id":
+               'Lot:portal.fm_receipt_raw_material.lotnoqc:{"id":5}', "summary": ""}
+        late = {"kind": "late_po", "object_id": BC_PO, "summary": "needed by 2026-07-14"}
+        out = tc.check(src, [lot, late])
+        self.assertEqual([r["verdict"] for r in out["results"]][1], "received_elsewhere")
+
+    def test_a_claim_names_its_record_whatever_the_json_spelling(self):
+        made = [_row(tc.FM_BATCH, id=n, status="Realized", statusqc="On-Hold")
+                for n in (11, 12)]
+        overdue = [_row(tc.SALES_ORDER, id=s, status="Open", required_date="2026-10-01",
+                        custom_fields={"fmId": f}) for s, f in (("s1", 1), ("s2", 2),
+                                                                ("s3", 3))]
+        src = tc.Sources(portal={tc.FM_BATCH: made, tc.SALES_ORDER: overdue,
+                                 tc.FM_ORDER_ENTRY: [_row(tc.FM_ORDER_ENTRY, id=2,
+                                                          status="Closed")]},
+                         bc=[], as_of=date(2026, 11, 5))
+        claims = [{"kind": "lot_on_hold", "object_id": 'Batch:portal.fm_batch:{"id":11}',
+                   "cites": []},
+                  {"kind": "late_customer_order",
+                   "object_id": 'SalesOrder:portal.app_sales_order:{"id":"s1"}', "cites": []}]
+        found = {p["rule"]: p for p in tc.probes(src, claims)}
+        self.assertEqual(found["L6"]["count"], 1)      # 12 unclaimed; 11 claimed
+        self.assertEqual(found["C2"]["count"], 1)      # s3; s1 claimed, s2 closed in FM
 
 
 class PeopleExclusionFailsClosed(unittest.TestCase):

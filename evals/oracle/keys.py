@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 import re
+from typing import Any, Mapping, Sequence
 
 PORTAL_COMMIT = "b46934a"
 PACK = "devloop/CONTEXT/03-PORTAL.md"
@@ -71,7 +72,7 @@ RELATIONS: dict[str, Relation] = {r.name: r for r in (
              "ship_date", "updated_at"), "updated_at"),
     Relation(SHIPMENT_LINE, "ShipmentLine", ("id", "shipment_id", "product_id", "quantity", "uom",
              "updated_at"), "updated_at", ("quantity",)),
-    Relation(FM_OE, "FmOrderEntry", ("id", "custpocode", "audittimestampmodified"),
+    Relation(FM_OE, "FmOrderEntry", ("id", "custpocode", "status", "audittimestampmodified"),
              "audittimestampmodified"),
     Relation(FM_AO, "FmAssemblyOrder", ("id", "nameamo_c", "audittimestampmodified"),
              "audittimestampmodified"),
@@ -92,7 +93,8 @@ RELATIONS: dict[str, Relation] = {r.name: r for r in (
              "updated_at"), "updated_at", ("quantity",)),
     Relation(FM_PO, "FmPurchaseOrder", ("id", "ponumber", "audittimestampmodified"),
              "audittimestampmodified"),
-    Relation(FM_PO_ITEM, "FmPurchaseOrderItem", ("id", "idpogen", "audittimestampmodified"),
+    Relation(FM_PO_ITEM, "FmPurchaseOrderItem", ("id", "idpogen", "status", "qty",
+             "audittimestampmodified"),
              "audittimestampmodified"),
     # FM raw-material receipts: one row per lab id (``idlabid`` = the receipt number the
     # Portal's MRP receiving path writes to app_receipt.receipt_number; 03 #3.5).
@@ -530,6 +532,86 @@ def po_closed_by_header_only(header: object) -> bool:
 
 def shipped(status: object) -> bool:
     return status in SHIPMENT_SHIPPED
+
+
+# The truth rules of 2026-11-06 (owner, after the cross-system audit), as the eval side
+# writes them by its own code (never the product's): a receipt in ANY copy of an order
+# closes it; a sales order closes in any copy. FileMaker's item settled words; a QC lot
+# QC refused is no goods received.
+FM_ITEM_SETTLED = frozenset({"COMPLETE", "OVERPO", "CANCEL"})
+FM_LOT_REFUSED = frozenset({"REJECTED"})
+TRUTH_RULES_CITE = ("owner 2026-11-06, /data/scratch/late-po-audit/REPORT.md root causes 1-6; "
+                    "devloop/DECISIONS/open-proactive-truth-custorder-sage-complete.md")
+
+
+def fm_item_received(item: Mapping[str, Any]) -> bool | None:
+    """One FileMaker PO item (its raw row): received when FileMaker settled it; any other
+    word is open (a back-ordered or waiting item with goods recorded against it is partly
+    received, and a partial receipt never closes it); None: no word (a receipt alone does
+    not say all arrived)."""
+    word = str(item.get("status") or "").strip().upper()
+    if word in FM_ITEM_SETTLED:
+        return True
+    return False if word else None
+
+
+def fm_order_received(items: Sequence[Mapping[str, Any]]) -> bool:
+    """Every item of a FileMaker order received (``fm_item_received``)."""
+    return bool(items) and all(fm_item_received(i) for i in items)
+
+
+def so_closed_by_copies(statuses: Sequence[object], shipped: bool = False) -> bool:
+    """A customer order is closed when ANY copy says so: a finished status of the Portal or
+    FileMaker (``so_finished``), or a shipment that shipped. A Sage header's completion code
+    alone closes nothing (its meaning is not confirmed, decision above)."""
+    return shipped or any(so_finished(s) for s in statuses)
+
+
+# Lot stock and batch QC holds, by the eval side's own words (the product's rule is
+# operating/stock_state.py; never imported here): a QC status that holds stock or says the
+# lot is gone; a batch QC "on hold" is a hold only when it is not the default its lifecycle
+# state carries (a value on at least STATE_DEFAULT_SHARE of at least STATE_DEFAULT_MIN
+# batches in that state); a made batch on hold in a state too small to judge is a hold.
+LOT_STOCK = frozenset({"released", "quarantine", "quarantined", "approved", "available"})
+LOT_GONE = frozenset({"finished", "rejected", "consumed", "used", "used up", "depleted",
+                      "expired", "written off", "scrapped"})
+BATCH_HOLD_WORDS = frozenset({"on-hold", "on hold", "hold", "onhold"})
+BATCH_CLOSED = frozenset({"cancelled", "canceled", "closed"})
+BATCH_MADE = frozenset({"realized", "realised", "completed", "complete", "manufactured"})
+BATCH_ACTIVE = frozenset({"allocated", "committed", "generated", "scheduled", "planned",
+                          "in progress", "in production"})
+STATE_DEFAULT_SHARE, STATE_DEFAULT_MIN = 0.95, 10
+
+
+def _said(value: object) -> str:
+    return " ".join(str(value or "").replace("_", " ").split()).casefold()
+
+
+def lot_holds_stock(status: object) -> bool | None:
+    """True: the QC status holds stock; False: the lot is gone; None: not stated."""
+    said = _said(status)
+    return True if said in LOT_STOCK else False if said in LOT_GONE else None
+
+
+def batch_hold_verdict(status: object, qc: object,
+                       pairs: Sequence[tuple[object, object]]) -> str:
+    """``hold``, ``not_held``, ``closed``, ``unmapped``, ``state_default`` or
+    ``unprofiled`` for a batch in ``status`` carrying QC ``qc``, judged over every batch
+    ``(status, qc)`` of the same system."""
+    said, qc_said = _said(status), _said(qc)
+    if qc_said not in BATCH_HOLD_WORDS:
+        return "not_held"
+    if said in BATCH_CLOSED:
+        return "closed"
+    if said not in BATCH_ACTIVE | BATCH_MADE:
+        return "unmapped"
+    peers = [_said(q) for s, q in pairs if _said(s) == said and _said(q)]
+    if len(peers) < STATE_DEFAULT_MIN:
+        return "hold" if said in BATCH_MADE else "unprofiled"
+    if peers.count(qc_said) >= STATE_DEFAULT_MIN and \
+            peers.count(qc_said) / len(peers) >= STATE_DEFAULT_SHARE:
+        return "state_default"
+    return "hold"
 
 
 def so_finished(value: object) -> bool:

@@ -655,6 +655,12 @@ class MockBackend(ActionsMixin):
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         return m.BriefingSeen(ok=True, at=_iso(0))
 
+    def watcher_item_state(self, reader: Reader, item_id: str,
+                           request: m.WatcherItemStateRequest) -> m.WatcherItemState:
+        """The demo briefing lists no watcher item: every id is not found."""
+        from .errors import UserFacing
+        raise UserFacing("item_not_found", "That item isn't in your briefing.", 404)
+
     def suggestions(self, reader: Reader) -> m.Suggestions:
         """Demo suggestions built by the real composer (``operating.proactive_suggestions``)
         over the demo briefing, one demo PO trail (no confirmation, a cleared vendor
