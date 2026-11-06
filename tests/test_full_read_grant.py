@@ -140,6 +140,77 @@ class FullReadGrantTest(unittest.TestCase):
         self.assertFalse(vince.full_read_allows("planner-task", {
             "status": "derived", "kind": "meeting_participants", "identities": [BOX]}))
 
+    def meetings_seen(self, readers, keys, guard=None):
+        """{reader oid: the ``meetings:`` units ``case_host_policy`` grants it}."""
+        from integrations.live_source_guard import LiveSourceAudience
+        from operating import ontology_host
+        guard = PeopleExclusion([EXCLUDED]) if guard is None else guard
+        live = LiveSourceAudience.from_file(self.tmp / "host" / "live_audience.json")
+        runtime = SimpleNamespace(
+            employee_gate=ep.EmployeeActorGate(self.resolver(exclusion=guard), "plx"),
+            people_exclusion=guard, live=SimpleNamespace(audience=live),
+            mirror=SimpleNamespace(_audience=lambda: SimpleNamespace(
+                allows=lambda actor, relation: True)))
+        seen = {}
+        for oid in readers:
+            actor = Actor("plx", frozenset({"employee:" + oid}), "restricted")
+            policy = ontology_host.case_host_policy(runtime, actor, None, audience_keys=keys)
+            seen[oid] = {k for k in keys if policy.may_read(actor, k)}
+        return seen
+
+    def test_meetings_units_open_to_their_own_reader_and_the_full_read_owner_only(self):
+        """Calendar, organizer and plan units are decided, never left to default deny: a
+        reader sees their own calendar only, the full-read owner every calendar and plan,
+        nobody an excluded person's calendar or organizer unit, and
+        nobody any calendar when the exclusion is not loaded (fail closed); a malformed
+        meetings unit never."""
+        keys = [f"meetings:calendar:{VINCE}", f"meetings:calendar:{OTHER}",
+                f"meetings:calendar:{BOX}", f"meetings:calendar:{EXCLUDED}",
+                f"meetings:organizer:{BOX}", f"meetings:organizer:{EXCLUDED}",
+                "meetings:plan:PlanOne", "meetings:other:x", "meetings:calendar:not-an-oid",
+                "meetings:plan:*", "meetings:plan:Plan One"]
+        excluded = {f"meetings:calendar:{EXCLUDED}", f"meetings:organizer:{EXCLUDED}"}
+        seen = self.meetings_seen((VINCE, OTHER), keys)
+        # the owner (full read over every mailbox): every calendar, organizer and plan
+        # (a unit id outside its grammar, ``meetings:plan:*`` included, is never granted:
+        # never a pattern over every plan)
+        self.assertEqual(seen[VINCE], set(keys) - excluded - {
+            "meetings:other:x", "meetings:calendar:not-an-oid", "meetings:plan:*",
+            "meetings:plan:Plan One"})
+        # another employee: their own calendar and the plan (its tasks per record) only
+        self.assertEqual(seen[OTHER], {f"meetings:calendar:{OTHER}", "meetings:plan:PlanOne"})
+        # an excluded person's calendar and transcripts: nobody
+        for oid in (VINCE, OTHER):
+            self.assertFalse(seen[oid] & excluded, oid)
+        # no loaded exclusion: no calendar or organizer unit for anyone
+        for guard in (PeopleExclusion(unavailable="excluded_people_unresolved"),):
+            unloaded = self.meetings_seen((VINCE, OTHER), keys, guard)
+            for oid in (VINCE, OTHER):
+                self.assertFalse({k for k in unloaded[oid]
+                                  if not k.startswith("meetings:plan:")}, oid)
+
+    def test_planner_tasks_stay_decided_per_record_inside_a_granted_plan(self):
+        """A plan unit granted on the audience opens no task by itself: each task is
+        decided by its own captured people (``plan_people``): a reader the task names
+        reads it, another does not, the full-read owner does unless an excluded person is
+        among its people, and a task with no derived ACL is read by nobody."""
+        resolver = self.resolver()
+        vince = resolver.resolve(ep.EmployeePrincipal(TID, VINCE))
+        other = resolver.resolve(ep.EmployeePrincipal(TID, OTHER))
+        audience = SimpleNamespace(tenant="plx", allows=lambda actor, resource: True)
+        unit = "meetings:plan:PlanOne"
+
+        def visible(who, identities, status="derived"):
+            acl = {"status": status, "kind": "plan_people", "identities": identities}
+            return _EmployeeItemAcl(audience, who, "planner-task").item_visible(
+                who.actor, unit, acl)
+        self.assertFalse(visible(other, [BOX]))
+        self.assertTrue(visible(other, [OTHER]))
+        self.assertTrue(visible(vince, [BOX]))
+        self.assertFalse(visible(vince, [BOX, EXCLUDED]))
+        self.assertFalse(visible(vince, [BOX], status="unreadable"))
+        self.assertFalse(visible(other, [OTHER], status="unreadable"))
+
     def test_excluded_person_stays_hidden_and_an_unloaded_exclusion_grants_nothing(self):
         resolver = self.resolver()
         excluded_box = {"source_acl": mail_acl(EXCLUDED, "gone@example.com")}

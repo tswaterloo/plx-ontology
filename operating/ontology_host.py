@@ -396,6 +396,57 @@ def case_host_policy(runtime: Any, actor: Any, schema: Any, *,
         entitlement = gate.entitlement(actor) if gate is not None else None
     except Exception:  # noqa: BLE001 - a refused or unresolved employee holds no more
         entitlement = None
+    # Calendar events, meetings, Planner tasks and transcripts (``integrations.
+    # capture_meetings``): every ``meetings:`` unit the store holds is decided here, never
+    # left to default deny. A unit is granted when the live audience allows the
+    # employee-gated actor every resource of it (a calendar or an organizer's transcripts:
+    # ``mail:<oid>``, a plan: ``teams:planner:<plan>``); a calendar or an organizer's unit
+    # (a person's mailbox) also needs an owner the people exclusion clears (fail closed: a
+    # missing or unavailable guard clears nobody) and to be the reader's own mailbox (its
+    # object id the employee's) or a full-read grant over every mailbox (``mail`` scope,
+    # ``mail_scope`` ``all``). The item gate still decides each record by its captured ACL
+    # (mailbox owner, plan people, participants), on every route (the tools and search:
+    # ``ontology_tools._ITEM_ACL_SCHEMES``). A unit whose id is not of its kind's grammar
+    # (an object id, a Planner id) is never granted: a key such as ``meetings:plan:*``
+    # never acts as a pattern. "Own" is the employee's principal object id only, the key a
+    # calendar is captured under; a calendar captured under another id of theirs is not.
+    meetings_units = sorted(str(k) for k in audience_keys if str(k).startswith(_MEETINGS))
+    if meetings_units and live is not None:
+        from integrations.capture_meetings import EVENT_KIND, TASK_KIND, TRANSCRIPT_KIND
+        from integrations.people_exclusion import is_object_id
+        from .ontology_tools_evidence import people_excluded
+        kinds = {"calendar": EVENT_KIND, "plan": TASK_KIND, "organizer": TRANSCRIPT_KIND}
+        gated = runtime.employee_gate(actor)
+        guard = getattr(runtime, "people_exclusion", None)
+        own: set[str] = set()
+        every_mailbox = False
+        if entitlement is not None and entitlement.actor is not None:
+            own = {str(entitlement.principal.object_id).strip().lower()}
+            try:
+                every_mailbox = entitlement.full_read_covers("mail") \
+                    and entitlement.full_read.grant.mail_scope == "all"
+            except Exception:  # noqa: BLE001 - an undecidable grant opens no mailbox
+                every_mailbox = False
+        for unit in meetings_units:
+            part, _, owner = unit[len(_MEETINGS):].partition(":")
+            kind = kinds.get(part)
+            if kind is None or not owner or kind.unit((owner,)) != unit:
+                continue  # not a meetings unit: never granted
+            try:
+                # the unit's id in its kind's grammar (a placeholder record id beside it)
+                kind.canonical_path((owner, owner) if kind is TASK_KIND
+                                    else (owner, "0", "0")[:kind.path_parts])
+            except (ValueError, TypeError):
+                continue  # an id outside the grammar (``*``, spaces): never granted
+            try:
+                allowed = all(live.audience.allows(gated, resource)
+                              for resource in kind.resources((owner,)))
+            except Exception:  # noqa: BLE001 - an undecidable audience grants nothing
+                allowed = False
+            if allowed and kind is not TASK_KIND:
+                allowed = (is_object_id(owner) and not people_excluded(guard, [owner])
+                           and (owner.lower() in own or every_mailbox))
+            grants[unit] = principals if allowed else frozenset()
     # BC is decided unit by unit as mail and SharePoint are: every BC unit the store holds
     # (and every one decided above) is listed, so a reader granted all of them reads the
     # whole family (``covers_family``: a BC record reached through a Portal twin is then
@@ -437,6 +488,7 @@ def check_marking_grants(value: Any) -> dict[str, frozenset[str]]:
 _TEAMS_UNITS = ("teams:channel:", "teams:chat:")
 _SHAREPOINT_LIST = "sharepoint-list:"  # integrations.capture_sharepoint_lists.LIST_KIND units
 _BRAIN = "brain:"  # integrations.knowledge_source.BRAIN_KIND units
+_MEETINGS = "meetings:"  # integrations.capture_meetings units (calendar, plan, organizer)
 
 
 def _file_identity(path: Path) -> tuple[int, int] | None:

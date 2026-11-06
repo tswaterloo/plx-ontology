@@ -392,6 +392,45 @@ class HybridSearchTests(unittest.TestCase):
         result = self.run_search("liquid soap shipment delayed maple suds", none)
         self.assertTrue(all(h["handle"].startswith("bc://") for h in result.hits))
 
+    def test_meeting_hits_pass_the_per_record_check_or_are_never_shown(self):
+        """Calendar events, Planner tasks and transcripts carry their own ACL (attendees,
+        plan people, participants): a reader granted their units still sees a hit only
+        when the per-record check admits it; a check refusing everything, or none at all,
+        shows no meeting hit (one list with the tools: ``ontology_tools._ITEM_ACL_SCHEMES``)."""
+        units = ["meetings:plan:PlanOne", "meetings:calendar:" + MBX_A.partition(":")[2]]
+        meetings = ("calendar-event://", "planner-task://", "meeting-transcript://")
+        with FixtureDb() as db:
+            db.add([
+                dict(chunk_id="task1#0", source_handle="planner-task://PlanOne/T1",
+                     object_id="PlannerTask:T1", kind="meetings", title="quokka relabel",
+                     occurred_at=_t(2), header="Planner task 'quokka relabel'.",
+                     body="Relabel the quokka soap cartons before the audit.",
+                     audience_key=units[0], authority=1),
+                dict(chunk_id="event1#0",
+                     source_handle="calendar-event://" + units[1].rpartition(":")[2] + "/E1",
+                     object_id="CalendarEvent:E1", kind="meetings", title="quokka review",
+                     occurred_at=_t(2), header="Calendar event 'quokka review'.",
+                     body="Review of the quokka soap cartons with the supplier.",
+                     audience_key=units[1], authority=1)])
+
+            def hits(gate):
+                result = search("quokka soap cartons", reader(units, gate=gate),
+                                dsn=db.dsn, now=NOW, embedder=EMB, reranker=None, owners={})
+                return [h["handle"] for h in result.hits], result
+            shown, _ = hits(lambda handle: True)
+            self.assertEqual({h.split("://")[0] + "://" for h in shown},
+                             {"calendar-event://", "planner-task://"})
+            shown, result = hits(lambda handle: False)
+            self.assertFalse([h for h in shown if h.startswith(meetings)])
+            self.assertTrue(result.hidden["private"])
+            none = SearchReader("x", lambda key: key in units, frozenset(), item_gate=None)
+            result = search("quokka soap cartons", none, dsn=db.dsn, now=NOW, embedder=EMB,
+                            reranker=None, owners={})
+            self.assertFalse([h for h in result.hits if h["handle"].startswith(meetings)])
+        from operating.ontology_tools import _ITEM_ACL_SCHEMES
+        from operating.search.reader import ITEM_ACL_SCHEMES
+        self.assertIs(ITEM_ACL_SCHEMES, _ITEM_ACL_SCHEMES)
+
     # ------------------------------------------------------------- matching
 
     def test_or_semantics_finds_a_document_when_not_all_words_match(self):

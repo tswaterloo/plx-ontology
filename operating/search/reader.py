@@ -12,12 +12,14 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from operating.ontology_tools import _ITEM_ACL_SCHEMES
 from operating.search.config import INTENTS
 
-# Citation schemes whose items carry their own ACL (mail, files, chats): a shown hit of
-# one passes the item gate, and without a gate it is never shown (ontology_tools).
-ITEM_ACL_SCHEMES = frozenset({"graph-mail", "sharepoint", "original", "teams-channel",
-                              "teams-chat", "sharepoint-list"})
+# Citation schemes whose items carry their own ACL (mail, files, chats, calendar events,
+# Planner tasks, transcripts): a shown hit of one passes the item gate, and without a gate
+# it is never shown. The tools' one list (``ontology_tools._ITEM_ACL_SCHEMES``), never a
+# copy that could drift from it.
+ITEM_ACL_SCHEMES = _ITEM_ACL_SCHEMES
 
 
 @dataclass(frozen=True)
