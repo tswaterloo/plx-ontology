@@ -736,10 +736,11 @@ class DetectorTest(Case):
                                  self.events(held=ALL - {"finance", "purchasing_prices"}))
                 self.inbox.unlink()
 
-    def test_slow_investigations_share_the_time_and_keep_what_they_found(self):
-        """Each investigation can take minutes on a full store: the three tool-call event
-        detectors share what is left in turn, so a slow vendor-mail scan never leaves the
-        margins unrun, and what a cut-short scan found is kept (never discarded)."""
+    def test_slow_investigations_stop_in_their_own_window_and_keep_what_they_found(self):
+        """Each investigation can take minutes on a full store: each tool-call event
+        detector runs in its own window (``DETECTOR_SECONDS``), so a slow vendor-mail scan
+        never leaves the margins unrun, and what a cut-short scan found is kept (never
+        discarded)."""
         from decimal import Decimal
         w = World()
         requests = {}
@@ -780,10 +781,10 @@ class DetectorTest(Case):
                 mock.patch.object(pe, "_orders_at_risk", nothing), \
                 mock.patch.object(pe, "_card_rules", nothing):
             summary = pe.run(self.store, self.inbox, AS_OF, call=call, clock=lambda: MOMENT,
-                             budget=pe.Budget(90, monotonic=lambda: now[0]))
+                             budget=pe.Budget(90, monotonic=lambda: now[0]),
+                             detector_seconds={"vendor_terms_unapplied": 35})
         detectors = summary["detectors"]
-        # its share of what is left for the mail scan: two of three orders read, both
-        # findings kept
+        # its own window for the mail scan: two of three orders read, both findings kept
         self.assertEqual(detectors["vendor_terms_unapplied"], "truncated")
         self.assertIn(pe.TIME_BUDGET, summary["detector_reasons"]["vendor_terms_unapplied"])
         self.assertEqual(len(self.events()["vendor_terms_unapplied"]), 2)

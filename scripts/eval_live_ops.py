@@ -1371,7 +1371,6 @@ class RoutedAgent:
 
     def run(self, prompt: str, host: Any) -> Any:
         declined: list[str] = []
-        began = time.monotonic()
         route = self._shortcut()
         if route == "profit":
             ran = self._profit(host, declined)
@@ -1409,13 +1408,21 @@ class RoutedAgent:
         # The question's first reads, as the app's Ask makes them (``gated_run``).
         told = getattr(self.agent, "for_question", None)
         agent = told(self.question) if told is not None else self.agent
-        # The Ask's one wall budget: the session gets what the routes before it left.
+        # The app's own session limit (``operator_api.agent_ask``: ``question_budget`` under
+        # the Ask's hard cap): a lookup of one named record the short one, any other
+        # question the deep one, never the 60 s ``answer_budget`` of the old Ask; its hard
+        # timeout is that budget, as the app's ``agent_for`` sets it. The app's front door
+        # reads a lookup; here the identifier grammar does (``deep_investigation.is_lookup``,
+        # as ``ClaudeCodeAgent.routed``).
         given = getattr(agent, "budget_seconds", None)
         if given is not None:
             import copy
             from operating import deep_investigation as deep
             agent = copy.copy(agent)
-            agent.budget_seconds = deep.answer_budget(time.monotonic() - began, given)
+            agent.budget_seconds = deep.question_budget(
+                self.question, given, "lookup" if deep.is_lookup(self.question) else None)
+            if getattr(agent, "timeout", None) is not None:
+                agent.timeout = int(agent.budget_seconds)
         result = agent.run(prompt, host)
         result.agent["routed"] = "agent"
         if declined:
@@ -1700,7 +1707,9 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
             sub.add_argument("--budget-seconds", type=float, default=DEFAULT_BUDGET_SECONDS)
             sub.add_argument("--timeout", type=int, default=300)
             sub.add_argument("--max-turns", type=int, default=deep.MAX_TURNS)
-            sub.add_argument("--session-budget", type=float, default=deep.SESSION_SECONDS)
+            sub.add_argument("--session-budget", type=float, default=deep.DEEP_SECONDS,
+                             help="the Ask's hard cap (the app's ASK_SECONDS); each "
+                                  "session gets question_budget under it")
             sub.add_argument("--max-steps", type=int, default=deep.MAX_STEPS)
             sub.add_argument("--claude-bin", default="claude")
             sub.add_argument("--model")

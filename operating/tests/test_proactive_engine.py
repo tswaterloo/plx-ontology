@@ -734,6 +734,62 @@ class InboxTest(Engine):
         self.assertEqual(hook["detector_reasons"]["order_without_customer_po"],
                          [pe.TIME_BUDGET])
 
+    def test_detectors_side_by_side_find_what_one_thread_finds_and_one_slow_stops_alone(self):
+        """The store-only detectors on threads (``run(threads=)``) find exactly what they
+        find one after another; a detector whose own window ends (``DETECTOR_SECONDS``) is
+        truncated while every other runs to complete."""
+        world, ids = seeded()
+        serial = self.run_engine(world, ids["coverage"], threads=1)
+        found = {g["id"] for g in self.read()["gaps"]}
+        side = self.run_engine(world, ids["coverage"], threads=4)
+        self.assertEqual((side["detectors"], side["gaps_found"]),
+                         (serial["detectors"], serial["gaps_found"]))
+        self.assertEqual({g["id"] for g in self.read()["gaps"]}, found)
+
+        def endless(st, _as_of):   # a query that never ends on its own
+            st.conn.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) "
+                            "SELECT count(*) FROM n").fetchone()
+        with mock.patch.object(pe, "_expired_quote", endless):
+            slow = self.run_engine(world, ids["coverage"], threads=4,
+                                   budget=pe.Budget(600), detector_seconds={"expired_quote": 0.5})
+        self.assertEqual(slow["detectors"]["expired_quote"], "truncated")
+        self.assertEqual(slow["detector_reasons"]["expired_quote"], [pe.TIME_BUDGET])
+        self.assertEqual({k: v for k, v in slow["detectors"].items() if k != "expired_quote"},
+                         {k: v for k, v in serial["detectors"].items() if k != "expired_quote"})
+        self.assertLess(slow["seconds"]["expired_quote"], 30)
+
+    def test_the_document_cards_are_read_on_the_pool_as_one_by_one(self):
+        """``card_rules`` with the run's pool asks the same cards as its serial reads, all at
+        once; a card the time left did not reach is not read (never a finding)."""
+        from operating import proactive_pool
+
+        class St:
+            class conn:
+                @staticmethod
+                def execute(_sql, _params):
+                    return [("SupplierInvoice:a",), ("SupplierInvoice:b",)]
+
+            @staticmethod
+            def versions(handles):
+                return []
+        asked = []
+
+        def call(tool, arguments):
+            asked.append(("call", tool, arguments["object_id"]))
+            return {"object": {"object_id": arguments["object_id"]}, "conflicts": []}
+
+        def many(tool, arguments):
+            asked.extend(("many", tool, a["object_id"]) for a in arguments)
+            return [{"object": {"object_id": "SupplierInvoice:a"}, "conflicts": []},
+                    proactive_pool.NOT_READ]
+        serial = pe._card_rules(St, AS_OF, call, 5)
+        pooled = pe._card_rules(St, AS_OF, call, 5, many)
+        self.assertEqual([a[1:] for a in asked if a[0] == "call"],
+                         [a[1:] for a in asked if a[0] == "many"])
+        self.assertEqual(serial["status"], "complete")
+        self.assertEqual(pooled["gaps"], [])   # the unread card: no finding (the run's
+        # ``Budget.pooled`` marks the rule truncated for it)
+
     def test_cardinality_no_gap_lost_or_duplicated_within_the_budget(self):
         for n in (1, 10, 60):
             with self.subTest(n=n):

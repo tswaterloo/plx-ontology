@@ -167,9 +167,10 @@ SETTLED = ("verified", "reviewed")
 CONFIRMING = ("verified", "reviewed", "corroborated")
 QC_TYPES = ("RelPublicAppIncomingQcRecord", "QualityRecord")
 PRIORITY = ("high", "medium", "low")
-# The order they run in: the cheap store-only checks first (the proactive events among
-# them), the tool-call rules last, sharing what time is left (``SHARED_TIME``), so a slow
-# investigation never leaves a store-only check unrun.
+# The order they start in: the store-only checks (the proactive events among them) side by
+# side on threads (``run(threads=)``), the tool-call rules one after another on the run's
+# own thread; each in its own time window (``DETECTOR_SECONDS``), so a slow one never
+# leaves another unrun.
 # An open purchase order with no requested-by date: never late, its own Home group.
 UNDATED_KIND = "undated_po"
 LATE_RULE = "late_or_unconfirmed_po"   # the rule Home's late count is read from
@@ -187,12 +188,24 @@ DETECTORS = ("late_or_unconfirmed_po", "late_customer_order",
              # late PO hits next, the attested-document cards last
              "negative_margin", "orders_at_risk", "vendor_terms_unapplied",
              "card_rules")
-# Each tool-call rule gets a weighted share of the time left when it starts (what one
-# leaves unused carries on, ``Budget.share``): each investigation can take minutes on a
-# full store, so one never starves the others; the customer orders a late PO hits weigh
-# most (the briefing's first criterion).
-SHARED_TIME = {"negative_margin": 1, "orders_at_risk": 3, "vendor_terms_unapplied": 1,
-               "card_rules": 1}
+# Each detector's own time window (seconds from its start, never past the run's deadline,
+# ``Budget.open``): a detector that reaches it is ``truncated`` (``time_budget``) and the
+# others still run. Measured on the live store (2.5M objects, 2026-11-06, a loaded host):
+# every store-only check under 3 min (the quantity conflicts ~2 min), so 10 min each is
+# room; the tool-call rules read on the process pool, the customer orders a late PO hits
+# weighing most (the briefing's first criterion); the margins' reads start with the run
+# (``_margin_head_start``), so their window is what is left of them at their turn.
+DETECTOR_SECONDS_DEFAULT = 600.0
+DETECTOR_SECONDS = {"conflicting_quantity": 900.0, "negative_margin": 900.0,
+                    "orders_at_risk": 1500.0, "vendor_terms_unapplied": 600.0,
+                    "card_rules": 900.0}
+# Store-only detectors that run side by side on threads (each on its own store connection):
+# every set-based rule but the customer-PO scan (it reads the runtime's mirror, on the
+# run's own thread); the vendor rule after the late rule on the same thread (it reads that
+# rule's order join).
+THREADS_ENV = "PLX_PROACTIVE_DETECTOR_THREADS"
+MAX_DETECTOR_THREADS = 6
+CHAINED = {"vendor_no_reply": LATE_RULE}
 # The vendor-terms check is incremental: it keeps its readings per purchase order in the
 # inbox (``event_cache``) and investigates only the ones whose mail thread changed.
 INCREMENTAL = ("vendor_terms_unapplied",)
@@ -247,7 +260,10 @@ def _connect(path: Path) -> sqlite3.Connection:
         # detectors' SQL run as written (operating/pg/sqlite_compat.py)
         from operating.pg.sqlite_compat import PgCompatConnection
         return PgCompatConnection(ontology_reader.dsn())   # type: ignore[return-value]
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None)
+    # read only, one thread at a time (``_Store.conn`` is per thread); the run's own thread
+    # may still set its progress handler and close it
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None,
+                           check_same_thread=False)
     conn.row_factory = sqlite3.Row
     # No query of a detector may build a transient index over a whole table: on a
     # store of millions of value cells that index is a multi-GB temp file and minutes.
@@ -279,43 +295,75 @@ class _Store:
     The link table has no index by link type, so each link read scans it whole (about a
     minute on the live store, ~20 reads a run): ``links`` reads every type it is asked for
     once per run, the table split into rowid ranges read side by side on ``threads``
-    connections, and keeps the rows for the rules after it (``prefetch_links``)."""
+    connections, and keeps the rows for the rules after it (``prefetch_links``).
+
+    ``conn`` is per thread (the detectors run side by side, ``run(threads=)``): each thread
+    reads on its own read-only connection, all closed with the store."""
 
     def __init__(self, path: Path, *, threads: int | None = None) -> None:
         if not Path(path).is_file():
             raise ostore.StoreError("store_missing")
         self.path = Path(path)
-        self.conn = _connect(self.path)
+        self._local = threading.local()
+        self._conns: list[sqlite3.Connection] = []
+        self._conns_lock = threading.Lock()
+        self.interrupt: Callable[[], int] | None = None
         problem = ostore.format_problem(self.conn)
         if problem is not None:
-            self.conn.close()
+            self.close()
             raise ostore.StoreError("store_format_mismatch", problem)
         self.digest = self.meta("content_digest")
         self.threads = scan_threads() if threads is None else max(1, threads)
         self.link_rows = _LinkRows()
-        # the budget's SQLite progress handler (``Budget.interrupt``), on every connection
-        # this store opens: a scan stops at the deadline as the detectors' queries do
-        self.interrupt: Callable[[], int] | None = None
+        # the budget's SQLite progress handler (``Budget.interrupt``, ``interrupt``), on
+        # every connection this store opens: a scan stops at the deadline as the detectors'
+        # queries do (it reads the window of the thread running the statement)
         self._memo: dict[str, Any] = {}
+        self._making: dict[str, threading.Lock] = {}
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """This thread's read-only connection (opened on its first read)."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = _connect(self.path)
+            if self.interrupt is not None:
+                conn.set_progress_handler(self.interrupt, 10000)
+            with self._conns_lock:
+                self._conns.append(conn)
+            self._local.conn = conn
+        return conn
 
     def watch(self, interrupt: Callable[[], int] | None) -> None:
         self.interrupt = interrupt
-        if interrupt is None:
-            self.conn.set_progress_handler(None, 0)
-        else:
-            self.conn.set_progress_handler(interrupt, 10000)
+        with self._conns_lock:
+            conns = list(self._conns)
+        for conn in conns:
+            if interrupt is None:
+                conn.set_progress_handler(None, 0)
+            else:
+                conn.set_progress_handler(interrupt, 10000)
 
     def memo(self, key: str, make: Callable[[], Any]) -> Any:
-        """What ``make()`` reads, once per run (several rules ask for it)."""
+        """What ``make()`` reads, once per run (several rules ask for it; rules running
+        side by side wait for the first one's read instead of reading it again)."""
         with self.link_rows.lock:
             if key in self._memo:
                 return self._memo[key]
-        made = make()
-        with self.link_rows.lock:
-            return self._memo.setdefault(key, made)
+            making = self._making.setdefault(key, threading.Lock())
+        with making:
+            with self.link_rows.lock:
+                if key in self._memo:
+                    return self._memo[key]
+            made = make()
+            with self.link_rows.lock:
+                return self._memo.setdefault(key, made)
 
     def close(self) -> None:
-        self.conn.close()
+        with self._conns_lock:
+            conns, self._conns = self._conns, []
+        for conn in conns:
+            conn.close()
 
     def meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
@@ -2238,8 +2286,12 @@ def _late_found(results: Mapping[str, Mapping[str, Any]]) -> set[str]:
             if gap.get("kind") in LATE_FOUND_KINDS and gap.get("object_id")}
 
 
-def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int) -> dict[str, Any]:
-    """``missing_in_record`` and attested conflicts on the attesting documents' cards."""
+def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int,
+                many: Callable[[str, Sequence[Any]], list[Any]] | None = None
+                ) -> dict[str, Any]:
+    """``missing_in_record`` and attested conflicts on the attesting documents' cards (the
+    newest ``bound``). ``many``: the run's process pool reads the cards side by side (one
+    the time left did not reach is not read: the budget marks the rule truncated)."""
     if call is None:
         return _result([], status="not_configured", reasons=["tool_caller_not_given"])
     documents = [name for name, _field in pg._roster()[0]]
@@ -2251,8 +2303,16 @@ def _card_rules(st: _Store, as_of: date, call: Callable | None, bound: int) -> d
     unread: Counter[str] = Counter()
     skipped = _Skips()
     found: list[tuple[dict[str, Any], list[list[str]]]] = []
-    for object_id in ids[:bound]:
-        answer = call("plx.object", {"object_id": object_id, "response_format": "detailed"})
+    asked = [{"object_id": object_id, "response_format": "detailed"} for object_id in ids[:bound]]
+    pooled = many("plx.object", asked) if many is not None else None
+    for n, object_id in enumerate(ids[:bound]):
+        if pooled is None:
+            answer = call("plx.object", asked[n])
+        else:
+            from . import proactive_pool
+            answer = pooled[n]
+            if answer is proactive_pool.NOT_READ:
+                continue   # the time left did not reach it (``Budget.pooled`` noted it)
         error = answer.get("error") if isinstance(answer, Mapping) else {"code": "error"}
         if error:
             code = error.get("code") if isinstance(error, Mapping) else None
@@ -2542,7 +2602,12 @@ TOOL_BUDGET_MAX_MS = 600000   # plx.investigate's schema maximum for time_budget
 class Budget:
     """A run's time budget (``seconds`` from now on ``monotonic``): ``guard`` wraps a tool
     caller so that once it is spent every call raises ``TimeBudgetSpent`` and is noted
-    (``refused``), so a detector that swallows a failing call is still not complete."""
+    (``refused``), so a detector that swallows a failing call is still not complete.
+
+    Each detector runs in its own window (``open``: its own seconds, ``DETECTOR_SECONDS``,
+    never past the run's deadline), kept per thread: detectors running side by side
+    (``run(threads=)``) each stop at their own window, and a refusal counts against the
+    detector whose thread it happened on (``refused_here``)."""
 
     def __init__(self, seconds: float, monotonic: Callable[[], float] = time.monotonic,
                  *, reserve: float = 0.0) -> None:
@@ -2552,23 +2617,43 @@ class Budget:
         self.end = monotonic() + seconds
         self.deadline = self.end - min(max(reserve, 0.0), seconds / 4)
         self.refused = 0
-        self.until: float | None = None   # the current detector's share, when it has one
+        self._local = threading.local()
+        self._lock = threading.Lock()
+
+    @property
+    def until(self) -> float | None:
+        """This thread's detector window's end, when it has one."""
+        return getattr(self._local, "until", None)
 
     def spent(self) -> bool:
         return self.monotonic() >= self.deadline
 
+    def open(self, seconds: float | None) -> None:
+        """This thread's next detector runs for at most ``seconds`` (None: to the run's
+        deadline), so no one slow detector starves the rest."""
+        self._local.until = None if seconds is None else self.monotonic() + max(0.0, seconds)
+
     def share(self, weight: float, of: float) -> None:
         """Give the next detector ``weight``/``of`` of what is left (time it leaves unused
-        carries to the ones after it), so no one slow detector starves the rest."""
+        carries to the ones after it)."""
         now = self.monotonic()
-        self.until = now + max(0.0, self.deadline - now) * weight / max(weight, of)
+        self._local.until = now + max(0.0, self.deadline - now) * weight / max(weight, of)
 
     def unshare(self) -> None:
-        self.until = None
+        self._local.until = None
+
+    def note_refused(self) -> None:
+        with self._lock:
+            self.refused += 1
+        self._local.refused = getattr(self._local, "refused", 0) + 1
+
+    def refused_here(self) -> int:
+        """Refusals noted on this thread (its detector's calls and maps)."""
+        return getattr(self._local, "refused", 0)
 
     def release(self) -> None:
         """The detectors are done: what is left up to the end is the reserve's."""
-        self.until, self.deadline = None, self.end
+        self._local.until, self.deadline = None, self.end
 
     def guard(self, call: Callable | None) -> Callable | None:
         if call is None:
@@ -2577,7 +2662,7 @@ class Budget:
         def guarded(tool: str, arguments: dict) -> Any:
             left = self.left()
             if left <= 0:
-                self.refused += 1
+                self.note_refused()
                 raise TimeBudgetSpent(tool)
             if tool == "plx.investigate":
                 # the investigation stops itself at the deadline (between its steps), never
@@ -2589,7 +2674,7 @@ class Budget:
             reasons = ((found.get("answerability") or {}).get("reasons") or ()
                        if isinstance(found, Mapping) else ())
             if tool == "plx.investigate" and "time_budget_exhausted" in reasons:
-                self.refused += 1   # a part-read investigation is no reading at all
+                self.note_refused()   # a part-read investigation is no reading at all
                 raise TimeBudgetSpent(tool)
             return found
         return guarded
@@ -2602,13 +2687,15 @@ class Budget:
         def run_map(task: Callable, items: Sequence[Any]) -> list[Any]:
             out = pool.map(task, items, left=self.left)
             if any(r is proactive_pool.NOT_READ for r in out):
-                self.refused += 1
+                self.note_refused()
             return out
         return run_map
 
     def left(self) -> float:
-        """Seconds left for the current detector: to its share's end, else the deadline."""
-        end = self.deadline if self.until is None else min(self.deadline, self.until)
+        """Seconds left for this thread's detector: to its window's end, else the
+        deadline."""
+        until = self.until
+        end = self.deadline if until is None else min(self.deadline, until)
         return end - self.monotonic()
 
     def interrupt(self) -> int:
@@ -2628,6 +2715,7 @@ class _HeadStart:
                  budget: Budget | None) -> None:
         self.task, self.items, self.budget = task, list(items), budget
         self.turn = self.stopped = False
+        self.until: float | None = None   # the collecting detector's window end
         self.out: list[Any] | None = None
         self.error: BaseException | None = None
         self.thread = threading.Thread(target=self._run_map, args=(pool,), daemon=True,
@@ -2640,7 +2728,9 @@ class _HeadStart:
         if self.budget is None:
             return float("inf")
         if self.turn:
-            return self.budget.left()
+            end = self.budget.deadline if self.until is None \
+                else min(self.budget.deadline, self.until)
+            return end - self.budget.monotonic()
         return self.budget.deadline - self.budget.monotonic()
 
     def _run_map(self, pool: Any) -> None:
@@ -2652,13 +2742,15 @@ class _HeadStart:
     def collect(self) -> list[Any]:
         from . import proactive_pool
 
+        if self.budget is not None:
+            self.until = self.budget.until   # read on the collecting detector's thread
         self.turn = True
         self.thread.join()
         if self.error is not None:
             raise self.error
         out = list(self.out or [])
         if self.budget is not None and any(r is proactive_pool.NOT_READ for r in out):
-            self.budget.refused += 1   # as ``Budget.pooled``: its rule is not complete
+            self.budget.note_refused()   # as ``Budget.pooled``: its rule is not complete
         return out
 
     def stop(self) -> None:
@@ -2684,6 +2776,36 @@ def _margin_head_start(st: _Store, as_of: date, pool: Any, budget: Budget | None
     return _HeadStart(pool, ev.read_margin, roots, budget) if roots else None
 
 
+def detector_threads(environ: Mapping[str, str] | None = None) -> int:
+    """Threads the store-only detectors run on side by side: every core but two, at most
+    ``MAX_DETECTOR_THREADS`` (``PLX_PROACTIVE_DETECTOR_THREADS`` overrides; 1: one after
+    another)."""
+    raw = (os.environ if environ is None else environ).get(THREADS_ENV, "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return 1
+    return max(1, min(MAX_DETECTOR_THREADS, (os.cpu_count() or 1) - 2))
+
+
+def _lanes(order: Sequence[str], threads: int) -> list[list[str]]:
+    """None with one thread (every detector then runs in ``order`` on the run's thread)."""
+    if threads <= 1:
+        return []
+    side = [d for d in order if d in SET_BASED and d != "order_without_customer_po"]
+    lanes: list[list[str]] = []
+    for name in side:
+        after = CHAINED.get(name)
+        lane = next((ln for ln in lanes if after in ln), None)
+        if lane is not None:
+            lane.append(name)
+        else:
+            lanes.append([name])
+    first = {"conflicting_quantity": 0, LATE_RULE: 1}
+    return sorted(lanes, key=lambda ln: first.get(ln[0], 2))
+
+
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
@@ -2691,7 +2813,8 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         only: Sequence[str] | None = None, vendor_bound: int | None = None,
         reader_may_read: Callable[[str], bool] | None = None,
-        pool: Any = None, people: Any = None) -> dict[str, Any]:
+        pool: Any = None, people: Any = None, threads: int | None = 1,
+        detector_seconds: Mapping[str, float] | None = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -2715,7 +2838,11 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     and the mail capture of the state directory the store sits in (``_people``).
     A full run reads every link type its rules read in one scan first (``_Store.links``);
     with a pool, the margins of the recently invoiced orders are read on it from the start
-    (``_margin_head_start``), while the store-only rules run."""
+    (``_margin_head_start``), while the store-only rules run. ``threads``: the store-only
+    rules run side by side on this many threads (``_lanes``; 1: one after another; None:
+    ``detector_threads()``), the tool-call rules on this thread. With a ``budget`` every
+    detector runs in its own window (``DETECTOR_SECONDS``, ``detector_seconds`` overriding
+    some), within the run's deadline; the summary's ``seconds`` holds each one's time."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
@@ -2772,45 +2899,70 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 # reader, so it does not judge (its gaps stay as they were); never a clean
                 # "none at risk"
                 _result([], status="blocked", reasons=["reader_lacks_lateness_access"])),
-            "card_rules": lambda: _card_rules(st, as_of, call, card_bound),
+            "card_rules": lambda: _card_rules(st, as_of, call, card_bound, many),
             **_event_steps(st, as_of, call, cache, vendor_bound, pmap=pmap,
                            results=lambda: results,
                            people=lambda: people if people is not None
                            else _people(Path(store_path)), margins=head)}
+        windows = {**DETECTOR_SECONDS, **(detector_seconds or {})}
+
+        def judge(name: str) -> None:
+            """One detector in its own window, on this thread; never raising."""
+            if budget is not None and budget.spent():
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                return
+            refused = budget.refused_here() if budget is not None else 0
+            if budget is not None:
+                budget.open(windows.get(name, DETECTOR_SECONDS_DEFAULT))
+            started = time.monotonic()
+            try:
+                results[name] = steps[name]()
+            except TimeBudgetSpent:
+                results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+            except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
+                if budget is not None and budget.left() <= 0 \
+                        and isinstance(error, sqlite3.OperationalError):
+                    # its query was interrupted at its window's end: cut short, not failed
+                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
+                else:
+                    results[name] = _result([], status="failed",
+                                            reasons=[type(error).__name__])
+            finally:
+                if budget is not None:
+                    budget.unshare()
+                seconds[name] = round(time.monotonic() - started, 1)
+            if budget is not None and budget.refused_here() > refused \
+                    and results[name]["status"] != "failed":
+                # a call it made was refused: what it found stands, never all it would find
+                results[name]["status"] = "truncated"
+                if TIME_BUDGET not in results[name]["reasons"]:
+                    results[name]["reasons"].append(TIME_BUDGET)
+
+        lanes = _lanes(order, detector_threads() if threads is None else threads)
         try:
-            for name in order:
-                if budget is not None and budget.spent():
-                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                    continue
-                refused = budget.refused if budget is not None else 0
-                if budget is not None and name in SHARED_TIME:
-                    later = [d for d in DETECTORS[DETECTORS.index(name):]
-                             if d in SHARED_TIME and d in order]
-                    budget.share(SHARED_TIME[name], sum(SHARED_TIME[d] for d in later))
-                started = time.monotonic()
-                try:
-                    results[name] = steps[name]()
-                except TimeBudgetSpent:
-                    results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                except Exception as error:  # noqa: BLE001 - one detector fails alone, typed
-                    if budget is not None and budget.left() <= 0 \
-                            and isinstance(error, sqlite3.OperationalError):
-                        # its query was interrupted at the deadline: cut short, not failed
-                        results[name] = _result([], status="truncated", reasons=[TIME_BUDGET])
-                    else:
-                        results[name] = _result([], status="failed",
-                                                reasons=[type(error).__name__])
-                finally:
-                    if budget is not None:
-                        budget.unshare()
-                    seconds[name] = round(time.monotonic() - started, 1)
-                if budget is not None and budget.refused > refused \
-                        and results[name]["status"] != "failed":
-                    # a call it made was refused: what it found stands, never all it would
-                    # find
-                    results[name]["status"] = "truncated"
-                    if TIME_BUDGET not in results[name]["reasons"]:
-                        results[name]["reasons"].append(TIME_BUDGET)
+            if lanes:
+                from concurrent.futures import ThreadPoolExecutor
+
+                def lane(names: Sequence[str]) -> None:
+                    for name in names:
+                        judge(name)
+                side = [d for names in lanes for d in names]
+                width = min(len(lanes), detector_threads() if threads is None else threads)
+                with ThreadPoolExecutor(max_workers=width,
+                                        thread_name_prefix="proactive-detector") as threads_:
+                    running = {name: future for names in lanes
+                               for future in [threads_.submit(lane, names)] for name in names}
+                    for name in order:
+                        if name in side:
+                            continue
+                        if name == "orders_at_risk" and LATE_RULE in running:
+                            running[LATE_RULE].result()   # it asks the late POs first
+                        judge(name)
+                    for future in set(running.values()):
+                        future.result()
+            else:
+                for name in order:
+                    judge(name)
         finally:
             if head is not None:
                 head.stop()   # its rule did not run (the time ran out): no read goes on
@@ -3660,7 +3812,8 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
             *, captures: Path | None, scan_coverage: bool = True,
             budget: Budget | None = None,
             clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-            vendor_bound: int | None = None, pool: Any = None) -> dict[str, Any]:
+            vendor_bound: int | None = None, pool: Any = None, threads: int | None = None,
+            detector_seconds: Mapping[str, float] | None = None) -> dict[str, Any]:
     """The full scheduled run over ``projection`` into its inbox, as ``investigator``: the
     customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
     statuses ``absent_in_this_source``) and a case session over the projection and the
@@ -3669,7 +3822,9 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
     capture principal with its capture audience: Portal and BC, ``host.engine_readers``);
     ``orders_at_risk`` is ``blocked`` (``reader_lacks_lateness_access``) when it does not.
     The inbox stores each gap with its citations' audiences; ``read_inbox`` trims it per
-    reader. Shared by ``main`` and the host's ``after_build(scheduled=)``."""
+    reader. Shared by ``main`` and the host's ``after_build(scheduled=)``. The store-only
+    detectors run side by side (``threads``, default ``detector_threads()``), each detector
+    in its own window (``DETECTOR_SECONDS``, ``detector_seconds`` overriding some)."""
     from . import case_workspace_live as live
     from . import customer_po_coverage
 
@@ -3690,7 +3845,7 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
                    coverage=coverage if scan_coverage else None, call=session,
                    budget=budget, clock=clock, vendor_bound=vendor_bound,
                    reader_may_read=lambda key: policy.may_read(investigator, key),
-                   pool=pool)
+                   pool=pool, threads=threads, detector_seconds=detector_seconds)
     finally:
         session.close()
 

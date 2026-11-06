@@ -3,46 +3,80 @@
 Rishi (29 Oct 2026): backups in three places (a local copy plus two other regions or
 providers), nightly Postgres dumps and state backups, and a restore test.
 
-## What is backed up
+## What is backed up (nightly, 03:15 ET)
 
-- The Postgres database `plx` (`pg_dump -Fc`, on one exported snapshot; the manifest holds
-  the exact row count of every table read in that snapshot).
-- The small state stores under `/data/plx-state` (online SQLite backups, then one tar.gz):
-  `reviews.sqlite` (40 KB), `case-runtime/originals.sqlite` (28 KB),
-  `case-runtime/cases.sqlite` (432 KB) and `.cursors` (12 KB),
-  `case-runtime/kind-confirmations.sqlite` (28 KB), `host/host.sqlite` (52 KB),
-  `carried-cloud/host.sqlite` (272 KB), `session-replay.sqlite` (128 KB) and three small
-  JSON files. Sizes as of 29 Oct 2026; a file over 512 MB is refused.
-- NOT backed up here (large, rebuilt from the source systems): `projection/` (41 GB),
-  `case-runtime/source-mirror.sqlite` (35 GB), `mail-capture/` (2.5 GB),
-  `sharepoint-capture/` (1.9 GB), `case-originals/` (1.3 GB), `teams-capture/` (498 MB),
-  `bc-capture/` (158 MB), `mc-capture/` (86 MB). Decide separately if a rebuild is too slow.
+- **Postgres `plx`** (`pg_dump -Fc` on one exported snapshot): the DDL of every schema and
+  the extensions; the data of `plx_meta` (and `public`). The data of `search` and
+  `ontology` (~100 GB, rebuilt by the projection build and the search follower) is left out
+  by default; `PLX_BACKUP_PG_SCHEMA_ONLY=` (empty) dumps everything. The manifest holds the
+  exact row count of every table whose data is dumped (null: schema only).
+- **Small state** under `/data/plx-state` (online SQLite backups on read-only connections,
+  never a copy of a live WAL file; then one tar.gz, ~7 MB): `console-journal.sqlite` (the
+  console's actions journal), `projection/ontology.sqlite.gap-inbox.sqlite` (gaps, acks,
+  visits, history), `projection/CURRENT`, `projection/delta/CURRENT.json` and
+  `cycles.jsonl` (delta state, not the delta layers), `host/host.sqlite`,
+  `carried-cloud/host.sqlite`, `reviews.sqlite`, `case-runtime/{cases,originals,
+  kind-confirmations}.sqlite` and `.cursors`, `session-replay.sqlite`,
+  `console-ticket-audit.jsonl`, `search/follow.json`, `truth-check/{status.json,report.md}`
+  and small JSON files; `actions.sqlite` and `actions/journal.jsonl` when they exist; the AI
+  watcher store `/data/scratch/ai-watcher/watcher.sqlite`. A file over 512 MB is refused.
+- **Config**: `~/.config/plx`, `/etc/plx`, `/etc/systemd/system/plx-*` as a tar with modes,
+  owners and times kept. A secret-bearing file (any name but `*.json`, unit or Caddyfile, or
+  text assigning a KEY/SECRET/TOKEN/PASSWORD/DSN) is never stored in plain text: with
+  `PLX_BACKUP_SECRETS_PASSPHRASE_FILE` set it goes to `secrets-<stamp>.tar.gpg` (gpg
+  symmetric AES256; keep the passphrase off this machine too), else it is only listed in the
+  manifest (path, mode, size).
+- NOT backed up (large, rebuilt from the source systems): the projection store and delta
+  layers, `case-runtime/source-mirror.sqlite` (62 GB), the capture stores.
 
-## Layout and rotation
+## Layout, rotation, disk budget
 
 `/data/backups/daily/` holds the 7 newest sets, `/data/backups/weekly/` the 4 newest weekly
-sets (hard links). A set is `plx-<stamp>.dump`, `state-<stamp>.tar.gz` and
-`manifest-<stamp>.json` (written last; a set without it is incomplete).
+sets (hard links). A set is `plx-<stamp>.dump`, `state-<stamp>.tar.gz`,
+`config-<stamp>.tar.gz`, optionally `secrets-<stamp>.tar.gpg`, and `manifest-<stamp>.json`
+(written last; a set without it is incomplete). Then the oldest sets are removed while all
+exceed `PLX_BACKUP_MAX_GB` (20). No run starts when `/data` would keep less than
+`PLX_BACKUP_MIN_FREE_GB` (200) free (exit 5).
 
 ## Run by hand
 
-    deploy/backup/backup.sh          # exit 0 ok, 3 a listed state store missing, 4 off-site failed
-    deploy/backup/restore_test.sh    # restores the newest set into plx_restore_test_<pid>, drops it
+    deploy/backup/backup.sh          # 0 ok, 3 a state store missing, 4 off-site failed,
+                                     # 5 disk guard, 6 pg dump failed (state+config kept)
+    deploy/backup/restore_test.sh    # newest set: digests, dump into a throwaway DB (dropped),
+                                     # PRAGMA integrity_check of each restored SQLite store
 
-## Enable the timers (not enabled by the builder)
+## Install (system units)
 
-The units are user units and point at `/data/OntologyProject/deploy/backup/`.
+    sudo cp /data/OntologyProject/deploy/backup/plx-backup.{service,timer} \
+            /data/OntologyProject/deploy/backup/plx-restore-test.{service,timer} /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now plx-backup.timer plx-restore-test.timer
+    systemctl list-timers 'plx-backup*' 'plx-restore*'
 
-    mkdir -p ~/.config/systemd/user ~/.config/plx
-    cp deploy/backup/plx-backup.{service,timer} deploy/backup/plx-restore-test.{service,timer} \
-       ~/.config/systemd/user/
-    systemctl --user daemon-reload
-    systemctl --user enable --now plx-backup.timer plx-restore-test.timer
-    loginctl enable-linger "$USER"     # so user timers run without a login session
-    systemctl --user list-timers 'plx-*'
+Settings go in `~/.config/plx/backup.env` (mode 600), e.g. `PLX_BACKUP_OFFSITE_HOOK=` or
+`PLX_BACKUP_SECRETS_PASSPHRASE_FILE=`. The units never read `plx.env`.
 
-Settings go in `~/.config/plx/backup.env` (mode 600), for example `PLX_BACKUP_DIR=` or
-`PLX_BACKUP_OFFSITE_HOOK=`.
+## Restore
+
+Stop writers first: `sudo systemctl stop plx-api plx-ingest plx-delta.timer
+plx-delta-compact.timer plx-search-follow.timer plx-search-follow.path plx-truth-check.path`.
+Pick a set: `S=/data/backups/daily; T=<stamp>`.
+
+1. Verify: `deploy/backup/restore_test.sh` (newest set) or compare
+   `sha256sum $S/*-$T.*` with `manifest-$T.json`.
+2. State: `mkdir /tmp/r && tar -xzf $S/state-$T.tar.gz -C /tmp/r`; for each store to
+   restore, move the live file and its `-wal`/`-shm` aside, then
+   `install -m 600 /tmp/r/<rel> /data/plx-state/<rel>` (`extra/data/...` goes back to
+   `/data/...`). Each restored `.sqlite` is a complete, checkpointed database.
+3. Config: `sudo tar -xpzf $S/config-$T.tar.gz -C /` (modes and owners kept); secrets:
+   `gpg -d --pinentry-mode loopback --passphrase-file <pass> $S/secrets-$T.tar.gpg |
+   sudo tar -xpf - -C /`, or re-create the files the manifest lists (`config.secret_files`)
+   from the vault with the listed modes.
+4. Postgres schema: `createdb plx_new && pg_restore --no-owner -d plx_new $S/plx-$T.dump`,
+   point `PLX_PG_DSN` at it, `python3 -m operating.pg status`, and let the ontology load and
+   `plx-search-follow` re-fill the data from the served projection; a full-data dump
+   (`PLX_BACKUP_PG_SCHEMA_ONLY=`) restores directly.
+5. Start the services again; `systemctl status 'plx-*'`.
 
 ## Off-site copies: OPEN, needs the owner
 
@@ -50,4 +84,4 @@ Two off-site destinations (another region or provider each, e.g.
 The hook is ready: copy
 `offsite_hook.example.sh`, fill in both destinations, and set `PLX_BACKUP_OFFSITE_HOOK`.
 Until then every run reports `"offsite": "not_configured"`. Encrypt before upload if the
-destination is not encrypted at rest under PLX control (the dump holds business text).
+destination is not encrypted at rest under PLX control (the state holds business text).

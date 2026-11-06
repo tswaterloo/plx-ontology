@@ -2,7 +2,8 @@
 archive, manifest with exact row counts), restore_test.sh restores it into another
 throwaway database and finds every count; a tampered dump, a missing or oversized state
 store and a failing off-site hook are reported, never passed; rotation keeps 7 daily and
-4 weekly sets."""
+4 weekly sets. The default set dumps the big schemas' DDL only, keeps config modes and never
+holds a secret in plain text; the disk guard refuses a run before writing anything."""
 from __future__ import annotations
 
 import datetime as dt
@@ -64,12 +65,25 @@ class BackupRestoreTest(unittest.TestCase):
         store.commit()
         self.addCleanup(store.close)  # held open while backed up: online backup
         (self.state / "label.json").write_text('{"label": "x"}')
+        self.config = self.tmp / "config"
+        self.config.mkdir(mode=0o700)
+        (self.config / "host.json").write_text('{"tenant": "plx"}')
+        (self.config / "host.json").chmod(0o640)
+        (self.config / "plx.env").write_text("PLX_X_API_KEY=k3yVALUE\n")
+        (self.config / "plx.env").chmod(0o600)
+        (self.config / "leak.json").write_text('{"PLX_PG_DSN": "x"}')
         self.env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                     "HOME": os.environ.get("HOME", "/tmp"),
                     "PLX_PYTHON": sys.executable, "PLX_PG_DSN": self.dsn,
                     "PLX_BACKUP_DIR": str(self.tmp / "backups"),
                     "PLX_STATE_DIR": str(self.state),
-                    "PLX_BACKUP_STATE_FILES": "case-runtime/cases.sqlite,label.json"}
+                    "PLX_BACKUP_STATE_FILES": "case-runtime/cases.sqlite,label.json",
+                    "PLX_BACKUP_EXTRA_FILES": "", "PLX_BACKUP_CONFIG_PATHS": str(self.config),
+                    "PLX_BACKUP_PG_SCHEMA_ONLY": "", "PLX_BACKUP_MIN_FREE_GB": "0"}
+
+    def migrations(self) -> int:
+        with psycopg.connect(self.dsn) as conn:
+            return conn.execute("SELECT count(*) FROM plx_meta.migrations").fetchone()[0]
 
     def run_script(self, name: str, **env: str) -> tuple[int, dict]:
         if name == "backup.sh" and "PLX_BACKUP_DIR" not in env and getattr(self, "used", False):
@@ -91,7 +105,7 @@ class BackupRestoreTest(unittest.TestCase):
         manifest = json.loads(next(daily.glob("manifest-*.json")).read_text())
         self.assertEqual(manifest["table_counts"]["search.chunks"], 5)
         self.assertEqual(manifest["table_counts"]["search.feedback"], 1)
-        self.assertEqual(manifest["table_counts"]["plx_meta.migrations"], 4)
+        self.assertEqual(manifest["table_counts"]["plx_meta.migrations"], self.migrations())
         for path in daily.iterdir():
             self.assertEqual(path.stat().st_mode & 0o077, 0, path.name)
         code, out = self.run_script("restore_test.sh")
@@ -128,10 +142,13 @@ class BackupRestoreTest(unittest.TestCase):
         code, out = self.run_script("backup.sh", PLX_BACKUP_OFFSITE_HOOK=str(hook))
         self.assertEqual((code, out["offsite"]), (4, "failed:9"))
         args = seen.read_text().split()
-        self.assertEqual([Path(a).name.split("-")[0] for a in args], ["plx", "state", "manifest"])
+        self.assertEqual([Path(a).name.split("-")[0] for a in args],
+                         ["plx", "state", "config", "manifest"])
         self.assertTrue(all(Path(a).is_file() for a in args))  # the local set is kept
+        # no database: the state and config are still kept, the run fails (6)
         code, out = self.run_script("backup.sh", PLX_PG_DSN="dbname=plx_test_a_absent_db")
-        self.assertEqual((code, out["error"]), (1, "OperationalError"))
+        self.assertEqual((code, out["pg_problem"], out["state_files"]),
+                         (6, "OperationalError", 2))
 
     def test_the_dsn_never_reaches_a_command_line(self) -> None:
         bin_dir = self.tmp / "bin"
@@ -162,6 +179,32 @@ class BackupRestoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dsn_keyword_unsupported"):
             plx_backup._pg_env("dbname=x keepalives=1")
 
+    def test_default_set_schema_only_config_without_secrets_and_disk_guard(self) -> None:
+        code, out = self.run_script("backup.sh", PLX_BACKUP_DIR=str(self.tmp / "d"),
+                                    PLX_BACKUP_MIN_FREE_GB="1e9")
+        self.assertEqual((code, out["error"]), (5, "disk_guard"))
+        self.assertEqual(list((self.tmp / "d" / "daily").iterdir()), [])
+        env = dict(self.env)
+        del env["PLX_BACKUP_PG_SCHEMA_ONLY"]   # the default: search and ontology DDL only
+        self.env = env
+        code, out = self.run_script("backup.sh", PLX_BACKUP_DIR=str(self.tmp / "backups"))
+        self.assertEqual((code, out["config_files"], out["config_secret_files"],
+                          out["config_secrets"]), (0, 1, 2, "omitted"), out)   # plx.env and leak.json withheld
+        daily = self.tmp / "backups" / "daily"
+        manifest = json.loads(next(daily.glob("manifest-*.json")).read_text())
+        self.assertIsNone(manifest["table_counts"]["search.chunks"])
+        self.assertEqual(manifest["table_counts"]["plx_meta.migrations"], self.migrations())
+        config = next(daily.glob("config-*.tar.gz"))
+        raw = subprocess.run(["tar", "-xzOf", str(config)], capture_output=True).stdout
+        self.assertNotIn(b"k3yVALUE", raw)
+        self.assertNotIn(b"k3yVALUE", json.dumps(manifest).encode())
+        import tarfile
+        with tarfile.open(config) as tar:
+            member = tar.getmember(str(self.config / "host.json").lstrip("/"))
+        self.assertEqual(member.mode & 0o777, 0o640)
+        code, out = self.run_script("restore_test.sh")
+        self.assertEqual((code, out["problems"], out["config_files"]), (0, [], 1), out)
+
     def test_rotation_keeps_seven_daily_and_four_weekly(self) -> None:
         root = self.tmp / "rot"
         daily = root / "daily"
@@ -180,8 +223,9 @@ class BackupRestoreTest(unittest.TestCase):
         weekly = plx_backup._sets(root / "weekly")
         self.assertEqual(weekly, ["20260915T023000Z", "20260922T023000Z",
                                   "20260929T023000Z", "20261006T023000Z"])
-        self.assertEqual(len(os.listdir(daily)), 21)
-        self.assertEqual(len(os.listdir(root / "weekly")), 12)
+        per_set = len(plx_backup._set_files(daily, "x"))
+        self.assertEqual(len(os.listdir(daily)), 7 * per_set)
+        self.assertEqual(len(os.listdir(root / "weekly")), 4 * per_set)
         # An interrupted older set (no manifest) is cleared on the next run.
         (daily / "plx-20261001T000000Z.dump").write_text("partial")
         plx_backup.rotate(root, "20261010T023000Z")

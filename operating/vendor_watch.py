@@ -15,14 +15,20 @@ served is newer than the inbox's last full run (the build's own run failed, did 
 has not run yet), so the findings Home and the briefing list follow every published
 generation; meanwhile ``read_inbox`` holds back what older data found.
 
-Schedule: as its own system unit (``heavy.sh``) after the capture cycles, e.g. every 2
-hours for up to 90 minutes (``scripts/vendor_watch_loop.sh`` also starts a pass as soon as
-a new generation is published). The first passes over a store work off the backlog; after that
-a pass reads only the threads that changed. Read only: no reader is built for any live
-source, nothing is sent or written to a business system. Usage::
+``--refresh always`` runs the whole engine first on every pass, whatever the inbox's last
+full run read (the day moves on, a run cut short or failed is made whole): the scheduled
+pass (``deploy/systemd/plx-proactive.timer``, every 30 minutes after the last one ended)
+gives the engine ``--refresh-seconds`` and the vendor checks what is left.
+
+Schedule: ``deploy/systemd/plx-proactive.{service,timer}`` (one pass each, ``--refresh
+always``); ``scripts/vendor_watch_loop.sh`` is the older loop (every 2 hours, and as soon as
+a new generation is published, ``--refresh new``). The first passes over a store work off
+the backlog; after that a pass reads only the threads that changed. Read only: no reader is
+built for any live source, nothing is sent or written to a business system. Usage::
 
     python3 -m operating.vendor_watch --state-dir STATE --config HOST.json \\
-        [--budget-seconds 5400] [--bound 400] [--as-of YYYY-MM-DD]
+        [--budget-seconds 5400] [--bound 400] [--as-of YYYY-MM-DD] \\
+        [--refresh new|always|never] [--refresh-seconds S]
 """
 
 from __future__ import annotations
@@ -36,16 +42,23 @@ from typing import Any, Callable, Mapping, Sequence
 
 DEFAULT_SECONDS = 5400
 DEFAULT_BOUND = 400
+REFRESH_MODES = ("new", "always", "never")
 
 
 def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
              as_of: date | None = None, environ: Mapping[str, str] | None = None,
-             refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic
+             refresh_new: bool = True, monotonic: Callable[[], float] = time.monotonic,
+             refresh: str | None = None, refresh_seconds: float | None = None
              ) -> dict[str, Any]:
     """One vendor-mail pass over the served projection of ``state_dir``; counts only.
-    ``refresh_new``: first the full engine run (``proactive_engine.refresh``, within half
-    the pass) when the served generation is not the one the inbox's last full run read
-    (``full_refresh``: its counts, else None)."""
+    ``refresh``: ``new`` (the default; ``refresh_new=False``: ``never``) runs the full
+    engine first (``proactive_engine.refresh``) when the served generation is not the one
+    the inbox's last full run read, ``always`` on every pass; within ``refresh_seconds``
+    (default half the pass). ``full_refresh``: its counts and each detector's seconds,
+    else None."""
+    mode = refresh or ("new" if refresh_new else "never")
+    if mode not in REFRESH_MODES:
+        raise ValueError("refresh_mode_unknown")
     from integrations.source_mirror import AudienceMap
     from ontology.core import Actor
 
@@ -68,14 +81,14 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     # every core the host can spare reads as the same principal, offline (``proactive_pool``)
     pool = proactive_pool.from_host_config(config, state_dir, store, environ)
     try:
-        if refresh_new and pe.served_behind(store):
+        if mode == "always" or (mode == "new" and pe.served_behind(store)):
             # a generation was served since the last full run (the build's own run did not
             # run, failed or is still to come): the whole engine runs over it now, in this
             # fresh process, so Home and the briefing never list older data's findings
             # for long (``proactive_engine.read_inbox`` hides them meanwhile)
             # outside the cycle lock: half the pass, not the build's bound
             # (``REFRESH_BUDGET_SECONDS``), so every rule finishes on a cold store
-            share = seconds / 2
+            share = min(seconds, refresh_seconds) if refresh_seconds else seconds / 2
             try:
                 ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
                                  scan_coverage="portal" in config.sources,
@@ -85,7 +98,7 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
                 full = {"state": "failed", "error": type(error).__name__}
             else:
                 full = {"state": "ran", **{key: ran.get(key) for key in (
-                    "detectors", "detector_reasons", "gaps_found")}}
+                    "detectors", "detector_reasons", "gaps_found", "seconds")}}
         left = seconds - (monotonic() - started)
         session = live._Session(runtime, actor, audience, store, captures=state_dir,
                                 marking_grants=pe.engine_marking_grants(actor))
@@ -117,13 +130,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--as-of", type=date.fromisoformat, default=None)
     parser.add_argument("--no-refresh-new", action="store_true",
                         help="never run the full engine first, even on a new generation")
+    parser.add_argument("--refresh", choices=REFRESH_MODES, default=None,
+                        help="run the full engine first: on a new generation (new, the "
+                             "default), on every pass (always) or never")
+    parser.add_argument("--refresh-seconds", type=float, default=None,
+                        help="the full engine run's budget (default half the pass)")
     args = parser.parse_args(argv)
-    if args.budget_seconds <= 0 or args.bound < 0:
+    if args.budget_seconds <= 0 or args.bound < 0 or (
+            args.refresh_seconds is not None and args.refresh_seconds <= 0):
         parser.error("budget and bound must be positive")
     config = HostConfig.from_file(args.config)
     print(json.dumps(run_pass(args.state_dir, config, seconds=args.budget_seconds,
                               bound=args.bound, as_of=args.as_of,
-                              refresh_new=not args.no_refresh_new),
+                              refresh_new=not args.no_refresh_new, refresh=args.refresh,
+                              refresh_seconds=args.refresh_seconds),
                      indent=1, sort_keys=True))
     return 0
 

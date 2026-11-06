@@ -1014,6 +1014,38 @@ class KeyTests(unittest.TestCase):
             self.assertIs(run, answered)
             self.assertEqual(served, [])         # answered: the fast path never runs
 
+    def test_an_agent_session_gets_the_apps_question_budget_not_the_old_60_seconds(self):
+        """The scoreboard's agent session gets the app's own limit (``question_budget``
+        under the Ask's cap, ``agent_ask.ASK_SECONDS``): a deep question the deep budget, a
+        lookup of one named record the lookup budget, and the hard timeout the app's
+        (``agent_for``: that same budget). Derived from the app's constants, never
+        literals."""
+        from operating import deep_investigation as deep
+        from operator_api.agent_ask import ASK_SECONDS
+        got = []
+
+        class Agent:
+            budget_seconds, timeout = ASK_SECONDS, 300
+
+            def run(self, prompt, host):
+                got.append((self.budget_seconds, self.timeout))
+                return runner.AgentRun(events=[], final_text="x", usage={}, agent={})
+
+        class NoFast:
+            @staticmethod
+            def serves(question):
+                return False
+        expected = []
+        for question, route in (("which customers' orders are at risk from late supplier "
+                                 "POs and what is the margin on each?", None),
+                                ("status on PO#10515?", "lookup")):
+            script.RoutedAgent(Agent(), question, fast=NoFast).run("p", None)
+            app = deep.question_budget(question, ASK_SECONDS, route)
+            expected.append((app, int(app)))
+        self.assertEqual(got, expected)
+        self.assertEqual([b for b, _ in got], [min(deep.DEEP_SECONDS, ASK_SECONDS),
+                                               min(deep.LOOKUP_SECONDS, ASK_SECONDS)])
+
     def test_a_late_list_question_takes_the_apps_late_list_route_and_nothing_else(self):
         """``how many POs are late`` is answered by the app's late-list job over the
         reader's gap inbox (``WorkspaceBackend.late_job``), read with the reader's grant;
