@@ -37,7 +37,7 @@ from ontology.project import MailCaptures, build_store
 from ontology.store import StoreBuilder
 from ontology.tests.test_document_fields import pdf
 from ontology.tests.test_mail_documents import StaticPortal, po
-from ontology.chunk_families import store_chunk_families
+from ontology.chunk_families import read_runs
 from ontology.text_index import store_text_index
 from ontology.types import Actor
 from operating import ontology_tools as ot
@@ -345,10 +345,10 @@ class FixtureTextTests(unittest.TestCase):
                                          "row.content_text")
 
     def test_a_text_search_of_a_few_sources_reads_only_their_chunk_runs_alike(self):
-        # The build writes the chunk id runs of each audience family; a
-        # documents text search of a family holding few chunks lists its matches in its
-        # runs instead of reading every source's: the same documents, snippets and cut,
-        # and the same rows reach the item gate.
+        # The chunk id runs of each audience family are read from the store online (no
+        # build writes them); a documents text search of a family holding few chunks
+        # lists its matches in its runs instead of reading every source's: the same
+        # documents, snippets and cut, and the same rows reach the item gate.
         from operating import ontology_tools_evidence as ev
         store = fx.build()
         self.addCleanup(store.conn.close)
@@ -360,10 +360,9 @@ class FixtureTextTests(unittest.TestCase):
             store.obj(oid, f"{family}:unit-1", handle, "sharepoint")
             documents.append(doc(handle, f"orchid shipment {i} " + "x " * 3000 + "orchid"))
         index_documents(store, documents)
-        written = store_chunk_families(store.conn)
-        runs = store.conn.execute("SELECT family FROM chunk_families ORDER BY lo").fetchall()
-        self.assertEqual(written, len(runs))
-        self.assertEqual([r[0] for r in runs][:3], ["sharepoint", "mail", "sharepoint"])
+        store.conn.commit()
+        runs = read_runs(store.conn)
+        self.assertEqual([r[2] for r in runs][:3], ["sharepoint", "mail", "sharepoint"])
         tools, _ = fx.tools(store)
         evidence = ev.EvidenceTools(tools.base, traverse=tools)
         gated = []
@@ -411,18 +410,18 @@ class FixtureTextTests(unittest.TestCase):
         self.assertLess(sum(listed), len(matches))
         # Families holding most chunks read the match whole, as before.
         self.assertIsNone(evidence._chunk_runs(["sharepoint"]))
-        # A field whose chunks are not one run of ids leaves the runs empty: no narrowing.
+        # A field whose chunks are not one run of ids: no runs, nothing narrowed.
         store.conn.execute("UPDATE text_chunks SET chunk_id = chunk_id + 100000 WHERE "
                            "chunk_id = (SELECT MIN(chunk_id) FROM text_chunks)")
-        self.assertIsNone(store_chunk_families(store.conn))
-        self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM chunk_families"
-                                            ).fetchone()[0], 0)
+        store.conn.commit()
+        self.assertIsNone(read_runs(store.conn))
+        self.assertIsNone(evidence._chunk_runs(["mail"]))
 
-    def test_chunk_runs_are_dropped_by_any_later_write_that_could_move_a_chunk(self):
-        # The runs are written by the text index step; a later step (or any writer) that
-        # moves an object to another family, deletes one, adds a chunk or moves a field
-        # empties them, so the search reads every match and still finds the document in
-        # its new family (fails closed). A store without the guards reads every match.
+    def test_chunk_runs_follow_every_later_write_to_the_store(self):
+        # The runs are read for the store as it is now: after any write (an object moved
+        # to another family, replaced whole, deleted, a chunk or field added, moved or
+        # deleted) they are read again, so the search still finds a document in its new
+        # family and reads the same rows as a search of every match.
         from operating import ontology_tools_evidence as ev
 
         def fresh():
@@ -436,7 +435,7 @@ class FixtureTextTests(unittest.TestCase):
                 store.obj(oid, f"{family}:unit-1", handle, "sharepoint")
                 documents.append(doc(handle, f"orchid shipment {i} " + "x " * 3000))
             index_documents(store, documents)
-            self.assertTrue(store_chunk_families(store.conn))
+            store.conn.commit()
             tools, _ = fx.tools(store)
             return store, tools, ev.EvidenceTools(tools.base, traverse=tools)
 
@@ -448,11 +447,14 @@ class FixtureTextTests(unittest.TestCase):
         writes = {
             "audience": ("UPDATE objects SET audience_key = 'mail:unit-1' WHERE object_id = ?",
                          (moved,)),
+            "replaced": ("INSERT OR REPLACE INTO objects SELECT object_id, object_type, "
+                         "binding_id, native_key, 'mail:unit-1', first_recorded_at, "
+                         "missing_from_source_since FROM objects WHERE object_id = ?", (moved,)),
             "chunk": ("INSERT INTO text_chunks (field_id, start, body) SELECT field_id, "
                       "999999, body FROM text_chunks WHERE chunk_id = 1", ()),
-            "unchanged": ("UPDATE objects SET audience_key = audience_key", ()),
             "field": ("UPDATE text_fields SET object_id = 'Document:sharepoint.docs:g-003' "
                       "WHERE object_id = 'Document:sharepoint.docs:g-000'", ()),
+            "field_deleted": ("DELETE FROM text_fields WHERE object_id = ?", (moved,)),
             "deleted": ("DELETE FROM objects WHERE object_id = 'Document:sharepoint.docs:bare'",
                         ())}
         for what, (sql, args) in writes.items():
@@ -462,21 +464,63 @@ class FixtureTextTests(unittest.TestCase):
                 if what == "deleted":   # an object no version or value holds yet
                     store.conn.execute(
                         "INSERT INTO objects VALUES (?, 'Document', 'sharepoint.docs', ?, "
-                        "'sharepoint:unit-1', ?, NULL)",
+                        "'mail:unit-1', ?, NULL)",
                         ("Document:sharepoint.docs:bare", '["bare"]', fx.T0))
+                    store.conn.commit()
                     self.assertIsNotNone(evidence._chunk_runs(["mail"]))
                 store.conn.execute(sql, args)
-                if what == "unchanged":   # an update that moves nothing fires no guard
-                    self.assertIsNotNone(evidence._chunk_runs(["mail"]))
-                    continue
-                self.assertEqual(store.conn.execute(
-                    "SELECT COUNT(*) FROM chunk_families").fetchone()[0], 0)
-                self.assertIsNone(evidence._chunk_runs(["mail"]))
-                if what == "audience":
-                    self.assertIn(moved, mail_hits(tools, evidence))
-        store, tools, evidence = fresh()
-        store.conn.execute("DROP TRIGGER chunk_families_object_moved")
-        self.assertIsNone(evidence._chunk_runs(["mail"]))   # unguarded: every match read
+                store.conn.commit()
+                with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+                    whole = mail_hits(tools, evidence)
+                self.assertEqual(mail_hits(tools, evidence), whole)
+                if what in ("audience", "replaced"):
+                    self.assertIn(moved, whole)
+
+    def test_a_big_stores_runs_are_read_in_the_background_and_kept_beside_it(self):
+        # A big store's runs are read once, off the request path, and kept beside its
+        # file under its identity and content digest: until then (and after any change to
+        # the file) a search reads every match, with the same result either way.
+        from ontology import chunk_families as cf
+        from operating import ontology_tools_evidence as ev
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "store.sqlite")
+            store = fx.build()
+            documents = []
+            for i in range(20):
+                family = "mail" if i % 10 == 3 else "sharepoint"
+                handle = f"sharepoint://drive-k/k-{i}@e1"
+                store.obj(f"Document:sharepoint.docs:k-{i:03d}", f"{family}:unit-1", handle,
+                          "sharepoint")
+                documents.append(doc(handle, f"orchid shipment {i} " + "x " * 3000))
+            index_documents(store, documents)
+            store.conn.execute("INSERT OR REPLACE INTO store_meta VALUES "
+                               "('content_digest', 'sha256:made-up-1')")
+            store.conn.commit()
+            disk = sqlite3.connect(path)
+            store.conn.backup(disk)
+            disk.close()
+            store.conn.close()
+            reader = ot.StoreReader.open(path)
+            self.addCleanup(reader.conn.close)
+            started = []
+            with mock.patch.object(cf, "SYNC_MAX_BYTES", 0), \
+                    mock.patch.object(cf, "keep_in_background",
+                                      lambda p, ident: started.append(p)):
+                self.assertIsNone(cf.runs_for(reader.conn))   # not kept yet: none
+                self.assertEqual(started, [path])
+                self.assertTrue(cf.keep(path))                # the background read
+                kept = cf.runs_for(reader.conn)
+                self.assertEqual(kept, cf.read_runs(reader.conn))
+                identity = cf.file_identity(path)
+                self.assertTrue(cf.runs_path(path, identity).is_file())
+                # runs of another generation at the same path are refused
+                self.assertIsNone(cf.load_kept(path, identity, "sha256:made-up-2"))
+                # a write to the file changes its identity: none until read again
+                with sqlite3.connect(path) as writer:
+                    writer.execute("UPDATE objects SET audience_key = 'mail:unit-1' WHERE "
+                                   "object_id = 'Document:sharepoint.docs:k-005'")
+                self.assertIsNone(cf.runs_for(reader.conn))
+                self.assertEqual(len(started), 2)
 
     def test_a_query_the_index_cannot_read_is_truncated_not_absent(self):
         store = fx.build()

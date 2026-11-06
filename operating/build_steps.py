@@ -294,22 +294,8 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
         "document_fields": document_fields, "mentions": _documents_cleaned(mentions),
         "reviews": reviews.link_step(review_store, tenant),
         "sender_corroboration": sender_corroboration_step,
-        "text_index": _documents_cleaned(_with_chunk_families(store_text_index)),
-        "twins": twin_step,
+        "text_index": _documents_cleaned(store_text_index), "twins": twin_step,
         "your_reference": your_reference_step}.items()}
-
-
-def _with_chunk_families(step: Step) -> Step:
-    """The ``text_index`` step, then the chunk id runs of each audience family it left
-    (``ontology.chunk_families``: what a documents search of a few sources reads), in its
-    report as ``chunk_family_runs`` (None: left empty, nothing narrowed)."""
-    from ontology.chunk_families import store_chunk_families
-
-    @functools.wraps(step)
-    def run(builder: Any, projector: Any) -> dict[str, Any]:
-        report = step(builder, projector)
-        return {**report, "chunk_family_runs": store_chunk_families(builder.connection)}
-    return run
 
 
 def _named(name: str, step: Step) -> Step:

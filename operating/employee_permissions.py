@@ -1034,6 +1034,18 @@ class EmployeeEntitlement:
 
 def _portal_decision(rule: PrincipalRule, access: PortalAccessRead,
                      state: portal.AccessState) -> tuple[bool, portal.Decision]:
+    """``_decide_portal``, kept for equal inputs (``_DECIDED``): a pure function of three
+    frozen values, asked for every rule each time an employee is resolved (once per item
+    a search checks), so the same answer is not derived again; inputs that cannot be
+    kept (an unhashable field) are decided each time."""
+    try:
+        return _DECIDED(rule, access, state)
+    except TypeError:
+        return _decide_portal(rule, access, state)
+
+
+def _decide_portal(rule: PrincipalRule, access: PortalAccessRead,
+                   state: portal.AccessState) -> tuple[bool, portal.Decision]:
     """One rule under both Portal modes (legacy, canonical); the caller requires both.
 
     Legacy: the role matrix on the capability, the MRP flags, and the role among
@@ -1057,6 +1069,9 @@ def _portal_decision(rule: PrincipalRule, access: PortalAccessRead,
                                        f"{state.access_level} supplies a listed role")
     return legacy, portal.resolve_effective_access(access.user_id, rule.capability,
                                                    rule.resource, state)
+
+
+_DECIDED = functools.lru_cache(maxsize=8192)(_decide_portal)
 
 
 # ----------------------------------------------------------------- resolver

@@ -2484,8 +2484,8 @@ class EvidenceTools:
         readable = _audience_first("o", (
             f"{tt._live('v')} AND fd.markings IN (SELECT value FROM json_each(:marks)) "
             f"AND {scope.gate}(v.l1_handle) AND {tt._visible_object('o', scope.gate)}"))
-        # The matching chunks in id order: the index's own match, or (a store holding the
-        # families' chunk runs, ``ontology.chunk_families``) those of its
+        # The matching chunks in id order: the index's own match, or (a store whose
+        # families' chunk runs are known, ``ontology.chunk_families``) those of its
         # matches in these families' runs, listed: the same rows in the same order, less
         # every other source's, which the audience term below drops unread anyway.
         batches = self._family_chunks(words, families)
@@ -2548,11 +2548,10 @@ class EvidenceTools:
         of ``families`` (``chunk_families``), in batches of ``CHUNK_BATCH`` read as the
         scan asks for them (a common word on a big store is read only as far as the
         capped scan goes); or None to read the index's match whole: a store without the
-        runs (built before them, unguarded, or whose chunks were not in runs), families
+        runs known yet (``_chunk_runs``), or whose chunks are not in runs, families
         holding more than ``CHUNK_NARROW_SHARE`` of the chunks (most matches are theirs),
         or a match the index cannot read (the scan then reports it)."""
-        runs = self.traverse._store_cached(("chunk_runs", ",".join(sorted(set(families)))),
-                                           lambda: self._chunk_runs(families))
+        runs = self._chunk_runs(families)
         if runs is None:
             return None
         lows, highs = runs
@@ -2579,18 +2578,17 @@ class EvidenceTools:
 
     def _chunk_runs(self, families: Sequence[str]) -> tuple[list[int], list[int]] | None:
         """(run starts, run ends) of ``families``' chunks (and of chunks of no known
-        family), ascending; None when the store holds no runs, its runs are unguarded (a
-        later write could have moved a chunk's object to another family unseen:
-        ``ontology.chunk_families.runs_guarded``) or they hold more than
-        ``CHUNK_NARROW_SHARE`` of all chunks."""
-        from ontology.chunk_families import ANY_FAMILY, runs_guarded
+        family), ascending; None when the store's runs are not known yet (read online, in
+        the background for a big store, and only for the file as it is now:
+        ``ontology.chunk_families.runs_for``), its chunks are not in runs, or ``families``
+        hold more than ``CHUNK_NARROW_SHARE`` of all chunks."""
+        from ontology.chunk_families import ANY_FAMILY, runs_for
         try:
-            if not runs_guarded(self.store.word_conn):
-                return None
-            rows = self.store.word_conn.execute(
-                "SELECT lo, hi, family FROM chunk_families ORDER BY lo").fetchall()
-        except sqlite3.OperationalError:
-            return None   # a store built before the runs
+            rows = runs_for(self.store.word_conn)
+        except sqlite3.Error:
+            return None
+        if not rows:
+            return None
         total = sum(hi - lo + 1 for lo, hi, _family_name in rows)
         mine = [(lo, hi) for lo, hi, family in rows
                 if family in families or family == ANY_FAMILY]
