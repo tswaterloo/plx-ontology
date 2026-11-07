@@ -2237,10 +2237,12 @@ class SetRegistry:
                  ttl: float = SET_TTL_SECONDS) -> None:
         self.monotonic = monotonic
         self.ttl = ttl
-        # handle -> (owner, ids, expiry, live, withheld): ``withheld`` marks a set made
-        # from an answer this reader's grants trimmed (it is never the whole set).
+        # handle -> (owner, ids, expiry, live, withheld, lead): ``withheld`` marks a set
+        # made from an answer this reader's grants trimmed (it is never the whole set);
+        # ``lead`` one whose records were reached only through lead-tier links (possibly
+        # related, never confirmed: whatever is counted or walked from it stays a lead).
         self._sets: dict[str, tuple[tuple[str, tuple[str, ...]], tuple[str, ...], float,
-                                    bool, bool]] = {}
+                                    bool, bool, bool]] = {}
         # Object ids plx.find answered from a live lookup (not in the projection store),
         # with their expiry: traversal tools name them instead of answering "nothing".
         # Insertion order is expiry order (a refreshed id moves to the end), so the
@@ -2266,7 +2268,7 @@ class SetRegistry:
 
     def _drop_set(self, handle: str) -> None:
         """Forget a set and the live ids that only it held. Caller holds the lock."""
-        owner, ids, _, live, _ = self._sets.pop(handle)
+        owner, ids, _, live, _, _ = self._sets.pop(handle)
         if not live:
             return
         for oid in set(ids):
@@ -2279,10 +2281,11 @@ class SetRegistry:
                 self._drop_live(owner, oid)
 
     def new(self, actor: Actor, object_ids: Sequence[str], *, live: bool = False,
-            withheld: bool = False) -> str:
+            withheld: bool = False, lead: bool = False) -> str:
         """A handle for ``object_ids``; ``live`` marks a set plx.find answered from a
         live lookup (its objects exist only in a discarded throw-away store),
-        ``withheld`` one whose answer this reader's grants trimmed."""
+        ``withheld`` one whose answer this reader's grants trimmed, ``lead`` one whose
+        records only lead-tier links reach."""
         handle = "set:" + secrets.token_urlsafe(18).replace("=", "")
         now = self.monotonic()
         with self._lock:
@@ -2297,7 +2300,7 @@ class SetRegistry:
                 self._drop_set(min(self._sets, key=lambda k: self._sets[k][2]))
             ids = tuple(object_ids[:MAX_SET_OBJECTS])
             owner = self._owner(actor)
-            self._sets[handle] = (owner, ids, now + self.ttl, live, withheld)
+            self._sets[handle] = (owner, ids, now + self.ttl, live, withheld, lead)
             if live:
                 mine = self._live_by_owner.get(owner) or OrderedDict()
                 new_ids = dict.fromkeys(ids)
@@ -2334,6 +2337,14 @@ class SetRegistry:
             entry = self._sets.get(handle)
         return (entry is not None and entry[2] > self.monotonic()
                 and entry[0] == self._owner(actor) and entry[4])
+
+    def is_lead(self, handle: str, actor: Actor) -> bool:
+        """Whether this actor's live handle holds records reached only through lead-tier
+        links (a ``possibly_related`` set, or one walked or counted from it)."""
+        with self._lock:
+            entry = self._sets.get(handle)
+        return (entry is not None and entry[2] > self.monotonic()
+                and entry[0] == self._owner(actor) and entry[5])
 
     def live_id(self, object_id: str, actor: Actor) -> bool:
         """Whether plx.find recently answered this object id to this same actor

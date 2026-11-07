@@ -294,7 +294,8 @@ class _Card:
         if found or not any(g.get("reason") == "below_tier_floor"
                             for g in answer.get("gaps") or ()):
             return found, False
-        answer = self.call("plx.around", {**args, "tier_floor": "lead"})
+        from operating.ontology_tools_traverse import with_leads
+        answer = with_leads(self.call("plx.around", {**args, "tier_floor": "lead"}))
         return [o["object_id"] for o in answer.get("objects") or () if o.get("object_id")], True
 
     # ---- an order ------------------------------------------------------------

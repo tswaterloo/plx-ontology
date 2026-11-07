@@ -429,3 +429,174 @@ class PlaybookEvalEvidenceTests(pe_tests.CustomerPoEvalBase, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadTierCountTests(unittest.TestCase):
+    """A count backed in whole or in part by lead-tier links (11-07 dev 0014: emails of a
+    second, unrelated PO reached through weak mention links swelled a count of 4 to "at
+    least 8") passes the answer gate only stated as a lead; a count of the records solid
+    links reach passes as it is. Evidence label ``isolated-fixture``: synthetic receipt
+    rows and tool answers in the contract shapes plx.around and plx.aggregate return."""
+
+    def setUp(self) -> None:
+        self.rows = dict(receipt(index) for index in range(3))
+        self.solid, self.leads = list(self.rows)[:2], list(self.rows)[2:]
+        listed = {"set": "set:solid1", "hops": [], "edges": [],
+                  "objects": [{"object_id": f"Receipt:x:{n}", "object_type": "Receipt",
+                               "lineage": "portal_native",
+                               "display": {"origin": {"citation": h}}}
+                              for n, h in enumerate(self.solid)],
+                  "gaps": [{"state": "unknown", "reason": "possibly_related",
+                            "subject": "set:lead1", "detail": "1 more record"}],
+                  "completeness": {"complete": True, "truncated": False,
+                                   "returned": 2, "total": 2, "next_cursor": None},
+                  "meta": {}}
+        self.returned = claim_checks.returned_evidence(
+            "plx.around", {"from": "Order:x:1", "tier_floor": "lead",
+                           "path": [{"link": "receipts"}]}, listed)
+        claim_checks.returned_evidence(
+            "plx.aggregate", {"set": "set:lead1", "measure": {"op": "count"}},
+            count_result(self.leads, gaps=[{"state": "unknown", "reason": "lead_basis",
+                                            "subject": "set:lead1", "detail": "lead"}]),
+            self.returned)
+
+    def gate(self, handles, lead=False):
+        from unittest import mock
+        from operating import answer_gate
+        claim = {"id": "n", **count_of(handles), **({"lead": True} if lead else {})}
+        rows = lambda runtime, actor, **_kw: (lambda handle: (
+            {"handle": handle, **self.rows[handle]} if handle in self.rows else None))
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
+                mock.patch.object(answer_gate, "gate_rows", rows):
+            return answer_gate.gate_answer(
+                {"claims": [claim], "text": "{n} receipts."},
+                mock.Mock(case_runtime=None, actor=None), seen=set(self.rows),
+                returned=self.returned, may_repair=False)
+
+    @staticmethod
+    def lead_refused(out):
+        return "claim_lead_unmarked" in [f["code"] for u in out["unsupported"]
+                                         for f in u["failures"]]
+
+    def test_the_solid_listing_is_exact_and_the_lead_records_stay_apart(self):
+        # the possibly_related records are no member left out of the listing's count
+        self.assertIn({"value": "2", "records": self.solid, "distinct": True,
+                       "complete": True, "listing": "set:solid1"}, self.returned["counts"])
+        self.assertEqual(self.returned["lead_records"],
+                         {**dict.fromkeys(self.solid, False), self.leads[0]: True})
+        solid = self.gate(self.solid)
+        self.assertFalse(self.lead_refused(solid), solid)
+        self.assertEqual(solid["unsupported"], [])
+
+    def test_a_count_partly_on_lead_links_passes_only_said_as_a_lead(self):
+        for handles in (self.solid + self.leads, self.leads):
+            with self.subTest(handles=len(handles)):
+                self.assertTrue(self.lead_refused(self.gate(handles)))
+                self.assertFalse(self.lead_refused(self.gate(handles, lead=True)))
+
+    def test_an_around_answer_alone_marks_its_possibly_related_records_as_leads(self):
+        # 51706fd32c review: plx.around at tier_floor lead lists the lead-only records
+        # apart (possibly_related.objects, each cited); with no aggregate over that set a
+        # count citing them still passes only stated as a lead.
+        listed = {"set": "set:solid2", "hops": [], "edges": [],
+                  "objects": [{"object_id": f"Receipt:x:{n}", "object_type": "Receipt",
+                               "lineage": "portal_native",
+                               "display": {"origin": {"citation": h}}}
+                              for n, h in enumerate(self.solid)],
+                  "possibly_related": {"set": "set:lead2", "count": 1, "edges": [],
+                                       "objects": [{"object_id": "Receipt:x:2",
+                                                    "object_type": "Receipt",
+                                                    "display": {"origin": {
+                                                        "citation": self.leads[0]}}}]},
+                  "gaps": [{"state": "unknown", "reason": "possibly_related",
+                            "subject": "set:lead2", "detail": "1 more record"}],
+                  "completeness": {"complete": True, "truncated": False,
+                                   "returned": 2, "total": 2, "next_cursor": None},
+                  "meta": {}}
+        self.returned = claim_checks.returned_evidence(
+            "plx.around", {"from": "Order:x:1", "tier_floor": "lead",
+                           "path": [{"link": "receipts"}]}, listed)
+        self.assertEqual(self.returned["lead_records"],
+                         {**dict.fromkeys(self.solid, False), self.leads[0]: True})
+        for handles in (self.solid + self.leads, self.leads):
+            with self.subTest(handles=len(handles)):
+                self.assertTrue(self.lead_refused(self.gate(handles)))
+                self.assertFalse(self.lead_refused(self.gate(handles, lead=True)))
+        self.assertFalse(self.lead_refused(self.gate(self.solid)))
+
+    def test_a_record_a_solid_result_also_reached_is_no_lead(self):
+        claim_checks.returned_evidence(
+            "plx.aggregate", {"set": "set:s9", "measure": {"op": "count"}},
+            count_result(self.leads), self.returned)
+        self.assertFalse(self.lead_refused(self.gate(self.solid + self.leads)))
+
+
+class CountAskedWithRowsTests(unittest.TestCase):
+    """11-07 regrade root cause 1 (21 answers "count: at least N" with the right N): a
+    plx.query asking a count and rows naming the records came back with the rows alone,
+    so no complete count entry existed and the gate bound the right count as a lower
+    bound. A count asked beside rows is measured, and a complete one binds exactly; a
+    partial or withheld one stays a lower bound. Evidence label ``isolated-fixture``:
+    plx.query's own code over a scripted host in the contract shapes."""
+
+    def query(self, handles, **aggregate):
+        from operating import ontology_query as oq
+
+        def call(name, arguments, actor):
+            if name == "plx.around":
+                return {"set": "set:reach0001", "hops": [{
+                    "link_type": "Shipment.shipped_to", "direction": "forward",
+                    "count": len(handles), "tiers": {"verified": len(handles)}}],
+                    "gaps": [{"state": "stale", "reason": "stale_source",
+                              "subject": "portal_api"}]}
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": str(len(handles)), "inputs": 0,
+                                    "markings": [], "members_cited": list(handles)}],
+                        "partial": False, "gaps": [], "meta": {},
+                        "completeness": {"complete": True, "truncated": False,
+                                         "returned": 1, "total": 1}, **aggregate}
+            raise AssertionError(name)
+
+        def rows(arguments, actor):
+            return {"count": len(handles), "rows": [
+                {"object_id": f"Receipt:x:{n}", "values": {"id": {
+                    "citation": {"l1_handle": h, "field_path": "row.id"}}}}
+                for n, h in enumerate(handles)], "gaps": []}
+
+        tool = oq.QueryTool(oq.TableBackend(call, lambda actor, ids: "set:new00001",
+                                            None, rows=rows))
+        args = {"from": {"object_id": "SalesOrder:x:1"},
+                "traverse": [{"link_type": "Shipment.shipped_to", "direction": "forward"}],
+                "measures": [{"op": "count"}], "rows": {"properties": ["id"], "limit": 20}}
+        out = tool.call(args, "actor")
+        self.assertNotIn("error", out)
+        return args, out
+
+    def test_a_complete_count_asked_with_rows_is_stated_exactly(self):
+        for size in (1, 10, 60):
+            with self.subTest(size=size):
+                rows = dict(receipt(index) for index in range(size))
+                handles = list(rows)
+                args, out = self.query(handles)
+                self.assertEqual(out["rows"]["count"], size)
+                self.assertEqual(out["results"][0]["groups"][0]["value"], str(size))
+                returned = claim_checks.returned_evidence("plx.query", args, out)
+                bound = gate(f"{size} receipts.", handles, [count_of(handles)], rows=rows,
+                             calculations=(), returned=returned)
+                self.assertTrue(bound["passed"], bound["failures"])
+                self.assertEqual(checked(bound)[0]["bound"], "exact")
+
+    def test_a_partial_or_withheld_count_asked_with_rows_stays_a_lower_bound(self):
+        rows = dict(receipt(index) for index in range(3))
+        handles = list(rows)
+        for aggregate in ({"partial": True},
+                          {"withheld": {"objects": 1}},
+                          {"gaps": [{"state": "inaccessible", "reason": "withheld",
+                                     "subject": "x"}]}):
+            with self.subTest(aggregate=aggregate):
+                args, out = self.query(handles, **aggregate)
+                returned = claim_checks.returned_evidence("plx.query", args, out)
+                self.assertEqual(codes(gate("3 receipts.", handles, [count_of(handles)],
+                                            rows=rows, calculations=(),
+                                            returned=returned)),
+                                 ["claim_count_lower_bound"])

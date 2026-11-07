@@ -109,6 +109,8 @@ class TableBackend:
         self.call, self.new_set, self.schema = call, new_set, schema
         # a set marked as trimmed by this reader's grants (``SetRegistry.new(withheld=)``)
         self.withheld_set: Callable[[Any, list[str]], str] | None = None
+        # a set marked as reached only through lead-tier links (``SetRegistry.new`` lead)
+        self.lead_set: Callable[..., str] | None = None
         # the records a set handle holds (the host's set registry), for the type a walk
         # starts from
         self.members = members
@@ -230,6 +232,10 @@ FIRM_TIERS = frozenset({"verified", "reviewed"})
 # A hop reaching nothing is tried again through twins (``QueryTool._via_twin``): lead
 # identity links included, so a copy joined only by a lead is offered, said as a lead.
 TWIN_TIER_FLOOR = "lead"
+# plx.around's gap naming the records only lead links reach (a set handle as subject),
+# and the gap marking what rests on them (``ontology_tools_traverse``)
+POSSIBLY_RELATED = "possibly_related"
+LEAD_BASIS = "lead_basis"
 WEAK_TWIN_TIERS = frozenset({"lead", "contradicted"})
 # gaps saying a plx.around answer was trimmed by the reader's grants
 # A hop's dead-end gaps a twin route then reached past: the reply would say both
@@ -477,8 +483,12 @@ class QueryTool:
             listed = self._rows(current, arguments, gaps, actor)
             if listed is not None:
                 result["rows"] = listed
-            result["gaps"], result["meta"] = gaps, meta
-            return result
+            if not arguments.get("measures"):
+                result["gaps"], result["meta"] = gaps, meta
+                return result
+        # Measures asked beside rows are measured too (11-07 regrade: a count asked with
+        # rows to name its records came back with no count, so the answer could state it
+        # only as a lower bound).
         for measure in arguments.get("measures") or [{"op": "count"}]:
             result["results"].append(self._measure(call, current, measure, arguments,
                                                    common, gaps))
@@ -497,8 +507,10 @@ class QueryTool:
         if link is None or not current:
             return None
         ids: list[str] = []
+        lead_ids: list[str] = []
         tiers: dict[str, int] = {}
         meta, gaps, handles, trimmed, marked = None, [], [], False, False
+        lead_gaps: list[dict[str, Any]] = []
         for direction in ("forward", "reverse"):
             args: dict[str, Any] = {"from": current, "limit": 50, "tier_floor": TWIN_TIER_FLOOR,
                                     "path": [{"link_type": link, "direction": direction}],
@@ -509,6 +521,18 @@ class QueryTool:
             if got.get("error"):
                 continue
             hop = (got.get("hops") or [{}])[-1]
+            # twins only a lead link joins come back apart (possibly_related): walked on
+            # only when no confirmed twin is reached, and then said as a lead
+            for g in got.get("gaps") or ():
+                if isinstance(g, Mapping) and g.get("reason") == POSSIBLY_RELATED:
+                    lead_gaps.append(dict(g))
+                    found = self.backend.members(actor, g.get("subject")) \
+                        if self.backend.members is not None else None
+                    lead_ids += [m for m in found or () if m not in lead_ids]
+                    meta = got.get("meta") or meta
+                    for tier, n in (hop.get("tiers") or {}).items():
+                        if tier in WEAK_TWIN_TIERS and isinstance(n, int):
+                            tiers[tier] = tiers.get(tier, 0) + n
             if not got.get("set") or not hop.get("count"):
                 # a direction the reader's grants trimmed to nothing still trims the
                 # twins: its permission gaps stay, and the other direction's set is
@@ -521,9 +545,9 @@ class QueryTool:
             meta = got.get("meta") or meta
             gaps += [g for g in got.get("gaps") or () if isinstance(g, Mapping)
                      and g.get("reason") not in ("nothing_selected", "no_match",
-                                                 "twin_route")]
+                                                 "twin_route", POSSIBLY_RELATED)]
             for tier, n in (hop.get("tiers") or {}).items():
-                if isinstance(n, int):
+                if isinstance(n, int) and tier not in WEAK_TWIN_TIERS:
                     tiers[tier] = tiers.get(tier, 0) + n
             made = got["set"]
             own = any(isinstance(g, Mapping) and g.get("reason") in TRIMMED_REASONS
@@ -534,7 +558,19 @@ class QueryTool:
                 self.backend.members(actor, made) or ()) \
                 if self.backend.members is not None else []
             ids += [m for m in members if m not in ids]
-        if len(handles) == 1 and (marked or not trimmed):
+        lead = not ids and bool(lead_ids)
+        if ids:
+            # confirmed twins answer; the lead-only ones stay said apart
+            gaps += lead_gaps
+            tiers = {t: n for t, n in tiers.items() if t not in WEAK_TWIN_TIERS}
+        elif lead:
+            ids = lead_ids
+            tiers = {t: n for t, n in tiers.items() if t in WEAK_TWIN_TIERS}
+        if lead:
+            # every twin is a lead: the set is marked, so all it reaches stays a lead
+            made = self.backend.lead_set(actor, ids, trimmed) \
+                if self.backend.lead_set is not None else None
+        elif len(handles) == 1 and (marked or not trimmed):
             made = handles[0]   # its own handle: a trimmed answer's set stays marked
         elif not ids:
             made = None
@@ -547,7 +583,7 @@ class QueryTool:
             made = self._set_of(ids, actor)
         if not made:
             return None
-        return {"set": made, "gaps": gaps, "meta": meta,
+        return {"set": made, "gaps": gaps, "meta": meta, "lead": lead,
                 "hop": {"link_type": link, "direction": "forward", "count": len(ids),
                         "tiers": tiers, "via_twin": True}}
 
@@ -618,10 +654,16 @@ class QueryTool:
             detail += ("; a twin joined only by a " + "/".join(weak) + " link is a likely "
                        "match, not a confirmed one: say what it reached as a likely match "
                        "(claims with lead true)")
+        said = [{"state": "unknown", "reason": "via_twin",
+                 "subject": str(twin["hop"]["link_type"])[:700], "detail": detail[:600]}]
+        if twin.get("lead"):
+            said.append({"state": "unknown", "reason": LEAD_BASIS,
+                         "subject": str(twin["hop"]["link_type"])[:700],
+                         "detail": "every twin walked is joined only by a lead link: what "
+                                   "this walk counted, totalled or listed is a likely "
+                                   "match, never a confirmed one (claims with lead true)"})
         return {"set": twin["set"], "hops": hops, "meta": twin.get("meta") or meta,
-                "gaps": list(twin.get("gaps") or ()) + [{
-                    "state": "unknown", "reason": "via_twin",
-                    "subject": str(twin["hop"]["link_type"])[:700], "detail": detail[:600]}]}
+                "gaps": list(twin.get("gaps") or ()) + said}
 
     def _around(self, call, current: Any, hop: Mapping[str, Any],
                 filters: list[Any] | None, arguments: Mapping[str, Any],
@@ -1512,6 +1554,8 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
     if hasattr(getattr(base, "sets", None), "new"):
         backend.withheld_set = lambda actor, ids: base.sets.new(actor, list(ids),
                                                                 withheld=True)
+        backend.lead_set = lambda actor, ids, withheld=False: base.sets.new(
+            actor, list(ids), withheld=bool(withheld), lead=True)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

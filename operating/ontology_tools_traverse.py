@@ -42,7 +42,11 @@ or a set handle. Each hop is validated against the schema before any read: an
 undeclared link type or a hop whose source type is not the previous hop's
 target type is refused. ``tier_floor`` is the weakest tier traversed (default
 ``stored_by_text_join``: ``lead`` and ``contradicted`` links are shown only when
-a caller asks for them). A link touching a version whose lineage is
+a caller asks for them). Solid by default, whatever the floor: the answer's set,
+counts and listing hold only what solid links reach (every hop at or above
+``stored_by_text_join``); what a lowered floor reaches beyond them is a separate
+lead set named by a ``possibly_related`` gap, never merged into a count, and a set
+walked from a lead set stays one (``lead_basis`` gap). A link touching a version whose lineage is
 ``gold_native_staging`` is capped at ``lead`` (R1: never authority, the same
 rule plx.find applies), unless it is a foreign key one source stores between its
 own rows: lineage decides which copy's values win, not whether that key exists.
@@ -217,6 +221,16 @@ TIER_ORDER = ("verified", "reviewed", "corroborated", "stored_by_text_join", "le
               "contradicted")
 _TIER_RANK = {tier: index for index, tier in enumerate(TIER_ORDER)}
 DEFAULT_TIER_FLOOR = "stored_by_text_join"
+# The weakest tier a count, total or listing rests on: a record reached only through a
+# weaker link (lead, contradicted) is possibly related, set apart (``possibly_related``),
+# never merged into the answer, whatever ``tier_floor`` the caller walked with.
+SOLID_RANK = _TIER_RANK[DEFAULT_TIER_FLOOR]
+POSSIBLY_RELATED = "possibly_related"
+# The lead records shown apart (possibly_related): as many as the page's limit, at most
+# this many, with at most twice as many edges (dropped first), in at most half the
+# result's bytes.
+RELATED_OBJECTS = 50
+LEAD_BASIS = "lead_basis"
 # What a link is (ER-06), shown beside its tier on every edge (``_link_kind``).
 LINK_KINDS = ("reference", "identity", "allocation", "dependency")
 # L1 handle schemes / audience prefixes whose items carry their own ACL (L8's rule).
@@ -782,6 +796,12 @@ class TraverseTools:
                 gaps.append(_gap("inaccessible", WITHHELD, root[:700],
                                  "this set came from an answer this reader's grants trimmed: "
                                  "it holds only what the reader may read, not the whole set"))
+            if getattr(self.sets, "is_lead", None) and self.sets.is_lead(root, scope.actor):
+                gaps.append(_gap("unknown", LEAD_BASIS, root[:700],
+                                 "this set holds records reached only through lead-tier "
+                                 "links: whatever is walked, counted, totalled or listed "
+                                 "from it is a likely match, never a confirmed one; say it "
+                                 "as a lead (claims with lead true)"))
             if later:
                 gaps.append(_gap("not_ingested", CAPTURED_AFTER, root[:700],
                                  f"{len(later)} object(s) of this set were first captured "
@@ -1104,6 +1124,10 @@ class TraverseTools:
                                 f"{', '.join(unknown)}",
                                 property_hint(self.schema, target, unknown))
         frontier = sorted({oid for oid in roots if oid.split(":", 1)[0] == hops[0][2]})
+        # The records reached along solid links only (every hop at or above
+        # ``DEFAULT_TIER_FLOOR`` from a record reached the same way): what a lowered
+        # ``tier_floor`` adds beyond them is possibly related, never in the answer's set.
+        solid: set[str] = set(frontier)
         lap("root")
         gaps: list[dict] = list(root_gaps)
         hop_out: list[dict] = []
@@ -1123,18 +1147,24 @@ class TraverseTools:
             self._read_corroboration(scope, rows)
             reached: dict[str, list[tuple[str, sqlite3.Row]]] = {}
             best_any: dict[str, str] = {}
+            solid_next: set[str] = set()
             for row in rows:
                 tier = self._reader_tier(scope, row)
-                other = row["to_object"] if direction == "forward" else row["from_object"]
+                forward = direction == "forward"
+                other = row["to_object"] if forward else row["from_object"]
                 if other not in best_any or _TIER_RANK[tier] < _TIER_RANK[best_any[other]]:
                     best_any[other] = tier
                 if _TIER_RANK[tier] <= floor_rank:
                     reached.setdefault(other, []).append((tier, row))
+                    if _TIER_RANK[tier] <= SOLID_RANK and (
+                            row["from_object"] if forward else row["to_object"]) in solid:
+                        solid_next.add(other)
+            solid = solid_next
             tiers: dict[str, int] = {}
             for tier in best_any.values():
                 tiers[tier] = tiers.get(tier, 0) + 1
             hop_out.append({"link_type": link_type, "direction": direction,
-                            "count": len(reached),
+                            "count": len(solid),
                             "tiers": dict(sorted(tiers.items(), key=lambda kv: _TIER_RANK[kv[0]]))})
             parents.append(reached)
             if not reached and empty_at is None and frontier:
@@ -1169,6 +1199,10 @@ class TraverseTools:
             bool(frontiers and frontiers[0])
             and self._path_trimmed(scope, hops, reach_checked=owner_open))
         lap("trimmed")
+        # Only what solid links reach is the answer (its set, count and listing); what a
+        # lowered floor reaches beyond it is a separate lead set, said as possibly related.
+        leads = sorted(oid for oid in final if oid not in solid)
+        final = [oid for oid in final if oid in solid]
         ranked = sorted(final, key=lambda oid: (_TIER_RANK[best[oid]], oid))
         total = len(ranked)
         if total and offset >= total:
@@ -1177,11 +1211,25 @@ class TraverseTools:
         # A set made from a trimmed answer stays marked, so whatever reads it next
         # (a further hop, plx.timeline, plx.aggregate) never takes it as whole.
         lost = trimmed or any(g["reason"] in PERMISSION_LOSSES for g in gaps)
+        # A set walked from a lead set is a lead set too: its records' connection to the
+        # start rests on a lead link however firm the later hops are.
+        root_lead = root.startswith("set:") and bool(
+            getattr(self.sets, "is_lead", None) and self.sets.is_lead(root, actor))
         handle = None
         if cursor_set is not None and self.sets.resolve(cursor_set, actor) == tuple(ranked):
             handle = cursor_set
         if handle is None:
-            handle = self.sets.new(actor, ranked, withheld=lost)
+            handle = self.sets.new(actor, ranked, withheld=lost, lead=root_lead)
+        related: dict[str, Any] | None = None
+        if leads:
+            lead_handle = self.sets.new(actor, leads, withheld=lost, lead=True)
+            related = {"set": lead_handle, "count": len(leads)}
+            gaps.append(_gap("unknown", POSSIBLY_RELATED, lead_handle,
+                             f"{len(leads)} more record(s) are reached only through "
+                             "lead-tier links: possibly related, not confirmed, and not in "
+                             "this answer's set, count or listing; say them apart as "
+                             "possibly related (likely matches), never added to a count or "
+                             "total (this set handle lists them)"))
         detailed = arguments.get("response_format") == "detailed"
         limit = arguments.get("limit", DEFAULT_LIMIT)
         page = ranked[offset:offset + limit]
@@ -1194,6 +1242,26 @@ class TraverseTools:
         gaps.extend(g for g in edge_gaps if g["reason"] != "process_graphs_unavailable")
         sources = {_source_of(row["l1_handle"], row["lineage"])
                    for row in self._versions_at(scope, page + list(roots[:1])).values()}
+        if related is not None:
+            # the first few lead records, with the links' reasons, shown apart
+            shown = min(arguments.get("limit", DEFAULT_LIMIT), RELATED_OBJECTS)
+            lead_page = sorted(leads, key=lambda oid: (_TIER_RANK[best[oid]], oid))[:shown]
+            lead_edges, _, _ = self._page_edges(scope, lead_page, parents, detailed)
+            lead_refs = {ref["object_id"]: ref for ref in self._object_refs(scope, lead_page)}
+            while True:
+                related.update(objects=[lead_refs[o] for o in lead_page if o in lead_refs],
+                               edges=_edges_for(lead_edges, set(lead_page), parents,
+                                                detailed)[:2 * len(lead_page)])
+                if _envelope_bytes(related) <= self.limits["max_result_bytes"] // 2:
+                    break
+                if related["edges"]:
+                    related["edges"] = []   # the records first, their reasons if room
+                    if _envelope_bytes(related) <= self.limits["max_result_bytes"] // 2 \
+                            or len(lead_page) <= 1:
+                        break
+                if len(lead_page) <= 1:
+                    break
+                lead_page = lead_page[:len(lead_page) // 2]
         meta, fresh_gaps, coverage = self._listed_meta(scope, sources | edge_sources)
         lap("page")
         if empty_at is not None and not any(g["reason"] == "below_tier_floor" for g in gaps):
@@ -1201,7 +1269,7 @@ class TraverseTools:
             gaps.append(self._no_link_gap(scope, link_type, direction, target, floor,
                                           frontiers[empty_at],
                                           [(h[0], h[3]) for h in hops[:empty_at]]))
-        elif filters and frontier and not ranked:
+        elif filters and frontier and not ranked and not leads:
             gaps.append(_gap("unknown", "no_match", f"{hops[-1][3]} where "
                              + ", ".join(f"{f['property']} {f['op']}" for f in filters),
                              "no reached object passes the filters this reader can evaluate"))
@@ -1233,6 +1301,8 @@ class TraverseTools:
             # Constant by design: plx.around never reveals what the reader's grants removed.
             "withheld": {"properties": None, "objects": None, "reason": "marking_and_audience"},
             "freshness_coverage": coverage, "meta": meta}
+        if related is not None:
+            result["possibly_related"] = related
 
         max_bytes = self.limits["max_result_bytes"]
 
@@ -2851,6 +2921,20 @@ def _backtrack(keep: set[str], parents: Sequence[Mapping[str, list]], detailed: 
                              else row["to_object"])
         wanted = previous
     return chosen
+
+
+def with_leads(answer: Any) -> Any:
+    """A plx.around answer as a caller that labels leads itself reads it (a PO trail's
+    follow-ups, a status card's lead links): its listing followed by what only lead links
+    reach (``possibly_related``), each edge keeping its tier. Never for a count: the set,
+    hop counts and exact_count stay the solid ones."""
+    if not isinstance(answer, Mapping) or not isinstance(answer.get("possibly_related"),
+                                                         Mapping):
+        return answer
+    apart = answer["possibly_related"]
+    return dict(answer, objects=list(answer.get("objects") or ()) + list(
+        apart.get("objects") or ()), edges=list(answer.get("edges") or ()) + list(
+        apart.get("edges") or ()))
 
 
 def _edges_for(edges: Mapping[str, dict], keep: set[str],

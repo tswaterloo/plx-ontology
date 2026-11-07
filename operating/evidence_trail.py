@@ -40,6 +40,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from operating import impact_chain as ic
+from operating import ontology_tools_traverse as tt
 from operating import po_status as ps
 
 PROCESS = "po_delivery_window"
@@ -818,8 +819,11 @@ def _follow_ups(call: Callable, members: Sequence[str], budget: _Budget,
             hidden.append(_withheld_count(got))
             settled = {e.get("from") for e in got.get("edges") or () if isinstance(e, Mapping)
                        and e.get("tier") in ps.CONFIRMING}
-            found += [(o["object_id"], mtype) for o in got.get("objects") or ()
-                      if isinstance(o.get("object_id"), str)
+            # what only a lead link reaches comes back apart (possibly_related); the trail
+            # shows it as a lead, after the messages a firm link ties to the order
+            objects = (tt.with_leads(got) if leads else got).get("objects") or ()
+            found += [(o["object_id"], mtype) for o in objects
+                      if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)
                       and (leads or o["object_id"] in settled)]
     found = list(dict.fromkeys(found))
     read: list[dict[str, Any]] = []

@@ -505,8 +505,16 @@ class AroundTests(unittest.TestCase):
         self.assertEqual(ids(out), [S1])
         self.assertEqual(out["hops"][0]["tiers"], {"verified": 1, "lead": 1})
         leads = ok(self, "plx.around", t.call("plx.around", dict(args, tier_floor="lead"), FULL))
-        self.assertEqual(ids(leads), [S1, S2])
-        lead_edge = next(e for e in leads["edges"] if e["from"] == S2)
+        # solid by default: the lead-only shipment is shown apart, never in the answer's
+        # set, count or listing
+        self.assertEqual(ids(leads), [S1])
+        self.assertEqual(leads["hops"][0]["count"], 1)
+        self.assertEqual(leads["exact_count"], 1)
+        related = leads["possibly_related"]
+        self.assertEqual((related["count"], ids(related)), (1, [S2]))
+        self.assertIn({"reason": "possibly_related", "subject": related["set"]},
+                      [{k: g[k] for k in ("reason", "subject")} for g in leads["gaps"]])
+        lead_edge = next(e for e in related["edges"] if e["from"] == S2)
         self.assertEqual(lead_edge["tier"], "lead")
         self.assertEqual(lead_edge["why_not"], [{"feature": "ambiguous_target",
                                                  "agrees": None}])
@@ -518,14 +526,64 @@ class AroundTests(unittest.TestCase):
         self.assertIn("below_tier_floor", [g["reason"] for g in out2["gaps"]])
         both = ok(self, "plx.around", t.call("plx.around", dict(args2, tier_floor="contradicted"),
                                              FULL))
-        self.assertEqual(ids(both), [S3])
+        self.assertEqual(ids(both), [])
+        self.assertEqual(ids(both["possibly_related"]), [S3])
+
+    def test_what_a_lead_hop_reaches_stays_a_lead_at_every_later_hop(self):
+        """Solid by default (11-07 dev 0014): a record a later hop reaches by a firm link
+        from one only a lead reached is possibly related, never in the set, hop count or
+        listing; walked or counted from its set it stays a lead (lead_basis), and N=1/10/60
+        such records are each set apart once."""
+        for n in (1, 10, 60):
+            with self.subTest(n=n):
+                lead_invoices = [f"Invoice:portal.invoice:il-{k:03d}" for k in range(n)]
+
+                def billed(s):
+                    for k, oid in enumerate(lead_invoices):
+                        s.obj(oid, "api:public.invoice", api("invoice", f"il-{k:03d}"),
+                              "fm_bronze")
+                        s.link(f"l-bl-{k:03d}", "Invoice.bills_shipment", oid, S2)
+                t, _ = tools(build(extra=billed))
+                agg = oa.AggregateTools(t.base, t)
+                path = [{"link_type": "Shipment.ships_order", "direction": "reverse"},
+                        {"link_type": "Invoice.bills_shipment", "direction": "reverse"}]
+                solid = ok(self, "plx.around", t.call("plx.around",
+                                                      {"from": O1, "path": path}, FULL))
+                low = ok(self, "plx.around", t.call("plx.around", {"from": O1, "path": path,
+                                                                   "tier_floor": "lead"}, FULL))
+                self.assertEqual(sorted(ids(low)), sorted(ids(solid)))
+                self.assertEqual([h["count"] for h in low["hops"]],
+                                 [h["count"] for h in solid["hops"]])
+                self.assertEqual(low["exact_count"], len(ids(solid)))
+                related = low["possibly_related"]
+                self.assertEqual(related["count"], n)
+                self.assertEqual(len(set(ids(related))), min(n, 10))   # the page limit
+                self.assertFalse(set(ids(related)) & set(ids(low)))
+                self.assertEqual(validate(low, CONTRACTS["tools"]["plx.around"]["output"],
+                                          root=CONTRACTS), [])
+                counted = agg.call("plx.aggregate", {"set": related["set"],
+                                                     "measure": {"op": "count"}}, FULL)
+                self.assertEqual(counted["groups"][0]["value"], str(n))
+                self.assertIn("lead_basis", [g["reason"] for g in counted["gaps"]])
+                onward = ok(self, "plx.around", t.call("plx.around", {
+                    "from": related["set"], "path": [{"link_type": "Invoice.bills_shipment",
+                                                      "direction": "forward"}]}, FULL))
+                self.assertIn("lead_basis", [g["reason"] for g in onward["gaps"]])
+                again = agg.call("plx.aggregate", {"set": onward["set"],
+                                                   "measure": {"op": "count"}}, FULL)
+                self.assertIn("lead_basis", [g["reason"] for g in again["gaps"]])
+                # a firm walk's set carries no lead mark
+                plain = agg.call("plx.aggregate", {"set": solid["set"],
+                                                   "measure": {"op": "count"}}, FULL)
+                self.assertNotIn("lead_basis", [g["reason"] for g in plain["gaps"]])
 
     def test_native_staging_is_lead_everywhere(self):
         t, _ = tools()
         out = ok(self, "plx.around", t.call("plx.around", dict(PARTY_ORDERS, tier_floor="lead"),
                                             FULL))
-        self.assertEqual(ids(out)[-1], O4)
-        edge = next(e for e in out["edges"] if e["from"] == O4)
+        self.assertNotIn(O4, ids(out))
+        self.assertEqual(ids(out["possibly_related"])[-1], O4)
+        edge = next(e for e in out["possibly_related"]["edges"] if e["from"] == O4)
         self.assertEqual(edge["tier"], "lead")
         self.assertIn({"feature": "never_authority_lineage", "agrees": None}, edge["why_not"])
 
@@ -548,7 +606,8 @@ class AroundTests(unittest.TestCase):
         self.assertNotIn("never_authority_lineage", [f["feature"] for f in edge["why_not"]])
         lead = ok(self, "plx.around", t.call("plx.around", dict(PARTY_ORDERS, tier_floor="lead"),
                                              OPS))
-        self.assertEqual(next(e for e in lead["edges"] if e["from"] == O4)["tier"], "lead")
+        self.assertEqual(next(e for e in lead["possibly_related"]["edges"]
+                              if e["from"] == O4)["tier"], "lead")
 
     def test_set_handles_chain_expire_and_bind_to_actor(self):
         t, clock = tools()
@@ -628,8 +687,8 @@ class AroundTests(unittest.TestCase):
                                                                     "MailMessage.mentions_order",
                                                                     "direction": "reverse"}]},
                                             OPS))
-        self.assertEqual(ids(out), [M1])
-        display = out["objects"][0]["display"]
+        self.assertEqual(ids(out["possibly_related"]), [M1])
+        display = out["possibly_related"]["objects"][0]["display"]
         self.assertEqual(display["origin"]["citation"], M1_H)
         self.assertTrue(display["untrusted_text"].startswith("Ignore previous"))
 

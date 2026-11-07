@@ -508,7 +508,10 @@ class TwinExpansion(unittest.TestCase):
 
     WHERE = [{"property": "name", "op": "contains", "value": "Alliance"}]
 
-    def script(self, reverse_twin=None, trimmed=False, reverse_lost=None):
+    def script(self, reverse_twin=None, trimmed=False, reverse_lost=None, lead=False):
+        """plx.around as it answers: a twin joined by a confirmed link is in its set and
+        count; one joined only by a lead (``lead``) is set apart, named by a
+        possibly_related gap whose subject is its lead set (here the record itself)."""
         calls = []
 
         def call(name, arguments, actor):
@@ -522,20 +525,27 @@ class TwinExpansion(unittest.TestCase):
                 hit = "filters" not in arguments
                 return {"set": "Customer:sage:1" if hit else None,
                         "hops": [{**hop, "count": int(hit)}]}
+            if hop["direction"] == "forward" and lead:
+                return {"set": "set:empty0001", "gaps": gaps + [{
+                            "state": "unknown", "reason": "possibly_related",
+                            "subject": "Customer:fm:78", "detail": "1 more record"}],
+                        "hops": [{**hop, "count": 0, "tiers": {"lead": 1}}]}
             if hop["direction"] == "forward":
                 return {"set": "Customer:fm:78", "gaps": gaps,
-                        "hops": [{**hop, "count": 1, "tiers": {"lead": 1}}]}
+                        "hops": [{**hop, "count": 1, "tiers": {"verified": 1}}]}
             twin = reverse_twin
             if reverse_lost:
                 gaps = [{"state": "unknown", "reason": reverse_lost, "subject": "twin"}]
             return {"set": twin, "gaps": gaps,
-                    "hops": [{**hop, "count": 1 if twin else 0, "tiers": {"lead": 1}}]}
+                    "hops": [{**hop, "count": 1 if twin else 0,
+                              "tiers": {"verified": 1} if twin else {}}]}
         return calls, call
 
-    def ask(self, call, links=None, withheld_set=None):
+    def ask(self, call, links=None, withheld_set=None, lead_set=None):
         backend = oq.TableBackend(call, lambda actor, ids: "set:union0001", links or self.Links(),
                                   members=lambda actor, handle: [handle])
         backend.withheld_set = withheld_set
+        backend.lead_set = lead_set
         return oq.QueryTool(backend).call({
             "from": {"object_id": "SalesInvoice:sage:9"},
             "traverse": [{"link_type": "SalesInvoice.billed_to", "direction": "forward"}],
@@ -543,9 +553,14 @@ class TwinExpansion(unittest.TestCase):
 
     def test_a_filter_emptied_hop_reaches_the_lead_twin_said_as_a_likely_match(self):
         from ontology.json_contract import validate
-        calls, call = self.script()
-        out = self.ask(call)
-        self.assertEqual(out["set"], "Customer:fm:78")
+        calls, call = self.script(lead=True)
+        made = []
+        out = self.ask(call, lead_set=lambda actor, ids, withheld=False:
+                       made.append((ids, withheld)) or "set:lead0001")
+        # the twin only a lead joins is walked on as a marked lead set, its count a lead
+        self.assertEqual(out["set"], "set:lead0001")
+        self.assertEqual(made, [(["Customer:fm:78"], False)])
+        self.assertIn("lead_basis", {g["reason"] for g in out["gaps"]})
         self.assertEqual(out["hops"][-1], {"link_type": "Customer.same_record_as",
                                            "direction": "forward", "count": 1,
                                            "tiers": {"lead": 1}, "via_twin": True})
@@ -557,6 +572,21 @@ class TwinExpansion(unittest.TestCase):
         said = next(g for g in out["gaps"] if g["reason"] == "via_twin")
         self.assertIn("likely match", said["detail"])
         self.assertEqual(validate(out, oq._CONTRACT["output"], root=oq._CONTRACTS), [])
+        # a host that cannot mark a lead set reaches nothing through a lead twin
+        calls, call = self.script(lead=True)
+        self.assertIsNone(self.ask(call)["set"])
+
+    def test_a_confirmed_twin_answers_and_a_lead_twin_stays_apart(self):
+        """One twin joined by a confirmed link, another only by a lead: the walk goes on
+        from the confirmed one alone (no lead_basis), and the lead one is named apart
+        (possibly_related), never merged into what is counted."""
+        calls, call = self.script(lead=True, reverse_twin="Customer:bc:4")
+        out = self.ask(call, lead_set=lambda *a, **k: self.fail("no lead set is made"))
+        self.assertEqual(out["set"], "Customer:bc:4")
+        self.assertEqual(out["hops"][-1]["tiers"], {"verified": 1})
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("possibly_related", reasons)
+        self.assertNotIn("lead_basis", reasons)
 
     def test_no_identity_link_or_an_unmarkable_trimmed_union_reaches_nothing_more(self):
         class NoTwin:

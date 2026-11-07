@@ -1037,6 +1037,8 @@ def _check(claims: list[dict], rows: Callable[[str], Any], returned: Mapping[str
     results = {entry["item"]: entry["claims"][0] for entry in report["items"]
                if entry["claims"]}
     leads = returned.get("leads") if isinstance(returned.get("leads"), Mapping) else {}
+    lead_records = returned.get("lead_records") \
+        if isinstance(returned.get("lead_records"), Mapping) else {}
     counts = dict(report["counts"])
     passed, failed = [], []
     for claim in claims:
@@ -1045,10 +1047,13 @@ def _check(claims: list[dict], rows: Callable[[str], Any], returned: Mapping[str
         if problems is None and not result:
             problems = [{"code": "claim_uncited", "value": value_claim["value"],
                          "detail": "the claim was not checked"}]
-        if problems is None and not claim["lead"] and _on_a_lead(value_claim, claim, leads):
+        if problems is None and not claim["lead"] and _on_a_lead(value_claim, claim, leads,
+                                                                 lead_records):
             problems = [{"code": LEAD_UNMARKED, "value": value_claim["value"],
-                         "detail": "the value rests only on lead-tier links (lead_basis): "
-                                   "state it as a lead"}]
+                         "detail": "the value rests on lead-tier links (lead_basis), in "
+                                   "whole or in part: count only the confirmed records, "
+                                   "and say the lead ones apart as possibly related, or "
+                                   "state the value as a lead (lead true)"}]
             counts.update(passed=counts["passed"] - 1, failed=counts["failed"] + 1)
             if result.get("role_basis") in counts:
                 counts[result["role_basis"]] -= 1
@@ -2568,14 +2573,18 @@ def _prose(raw: Any) -> list[str]:
 
 
 def _on_a_lead(value_claim: Mapping[str, Any], claim: Mapping[str, Any],
-               leads: Mapping[Any, Any]) -> bool:
-    """Whether the claim's value rests only on lead-tier links: the cell a field claim
-    cites is a lead cell; a claim with no field (a count or other operation over records)
-    counts a record whose lead cell this session was returned."""
+               leads: Mapping[Any, Any], lead_records: Mapping[Any, Any] | None = None
+               ) -> bool:
+    """Whether the claim's value rests on lead-tier links: the cell a field claim cites
+    is a lead cell; a claim with no field (a count or other operation over records)
+    counts a record whose lead cell this session was returned, or a record only results
+    resting on lead links named (``lead_records``): a count backed partly by leads."""
     field = value_claim.get("field")
     if isinstance(field, str):
         return leads.get((value_claim.get("citation"), field)) is True
     cited = set(claim["citations"])
+    if any(lead_records.get(handle) is True for handle in cited) if lead_records else False:
+        return True
     return any(flag is True and isinstance(cell, tuple) and cell[0] in cited
                for cell, flag in leads.items())
 

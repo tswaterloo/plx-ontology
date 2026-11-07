@@ -2229,6 +2229,8 @@ class NamedOrderInvoiceTests(unittest.TestCase):
             {"from": po, "path": [{"link_type": "PurchaseOrder.same_record_as",
                                    "direction": "forward"}],
              "tier_floor": "lead", "as_known_at": self.at}, actor)
+        from operating.ontology_tools_traverse import with_leads
+        twins = with_leads(twins)
         self.assertFalse([o for o in twins["objects"] if ":bc." in o["object_id"]])
         for start in [po] + [o["object_id"] for o in twins["objects"]]:
             hop = table["plx.around"]["handler"](
@@ -2236,11 +2238,14 @@ class NamedOrderInvoiceTests(unittest.TestCase):
                                           "direction": "reverse"}],
                  "tier_floor": "lead", "as_known_at": self.at}, actor)
             self.assertEqual(hop["hops"][-1]["count"], 0, start)
+            self.assertNotIn("possibly_related", hop, start)
         named = table["plx.around"]["handler"](
             {"from": po, "path": [{"link_type": "PurchaseInvoice.names_order",
                                    "direction": "reverse"}],
              "tier_floor": "lead", "as_known_at": self.at}, actor)
-        self.assertGreater(named["hops"][-1]["count"], 0, named)
+        # only a lead link names the invoice: set apart, never in the hop's count
+        self.assertEqual(named["hops"][-1]["count"], 0, named)
+        self.assertGreater(named["possibly_related"]["count"], 0, named)
 
         result = self.run_plan(table, item)
         expected = {v["name"]: v for v in item["known_outcome"]["values"]

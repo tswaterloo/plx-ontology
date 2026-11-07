@@ -2345,6 +2345,9 @@ class ToolSource:
                 "from": oid, "limit": 50, "path": [{"link_type": link, "direction": direction}],
                 **({"tier_floor": floor} if floor else {}),
                 **({"cursor": cursor} if cursor else {})})
+            if floor:
+                # a lowered floor's lead-only records come back apart (possibly_related)
+                page = tt.with_leads(page)
             # plx.around's ``withheld`` block is constant by design (it never reveals
             # what a grant removed); a path that lost records says so in its gaps
             lost = {(g or {}).get("reason") for g in page.get("gaps") or ()} \
@@ -2505,6 +2508,7 @@ class ToolSource:
             page = self.call("plx.around", {
                 "from": oid, "limit": 50, "path": [{"link_type": link, "direction": direction}],
                 "tier_floor": floor, **({"cursor": cursor} if cursor else {})})
+            page = tt.with_leads(page)   # lead-only edges come back apart; tiers kept
             lost = {(g or {}).get("reason") for g in page.get("gaps") or ()} \
                 & tt.PERMISSION_LOSSES
             if "error" in page or lost or (page.get("withheld") or {}).get("objects"):

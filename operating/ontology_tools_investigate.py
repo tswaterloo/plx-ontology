@@ -228,6 +228,7 @@ from .ontology_tools import (_AUDIENCE_SOURCE, _IDENTITY_TIERS, _ITEM_ACL_AUDIEN
                              _compare_key, _envelope_bytes, _fingerprint, _inline_defs,
                              default_grammar, default_schema, load_contracts, plan_read, run_memo,
                              scoped_kind, scoped_root_lead)
+from .ontology_tools_traverse import with_leads
 from .ontology_tools_traverse import (DEFAULT_TIER_FLOOR, PERMISSION_LOSSES, TIER_ORDER,
                                       WITHHELD, navigation_hops)
 
@@ -426,7 +427,15 @@ def ask_again(ask: Callable[[dict[str, Any]], dict[str, Any]], args: Mapping[str
             {g.get("reason") for g in first.get("gaps") or () if isinstance(g, Mapping)}
             & set(retry["on_gap_reasons"])):
         return first, first
-    return first, ask(dict(args, **retry["set_args"]))
+    again = ask(dict(args, **retry["set_args"]))
+    apart = again.get("possibly_related") if isinstance(again, Mapping) else None
+    if isinstance(apart, Mapping) and not again.get("objects"):
+        # the walk asked again at the lead floor reaches only leads, set apart by
+        # plx.around: those are what this step follows, its lead set marked as one
+        # (every entry resting on them says lead_basis)
+        again = dict(with_leads(again), set=apart.get("set"))
+        again.pop("possibly_related", None)
+    return first, again
 
 
 def _froms(step: Mapping[str, Any]) -> list[str]:
@@ -1505,6 +1514,7 @@ class InvestigateTools:
                 around = self._dispatch(run, "plx.around", {
                     "from": root_id, "path": [{"link_type": link_id, "direction": direction}],
                     "tier_floor": "lead", "limit": 50}, harvest=False)
+                around = with_leads(around)   # lead twins come back apart, tiers kept
                 for edge in around.get("edges") or ():
                     if not isinstance(edge, Mapping) or edge.get("tier") not in _IDENTITY_TIERS \
                             or root_id not in (edge.get("from"), edge.get("to")):
@@ -1557,6 +1567,7 @@ class InvestigateTools:
             out = self._dispatch(run, "plx.around", {
                 "from": start, "path": path, "tier_floor": floor, "limit": 50},
                 harvest=False)
+            out = with_leads(out)
             return {o["object_id"] for o in out.get("objects") or ()
                     if isinstance(o, Mapping) and isinstance(o.get("object_id"), str)}
 

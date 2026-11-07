@@ -2230,6 +2230,7 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
         _engine_currencies(result.get("answer"), into, max_cells)
     if tool == "plx.investigate":
         _lead_cells(result.get("answer"), into.setdefault("leads", {}), max_cells)
+    _lead_records(tool, result, into)
     if tool == "plx.find" and isinstance(result.get("home"), Mapping):
         _home_late_count(result["home"], arguments, into)
         return into
@@ -2268,11 +2269,68 @@ def _query_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
 
 
 # Gaps that state only the age of what was read, never a member left out of a count.
-AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift")})
+AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift"),
+                           # records set apart because only lead links reach them
+                           # (``possibly_related``): never members of what was counted
+                           ("unknown", "possibly_related")})
+# A result whose records rest on lead-tier links (a set walked from a lead set, twins
+# joined only by a lead): what it counts or lists is a likely match, said as a lead.
+LEAD_BASIS_GAP = "lead_basis"
+MAX_LEAD_RECORDS = 4096
 
 
 def _age_only(gap: Any) -> bool:
     return isinstance(gap, Mapping) and (gap.get("state"), gap.get("reason")) in AGE_ONLY_GAPS
+
+
+def _lead_records(tool: str, result: Mapping[str, Any], into: dict[str, Any]) -> None:
+    """``lead_records``: per record handle a counting or walking tool returned, True while
+    every result naming it rested on lead-tier links (a ``lead_basis`` gap, or listed
+    apart as ``possibly_related``: records only lead links reach), False once a result
+    that did not names it. A count claim citing a record still True rests partly on lead
+    links (``answer_gate._on_a_lead``)."""
+    if tool not in ("plx.around", "plx.query", "plx.aggregate"):
+        return
+    lead = any(isinstance(g, Mapping) and g.get("reason") == LEAD_BASIS_GAP
+               for g in result.get("gaps") or ())
+    handles = _object_citations(result.get("objects"))
+    related = result.get("possibly_related")
+    apart = _object_citations(related.get("objects")) if isinstance(related, Mapping) else []
+    groups = list(result.get("groups") or ())
+    for measured in result.get("results") or ():
+        if isinstance(measured, Mapping):
+            groups += list(measured.get("groups") or ())
+    for group in groups:
+        if not isinstance(group, Mapping):
+            continue
+        handles += [c.get("l1_handle") for c in group.get("inputs_citations") or ()
+                    if isinstance(c, Mapping) and isinstance(c.get("l1_handle"), str)]
+        handles += [h for h in group.get("members_cited") or () if isinstance(h, str)]
+    for row in result.get("rows") or ():
+        cite = row.get("citation") if isinstance(row, Mapping) else None
+        handle = cite.get("l1_handle") if isinstance(cite, Mapping) else cite
+        if isinstance(handle, str):
+            handles.append(handle)
+    held = into.setdefault("lead_records", {})
+    for handle in handles:
+        if handle in held or len(held) < MAX_LEAD_RECORDS:
+            held[handle] = held.get(handle, True) and lead
+    for handle in apart:
+        # Reached only through lead links: a lead until a solid result names it.
+        if handle in held or len(held) < MAX_LEAD_RECORDS:
+            held[handle] = held.get(handle, True)
+
+
+def _object_citations(objects: Any) -> list[str]:
+    """The record handle (display value's citation) of each listed object."""
+    handles: list[str] = []
+    for obj in objects if isinstance(objects, list) else ():
+        origin = ((obj.get("display") or {}).get("origin") or {}) \
+            if isinstance(obj, Mapping) else {}
+        cite = origin.get("citation") if isinstance(origin, Mapping) else None
+        if isinstance(cite, str):
+            handles.append(cite)
+    return handles
 
 
 def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],

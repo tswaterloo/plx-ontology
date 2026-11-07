@@ -1232,8 +1232,11 @@ class AggregateTools:
         # nor does a filter some sources never record (filter_not_sourced): it matched
         # every record it could, and its gap says which sources it left out. A record
         # whose date is not on record (date_not_on_record) is lost: partial
+        # A lead set's mark (lead_basis) loses no member either: the count is computed and
+        # stays marked as resting on lead links.
         lost_gaps = [g for g in root_gaps if g["reason"] not in (CAPTURED_AFTER,
-                                                                 "filter_not_sourced")]
+                                                                 "filter_not_sourced",
+                                                                 "lead_basis")]
         partial = bool(lost_gaps)
         withheld_objects = any(g["reason"] in PERMISSION_LOSSES for g in root_gaps)
         # Types of every readable member, removed or not: whether a measure applies never

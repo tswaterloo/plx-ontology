@@ -3937,6 +3937,35 @@
               "completeness": {
                 "$ref": "#/$defs/completeness"
               },
+              "possibly_related": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["set", "count", "objects", "edges"],
+                "description": "What a lowered tier_floor reached only through lead-tier (or contradicted) links, set apart: never in set, hops count, objects or exact_count. Say these as possibly related (likely matches), separately, never added to a count, total or list; set holds all of them (count), objects (up to limit) and edges the first ones with the links' reasons. A count or walk from set is a lead (lead_basis gap).",
+                "properties": {
+                  "set": {
+                    "$ref": "#/$defs/set_handle"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "objects": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/object_ref"
+                    },
+                    "maxItems": 50
+                  },
+                  "edges": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/edge"
+                    },
+                    "maxItems": 100
+                  }
+                }
+              },
               "exact_count": {
                 "type": "integer",
                 "minimum": 1,
@@ -7715,7 +7744,7 @@
             "required": [
               "properties"
             ],
-            "description": "List the reached records instead of measuring them: each one's properties (cited values) and date (its own property, or one to-one path away, e.g. a line's order date), newest first, with each property's summary (with_value, last with its date, lowest, highest).",
+            "description": "List the reached records (any measures asked are measured beside them): each one's properties (cited values) and date (its own property, or one to-one path away, e.g. a line's order date), newest first, with each property's summary (with_value, last with its date, lowest, highest).",
             "properties": {
               "properties": {
                 "type": "array",

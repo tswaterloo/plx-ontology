@@ -2983,8 +2983,12 @@ class MCPServer:
                 self._open_reads.remove(items)
                 items.close()
         evidence = self._evidence
+        # what rests on lead-tier links (``leads`` cells, ``lead_records``) travels with the
+        # counts, so a count backed partly by leads is refused unless said as one
         return {"counts": list(evidence["counts"]), "currencies": dict(evidence["currencies"]),
-                "currency_citations": dict(evidence["currency_citations"])}
+                "currency_citations": dict(evidence["currency_citations"]),
+                "leads": dict(evidence.get("leads") or {}),
+                "lead_records": dict(evidence.get("lead_records") or {})}
 
     def close(self) -> None:
         """End of session: release the case host's store and working directory."""
