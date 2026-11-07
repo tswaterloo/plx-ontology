@@ -83,6 +83,9 @@ class Me(_Model):
     expires_at: Optional[int] = None
     access_label: Optional[str] = Field(
         None, description="Set when this reader views with a declared full-read grant.")
+    feedback_admin: bool = Field(False, json_schema_extra=_optional,
+                                 description="The owner or a feedback admin: triages every "
+                                             "reader's feedback.")
 
 
 class DevLoginRequest(_Model):
@@ -1051,17 +1054,105 @@ class SourceView(_Model):
 
 # ---- feedback --------------------------------------------------------------------------
 
+_APP_VERSION = Field(None, max_length=40, pattern=r"^[A-Za-z0-9._+-]+$",
+                    description="The app's version, as the browser reports it.")
+_PAGE = Field(None, max_length=300, description="The app path the feedback was given on.")
+
+
 class FeedbackRequest(_Model):
     answer_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     rating: Literal[1, -1]
     note: Optional[str] = Field(None, max_length=2000,
                                 description="'What was wrong', in the person's words.")
+    expected: Optional[str] = Field(None, max_length=2000, json_schema_extra=_optional,
+                                    description="'The right answer is', in the person's "
+                                                "words (a thumbs-down only).")
+    claims: Optional[list[int]] = Field(None, max_length=50, json_schema_extra=_optional,
+                                        description="The answer's facts (their index) the "
+                                                    "person marked wrong.")
+    page: Optional[str] = _PAGE
+    app_version: Optional[str] = _APP_VERSION
 
 
 class FeedbackResponse(_Model):
     ok: bool
     feedback_id: str
-    stored_in: list[Literal["search.feedback", "feedback_log"]]
+    stored_in: list[Literal["search.feedback", "feedback_log", "feedback_store"]]
+
+
+FeedbackKind = Literal["answer", "alert", "page", "record", "list", "ui", "general"]
+FeedbackStatus = Literal["new", "accepted", "fixed", "wont_fix"]
+ItemVerdict = Literal["useful", "not_useful", "wrong"]
+
+
+class ItemFeedbackRequest(_Model):
+    """A briefing or alert item: useful, not useful or wrong."""
+    item_id: str = Field(min_length=1, max_length=200)
+    verdict: ItemVerdict
+    item_kind: Literal["briefing", "watcher", "suggestion", "today"] = "briefing"
+    event_type: Optional[str] = Field(None, max_length=80)
+    object_type: Optional[str] = Field(None, max_length=40)
+    object_id: Optional[str] = Field(None, max_length=200)
+    label: Optional[str] = Field(None, max_length=300)
+    note: Optional[str] = Field(None, max_length=2000)
+    page: Optional[str] = _PAGE
+    app_version: Optional[str] = _APP_VERSION
+
+
+class NoteFeedbackRequest(_Model):
+    """A free note on a page, a record, a list, the app itself or anything else."""
+    kind: Literal["page", "record", "list", "ui", "general"] = "general"
+    note: str = Field(min_length=1, max_length=2000)
+    page: Optional[str] = _PAGE
+    object_type: Optional[str] = Field(None, max_length=40)
+    object_id: Optional[str] = Field(None, max_length=200)
+    label: Optional[str] = Field(None, max_length=300)
+    app_version: Optional[str] = _APP_VERSION
+
+
+class FeedbackClaim(_Model):
+    i: int
+    text: Optional[str] = None
+    citations: list[dict[str, Optional[str]]] = Field(default_factory=list)
+
+
+class FeedbackEntry(_Model):
+    id: str
+    at: str
+    kind: FeedbackKind
+    status: FeedbackStatus
+    mine: bool
+    reader_name: Optional[str] = None
+    rating: Optional[int] = None
+    verdict: Optional[ItemVerdict] = None
+    note: Optional[str] = None
+    expected: Optional[str] = None
+    page: Optional[str] = None
+    object_type: Optional[str] = None
+    object_id: Optional[str] = None
+    label: Optional[str] = None
+    item_id: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    claims: list[FeedbackClaim] = Field(default_factory=list)
+    flagged: list[int] = Field(default_factory=list)
+    served_version: Optional[str] = None
+    app_version: Optional[str] = None
+    # what is not shown to this reader: the markings (and ``source``) it lacks
+    withheld: list[str] = Field(default_factory=list)
+
+
+class FeedbackList(_Model):
+    """Your feedback; every reader's for the owner and the admins (``all_readers``)."""
+    all_readers: bool
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    counts: dict[str, int] = Field(description="Entries per status under the other filters.")
+    entries: list[FeedbackEntry]
+
+
+class FeedbackStatusRequest(_Model):
+    status: FeedbackStatus
 
 
 AnyEvent = Union[UnderstandingEvent, StatusEvent, SourcesEvent, TokenEvent, AnswerPayload,

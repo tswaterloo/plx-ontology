@@ -22,8 +22,13 @@ import type { LateList,
   WatcherItemState,
   WatcherItemStateRequest,
   DevLoginResponse,
+  FeedbackEntry,
+  FeedbackList,
   FeedbackRequest,
   FeedbackResponse,
+  FeedbackStatus,
+  ItemFeedbackRequest,
+  NoteFeedbackRequest,
   HomeResponse,
   Me,
   ObjectPage,
@@ -207,8 +212,45 @@ export function getSource(handle: string, textOffset = 0, signal?: AbortSignal):
   return getJson<SourceView>(`/api/source?handle=${encodeURIComponent(handle)}${off}`, signal);
 }
 
+/** The app's version, attached to every piece of feedback (never anything else about the browser). */
+export const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "0.1.0";
+
+/** Where the reader is: the app path and query, never the host (works the same on every OS). */
+export function currentPage(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window.location.pathname + window.location.search).slice(0, 300);
+}
+
 export async function sendFeedback(body: FeedbackRequest): Promise<FeedbackResponse> {
-  return (await (await call("/api/feedback", { method: "POST", json: body })).json()) as FeedbackResponse;
+  const json: FeedbackRequest = { page: currentPage(), app_version: APP_VERSION, ...body };
+  return (await (await call("/api/feedback", { method: "POST", json })).json()) as FeedbackResponse;
+}
+
+/** A briefing or alert item: useful, not useful or wrong. */
+export async function sendItemFeedback(body: ItemFeedbackRequest): Promise<FeedbackResponse> {
+  const json: ItemFeedbackRequest = { page: currentPage(), app_version: APP_VERSION, ...body };
+  return (await (await call("/api/feedback/item", { method: "POST", json })).json()) as FeedbackResponse;
+}
+
+/** A note on a page, a record, a list, the app or anything else. */
+export async function sendNoteFeedback(body: NoteFeedbackRequest): Promise<FeedbackResponse> {
+  const json: NoteFeedbackRequest = { page: currentPage(), app_version: APP_VERSION, ...body };
+  return (await (await call("/api/feedback/note", { method: "POST", json })).json()) as FeedbackResponse;
+}
+
+export async function getFeedback(
+  filters: { kind?: string; page?: string; status?: string; order?: "newest" | "oldest"; offset?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<FeedbackList> {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) if (v !== undefined && v !== "") q.set(k, String(v));
+  const tail = q.toString();
+  return (await (await call(`/api/feedback${tail ? `?${tail}` : ""}`, { signal })).json()) as FeedbackList;
+}
+
+/** Triage (the owner and the admins only). */
+export async function setFeedbackStatus(id: string, status: FeedbackStatus): Promise<FeedbackEntry> {
+  return (await (await call(`/api/feedback/${encodeURIComponent(id)}/status`, { method: "POST", json: { status } })).json()) as FeedbackEntry;
 }
 
 const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "token", "answer", "error"]);

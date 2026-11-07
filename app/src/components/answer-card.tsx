@@ -840,7 +840,7 @@ export function AnswerCard({ turn, onPick, onRetry, onAsk }: { turn: Turn; onPic
             <FreshnessLabel freshness={a.freshness} used={usedSystems} />
           </div>
           <SaveButton question={turn.question} href={`/ask?q=${encodeURIComponent(turn.question)}`} />
-          <Feedback answerId={a.answer_id} />
+          <Feedback answerId={a.answer_id} facts={(a.facts ?? []).map((f) => f.text)} />
           {primary && (
             <Link
               href={refHref(primary)}

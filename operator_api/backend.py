@@ -1360,7 +1360,8 @@ class WorkspaceBackend(ActionsMixin):
         with self._lock:
             self._answers[answer.answer_id] = {"reader": reader.key,
                                                "question": request.question,
-                                               "at": _iso_now()}
+                                               "at": _iso_now(),
+                                               **_answer_kept(answer)}
             while len(self._answers) > MAX_ANSWERS_KEPT:
                 self._answers.pop(next(iter(self._answers)))
             recent = self._recent.setdefault(reader.key, [])
@@ -2737,6 +2738,36 @@ class WorkspaceBackend(ActionsMixin):
 
     # ---- feedback -------------------------------------------------------------------------
 
+    def answer_context(self, reader: Reader, answer_id: str) -> dict[str, Any]:
+        """What was kept of an answer given to this reader (its question, words, facts with
+        their citations, subjects); another reader's answer reads as none."""
+        with self._lock:
+            asked = self._answers.get(answer_id)
+        if asked is None or asked["reader"] != reader.key:
+            raise KeyError("answer_not_found")
+        return dict(asked)
+
+    def feedback_grant(self, reader: Reader, handles: Sequence[str]
+                       ) -> tuple[frozenset[str], dict[str, Any]]:
+        """(the markings this reader holds, each handle's withheld marker or None), from
+        the read policy every answer is decided by (``access.grant`` and ``access.decide``);
+        a reader whose access holds no grant holds no marking. Raises when undecidable."""
+        def job(view: Any) -> tuple[frozenset[str], dict[str, Any]]:
+            with view._request():
+                grant = getattr(view.access, "grant", None)
+                held = frozenset(grant()[1]) if callable(grant) else frozenset()
+                decided = view.access.decide(list(handles)) if handles else {}
+                return held, dict(decided)
+        return self.run(reader, job, timeout=READ_TIMEOUT_SECONDS)
+
+    def served_version(self) -> Optional[str]:
+        """The served data's version: a short digest of the served store file's identity."""
+        if not self.store_path:
+            return None
+        from operating.ontology_host import _file_identity
+        return hashlib.sha256(repr(_file_identity(self.store_path)).encode()
+                              ).hexdigest()[:12]
+
     def feedback(self, reader: Reader, request: m.FeedbackRequest) -> m.FeedbackResponse:
         with self._lock:
             asked = self._answers.get(request.answer_id)
@@ -2774,6 +2805,22 @@ class WorkspaceBackend(ActionsMixin):
 
 
 # ---- helpers shared by the routes ------------------------------------------------------
+
+def _answer_kept(answer: Any) -> dict[str, Any]:
+    """What feedback on an answer attaches: its words, facts (with citations) and subjects,
+    as served to its reader (bounded)."""
+    try:
+        return {"answer": (answer.direct_answer or "")[:4000],
+                "conversation_id": answer.conversation_id,
+                "as_of": answer.freshness.as_of if answer.freshness else None,
+                "facts": [{"text": f.text[:600], "sources": [
+                    {"system": s.system, "handle": s.handle, "label": s.label}
+                    for s in f.sources[:8]]} for f in answer.facts[:30]],
+                "subjects": [{"type": o.type, "object_id": o.object_id, "label": o.label}
+                             for o in answer.subjects[:10]]}
+    except Exception:  # noqa: BLE001 - the feedback keeps the question alone
+        return {}
+
 
 # Briefing: of the top items, the first ones get a trail read as the reader.
 BRIEFING_TRAILS = 3

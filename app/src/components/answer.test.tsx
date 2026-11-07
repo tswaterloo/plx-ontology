@@ -450,10 +450,12 @@ describe("Feedback", () => {
     vi.stubGlobal("fetch", f);
     render(<AnswerCard turn={{ id: "t", question: "why late", phase: "done", streamed: "", answer }} />);
     await userEvent.click(screen.getByRole("button", { name: "No, something was wrong" }));
-    expect(screen.getByRole("button", { name: "Send feedback" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submit feedback" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Wrong number" }));
-    await userEvent.type(screen.getByLabelText("Tell us more"), "qty is 3,000");
-    await userEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+    await userEvent.type(screen.getByLabelText("What was wrong, or what did you expect?"), "qty is 3,000");
+    await userEvent.click(within(screen.getByTestId("feedback-claims")).getAllByRole("checkbox")[0]);
+    await userEvent.type(screen.getByLabelText(/The right answer is/), "3,000");
+    await userEvent.click(screen.getByRole("button", { name: "Submit feedback" }));
     expect(await screen.findByTestId("feedback-thanks")).toBeInTheDocument();
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/api/feedback");
@@ -461,6 +463,10 @@ describe("Feedback", () => {
       answer_id: "a1",
       rating: -1,
       note: "[Wrong number] qty is 3,000",
+      claims: [0],
+      expected: "3,000",
+      page: "/",
+      app_version: "0.1.0",
     });
   });
 

@@ -1,4 +1,4 @@
-import { CalendarCheck2, Clock3, History, Inbox, MessageCircle, type LucideIcon } from "lucide-react";
+import { CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /**
@@ -47,6 +47,7 @@ export const PLACES: Record<string, { icon: LucideIcon; tile: string }> = {
   "/briefing": { icon: CalendarCheck2, tile: "bg-[linear-gradient(180deg,#f0ae3f,#e3951a)]" },
   "/ask": { icon: MessageCircle, tile: "bg-[linear-gradient(180deg,#2fb0a2,#13917f)]" },
   "/actions": { icon: History, tile: "bg-[linear-gradient(180deg,#90939b,#72757e)]" },
+  "/feedback": { icon: MessageSquareText, tile: "bg-[linear-gradient(180deg,#9b7be6,#7d5bd6)]" },
 };
 
 /** 20 px: drawn with classes only, since the sidebar is drawn on the server. */

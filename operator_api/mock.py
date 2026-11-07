@@ -13,7 +13,7 @@ import re
 import secrets
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 from urllib.parse import quote
 
 from operating.answer_gate import _sentences
@@ -416,6 +416,7 @@ class MockBackend(ActionsMixin):
         self._answers: dict[str, str] = {}      # answer_id -> reader key
         self._recent: dict[str, list[m.RecentQuestion]] = {}
         self._feedback: list[dict[str, Any]] = []
+        self._kept: dict[str, dict[str, Any]] = {}   # answer_id -> what feedback attaches
         self._lock = threading.Lock()
 
     def me(self, reader: Reader) -> m.Me:
@@ -484,6 +485,11 @@ class MockBackend(ActionsMixin):
                                  freshness=FRESH, conversation_id=conversation,
                                  latency_ms=ms(), **parts)
         answer.follow_ups = presentation.follow_ups(request.question, answer)
+        from .backend import _answer_kept
+        with self._lock:
+            self._kept[answer_id] = {"question": request.question, **_answer_kept(answer)}
+            while len(self._kept) > 200:
+                self._kept.pop(next(iter(self._kept)))
         yield "answer", answer
 
     def suggest(self, reader: Reader, q: str, limit: int) -> m.SuggestResponse:
@@ -573,7 +579,8 @@ class MockBackend(ActionsMixin):
                                                        as_of=_iso(0.5), late_total=len(late)),
                       recent_questions=recent, freshness=FRESH)
 
-    def _briefing(self, since_visit: bool) -> tuple[dict, dict[str, str]]:
+    def _briefing(self, since_visit: bool, reader: str | None = None
+                  ) -> tuple[dict, dict[str, str]]:
         """A demo briefing built by the real rules (``operating.briefing.build``) over demo
         events: top items, groups with counts, a suspect total, a PO due today, an
         acknowledged one, a partial check and a hidden count."""
@@ -616,6 +623,10 @@ class MockBackend(ActionsMixin):
                      "An open purchase order past its need date has no supplier "
                      "confirmation", days_late=2 + n,
                      state="acknowledged" if n == 0 else "open") for n in range(6)]
+        # as the proactive engine reads its inbox: an item marked by feedback is suppressed
+        from operating import feedback_signals
+        hide = feedback_signals.suppressor(None)   # PLX_FEEDBACK_DIR only, never a state
+        gaps = [g for g in gaps if hide(g["id"], reader) is None]
         history = {d: {"runs": 3, "first_found": "2026-10-30T06:00:00Z"} for d in (
             "late_or_unconfirmed_po", "orders_at_risk", "lot_attention", "vendor_no_reply")}
         detectors = {d: "complete" for d in bf.CHECK_WORDS}
@@ -634,7 +645,7 @@ class MockBackend(ActionsMixin):
         from operating import briefing as bf
         from .backend import briefing_item, briefing_model
 
-        found, labels = self._briefing(since_visit)
+        found, labels = self._briefing(since_visit, reader.key)
         top = [briefing_item(i, labels, None) for i in found["items"][:bf.TOP_ITEMS]]
         return briefing_model(found, top, digest=bf.digest_text(
             found, first_name=reader.display_name.split(" ")[0], labels=labels))
@@ -644,7 +655,7 @@ class MockBackend(ActionsMixin):
         from operating import briefing as bf
         from .backend import briefing_item
 
-        found, labels = self._briefing(since_visit)
+        found, labels = self._briefing(since_visit, reader.key)
         members = [i for i in found["items"] if i["event_type"] == event_type
                    and i["rank"] > bf.TOP_ITEMS]
         page = members[offset:offset + limit]
@@ -806,6 +817,23 @@ class MockBackend(ActionsMixin):
                             kind="record" if s.fields else "text", title=s.label,
                             text=s.quote, fields=s.fields, as_of=s.as_of,
                             text_offset=text_offset)
+
+    def answer_context(self, reader: Reader, answer_id: str) -> dict[str, Any]:
+        with self._lock:
+            if self._answers.get(answer_id) != reader.key:
+                raise KeyError("answer_not_found")
+            return dict(self._kept.get(answer_id) or {})
+
+    # the fixture's grants: reader key -> markings held (set by a test or a demo)
+    held_markings: dict[str, frozenset[str]] = {}
+
+    def feedback_grant(self, reader: Reader, handles: Sequence[str]
+                       ) -> tuple[frozenset[str], dict[str, Any]]:
+        """(the markings the fixture reader holds, every handle readable)."""
+        return frozenset(self.held_markings.get(reader.key, ())), {h: None for h in handles}
+
+    def served_version(self) -> str:
+        return "fixture"
 
     def feedback(self, reader: Reader, request: m.FeedbackRequest) -> m.FeedbackResponse:
         with self._lock:

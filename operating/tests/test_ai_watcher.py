@@ -641,6 +641,22 @@ class ReadTest(World):
         self.assertEqual([i["event_type"] for i in brief["items"]], ["watcher_attention"])
         self.assertEqual(brief["items"][0]["summary"], "PO moved")
 
+    def test_feedback_on_an_item_suppresses_it_for_whom_it_covers(self) -> None:
+        grant = {"may_read": lambda key: True, "held": ("finance",), "decide": admit}
+        ids = {i["summary"]: i["id"] for i in aw.read_items(self.watch, self.served, **grant)}
+        (self.state / "feedback").mkdir()
+        (self.state / "feedback" / "signals.json").write_text(json.dumps({"items": {
+            ids["PO moved"]: {"global": {"verdict": "wrong", "reason": "Marked wrong"},
+                              "readers": {}},
+            ids["money"]: {"global": None, "readers": {
+                "r1": {"verdict": "not_useful", "reason": "Marked not useful"}}}}}))
+
+        def shown(reader):
+            return sorted(i["summary"] for i in aw.read_items(
+                self.watch, self.served, reader=reader, **grant))
+        self.assertEqual(shown("r1"), ["computed"])
+        self.assertEqual(shown("r2"), ["computed", "money"])
+
     def test_a_reader_dismisses_or_snoozes_an_item_for_themselves_only(self) -> None:
         grant = {"may_read": lambda key: True, "held": ("finance",), "decide": admit}
         ids = {i["summary"]: i["id"] for i in aw.read_items(self.watch, self.served, **grant)}

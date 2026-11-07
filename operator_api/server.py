@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
                                 access_log=False, proxy_headers=mode == "entra",
                                 forwarded_allow_ips="127.0.0.1")
         server = uvicorn.Server(config)
+        from .feedback import start_nightly   # yesterday's feedback digest, once a night
+        start_nightly(app.state.feedback)
         owner_loop = getattr(backend, "loop", None)
         if ready is not None:
             if owner_loop is None:

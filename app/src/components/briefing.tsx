@@ -10,6 +10,7 @@ import { cn } from "@/lib/cn";
 import { formatDate, money, objectHref, plural, readable, recordLabel, safeHref } from "@/lib/format";
 import { briefingKind } from "@/lib/status";
 import type { Briefing, BriefingGroup, BriefingItem, BriefingItems, BriefingView, LatePo } from "@/lib/types";
+import { ItemFeedback, MarkedLine, WrongReason, type ItemVerdict } from "./item-feedback";
 import { AgeRing, StatusGlyph } from "./ui/glyphs";
 import { Monogram } from "./ui/monogram";
 import { StatusWord } from "./ui/status-badge";
@@ -93,6 +94,9 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
   const [aside, setAside] = useState<{ state: string; until?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
+  // marked not useful or wrong by this reader: suppressed for them from now on
+  const [marked, setMarked] = useState<ItemVerdict | null>(null);
+  const [asking, setAsking] = useState(false);   // Wrong: what is wrong, under the line
   const watcher = item.event_type === WATCHER;
   async function setState(state: "dismissed" | "snoozed" | "open") {
     setBusy(true);
@@ -106,6 +110,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
       setBusy(false);
     }
   }
+  if (marked) return <MarkedLine verdict={marked} testId={testId} />;
   if (watcher && aside) {
     return <SetAside item={item} state={aside.state} until={aside.until} onUndo={() => setState("open")} busy={busy} testId={testId} />;
   }
@@ -174,6 +179,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
                 </button>
               </span>
             )}
+            <ItemFeedback item={item} onMarked={setMarked} onWrong={() => setAsking(true)} className="lg:opacity-0 lg:group-hover:opacity-100 lg:focus-within:opacity-100" />
             <Link
               href={`${href}${href.includes("?") ? "&" : "?"}focus=chase`}
               className="relative z-10 max-w-[40%] shrink-0 truncate font-medium text-fg hover:underline max-sm:hidden lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100"
@@ -187,6 +193,7 @@ function ItemRow({ item, latePo, grouped, testId }: { item: BriefingItem; latePo
               {item.why}
             </p>
           )}
+          {asking && <WrongReason item={item} onMarked={setMarked} onCancel={() => setAsking(false)} />}
           {failed && (
             <p role="alert" className="relative z-10 mt-0.5 text-[12px] leading-4 text-fg">
               {failed}

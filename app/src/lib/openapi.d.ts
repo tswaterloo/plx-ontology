@@ -257,10 +257,83 @@ export type paths = {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Feedback List
+         * @description Your feedback, newest first; the owner and the admins see every reader's (an
+         *     admin who is not the owner reads another reader's answer as their own markings
+         *     allow).
+         */
+        get: operations["feedback_list_api_feedback_get"];
+        put?: never;
+        /**
+         * Feedback
+         * @description Rate an answer you were given: up or down, what was wrong, the claims that were
+         *     wrong and the right answer, kept as you saw the answer. The rating and its record
+         *     are one write: when either fails, neither is kept.
+         */
+        post: operations["feedback_api_feedback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/item": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         get?: never;
         put?: never;
-        /** Feedback */
-        post: operations["feedback_api_feedback_post"];
+        /**
+         * Feedback Item
+         * @description A briefing or alert item: useful, not useful or wrong. Not useful or wrong
+         *     suppresses it in your briefing (the AI watcher's and the proactive engine's).
+         */
+        post: operations["feedback_item_api_feedback_item_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/note": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Feedback Note
+         * @description A note on a page, a record, a list, the app itself or anything else: general
+         *     feedback needs only the note; a page or record is attached when sent.
+         */
+        post: operations["feedback_note_api_feedback_note_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/feedback/{feedback_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Feedback Status
+         * @description Triage (the owner and the admins): new, accepted, fixed or won't fix.
+         */
+        post: operations["feedback_status_api_feedback__feedback_id__status_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1592,15 +1665,120 @@ export type components = {
             /** Text */
             text: string;
         };
+        /** FeedbackClaim */
+        FeedbackClaim: {
+            /** Citations */
+            citations?: {
+                [key: string]: string | null;
+            }[];
+            /** I */
+            i: number;
+            /** Text */
+            text?: string | null;
+        };
+        /** FeedbackEntry */
+        FeedbackEntry: {
+            /** Answer */
+            answer?: string | null;
+            /** App Version */
+            app_version?: string | null;
+            /** At */
+            at: string;
+            /** Claims */
+            claims?: components["schemas"]["FeedbackClaim"][];
+            /** Expected */
+            expected?: string | null;
+            /** Flagged */
+            flagged?: number[];
+            /** Id */
+            id: string;
+            /** Item Id */
+            item_id?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "answer" | "alert" | "page" | "record" | "list" | "ui" | "general";
+            /** Label */
+            label?: string | null;
+            /** Mine */
+            mine: boolean;
+            /** Note */
+            note?: string | null;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /** Page */
+            page?: string | null;
+            /** Question */
+            question?: string | null;
+            /** Rating */
+            rating?: number | null;
+            /** Reader Name */
+            reader_name?: string | null;
+            /** Served Version */
+            served_version?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "accepted" | "fixed" | "wont_fix";
+            /** Verdict */
+            verdict?: ("useful" | "not_useful" | "wrong") | null;
+            /** Withheld */
+            withheld?: string[];
+        };
+        /**
+         * FeedbackList
+         * @description Your feedback; every reader's for the owner and the admins (``all_readers``).
+         */
+        FeedbackList: {
+            /** All Readers */
+            all_readers: boolean;
+            /**
+             * Counts
+             * @description Entries per status under the other filters.
+             */
+            counts: {
+                [key: string]: number;
+            };
+            /** Entries */
+            entries: components["schemas"]["FeedbackEntry"][];
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
         /** FeedbackRequest */
         FeedbackRequest: {
             /** Answer Id */
             answer_id: string;
             /**
+             * App Version
+             * @description The app's version, as the browser reports it.
+             */
+            app_version?: string | null;
+            /**
+             * Claims
+             * @description The answer's facts (their index) the person marked wrong.
+             */
+            claims?: number[] | null;
+            /**
+             * Expected
+             * @description 'The right answer is', in the person's words (a thumbs-down only).
+             */
+            expected?: string | null;
+            /**
              * Note
              * @description 'What was wrong', in the person's words.
              */
             note?: string | null;
+            /**
+             * Page
+             * @description The app path the feedback was given on.
+             */
+            page?: string | null;
             /**
              * Rating
              * @enum {integer}
@@ -1614,7 +1792,15 @@ export type components = {
             /** Ok */
             ok: boolean;
             /** Stored In */
-            stored_in: ("search.feedback" | "feedback_log")[];
+            stored_in: ("search.feedback" | "feedback_log" | "feedback_store")[];
+        };
+        /** FeedbackStatusRequest */
+        FeedbackStatusRequest: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "accepted" | "fixed" | "wont_fix";
         };
         /** Freshness */
         Freshness: {
@@ -1736,6 +1922,45 @@ export type components = {
             needs_attention: components["schemas"]["NeedsAttention"];
             /** Recent Questions */
             recent_questions: components["schemas"]["RecentQuestion"][];
+        };
+        /**
+         * ItemFeedbackRequest
+         * @description A briefing or alert item: useful, not useful or wrong.
+         */
+        ItemFeedbackRequest: {
+            /**
+             * App Version
+             * @description The app's version, as the browser reports it.
+             */
+            app_version?: string | null;
+            /** Event Type */
+            event_type?: string | null;
+            /** Item Id */
+            item_id: string;
+            /**
+             * Item Kind
+             * @default briefing
+             * @enum {string}
+             */
+            item_kind: "briefing" | "watcher" | "suggestion" | "today";
+            /** Label */
+            label?: string | null;
+            /** Note */
+            note?: string | null;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /**
+             * Page
+             * @description The app path the feedback was given on.
+             */
+            page?: string | null;
+            /**
+             * Verdict
+             * @enum {string}
+             */
+            verdict: "useful" | "not_useful" | "wrong";
         };
         /** LandedCost */
         LandedCost: {
@@ -1890,6 +2115,11 @@ export type components = {
             /** Expires At */
             expires_at?: number | null;
             /**
+             * Feedback Admin
+             * @description The owner or a feedback admin: triages every reader's feedback.
+             */
+            feedback_admin?: boolean;
+            /**
              * Principal
              * @description employee:<oid>, or the fixture principals joined.
              */
@@ -1980,6 +2210,36 @@ export type components = {
             what: string;
             /** Where It Would Live */
             where_it_would_live: string;
+        };
+        /**
+         * NoteFeedbackRequest
+         * @description A free note on a page, a record, a list, the app itself or anything else.
+         */
+        NoteFeedbackRequest: {
+            /**
+             * App Version
+             * @description The app's version, as the browser reports it.
+             */
+            app_version?: string | null;
+            /**
+             * Kind
+             * @default general
+             * @enum {string}
+             */
+            kind: "page" | "record" | "list" | "ui" | "general";
+            /** Label */
+            label?: string | null;
+            /** Note */
+            note: string;
+            /** Object Id */
+            object_id?: string | null;
+            /** Object Type */
+            object_type?: string | null;
+            /**
+             * Page
+             * @description The app path the feedback was given on.
+             */
+            page?: string | null;
         };
         /** ObjectPage */
         ObjectPage: {
@@ -3585,6 +3845,51 @@ export interface operations {
             };
         };
     };
+    feedback_list_api_feedback_get: {
+        parameters: {
+            query?: {
+                kind?: ("answer" | "alert" | "page" | "record" | "list" | "ui" | "general") | null;
+                page?: string | null;
+                status?: ("new" | "accepted" | "fixed" | "wont_fix") | null;
+                order?: "newest" | "oldest";
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     feedback_api_feedback_post: {
         parameters: {
             query?: never;
@@ -3609,6 +3914,152 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_item_api_feedback_item_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_note_api_feedback_note_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteFeedbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    feedback_status_api_feedback__feedback_id__status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                feedback_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FeedbackStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeedbackEntry"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

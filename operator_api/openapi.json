@@ -2899,6 +2899,321 @@
         "title": "Fact",
         "type": "object"
       },
+      "FeedbackClaim": {
+        "additionalProperties": false,
+        "properties": {
+          "citations": {
+            "items": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "i": {
+            "title": "I",
+            "type": "integer"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "i"
+        ],
+        "title": "FeedbackClaim",
+        "type": "object"
+      },
+      "FeedbackEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "app_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Version"
+          },
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackClaim"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected"
+          },
+          "flagged": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Flagged",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "kind": {
+            "enum": [
+              "answer",
+              "alert",
+              "page",
+              "record",
+              "list",
+              "ui",
+              "general"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "mine": {
+            "title": "Mine",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rating"
+          },
+          "reader_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Name"
+          },
+          "served_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Version"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "accepted",
+              "fixed",
+              "wont_fix"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "enum": [
+                  "useful",
+                  "not_useful",
+                  "wrong"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          },
+          "withheld": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Withheld",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "kind",
+          "status",
+          "mine"
+        ],
+        "title": "FeedbackEntry",
+        "type": "object"
+      },
+      "FeedbackList": {
+        "additionalProperties": false,
+        "description": "Your feedback; every reader's for the owner and the admins (``all_readers``).",
+        "properties": {
+          "all_readers": {
+            "title": "All Readers",
+            "type": "boolean"
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Entries per status under the other filters.",
+            "title": "Counts",
+            "type": "object"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "all_readers",
+          "total",
+          "offset",
+          "counts",
+          "entries"
+        ],
+        "title": "FeedbackList",
+        "type": "object"
+      },
       "FeedbackRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2908,6 +3223,49 @@
             "pattern": "^[A-Za-z0-9_-]+$",
             "title": "Answer Id",
             "type": "string"
+          },
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "pattern": "^[A-Za-z0-9._+-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app's version, as the browser reports it.",
+            "title": "App Version"
+          },
+          "claims": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The answer's facts (their index) the person marked wrong.",
+            "title": "Claims"
+          },
+          "expected": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "'The right answer is', in the person's words (a thumbs-down only).",
+            "title": "Expected"
           },
           "note": {
             "anyOf": [
@@ -2921,6 +3279,19 @@
             ],
             "description": "'What was wrong', in the person's words.",
             "title": "Note"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app path the feedback was given on.",
+            "title": "Page"
           },
           "rating": {
             "enum": [
@@ -2953,7 +3324,8 @@
             "items": {
               "enum": [
                 "search.feedback",
-                "feedback_log"
+                "feedback_log",
+                "feedback_store"
               ],
               "type": "string"
             },
@@ -2967,6 +3339,26 @@
           "stored_in"
         ],
         "title": "FeedbackResponse",
+        "type": "object"
+      },
+      "FeedbackStatusRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "new",
+              "accepted",
+              "fixed",
+              "wont_fix"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "FeedbackStatusRequest",
         "type": "object"
       },
       "Freshness": {
@@ -3300,6 +3692,131 @@
           "freshness"
         ],
         "title": "Home",
+        "type": "object"
+      },
+      "ItemFeedbackRequest": {
+        "additionalProperties": false,
+        "description": "A briefing or alert item: useful, not useful or wrong.",
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "pattern": "^[A-Za-z0-9._+-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app's version, as the browser reports it.",
+            "title": "App Version"
+          },
+          "event_type": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Type"
+          },
+          "item_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Item Id",
+            "type": "string"
+          },
+          "item_kind": {
+            "default": "briefing",
+            "enum": [
+              "briefing",
+              "watcher",
+              "suggestion",
+              "today"
+            ],
+            "title": "Item Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app path the feedback was given on.",
+            "title": "Page"
+          },
+          "verdict": {
+            "enum": [
+              "useful",
+              "not_useful",
+              "wrong"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "verdict"
+        ],
+        "title": "ItemFeedbackRequest",
         "type": "object"
       },
       "LandedCost": {
@@ -3796,6 +4313,11 @@
             ],
             "title": "Expires At"
           },
+          "feedback_admin": {
+            "description": "The owner or a feedback admin: triages every reader's feedback.",
+            "title": "Feedback Admin",
+            "type": "boolean"
+          },
           "principal": {
             "description": "employee:<oid>, or the fixture principals joined.",
             "title": "Principal",
@@ -4007,6 +4529,98 @@
           "where_it_would_live"
         ],
         "title": "NotFound",
+        "type": "object"
+      },
+      "NoteFeedbackRequest": {
+        "additionalProperties": false,
+        "description": "A free note on a page, a record, a list, the app itself or anything else.",
+        "properties": {
+          "app_version": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "pattern": "^[A-Za-z0-9._+-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app's version, as the browser reports it.",
+            "title": "App Version"
+          },
+          "kind": {
+            "default": "general",
+            "enum": [
+              "page",
+              "record",
+              "list",
+              "ui",
+              "general"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "note": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The app path the feedback was given on.",
+            "title": "Page"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "title": "NoteFeedbackRequest",
         "type": "object"
       },
       "ObjectPage": {
@@ -7453,7 +8067,152 @@
       }
     },
     "/api/feedback": {
+      "get": {
+        "description": "Your feedback, newest first; the owner and the admins see every reader's (an\nadmin who is not the owner reads another reader's answer as their own markings\nallow).",
+        "operationId": "feedback_list_api_feedback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "answer",
+                    "alert",
+                    "page",
+                    "record",
+                    "list",
+                    "ui",
+                    "general"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 300,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "accepted",
+                    "fixed",
+                    "wont_fix"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "newest",
+              "enum": [
+                "newest",
+                "oldest"
+              ],
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 100000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Feedback List",
+        "tags": [
+          "feedback"
+        ]
+      },
       "post": {
+        "description": "Rate an answer you were given: up or down, what was wrong, the claims that were\nwrong and the right answer, kept as you saw the answer. The rating and its record\nare one write: when either fails, neither is kept.",
         "operationId": "feedback_api_feedback_post",
         "requestBody": {
           "content": {
@@ -7508,6 +8267,193 @@
           }
         },
         "summary": "Feedback",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/feedback/item": {
+      "post": {
+        "description": "A briefing or alert item: useful, not useful or wrong. Not useful or wrong\nsuppresses it in your briefing (the AI watcher's and the proactive engine's).",
+        "operationId": "feedback_item_api_feedback_item_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemFeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Feedback Item",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/feedback/note": {
+      "post": {
+        "description": "A note on a page, a record, a list, the app itself or anything else: general\nfeedback needs only the note; a page or record is attached when sent.",
+        "operationId": "feedback_note_api_feedback_note_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteFeedbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Feedback Note",
+        "tags": [
+          "feedback"
+        ]
+      }
+    },
+    "/api/feedback/{feedback_id}/status": {
+      "post": {
+        "description": "Triage (the owner and the admins): new, accepted, fixed or won't fix.",
+        "operationId": "feedback_status_api_feedback__feedback_id__status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "feedback_id",
+            "required": true,
+            "schema": {
+              "title": "Feedback Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Feedback Status",
         "tags": [
           "feedback"
         ]

@@ -81,6 +81,12 @@ export type BriefingCheck = S["BriefingCheck"];
 export type BriefingView = "all" | "since_visit";
 export type FeedbackRequest = S["FeedbackRequest"];
 export type FeedbackResponse = S["FeedbackResponse"];
+export type ItemFeedbackRequest = S["ItemFeedbackRequest"];
+export type NoteFeedbackRequest = S["NoteFeedbackRequest"];
+export type FeedbackEntry = S["FeedbackEntry"];
+export type FeedbackList = S["FeedbackList"];
+export type FeedbackStatus = S["FeedbackStatusRequest"]["status"];
+export type FeedbackKind = FeedbackEntry["kind"];
 
 /** Events on the POST /api/ask stream (`x-sse-events` in the OpenAPI document). */
 export type AskEvent =

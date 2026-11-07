@@ -26,6 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import feedback as fb
 from . import models as m
 from .auth import SESSION_COOKIE, AuthRequired, DevAuth, Reader
 from .errors import BUSY, UserFacing
@@ -50,6 +51,7 @@ MESSAGES = {
     "invalid_request": "That request wasn't understood. Check it and try again.",
     "origin_refused": "This request came from a page the Workbench does not trust.",
     "not_served": "That part of the Workbench isn't switched on here yet.",
+    "forbidden": "Only the owner and the admins can do that.",
     "internal": "Something went wrong on our side. Try again; if it keeps happening, "
                 "quote incident {incident}.",
 }
@@ -106,6 +108,9 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                               "signed-in reader. Errors are {error:{code,message}}.",
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.backend, app.state.auth = backend, auth
+    feedback_store = getattr(backend, "feedback_store", None) \
+        or fb.FeedbackStore.for_backend(backend)
+    app.state.feedback = feedback_store
 
     # ---- errors ---------------------------------------------------------------------
 
@@ -211,7 +216,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.get("/api/me", response_model=m.Me, tags=["identity"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def me(who: Reader = Depends(reader)) -> m.Me:
-        return backend.me(who)
+        return backend.me(who).model_copy(update={"feedback_admin": fb.is_admin(who)})
 
     # ---- ask --------------------------------------------------------------------------
 
@@ -412,11 +417,86 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     @app.post("/api/feedback", response_model=m.FeedbackResponse, tags=["feedback"],
               responses={401: {"model": m.ErrorResponse}, 404: {"model": m.ErrorResponse}})
     def feedback(body: m.FeedbackRequest, who: Reader = Depends(reader)) -> Response:
+        """Rate an answer you were given: up or down, what was wrong, the claims that were
+        wrong and the right answer, kept as you saw the answer. The rating and its record
+        are one write: when either fails, neither is kept."""
         try:
-            out = backend.feedback(who, body)
+            entry, out = fb.record_answer(feedback_store, backend, who, body,
+                                          then=lambda: backend.feedback(who, body))
         except (KeyError, LookupError):
             return problem("not_found", 404)
+        out = out.model_copy(update={"feedback_id": entry["id"],
+                                     "stored_in": [*out.stored_in, "feedback_store"]})
         return JSONResponse(out.model_dump(mode="json"))
+
+    @app.post("/api/feedback/item", response_model=m.FeedbackResponse, tags=["feedback"],
+              responses={401: {"model": m.ErrorResponse}})
+    def feedback_item(body: m.ItemFeedbackRequest, who: Reader = Depends(reader)) -> Response:
+        """A briefing or alert item: useful, not useful or wrong. Not useful or wrong
+        suppresses it in your briefing (the AI watcher's and the proactive engine's)."""
+        entry = fb.record_item(feedback_store, backend, who, body)
+        return JSONResponse(m.FeedbackResponse(ok=True, feedback_id=entry["id"],
+                                               stored_in=["feedback_store"]).model_dump())
+
+    @app.post("/api/feedback/note", response_model=m.FeedbackResponse, tags=["feedback"],
+              responses={401: {"model": m.ErrorResponse}})
+    def feedback_note(body: m.NoteFeedbackRequest, who: Reader = Depends(reader)) -> Response:
+        """A note on a page, a record, a list, the app itself or anything else: general
+        feedback needs only the note; a page or record is attached when sent."""
+        entry = fb.record_note(feedback_store, backend, who, body)
+        return JSONResponse(m.FeedbackResponse(ok=True, feedback_id=entry["id"],
+                                               stored_in=["feedback_store"]).model_dump())
+
+    @app.get("/api/feedback", response_model=m.FeedbackList, tags=["feedback"],
+             responses={401: {"model": m.ErrorResponse}})
+    def feedback_list(kind: Optional[m.FeedbackKind] = None,
+                      page: Optional[str] = Query(None, max_length=300),
+                      status: Optional[m.FeedbackStatus] = None,
+                      order: Literal["newest", "oldest"] = "newest",
+                      offset: int = Query(0, ge=0, le=100_000),
+                      limit: int = Query(50, ge=1, le=200),
+                      who: Reader = Depends(reader)) -> Response:
+        """Your feedback, newest first; the owner and the admins see every reader's (an
+        admin who is not the owner reads another reader's answer as their own markings
+        allow)."""
+        admin = fb.is_admin(who)
+        rows, total, counts = feedback_store.list(
+            reader=None if admin else who.key, kind=kind, page=page, status=status,
+            oldest_first=order == "oldest", limit=limit, offset=offset)
+        viewer = fb.Viewer(backend, who, rows)
+        out = m.FeedbackList(all_readers=admin, total=total, offset=offset, counts=counts,
+                             entries=[_feedback_entry(viewer.entry(r), who, admin)
+                                      for r in rows])
+        return JSONResponse(out.model_dump(mode="json"))
+
+    @app.post("/api/feedback/{feedback_id}/status", response_model=m.FeedbackEntry,
+              tags=["feedback"], responses={401: {"model": m.ErrorResponse},
+                                            403: {"model": m.ErrorResponse},
+                                            404: {"model": m.ErrorResponse}})
+    def feedback_status(feedback_id: str, body: m.FeedbackStatusRequest,
+                        who: Reader = Depends(reader)) -> Response:
+        """Triage (the owner and the admins): new, accepted, fixed or won't fix."""
+        if not fb.is_admin(who):
+            return problem("forbidden", 403)
+        try:
+            row = feedback_store.set_status(feedback_id, body.status, who.display_name)
+        except KeyError:
+            return problem("not_found", 404)
+        shown = fb.Viewer(backend, who, [row]).entry(row)
+        return JSONResponse(_feedback_entry(shown, who, True).model_dump(mode="json"))
+
+    def _feedback_entry(row: dict, who: Reader, admin: bool) -> m.FeedbackEntry:
+        ctx = row.get("context") or {}
+        return m.FeedbackEntry(
+            id=row["id"], at=row["at"], kind=row["kind"], status=row["status"],
+            mine=row["reader"] == who.key,
+            reader_name=row.get("reader_name") if admin or row["reader"] == who.key else None,
+            **{k: row.get(k) for k in ("rating", "verdict", "note", "expected", "page",
+                                       "object_type", "object_id", "label", "item_id",
+                                       "question", "answer")},
+            claims=row.get("claims") or [], flagged=row.get("flagged") or [],
+            withheld=row.get("withheld") or [],
+            served_version=ctx.get("served_version"), app_version=ctx.get("app_version"))
 
     return app
 

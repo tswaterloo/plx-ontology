@@ -1,12 +1,13 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, CalendarCheck2, Clock3, History, Inbox, MessageCircle, MoreHorizontal, RefreshCw, Search, type LucideIcon } from "lucide-react";
+import { Bookmark, CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { getHome, getLateList } from "@/lib/api";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
+import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { stashPending } from "@/lib/pending";
@@ -177,6 +178,7 @@ const NAV: { href: string; label: string; icon: LucideIcon; late?: boolean }[] =
   { href: "/briefing", label: "Briefing", icon: CalendarCheck2 },
   { href: "/ask", label: "Ask", icon: MessageCircle },
   { href: "/actions", label: "Action log", icon: History },
+  { href: "/feedback", label: "Feedback", icon: MessageSquareText },
 ];
 
 function isOn(path: string, href: string) {
@@ -390,6 +392,7 @@ function Sidebar() {
         )}
       </nav>
       <div className="shrink-0 space-y-0.5 border-t border-border px-3 py-2.5">
+        <FeedbackButton />
         <SyncStatus home={home} />
         <UserMenu />
       </div>
@@ -421,6 +424,7 @@ function Avatar({ name, className }: { name: string; className?: string }) {
 function AccountMenuContent({ name, email }: { name: string; email?: string | null }) {
   const { signOut } = useAuth();
   const router = useRouter();
+  const feedback = useFeedbackDialog();
   return (
     <Menu.Portal>
       <Menu.Content side="top" align="start" sideOffset={6} collisionPadding={8} className="z-50 w-64 rounded-xl bg-raised p-1.5 shadow-pop">
@@ -434,6 +438,12 @@ function AccountMenuContent({ name, email }: { name: string; email?: string | nu
           <ThemeToggle />
         </div>
         <Menu.Separator className="mx-2 my-1 h-px bg-border" />
+        <Menu.Item onSelect={feedback.open} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
+          Give feedback
+        </Menu.Item>
+        <Menu.Item onSelect={() => router.push("/feedback")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
+          Feedback
+        </Menu.Item>
         <Menu.Item
           onSelect={async () => {
             await signOut();
@@ -474,7 +484,7 @@ function TabBar() {
   const path = usePathname();
   const home = useHome();
   const late = lateOf(home);
-  const tabs = NAV.filter((n) => n.href !== "/actions");
+  const tabs = NAV.filter((n) => n.href !== "/actions" && n.href !== "/feedback");
   return (
     <nav
       aria-label="Main"
@@ -543,7 +553,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-const TOOLBAR_PAGES: string[] = ["/late", "/briefing", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/actions"];
+const TOOLBAR_PAGES: string[] = ["/late", "/briefing", "/ask", "/po", "/ao", "/so", "/customer", "/supplier", "/object", "/source", "/actions", "/feedback"];
 
 function ShellSkeleton() {
   return (
@@ -561,6 +571,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { state, refresh } = useAuth();
   return (
     <CommandPaletteProvider>
+      <FeedbackProvider>
       <div className="flex h-dvh overflow-hidden bg-bg">
         <a
           href="#main"
@@ -581,6 +592,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
         <TabBar />
       </div>
+      </FeedbackProvider>
     </CommandPaletteProvider>
   );
 }

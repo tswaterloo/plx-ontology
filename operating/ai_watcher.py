@@ -1670,6 +1670,10 @@ def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
                 states = _reader_states(conn, reader)
                 day = today or _now().date()
                 rows = [r for r in rows if not set_aside(states.get(r["item_id"]), day)]
+            # people's feedback on an item (not useful, wrong): suppressed for whom it covers
+            from . import feedback_signals
+            hide = feedback_signals.suppressor(_state_of(store))
+            rows = [r for r in rows if hide(r["item_id"], reader) is None]
             since_run = _code_since(conn)
         seen: dict[str, bool] = {}
 
@@ -1800,6 +1804,8 @@ def stamp(store: Path) -> tuple | None:
             out.append((found.st_mtime_ns, found.st_size))
         except OSError:
             out.append(None)
+    from . import feedback_signals
+    out.append(feedback_signals.stamp(state_dir))   # an item marked by feedback
     return tuple(out)
 
 

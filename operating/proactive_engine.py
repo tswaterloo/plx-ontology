@@ -3555,6 +3555,9 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     unknown = set(states) - set(STATES)
     if unknown:
         raise ValueError("gap_state_unknown")
+    from . import feedback_signals
+    # people's feedback on a gap (not useful, wrong): suppressed for whom it covers
+    hide = feedback_signals.suppressor(feedback_signals.state_of(store))
     with closing(_attach(path, Path(store))) as conn:
         aud, marks = _reader_view(conn, may_read, held)
         params = {"aud": aud, "marks": marks}
@@ -3629,7 +3632,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             for row, citations in _visible(conn, rows, params, decide):
                 state = ("resolved" if row["state"] == "resolved"
                          else "acknowledged" if row["acked"] else "open")
-                if state not in states:
+                if state not in states or hide(row["gap_id"], reader) is not None:
                     continue
                 follow_up = json.loads(row["follow_up"])
                 order = follow_up.pop(_ORDER, None)

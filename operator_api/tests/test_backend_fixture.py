@@ -151,7 +151,10 @@ class FixtureBackend(unittest.TestCase):
         fb = self.ops.client.post("/api/feedback", json={
             "answer_id": answer["answer_id"], "rating": -1, "note": "wrong date"})
         self.assertEqual(fb.status_code, 200, fb.text)
-        self.assertEqual(fb.json()["stored_in"], ["feedback_log"])
+        self.assertEqual(fb.json()["stored_in"], ["feedback_log", "feedback_store"])
+        kept = self.ops.client.get("/api/feedback").json()["entries"][0]
+        self.assertEqual((kept["question"], kept["note"]), (answer["question"], "wrong date"))
+        self.assertTrue(kept["claims"])               # the answer's claims, attached
         logged = (self.tmp / "ops-app" / "feedback.jsonl").read_text().splitlines()
         self.assertEqual(json.loads(logged[-1])["note"], "wrong date")
         self.assertEqual(oct((self.tmp / "ops-app" / "feedback.jsonl").stat().st_mode & 0o777),

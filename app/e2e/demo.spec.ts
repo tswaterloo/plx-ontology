@@ -165,9 +165,9 @@ test("demo walkthrough", async ({ page }, info) => {
   // 6. Feedback on the first answer: thumbs down with a reason, stored by the API.
   await card.getByRole("button", { name: "No, something was wrong" }).click();
   await card.getByRole("button", { name: "Out of date" }).click();
-  await card.getByLabel("Tell us more").fill("ship date changed yesterday");
+  await card.getByLabel("What was wrong, or what did you expect?").fill("ship date changed yesterday");
   const fbRes = page.waitForResponse((r) => r.url().endsWith("/api/feedback"));
-  await card.getByRole("button", { name: "Send feedback" }).click();
+  await card.getByRole("button", { name: "Submit feedback" }).click();
   const fb = await fbRes;
   expect(fb.status()).toBe(200);
   expect(fb.request().postDataJSON()).toMatchObject({ rating: -1, note: "[Out of date] ship date changed yesterday" });

@@ -5,6 +5,7 @@ import { useId, useState } from "react";
 import { sendFeedback } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
+import type { FeedbackRequest } from "@/lib/types";
 
 const REASONS = ["Wrong number", "Wrong item or order", "Missing a source", "Out of date", "Didn't answer the question"];
 
@@ -16,21 +17,36 @@ export function feedbackNote(reasons: string[], note: string): string | undefine
   return parts.length ? parts.join(" ").slice(0, 2000) : undefined;
 }
 
-export function Feedback({ answerId }: { answerId: string }) {
+/** The thumbs-down body: reasons and words, the claims marked wrong, the right answer. */
+export function downBody(answerId: string, reasons: string[], note: string, claims: number[], expected: string): FeedbackRequest {
+  const body: FeedbackRequest = { answer_id: answerId, rating: -1, note: feedbackNote(reasons, note) };
+  if (claims.length) body.claims = [...claims].sort((a, b) => a - b);
+  if (expected.trim()) body.expected = expected.trim().slice(0, 2000);
+  return body;
+}
+
+/**
+ * Was this answer right: a thumbs up, or a thumbs down that opens what was wrong (reasons,
+ * the claims that were wrong, what you expected and, optionally, the right answer). The server
+ * attaches the question, the answer and its citations; the right answer becomes an eval
+ * candidate for review.
+ */
+export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: string[] }) {
   const [state, setState] = useState<State>("idle");
   const [reasons, setReasons] = useState<string[]>([]);
   const [note, setNote] = useState("");
+  const [claims, setClaims] = useState<number[]>([]);
+  const [expected, setExpected] = useState("");
   const [error, setError] = useState<string | null>(null);
   const noteId = useId();
+  const expectedId = useId();
 
   async function submit(rating: 1 | -1) {
     setError(null);
     const prev = state;
     setState("sending");
     try {
-      await sendFeedback(
-        rating === -1 ? { answer_id: answerId, rating, note: feedbackNote(reasons, note) } : { answer_id: answerId, rating },
-      );
+      await sendFeedback(rating === -1 ? downBody(answerId, reasons, note, claims, expected) : { answer_id: answerId, rating });
       setState(rating === 1 ? "up-sent" : "down-sent");
     } catch (e) {
       setError(plainError(e));
@@ -97,9 +113,30 @@ export function Feedback({ answerId }: { answerId: string }) {
               })}
             </div>
           </fieldset>
+          {facts.length > 0 && (
+            <fieldset data-testid="feedback-claims">
+              <legend className="mb-2 text-[13px] font-medium">Which part? (optional)</legend>
+              <div className="space-y-0.5">
+                {facts.slice(0, 12).map((f, i) => {
+                  const on = claims.includes(i);
+                  return (
+                    <label key={i} className="flex cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 text-[12px] leading-[17px] hover:bg-hover">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() => setClaims(on ? claims.filter((x) => x !== i) : [...claims, i])}
+                        className="mt-px size-3.5 shrink-0 accent-[var(--accent)]"
+                      />
+                      <span className="line-clamp-2">{f}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
+          )}
           <div>
             <label htmlFor={noteId} className="sr-only">
-              Tell us more
+              What was wrong, or what did you expect?
             </label>
             <textarea
               id={noteId}
@@ -107,8 +144,21 @@ export function Feedback({ answerId }: { answerId: string }) {
               onChange={(e) => setNote(e.target.value)}
               rows={2}
               maxLength={2000}
-              placeholder="What should it have said? (optional)"
+              placeholder="What was wrong, or what did you expect? (optional)"
               className="w-full resize-none rounded-lg bg-surface px-3 py-2 text-[13px] leading-5 placeholder:text-faint focus:outline-2 focus:outline-ring"
+            />
+          </div>
+          <div>
+            <label htmlFor={expectedId} className="mb-1.5 block text-[12px] text-muted">
+              The right answer is… <span className="text-faint">(optional)</span>
+            </label>
+            <input
+              id={expectedId}
+              value={expected}
+              onChange={(e) => setExpected(e.target.value)}
+              maxLength={2000}
+              placeholder="e.g. 12 Nov, or $4,820"
+              className="h-8 w-full rounded-lg bg-surface px-3 text-[13px] placeholder:text-faint focus:outline-2 focus:outline-ring"
             />
           </div>
           <div className="flex items-center justify-end gap-1">
@@ -117,10 +167,10 @@ export function Feedback({ answerId }: { answerId: string }) {
             </button>
             <button
               type="submit"
-              disabled={reasons.length === 0 && note.trim() === ""}
+              disabled={reasons.length === 0 && note.trim() === "" && claims.length === 0 && expected.trim() === ""}
               className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg hover:brightness-110 disabled:opacity-50 cursor-pointer disabled:cursor-default"
             >
-              Send feedback
+              Submit feedback
             </button>
           </div>
         </form>
