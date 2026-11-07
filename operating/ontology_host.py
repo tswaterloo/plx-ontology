@@ -177,6 +177,75 @@ def tool_table(tools: OntologyTools, runtime: Any, *,
     return table
 
 
+# How long ``prime_unbound`` waits for store facts read in the background before it
+# leaves them to the first call that needs them (which then waits for that same read).
+UNBOUND_FACTS_WAIT_SECONDS = 1800.0
+
+
+def prime_unbound(store_path: str | Path, *, tenant: str = "unbound",
+                  wait: float = UNBOUND_FACTS_WAIT_SECONDS) -> dict[str, Any]:
+    """Every reader-independent preparation a host's first call otherwise makes, done
+    before the host knows its reader (a warm host, ``mcp_server._bind_warm_ticket``): the
+    compiled schema; the served store's facts (``TraverseTools.prime``: its audiences,
+    gated handles, event types and document cell spans) and audience keys; the row-delta
+    overlay's layers (their owned ids, audience keys and which layer serves each id) and
+    each layer's store facts. Facts kept beside a store file are loaded; a store file
+    whose facts are not kept yet has them read now by worker processes and kept for
+    every later process (one read per file across processes), and this waits for that
+    read at most ``wait`` seconds. Everything is kept per process by file identity, so the
+    session the host serves next finds it; nothing here names, grants or reads for a
+    reader (the policy grants nothing; no live source is asked). Never raises: what
+    failed is read by the call that needs it, as before. Returns what was primed
+    (counts and states only)."""
+    from . import delta_overlay
+    from .ontology_tools_evidence import STORE_DOCUMENT_FAMILIES
+    from .ontology_tools_traverse import TraverseTools, kept_audience_keys
+    from .pg import ontology_reader
+
+    out: dict[str, Any] = {"store": "absent", "layers": 0, "layers_kept": 0}
+    if store_path is None or not Path(store_path).is_file():
+        return out
+    families = STORE_DOCUMENT_FAMILIES
+    reader = overlay = None
+    try:
+        schema = default_schema()
+        if ontology_reader.serves(store_path):
+            out["store"] = "postgres"   # its reader holds its facts itself: per process
+            return out
+        reader = StoreReader.open(store_path)
+        tools = OntologyTools(reader, ReadPolicy(tenant, {}), schema=schema)
+        kept_audience_keys(reader)
+        traversals = [TraverseTools(tools)]
+        traversals[0].prime_lazily(cell_families=families)
+        pointer = delta_overlay.pointer_path(store_path)
+        stamp = delta_overlay.pointer_stamp(pointer)
+        overlay = None if stamp is None else delta_overlay.open_overlay(pointer, stamp, tools)
+        for layer in overlay.layers if overlay is not None else ():
+            traversals.append(layer.traverse)   # primes it (kept, or read in the background)
+        out["layers"] = len(traversals) - 1
+        end = time.monotonic() + wait
+        loaded = []
+        for traverse in traversals:
+            pending = getattr(traverse, "_pending", None)
+            if pending is not None:
+                pending[2].wait(max(0.0, end - time.monotonic()))
+            # the facts into this process's kept facts (``_load_facts``): True once kept
+            loaded.append(traverse.prime_lazily(cell_families=families))
+        out["store"] = "kept" if loaded[0] else "unprimed"
+        out["layers_kept"] = sum(loaded[1:])
+    except Exception as error:  # noqa: BLE001 - a warm-up never fails a host
+        out["error"] = type(error).__name__
+    finally:
+        if overlay is not None:
+            overlay.close()
+        if reader is not None:
+            try:
+                reader.conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
 def people_directory_of(runtime: Any) -> Any:
     """The people directory provider of a runtime (``operating.people_graph.directory_of``:
     its people guard and mail capture, read anew per call), or None for a runtime with no

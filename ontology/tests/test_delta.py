@@ -105,6 +105,11 @@ class DeltaEquivalenceTests(DeltaCase):
             digest = conn.execute("SELECT value FROM store_meta WHERE key = "
                                   "'content_digest'").fetchone()[0]
         self.assertEqual(pointer["base_digest"], digest)
+        # the layer's store facts are kept beside it as it is published: no host reads
+        # them on a reader's first plx.around (operating.ontology_tools_traverse)
+        from operating import ontology_tools_traverse as traverse
+        self.assertIs(report["layer_facts"], True)
+        self.assertTrue(traverse.facts_path(report["store"]).is_file())
         again = self.cycle(base)
         self.assertEqual(again["layer"], "none: nothing new")
         self.assertEqual(json.loads((self.root / "delta" / delta.POINTER).read_text()),

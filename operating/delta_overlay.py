@@ -108,10 +108,19 @@ class Layer:
 
     @property
     def traverse(self) -> Any:
-        """Its plx.around/plx.timeline (``TraverseTools`` over its tools)."""
+        """Its plx.around/plx.timeline (``TraverseTools`` over its tools), with the layer's
+        store facts (``TraverseTools.prime``: every audience, gated handle and event type
+        the layer holds, read for every reader alike) loaded from beside the layer file
+        when kept there (the delta cycle keeps them as it publishes the layer, a warm
+        host when it first opens it), else read off the request path by worker
+        processes and kept for every later process: a layer of millions of rows took a
+        new host's first plx.around five minutes on one thread."""
         if self._traverse is None:
+            from .ontology_tools_evidence import STORE_DOCUMENT_FAMILIES
             from .ontology_tools_traverse import TraverseTools
-            self._traverse = TraverseTools(self.tools)
+            traverse = TraverseTools(self.tools)
+            traverse.prime_lazily(cell_families=STORE_DOCUMENT_FAMILIES)
+            self._traverse = traverse
         return self._traverse
 
     def readable(self, actor: Any, object_ids: Any) -> set[str]:

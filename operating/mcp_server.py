@@ -4613,17 +4613,46 @@ def playbook_session_tools(runtime: CaseRuntime, actor: Actor, state_dir: Path,
     return playbook_tools.PlaybookTools(store, ontology_tools.load_contracts(), forms)
 
 
+def prime_unbound(args: argparse.Namespace) -> dict[str, Any]:
+    """What this host's first call would read for every reader alike, read before it has
+    a reader: the store and delta-layer facts (``ontology_host.prime_unbound``), the
+    SharePoint capture's file names and identifier index (``case_tools_host.
+    warm_sharepoint``) and the captured attachment mailboxes (``case_tools_host.
+    prime_attachment_mailboxes``), each kept per process (and the facts beside their store
+    files for every process). Only the command line's paths: no ticket, identity, grant
+    or session state exists yet. Never raises."""
+    primed: dict[str, Any] = {}
+    try:
+        sharepoint = getattr(args, "sharepoint_capture_dir", None)
+        mail = getattr(args, "mail_capture_dir", None)
+        store = getattr(args, "ontology_store", None)
+        if sharepoint is not None:
+            case_tools_host.warm_sharepoint(_resolved(sharepoint))
+        if mail is not None:
+            case_tools_host.prime_attachment_mailboxes(_resolved(mail))
+        if store is not None:
+            from operating import ontology_host
+            primed = ontology_host.prime_unbound(
+                store, tenant=getattr(args, "tenant", None) or "unbound")
+    except Exception as error:  # noqa: BLE001 - a warm-up never fails a host
+        primed["error"] = type(error).__name__
+    return primed
+
+
 def _bind_warm_ticket(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """A warm host (``host_peers.TICKET_FILE_ENV`` set, its ticket variable empty): the
-    identity-independent start-up runs now (the search models load), then the host waits
-    for its one session's ticket, which only then names its reader; nothing before this
-    reads, grants or serves anything. A host given its ticket at start is unchanged."""
+    identity-independent start-up runs now (the search models load, and ``prime_unbound``
+    on its own thread while the host waits), then the host waits for its one session's
+    ticket, which only then names its reader; nothing before this reads for, grants or
+    serves anyone. A host given its ticket at start is unchanged."""
     path = os.environ.get(host_peers.TICKET_FILE_ENV)
     name = args.session_ticket_env
     if not path or name is None or os.environ.get(name):
         return
     from operating.search import plug as search_plug
     search_plug.warm_if_enabled()
+    threading.Thread(target=prime_unbound, args=(args,), name="host-prime",
+                     daemon=True).start()
     try:
         os.environ[name] = host_peers.await_ticket(
             Path(path), seconds=host_peers.TICKET_WAIT_SECONDS)

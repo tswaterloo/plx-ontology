@@ -1512,6 +1512,9 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     state.add(source, keys)
                 state.timed_out(timed)
             prune(delta_dir, keep={Path(item["store"]) for item in layers})
+            report["layer_facts"] = keep_layer_facts(layer["store"],
+                                                   workers=report.get("workers") or 1)
+            t = lap("layer_facts", t)
             if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
                 # the same layer into the Postgres ontology, over the generation it holds
                 # (``operating.pg.ontology_delta``), with any listed layer an earlier cycle
@@ -1868,6 +1871,21 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
     temp = delta_dir / f".{POINTER}.tmp"
     temp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
     os.replace(temp, delta_dir / POINTER)
+
+
+def keep_layer_facts(store: str | Path, *, workers: int = 1) -> bool:
+    """Read the new layer's store facts (``operating.ontology_tools_traverse.
+    prime_store_facts``: the audiences, gated handles and event types every reader's
+    plx.around / plx.timeline of a layer object starts from) and keep them beside it, so
+    no host reads them on a reader's first call (five minutes on one thread for a layer of
+    millions of rows). A host that opened the layer first reads them once for all (one
+    read per file across processes). Never fails the cycle: False when nothing was kept."""
+    try:
+        from operating.ontology_tools_evidence import STORE_DOCUMENT_FAMILIES
+        from operating.ontology_tools_traverse import prime_store_facts
+        return prime_store_facts(store, STORE_DOCUMENT_FAMILIES, workers=max(1, workers))
+    except Exception:  # noqa: BLE001 - hosts read them as they open the layer
+        return False
 
 
 def _derivation_code() -> str | None:

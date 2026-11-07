@@ -2212,8 +2212,10 @@ def _prune_facts(directory: Path) -> None:
                 for e in entries if not e.name.startswith(FACTS_PREFIX)
                 and e.is_file(follow_symlinks=False)}
         for entry in entries:
-            if re.fullmatch(re.escape(FACTS_PREFIX) + r"\d+-\d+\.json", entry.name) \
-                    and entry.name not in held:
+            name = entry.name[:-len(".lock")] + ".json" \
+                if entry.name.endswith(".lock") else entry.name
+            if re.fullmatch(re.escape(FACTS_PREFIX) + r"\d+-\d+\.json", name) \
+                    and name not in held:
                 os.unlink(entry.path)
     except OSError:
         pass
@@ -2333,21 +2335,27 @@ def _decode_facts(encoded: Any) -> dict[Any, Any] | None:
 def _load_facts(store: str, identity: Mapping[str, Any]) -> dict[Any, Any] | None:
     """The facts kept for ``store`` with this ``identity`` (a fresh dict each call: a
     reader adds facts to it), decoded once per process per identity: every reader's host
-    in a serving process opens the same generation."""
+    in a serving process opens the same generation and the same delta layers. The last
+    ``_LOADED_KEPT`` store files are held (the served generation and its layers: keeping
+    one alone made a generation and a layer evict each other on every call)."""
     key = (store, json.dumps(dict(identity), sort_keys=True))
     with _LOADED_LOCK:
-        held = _LOADED.get(key)
+        held = _LOADED.pop(key, None)
+        if held is not None:
+            _LOADED[key] = held   # most recently used last
     if held is None:
         held = _read_facts(store, identity)
         if held is not None:
             with _LOADED_LOCK:
-                _LOADED.clear()   # one served generation at a time
                 _LOADED[key] = held
+                while len(_LOADED) > _LOADED_KEPT:
+                    _LOADED.pop(next(iter(_LOADED)))
     return None if held is None else dict(held)
 
 
 _LOADED: dict[tuple[str, str], dict[Any, Any]] = {}
 _LOADED_LOCK = threading.Lock()
+_LOADED_KEPT = 8
 
 
 def kept_audience_keys(store: "StoreReader") -> bool:
@@ -2541,6 +2549,38 @@ def prime_store_facts(store: str | Path, cell_families: Sequence[str] = (), *,
     if kept is None:
         return False
     keys = _fact_keys(cell_families)
+    with _facts_lock(kept[0]):
+        # one read per store file across processes: every host that opens a new layer
+        # (and the delta cycle that published it) asks at once; the first reads, the
+        # others find its facts kept when they get the lock
+        held = _read_facts(*kept)
+        if held is not None and set(keys) <= set(held):
+            for other in also:
+                share_facts(kept[0], other)
+            return True
+        return _prime_store_facts(store, kept, keys, workers=workers, also=also)
+
+
+@contextmanager
+def _facts_lock(store: str) -> Iterator[None]:
+    """An exclusive lock on reading ``store``'s facts, shared by every process (a lock file
+    beside the kept facts); a directory this process may not write locks nothing."""
+    import fcntl
+    try:
+        lock = facts_path(store).with_suffix(".lock")
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _prime_store_facts(store: str, kept: tuple[str, Mapping[str, Any]], keys: list[Any], *,
+                       workers: int, also: Iterable[str | Path]) -> bool:
     try:
         if workers > 1:
             import concurrent.futures as futures
