@@ -1053,8 +1053,12 @@ CORE_SUITE = "core"
 OPEN_SUITE = "open"
 # ``blind``: the blind mined family (``scripts.eval_blind_mined``), keyed and split there.
 BLIND_SUITE = "blind"
+# ``graph``: the graph-walk family (``scripts.eval_graph_walks``), keyed and split there; a
+# run of it samples ``GRAPH_SAMPLE`` items stratified by hops and system pair by default.
+GRAPH_SUITE = "graph"
+GRAPH_SAMPLE = 60
 SUITES = (CORE_SUITE, "ceo", "wide", "proactive", "roles", OPEN_SUITE, "inventory",
-          BLIND_SUITE)
+          BLIND_SUITE, GRAPH_SUITE)
 PER_CARD_SUITES = frozenset({"wide", "proactive", "roles", OPEN_SUITE, "inventory"})
 
 
@@ -1246,6 +1250,8 @@ def grade(pairs: Sequence[tuple[Mapping, Mapping]], out: Path, reader: str,
         path = out / item["id"] / "p0-r0.transcript.json"
         base = {"card": _card_of(key), "item_id": item["id"], "split": item["split"],
                 "family": key["family"], "suite": _suite(key)}
+        if key.get("strata"):
+            base["strata"] = {k: key["strata"].get(k) for k in ("hops", "systems", "answer")}
         if not path.is_file():
             rows.append({**base, "outcome": "not_run", "codes": []})
             continue
@@ -1342,11 +1348,31 @@ def report(rows: Sequence[Mapping[str, Any]], *, reader: str, notes: Sequence[An
             "per_card": {c: live_ops.summary([r for r in open_scored if r.get("card") == c])
                         for c in cards},
             "routing": routing(ran),
+            **({"strata": strata_report(scored)} if any(r.get("strata") for r in scored)
+               else {}),
             "sealed": sum(sealed(r) for r in rows),
             "cards": [{k: r.get(k) for k in ("card", "item_id", "split", "family", "outcome",
                                              "justified", "codes", "answer_ms", "routed",
                                              "suite")}
                       for r in shown], "notes": list(notes)}
+
+
+def strata_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Outcome totals (both splits: counts only, never an item) per hop count, system pair
+    and answer kind of the rows whose key has ``strata`` (the graph family), and the
+    median seconds per question."""
+    import statistics
+    mine = [r for r in rows if r.get("strata")]
+    out: dict[str, Any] = {}
+    for name in ("hops", "systems", "answer"):
+        values = sorted({str(r["strata"].get(name)) for r in mine})
+        out[f"by_{name}"] = {v: live_ops.summary([r for r in mine
+                                                  if str(r["strata"].get(name)) == v])
+                             for v in values}
+    times = [r["answer_ms"] / 1000 for r in mine if isinstance(r.get("answer_ms"), (int, float))]
+    out["seconds"] = {"median": round(statistics.median(times), 1) if times else None,
+                      "max": round(max(times), 1) if times else None, "timed": len(times)}
+    return out
 
 
 def sealed(row: Mapping[str, Any]) -> bool:
@@ -1703,6 +1729,10 @@ def main(argv: Sequence[str] | None = None, *, agent: Any = None,
         sub.add_argument("--suite", choices=("all", *SUITES), default="all",
                          help="only the cards of one suite (the core set, or the CEO set)")
         sub.add_argument("--split", choices=("dev", "held_out", "both"), default="both")
+        sub.add_argument("--sample", type=int, default=None,
+                         help="run N items drawn stratified by hops and system pair "
+                              f"(default {GRAPH_SAMPLE} for --suite {GRAPH_SUITE}; 0: all)")
+        sub.add_argument("--sample-seed", default="1")
         sub.add_argument("--forms", choices=("recorded", "current"), default="recorded",
                          help="grade with each key's own words or today's (FORMS)")
         if name == "rescore":
@@ -1767,6 +1797,12 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str],
             if unknown:
                 raise ValueError("items_unknown:" + ",".join(sorted(unknown))[:200])
             pairs = [p for p in pairs if p[0]["id"] in picked]
+        sample = args.sample if args.sample is not None else (
+            GRAPH_SAMPLE if args.suite == GRAPH_SUITE and not picked else 0)
+        if sample:
+            from evals import graph_walks
+            chosen = set(graph_walks.stratified(pairs, sample, args.sample_seed))
+            pairs = [p for p in pairs if p[0]["id"] in chosen]
         out_dev = args.work_dir.resolve() / "dev"
         # Held-out transcripts stay under the held-out root, one directory per work dir.
         run_id = hashlib.sha256(str(args.work_dir.resolve()).encode()).hexdigest()[:16]
