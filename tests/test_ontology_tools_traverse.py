@@ -365,9 +365,17 @@ def ids(result):
 
 def strip(result):
     """A result without per-call handles and without whether it is whole (hidden rows
-    make an answer incomplete, never different), for comparing two stores."""
+    make an answer incomplete, never different), for comparing two stores. exact_count
+    is part of whether it is whole: it is the completeness total, stated only when the
+    answer is complete, so it adds nothing to what complete and total already say."""
     out = copy.deepcopy(result)
     out.pop("set", None)
+    if "exact_count" in out:
+        # Never stated beside a lower bound, and always the listed members' number.
+        assert out["completeness"].get("complete") is True, out["completeness"]
+        assert out["exact_count"] == out["completeness"].get("total") \
+            == len(out["objects"]), out
+        out.pop("exact_count")
     for key in ("next_cursor", "complete", "reason", "total"):
         out.get("completeness", {}).pop(key, None)
     out.pop("gaps", None)
@@ -595,6 +603,23 @@ class AroundTests(unittest.TestCase):
         out = ok(self, "plx.around", t.call("plx.around", dict(PARTY_ORDERS, filters=[
             {"property": "amount", "op": "present"}]), OPS))
         self.assertEqual(ids(out), [])
+
+    def test_filter_on_a_property_some_sources_lack_is_not_an_exact_count(self):
+        domain = copy.deepcopy(DOMAIN)
+        for typ in domain["object_types"]:
+            if typ["id"] == "Order":
+                for prop in typ["properties"]:
+                    if prop["name"] == "status":
+                        prop["sources"] = [{"binding": "portal.order", "path": "status"}]
+        schema = ot.SchemaView.from_documents([domain])
+        store = build()
+        store.conn.execute("UPDATE store_meta SET value = ? WHERE key = 'schema_digest'",
+                           ("sha256:" + schema.digest_hex,))
+        out = ok(self, "plx.around", tools(store, schema=schema)[0].call(
+            "plx.around", dict(PARTY_ORDERS, filters=[
+                {"property": "status", "op": "eq", "value": "open"}]), FULL))
+        self.assertIn("filter_not_sourced", {g["reason"] for g in out["gaps"]})
+        self.assertNotIn("exact_count", out)
 
     def test_untrusted_text_envelope_for_mail(self):
         t, _ = tools()
@@ -964,6 +989,9 @@ class DeniedReaderTests(unittest.TestCase):
                           ops["completeness"]["reason"]),
                          (False, None, "withheld_by_permission"))
         self.assertIn("withheld_by_permission", [g["reason"] for g in ops["gaps"]])
+        # A trimmed listing states no exact count; the whole one does.
+        self.assertNotIn("exact_count", ops)
+        self.assertEqual(full.get("exact_count"), 4)
         # A further hop from the trimmed set states no total, not even one it could
         # count exactly over what it reached; from the whole set it stays exact.
         to_party = {"path": [{"link_type": "Order.placed_by", "direction": "forward"}]}

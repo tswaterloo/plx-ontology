@@ -2208,6 +2208,7 @@ def _query_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
         call = {"set": result.get("set"), "measure": measured["measure"], **common}
         got = {key: measured[key] for key in ("groups", "completeness", "partial",
                                                "refused", "withheld") if key in measured}
+        got["meta"] = measured.get("meta") or result.get("meta")
         if measured.get("inputs_citations_kept") is not None:
             got["partial"] = True   # citations cut to fit: its records are not all listed
         _aggregate_counts("plx.aggregate", call, {**got, "gaps": gaps}, into)
@@ -2249,7 +2250,7 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
              and not {"refused", "withheld"} & set(result)
              and (done.get("complete") is True
                   or done.get("reason") in GROUP_PAGE_REASONS))
-    now = "as_known_at" not in arguments
+    now = known_now(arguments, result)
     # A count of a set's members (no property, no grouping) cites no value rows: its
     # records are those the complete listing that issued the set showed (``_note_listing``).
     listed = (into.get("listings") or {}).get(arguments.get("set")) \
@@ -2264,9 +2265,14 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
         if not records and not measure.get("property") and not arguments.get("group_by") \
                 and isinstance(cited, list) and all(isinstance(h, str) for h in cited):
             records = list(cited)
-        if not records and listed is not None and group.get("key") == {} \
-                and to_decimal(group.get("value")) == len(listed):
-            records = list(listed)
+        if listed is not None and group.get("key") == {}:
+            if to_decimal(group.get("value")) == len(listed):
+                records = records or list(listed)
+            else:
+                # A count of the same set that does not match its complete listing: the
+                # two disagree, so neither is exact (fail closed, ``_contradict_listing``).
+                _contradict_listing(arguments.get("set"), into)
+                listed = None
         value = to_decimal(group.get("value"))
         unique = len(records) == len(set(records))
         if op == "count_distinct":
@@ -2278,6 +2284,17 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
         into["counts"].append({"value": group.get("value"), "records": records,
                                "distinct": distinct, "complete": whole and distinct})
     return into
+
+
+def _contradict_listing(handle: Any, into: dict[str, Any]) -> None:
+    """A set whose complete listing a count of its members contradicts: the listing's
+    own count entry (``_note_listing``) becomes a lower bound and the set's listing is
+    dropped, so no later count of it binds to those records either."""
+    (into.get("listings") or {}).pop(handle, None)
+    for entry in into["counts"]:
+        if entry.get("listing") == handle:
+            entry["complete"] = False
+            entry["distinct"] = False
 
 
 def _note_distinct(group: Mapping[str, Any], value: Decimal | None, records: list[Any],
@@ -2305,41 +2322,90 @@ MAX_LISTINGS = 32   # complete set listings one session keeps for count claims (
 
 
 def _note_listing(arguments: Any, result: Mapping[str, Any], into: dict[str, Any]) -> None:
-    """A ``plx.around`` answer that lists every member of the set it issues, as known now:
-    the set handle and each member's record (its display value's citation), kept so a
-    ``plx.aggregate`` count of that set binds to those records. Kept only when the answer
-    is complete on its first page (no cursor, not truncated, every member listed once,
-    ``total`` equal to the listed count) with no gap and no withheld member counted, and
-    names no ``as_known_at``; anything else keeps nothing (the count stays a lower bound)."""
+    """A ``plx.around`` answer that lists every member of the set it issues, as known now
+    (``listing_count``): a complete count entry of those records, so a count claim citing
+    them binds exactly without a second call, and the set handle with its records, so a
+    ``plx.aggregate`` count of that set binds to them too. Anything else keeps nothing
+    (the count stays a lower bound)."""
+    records = listing_count(arguments, result)
+    if records is None:
+        return
+    into["counts"].append({"value": str(len(records)), "records": list(records),
+                           "distinct": True, "complete": True, "listing": result["set"]})
+    listings = into.setdefault("listings", {})
+    listings.pop(result["set"], None)
+    listings[result["set"]] = records
+    while len(listings) > MAX_LISTINGS:
+        listings.pop(next(iter(listings)))
+
+def known_now(arguments: Any, result: Mapping[str, Any]) -> bool:
+    """Whether a tool result counts what is known now: the call names no ``as_known_at``,
+    or the moment it names (as the result states it, ``meta.as_known_at``) is at or after
+    every capture the result read (``meta.freshness``, each source's ``captured_at``, all
+    listed): nothing was captured since, so what was known then is what is known now.
+    Any doubt (no moment, no capture time, a capture list cut short): not now."""
+    if not isinstance(arguments, Mapping) or "as_known_at" not in arguments:
+        return True
+    meta = result.get("meta") if isinstance(result, Mapping) else None
+    coverage = result.get("freshness_coverage") if isinstance(result, Mapping) else None
+    if not isinstance(meta, Mapping) or (isinstance(coverage, Mapping)
+                                         and coverage.get("truncated") is not False):
+        return False
+    at = _instant(meta.get("as_known_at"))
+    freshness = meta.get("freshness")
+    if at is None or not isinstance(freshness, list) or not freshness:
+        return False
+    for entry in freshness:
+        captured = _instant(entry.get("captured_at")) if isinstance(entry, Mapping) else None
+        if captured is None or captured > at:
+            return False
+    return True
+
+
+def _instant(text: Any) -> datetime | None:
+    """An aware moment of an ISO 8601 timestamp with its offset (``Z`` read as UTC); None
+    for anything else (a bare date, a naive time)."""
+    if not isinstance(text, str) or "T" not in text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def listing_count(arguments: Any, result: Any) -> tuple[str, ...] | None:
+    """The records a ``plx.around`` answer lists when it lists every member of the set it
+    issues, as known now (``known_now``): each member's record (its display value's
+    citation), so the listing is itself an exact count of them. Only when the answer is
+    complete on its first page (no cursor, not truncated, every member listed once,
+    ``total`` equal to the listed count) with no gap but the data's age and no withheld
+    member counted; anything else is None (a count of it stays a lower bound)."""
+    if not isinstance(result, Mapping) or "error" in result:
+        return None
     handle = result.get("set")
     done = result.get("completeness")
     objects = result.get("objects")
     if not isinstance(handle, str) or not isinstance(done, Mapping) \
             or not isinstance(objects, list) or not objects \
-            or (isinstance(arguments, Mapping)
-                and ("as_known_at" in arguments or arguments.get("cursor"))):
-        return
+            or (isinstance(arguments, Mapping) and arguments.get("cursor")) \
+            or not known_now(arguments, result):
+        return None
     withheld = result.get("withheld")
     if done.get("complete") is not True or done.get("truncated") is not False \
             or done.get("next_cursor") is not None or done.get("total") != len(objects) \
             or any(not _age_only(gap) for gap in result.get("gaps") or ()) \
             or (isinstance(withheld, Mapping) and withheld.get("objects")):
-        return
+        return None
     records: list[str] = []
     for obj in objects:
         origin = ((obj.get("display") or {}).get("origin") or {}) \
             if isinstance(obj, Mapping) else {}
         cite = origin.get("citation") if isinstance(origin, Mapping) else None
         if not isinstance(cite, str) or not cite:
-            return
+            return None
         records.append(cite)
-    if len(set(records)) != len(records):
-        return
-    listings = into.setdefault("listings", {})
-    listings.pop(handle, None)
-    listings[handle] = tuple(records)
-    while len(listings) > MAX_LISTINGS:
-        listings.pop(next(iter(listings)))
+    return tuple(records) if len(set(records)) == len(records) else None
 
 
 # The aggregate's citation cap (``ontology_tools_aggregate.MAX_CITATIONS``) and the gap it

@@ -871,6 +871,13 @@ class SharePointPageTests(unittest.TestCase):
                         self.assertIn("superseded_in_capture",
                                       [gap["reason"] for gap in read["gaps"]])
                         self.assertEqual(review["review"]["evidence"][0]["l1_handle"], handle)
+                        # The whole file read names the item's current version to read.
+                        whole = host.call("plx.read", {"citation": handle}, self.employee)
+                        self.assertEqual(whole["status"], "changed_since", whole)
+                        now = host.call("plx.read", {"citation": whole["current_citation"]},
+                                        self.employee)
+                        self.assertEqual(now["status"], "resolved")
+                        self.assertIn("1,300", now["content"]["untrusted_text"])
         unknown = ("page_text_unknown",) * 3
         self.assertEqual({key: tuple(outcomes[key[0], key[1], n] for n in (1, 2, 3))
                           for key in {k[:2] for k in outcomes}}, {

@@ -114,8 +114,7 @@ class CountClaimTests(unittest.TestCase):
         exact = self.check("3 receipts.", returned=returned(listing(self.handles)))
         self.assertTrue(exact["passed"], exact["failures"])
         self.assertEqual(checked(exact)[0]["bound"], "exact")
-        # Anything short of a whole listing of that set, or a count that is not of its
-        # members, keeps the count a lower bound.
+        # Anything short of a whole listing of that set keeps the count a lower bound.
         gap = {"state": "unknown", "reason": "marking_withheld", "subject": "x"}
         for name, evidence in (
                 ("paged", returned(listing(self.handles, completeness={
@@ -123,14 +122,36 @@ class CountClaimTests(unittest.TestCase):
                 ("gap", returned(listing(self.handles, gaps=[gap]))),
                 ("one missing", returned(listing(self.handles[:2],
                                                  completeness={"total": 3}))),
+                # an aggregate of the same set contradicting the listing: fail closed
+                ("value differs", returned(listing(self.handles), aggregate={
+                    **bare, "groups": [{**bare["groups"][0], "value": "4"}]}))):
+            with self.subTest(name):
+                self.assertEqual(codes(self.check("3 receipts.", returned=evidence)),
+                                 ["claim_count_lower_bound"])
+        # A whole listing is itself the exact count of its members (listing_count): no
+        # aggregate is needed, so an aggregate of another set, a grouped or partial one
+        # leaves it exact.
+        for name, evidence in (
+                ("listing alone", claim_checks.returned_evidence(
+                    "plx.around", {}, listing(self.handles))),
                 ("other set", returned(listing(self.handles, set="set:s2"))),
                 ("grouped", returned(listing(self.handles),
                                      call={**members, "group_by": ["status"]})),
-                ("value differs", returned(listing(self.handles), aggregate={
-                    **bare, "groups": [{**bare["groups"][0], "value": "4"}]})),
                 ("aggregate partial", returned(listing(self.handles),
                                                aggregate={**bare, "partial": True}))):
             with self.subTest(name):
+                got = self.check("3 receipts.", returned=evidence)
+                self.assertTrue(got["passed"], got["failures"])
+                self.assertEqual(checked(got)[0]["bound"], "exact")
+        # Without a whole listing, an aggregate of another set or a grouped or partial
+        # one still keeps the count a lower bound.
+        paged = listing(self.handles, completeness={
+            "complete": False, "truncated": True, "next_cursor": "c1"})
+        for name, evidence in (
+                ("other set", returned(dict(paged, set="set:s2"))),
+                ("grouped", returned(paged, call={**members, "group_by": ["status"]})),
+                ("aggregate partial", returned(paged, aggregate={**bare, "partial": True}))):
+            with self.subTest("paged, " + name):
                 self.assertEqual(codes(self.check("3 receipts.", returned=evidence)),
                                  ["claim_count_lower_bound"])
 

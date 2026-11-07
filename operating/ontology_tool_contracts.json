@@ -3717,7 +3717,7 @@
       }
     },
     "plx.around": {
-      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects. Undeclared links are refused.",
+      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects; exact_count when every member is listed (filters on the last hop included): the exact count, citing each listed object. Undeclared links are refused.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -3894,6 +3894,11 @@
               },
               "completeness": {
                 "$ref": "#/$defs/completeness"
+              },
+              "exact_count": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Present only when this answer lists every member of its set as known now (complete on its first page, no cursor, no gap but the data's age, nothing withheld; an as_known_at at or after every capture read counts as now): the exact number of objects, each listed once. A count claim citing each listed object's display citation is exact; no plx.aggregate call is needed. Absent: what is listed is a lower bound."
               },
               "freshness_coverage": {
                 "type": "object",

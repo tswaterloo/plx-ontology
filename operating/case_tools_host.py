@@ -2123,9 +2123,47 @@ class CaptureCaseHostTools(CaseHostTools):
                     "case original cited here holds the same bytes (SHA-256) with their "
                     "extracted text: read it (and its members) for what this file says"))
         if view["superseded_at"] is not None:
+            current = self._current_read(handle, actor)
+            if current is not None and not (isinstance(text, str) and text.strip()):
+                # The cited version's text is gone (pruned) or was never read: the
+                # current version is returned under its own citation, as a live reader
+                # returns it, never labelled with the cited one.
+                current["gaps"].append(_gap(
+                    "stale", "cited_version_not_retained", handle[:700],
+                    "the capture holds no text of the cited version, superseded since; "
+                    "the values shown are the item's current captured version, cited at "
+                    "current_citation"))
+                return {**current, "status": "changed_since",
+                        "current_citation": current["values_citation"]}
+            if current is not None:
+                out.update(status="changed_since",
+                           current_citation=current["values_citation"])
             out["gaps"].append(_gap("stale", "superseded_in_capture", handle[:700],
-                                    "the capture no longer holds this version as current"))
+                                    "the capture no longer holds this version as current"
+                                    + ("; read current_citation for its current version"
+                                       if current is not None else "")))
         return out
+
+    def _current_read(self, handle: str, actor: Any) -> dict[str, Any] | None:
+        """``captured_read`` of the item's current captured version when ``handle`` is a
+        plain version handle (no page or member) the capture has superseded and this
+        reader may be served the current one, a version of its own; else None."""
+        from integrations import capture_sharepoint as cs
+        store = self._sharepoint()
+        try:
+            (drive_id, item_id), _etag, extra = cs.parse_handle(handle, cs.SCHEME, 2)
+            current = None if extra or store is None else store.current(drive_id, item_id)
+        except Exception:  # noqa: BLE001 - no current version named
+            return None
+        cited = current.get("l1_handle") if isinstance(current, Mapping) else None
+        if not isinstance(cited, str) or cited == handle \
+                or current.get("removed_reason") is not None:
+            return None
+        read = self.captured_read(cited, actor)
+        if not isinstance(read, Mapping) or read.get("status") != "resolved" \
+                or read.get("values_citation") != cited:
+            return None
+        return dict(read, gaps=list(read.get("gaps") or ()))
 
     def _text_original(self, actor: Any, view: Mapping[str, Any]) -> str | None:
         """The ``original://`` citation of the captured original holding the text of the

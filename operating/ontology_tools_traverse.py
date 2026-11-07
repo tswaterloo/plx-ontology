@@ -1091,6 +1091,9 @@ class TraverseTools:
             final = sorted(passing)
             if undecided:
                 gaps.extend(_filter_gaps(hops[-1][3], undecided))
+            # A property only some sources record leaves the other sources' records
+            # out of the match: the listing is then not every member, never an exact count.
+            gaps.extend(self.base.unsourced_filter_gaps(hops[-1][3], filters))
         # Some of what this path reaches may be hidden from this reader (a marking it
         # lacks, an audience it may not read, an item it may not open): what it sees is
         # then not the whole answer. Decided on the reader's grants over the path's link
@@ -1208,6 +1211,12 @@ class TraverseTools:
                     best, low = trial, mid + 1
             out = best
         lap("fit")
+        # A listing of every member, as known now, is itself the members' exact count
+        # (the answer gate binds a count claim citing them to it: claim_checks).
+        from operating.claim_checks import listing_count
+        listed = listing_count(arguments, out)
+        if listed is not None:
+            out["exact_count"] = len(listed)
         return out
 
     def _path_trimmed(self, scope: _Scope, hops: Sequence[tuple[str, str, str, str]]

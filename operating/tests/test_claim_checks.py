@@ -3101,6 +3101,41 @@ class AskClaimFormTests(unittest.TestCase):
         self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
             "plx.query", query_args, dict(walked, results=[dict(members, groups=[
                 dict(members["groups"][0], members_cited=pair[:1])])]))["counts"]], [False])
+        # A plx.around answer listing every member as known now is itself their exact
+        # count (no aggregate call); a cut, gapped or past listing stays a lower bound,
+        # and an as_known_at counts as now only at or after every capture it read.
+        listing = {"set": "set:l1", "hops": [], "edges": [], "gaps": aged,
+                   "objects": [{"object_id": f"Receipt:{i}", "display": {
+                       "untrusted_text": "r", "origin": {"citation": h,
+                                                         "field_path": "row.id"}}}
+                               for i, h in enumerate(pair)],
+                   "withheld": {"properties": None, "objects": None},
+                   "completeness": {"complete": True, "truncated": False, "returned": 2,
+                                    "total": 2, "next_cursor": None},
+                   "meta": {"as_known_at": "2026-11-05T23:59:59.999Z", "freshness": [
+                       {"captured_at": "2026-11-05T05:51:20.586453Z"}]}}
+        around_args = {"from": "Product:x", "path": []}
+        self.assertEqual(claim_checks.listing_count(around_args, listing), tuple(pair))
+        bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
+                     returned=claim_checks.returned_evidence("plx.around", around_args,
+                                                             listing))
+        self.assertTrue(bound["passed"], bound["failures"])
+        self.assertEqual(checked(bound)[0]["bound"], "exact")
+        past = dict(around_args, as_known_at="2026-11-05")
+        self.assertEqual(claim_checks.listing_count(past, listing), tuple(pair))
+        early = dict(listing, meta={"as_known_at": "2026-11-05T01:00:00Z",
+                                    "freshness": listing["meta"]["freshness"]})
+        for args, result in (
+                (past, early), (past, dict(listing, meta=None)),
+                (around_args, dict(listing, gaps=aged + [
+                    {"state": "inaccessible", "reason": "withheld_by_permission",
+                     "subject": "x"}])),
+                (around_args, dict(listing, completeness=dict(
+                    listing["completeness"], total=3))),
+                (dict(around_args, cursor="c"), listing)):
+            self.assertIsNone(claim_checks.listing_count(args, result))
+            self.assertEqual(claim_checks.returned_evidence(
+                "plx.around", args, result)["counts"], [])
         # 12 receipts seen, 8 cited: "12" binds to the complete count of the 12, "8" does
         # not (no entry of 8), whatever the claim's own citations add up to.
         rows = dict(receipt(index) for index in range(12))
