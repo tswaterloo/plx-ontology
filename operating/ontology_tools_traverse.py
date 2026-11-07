@@ -189,6 +189,7 @@ from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
     _envelope_bytes,
     _error,
     _filters_verdict,
+    _filter_gaps,
     _withheld_filter_gap,
     _fingerprint,
     _format_time,
@@ -1089,7 +1090,7 @@ class TraverseTools:
             passing, undecided = self._filter_objects(scope, final, filters)
             final = sorted(passing)
             if undecided:
-                gaps.append(_withheld_filter_gap(hops[-1][3], undecided))
+                gaps.extend(_filter_gaps(hops[-1][3], undecided))
         # Some of what this path reaches may be hidden from this reader (a marking it
         # lacks, an audience it may not read, an item it may not open): what it sees is
         # then not the whole answer. Decided on the reader's grants over the path's link

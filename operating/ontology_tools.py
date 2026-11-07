@@ -1795,6 +1795,21 @@ def _source_of(handle: str | None, lineage: str | None = None) -> str | None:
     return _SCHEME_SOURCE.get(handle.split("://", 1)[0])
 
 
+def origin_rank(lineage: Any) -> int:
+    """How near a record is to the system its business object was created in, by its
+    lineage: a source system's own record (``*_bronze``: FileMaker, Sage) 0, the
+    Portal's (``gold_*``: its ETL copies and its own records) 1, a BC posting
+    (``bc_*``) 2, anything else 3. Lower is the origin."""
+    text = str(lineage or "")
+    if text.endswith("_bronze"):
+        return 0
+    if text.startswith("gold_"):
+        return 1
+    if text.startswith("bc_"):
+        return 2
+    return 3
+
+
 def _effective_tier(row: Mapping[str, Any]) -> str:
     """The one link-tier rule plx.around, plx.aggregate and plx.process serve (R1).
 
@@ -3647,7 +3662,7 @@ class OntologyTools:
                  "a reference that names another record, never its holder; list them all "
                  "with plx.find " + json.dumps(listing, separators=(",", ":")))[:600]))
         if undecided:
-            gaps.append(_withheld_filter_gap(object_type, undecided))
+            gaps.extend(_filter_gaps(object_type, undecided))
         if not ranked and not prior:
             # (An empty last segment of a listing whose earlier segments matched is
             # no no-match: those matches stand.)
@@ -4570,6 +4585,169 @@ class OntologyTools:
                                   object_id.split(":", 2)[1], version["l1_handle"], ""))
         return out
 
+    def default_days(self, object_type: str, prop: str) -> dict[str, frozenset]:
+        """Per source binding, the days a bulk share of ``object_type.prop``'s records hold
+        (``operating.source_defaults``: an import or migration day, never a date a person
+        stated about one record), counted over the whole source column, cached per store
+        generation. A store that cannot be counted has none (every date reads as stated)."""
+        from operating.source_defaults import DATE_SHARE, bulk_values
+        try:
+            found = self.store.conn.execute("SELECT value FROM store_meta WHERE key = "
+                                            "'content_digest'").fetchone()
+            digest = found[0] if found else None
+        except sqlite3.Error:
+            digest = None
+        cache = self.__dict__.setdefault("_default_days", {})
+        key = (digest, object_type, prop)
+        if digest is not None and key in cache:
+            return cache[key]
+        days: dict[str, list[str]] = {}
+        try:
+            for oid, value in self.store.conn.execute(
+                    "SELECT o.object_id, v.value FROM objects o JOIN object_values v ON "
+                    "v.object_id = o.object_id WHERE o.object_type = ? AND v.property = ? "
+                    "AND v.superseded_at IS NULL AND v.value IS NOT NULL AND v.value <> ''",
+                    (object_type, prop)):
+                days.setdefault(oid.split(":", 2)[1] if oid.count(":") >= 2 else "",
+                                []).append(str(value)[:10])
+        except sqlite3.Error:
+            days = {}
+        out = {binding: found for binding, values in days.items()
+               if (found := bulk_values(values, share=DATE_SHARE))}
+        if digest is not None:
+            if len(cache) > 64:
+                cache.clear()
+            cache[key] = out
+        return out
+
+    def _identity_twins(self, scope: _Scope, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Each of ``ids``' identity twins this reader sees (a link of an identity type at
+        an identity tier, live at T, its evidence and its other end readable): its
+        records in other systems, each with its lineage at T."""
+        types = sorted(self.schema.identity_link_types()) if self.schema is not None else []
+        if not ids or not types:
+            return {}
+        wanted = set(ids)
+        rows = [row for row in self.store.links_touching(scope, sorted(wanted), types)
+                if row["from_object"] != row["to_object"]
+                and all(self._item_allowed(scope.actor, handle)
+                        for handle in json.loads(row["evidence_handles"] or "[]"))]
+        visible = self._visible_versions(
+            scope, {end for row in rows for end in (row["from_object"], row["to_object"])})
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            ends = (row["from_object"], row["to_object"])
+            if not all(end in visible for end in ends):
+                continue
+            tiered = dict(row)
+            tiered.update(from_lineage=visible[ends[0]]["lineage"],
+                          to_lineage=visible[ends[1]]["lineage"])
+            if _effective_tier(tiered) not in _IDENTITY_TIERS:
+                continue
+            for one, other in (ends, ends[::-1]):
+                if one in wanted:
+                    out.setdefault(one, {})[other] = visible[other]["lineage"]
+        return out
+
+    def bulk_default_dates(self, scope: _Scope, dated: Mapping[tuple[str, str], Any]
+                           ) -> dict[tuple[str, str], dict[str, Any] | None]:
+        """Of ``(object id, property) -> date value``, the dates that are a bulk default
+        (an import or migration day), never a date of the record: the day is one a bulk
+        share of its source column holds (``default_days``, the candidate test only: a
+        busy real day is one too), and either
+
+        * (a) the record is a copy whose origin or twin in another system (an identity
+          twin no farther from the origin, ``origin_rank``) states a different date for
+          the same property, or
+        * (b) the property is a business date (declared ``date``, not a ``timestamp``)
+          and the day is the record's own creation, migration or order stamp
+          (``source_defaults.own_day`` over ``OWN_DAY_PROPS``: the proactive rules' one
+          date-provenance test).
+
+        Each judged date maps to the origin's stated date (``object_id``, ``value``,
+        ``value_type``: the nearest-origin twin's) or None: the record states no date."""
+        from operating.source_defaults import OWN_DAY_PROPS, own_day
+        candidates: dict[tuple[str, str], str] = {}
+        for (oid, prop), value in dated.items():
+            object_type, _, rest = oid.partition(":")
+            day = str(value)[:10]
+            if day in self.default_days(object_type, prop).get(rest.split(":", 1)[0], ()):
+                candidates[(oid, prop)] = day
+        if not candidates:
+            return {}
+        ids = sorted({oid for oid, _p in candidates})
+        props = sorted({p for _o, p in candidates})
+        twins = self._identity_twins(scope, ids)
+        twin_ids = sorted({t for found in twins.values() for t in found})
+        stated: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for row in self.store.readable_values(scope, twin_ids, props) if twin_ids else ():
+            if row["value_type"] in ("date", "timestamp") and row["value"]:
+                stated.setdefault((row["object_id"], row["property"]), []).append(row)
+        stamps: dict[str, list[tuple[str, dt.date]]] = {}
+        for row in self.store.readable_values(scope, ids, sorted(OWN_DAY_PROPS)):
+            day = _parse_day(str(row["value"] or "")[:10])
+            if day is not None:
+                stamps.setdefault(row["object_id"], []).append((row["property"], day))
+        lineage = self._visible_versions(scope, ids)
+        out: dict[tuple[str, str], dict[str, Any] | None] = {}
+        for (oid, prop), day in sorted(candidates.items()):
+            object_type, _, rest = oid.partition(":")
+            binding = rest.split(":", 1)[0]
+            own_rank = origin_rank(lineage[oid]["lineage"]) if oid in lineage else 3
+            origin = None
+            for twin, twin_lineage in sorted(twins.get(oid, {}).items(),
+                                             key=lambda t: (origin_rank(t[1]), t[0])):
+                if twin.split(":", 2)[1] == binding or origin_rank(twin_lineage) > own_rank:
+                    continue   # the same system, or a copy of this record
+                other = next((r for r in stated.get((twin, prop), ())
+                              if str(r["value"])[:10] != day), None)
+                if other is not None:
+                    origin = {"object_id": twin, "value": other["value"],
+                              "value_type": other["value_type"]}
+                    break
+            if origin is not None:
+                out[(oid, prop)] = origin
+                continue
+            business = self._declared_value_type(object_type, prop) == "date"
+            own = [d for p, d in stamps.get(oid, ()) if p != prop]
+            if business and own_day(_parse_day(day), own):
+                out[(oid, prop)] = None
+        return out
+
+    def _declared_value_type(self, object_type: str, prop: str) -> str | None:
+        declared = (self.schema.object_types.get(object_type, {}).get("properties", ())
+                    if self.schema is not None else ())
+        return next((p.get("value_type") for p in declared
+                     if isinstance(p, Mapping) and p.get("name") == prop), None)
+
+    def _undated_defaults(self, scope: _Scope,
+                          values: dict[str, dict[str, list[tuple[str, Any]]]],
+                          filters: list[dict]) -> set[str]:
+        """A filtered date that is a bulk default (``bulk_default_dates``) is no date the
+        record states: it is read as its origin's stated date when one exists, else
+        dropped, and a record left with no date of that property is neither matched nor
+        excluded on it. Returns the markers (``undated_marker``) of those properties,
+        which the caller's undecided set carries to its gap (``_filter_gaps``)."""
+        dated_props = {f["property"] for f in filters if f.get("op") not in ("present", "absent")}
+        dated = {(oid, prop): v for oid, held in values.items()
+                 for prop in dated_props & set(held)
+                 for kind, v in held[prop] if kind in ("date", "timestamp")}
+        if not dated:
+            return set()
+        judged = self.bulk_default_dates(scope, dated)
+        undated: set[str] = set()
+        for (oid, prop), origin in judged.items():
+            day = str(dated[(oid, prop)])[:10]
+            items = values[oid][prop]
+            kept = [(kind, v) for kind, v in items
+                    if kind not in ("date", "timestamp") or str(v)[:10] != day]
+            if origin is not None:
+                kept.append((origin["value_type"], origin["value"]))
+            values[oid][prop] = kept
+            if not kept:
+                undated.add(undated_marker(prop))
+        return undated
+
     def _filter_objects(self, scope: _Scope, object_ids: list[str], filters: list[dict]
                         ) -> tuple[set[str], set[str]]:
         """(objects every filter holds on, the filtered properties a verdict was
@@ -4613,8 +4791,9 @@ class OntologyTools:
                 kind = "date" if _DATE.match(time_text) else "timestamp"
                 values.setdefault(row["object_id"], {}).setdefault(name, []).append(
                     (kind, time_text))
+        undated = self._undated_defaults(scope, values, filters)
         passing: set[str] = set()
-        undecided: set[str] = set()
+        undecided: set[str] = set(undated)
         for oid in object_ids:
             verdict, unsure = _filters_verdict(values.get(oid, {}), withheld.get(oid, set()),
                                                filters)
@@ -5626,6 +5805,42 @@ def _withheld_filter_gap(object_type: str | None, properties: Iterable[str]) -> 
                 "some records this reader can read hold a value of a filtered property it "
                 "may not read; they are neither matched nor excluded on it (a withheld "
                 "value is not a missing one)")
+
+
+UNDATED_MARK = "date_not_on_record:"
+
+
+def _parse_day(text: str) -> dt.date | None:
+    try:
+        return dt.date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def undated_marker(prop: str) -> str:
+    """The undecided-set entry of a filtered date property some record holds only as a
+    bulk default (``OntologyTools._undated_defaults``): never a property name."""
+    return UNDATED_MARK + prop
+
+
+def _filter_gaps(object_type: str | None, undecided: Iterable[str]) -> list[dict[str, Any]]:
+    """The gaps of a filter undecided on some readable records: a withheld value
+    (``_withheld_filter_gap``), or a date that is only its source's bulk default with no
+    origin stating another (``date_not_on_record``). Either way the records are neither
+    matched nor excluded and the answer is partial."""
+    undecided = set(undecided)
+    undated = sorted(p[len(UNDATED_MARK):] for p in undecided if p.startswith(UNDATED_MARK))
+    withheld = sorted(p for p in undecided if not p.startswith(UNDATED_MARK))
+    out = [_withheld_filter_gap(object_type, withheld)] if withheld else []
+    if undated:
+        subject = ", ".join(f"{object_type}.{p}" if object_type else p for p in undated)
+        out.append(_gap("unknown", "date_not_on_record", subject[:700],
+                        "some records hold only a day a bulk share of their source's "
+                        "records hold that their origin record contradicts or that is the "
+                        "record's own creation or migration stamp (an import or migration "
+                        "day), and no origin states another: their date is not on record, "
+                        "so they are neither matched nor excluded by the date filter"))
+    return out
 
 
 _NUMERIC_TYPES = "('decimal', 'money', 'quantity', 'integer')"

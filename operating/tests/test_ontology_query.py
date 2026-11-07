@@ -529,3 +529,87 @@ class OnePartNeverRefusesTheRead(unittest.TestCase):
         refused = tool.call({"from": {"entity": "Solo"}, "traverse": [{"to": "Product"}]},
                             "actor")
         self.assertEqual(refused["error"]["code"], "undeclared_link")
+
+
+class IdentifierRoute(unittest.TestCase):
+    """A walk no stored link completes resolves the identifiers its records' own values
+    hold: an exact identifier of one thing (one record, or its records in several
+    systems) is firm and walked on; a number two things share is a lead, never walked;
+    what was searched is said either way."""
+
+    class Links:
+        link_types = {"Lot.of_item": {"from": "Lot", "to": "Item", "cardinality": "N:1"},
+                      "Order.for_item": {"from": "Order", "to": "Item", "cardinality": "N:1"},
+                      "Shipment.ships": {"from": "Shipment", "to": "Order",
+                                         "cardinality": "N:1"}}
+        object_types = {"Lot": {"properties": [{"name": "order_list", "value_type": "text"}]},
+                        "Item": {"properties": []}}
+
+    def tool(self, entities):
+        calls = []
+        sets = {"set:orders01": ["Order:sage:7", "Order:portal:7"],
+                "set:ships001": ["Shipment:sage:3"]}
+
+        def call(name, arguments, actor):
+            calls.append((name, dict(arguments)))
+            if name == "plx.find":
+                ids = ["Order:sage:7", "Order:portal:7"]
+                return {"status": "ambiguous", "candidates": [
+                    {"object": {"object_id": i}, "reason": "exact_identifier",
+                     "tier": "verified"} for i in ids],
+                    "entities": [{"records": [{"object": {"object_id": i}, "status": "match"}
+                                              for i in group]} for group in entities(ids)]}
+            if name == "plx.aggregate":
+                return {"groups": [{"key": {}, "value": "1", "inputs": 0, "markings": []}]}
+            hop = arguments["path"][0]
+            ships = hop["link_type"] == "Shipment.ships" and arguments["from"] == "set:orders01"
+            return {"set": "set:ships001" if ships else None,
+                    "hops": [dict(hop, count=1 if ships else 0)]}
+
+        def rows(arguments, actor):
+            return {"rows": [{"object_id": "Lot:fm:1", "values": {"order_list": {
+                "value": {"untrusted_text": "OR1000777777 sample run"}}}}]}
+
+        new = iter(["set:orders01", "set:other001", "set:other002"])
+        backend = oq.TableBackend(call, lambda actor, ids: next(new), self.Links(),
+                                  lambda a, ids: set(ids), rows=rows,
+                                  members=lambda actor, handle: sets.get(handle))
+        return oq.QueryTool(backend), calls
+
+    def test_an_order_number_a_lot_holds_reaches_its_shipments(self):
+        tool, calls = self.tool(lambda ids: [ids])
+        out = tool.call({"from": {"object_id": "Lot:fm:1"},
+                         "traverse": [{"to": "Shipment"}]}, "actor")
+        self.assertEqual(out["set"], "Shipment:sage:3")
+        [gap] = [g for g in out["gaps"] if g["reason"] == "matched_by_identifier"]
+        self.assertIn("OR1000777777", gap["detail"])
+        self.assertIn("Lot.order_list", gap["searched"]["scopes"])
+        self.assertNotIn("nothing_reached", {g["reason"] for g in out["gaps"]})
+
+    def test_a_number_two_things_share_is_a_lead_never_walked(self):
+        tool, calls = self.tool(lambda ids: [[i] for i in ids])
+        out = tool.call({"from": {"object_id": "Lot:fm:1"},
+                         "traverse": [{"to": "Shipment"}]}, "actor")
+        self.assertIsNone(out["set"])
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertTrue({"identifier_leads", "no_identifier_match", "nothing_reached"}
+                        <= reasons)
+        self.assertNotIn(("plx.around", "set:orders01"),
+                         [(n, a.get("from")) for n, a in calls])
+
+    def test_a_cut_identifier_search_says_what_it_left_and_claims_no_absence(self):
+        tool, calls = self.tool(lambda ids: [[i] for i in ids])
+        numbers = [f"OR10007777{n:02d}" for n in range(oq.IDENTIFIER_QUERIES + 3)]
+        tool.backend.rows = lambda arguments, actor: {"rows": [
+            {"object_id": "Lot:fm:1", "values": {"order_list": {
+                "value": {"untrusted_text": " ".join(numbers)}}}}]}
+        out = tool.call({"from": {"object_id": "Lot:fm:1"},
+                         "traverse": [{"to": "Shipment"}]}, "actor")
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("identifier_search_cut", reasons)
+        self.assertNotIn("no_identifier_match", reasons)   # never an absence after a cut
+        [cut] = [g for g in out["gaps"] if g["reason"] == "identifier_search_cut"]
+        self.assertIn(f"3 of {len(numbers)} identifiers", cut["detail"])
+        self.assertEqual(len(cut["searched"]["queries"]), oq.IDENTIFIER_QUERIES)
+        finds = [a["query"] for n, a in calls if n == "plx.find"]
+        self.assertEqual(sorted(cut["searched"]["queries"]), sorted(finds))

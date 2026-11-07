@@ -444,19 +444,36 @@ class AggregateTests(_Base):
         self.assertIn("policy_changed_since_handle", {g["reason"] for g in out["gaps"]})
 
     def test_twins_in_two_systems_are_never_counted_or_summed_twice(self):
+        """One record held in two systems counts once, from the origin system's record
+        (the Portal's before its BC posting); twins with no single origin (two copies
+        of one rank) leave their group with no value, never a double count."""
         twin = self.store.obj("ReceiptLine:bc.purchase_receipt_lines:r1")
-        self.store.val(twin, "received_quantity", "quantity", "98", unit="each",
+        self.store.val(twin, "received_quantity", "quantity", "97", unit="each",
                        role="received")
         self.store.link("ReceiptLine.same_record_as", R1, twin, kind="same_record")
-        for measure in ({"property": "received_quantity", "op": "sum"}, {"op": "count"}):
+        for measure, once in (({"property": "received_quantity", "op": "sum"}, "98"),
+                              ({"op": "count"}, "1")):
             with self.subTest(measure["op"]):
                 out = self.agg(STAFF, [R1, twin], measure)
                 [group] = out["groups"]
-                self.assertIsNone(group["value"])  # never 196 or 2
-                self.assertTrue(out["partial"])
-                self.assertIn("cross_system_twins", {g["reason"] for g in out["gaps"]})
+                self.assertEqual(group["value"], once)  # never 195 or 2, never the copy's
+                self.assertIn("cross_system_twins_counted_once",
+                              {g["reason"] for g in out["gaps"]})
+                # the copy states 97, the origin 98: counted once, the sum is partial
+                self.assertEqual(out["partial"], measure["op"] == "sum")
+                self.assertEqual("twin_copies_disagree" in {g["reason"] for g in out["gaps"]},
+                                 measure["op"] == "sum")
         alone = self.agg(STAFF, [R1], {"property": "received_quantity", "op": "sum"})
         self.assertEqual(alone["groups"][0]["value"], "98")
+        other = self.store.obj("ReceiptLine:bc.purchase_receipt_lines:r9")
+        self.store.val(other, "received_quantity", "quantity", "97", unit="each",
+                       role="received")
+        self.store.link("ReceiptLine.same_record_as", twin, other, kind="same_record")
+        out = self.agg(STAFF, [twin, other], {"property": "received_quantity", "op": "sum"})
+        [group] = out["groups"]
+        self.assertIsNone(group["value"])  # two copies, no origin among them: never 194
+        self.assertTrue(out["partial"])
+        self.assertIn("cross_system_twins", {g["reason"] for g in out["gaps"]})
 
     def test_missing_value_is_explicit_never_a_partial_sum(self):
         self.line_totals()
@@ -1298,3 +1315,93 @@ class UnitFoldAgreementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultDatesAndOrigins(_Base):
+    """A day a bulk share of a source column holds is a migration default only with
+    evidence: its origin twin states another date, or it is the record's own creation stamp
+    on a business date. Then a filter reads the origin's date, or the record is neither
+    matched nor excluded (``date_not_on_record``, partial); groups and listings keep it,
+    flagged. A busy real day is a date like any other."""
+
+    def setUp(self):
+        super().setUp()
+        self.copies = [f"PurchaseOrder:portal.app_purchase_order:zz{n:02d}" for n in range(12)]
+        for oid in self.copies:
+            self.store.obj(oid)
+            self.store.val(oid, "order_date", "date", "2031-02-14")
+            self.store.val(oid, "portal_created_at", "timestamp", "2031-02-14T09:00:00Z")
+        self.dated = "PurchaseOrder:portal.app_purchase_order:zz99"
+        self.store.obj(self.dated)
+        self.store.val(self.dated, "order_date", "date", "2031-05-02")
+        self.origin = "PurchaseOrder:portal.fm_generated_purchase_order:9001"
+        self.store.obj(self.origin, lineage="fm_bronze")
+        self.store.val(self.origin, "order_date", "date", "2030-06-01")
+        self.store.link("PurchaseOrder.same_record_as", self.copies[0], self.origin,
+                        kind="same_record")
+
+    def test_a_date_filter_never_holds_on_a_default_day(self):
+        out = self.call("plx.aggregate", {"object_type": "PurchaseOrder", "measure": {
+            "op": "count"}, "filters": [{"property": "order_date", "op": "gte",
+                                         "value": "2031-01-01"}]})
+        # 11 records' dates are not on record: never 13, never a silent 1, but partial
+        self.assertIsNone(out["groups"][0]["value"])
+        self.assertTrue(out["partial"])
+        self.assertIn("date_not_on_record", {g["reason"] for g in out["gaps"]})
+
+    def test_real_busy_days_are_dates(self):
+        days = ["2031-03-02", "2031-03-03", "2031-03-04", "2031-03-05", "2031-03-06"]
+        for n in range(60):
+            oid = f"PurchaseOrder:portal.app_purchase_order:busy{n:02d}"
+            self.store.obj(oid)
+            self.store.val(oid, "order_date", "date", days[n % 5])
+            self.store.val(oid, "portal_created_at", "timestamp", "2031-03-01T08:00:00Z")
+        out = self.call("plx.aggregate", {"object_type": "PurchaseOrder", "measure": {
+            "op": "count"}, "filters": [{"property": "order_date", "op": "gte",
+                                         "value": "2031-03-01"},
+                                        {"property": "order_date", "op": "lt",
+                                         "value": "2031-04-01"}]})
+        self.assertEqual(out["groups"][0]["value"], "60")
+        self.assertFalse(out["partial"])
+        self.assertNotIn("date_not_on_record", {g["reason"] for g in out["gaps"]})
+
+    def test_a_migration_day_copy_is_filtered_by_its_origins_date(self):
+        base = self.tools.base
+        scope = base._scope(STAFF, base._as_known_at({}))
+        passing, undecided = base._filter_objects(
+            scope, [self.copies[0], self.copies[1], self.dated],
+            [{"property": "order_date", "op": "lt", "value": "2031-01-01"}])
+        # the copy dated by its migration day reads its FileMaker origin's 2030-06-01; the
+        # copy with no origin is neither matched nor excluded, its gap says so
+        self.assertEqual(passing, {self.copies[0]})
+        self.assertEqual(undecided, {ot.undated_marker("order_date")})
+
+    def test_groups_count_a_twin_once_by_its_origin_date(self):
+        out = self.agg(STAFF, [*self.copies, self.dated, self.origin], {"op": "count"},
+                       group_by=["order_date"], bucket="year")
+        counts = {(g["key"]["order_date"] or {}).get("untrusted_text")
+                  if isinstance(g["key"]["order_date"], dict) else g["key"]["order_date"]:
+                  g["value"] for g in out["groups"]}
+        self.assertEqual(counts, {"2030": "1", "2031": "1", None: "11"})
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertTrue({"date_not_on_record", "cross_system_twins_counted_once"} <= reasons)
+        self.assertTrue(out["partial"])
+
+    def test_a_listing_shows_the_origin_twins_date_cited_to_it(self):
+        self.store.conn.commit()
+        got = self.tools.rows({"set": self.set_of(STAFF, self.copies[0], self.copies[1],
+                                                  self.dated),
+                               "properties": ["order_date"],
+                               "date": {"property": "order_date"}}, STAFF)
+        by = {r["object_id"]: r for r in got["rows"]}
+        moved = by[self.copies[0]]
+        self.assertEqual(moved["values"]["order_date"]["value"], "2030-06-01")
+        self.assertEqual(moved["date"]["value"], "2030-06-01")
+        self.assertEqual(moved["values"]["order_date"]["citation"]["l1_handle"],
+                         self.store.handles[self.origin][0])
+        self.assertEqual(by[self.copies[1]]["values"]["order_date"],
+                         {"status": "date_not_on_record"})
+        self.assertNotIn("date", by[self.copies[1]])
+        self.assertEqual(by[self.dated]["values"]["order_date"]["value"], "2031-05-02")
+        reasons = {g["reason"] for g in got["gaps"]}
+        self.assertTrue({"date_not_on_record", "date_from_origin_twin"} <= reasons)

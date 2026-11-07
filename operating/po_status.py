@@ -560,7 +560,7 @@ RECEIPT_STATUS, LOT_QC = "fm_status", "qc_status"
 # A record's own days: the date a form or import set to the day it wrote the record is no
 # requested date (``source_defaults.own_day``).
 # BC's last-modified day is not one: any later edit or receipt posting rewrites it.
-OWN_DAY_PROPS = ("order_date", "portal_created_at", "fm_created_at")
+from operating.source_defaults import OWN_DAY_PROPS  # noqa: E402 (the one list)
 # The supplier a record is ordered from, as each system stores it (number collisions).
 VENDOR_NUMBER_PROPS = ("vendor_number", "vendor_name")
 FM_BINDING = "portal.fm_generated_purchase_order"

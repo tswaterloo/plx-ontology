@@ -148,7 +148,8 @@ from ontology.types import Actor
 from ontology.units import is_unit_price, same_denominator, unit_token, value_basis
 from operating.absence_claims import ABSENT, traversal_problem
 from operating.claim_checks import _plain, to_decimal
-from operating.ontology_tools import (
+from operating.ontology_tools import (  # noqa: F401 (origin_rank: re-exported)
+    origin_rank,
     LIVE_LOOKUP_HINT,
     OntologyTools,
     REMOVAL_REASONS,
@@ -440,9 +441,9 @@ class AggregateTools:
             gaps += base.unsourced_filter_gaps(object_type, filters)
             kept += [oid for oid in ids if oid in passing]
         if undecided:
-            from operating.ontology_tools import _withheld_filter_gap
-            gaps.append(_withheld_filter_gap(next(iter(by_type)) if len(by_type) == 1
-                                             else None, undecided))
+            from operating.ontology_tools import _filter_gaps
+            gaps.extend(_filter_gaps(next(iter(by_type)) if len(by_type) == 1
+                                     else None, undecided))
         return {"ids": kept, "gaps": gaps}
 
     def _rows(self, arguments: Mapping[str, Any], actor: Actor, gate: str
@@ -496,23 +497,39 @@ class AggregateTools:
                 reached = {oid: oid for oid in roots}
             targets = sorted({oid for oid in reached.values() if isinstance(oid, str)})
             found, hidden = self._values(scope, targets, [date["property"]])
+            picked_dates = {}
             for root, target in reached.items():
                 if not isinstance(target, str):
                     continue
                 pick = _pick(found.get((target, date["property"]), []),
                              (target, date["property"]) in hidden)
                 if pick.row is not None:
+                    picked_dates[(target, date["property"])] = pick.row
                     dated[root] = pick.row
+            self._stated_dates(scope, picked_dates, gaps)
+            for root, target in reached.items():
+                if isinstance(target, str) and (target, date["property"]) in picked_dates:
+                    if picked_dates[(target, date["property"])] is None:
+                        dated.pop(root, None)
+                    else:
+                        dated[root] = picked_dates[(target, date["property"])]
+        picks = {(oid, prop): _pick(values.get((oid, prop), []), (oid, prop) in withheld)
+                 for oid in roots for prop in props}
+        chosen_rows = {key: pick.row for key, pick in picks.items()
+                       if pick.row is not None and key not in corrections}
+        self._stated_dates(scope, chosen_rows, gaps)
         out_rows = []
         for oid in roots:
             row: dict[str, Any] = {"object_id": oid, "values": {}}
             for prop in props:
-                pick = _pick(values.get((oid, prop), []), (oid, prop) in withheld)
-                chosen = pick.row
+                pick = picks[(oid, prop)]
+                chosen = chosen_rows.get((oid, prop), pick.row)
                 if chosen is not None and (oid, prop) in corrections:
                     chosen = _corrected(chosen, corrections[(oid, prop)])
                 shown = _shown(chosen, limit) if chosen is not None else None
-                row["values"][prop] = shown if shown is not None else {"status": pick.status}
+                status = "date_not_on_record" if (oid, prop) in chosen_rows \
+                    and chosen_rows[(oid, prop)] is None else pick.status
+                row["values"][prop] = shown if shown is not None else {"status": status}
             if oid in dated:
                 row["date"] = _shown(dated[oid], limit)
             out_rows.append(row)
@@ -715,6 +732,139 @@ class AggregateTools:
         for oid in set(parent) | set(parent.values()):
             clusters.setdefault(find(oid), set()).add(oid)
         return [c for c in clusters.values() if len(c) > 1]
+
+    def _base_scope(self, scope: Any) -> Any:
+        """This call's read scope as the base tools read it (the same grants)."""
+        from operating.ontology_tools import _Scope as _BaseScope
+        return _BaseScope(scope.actor, scope.audience_keys, scope.held, scope.marking_sets,
+                          scope.sources, scope.at)
+
+    def _judged_dates(self, scope: Any, picked: Mapping[tuple[str, str], Any]
+                      ) -> dict[tuple[str, str], Any]:
+        """``OntologyTools.bulk_default_dates`` of the picked date rows: per judged
+        ``(object id, property)``, its origin twin's stated date row (read here, cited to
+        that record) or None (no date of its own)."""
+        judge = getattr(self.base, "bulk_default_dates", None)
+        dated = {key: row["value"] for key, row in picked.items()
+                 if row is not None and row["value_type"] in ("date", "timestamp")}
+        if judge is None or not dated:
+            return {}
+        judged = judge(self._base_scope(scope), dated)
+        twins = sorted({o["object_id"] for o in judged.values() if o is not None})
+        found, _hidden = self._values(scope, twins, sorted({n for _o, n in judged}))
+        out: dict[tuple[str, str], Any] = {}
+        for (oid, name), origin in judged.items():
+            row = None
+            if origin is not None:
+                row = next((r for r in found.get((origin["object_id"], name), [])
+                            if r["value"] == origin["value"]), None)
+            out[(oid, name)] = row
+        return out
+
+    def _undate_defaults(self, rows: dict[tuple[str, str], list[Any]], gaps: "_Gaps",
+                         scope: Any) -> int:
+        """Group values that are a bulk default date (``_judged_dates``) read in place as
+        their origin's stated date, else dropped: such a record groups under no date, and a
+        ``date_not_on_record`` gap counts it (the answer is partial). Returns how many."""
+        picked = {key: next((r for r in found if r["value_type"] in ("date", "timestamp")),
+                            None) for key, found in rows.items()}
+        moved: dict[str, int] = {}
+        undated: dict[str, int] = {}
+        for (oid, name), origin in self._judged_dates(scope, picked).items():
+            day = str(picked[(oid, name)]["value"])[:10]
+            kept = [r for r in rows[(oid, name)]
+                    if r["value_type"] not in ("date", "timestamp")
+                    or str(r["value"])[:10] != day]
+            subject = f"{oid.split(':', 1)[0]}.{name}"
+            if origin is not None:
+                kept.append(origin)
+                moved[subject] = moved.get(subject, 0) + 1
+            if kept:
+                rows[(oid, name)] = kept
+            else:
+                del rows[(oid, name)]
+                undated[subject] = undated.get(subject, 0) + 1
+        for subject, n in sorted(moved.items()):
+            gaps.add("unknown", "date_from_origin_twin", subject,
+                     "a record's own date is its source's bulk default (an import or "
+                     "migration day) its origin contradicts: it is grouped by the date its "
+                     "twin in the origin system states", n)
+        for subject, n in sorted(undated.items()):
+            gaps.add("unknown", "date_not_on_record", subject,
+                     "a record's own date is its source's bulk default (an import or "
+                     "migration day) and no origin states another: its date is not on "
+                     "record, so it is grouped under no date", n)
+        return sum(undated.values())
+
+    def _stated_dates(self, scope: Any, picked: dict[tuple[str, str], Any],
+                      gaps: "_Gaps") -> int:
+        """Listed dates that are a bulk default (``_judged_dates``) replaced, in place, by
+        the date the record's origin twin states (cited to that record), else None: the
+        row stays, flagged ``date_not_on_record``, with a gap (the answer is partial).
+        Returns how many rows have no date of their own."""
+        judged = self._judged_dates(scope, picked)
+        if not judged:
+            return 0
+        names = ", ".join(sorted({n for _o, n in judged}))
+        moved = sum(1 for row in judged.values() if row is not None)
+        undated = len(judged) - moved
+        picked.update(judged)
+        if moved:
+            gaps.add("unknown", "date_from_origin_twin", names,
+                     "a record's own date is its source's bulk default (an import or "
+                     "migration day) its origin contradicts; the date shown is the one its "
+                     "twin in the origin system states, cited to that record", moved)
+        if undated:
+            gaps.add("unknown", "date_not_on_record", names,
+                     "a record's own date is its source's bulk default (an import or "
+                     "migration day) and no origin states another: its date is not on "
+                     "record", undated)
+        return undated
+
+    def _origin_records(self, scope: Any, roots: Sequence[str], gaps: "_Gaps",
+                        subject: str, prop: str | None = None) -> tuple[list[str], bool]:
+        """Members one identity link joins (one record held in several systems) counted
+        once: from the record of the system the others copy (``origin_rank``: a
+        FileMaker or Sage record before the Portal's ETL copy of it, the Portal's before
+        the BC posting of it). A cluster with no single origin stays as it is (its group
+        then shows no value: ``cross_system_twins``). Second: whether a left-out copy
+        states another ``prop`` value than its origin (``twin_copies_disagree``): the
+        answer counted once is then partial."""
+        clusters = self._twins(scope, roots)
+        if not clusters:
+            return list(roots), False
+        versions = self.walk._versions_at(scope, sorted({o for c in clusters for o in c}))
+        dropped: set[str] = set()
+        kept_by: dict[str, list[str]] = {}
+        for cluster in clusters:
+            ranked = sorted((origin_rank(versions[o]["lineage"] if o in versions else None),
+                             o) for o in cluster)
+            if len(ranked) > 1 and ranked[0][0] < ranked[1][0]:
+                dropped |= {o for _r, o in ranked[1:]}
+                kept_by[ranked[0][1]] = [o for _r, o in ranked[1:]]
+        if dropped:
+            gaps.add("unknown", "cross_system_twins_counted_once", subject,
+                     "members held in several systems (an identity link joins them) are "
+                     "counted once, from the origin system's record (FileMaker or Sage "
+                     "before the Portal's copy, the Portal's before its BC posting); the "
+                     "copies left out may hold other values (plx.object shows each)",
+                     len(dropped))
+        disagree = 0
+        if prop is not None and kept_by:
+            found, _hidden = self._values(scope, sorted(set(kept_by) | dropped), [prop])
+
+            def said(oid: str) -> Any:
+                row = _pick(found.get((oid, prop), []), False).row
+                return None if row is None else str(row["value"])
+            for origin, copies in kept_by.items():
+                if any(said(c) != said(origin) for c in copies):
+                    disagree += 1
+        if disagree:
+            gaps.add("unknown", "twin_copies_disagree", subject,
+                     f"a record counted once from its origin has a copy in another system "
+                     f"stating another {prop}: which one is right is not settled, so the "
+                     "answer is partial (plx.object shows each copy)", disagree)
+        return [o for o in roots if o not in dropped], bool(disagree)
 
     def _meta(self, scope: Any, sources: Iterable[str | None]) -> tuple[dict, list[dict]]:
         """The walk's meta and freshness gaps; sources beyond what ``meta.freshness``
@@ -972,8 +1122,8 @@ class AggregateTools:
                 break
             start = position
         if undecided:
-            from operating.ontology_tools import _withheld_filter_gap
-            gaps.append(_withheld_filter_gap(object_type, undecided))
+            from operating.ontology_tools import _filter_gaps
+            gaps.extend(_filter_gaps(object_type, undecided))
         gaps += base.unsourced_filter_gaps(object_type, filters)
         if not getattr(base, "projection_built", True):
             gaps.append(_gap("not_ingested", "projection_not_built", subject,
@@ -1031,7 +1181,8 @@ class AggregateTools:
         # Members first captured after T are simply not known at T: the answer as known
         # then is complete without them (their gap says so).
         # nor does a filter some sources never record (filter_not_sourced): it matched
-        # every record it could, and its gap says which sources it left out
+        # every record it could, and its gap says which sources it left out. A record
+        # whose date is not on record (date_not_on_record) is lost: partial
         lost_gaps = [g for g in root_gaps if g["reason"] not in (CAPTURED_AFTER,
                                                                  "filter_not_sourced")]
         partial = bool(lost_gaps)
@@ -1040,6 +1191,10 @@ class AggregateTools:
         # depends on which members the source still holds.
         root_types = {oid.split(":", 1)[0] for oid in roots}
         roots = [oid for oid in roots if oid not in asserted]
+        if op in ("count", "sum"):
+            roots, disagree = self._origin_records(scope, roots, gaps, prop or "members",
+                                                   prop)
+            partial = partial or disagree
         if prop is not None:
             self._require_declared(root_types, [prop], "measure",
                                    numeric=op in ("sum", "min", "max"))
@@ -1107,6 +1262,8 @@ class AggregateTools:
         dim_ids = sorted({d for d in dims.values() if isinstance(d, str)}
                          | ({d for objs in several.values() for d in objs} if split else set()))
         group_rows, group_withheld = self._values(scope, dim_ids, group_by)
+        if self._undate_defaults(group_rows, gaps, scope):
+            partial = True
         group_fixes = self._corrections(actor, scope.at, dim_ids, group_by)
         # Members' (and dimension objects') versions: their markings are inputs of every
         # group, a count's only ones.

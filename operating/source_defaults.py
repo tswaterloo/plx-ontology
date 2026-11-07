@@ -27,6 +27,9 @@ from typing import Any, Hashable, Iterable, Mapping
 DATE_SHARE = 0.10
 STATE_SHARE = 0.95
 MINIMUM = 10
+# A record's own days (its creation, migration or order stamp), as the sources store them:
+# a date equal to one of them was set to the day a form or an import wrote the record.
+OWN_DAY_PROPS = ("order_date", "portal_created_at", "fm_created_at")
 
 
 def bulk_values(values: Iterable[Hashable], *, share: float, minimum: int = MINIMUM

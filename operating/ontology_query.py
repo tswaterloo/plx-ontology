@@ -217,6 +217,51 @@ class TableBackend:
         return link["from"] if hop.get("direction") == "forward" else link["to"]
 
 
+# A walk no declared link completes resolves the identifiers its records' own values hold
+# (``QueryTool._identifier_route``): at most these records, properties per read, and
+# identifiers resolved.
+IDENTIFIER_RECORDS = 20
+IDENTIFIER_PROPS = 12
+IDENTIFIER_QUERIES = 8
+FIRM_REASONS = frozenset({"exact_identifier", "alias_match"})
+FIRM_TIERS = frozenset({"verified", "reviewed"})
+IDENTIFIER_GAPS = frozenset({"no_identifier_match", "identifier_leads",
+                             "identifier_search_cut"})
+
+
+def _object_id(candidate: Mapping[str, Any]) -> str | None:
+    found = (candidate.get("object") or {}).get("object_id")
+    return found if isinstance(found, str) else None
+
+
+def _value_text(value: Any) -> str | None:
+    """The text of a listed value (an untrusted-text envelope or a plain value)."""
+    if not isinstance(value, Mapping):
+        return None
+    inner = value.get("value")
+    if isinstance(inner, Mapping):
+        inner = inner.get("untrusted_text")
+    return inner if isinstance(inner, str) and inner.strip() else None
+
+
+def _business_code(text: str) -> bool:
+    """A code a person reads (letters and digits, e.g. a product code), never a system's
+    bare row number."""
+    return 2 < len(text) <= 64 and any(c.isdigit() for c in text) \
+        and any(c.isalpha() for c in text)
+
+
+def _one_entity(found: Mapping[str, Any], ids: Sequence[str]) -> bool:
+    """Whether ``plx.find``'s entities hold every one of ``ids`` as one thing's records
+    (one record held in several systems), never several things sharing a number."""
+    for entity in found.get("entities") or ():
+        held = {(r.get("object") or {}).get("object_id") for r in entity.get("records") or ()
+                if r.get("status") == "match"}
+        if set(ids) <= held:
+            return True
+    return False
+
+
 def _hop(hop: Mapping[str, Any]) -> dict[str, Any]:
     return {k: hop[k] for k in ("link_type", "direction", "link") if k in hop}
 
@@ -309,13 +354,16 @@ class QueryTool:
                                  "detail": str(refused.result["error"].get("message"))[:600]})
                     continue
                 meta = run.pop("meta", None) or meta
-                if run["hops"] and all(h.get("count") for h in run["hops"]):
+                if run.get("set") and all(h.get("count") for h in run["hops"]):
                     by_record.append({"record": record, **run})
                 else:
                     gaps.append({"state": "unknown", "reason": "nothing_reached",
                                  "subject": record[:700],
                                  "detail": "this record of the thing reaches nothing on the "
                                            "path"})
+                    # what its identifiers were searched for stays said
+                    gaps += [g for g in run.get("gaps") or ()
+                             if g.get("reason") in IDENTIFIER_GAPS]
             if len(unroutable) == len(starts):
                 raise unroutable[0]
             out.update({"hops": [], "set": None, "results": [], "by_record": by_record})
@@ -458,7 +506,8 @@ class QueryTool:
 
     def _route(self, call, current: Any, here: str | None, goal: str,
                filters: list[Any] | None, arguments: Mapping[str, Any],
-               common: Mapping[str, Any], index: int, actor: Any = None) -> dict[str, Any]:
+               common: Mapping[str, Any], index: int, actor: Any = None,
+               by_identifier: bool = True) -> dict[str, Any]:
         """A hop to the type ``goal``: the records ``current`` holds are walked on, link
         by link (``links_from``), along the links that can still reach ``goal`` within
         ``ROUTE_HOPS`` (``distances``), nearest it first, a link reaching nothing ending
@@ -495,7 +544,8 @@ class QueryTool:
             return {"routes": [], "hops": [], "gaps": kept_gaps, "meta": None,
                     "set": self._set_of(ids, actor)}
         far = self._reachable(here, goal, index)
-        reach = min(ROUTE_HOPS, far[here] + ROUTE_SLACK)
+        # a walk on from records an identifier named takes the shortest routes only
+        reach = min(ROUTE_HOPS, far[here] + (ROUTE_SLACK if by_identifier else 0))
         from operating import call_limits
         listed: list[dict[str, Any]] = []
         found: list[dict[str, Any]] = []
@@ -567,6 +617,17 @@ class QueryTool:
                                                        len(node[0])))
             if not frontier:
                 break
+        if found and by_identifier and len(found[0]["hops"]) > 1:
+            # a route of several links (through a product, a customer) reaches every
+            # record of what it passes; the identifiers the records' own values hold may
+            # name the very ones (a batch's order list): said beside it, never instead
+            named = self._identifier_route(call, current, here, goal, filters, arguments,
+                                           common, actor)
+            if named["set"]:
+                gaps += [dict(g, detail=(g["detail"] + f"; their set: {named['set']} (the "
+                                         "route taken passes through other records)")[:600])
+                         if g.get("reason") == "matched_by_identifier" else g
+                         for g in named["gaps"]]
         if found:
             # of the routes of the level that reached it, the one reaching most records
             found.sort(key=lambda route: -route["entry"]["count"])
@@ -593,6 +654,15 @@ class QueryTool:
                                    "call or time budget); name the links of a longer route "
                                    "to walk it"})
         if not found:
+            if by_identifier:
+                # no stored link: the identifiers the records' own values hold
+                matched = self._identifier_route(call, current, here, goal, filters,
+                                                 arguments, common, actor)
+                gaps += matched["gaps"]
+                if matched["set"]:
+                    return {"routes": listed[:MAX_ROUTES_SHOWN], "hops": matched["hops"],
+                            "gaps": gaps, "meta": matched["meta"] or meta,
+                            "set": matched["set"]}
             gaps.append({"state": "unknown", "reason": "nothing_reached",
                          "subject": f"{here} to {goal}"[:700],
                          "detail": f"no route of up to {reach} declared links from these "
@@ -600,6 +670,182 @@ class QueryTool:
         return {"routes": listed[:MAX_ROUTES_SHOWN],
                 "hops": found[0]["hops"] if found else [], "gaps": gaps, "meta": meta,
                 "set": found[0]["set"] if found else None}
+
+    def _identifier_route(self, call, current: Any, here: str, goal: str,
+                          filters: list[Any] | None, arguments: Mapping[str, Any],
+                          common: Mapping[str, Any], actor: Any) -> dict[str, Any]:
+        """No declared link reaches ``goal`` from these records: the identifiers their own
+        values hold (the one identifier grammar, ``ontology.identifiers``; a FileMaker
+        batch's order list names its sales order) are resolved as ``plx.find`` resolves
+        them, for this reader. An exact identifier naming one record, or one record held
+        in several systems (one entity), is firm (``matched_by_identifier``) and is walked
+        on: it is the goal, or the goal is reached from it along declared links. A match
+        by name or a reference is a lead: named, never walked. What was searched is stated
+        either way, so a goal no identifier reaches is an evidenced absence. A search cut
+        short (more start records, linked records or identifiers than it reads, or the
+        call's time) says what it left unsearched (``identifier_search_cut``) and never
+        claims an absence."""
+        out: dict[str, Any] = {"set": None, "hops": [], "gaps": [], "meta": None}
+        if self.backend.rows is None:
+            return out
+        members = [current] if isinstance(current, str) and not current.startswith("set:") \
+            else list(self.backend.members(actor, current) or ()) \
+            if self.backend.members is not None else []
+        cuts: list[str] = []
+        if len(members) > IDENTIFIER_RECORDS:
+            cuts.append(f"{len(members) - IDENTIFIER_RECORDS} of {len(members)} start "
+                        f"{here} records")
+        members = members[:IDENTIFIER_RECORDS]
+        if not members:
+            return out
+        common_args = {k: arguments[k] for k in ("as_known_at",) if k in arguments}
+        holders: list[tuple[str, list[str]]] = [(here, members)]
+        # the one record each start names by a to-one link (an assembly order's bulk
+        # batch) describes it too: its values are read the same way
+        links = getattr(self.backend.schema, "link_types", None) or {}
+        for link_id in sorted(links):
+            spec = links[link_id]
+            if spec.get("from") != here or spec.get("to") in (here, goal) \
+                    or ".mentions_" in link_id or link_id.endswith(".same_record_as") \
+                    or str(spec.get("cardinality") or "") not in ("N:1", "1:1"):
+                continue
+            got = self._around(call, self._set_of(members, actor),
+                               {"link_type": link_id, "direction": "forward"}, None,
+                               arguments, common)
+            if got.get("error") or not got.get("set"):
+                continue
+            parents = [got["set"]] if not str(got["set"]).startswith("set:") else list(
+                self.backend.members(actor, got["set"]) or ()) \
+                if self.backend.members is not None else []
+            if len(parents) > IDENTIFIER_RECORDS:
+                cuts.append(f"{len(parents) - IDENTIFIER_RECORDS} of {len(parents)} linked "
+                            f"{spec['to']} records")
+            if parents:
+                holders.append((spec["to"], parents[:IDENTIFIER_RECORDS]))
+        queries: dict[str, set[str]] = {}
+        from ontology.identifiers import find_identifiers
+        for kind, ids in holders:
+            props = {p["name"]: p.get("value_type") for p in (
+                (getattr(self.backend.schema, "object_types", None) or {}).get(kind)
+                or {}).get("properties", ()) if p.get("value_type") in ("text", "identifier")}
+            names = sorted(props)
+            for chunk in range(0, len(names), IDENTIFIER_PROPS):
+                got = self.backend.rows({"set": self._set_of(ids, actor),
+                                         "properties": names[chunk:chunk + IDENTIFIER_PROPS],
+                                         "limit": len(ids), **common_args}, actor)
+                for row in got.get("rows") or () if not got.get("error") else ():
+                    for prop, value in (row.get("values") or {}).items():
+                        text = _value_text(value)
+                        if not text:
+                            continue
+                        found = {m.normalized for m in find_identifiers(text)}
+                        code = text.strip()
+                        if props.get(prop) == "identifier" and kind != here \
+                                and _business_code(code):
+                            found.add(code)   # a parent's own code (never a row id)
+                        for query in found:
+                            queries.setdefault(query, set()).add(f"{kind}.{prop}")
+        from operating import call_limits
+        firm: dict[str, list[str]] = {}
+        leads: list[str] = []
+        said: list[str] = []
+        near = {kind for kind, far in self.backend.distances(goal).items() if far <= 1}
+        resolved: list[str] = []
+        ordered = sorted(queries.items())
+        for query, held in ordered[:IDENTIFIER_QUERIES]:
+            left = call_limits.seconds_left()
+            if left is not None and left < ROUTE_MARGIN_SECONDS:
+                break
+            resolved.append(query)
+            found = call("plx.find", {"query": query, "limit": 10, **common_args})
+            exact = [c for c in found.get("candidates") or ()
+                     if c.get("reason") in FIRM_REASONS and c.get("tier") in FIRM_TIERS
+                     and _object_id(c) and _object_id(c).split(":", 1)[0] != here]
+            types = {_object_id(c).split(":", 1)[0] for c in exact}
+            ids = [_object_id(c) for c in exact]
+            if len(types) == 1 and (len(ids) == 1 or _one_entity(found, ids)):
+                kind = next(iter(types))
+                firm.setdefault(kind, []).extend(i for i in ids if i not in firm.get(kind, ()))
+                if kind in near:
+                    said.append(f"{query} ({', '.join(sorted(held))}) is one {kind}: "
+                                + ", ".join(ids[:3]))
+            else:
+                # a number several things share, or a match by name or reference, of the
+                # goal or a record one link from it: a lead, named, never walked
+                leads += [i for i in (_object_id(c) for c in found.get("candidates") or ())
+                          if i and i.split(":", 1)[0] in near and i not in leads]
+        if len(resolved) < len(ordered):
+            unsearched = [q for q, _held in ordered if q not in set(resolved)]
+            cuts.append(f"{len(unsearched)} of {len(ordered)} identifiers (not resolved: "
+                        + ", ".join(unsearched[:5]) + (", ..." if len(unsearched) > 5
+                                                         else "") + ")")
+        searched = {"sources": ["projection"], "queries": resolved[:16],
+                    "scopes": sorted({p for q in resolved for p in queries[q]})[:16]}
+        reached: list[str] = list(firm.pop(goal, ()))
+        if reached and filters and self.backend.select is not None:
+            # the hop's where selects among the goal records an identifier names
+            got = self.backend.select({"set": self._set_of(reached, actor),
+                                       "filters": filters, **common_args}, actor)
+            if got.get("error"):
+                raise _Refused({"error": got["error"]})
+            out["gaps"] += [g for g in got.get("gaps") or () if isinstance(g, Mapping)]
+            reached = list(got.get("ids") or ())
+        hops: list[dict[str, Any]] = []
+        meta = None
+        for kind, ids in sorted(firm.items()):
+            # walked on only from a record one declared link from the goal: a code that
+            # names a product or a customer reaches every order of it, never this one's
+            if kind == here or self.backend.distances(goal).get(kind) != 1:
+                continue
+            walked = self._route(call, self._set_of(ids, actor), kind, goal, filters,
+                                 arguments, common, 0, actor, by_identifier=False)
+            meta = walked["meta"] or meta
+            if not walked["set"]:
+                said.append(f"that {kind} reaches no {goal} by a declared link")
+            if walked["set"]:
+                more = self.backend.members(actor, walked["set"]) \
+                    if self.backend.members is not None and str(walked["set"]).startswith(
+                        "set:") else [walked["set"]]
+                reached += [i for i in more or () if i not in reached]
+                hops = hops or walked["hops"]
+                said.append(f"{kind} to {goal}: " + " / ".join(
+                    f"{h['link_type']} {h['direction']}" for h in walked["hops"]))
+        if reached:
+            out["set"], out["hops"], out["meta"] = self._set_of(reached, actor), hops, meta
+            out["gaps"].append({
+                "state": "unknown", "reason": "matched_by_identifier",
+                "subject": f"{here} to {goal}"[:700],
+                "detail": (f"no stored link joins them: {len(reached)} {goal} record(s) "
+                           "reached through identifiers these records' own values hold, "
+                           "each an exact identifier of one thing (firm, read under your "
+                           "rights): " + "; ".join(said))[:600], "searched": searched})
+        elif queries and not cuts:
+            out["gaps"].append({
+                "state": "unknown", "reason": "no_identifier_match",
+                "subject": f"{here} to {goal}"[:700],
+                "detail": (f"no stored link and no identifier these records' values hold "
+                           f"reaches a {goal}" + (f"; resolved: {'; '.join(said)}"
+                                                    if said else ""))[:600],
+                "searched": searched})
+        if cuts:
+            # what was never searched is no evidence of absence: the answer is partial
+            out["gaps"].append({
+                "state": "unknown", "reason": "identifier_search_cut",
+                "subject": f"{here} to {goal}"[:700],
+                "detail": ("the identifier search was cut short (its record, identifier or "
+                           "time budget), so the records it reached, if any, are partial "
+                           "and no absence is claimed; not searched: " + "; ".join(cuts)
+                           + (f"; resolved: {'; '.join(said)}" if said and not reached
+                              else ""))[:600],
+                "searched": searched})
+        if leads:
+            out["gaps"].append({
+                "state": "unknown", "reason": "identifier_leads",
+                "subject": f"{here} to {goal}"[:700],
+                "detail": (f"{len(leads)} record(s) match an identifier only by name, "
+                           "reference or a number several things share: leads, not "
+                           "walked: " + ", ".join(leads[:5]))[:600]})
+        return out
 
     def _reachable(self, here: str | None, goal: str, index: int) -> dict[str, int]:
         """The schema's distances to ``goal`` (``distances``) when ``here`` has a declared
