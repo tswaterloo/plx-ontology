@@ -24,6 +24,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest import mock
 from urllib.parse import quote
@@ -1750,6 +1751,31 @@ class StoredTextLookupTests(SharePointHostCase):
         self.assertEqual(found["documents"][0]["mentions"][0]["span"]["origin"]["citation"],
                          self.handle(SCAN) + "#page=2")
         self.assertEqual(extract.call_count, 0)
+
+    def test_each_code_version_keeps_its_own_index_and_old_versions_files_are_pruned(self):
+        from operating import case_tools_host as host
+        root = Path(self.store.root)
+        mine = host.identifier_index_path(root, "a" * 64)
+        other = host.identifier_index_path(root, "b" * 64)
+        self.assertNotEqual(mine, other)
+        self.assertEqual(mine.parent, root)
+        mine.write_text("{}")
+        other.write_text("{}")
+        legacy = root / host.INDEX_FILE
+        legacy.write_text("{}")
+        old = time.time() - host.INDEX_OTHER_VERSION_STALE - 60
+        os.utime(legacy, (old, old))
+        host._prune_indexes(mine)
+        # a recent file of another version (a process still running it) stays; a stale
+        # one and the unversioned file go; this version's own file is never touched
+        self.assertTrue(mine.exists() and other.exists())
+        self.assertFalse(legacy.exists())
+        os.utime(other, (old, old))
+        host._prune_indexes(mine)
+        self.assertFalse(other.exists())
+        self.assertTrue(mine.exists())
+        self.assertEqual(host.identifier_index_path(root), host.identifier_index_path(
+            root, host._index_code()))
 
     def test_the_index_names_what_a_fresh_reading_of_every_captured_file_names(self):
         # Equivalence: per current file, the identifiers by page and the unsearched

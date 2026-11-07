@@ -701,7 +701,12 @@ PARTY_SET = re.compile(
 TOTAL_ASKED = re.compile(
     r"\b(?:total|totals|combined|altogether|in all|overall|sum|add(?:ed|s)? up)\b", re.I)
 COUNT_ASKED = re.compile(r"\b(?:how many|number of|count of)\b", re.I)
-COMPARED = re.compile(r"\b(?:compared?|comparison|versus|vs\.?|than|against)\b", re.I)
+# "than"/"against" compare two periods or sides only before a thing, not before a figure
+# ("worth more than 5000", "against 1,200"): a threshold names one side.
+COMPARED = re.compile(
+    r"\b(?:compared?|comparison|versus|vs\.?)\b"
+    r"|\b(?:than|against)\b(?!\s+(?:(?:about|around|roughly|approximately|at least)\s+)?"
+    r"[$€£]?\s*\d)", re.I)
 # The systems a question or a reply names, by their own words (``asked_system``); a short
 # name never matches inside an identifier (MO-FM-5320 names no system).
 SYSTEM_WORDS = (

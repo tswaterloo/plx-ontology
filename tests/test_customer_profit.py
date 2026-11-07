@@ -426,7 +426,8 @@ class CustomerProfitTests(unittest.TestCase):
                                      "discount", "freight"])
         losing = got["losing_orders"]
         self.assertEqual(losing["text"], "2 of 3 checked orders lost money: −65.00 CAD in "
-                         "all (on item cost only); worst SO-101, −45.00 CAD.")
+                         "all (on item cost only); worst SO-101, −45.00 CAD. "
+                         "1 of 4 invoiced orders not checked.")
         decided = [o for o in self.answer["orders"] if o["decided"]]
         self.assertEqual(losing["amount"], sum(o["margin"] for o in decided if o["margin"] < 0))
         self.assertEqual(len(losing["handles"]), 2)
@@ -448,6 +449,13 @@ class CustomerProfitTests(unittest.TestCase):
         self.assertEqual({(d["currency"], d["amount"]) for d in mixed},
                          {("CAD", Decimal(-65)), ("USD", Decimal(-5))})
         self.assertEqual(cp.customer_drivers([], [], {}), [])
+
+    def test_losing_orders_line_says_when_invoiced_orders_have_no_checked_margin(self):
+        cad = [o for o in self.world_orders() if o.decided]
+        line = lambda n: next(d["text"] for d in cp.customer_drivers(cad, [], {}, unchecked=n)
+                              if d["kind"] == "losing_orders")
+        self.assertNotIn("not checked", line(0))
+        self.assertTrue(line(3).endswith(f" 3 of {len(cad) + 3} invoiced orders not checked."))
 
     def test_margin_per_product_sums_to_the_customer_margin(self):
         got = self.answer

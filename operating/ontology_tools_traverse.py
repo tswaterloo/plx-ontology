@@ -2715,11 +2715,20 @@ def prime_store_facts(store: str | Path, cell_families: Sequence[str] = (), *,
         return _prime_store_facts(store, kept, keys, workers=workers, also=also)
 
 
+# How long a process waits for another's read of the same store's facts before it reads
+# them whole itself (a stuck holder never stalls every host that opens the layer).
+FACTS_LOCK_WAIT_SECONDS = 600.0
+
+
 @contextmanager
-def _facts_lock(store: str) -> Iterator[None]:
+def _facts_lock(store: str, *, wait: float | None = None) -> Iterator[None]:
     """An exclusive lock on reading ``store``'s facts, shared by every process (a lock file
-    beside the kept facts); a directory this process may not write locks nothing."""
+    beside the kept facts); a directory this process may not write locks nothing. After
+    ``wait`` seconds (``FACTS_LOCK_WAIT_SECONDS``) without the lock it yields anyway: the
+    caller then reads the whole set itself, never a part of one."""
     import fcntl
+    import time
+    limit = FACTS_LOCK_WAIT_SECONDS if wait is None else wait
     try:
         lock = facts_path(store).with_suffix(".lock")
         fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
@@ -2727,7 +2736,15 @@ def _facts_lock(store: str) -> Iterator[None]:
         yield
         return
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        end = time.monotonic() + limit
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= end:
+                    break
+                time.sleep(0.05)
         yield
     finally:
         os.close(fd)

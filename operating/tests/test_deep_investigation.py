@@ -481,6 +481,23 @@ class OpenPartsContinue(Temp):
         self.assertEqual(open_parts("How many POs in total this year?",
                                     decision("12 POs.", "count")), [])
 
+        # a threshold is one side: "than"/"against" before a figure asks no second total
+        for threshold in ("POs worth more than 5000 in total this year?",
+                          "Total of POs against $1,200 this year?"):
+            self.assertFalse(deep.COMPARED.search(threshold), threshold)
+            self.assertEqual(open_parts(threshold, decision("One total.", "sum")), [])
+        self.assertTrue(deep.COMPARED.search("Total spend this year rather than last year?"))
+        self.assertTrue(deep.COMPARED.search("Total spend this year against last year?"))
+
+        # the answer-duty checks follow the 60 s cutoff: with under 60 s of the session
+        # left the answer in hand is kept, at 60 s they send back
+        def with_left(seconds):
+            late = deep.Budget(deadline=now + 100, max_steps=30, question=totals,
+                               ends_at=now + seconds)
+            return late.after_answer(decision("This year 5 POs.", None), now)
+        self.assertIsNone(with_left(deep.REQUIRED_PARTS_SECONDS - 1))
+        self.assertIn("on each side it compares", with_left(deep.REQUIRED_PARTS_SECONDS)["open"][0])
+
         wrote = "Which suppliers have lots in quarantine, and has anyone emailed them?"
         once = [("plx.find", {"query": "quarantine"}),
                 ("plx.documents", {"query": "quarantine", "sources": ["graph_mail"]})]

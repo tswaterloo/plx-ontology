@@ -2943,11 +2943,40 @@ _INDEXES_LOCK = threading.Lock()
 _STATE_KEYS: dict[str, dict[int, tuple[tuple, str]]] = {}
 
 
-def identifier_index_path(store_root: str | Path) -> Path:
+# A kept index of another code version is removed once it has not been written for this
+# long (a process still running that version rewrites its own at least every
+# ``PERSIST_EVERY`` seconds).
+INDEX_OTHER_VERSION_STALE = 6 * 3600.0
+
+
+def identifier_index_path(store_root: str | Path, code: str | None = None) -> Path:
     """Where the identifier index of the SharePoint capture under ``store_root`` (the
-    store's own directory, ``SharePointCaptureStore.root``) is kept: beside its
-    database."""
-    return Path(store_root) / INDEX_FILE
+    store's own directory, ``SharePointCaptureStore.root``) is kept: beside its database,
+    named by the code version that makes it (``_index_code``), so processes running
+    different code never overwrite each other's file and rebuild it in turn."""
+    code = _index_code() if code is None else code
+    stem, suffix = INDEX_FILE.rsplit(".", 1)
+    return Path(store_root) / (INDEX_FILE if code is None else f"{stem}-{code[:16]}.{suffix}")
+
+
+def _prune_indexes(path: Path, *, now: float | None = None) -> None:
+    """Remove the kept indexes beside ``path`` of other code versions (and the unversioned
+    file older code kept) that nobody has written for ``INDEX_OTHER_VERSION_STALE``."""
+    now = time.time() if now is None else now
+    stem, suffix = INDEX_FILE.rsplit(".", 1)
+    try:
+        for other in path.parent.iterdir():
+            name = other.name
+            if other == path or not (name == INDEX_FILE or (
+                    name.startswith(stem + "-") and name.endswith("." + suffix))):
+                continue
+            try:
+                if now - other.stat().st_mtime > INDEX_OTHER_VERSION_STALE:
+                    other.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _index_row(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -3092,6 +3121,7 @@ def _save_index(path: Path, code: str, files: Mapping[str, Any]) -> None:
     files = dict(files)
     _persist(path, lambda: json.dumps({"format": INDEX_FORMAT, "code": code, "files": files},
                                       sort_keys=True, separators=(",", ":")))
+    _prune_indexes(path)
 
 
 # The kept files (identifier index, file facts) only spare a new process reading the
@@ -3525,7 +3555,7 @@ def file_index(store: Any) -> dict[str, dict[str, Any]]:
 
 def _file_index(store: Any) -> dict[str, dict[str, Any]]:
     code = _index_code()
-    path = identifier_index_path(store.root)
+    path = identifier_index_path(store.root, code)
     current = store.db.execute(_INDEX_STATE_SQL).fetchall()
     facts = _version_facts(store, [row["version_id"] for row in current])
     # Each version's key, kept per store file while its state is the same (a capture

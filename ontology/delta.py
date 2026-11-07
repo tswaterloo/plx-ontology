@@ -1676,9 +1676,6 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     state.add(source, keys)
                 state.timed_out(timed)
             prune(delta_dir, keep={Path(item["store"]) for item in layers})
-            report["layer_facts"] = keep_layer_facts(layer["store"],
-                                                   workers=report.get("workers") or 1)
-            t = lap("layer_facts", t)
             if environ.get("PLX_DELTA_PG") == "1" or base.postgres:
                 # the same layer into the Postgres ontology, over the generation it holds
                 # (``operating.pg.ontology_delta``), with any listed layer an earlier cycle
@@ -1693,6 +1690,12 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                 except Exception as exc:  # noqa: BLE001 - reported; SQLite layers serve
                     report["postgres"] = {"applied": False,
                                           "error": f"{type(exc).__name__}"[:120]}
+            t = lap("postgres", t)
+            # the facts are read and kept after the Postgres apply: a layer is served
+            # from Postgres first, and a slow facts read never delays its apply
+            report["layer_facts"] = keep_layer_facts(layer["store"],
+                                                   workers=report.get("workers") or 1)
+            t = lap("layer_facts", t)
         return report
     finally:
         if budget_was is None:
@@ -2119,6 +2122,11 @@ def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> None:
         if path.name.startswith("delta-") and path.is_file() and \
                 now - path.stat().st_mtime > grace:
             path.unlink(missing_ok=True)
+    try:   # the kept facts and lock files of layers that no longer exist go with them
+        from operating.ontology_tools_traverse import _prune_facts
+        _prune_facts(delta_dir)
+    except Exception:  # noqa: BLE001 - housekeeping; the next prune retries
+        pass
     sweep(delta_dir)
 
 

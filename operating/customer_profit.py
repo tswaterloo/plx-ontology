@@ -1193,7 +1193,8 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         out["breakdown"]["previous"] = previous_sales(focus_order, decided)
     out["products"] = products(decided, blocking, covered)
     out["drivers"] = drivers(out["breakdown"], items) if out["breakdown"] else []
-    out["customer_drivers"] = customer_drivers(decided, out["products"], items)
+    out["customer_drivers"] = customer_drivers(decided, out["products"], items,
+                                              unchecked=len(blocking))
     out["why"] = why(out["drivers"])
     out["next_action"] = next_action(out, visible, items)
     out["items"] = items
@@ -1542,7 +1543,8 @@ CUSTOMER_DRIVER_KINDS = ("losing_orders", "low_margin_item", "credit", "discount
 
 
 def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[str, Any]],
-                     items: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+                     items: Mapping[str, Mapping[str, Any]],
+                     unchecked: int = 0) -> list[dict[str, Any]]:
     """Why the customer makes or loses money, over the orders with a checked margin only
     (``decided``: never a withheld or unchecked order), each currency on its own (nothing
     converted or summed across currencies), every figure a Decimal sum of the orders' own
@@ -1556,10 +1558,14 @@ def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[st
     * ``discount`` and ``freight``: not established (``established`` false), said with where
       they would live: discounts are already netted out of revenue and not broken out, and
       inbound freight is expensed outside item cost (BC) or in Sage's item cost as costed.
+    ``unchecked``: invoiced orders without a checked margin; the losing-orders line then says
+    so ("3 of 12 invoiced orders not checked") so it never reads as a customer total.
     Nothing when no order has a checked margin."""
     if not decided:
         return []
     out: list[dict[str, Any]] = []
+    unchecked_words = (f" {unchecked} of {len(decided) + unchecked} invoiced orders not "
+                       "checked." if unchecked > 0 else "")
     currencies = sorted({o.currency for o in decided if o.currency}) or [None]
     for cur in currencies:
         mine = [o for o in decided if o.currency == cur or len(currencies) == 1]
@@ -1572,7 +1578,7 @@ def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[st
                 "text": f"{len(losing)} of {len(mine)} checked order"
                         f"{'s' if len(mine) != 1 else ''} lost money: "
                         f"{_signed(lost, cur)} in all ({MARGIN_BASIS}); worst "
-                        f"{worst.number}, {_signed(worst.margin, cur)}.",
+                        f"{worst.number}, {_signed(worst.margin, cur)}." + unchecked_words,
                 "handles": [o.handle for o in losing if o.handle][:4]})
         credited = [ln for o in mine for ln in o.lines if ln.credit_amount]
         if credited:

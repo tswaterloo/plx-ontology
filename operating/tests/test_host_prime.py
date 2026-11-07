@@ -160,6 +160,43 @@ class HostPrimeTests(unittest.TestCase):
             self.assertEqual(reads.call_count, 3)
         self.assertEqual(self.answers(fx.SALES)[1].keys() & set(FACT_READS), set())
 
+    def test_a_stuck_facts_lock_times_out_into_a_whole_read_never_a_partial_one(self):
+        import fcntl
+        store = Path(self.temp.name) / "locked.sqlite"
+        store.write_bytes(b"x")
+        lock = traverse.facts_path(store).with_suffix(".lock")
+        holder = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        try:
+            with traverse._facts_lock(str(store), wait=0.2):
+                reached = True   # waited its limit, then went on to read the whole set
+        finally:
+            os.close(holder)
+        self.assertTrue(reached)
+        with traverse._facts_lock(str(store), wait=0.2):    # a free lock is taken at once
+            pass
+
+    def test_facts_and_lock_files_of_layers_that_no_longer_exist_are_removed(self):
+        from ontology import delta
+        directory = Path(self.temp.name) / "pruned"
+        directory.mkdir()
+        gone = directory / "delta-gone.sqlite"
+        kept = directory / "delta-kept.sqlite"
+        gone.write_bytes(b"a")
+        kept.write_bytes(b"b")
+        for layer in (gone, kept):
+            facts = traverse.facts_path(layer)
+            facts.write_text("{}")
+            facts.with_suffix(".lock").write_text("")
+        names = {traverse.facts_path(gone).name, traverse.facts_path(gone).with_suffix(
+            ".lock").name}
+        gone.unlink()
+        delta.prune(directory, keep={kept.resolve()})
+        left = {e.name for e in directory.iterdir()}
+        self.assertFalse(names & left, left)
+        self.assertTrue({traverse.facts_path(kept).name,
+                         traverse.facts_path(kept).with_suffix(".lock").name} <= left)
+
     def forget_memory(self) -> None:
         traverse._LOADED.clear()
         traverse._BACKGROUND.clear()
