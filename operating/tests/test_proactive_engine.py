@@ -351,8 +351,18 @@ class DetectorTest(Engine):
         summary = self.run_engine(world, None, qc_link_types=None)
         self.assertEqual(pe.declared_qc_links(), ())   # the schema serves no QC relation yet
         self.assertEqual(summary["detectors"]["receipt_without_qc"], "blocked")
+        # the seeded store holds QC records: only the missing relation is said
         self.assertEqual(summary["detector_reasons"]["receipt_without_qc"],
                          ["qc_link_not_declared"])
+        bare = World()
+        bare.obj("Receipt", {"received_date": "2026-10-01"})
+        self.store = self.dir / "no-qc.sqlite"
+        self.inbox = pe.inbox_path(self.store)
+        none = self.run_engine(bare, None, qc_link_types=None, only=["receipt_without_qc"])
+        # no QC record of any kind in the store: said, and still blocked (never "none")
+        self.assertEqual(none["detectors"]["receipt_without_qc"], "blocked")
+        self.assertEqual(none["detector_reasons"]["receipt_without_qc"],
+                         ["qc_link_not_declared", "no_qc_record_captured"])
         self.assertEqual(summary["detectors"]["order_without_customer_po"], "not_configured")
         self.assertNotIn("receipt_without_qc", summary["gaps_by_kind"])
 
@@ -2164,6 +2174,49 @@ class PostgresStoreTest(Engine):
                          expected)
         self.assertIn(("conflicting_quantity", min(ids["conflict_a"], ids["conflict_b"])),
                       expected)
+
+
+class ExclusionReachesTheEngine(unittest.TestCase):
+    """A pass started without the exclusion in its environment (outside the units) reads it
+    from the passes' env file, in the engine and in every pool worker; without one it stays
+    blocked, saying why."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name)
+        (self.state / "projection").mkdir()
+        self.store = self.state / "projection" / "ontology.sqlite"
+        self.env = self.state / "proactive.env"
+        self.env.write_text(f"PLX_EXCLUDED_PEOPLE_OIDS={EXCLUDED_OID}\n", encoding="utf-8")
+        os.chmod(self.env, 0o600)
+
+    def environ(self, **extra: str):
+        base = {k: v for k, v in os.environ.items() if not k.startswith("PLX_EXCLU")}
+        return mock.patch.dict(os.environ, {**base, **extra}, clear=True)
+
+    def test_engine_and_workers_get_the_exclusion_from_the_env_file(self) -> None:
+        from operating import proactive_pool
+        config = mock.Mock(tenant="plx", principal="svc:engine", mirror_audience="m.json",
+                           capture_audience=None)
+        with self.environ(PLX_EXCLUSION_ENV_FILE=str(self.env)):
+            self.assertIsNone(pe._people(self.store).unavailable)
+            spec = proactive_pool.WorkerSpec.from_host_config(config, self.state, self.store)
+        self.assertEqual(dict(spec.environ), {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED_OID})
+        with self.environ(PLX_EXCLUSION_ENV_FILE=str(self.state / "absent.env")):
+            guard = pe._people(self.store)
+            spec = proactive_pool.WorkerSpec.from_host_config(config, self.state, self.store)
+        self.assertEqual(guard.unavailable, "excluded_people_oids_absent")
+        self.assertEqual(spec.environ, ())
+
+    def test_vendor_rule_blocked_without_the_exclusion_says_why(self) -> None:
+        from operating import proactive_events as ev
+        found = ev.vendor_no_reply(None, AS_OF, gap=pe._gap, cites=pe._cites,
+                                   result=pe._result, people=people(unavailable=True),
+                                   orders={})
+        self.assertEqual((found["status"], found["reasons"]),
+                         ("blocked", ["people_exclusion_unavailable",
+                                      "excluded_people_oids_absent"]))
 
 
 if __name__ == "__main__":

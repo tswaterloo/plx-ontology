@@ -25,7 +25,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -46,6 +48,55 @@ KINDS = frozenset({"mailbox", "chat_member", "chat", "sender", "recipient",
 CODES = frozenset({"excluded_people_oids_absent", "excluded_people_oids_invalid",
                    "excluded_people_file_unreadable", "excluded_people_file_in_git",
                    "excluded_people_unresolved"})
+
+# The unattended passes' env file (deploy/systemd/plx-proactive*.service EnvironmentFile):
+# a process started outside those units (an operator's or a harness's run of the engine)
+# reads the exclusion from it when its own environment names none.
+ENV_FILE_SETTING = "PLX_EXCLUSION_ENV_FILE"
+DEFAULT_ENV_FILE = "~/.config/plx/proactive.env"
+_ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+
+def environ_with_exclusion(environ: Mapping[str, str] | None = None, *,
+                           env_file: str | Path | None = None) -> Mapping[str, str]:
+    """``environ`` (default ``os.environ``) plus the ``PLX_EXCLUDED_PEOPLE_*`` entries of
+    the passes' env file when ``environ`` names neither ``ENV_IDS`` nor ``ENV_FILE``.
+
+    The file is ``env_file``, else ``PLX_EXCLUSION_ENV_FILE`` (empty: none), else
+    ``DEFAULT_ENV_FILE``. It is read only when it is a regular file owned by this user,
+    readable by nobody else and outside git; only ``PLX_EXCLUDED_PEOPLE_*`` lines are
+    taken (systemd ``EnvironmentFile`` syntax: ``KEY=value``, optional quotes, ``#``
+    comments). Anything else leaves ``environ`` as it is, so the guard built from it stays
+    unavailable (fail closed); nothing is printed or returned but the merged mapping."""
+    environ = os.environ if environ is None else environ
+    if environ.get(ENV_IDS) is not None or environ.get(ENV_FILE):
+        return environ
+    named = env_file if env_file is not None else environ.get(ENV_FILE_SETTING,
+                                                              DEFAULT_ENV_FILE)
+    if not named:
+        return environ
+    path = Path(named).expanduser()
+    try:
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() \
+                or info.st_mode & 0o077 or _inside_git(path.resolve()):
+            return environ
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return environ
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _ENV_LINE.match(line)
+        if match is None or line.lstrip().startswith("#"):
+            continue
+        key, value = match.groups()
+        if not key.startswith("PLX_EXCLUDED_PEOPLE_"):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        found[key] = value
+    return {**environ, **found} if found else environ
+
 
 _GUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

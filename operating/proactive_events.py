@@ -1025,7 +1025,9 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     (``po_status.StoreSource.colliding``): a number-text mention of it (a lead link) may be
     the other order's, so it ties no message to this order."""
     if people is None or getattr(people, "unavailable", None):
-        return result([], status="blocked", reasons=["people_exclusion_unavailable"])
+        # the guard's own code (an enum, never an ID) says why: no list, a bad entry, ...
+        cause = getattr(people, "unavailable", None) or "exclusion_not_loaded"
+        return result([], status="blocked", reasons=["people_exclusion_unavailable", cause])
     domains = tuple(getattr(people, "internal", ()) or ())
     if not domains:
         return result([], status="blocked", reasons=["tenant_domains_unknown"])

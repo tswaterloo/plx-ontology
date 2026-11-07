@@ -469,5 +469,52 @@ class OneDriveGuardTests(te.EstateCase):
         self.assertEqual([u for u in self.urls() if "/v1.0/users" in u], [])
 
 
+class ExclusionEnvFile(unittest.TestCase):
+    """A process started outside the passes' units reads the exclusion from their env file;
+    anything doubtful about the file leaves the guard unavailable (fail closed)."""
+
+    OID = "00000000-0000-4000-8000-0000000000e7"
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(self.dir)], check=False))
+        self.file = self.dir / "proactive.env"
+        self.file.write_text(f"# the exclusion only\nPLX_EXCLUDED_PEOPLE_OIDS=\"{self.OID}\"\n"
+                             "OTHER_SECRET=never-merged\n", encoding="utf-8")
+        os.chmod(self.file, 0o600)
+
+    def guard(self, environ: dict) -> people_exclusion.PeopleExclusion:
+        merged = people_exclusion.environ_with_exclusion(environ)
+        self.assertNotIn("OTHER_SECRET", merged)       # only the exclusion's own keys
+        return people_exclusion.PeopleExclusion.from_env(merged)
+
+    def test_env_file_supplies_the_exclusion_when_the_environment_has_none(self) -> None:
+        guard = self.guard({"PLX_EXCLUSION_ENV_FILE": str(self.file)})
+        self.assertIsNone(guard.unavailable)
+        self.assertEqual(guard.count, 1)
+
+    def test_the_environment_wins_over_the_file(self) -> None:
+        other = "00000000-0000-4000-8000-0000000000e8"
+        merged = people_exclusion.environ_with_exclusion(
+            {"PLX_EXCLUDED_PEOPLE_OIDS": other, "PLX_EXCLUSION_ENV_FILE": str(self.file)})
+        self.assertEqual(merged["PLX_EXCLUDED_PEOPLE_OIDS"], other)
+
+    def test_doubtful_file_fails_closed(self) -> None:
+        os.chmod(self.file, 0o644)                     # readable by others: not trusted
+        self.assertEqual(self.guard({"PLX_EXCLUSION_ENV_FILE": str(self.file)}).unavailable,
+                         "excluded_people_oids_absent")
+        os.chmod(self.file, 0o600)
+        for named in (str(self.dir / "missing.env"), "", str(self.dir)):
+            self.assertEqual(self.guard({"PLX_EXCLUSION_ENV_FILE": named}).unavailable,
+                             "excluded_people_oids_absent", named)
+        self.file.write_text("PLX_EXCLUDED_PEOPLE_OIDS=not-an-id\n", encoding="utf-8")
+        self.assertEqual(self.guard({"PLX_EXCLUSION_ENV_FILE": str(self.file)}).unavailable,
+                         "excluded_people_oids_invalid")
+        link = self.dir / "link.env"
+        link.symlink_to(self.file)
+        self.assertEqual(self.guard({"PLX_EXCLUSION_ENV_FILE": str(link)}).unavailable,
+                         "excluded_people_oids_absent")
+
+
 if __name__ == "__main__":
     unittest.main()

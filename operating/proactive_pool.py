@@ -96,7 +96,11 @@ class WorkerSpec:
     @classmethod
     def from_host_config(cls, config: Any, state_dir: Path, store: Path,
                          environ: Mapping[str, str] | None = None) -> "WorkerSpec":
-        env = os.environ if environ is None else environ
+        from integrations.people_exclusion import environ_with_exclusion
+
+        # the engine's own resolution (``proactive_engine._people``): every worker reads
+        # with the exclusion the engine clears mail with, or with none (fail closed)
+        env = environ_with_exclusion(os.environ if environ is None else environ)
         return cls(str(state_dir), str(store), config.tenant, config.principal,
                    str(config.mirror_audience),
                    None if config.capture_audience is None else str(config.capture_audience),

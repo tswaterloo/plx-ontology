@@ -1520,7 +1520,14 @@ def _receipt_without_qc(st: _Store, as_of: date, link_types: Sequence[str]
                         ) -> dict[str, Any]:
     name = "receipt_without_qc"
     if not link_types:
-        return _result([], status="blocked", reasons=["qc_link_not_declared"])
+        # blocked, never a clean "none": the receiving QC FileMaker keeps on each receiving
+        # line (its QC lot and status, ``Lot.qc_status``) has no declared QC relation
+        # yet; say also when no dedicated QC record (the
+        # Portal's incoming QC and eQMS tables, not served) is in the store at all
+        reasons = ["qc_link_not_declared"]
+        if not any(st._type_count(t) for t in QC_TYPES):
+            reasons.append("no_qc_record_captured")
+        return _result([], status="blocked", reasons=reasons)
     receipts = st.values(("Receipt",), ("received_date", "receipt_number"))
     lines_of: dict[str, set[str]] = defaultdict(set)
     line_marks: dict[tuple[str, str], str] = {}
@@ -2959,16 +2966,20 @@ def _open_inbox(path: Path) -> sqlite3.Connection:
 
 
 def _people(store_path: Path) -> Any:
-    """The people exclusion (environment) with the tenant's mail directory and domains
+    """The people exclusion (environment, else the passes' env file:
+    ``integrations.people_exclusion.environ_with_exclusion``) with the tenant's mail
+    directory and domains
     from the mail capture of the state directory ``store_path`` sits in (the projection
     file, or a generation's store under it); unreadable: an unavailable guard."""
+    from integrations.people_exclusion import environ_with_exclusion
     from .chunking.permissions import load_exclusion
 
     parent = store_path.parent
     state = parent.parent.parent.parent if parent.parent.name == "generations" \
         else parent.parent
     try:
-        return load_exclusion(state)
+        # the passes' env file when this process was started without the exclusion
+        return load_exclusion(state, environ_with_exclusion())
     except Exception:  # noqa: BLE001 - no directory: the rule is blocked, never guessed
         return None
 
