@@ -1882,35 +1882,93 @@ def _said_values(view: Any) -> list[str] | None:
 
 # A name or code shorter than this names too much to tie a record to the question.
 MIN_ANCHOR_CHARS = 4
+# The question's things are resolved once, at the session's start (``_told_question``),
+# within START_ANCHOR_SECONDS; the answer gate never waits on a search: a session told no
+# question, or whose start-up resolution did not finish, resolves at its submission within
+# SUBMIT_ANCHOR_SECONDS (a warm second try), and what is still unresolved then is not on
+# the question (fail closed). Measured 2026-11-06: one plx.find of a question's names took
+# 75 s of a 78 s submission under load 40, and sessions were killed waiting on it.
+START_ANCHOR_SECONDS = 45.0
+SUBMIT_ANCHOR_SECONDS = 10.0
+# The link walk of a submission's relevance check (``_linked_to``) is bounded too: one not
+# finished in time connects nothing.
+LINK_SECONDS = 10.0
+# The session's own finds kept for the relevance check (``_kept_find``).
+MAX_KEPT_FINDS = 50
+
+
+def _named_entities(entities: Any) -> list[Mapping[str, Any]]:
+    """Of ``entities`` (``objective_runner.resolve_entities``' shape), those the resolver
+    matched or derived as one thing."""
+    return [entity for entity in entities or () if isinstance(entity, Mapping)
+            and entity.get("status") in ("match", "derived")]
+
+
+def _entity_records(entities: Iterable[Mapping[str, Any]]) -> set[str]:
+    """The object ids of the records ``entities`` holds as the same thing."""
+    out: set[str] = set()
+    for entity in entities:
+        for record in entity.get("records") or ():
+            if not isinstance(record, Mapping) or record.get("status") not in (
+                    "match", "derived"):
+                continue
+            # a find result's record holds its object; a resolved one its id
+            held = record.get("object")
+            oid = held.get("object_id") if isinstance(held, Mapping) \
+                else record.get("object_id")
+            if isinstance(oid, str):
+                out.add(oid)
+    return out
 
 
 def _question_anchors(server: "MCPServer", asked: str,
-                      records: set[str] | None = None) -> frozenset[str]:
+                      records: set[str] | None = None, *,
+                      entities: Sequence[Mapping[str, Any]] | None = None,
+                      limit: float | None = None,
+                      whole: list[bool] | None = None) -> frozenset[str]:
     """The names and codes, as letters and digits, the question ``asked`` names records
     by: each identifier it writes (the one grammar, ``find_identifiers``) and each entity
-    its reader's ``plx.find`` matches or reads out of a longer reference
-    (``objective_runner.resolve_entities``, one call); a code's number alone too.
-    ``records`` gets the object ids of those entities' records (``_linked_to``)."""
+    its reader's resolver matches or reads out of a longer reference; a code's number
+    alone too. ``records`` gets the object ids of those entities' records (``_linked_to``).
+    ``entities``: the question's things as already resolved for this reader (the app's
+    front door, ``objective_runner.resolve_entities``), so no search runs; None: resolved
+    here by one ``plx.find`` (``resolve_entities``) within ``limit`` seconds (None: no
+    limit). ``whole`` gets False when that resolution did not finish (timed out or
+    failed): the anchors are then only what is known, never more."""
     from ontology.identifiers import find_identifiers
     from .objective_runner import resolve_entities
     if server.ontology is None:
         return frozenset()
     mentions = [mention.text for mention in find_identifiers(asked)]
-    try:
-        gated = server.case_runtime.employee_gate(server.actor)
-        host = server._ontology_host()
-        with host.request():
-            entities = resolve_entities(asked, lambda arguments: host.call(
-                "plx.find", arguments, gated))
-    except Exception:  # noqa: BLE001 - the question's own identifiers still stand
-        entities = []
-    named = [entity for entity in entities if entity.get("status") in ("match", "derived")]
+    if entities is None:
+        try:
+            gated = server.case_runtime.employee_gate(server.actor)
+            host = server._ontology_host()
+            with call_limits.bounded(limit), host.request():
+                entities = resolve_entities(asked, lambda arguments: host.call(
+                    "plx.find", arguments, gated))
+            if entities is None:   # the lookup failed: only what is known, never more
+                entities = []
+                if whole is not None:
+                    whole.append(False)
+        except call_limits.ToolTimedOut:
+            entities = []   # not resolved in time: the question's identifiers still stand
+            if whole is not None:
+                whole.append(False)
+        except Exception:  # noqa: BLE001 - the question's own identifiers still stand
+            entities = []
+            if whole is not None:
+                whole.append(False)
+    named = _named_entities(entities)
     mentions += [entity.get("mention") for entity in named]
     if records is not None:
-        records.update(record["object_id"] for entity in named
-                       for record in entity.get("records") or ()
-                       if record.get("status") in ("match", "derived")
-                       and isinstance(record.get("object_id"), str))
+        records.update(_entity_records(named))
+    return _anchor_keys(mentions)
+
+
+def _anchor_keys(mentions: Iterable[Any]) -> frozenset[str]:
+    """``mentions`` as relevance anchors: each as letters and digits when long enough,
+    and a code's number alone."""
     anchors = set()
     for mention in mentions:
         key = _letters_digits(str(mention or ""))
@@ -1920,6 +1978,43 @@ def _question_anchors(server: "MCPServer", asked: str,
         if core:
             anchors.add(core.group(1))
     return frozenset(anchors)
+
+
+def _found_on_question(asked: str, finds: Iterable[tuple[Mapping[str, Any], Any]]
+                       ) -> tuple[list[Any], set[str]]:
+    """What this session's own finds (``finds``: arguments, result) resolved of the
+    question ``asked``: (mentions, record ids). Only a find the question itself decides:
+    a ``mode: entities`` find of text the question writes, whose things the resolver
+    matched or derived; or a find of an identifier the question writes
+    (``find_identifiers``), found as exactly one record. A find of any other words adds
+    nothing, so an agent's own search never widens what the question names."""
+    from ontology.identifiers import find_identifiers
+    said = _letters_digits(asked)
+    codes = {_letters_digits(mention.text) for mention in find_identifiers(asked)}
+    mentions: list[Any] = []
+    ids: set[str] = set()
+    for arguments, result in finds:
+        if not isinstance(arguments, Mapping) or not isinstance(result, Mapping):
+            continue
+        if arguments.get("mode") == "entities":
+            text = _letters_digits(str(arguments.get("text") or arguments.get("query") or ""))
+            if len(text) < MIN_ANCHOR_CHARS or text not in said:
+                continue
+            named = [entity for entity in _named_entities(result.get("entities"))
+                     if _letters_digits(str(entity.get("mention") or "")) in said]
+            mentions += [entity.get("mention") for entity in named]
+            ids |= _entity_records(named)
+            continue
+        query = _letters_digits(str(arguments.get("query") or ""))
+        candidates = [c for c in result.get("candidates") or () if isinstance(c, Mapping)]
+        if query not in codes or result.get("status") != "found" or len(candidates) != 1:
+            continue
+        oid = (candidates[0].get("object") or {}).get("object_id") \
+            if isinstance(candidates[0].get("object"), Mapping) else None
+        if isinstance(oid, str):
+            mentions.append(arguments.get("query"))
+            ids.add(oid)
+    return mentions, ids
 
 
 # A record a question's record links to is on the question too: a line, an entry, a
@@ -2251,6 +2346,10 @@ class MCPServer:
         # The question's records as the answer gate's relevance check names them
         # (``_relevance``), for the question last asked.
         self._anchors: dict[str, frozenset[str]] = {}
+        # whether the last resolution of them finished (``_resolve_anchors``), and the
+        # session's own finds (``_kept_find``)
+        self._anchors_whole = True
+        self._finds: list[tuple[dict[str, Any], Any]] = []
         # The last answer decision plx.case_get gave this session (``_answer``), and
         # whether a later submission the gate could not decide cleared it
         # (``_cleared_note``).
@@ -2314,6 +2413,11 @@ class MCPServer:
             if not host_code and "id" not in message:
                 self._peer_import(message.get("params"))
             return None   # never answered, never a tool call
+        if message.get("method") == host_peers.QUESTION_METHOD:
+            # the gate's own notice (its client's is never forwarded): never answered
+            if not host_code and "id" not in message and self.ready:
+                self._told_question(message.get("params"))
+            return None
         if confirmation_forms.is_response(message):
             # The person's answer to a confirmation form (a steward's playbook adoption or a
             # document-fields confirmation), answered by the principal it asked from any of
@@ -2421,6 +2525,8 @@ class MCPServer:
                 arguments = call_limits.clamp_arguments(name, arguments, limit)
                 with writing_as(self._claim_holder), call_limits.bounded(limit):
                     built = self._call(name, arguments)
+                if name == "plx.find" and not host_code:
+                    self._kept_find(arguments, built)
                 escalation = run.record(name, error=False, host_code=host_code,
                                         escalation=self._escalation(name, built))
                 value = built if host_code else _firewall(built, name)
@@ -2693,27 +2799,68 @@ class MCPServer:
         self._last_decision = {"outcome": gated["outcome"], "claims": gated["claims"]}
         return result
 
+    def _told_question(self, params: Any) -> None:
+        """The gate's notice of the session's question (``host_peers.QUESTION_METHOD``),
+        at the session's start: the question's anchors resolved now, once, never at its
+        submission (``_question_anchors``): from ``entities`` when the app resolved them
+        before the session (no search), else by one search within
+        ``START_ANCHOR_SECONDS``."""
+        if not isinstance(params, Mapping) or not isinstance(params.get("question"), str):
+            return
+        asked = params["question"].strip()
+        if not asked or self.ontology is None:
+            return
+        given = params.get("entities")
+        entities = [entity for entity in given if isinstance(entity, Mapping)] \
+            if isinstance(given, list) else None
+        self._resolve_anchors(asked, entities, START_ANCHOR_SECONDS)
+
+    def _resolve_anchors(self, asked: str, entities: Sequence[Mapping[str, Any]] | None,
+                         limit: float | None) -> None:
+        whole: list[bool] = []
+        records: set[str] = set()
+        anchors = _question_anchors(self, asked, records, entities=entities, limit=limit,
+                                    whole=whole)
+        self._anchors.clear()   # one question per session: the last one asked
+        self._anchors[asked] = anchors
+        self._anchor_records = (asked, records, {})
+        self._anchors_whole = not whole
+
+    def _kept_find(self, arguments: Any, built: Any) -> None:
+        """Keep a ``plx.find`` this session made (its arguments and result) for the
+        relevance check (``_found_on_question``), at most ``MAX_KEPT_FINDS``."""
+        if isinstance(arguments, Mapping) and isinstance(built, Mapping) \
+                and len(self._finds) < MAX_KEPT_FINDS:
+            self._finds.append((dict(arguments), built))
+
     def _relevance(self, asked: Any
                    ) -> Callable[[Sequence[str], Callable[[str], Any]], bool | None] | None:
         """The answer gate's relevance check (``answer_gate.gate_answer``'s ``relevant``)
         for the question ``asked``: a cited record is on the question when its row or text
         names a record the question names (``_question_anchors``: its identifiers and the
-        entities this reader's ``plx.find`` matches), compared on letters and digits
-        alone, value by value; a code's number alone counts too, the way another system
-        writes it. A record that moved on since it was read is read as the revision its
-        claim cites. None (no check) when the question names none. A cited record that
-        cannot be read now is undecided (its own check decides it)."""
+        entities this reader's resolver matches, resolved at the session's start, with
+        what the session's own finds resolved of the question, ``_found_on_question``),
+        compared on letters and digits alone, value by value; a code's number alone counts
+        too, the way another system writes it. A record that moved on since it was read is
+        read as the revision its claim cites. None (no check) when the question names none
+        and its resolution finished; when it did not, an unconnected claim is refused
+        (fail closed). A cited record that cannot be read now is undecided (its own check
+        decides it)."""
         if not isinstance(asked, str) or not asked.strip():
             return None
-        if asked not in self._anchors:
-            self._anchors.clear()   # one question per session: the last one asked
-            records: set[str] = set()
-            self._anchors[asked] = _question_anchors(self, asked, records)
-            self._anchor_records = (asked, records, {})
-        anchors = self._anchors[asked]
-        if not anchors:
-            return None
+        asked = asked.strip()
+        if asked not in self._anchors or not self._anchors_whole:
+            # not told at the start (a client without the gate's notice), or its start-up
+            # resolution did not finish: one bounded try now
+            self._resolve_anchors(asked, None, SUBMIT_ANCHOR_SECONDS)
         _asked, records, near = getattr(self, "_anchor_records", (asked, set(), {}))
+        found, found_ids = _found_on_question(asked, self._finds)
+        anchors = self._anchors[asked] | _anchor_keys(found)
+        records = set(records) | found_ids
+        if not anchors and not records:
+            if self._anchors_whole:
+                return None
+            return lambda handles, read: False   # unresolved: nothing is on the question
 
         def relevant(handles: Sequence[str], read: Callable[[str], Any]) -> bool | None:
             undecided = False
@@ -2724,8 +2871,13 @@ class MCPServer:
                     continue
                 if any(anchor in value for value in values for anchor in anchors):
                     return True
-            if records and _linked_to(self, records, list(handles), near):
-                return True   # linked to a record the question names
+            if records:
+                try:
+                    with call_limits.bounded(LINK_SECONDS):
+                        if _linked_to(self, records, list(handles), near):
+                            return True   # linked to a record the question names
+                except call_limits.ToolTimedOut:
+                    pass   # not walked in time: connects nothing
             return None if undecided else False
         return relevant
 

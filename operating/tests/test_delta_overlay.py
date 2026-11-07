@@ -179,6 +179,33 @@ class DeltaOverlayTests(unittest.TestCase):
         self.assertEqual(sorted(self.ids(both)), sorted({fx.PO, fx.PO2, fx.BCPO}))
         self.assertEqual([c["rank"] for c in both["candidates"]], [1, 2, 3])
 
+    def test_a_find_resolves_the_names_it_reads_once_never_once_per_layer(self):
+        """A layer's answer merges only its candidates: an entity resolution is the served
+        store's alone and is never asked of a layer, and a find's layer answers resolve
+        no names (each would repeat the entity index's searches)."""
+        from operating import ontology_tools
+        ran, resolved = [], []
+        real_find, real_entities = ontology_tools.OntologyTools._find, \
+            ontology_tools.OntologyTools._entities
+
+        def finding(tools, arguments, actor):
+            ran.append((id(tools), arguments.get("mode")))
+            return real_find(tools, arguments, actor)
+
+        def entities(tools, actor, text, object_type=None):
+            resolved.append(id(tools))
+            return real_entities(tools, actor, text, object_type)
+        with mock.patch.object(ontology_tools.OntologyTools, "_find", finding), \
+                mock.patch.object(ontology_tools.OntologyTools, "_entities", entities):
+            self.assertEqual(self.ids(self.call("plx.find", {"query": "PO5555"})), [NEW])
+            self.assertEqual(len({tools for tools, _mode in ran}), 2)   # served + layer
+            self.assertEqual(len(resolved), 1)
+            ran.clear()
+            resolved.clear()
+            self.call("plx.find", {"mode": "entities", "text": "PO5555"})
+            self.assertEqual(len(ran), 1)
+            self.assertEqual(len(resolved), 1)
+
     def test_a_changed_object_is_read_from_the_delta_only(self):
         opened = self.call("plx.object", {"object_id": fx.PO})
         self.assertIn(PO_H2, json.dumps(opened))

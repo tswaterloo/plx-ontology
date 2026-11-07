@@ -183,6 +183,29 @@ def answer_gate_record(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 HOST_SUBMITTER = "host"
 
 
+def cut_submission(events: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """The answer a session stopped at its cap last submitted to its gate, for the host to
+    submit again (``HostGate.finish``): None when a decision of the session already passed
+    a claim (that decision is the reply) or it submitted nothing. The gate decides it as
+    any submission: a value it refuses stays withheld."""
+    from operating import answer_gate
+    decision, _refused = _gate_results(events)
+    if answer_gate.passed_cells(decision):
+        return None
+    for event in reversed(events):
+        arguments = event.get("arguments")
+        if event.get("type") != "tool_call" or event.get("name") != ANSWER_GATE_TOOL \
+                or not isinstance(arguments, Mapping):
+            continue
+        answer = arguments.get("answer")
+        if isinstance(answer, Mapping) and isinstance(answer.get("claims"), list):
+            return dict(answer)
+        recovered = _recovered_submission([event])
+        if recovered is not None:
+            return dict(recovered)
+    return None
+
+
 def _recovered_submission(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The answer of the session's last gate call that never reached the gate because its
     input was not valid JSON (Claude Code's ``__unparsedToolInput``), when the one fault
@@ -849,7 +872,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                child: "subprocess.Popen | None" = None,
                prelude: Callable[[Callable[..., Any]], None] | None = None,
                early: "EarlyStart | None" = None,
-               pool: "HostPool | None" = None, question: str | None = None) -> int:
+               pool: "HostPool | None" = None, question: str | None = None,
+               entities: Sequence[Mapping[str, Any]] | None = None) -> int:
     """The tool gate: relay MCP stdio between a client (the agent) and ``server`` (the case
     host), listing only ``allowed`` tools and refusing a ``tools/call`` of any other name
     with a tool error, never forwarded; each refusal appends its tool name to ``log``. A
@@ -895,7 +919,11 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     reaches the client; a message of the import method from the client is dropped. A
     call unanswered ``POOL_GRACE_SECONDS`` past its tool's limit is answered timed out
     by the gate (its late answer dropped) and a helper still serving it stopped, so no
-    slow call holds the calls behind it."""
+    slow call holds the calls behind it.Once the client has the tool list, the host is told ``question`` (``host_peers.QUESTION_METHOD``)
+    with ``entities``, the things it names as the app resolved them before the session
+    (None: the host resolves them itself), so its answer gate never searches for them at
+    the agent's submission.
+    """
     import threading
     from operating import call_limits, host_peers
     allowed, inbound = frozenset(allowed), stdin or sys.stdin
@@ -916,6 +944,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     started = [0]                      # helpers started (``HOST_HELPER_STARTS``)
     finished = threading.Event()
     lock, listing, calls = threading.Lock(), set(), set()
+    told: list[bool] = []   # the host was told the session's question
     noted: dict[str, Any] = {}   # forwarded call -> the budget note its result carries
     answering: set[str] = set()  # forwarded answer-gate submissions (``Budget.after_answer``)
     asked: dict[str, list[Any]] = {}   # the host's own call -> [event, its reply]
@@ -1003,6 +1032,17 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             listing.discard(message["id"])
             result["tools"] = [tool for tool in result.get("tools") or []
                                if isinstance(tool, Mapping) and tool.get("name") in allowed]
+            if question is not None and not told:
+                told.append(True)
+                notice: dict[str, Any] = {"question": question.strip()[:ASKED_QUESTION_CHARS]}
+                if entities is not None:
+                    notice["entities"] = [dict(entity) for entity in entities
+                                          if isinstance(entity, Mapping)]
+                try:
+                    primary.send({"jsonrpc": "2.0", "method": host_peers.QUESTION_METHOD,
+                                  "params": notice})
+                except (OSError, ValueError):
+                    pass   # the host resolves them at the submission instead
         if reader is not None and key in reader.ids and "method" not in message:
             return    # a late answer to the host's own early request
         if key in asked and "method" not in message:
@@ -1142,8 +1182,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
             continue
         if not isinstance(message, dict):
             continue
-        if message.get("method") == host_peers.IMPORT_METHOD:
-            continue   # only the gate hands the host a helper's evidence
+        if message.get("method") in (host_peers.IMPORT_METHOD, host_peers.QUESTION_METHOD):
+            continue   # only the gate hands the host a helper's evidence or the question
         if early is not None and message.get("method") == "initialize" and "id" in message:
             emit({"jsonrpc": "2.0", "id": message["id"], "result": early.init_result})
             continue
@@ -1584,8 +1624,11 @@ class HostGate:
                                   Sequence[tuple[str, Mapping[str, Any]]]] | None = None,
                  child: "subprocess.Popen | None" = None,
                  pool: "HostPool | None" = None, question: str | None = None,
-                 quiet: Sequence[tuple[str, Mapping[str, Any]]] = ()) -> None:
+                 quiet: Sequence[tuple[str, Mapping[str, Any]]] = (),
+                 entities: Sequence[Mapping[str, Any]] | None = None) -> None:
         import queue
+        # the things the question names as the app resolved them (``serve_gate``), or None
+        self.entities = None if entities is None else list(entities)
         self.pool = pool   # the session's helper hosts (``serve_gate``), or None
         # of ``prefetch``, the reads whose results the task does not show (``_fed``)
         self.quiet = {_read_key(name, arguments) for name, arguments in quiet}
@@ -1706,7 +1749,8 @@ class HostGate:
                        # not started early: the reads follow the client's start
                        prelude=self._prelude if self.prefetch and (
                            early is None or early.init_result is None) else None,
-                       early=early, pool=self.pool, question=self.question)
+                       early=early, pool=self.pool, question=self.question,
+                       entities=self.entities)
         finally:
             for stream in (inbound, outbound):
                 try:
@@ -2162,6 +2206,10 @@ class ClaudeCodeAgent:
         # The question the session answers (``for_question``): every answer submission is
         # decided against it, never against one the agent writes (``serve_gate``).
         self.asked: str | None = None
+        # The things the question names as the app resolved them before the session
+        # (``objective_runner.resolve_entities``): the host's answer gate takes them and
+        # never searches for them (``serve_gate``). None: the host resolves them itself.
+        self.question_entities: list[dict[str, Any]] | None = None
 
     def for_question(self, question: str) -> "ClaudeCodeAgent":
         """This agent told ``question`` (its answer gate decides against it) with the reads
@@ -2265,7 +2313,7 @@ class ClaudeCodeAgent:
                     follow=self.follow_reads if feeds else None,
                     quiet=self.quiet_reads if feeds else (),
                     child=None if spare is None else spare.child, pool=pool,
-                    question=self.asked)
+                    question=self.asked, entities=self.question_entities)
             except BaseException:
                 if spare is not None:
                     spare.stop()
@@ -2325,6 +2373,11 @@ class ClaudeCodeAgent:
                                     "subtype": "ended_at_gate"}, run.agent)
                 if not timed_out and ANSWER_GATE_TOOL in allowed:
                     submission = host_submission(run.events, run.final_text)
+                elif ANSWER_GATE_TOOL in allowed:
+                    # Stopped at its cap: what it last submitted (a submission still
+                    # being decided when it was stopped) is decided by the host, so the
+                    # reader gets the best answer the gate passes, never an empty reply.
+                    submission = cut_submission(run.events)
             finally:
                 submitted = gate.finish(submission)
             gate_refused = (len(log.read_text(encoding="utf-8").splitlines())
@@ -2347,8 +2400,10 @@ class ClaudeCodeAgent:
         if submission is not None and gate.served:
             run.events.append(_host_event(len(run.events), submission, submitted))
         if timed_out:
-            run = AgentRun(run.events, "", {**run.usage, "is_error": True,
-                                            "subtype": "timeout"}, run.agent)
+            # the last decision the gate passed (the host's own included), rendered as the
+            # reply; "" when none passed
+            run = AgentRun(run.events, decided_reply(run.events),
+                           {**run.usage, "is_error": True, "subtype": "timeout"}, run.agent)
         run.usage["exit_code"] = code
         run.usage["refused_tool_calls"] = sum(1 for event in run.events
                                               if event["name"] not in allowed)

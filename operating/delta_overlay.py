@@ -262,6 +262,17 @@ def _status(count: int) -> str:
     return "not_found" if not count else "found" if count == 1 else "ambiguous"
 
 
+def mergeable(base: Any) -> bool:
+    """Whether ``merge_find`` can change ``base``, a served ``plx.find`` answer: one with
+    candidates and a status a layer's candidates merge into; else (an error, an entity
+    resolution, a home, portfolio or use-case card) the served answer stands and no
+    layer needs asking."""
+    return isinstance(base, Mapping) and "error" not in base \
+        and base.get("status") in _MERGEABLE \
+        and not any(key in base for key in ("home", "portfolio", "use_case")) \
+        and isinstance(base.get("candidates"), list)
+
+
 def merge_find(base: dict[str, Any], answers: list[tuple[Any, frozenset[str]]],
                owned: frozenset[str], arguments: Mapping[str, Any]) -> dict[str, Any] | None:
     """``base`` (the served store's ``plx.find`` answer) with the overlay's owned objects in
@@ -270,12 +281,9 @@ def merge_find(base: dict[str, Any], answers: list[tuple[Any, frozenset[str]]],
     (``Layer.serves``); any error or unusable answer: None, the served answer stands.
     ``owned``: every layer's owned ids. The caller validates the result against the
     output contract and falls back to ``with_unmerged_gap(base)``."""
-    if "error" in base or base.get("status") not in _MERGEABLE \
-            or any(key in base for key in ("home", "portfolio", "use_case")):
+    if not mergeable(base):
         return None
-    candidates = base.get("candidates")
-    if not isinstance(candidates, list):
-        return None
+    candidates = base["candidates"]
     if not answers or not all(
             isinstance(answer, dict) and "error" not in answer
             and answer.get("status") in _MERGEABLE

@@ -38,7 +38,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from operating import deep_investigation as deep
 
@@ -364,7 +364,8 @@ class AgentAsk:
 
     def run(self, session: Any, question: str,
             emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
-            context: str = "", route: Optional[str] = None) -> AskRun:
+            context: str = "", route: Optional[str] = None,
+            entities: Optional[Sequence[Mapping[str, Any]]] = None) -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
         each tool call starts; ``("result", {"tool", "step"})`` as another tool's result
@@ -372,7 +373,9 @@ class AgentAsk:
         ``("gate", {"outcome", "verdict", "citations"})`` as each gate decision returns
         (``verdict``: an ``answered`` decision's first sentence, ``ask_progress.verdict``;
         ``citations``: what its passed claims cite, for the caller to decide for the
-        reader before showing it)."""
+        reader before showing it). ``entities``: the things the question names as the
+        app resolved them before the session (``objective_runner.resolve_entities``), so
+        the session's answer gate never searches for them; None: it resolves them."""
         from operating import agent_session as runner
         from . import ask_progress as progress
 
@@ -433,6 +436,8 @@ class AgentAsk:
                 "\n\n" + PREREAD_HEADING + context.strip() if context.strip() else "")
             budget = deep.question_budget(question, self.seconds, route)
             agent = self.agent_for(on_line, budget)
+            if entities is not None and hasattr(agent, "question_entities"):
+                agent.question_entities = [dict(entity) for entity in entities]
             # the sources the pre-read brief names are read in the session itself, so
             # what the agent cites of them is evidence the session returned
             agent.quiet_reads = runner.told_reads(context)

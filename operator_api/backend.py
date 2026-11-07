@@ -1287,6 +1287,8 @@ class WorkspaceBackend(ActionsMixin):
         asked = request
         # the agent's host starts while the question is read and its records resolved
         self._prewarm_agent(reader)
+        # the question's records are looked up while the front door reads it
+        early = self._early_find(reader, request)
         reading = self._front_read(request)
         if reading is not None:
             # the model's reading of a messy question routes it; the person's own words
@@ -1323,7 +1325,8 @@ class WorkspaceBackend(ActionsMixin):
             pass
         elif self.agent_ask is not None and self.agent_ask.serves(reader.session):
             answer = yield from self._agent_ask(reader, request, conversation, ms,
-                                                route=reading.route if reading else None)
+                                                route=reading.route if reading else None,
+                                                early=early)
         else:
             answer = yield from self._box_ask(reader, request, conversation, ms)
         answer = presentation.polished(answer)   # no codes or escapes reach the reader
@@ -1616,11 +1619,38 @@ class WorkspaceBackend(ActionsMixin):
                 return profit_answer(self, view, request, profit, conversation, ms)
         return job
 
+    def _early_find(self, reader: Reader, request: m.AskRequest
+                    ) -> Optional[tuple[str, Future, dict[str, Any]]]:
+        """The records the question names (``objective_runner.find_roots`` as the reader),
+        looked up while the front door reads the question: (the objective looked up, its
+        future, the understanding it gives once done). ``_agent_ask`` takes it when the
+        objective it asks is the same (the question not rewritten), else looks up its
+        own. None: no agent path for this reader."""
+        from operating import objective_runner
+        agent = self.agent_ask
+        try:
+            if agent is None or not agent.serves(reader.session):
+                return None
+            objective = self._objective(request)
+        except Exception:  # noqa: BLE001 - the agent path looks up its own
+            return None
+        told: dict[str, Any] = {}
+
+        def understand(view: Any) -> Mapping[str, Any]:
+            with view._request():
+                found = objective_runner.find_roots(
+                    objective, lambda arguments: view._call("plx.find", arguments))
+                told["understanding"] = self._understanding(view, request, found)
+            return found
+        return objective, submit(self.ask_jobs, self.ask_stopped, reader, understand, 1), told
+
     def _agent_ask(self, reader: Reader, request: m.AskRequest, conversation: str,
-                   ms: Callable[[], int], route: Optional[str] = None
+                   ms: Callable[[], int], route: Optional[str] = None,
+                   early: Optional[tuple[str, Future, dict[str, Any]]] = None
                    ) -> Iterator[tuple[str, Any]]:
         """The scoreboard's agent path as this reader (``agent_ask.AgentAsk``): its tool
-        calls stream as steps; the answer is what the session's answer gate passed."""
+        calls stream as steps; the answer is what the session's answer gate passed.
+        ``early``: the question's records looked up ahead (``_early_find``)."""
         from operating import objective_runner
         from operating.agent_session import ANSWER_GATE_TOOL
 
@@ -1637,7 +1667,15 @@ class WorkspaceBackend(ActionsMixin):
                     lambda arguments: view._call("plx.find", arguments))
                 events.put(("understanding", self._understanding(view, request, found)))
             return found
-        found_future = submit(self.ask_jobs, self.ask_stopped, reader, understand, 1)
+        if early is not None and early[0] == self._objective(request):
+            found_future, told = early[1], early[2]
+
+            def understood(_done: Future) -> None:
+                if "understanding" in told:
+                    events.put(("understanding", told["understanding"]))
+            found_future.add_done_callback(understood)
+        else:
+            found_future = submit(self.ask_jobs, self.ask_stopped, reader, understand, 1)
 
         said: list[str] = []
 
@@ -1735,6 +1773,10 @@ class WorkspaceBackend(ActionsMixin):
             except Exception:  # noqa: BLE001 - the agent answers without it
                 return ""
             pre["found"] = resolved
+            if isinstance(found.get("entities"), list):
+                # the question's things as the front door resolved them: the session's
+                # answer gate takes them, never searching for them at the submission
+                pre["entities"] = found["entities"]
             if several:
                 pre["several"] = several
                 return None
@@ -1757,7 +1799,8 @@ class WorkspaceBackend(ActionsMixin):
                     status("searching", "Finding the records your question is about")
                     session.set_result(self.agent_ask.run(
                         reader.session, question, emit, context=brief,
-                        **({"route": route} if route else {})))
+                        **({"route": route} if route else {}),
+                        **({"entities": pre["entities"]} if "entities" in pre else {})))
                 finally:
                     self._sessions.release()
             except BaseException as error:  # noqa: BLE001 - handed to the route

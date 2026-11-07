@@ -246,11 +246,13 @@ class OpenPartsContinue(Temp):
         replies = {m["id"]: m["result"] for m in map(json.loads, out.getvalue().splitlines())}
         return [replies[n + 1] for n in range(len(calls))]
 
-    def test_an_early_partial_decision_goes_back_once_with_its_open_parts(self):
+    def test_an_early_partial_decision_goes_back_while_research_settles_its_parts(self):
         first, again, second = [r["structuredContent"] for r in
                                 self.run_gate(deep.Budget(deadline=time.time() + 100,
                                                           max_steps=30))[1::2]]
-        self.assertTrue(again[deep.BUDGET_KEY][deep.CONTINUE_KEY])   # a second time
+        # the research it was sent back for settled none of its open parts: the same
+        # decision again is the answer (the session ends at it)
+        self.assertNotIn(deep.BUDGET_KEY, again)
         note = first[deep.BUDGET_KEY]
         self.assertTrue(note[deep.CONTINUE_KEY])
         self.assertEqual(note["open"], ["packaging on hand",
@@ -268,7 +270,23 @@ class OpenPartsContinue(Temp):
                 "type": "tool_result", "tool_use_id": f"t{n}", "content": json.dumps(body)}]}}
             return [json.dumps(use), json.dumps(done)]
         self.assertFalse(any(ends(text) for text in line(1, first)))
-        self.assertTrue(any(ends(text) for text in line(3, second)))
+        self.assertTrue(any(ends(text) for text in line(3, again)))
+
+    def test_a_decision_goes_back_again_only_when_the_last_send_back_settled_a_part(self):
+        def decision(*unknowns):
+            return {"structuredContent": {"outcome": "answered", "claims": [{"text": "c"}],
+                                          "unknowns": list(unknowns),
+                                          "answerability": {"state": "partial"}}}
+        now = time.time()
+        budget = deep.Budget(deadline=now + 100, max_steps=30)
+        self.assertEqual(budget.after_answer(decision("a", "b"), now)["open"], ["a", "b"])
+        # one part settled: the other goes back once more (MAX_CONTINUES)
+        self.assertEqual(budget.after_answer(decision("b"), now)["open"], ["b"])
+        self.assertIsNone(budget.after_answer(decision(), now))
+        reworded = deep.Budget(deadline=now + 100, max_steps=30)
+        self.assertTrue(reworded.after_answer(decision("a", "b"), now))
+        # the same number of parts, reworded: nothing settled, the decision ends it
+        self.assertIsNone(reworded.after_answer(decision("a again", "b"), now))
 
     def test_a_decision_that_establishes_nothing_goes_back_while_time_is_left(self):
         abstained = {"structuredContent": {"outcome": "abstained", "reason": "no_cited_claims",

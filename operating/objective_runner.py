@@ -205,7 +205,8 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
             unfound.append({**named, "state": "unknown",
                             "reason": error.get("code") or "not_found",
                             "gaps": gaps[:5]})
-    entities = resolve_entities(objective, find)
+    resolved = resolve_entities(objective, find)
+    entities = resolved or []
     named = {r["object_id"] for r in roots} | {c["object_id"] for a in ambiguous
                                                for c in a["candidates"]}
     for entity in entities:
@@ -221,21 +222,23 @@ def find_roots(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any
                       "found_by": "resolver", "same_as": ids[1:],
                       "confidence": entity["confidence"]})
         named |= set(ids)
+    # None when the lookup failed: a failed lookup is not one that found nothing
     return {"roots": roots, "ambiguous": ambiguous, "unfound": unfound,
-            "entities": entities}
+            "entities": None if resolved is None else entities}
 
 
 def resolve_entities(objective: str, find: Callable[[dict[str, Any]], Mapping[str, Any]]
-                     ) -> list[dict[str, Any]]:
+                     ) -> list[dict[str, Any]] | None:
     """The things the objective names (its names and codes), each with every record of
     it across systems, its confidence and status (``plx.find`` mode ``entities``,
     ``operating.entity_resolution``): ``[{mention, object_type, confidence, status,
-    records: [{object_id, system, confidence, status, why}]}]``. Empty when the reader's find
+    records: [{object_id, system, confidence, status, why}]}]``. None when the lookup
+    failed (never ``[]``: that says it completed and found nothing). Empty when the reader's find
     resolves none or does not serve the mode."""
     try:
         result = find({"mode": "entities", "text": objective[:2000]})
     except Exception:  # noqa: BLE001 - resolution is a hint; the identifiers still stand
-        return []
+        return None
     out = []
     for entity in (result or {}).get("entities") or ():
         if not isinstance(entity, Mapping):

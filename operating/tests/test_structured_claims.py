@@ -584,9 +584,12 @@ class OnQuestionTests(unittest.TestCase):
         from operating import mcp_server
         session = mock.Mock(case_runtime=None, actor=None)
         rows = lambda runtime, actor, **_kw: self.view
-        server = mock.Mock(ontology=ontology or object(), _anchors={})
+        server = mock.Mock(ontology=ontology or object(), _anchors={},
+                           _anchors_whole=True, _finds=[])
+        server._resolve_anchors = lambda *args: mcp_server.MCPServer._resolve_anchors(
+            server, *args)
 
-        def anchors(_server, _asked, found=None):
+        def anchors(_server, _asked, found=None, **_kw):
             if found is not None:
                 found.update(records)
             return frozenset({"0103510"})
@@ -730,6 +733,150 @@ class OnQuestionTests(unittest.TestCase):
         agent = agent_session.ClaudeCodeAgent()
         self.assertEqual(agent.for_question("Q?").asked, "Q?")
         self.assertIsNone(agent.asked)
+
+    def told(self, claims, question, *, entities=None, finds=(), resolve=None):
+        """``claims`` decided for ``question`` as a session decides them: told the question
+        at its start (``_told_question``; ``entities`` as the app resolved them, None:
+        resolved by ``resolve``), then its submission; (decision, resolver calls)."""
+        from operating import mcp_server, objective_runner
+        calls = []
+
+        def resolving(asked, find):
+            calls.append(asked)
+            return resolve(asked) if resolve is not None else []
+        server = mock.MagicMock(ontology=object(), _anchors={}, _anchors_whole=True,
+                                _finds=list(finds))
+        for name in ("_resolve_anchors", "_told_question"):
+            setattr(server, name, getattr(mcp_server.MCPServer, name).__get__(server))
+        session = mock.Mock(case_runtime=None, actor=None)
+        rows = lambda runtime, actor, **_kw: self.view
+        with mock.patch.object(objective_runner, "resolve_entities", resolving):
+            if entities is not False:
+                server._told_question({"question": question, "entities": entities})
+            relevant = mcp_server.MCPServer._relevance(server, question)
+        with mock.patch.object(answer_gate, "citation_rows", lambda runtime, **_kw: None), \
+                mock.patch.object(answer_gate, "gate_rows", rows):
+            return answer_gate.gate_answer({"claims": claims}, session,
+                                           seen={self.ORDER, self.OTHER}, returned={},
+                                           may_repair=True, relevant=relevant), calls
+
+    def named_rows(self):
+        self.ROWS = {**self.ROWS,
+                     self.ORDER: {"relation": "public.app_purchase_order",
+                                  "row": {"vendor": "Northwind Paints", "quantity": "40"}},
+                     self.OTHER: {"relation": "public.app_purchase_order",
+                                  "row": {"vendor": "Contoso Supply", "quantity": "40"}}}
+        return ({"id": "n", "value": "40", "citation": self.ORDER, "field": "row.quantity"},
+                {"id": "c", "value": "40", "citation": self.OTHER, "field": "row.quantity"})
+
+    def test_the_question_told_at_the_start_is_not_searched_for_at_the_submission(self):
+        """The app's front door resolved the question's things before the session: the
+        submission makes no search, and an off-question citation is still refused."""
+        named, other = self.named_rows()
+        entities = [{"mention": "Northwind Paints", "status": "match",
+                     "records": [{"object_id": "PO:1", "status": "match"}]}]
+        decided, calls = self.told([named, other], "What did Northwind Paints receive?",
+                                   entities=entities)
+        self.assertEqual(calls, [])
+        self.assertEqual([c["id"] for c in decided["claims"]], ["n"])
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
+        # told without them: resolved once, at the start, never again at the submission
+        found = lambda asked: entities   # noqa: E731
+        decided, calls = self.told([named, other], "What did Northwind Paints receive?",
+                                   resolve=found)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
+
+    def test_a_failed_front_door_lookup_is_not_a_lookup_that_found_nothing(self):
+        """The front door's entity lookup failed: the app tells the session nothing (not
+        ``[]``), the session resolves the names itself, and an off-question citation is
+        still refused."""
+        from operating import objective_runner
+
+        def failing(arguments):
+            raise RuntimeError("find is down")
+        question = "What did Northwind Paints receive?"
+        found = objective_runner.find_roots(question, failing)
+        self.assertNotIsInstance(found["entities"], list)
+        told_entities = found["entities"] if isinstance(found["entities"], list) else None
+        named, other = self.named_rows()
+        entities = [{"mention": "Northwind Paints", "status": "match",
+                     "records": [{"object_id": "PO:1", "status": "match"}]}]
+        decided, calls = self.told([named, other], question, entities=told_entities,
+                                   resolve=lambda asked: entities)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([c["id"] for c in decided["claims"]], ["n"])
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
+
+    def test_a_resolution_out_of_time_refuses_what_it_cannot_connect(self):
+        """Not resolved in time, at the start or the submission's one bounded retry: the
+        question's own identifiers still stand, and a claim nothing connects is refused,
+        never let through unchecked (fail closed)."""
+        from operating import call_limits
+        named, other = self.named_rows()
+
+        def late(asked):
+            raise call_limits.ToolTimedOut()
+        decided, calls = self.told([named, other], "What did Northwind Paints receive?",
+                                   resolve=late)
+        self.assertEqual(len(calls), 2)   # the start, then one try at the submission
+        self.assertEqual(decided["claims"], [])
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION] * 2)
+        # never told (a client without the gate's notice): resolved at the submission
+        order = {"id": "o", "value": "PO-0103510", "citation": self.ORDER,
+                 "field": "row.po_number"}
+        self.ROWS = dict(type(self).ROWS)
+        decided, calls = self.told([order, other], "Did PO0103510 arrive?",
+                                   entities=False, resolve=late)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([c["id"] for c in decided["claims"]], ["o"])
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
+
+    def test_the_sessions_own_find_of_the_question_connects_and_no_other_does(self):
+        """A session whose resolution ran out of time: its own find of the question's
+        words, resolved as one thing, connects that thing's records; a find of words
+        the question does not write connects nothing."""
+        from operating import call_limits
+        named, other = self.named_rows()
+
+        def late(asked):
+            raise call_limits.ToolTimedOut()
+
+        def entity_find(text, oid):
+            return ({"mode": "entities", "text": text},
+                    {"entities": [{"mention": text, "status": "match",
+                                   "records": [{"object": {"object_id": oid},
+                                                "status": "match"}]}]})
+        finds = [entity_find("Northwind Paints", "PO:1"),
+                 entity_find("Contoso Supply", "PO:7")]
+        decided, _calls = self.told([named, other], "What did Northwind Paints receive?",
+                                    resolve=late, finds=finds)
+        self.assertEqual([c["id"] for c in decided["claims"]], ["n"])
+        self.assertEqual(self.reasons(decided), [answer_gate.OFF_QUESTION])
+
+    def test_a_session_stopped_at_its_cap_keeps_its_best_gated_answer(self):
+        """Stopped while its submission was being decided: that submission is the host's
+        to decide (``cut_submission``) and the reply is what the gate passed
+        (``decided_reply``), never empty; a decision that already passed stands."""
+        from operating import agent_session
+        tool = agent_session.ANSWER_GATE_TOOL
+        answer = {"claims": [{"id": "q", "value": "40", "citation": self.LINE,
+                              "field": "row.quantity"}]}
+        cut = [{"seq": 0, "type": "tool_call", "name": "plx.find",
+                "arguments": {"query": "PO0103510"}, "result": {"status": "found"}},
+               {"seq": 1, "type": "tool_call", "name": tool,
+                "arguments": {"answer": answer}, "result": None}]
+        self.assertEqual(agent_session.cut_submission(cut), answer)
+        self.assertEqual(agent_session.decided_reply(cut), "")
+        passed = {"outcome": "answered", "claims": [{
+            "id": "q", "check": {"status": "passed"}, "value_claims": [
+                {"value": "40", "citation": self.LINE, "field": "row.quantity"}]}],
+                  "answerability": {"state": "partial"}, "unknowns": []}
+        done = cut + [agent_session._host_event(2, answer, {"result": {
+            "content": [{"type": "text", "text": json.dumps(passed)}],
+            "structuredContent": passed, "isError": False}})]
+        self.assertIsNone(agent_session.cut_submission(done))
+        self.assertTrue(agent_session.decided_reply(done).strip())
 
     def test_a_claim_needs_a_via_when_its_record_is_off_the_question(self):
         line = {"id": "q", "value": "40", "citation": self.LINE, "field": "row.quantity"}

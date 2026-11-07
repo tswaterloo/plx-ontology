@@ -1003,6 +1003,7 @@ class CaseHostTools:
             for layer in overlay.layers:
                 layer.tools.policy = base_tools.policy
                 layer.tools.clock = base_tools.clock
+                layer.tools.resolves_entities = False
             if name == "plx.object":
                 layer = overlay.owner(arguments.get("object_id")
                                       if isinstance(arguments, dict) else None)
@@ -1019,7 +1020,12 @@ class CaseHostTools:
         except Exception:  # noqa: BLE001 - the served generation answers alone
             return served(arguments, actor)
         result = served(arguments, actor)
-        if name != "plx.find" or not isinstance(arguments, dict):
+        if name != "plx.find" or not isinstance(arguments, dict) \
+                or arguments.get("mode") == "entities" or "text" in arguments \
+                or not delta_overlay.mergeable(result):
+            # an answer no layer can change (an entity resolution, an error, a home
+            # card): the layers are not asked (measured 2026-11-06: one find of a
+            # question's names resolved them once per layer, 5 times over)
             return result
         try:
             answers = [(layer.tools.call(name, arguments, actor), layer.serves)

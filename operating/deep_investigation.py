@@ -563,6 +563,8 @@ class Budget:
         self.steps = self.refused = self.repairs = self.submissions = self.grace = 0
         self.continues = 0   # decisions sent back with their open parts (``after_answer``)
         self.text_repairs = 0   # decisions sent back for the sentences their reply drops
+        # the open parts of the decision last sent back for research (``after_answer``)
+        self.sent_open: list[str] | None = None
         self.timed_out = 0   # calls the host stopped at their limit (``call_limits``)
         # a stopped call no research call was forwarded after (``cut_short``)
         self.timeout_open = False
@@ -700,6 +702,11 @@ class Budget:
         parts = (open_parts(decision) or (
             ["the whole question: nothing is established yet"] if nothing else [])) \
             if research else []
+        if parts and self.sent_open is not None and not settled(self.sent_open, parts):
+            # The research the last send-back asked for settled none of its open parts:
+            # another round costs a minute for what the last one did not find, so this
+            # decision is the answer (the session ends at it, ``agent_session.GateEnd``).
+            parts = []
         ends = self.ends_at if self.ends_at is not None else self.deadline
         uncovered, dropped = dropped_text(decision) \
             if self.text_repairs < MAX_TEXT_REPAIRS and ends is not None \
@@ -710,6 +717,7 @@ class Budget:
         said: list[str] = []
         if parts:
             self.continues += 1
+            self.sent_open = list(parts)
             left = int(self.deadline - now)
             what = ("this decision establishes nothing of the question" if nothing else
                     "this decision leaves the parts listed in open unsettled")
@@ -797,6 +805,13 @@ def dropped_text(decision: Mapping[str, Any]) -> tuple[list[str], list[str]]:
                  if isinstance(entry, Mapping)
                  and isinstance(value := _plain(entry.get("value")), (str, int, float))]
     return list(dict.fromkeys(uncovered)), dropped
+
+
+def settled(before: Sequence[str], after: Sequence[str]) -> bool:
+    """Whether a decision with open parts ``after`` settled any of the parts ``before``
+    left open: it has fewer. Counted, not matched: the parts are the agent's own words,
+    which it rewords between submissions."""
+    return len(after) < len(before)
 
 
 def open_parts(decision: Mapping[str, Any]) -> list[str]:

@@ -43,6 +43,11 @@ KEY_FILE_ENV = "PLX_HOST_PEER_KEY_FILE"
 PRIMARY, HELPER = "primary", "helper"
 EXPORT_KEY = "plx/peer_evidence"     # a helper result's ``_meta`` entry (gate-only)
 IMPORT_METHOD = "plx/peer_evidence"  # the gate's notification to the primary
+# The gate's notice to the primary, once its client has the tool list: the session's own
+# question and, when the app resolved them before the session, the things it names
+# (``objective_runner.resolve_entities``), so the answer gate's relevance check has the
+# question's records before the agent submits (``mcp_server``'s ``_told_question``).
+QUESTION_METHOD = "plx/question"
 # An import carries one result twice (as built and as shown): larger than any agent line.
 MAX_IMPORT_BYTES = 4 * 1024 * 1024
 MIN_KEY_CHARS = 32

@@ -11,6 +11,7 @@ populated or empty. All identifiers and text are synthetic.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -383,31 +384,35 @@ class FixtureTextTests(unittest.TestCase):
         self.assertTrue(narrowed_gated)
         self.assertTrue(all("drive-mail" in h for h in narrowed_gated), narrowed_gated)
         gated.clear()
-        with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+        with mock.patch.object(ev.EvidenceTools, "_chunk_runs", return_value=None):
             whole = text_hits(["mail"])
         self.assertEqual(narrowed, whole)
         self.assertEqual(narrowed_gated, gated)
         self.assertIsNotNone(evidence._chunk_runs(["mail"]))   # the narrowed read ran
-        # The listed chunks are read in batches only as far as the capped scan goes: a
-        # cap the first rows reach leaves the rest of the match unread, the same rows kept.
+        # The matched chunks are read only as far as the capped scan goes: a cap the
+        # first rows reach leaves the rest of the match unread, the same rows kept.
         listed = []
-        family_chunks = ev.EvidenceTools._family_chunks
+        matched_chunks = ev.EvidenceTools._matched_chunks
 
+        @contextlib.contextmanager
         def counted(self_, words, families):
-            for batch in family_chunks(self_, words, families):
-                listed.append(len(batch))
-                yield batch
+            with matched_chunks(self_, words, families) as ids:
+                def each():
+                    for chunk in ids:
+                        listed.append(chunk)
+                        yield chunk
+                yield each()
         with mock.patch.object(ev, "DOC_SCAN_CAP", 2), mock.patch.object(ev, "CHUNK_BATCH", 1):
-            with mock.patch.object(ev.EvidenceTools, "_family_chunks", counted):
+            with mock.patch.object(ev.EvidenceTools, "_matched_chunks", counted):
                 capped = text_hits(["mail"])
             whole_capped = None
-            with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+            with mock.patch.object(ev.EvidenceTools, "_chunk_runs", return_value=None):
                 whole_capped = text_hits(["mail"])
-            matches = [chunk for batch in family_chunks(evidence, '"orchid"* AND "shipment"*',
-                                                         ["mail"]) for chunk in batch]
+            with matched_chunks(evidence, '"orchid"* AND "shipment"*', ["mail"]) as ids:
+                matches = list(ids)
         self.assertEqual(capped, whole_capped)
         self.assertEqual(len(capped[0][0]), 2)   # the cap cut the scan (said as scan_cap)
-        self.assertLess(sum(listed), len(matches))
+        self.assertLess(len(listed), len(matches))
         # Families holding most chunks read the match whole, as before.
         self.assertIsNone(evidence._chunk_runs(["sharepoint"]))
         # A field whose chunks are not one run of ids: no runs, nothing narrowed.
@@ -470,7 +475,7 @@ class FixtureTextTests(unittest.TestCase):
                     self.assertIsNotNone(evidence._chunk_runs(["mail"]))
                 store.conn.execute(sql, args)
                 store.conn.commit()
-                with mock.patch.object(ev.EvidenceTools, "_family_chunks", return_value=None):
+                with mock.patch.object(ev.EvidenceTools, "_chunk_runs", return_value=None):
                     whole = mail_hits(tools, evidence)
                 self.assertEqual(mail_hits(tools, evidence), whole)
                 if what in ("audience", "replaced"):

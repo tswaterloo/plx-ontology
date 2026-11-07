@@ -2246,6 +2246,11 @@ class OntologyTools:
         # plx.timeline take and return the same handles).
         self.sets = SetRegistry(monotonic)
         self.resolver: Any = None   # operating.entity_resolution.Resolver, built on first use
+        # False for a delta overlay layer's tools (``ontology_host._overlaid``): a find
+        # merges only the layer's candidates (``delta_overlay.merge_find``), never its
+        # entities, so the layer never resolves them (each resolution is the entity
+        # index's searches again, once per layer per find)
+        self.resolves_entities = True
         # False when the store is an empty placeholder (a host started without a built
         # projection): a filter or listing find then enumerates nothing, so it is
         # never complete and says so (gap projection_not_built).
@@ -3233,7 +3238,7 @@ class OntologyTools:
                 result = self._find_store(arguments, actor)
             if isinstance(query, str) and "as_known_at" not in arguments \
                     and result.get("status") in ("found", "ambiguous", "not_found") \
-                    and arguments.get("cursor") is None:
+                    and arguments.get("cursor") is None and self.resolves_entities:
                 entities, gaps = self._entities(actor, query, object_type)
                 if entities:
                     result["entities"] = entities
