@@ -979,6 +979,23 @@ class PermissionTest(Engine):
         self.assertNotIn(empty, json.dumps(document_only))
         self.assertNotIn(order, json.dumps(document_only))
 
+    def test_an_alert_never_cites_a_document_the_readers_markings_withhold(self):
+        """A cited document marked beyond the reader (document_marks) trims the gap, as a
+        refusal by the host does; a reader holding the marking still gets it."""
+        from operating.search import document_marks
+        world, ids = seeded()
+        self.run_engine(world, ids["coverage"])
+        full = {g["object_id"]: g for g in self.read()["gaps"]}
+        need = full[ids["unconfirmed"]]["citations"][0]
+
+        with mock.patch.object(document_marks, "withheld_set",
+                               return_value=(frozenset(), frozenset({need}))):
+            cut = self.read(held=frozenset())
+        self.assertNotIn(ids["unconfirmed"], {g["object_id"] for g in cut["gaps"]})
+        self.assertNotIn(need, json.dumps(cut))
+        # unmarked, the same gap is shown
+        self.assertIn(ids["unconfirmed"], {g["object_id"] for g in self.read()["gaps"]})
+
     def test_audience_marking_and_item_decisions_each_trim_the_inbox(self):
         world, ids = seeded(receipt_markings='["quality_controlled"]')
         self.run_engine(world, ids["coverage"])

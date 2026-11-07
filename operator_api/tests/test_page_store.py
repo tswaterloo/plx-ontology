@@ -179,5 +179,24 @@ class DeltaLayerKey(unittest.TestCase):
             self.assertNotEqual(first, be.page_key(view, "o"))
 
 
+class MarkedSetKey(unittest.TestCase):
+    def test_a_re_mark_is_a_new_page_key(self):
+        from operating.search import document_marks
+        view = view_of([])
+        marked = [(frozenset(), frozenset())]
+        with mock.patch("operating.pg.permissions._fingerprint", lambda p, a: "fp-1"), \
+                mock.patch.object(document_marks, "withheld_set",
+                                  side_effect=lambda held: marked[0]):
+            first = be.page_key(view, "o")
+            self.assertEqual(first, be.page_key(view, "o"))
+            marked[0] = (frozenset({"SharePointFile:x"}), frozenset())
+            second = be.page_key(view, "o")
+            self.assertNotEqual(first, second)
+            marked[0] = (frozenset(), frozenset())
+            self.assertEqual(first, be.page_key(view, "o"))      # un-marked: the old key
+            marked[0] = None                                      # unreadable: its own key
+            self.assertNotIn(be.page_key(view, "o"), (first, second))
+
+
 if __name__ == "__main__":
     unittest.main()

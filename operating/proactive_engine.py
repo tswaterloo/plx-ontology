@@ -3903,9 +3903,11 @@ def _visible(conn: sqlite3.Connection, rows: Sequence[sqlite3.Row], params: Mapp
     """Each gap the reader may see, with the citations it may open."""
     ids = json.dumps([row["gap_id"] for row in rows])
     cites: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    objects: dict[str, set[Any]] = defaultdict(set)
     groups: dict[str, set[int]] = defaultdict(set)
     for cite in conn.execute(
-            "SELECT gc.gap_id, gc.grp, gc.handle, gc.object_id IS NOT NULL AND gc.markings IN "
+            "SELECT gc.gap_id, gc.grp, gc.handle, gc.object_id, "
+            "gc.object_id IS NOT NULL AND gc.markings IN "
             "(SELECT value FROM json_each(:marks)) AND "
             + _OBJECT_VISIBLE.format(o="gc.object_id")
             + " AS shown FROM gap_cites gc WHERE gc.gap_id IN (SELECT value FROM "
@@ -3914,6 +3916,7 @@ def _visible(conn: sqlite3.Connection, rows: Sequence[sqlite3.Row], params: Mapp
             groups[cite["gap_id"]].add(cite["grp"])
         if cite["shown"]:
             cites[cite["gap_id"]].append((cite["grp"], cite["handle"]))
+            objects[cite["handle"]].add(cite["object_id"])
     requires: dict[str, set[str]] = defaultdict(set)
     if _has_requires(conn):
         for req in conn.execute(
@@ -3923,6 +3926,12 @@ def _visible(conn: sqlite3.Connection, rows: Sequence[sqlite3.Row], params: Mapp
     granted = set(json.loads(params["aud"]))
     handles = sorted({h for found in cites.values() for _, h in found})
     refused = {h for h, why in decide(handles).items() if why is not None} if handles else set()
+    # a document the reader's markings withhold (a pay stub) is never cited, whatever the
+    # row's own markings say (``operating.search.document_marks``)
+    from .search import document_marks
+    held = set(json.loads(params["marks"]))
+    refused |= {h for h in handles if document_marks.handle_withheld(
+        h, held, [o for o in objects.get(h, ()) if o])}
     out = []
     for row in rows:
         open_ = [(grp, h) for grp, h in cites.get(row["gap_id"], []) if h not in refused]

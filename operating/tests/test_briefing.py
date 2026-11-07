@@ -720,6 +720,33 @@ class DetectorTest(Case):
         self.assertEqual([g["object_id"] for g in found["negative_margin"]],
                          [orders["written_off"]])
 
+    def test_a_partly_returned_credited_order_loses_only_the_unreturned_credit(self):
+        """Fully credited, only one of two credited lines came back: the order is not
+        no-charge; the loss is the credited value of the unreturned line."""
+        from decimal import Decimal
+        w = World()
+        order_id = w.obj("SalesOrder", {})
+        invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"}, markings='["finance"]')
+        fig = handle(w.n)
+        w.link("SalesInvoice.bills", invoice, order_id)
+
+        def read_order(_call, order):
+            order.revenue, order.cost = Decimal("0"), Decimal("31.78")
+            order.margin, order.currency = Decimal("-31.78"), "CAD"
+            order.lines = [
+                cp.Line(1, "a", None, credited=Decimal("1"), credit_amount=Decimal("60"),
+                        invoice_handles=[fig], return_handles=[fig]),
+                cp.Line(2, "b", None, credited=Decimal("1"), credit_amount=Decimal("40"),
+                        invoice_handles=[fig])]
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        found = self.events()
+        self.assertNotIn("no_charge_order", found)
+        (loss,) = found["negative_margin"]
+        self.assertEqual(loss["event"]["amount"]["value"], "40")
+
     def test_a_late_check_that_failed_keeps_the_impacts_marked_not_checked(self):
         """When the late rule failed or timed out, no impact is dropped for not being on
         the late list; each says its late status was not checked."""

@@ -84,6 +84,20 @@ ASK_WORKERS = 2
 READ_WORKERS = 3
 MAX_QUEUED_ASKS = 8
 READ_TIMEOUT_SECONDS = 60
+PREREAD_FAILURES: dict[str, int] = {}     # failed pre-reads by exception type, this process
+_PREREAD_LOCK = threading.Lock()
+
+
+def _count_preread_failure(error: BaseException) -> None:
+    """A pre-read that failed is not silent: its exception type is counted and logged (never
+    the message or arguments, which may carry a name or an amount); the answer goes on
+    without the pre-read."""
+    kind = type(error).__name__
+    with _PREREAD_LOCK:
+        PREREAD_FAILURES[kind] = PREREAD_FAILURES.get(kind, 0) + 1
+        total = PREREAD_FAILURES[kind]
+    logging.getLogger("operator_api.ask").warning(json.dumps(
+        {"preread_failed": kind, "count": total}))
 # A record page reads its trail and plans: the first page a reader opens after a start
 # checks every mail item of a message type against its item gate once (cold, measured
 # 60 s and more on the live store), so it gets longer than a plain read before "busy".
@@ -1987,7 +2001,9 @@ class WorkspaceBackend(ActionsMixin):
                 resolved, several, got, told = submit(
                     self.ask_jobs, self.ask_stopped, reader, read, 1).result(
                     timeout=trails.MATERIALS_SECONDS + READ_TIMEOUT_SECONDS + 30)
-            except Exception:  # noqa: BLE001 - the agent answers without it
+            except Exception as error:  # noqa: BLE001 - the agent answers without it
+                # counted and logged by type only (a message may carry a value)
+                _count_preread_failure(error)
                 return ""
             pre["found"] = resolved
             if isinstance(found.get("entities"), list):
@@ -5940,9 +5956,29 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
         # page kept on disk (``page_store``) is found again under the same reader state
         return (oid, meta.get("content_digest"), _fingerprint(policy, gated),
                 bool(getattr(policy, "unrestricted", False)), exclusion_stamp(),
-                _delta_layers(view))
+                _delta_layers(view), _marks_stamp(view))
     except Exception:  # noqa: BLE001 - an undecidable key is no cache entry
         return None
+
+
+def _marks_stamp(view: Any) -> Optional[str]:
+    """A cheap fingerprint of the documents marked beyond this reader
+    (``document_marks.withheld_set``), so a re-mark is a new page key. None when no marking
+    applies; a store that cannot be read is its own value, so the page is rebuilt when it
+    can."""
+    from operating.search import document_marks
+    try:
+        grant = getattr(view.access, "grant", None)
+        held = frozenset(grant()[1]) if callable(grant) else frozenset()
+    except Exception:  # noqa: BLE001 - undecidable: nothing held (fail closed)
+        held = frozenset()
+    got = document_marks.withheld_set(held)
+    if got is None:
+        return "unreadable"
+    if not got[0] and not got[1]:
+        return None
+    return hashlib.sha256(json.dumps([sorted(got[0]), sorted(got[1])]).encode()
+                          ).hexdigest()[:16]
 
 
 def overlay_stamp(view: Any) -> Any:

@@ -646,6 +646,28 @@ class AgentPath(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertNotIn("materials walk", seen["prompt"])
 
+    def test_a_failed_preread_is_logged_by_type_and_counted_and_the_agent_goes_on(self):
+        """preread.resolve raising does not stop the answer; the failure is counted and
+        logged with its type only, never the message."""
+        from operator_api import backend, preread
+        backend.PREREAD_FAILURES.clear()
+        lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
+                 tool_result(1, decision(self.handle, "Overdue"))]
+        seen = {}
+        self.use(self.ops, lambda on_line: ScriptedSession(
+            on_line, lines, "The order status is Overdue.\n\n"
+            + answer_block(self.handle, "Overdue"), seen=seen))
+        boom = RuntimeError("Jane Doe owes 123.45")
+        with mock.patch.object(preread, "resolve", side_effect=boom), \
+                self.assertLogs("operator_api.ask", "WARNING") as logged:
+            answer = self.ask(self.ops, f"why is {self.late[0]['label']} late?")[-1][0][1]
+        self.assertTrue(seen.get("prompt"))          # the session still ran
+        self.assertTrue(answer["direct_answer"])
+        self.assertEqual(backend.PREREAD_FAILURES.get("RuntimeError"), 1)
+        text = " ".join(logged.output)
+        self.assertIn("RuntimeError", text)
+        self.assertNotIn("Jane Doe", text)
+
     def test_a_number_two_different_records_share_is_asked_back_and_the_pick_answers(self):
         """An identifier naming two different records (not one record's copies) gets a
         did-you-mean before any session; the pick runs the session on the earlier question

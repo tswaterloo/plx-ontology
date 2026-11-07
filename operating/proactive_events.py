@@ -1326,9 +1326,15 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
         # A fully credited order whose goods were NOT returned stays a loss (a write-off):
         # only nothing invoiced, or credited and returned, is no-charge
         credited = any(line.credited or line.credit_amount for line in order.lines)
+        # the return check is per line: only the credited lines whose goods did not come
+        # back stay a loss (a write-off), valued at what was credited for them
+        unreturned = sum((line.credit_amount for line in order.lines
+                          if (line.credited or line.credit_amount)
+                          and not line.return_handles), Decimal(0))
         returned = any(line.return_handles for line in order.lines)
+        fully_credited = order.revenue is not None and order.revenue == 0 and credited
         no_charge = order.revenue is not None and order.revenue == 0 and (
-            not credited or returned)
+            not credited or (returned and unreturned <= 0))
         handles = sorted({h for line in order.lines for h in (
             *line.invoice_handles, *line.credit_handles, *line.ledger_handles,
             *line.return_handles) if isinstance(h, str)})
@@ -1339,6 +1345,8 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
         subject = st.versions(objects=[root])
         marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
         loss = -order.margin
+        if fully_credited and returned and unreturned > 0:
+            loss = unreturned       # only the unreturned part is lost
         if no_charge:
             gaps.append(gap(
                 "no_charge_order", "negative_margin", root, "SalesOrder", "no_charge",

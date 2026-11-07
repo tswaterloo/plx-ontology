@@ -1,9 +1,0 @@
-[Unit]
-Description=PLX publish watcher (one pass): post_publish.sh for each generation not yet claimed
-
-[Service]
-Type=oneshot
-Environment=PATH=/data/venv/bin:@PLX_HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/bash @PLX_CURRENT@/deploy/ops/watch_publish.sh --any
-# deploy, prime and the full scoreboard take hours
-TimeoutStartSec=infinity
