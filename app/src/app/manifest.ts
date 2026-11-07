@@ -9,7 +9,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: "/",
     name: "PLX Workbench",
     short_name: "Workbench",
-    description: "Purchase orders, sales orders, lots, suppliers and customers, with sources.",
+    description: "Purchase orders, customer orders, lots, suppliers and customers, with sources.",
     start_url: "/",
     scope: "/",
     display: "standalone",

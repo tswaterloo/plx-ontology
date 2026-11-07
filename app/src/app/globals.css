@@ -94,3 +94,33 @@
   background: var(--surface-2);
   border-radius: 2px;
 }
+
+/* Phone width (390 px): nothing makes the page scroll sideways, and every control that is not
+   a link inside a sentence is at least 40 px to tap. */
+@media (max-width: 640px) {
+  html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+  main, [data-testid] {
+    min-width: 0;
+  }
+  img, svg, video, pre, table {
+    max-width: 100%;
+  }
+  pre {
+    overflow-x: auto;
+  }
+  button:not(p button, [data-tap="inline"]),
+  [role="tab"],
+  [role="button"],
+  input:not([type="checkbox"], [type="radio"]),
+  select,
+  a.btn {
+    min-height: 40px;
+  }
+  button:not(p button, [data-tap="inline"]),
+  [role="tab"] {
+    min-width: 40px;
+  }
+}

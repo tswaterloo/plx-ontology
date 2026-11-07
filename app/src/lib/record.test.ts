@@ -110,8 +110,8 @@ describe("record page head", () => {
 describe("activity titles", () => {
   it("says what happened to which record, and repeats as a count of that kind", async () => {
     const { activityTitle } = await import("./record");
-    expect(activityTitle("Required: sales order SO-FM-23", 1)).toBe("Sales order SO-FM-23 due");
-    expect(activityTitle("Required: sales order SO-FM-23", 6)).toBe("6 sales orders due");
+    expect(activityTitle("Required: sales order SO-FM-23", 1)).toBe("Customer order SO-FM-23 due");
+    expect(activityTitle("Required: sales order SO-FM-23", 6)).toBe("6 customer orders due");
     expect(activityTitle("Posted: receipt 107057", 3)).toBe("3 receipts posted");
     // an unknown verb stays as written, never guessed
     expect(activityTitle("Frobbed: thing 1", 2)).toBe("Frobbed ×2");

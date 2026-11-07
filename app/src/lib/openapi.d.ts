@@ -2303,6 +2303,11 @@ export type components = {
             proposals?: components["schemas"]["Proposal"][];
             /** Related */
             related?: components["schemas"]["ObjectRef"][];
+            /**
+             * Stale Since
+             * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
             status: components["schemas"]["ObjectStatus"];
             /** Summary */
             summary: string;
@@ -2365,6 +2370,11 @@ export type components = {
              * @enum {string}
              */
             section: "late" | "people" | "landed_cost" | "trail" | "margin";
+            /**
+             * Stale Since
+             * @description Set when the server could not read this section in time and serves the last one it read for this same reader: when that was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
             /** @description late: the record's status as the late-PO check established it (replaces the quick read's); omitted when it established none. */
             status?: components["schemas"]["ObjectStatus"] | null;
             trail?: components["schemas"]["EvidenceTrail"] | null;

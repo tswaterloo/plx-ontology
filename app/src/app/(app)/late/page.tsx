@@ -6,7 +6,7 @@ import { LateOverview } from "@/components/late/overview";
 import { TodayDetail, type QueueRow } from "@/components/today-detail";
 import { AgeRing, DoneRing, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { Monogram } from "@/components/ui/monogram";
-import { LoadProblem } from "@/components/ui/notice";
+import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { getActionStates, getLateList, getSuggestions } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -187,6 +187,7 @@ export default function LatePage() {
   const [items, setItems] = useState<LatePo[]>([]);
   const [total, setTotal] = useState<number | null>(null);
   const [asOf, setAsOf] = useState<string | null>(null);
+  const [staleSince, setStaleSince] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<LateFilter>({ supplier: null, days: "all", value: "all" });
@@ -203,6 +204,7 @@ export default function LatePage() {
       // every page, so filters and sorting cover the whole list, not the first 25
       const all = await readAllLate((offset, size) => getLateList(offset, c.signal, size), PAGE, MOST);
       setAsOf(all.asOf);
+      setStaleSince(all.staleSince);
       setTotal(all.total);
       setItems(all.items);
     })().catch((e) => {
@@ -388,6 +390,7 @@ export default function LatePage() {
       />
       {!desktop && ready && items.length > 0 && <div className="@container border-b border-border px-5 pt-4 pb-5">{overview("figures")}</div>}
       {controls}
+      <StaleNote since={staleSince} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 pb-6 lg:overflow-y-auto" data-testid="late-all">
         <div ref={desktop ? undefined : phoneRef}>
           {error ? (

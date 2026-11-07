@@ -45,7 +45,8 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
   const partial = !!note && note.startsWith("partial");
   return (
     <div className="space-y-2">
-      <table className="w-full text-[13px]" data-testid="order-ranking">
+      <div className="max-w-full overflow-x-auto">
+        <table className="w-full text-[13px]" data-testid="order-ranking">
         <caption className="mb-2 text-left text-[12px] font-medium leading-4 text-muted">
           Orders, worst margin first
           {typeof inPeriod === "number" && inPeriod > 0 && <span className="font-normal"> · {real.length} of {inPeriod} checked</span>}
@@ -106,6 +107,7 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
           </tfoot>
         )}
       </table>
+</div>
       <p className="text-[12px] leading-4 text-muted">*Item cost only. Freight, labour and overhead aren&apos;t included.</p>
     </div>
   );
@@ -115,7 +117,8 @@ export function OrderRanking({ orders, note, more = 0, inPeriod }: { orders: Ord
 export function ProductRanking({ products }: { products: ProductMargin[] }) {
   if (products.length < 2) return null;
   return (
-    <table className="w-full text-[13px]" data-testid="product-ranking">
+    <div className="max-w-full overflow-x-auto">
+      <table className="w-full text-[13px]" data-testid="product-ranking">
       <caption className="mb-2 text-left text-[12px] font-medium leading-4 text-muted">By product, worst margin first</caption>
       <thead className="text-[12px] text-muted [&_th]:font-normal">
         <tr className="h-8 border-b border-border">
@@ -143,6 +146,7 @@ export function ProductRanking({ products }: { products: ProductMargin[] }) {
         ))}
       </tbody>
     </table>
+</div>
   );
 }
 
@@ -163,7 +167,8 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
       </h3>
       {lines.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full text-[13px]" aria-label="Order lines">
+          <div className="max-w-full overflow-x-auto">
+            <table className="w-full text-[13px]" aria-label="Order lines">
             <thead className="text-[12px] text-muted [&_th]:font-normal">
               <tr className="h-8 border-b border-border">
                 <th scope="col" className="py-1.5 pr-3 text-left">Item</th>
@@ -191,6 +196,7 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
               ))}
             </tbody>
           </table>
+</div>
         </div>
       )}
       {(b.cost_sources ?? []).length > 0 && (

@@ -33,9 +33,8 @@ describe("Home headline", () => {
 });
 
 describe("staleLine", () => {
-  it("says when the shown page was read, in Eastern time, and that a fresh one is coming", () => {
-    const line = staleLine("2026-11-07T02:08:00Z", new Date("2026-11-07T02:38:00Z"));
-    expect(line).toBe("Showing the page as of 9:08 p.m. ET (30 min ago). A fresh one is on its way.");
+  it("says when the shown page was read, in Eastern time, and that it is refreshing", () => {
+    expect(staleLine("2026-11-07T02:08:00Z")).toBe("As of 9:08 PM ET · refreshing");
   });
   it("shows nothing for a fresh page or an unreadable time", () => {
     expect(staleLine(null)).toBeNull();

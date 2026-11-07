@@ -13,7 +13,7 @@ import type { ActionResult, ProactiveSuggestion, SuggestionDraft, SuggestionEta,
 import { CardActions } from "./card-actions";
 import { SourceChip } from "./source-chip";
 import { OpenRing, StatusGlyph } from "./ui/glyphs";
-import { LoadProblem } from "./ui/notice";
+import { LoadProblem, StaleNote } from "./ui/notice";
 import { SkeletonRows } from "./ui/skeleton";
 import { StatusWord } from "./ui/status-badge";
 
@@ -74,7 +74,7 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
       () => undefined,
     );
   };
-  const title = draft.audience === "vendor" ? "Draft to the vendor" : draft.audience === "customer" ? "Draft to the customer" : "Internal note";
+  const title = draft.audience === "vendor" ? "Draft to the supplier" : draft.audience === "customer" ? "Draft to the customer" : "Internal note";
   const to = draft.to.address ? (draft.to.name ? `${draft.to.name} <${draft.to.address}>` : draft.to.address) : null;
   return (
     <div data-testid="suggestion-draft">
@@ -261,6 +261,7 @@ export function ProactiveSuggestions({ limit = 5, className }: { limit?: number;
         <h2 className="text-[12px] font-medium text-muted">Follow-ups</h2>
         {data && data.total > 0 && <span className="text-[12px] tabular-nums text-faint">{data.total}</span>}
       </div>
+      <StaleNote since={data?.stale_since} className="mb-1 text-[12px]" />
       {error ? (
         <LoadProblem message={error} onRetry={load} />
       ) : !data ? (

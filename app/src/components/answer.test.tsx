@@ -343,7 +343,7 @@ describe("AnswerCard", () => {
         }}
       />,
     );
-    await userEvent.click(screen.getByRole("button", { name: /5280.*Sales order/ }));
+    await userEvent.click(screen.getByRole("button", { name: /5280.*Customer order/ }));
     expect(pick).toHaveBeenCalledWith(expect.objectContaining({ object_id: "SalesOrder:5280" }));
   });
 });
@@ -475,7 +475,7 @@ describe("Feedback", () => {
     render(<AnswerCard turn={{ id: "t", question: "q", phase: "done", streamed: "", answer }} />);
     await userEvent.click(screen.getByRole("button", { name: "Yes, this answer was right" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Server error");
+    expect(alert).toHaveTextContent("Something went wrong on our side");
     expect(alert).not.toHaveTextContent("Traceback");
   });
 });

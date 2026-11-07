@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
+import { staleLine } from "@/lib/home";
 
 /** "Reference 8e081121" out of a message that carries "(incident 8e081121)" or "incident 8e081121". */
 export function splitReference(message: string): { text: string; reference: string | null } {
@@ -59,4 +60,15 @@ export function LoadProblem({ message, busy, onRetry, after = 20_000, className 
     return () => clearTimeout(t);
   }, [busy, onRetry, after]);
   return <ErrorNotice message={busy ? BUSY_RETRY : message} onRetry={onRetry} tone={busy ? "notice" : "error"} className={className} />;
+}
+
+/** The page's age, when the server answered from its last good read: "As of 9:08 PM ET · refreshing". */
+export function StaleNote({ since, className }: { since?: string | null; className?: string }) {
+  const line = staleLine(since);
+  if (!line) return null;
+  return (
+    <p className={cn("text-meta text-muted", className)} data-testid="stale-page" role="status">
+      {line}
+    </p>
+  );
 }

@@ -185,7 +185,7 @@ export function sourceTitle(view: SourceView): string {
   const num = pick(/^(?:number|no|po_?number|so_?number|order_?number|document_?number|ao_?code|code)$/i);
   const party = pick(/^(?:vendor_?name|buy_?from_?vendor_?name|supplier_?name|customer_?name|sell_?to_?customer_?name|display_?name|name)$/i);
   const kind = recordKind(view.handle, view.label);
-  const prefix = kind === "Purchase order" ? "PO " : kind === "Sales order" ? "SO " : kind ? `${kind} ` : "";
+  const prefix = kind === "Purchase order" ? "PO " : kind === "Customer order" ? "SO " : kind ? `${kind} ` : "";
   if (num) return [/^\d/.test(num) ? `${prefix}${num}` : num, party].filter(Boolean).join(" · ");
   if (party) return party;
   return kind ?? SYSTEM_LABEL[view.system] ?? "Source";

@@ -153,7 +153,7 @@ export const SYSTEM_LABEL: Record<SourceSystem, string> = {
 
 const TYPE_LABELS: Record<string, string> = {
   PurchaseOrder: "Purchase order",
-  SalesOrder: "Sales order",
+  SalesOrder: "Customer order",
   Customer: "Customer",
   Supplier: "Supplier",
   Vendor: "Supplier",
@@ -166,13 +166,18 @@ const TYPE_LABELS: Record<string, string> = {
   // short forms some payloads use (AtRisk.kind)
   po: "Purchase order",
   purchase_order: "Purchase order",
-  order: "Sales order",
-  sales_order: "Sales order",
+  order: "Customer order",
+  sales_order: "Customer order",
   customer: "Customer",
   supplier: "Supplier",
   item: "Item",
   lot: "Lot",
 };
+
+/** Server wording in a reader's words: "sales order" is a customer order everywhere. */
+export function plainWords(text: string): string {
+  return text.replace(/\bsales (orders?)\b/gi, (m, o: string) => (m[0] === "S" ? "Customer " : "customer ") + o);
+}
 
 /** "PurchaseOrder" -> "Purchase order"; unknown CamelCase types are split into words. */
 export function typeLabel(type: string | null | undefined): string {
@@ -342,8 +347,8 @@ const RECORD_KIND: [RegExp, string][] = [
   [/^purchase_?orders?$/i, "Purchase order"],
   [/^(?:purchase_?)?receipts?$/i, "Receipt"],
   [/^purchase_?invoices?$/i, "Purchase invoice"],
-  [/^sales_?orders?$/i, "Sales order"],
-  [/^sales_?invoices?$/i, "Sales invoice"],
+  [/^sales_?orders?$/i, "Customer order"],
+  [/^sales_?invoices?$/i, "Customer invoice"],
   [/^(?:vendors?|suppliers?|ap_vendor)$/i, "Supplier"],
   [/^ar_customer$/i, "AR record"],
   [/^oe_?order_?headers?$/i, "Sage order"],

@@ -16,7 +16,7 @@ import { StatusBadge, StatusWord } from "./ui/status-badge";
 const KIND: Record<TrailStep["kind"], { label: string; status: Status }> = {
   due_date: { label: "Needed-by date", status: "neutral" },
   po_issued: { label: "Purchase order", status: "neutral" },
-  confirmation: { label: "Vendor confirmation", status: "ok" },
+  confirmation: { label: "Supplier confirmation", status: "ok" },
   revision: { label: "Promise revised", status: "risk" },
   lead: { label: "Possible confirmation", status: "risk" },
   follow_up: { label: "Follow-up", status: "new" },

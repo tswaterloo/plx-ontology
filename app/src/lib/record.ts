@@ -3,7 +3,7 @@
 // lists (messages by thread, activity by month, related by type). Display only: nothing
 // is recomputed that the server did not state; an unknown value is left out, never guessed.
 
-import { currencyCode, formatDate, formatMoney, plural, readable, recordLabel, typeLabel } from "./format";
+import { currencyCode, formatDate, formatMoney, plainWords, plural, readable, recordLabel, typeLabel } from "./format";
 import { etaShown as etaHeadline } from "./eta";
 import { lateness, recordState, type Shown, type Status } from "./status";
 import type { Fact, LinkedItem, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
@@ -474,7 +474,7 @@ export function activityTitle(title: string, count: number): string {
   const m = /^([A-Za-z ]+):\s*(.+)$/.exec(title.trim());
   const verb = m ? EVENT_VERB[m[1].trim().toLowerCase()] : undefined;
   if (!m || !verb) return count > 1 ? `${m?.[1] ?? readable(title)} ×${count}` : readable(title);
-  const record = readable(m[2]);
+  const record = plainWords(readable(m[2]));
   if (count === 1) return `${record[0].toUpperCase()}${record.slice(1)} ${verb}`;
   // the record's kind: its words before the first one holding a digit ("sales order SO-1" -> "sales order")
   const kind = record.split(/\s+/).filter((w, i, all) => !all.slice(0, i + 1).some((x) => /\d/.test(x))).join(" ").toLowerCase();

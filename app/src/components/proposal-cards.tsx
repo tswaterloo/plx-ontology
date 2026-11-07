@@ -82,7 +82,8 @@ function Change({ p }: { p: Proposal }) {
   return (
     <div className="space-y-3" data-testid="proposed-change">
       <div className="overflow-hidden rounded-xl bg-bg shadow-lift">
-        <table className="w-full text-[13px]">
+        <div className="max-w-full overflow-x-auto">
+          <table className="w-full text-[13px]">
           <caption className="sr-only">{c.field} on {c.record}: now and proposed</caption>
           <tbody>
             <tr className="border-b border-border">
@@ -104,6 +105,7 @@ function Change({ p }: { p: Proposal }) {
             </tr>
           </tbody>
         </table>
+</div>
       </div>
       <p className="text-[13px] leading-5">{c.why}</p>
       <p className="text-[12px] leading-4 text-muted">Make the change in {SYSTEM_NAME[c.system] ?? c.system}. The Workbench doesn&apos;t write to it.</p>

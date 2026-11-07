@@ -14,7 +14,7 @@ const sans = Host_Grotesk({ subsets: ["latin"], variable: "--font-host", display
 
 export const metadata: Metadata = {
   title: { default: "PLX Workbench", template: "%s · PLX Workbench" },
-  description: "Purchase orders, sales orders, suppliers and customers from BC, the Portal, mail, Teams and files.",
+  description: "Purchase orders, customer orders, suppliers and customers from BC, the Portal, mail, Teams and files.",
   robots: { index: false, follow: false },
   // favicon.ico, icon.svg and apple-icon.png sit beside this file; manifest.ts makes it installable
   applicationName: "PLX Workbench",

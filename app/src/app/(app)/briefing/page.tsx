@@ -46,7 +46,7 @@ export default function BriefingPage() {
     setError(null);
     getBriefing(c.signal)
       .then(setBriefing)
-      .catch((e) => !c.signal.aborted && setError(plainError(e).replace(/^Server error\./, "Couldn't load the briefing.")));
+      .catch((e) => !c.signal.aborted && setError(plainError(e).replace(/^Something went wrong on our side\./, "Couldn't load the briefing.")));
     // suppliers for the rows' names; a failure only leaves them out
     loadLate().then((l) => !c.signal.aborted && setLate(l), () => undefined);
     return () => c.abort();
@@ -62,7 +62,7 @@ export default function BriefingPage() {
       ) : !briefing ? (
         <Skeleton />
       ) : (
-        <BriefingCard briefing={briefing} latePos={late} />
+        <BriefingCard briefing={briefing} latePos={late} onRetry={load} />
       )}
     </div>
   );

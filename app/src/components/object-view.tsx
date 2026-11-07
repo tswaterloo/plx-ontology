@@ -25,7 +25,7 @@ import { EvidenceDrawer, SourceChip, SourceChips } from "./source-chip";
 import { stepWords } from "./today-detail";
 import { DoneRing, OpenRing, StatusGlyph, SystemTile } from "./ui/glyphs";
 import { Toolbar, ToolbarButton } from "./ui/toolbar";
-import { LoadProblem } from "./ui/notice";
+import { LoadProblem, StaleNote } from "./ui/notice";
 import { Monogram } from "./ui/monogram";
 import { StatusBadge, StatusWord } from "./ui/status-badge";
 
@@ -752,6 +752,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   const [conflictsOpen, setConflictsOpen] = useState(false);
   // The sections still being read, and those that could not be read.
   const [pending, setPending] = useState<ReadonlySet<SectionName>>(new Set());
+  const [sectionStale, setSectionStale] = useState<string | null>(null);
   const [failed, setFailed] = useState<ReadonlySet<SectionName>>(new Set());
   // the proactive engine's card for this record, when it drafted one, and its action's state
   const [card, setCard] = useState<ProactiveSuggestion | null>(null);
@@ -767,6 +768,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
     setObj(null);
     setPending(new Set());
     setFailed(new Set());
+    setSectionStale(null);
     getObject(type, id, c.signal, true)
       .then((first) => {
         if (c.signal.aborted) return;
@@ -781,7 +783,9 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         for (const name of names) {
           getObjectSection(name, first.type, first.object_id, c.signal)
             .then((sec) => {
-              if (!c.signal.aborted) setObj((o) => (o ? mergeSection(o, sec) : o));
+if (c.signal.aborted) return;
+              if (sec.stale_since) setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
+              setObj((o) => (o ? mergeSection(o, sec) : o));
             })
             .catch(() => {
               if (!c.signal.aborted) setFailed((f) => new Set(f).add(name));
@@ -927,6 +931,8 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
   );
 
   const header = (
+    <>
+    <StaleNote since={[obj.stale_since, sectionStale].filter((t): t is string => !!t).sort()[0]} className="mb-3" />
     <header className="flex gap-4 sm:gap-5">
       <Monogram name={isParty ? obj.label : (counterpart?.label ?? null)} size={isParty ? 56 : 48} />
       <div className="min-w-0 flex-1">
@@ -995,6 +1001,7 @@ export function ObjectView({ type, id, missing }: { type: string; id: string; mi
         )}
       </div>
     </header>
+    </>
   );
 
   const hasFigures = factFigures.length > 0 || !!total || !!got || ordered != null || needed != null || !!so?.total || otherStats.length > 0 || revenue.length > 0;

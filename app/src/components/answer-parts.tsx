@@ -323,7 +323,8 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
         <StatusGlyph status="suspect" size={14} />
         Systems disagree on {what}
       </h3>
-      <table className="mt-1.5 w-full text-[13px] leading-5">
+      <div className="max-w-full overflow-x-auto">
+        <table className="mt-1.5 w-full text-[13px] leading-5">
         <caption className="sr-only">Values for {what}, by system</caption>
         <tbody>
           {conflict.values.map((v, i) => (
@@ -352,6 +353,7 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
           ))}
         </tbody>
       </table>
+</div>
       {!used && (
         <p className="mt-1 mb-1 text-[12px] leading-[18px] text-muted">
           Neither value is confirmed, so neither is used. Ask {owner || "the record's owner"} which is right.

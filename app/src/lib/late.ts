@@ -94,6 +94,7 @@ export interface LatePage {
   more?: boolean;
   next_offset?: number | null;
   as_of?: string | null;
+  stale_since?: string | null;
 }
 
 /**
@@ -105,7 +106,7 @@ export async function readAllLate<P extends LatePage>(
   get: (offset: number, size: number) => Promise<P>,
   size: number,
   most: number,
-): Promise<{ items: LatePo[]; total: number; asOf: string | null }> {
+): Promise<{ items: LatePo[]; total: number; asOf: string | null; staleSince: string | null }> {
   const first = await get(0, size);
   const pages: P[] = [first];
   const step = first.next_offset ?? (first.items ?? []).length;
@@ -119,5 +120,6 @@ export async function readAllLate<P extends LatePage>(
   for (const page of pages)
     for (const p of page.items ?? []) if (!seen.has(p.object_id)) (seen.add(p.object_id), items.push(p));
   const last = pages[pages.length - 1];
-  return { items, total: last.total, asOf: last.as_of ?? null };
+  const staleSince = pages.map((p) => p.stale_since).filter((t): t is string => !!t).sort()[0] ?? null;
+  return { items, total: last.total, asOf: last.as_of ?? null, staleSince };
 }

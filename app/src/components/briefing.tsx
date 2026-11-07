@@ -14,6 +14,7 @@ import { ItemFeedback, MarkedLine, WrongReason, type ItemVerdict } from "./item-
 import { AgeRing, StatusGlyph } from "./ui/glyphs";
 import { Monogram } from "./ui/monogram";
 import { StatusWord } from "./ui/status-badge";
+import { StaleNote } from "./ui/notice";
 
 type LoadView = (view: BriefingView) => Promise<Briefing>;
 type LoadItems = (eventType: string, offset: number, view: BriefingView) => Promise<BriefingItems>;
@@ -371,11 +372,13 @@ export function BriefingCard({
   loadView = (v) => getBriefing(undefined, v),
   loadItems = (t, o, v) => getBriefingItems(t, o, v),
   latePos = [],
+  onRetry,
 }: {
   briefing: Briefing;
   loadView?: LoadView;
   loadItems?: LoadItems;
   latePos?: LatePo[];
+  onRetry?: () => void;
 }) {
   const [view, setView] = useState<BriefingView>(first.since_visit ? "since_visit" : "all");
   const [briefing, setBriefing] = useState<Briefing>(first);
@@ -396,9 +399,20 @@ export function BriefingCard({
   }
   if (briefing.status !== "read") {
     return (
-      <p className="px-5 py-10 text-[13px] text-muted" data-testid="briefing-unavailable">
-        {briefing.status === "not_configured" ? "The briefing hasn't run on this server." : "Couldn't load the briefing. Try again in a few minutes."}
-      </p>
+      <div className="px-5 py-10 text-[13px] text-muted" data-testid="briefing-unavailable">
+        {briefing.status === "not_configured" ? (
+          <p>The briefing hasn&apos;t run on this server.</p>
+        ) : (
+          <>
+            <p>Couldn&apos;t load the briefing. Try again in a few minutes.</p>
+            {onRetry && (
+              <button type="button" onClick={onRetry} className="mt-3 inline-flex h-10 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-4 font-medium text-fg cursor-pointer">
+                Try again
+              </button>
+            )}
+          </>
+        )}
+      </div>
     );
   }
   const items = briefing.items ?? [];
@@ -418,6 +432,7 @@ export function BriefingCard({
     <div className="grid flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] lg:grid-rows-[auto_1fr] xl:grid-cols-[minmax(0,1fr)_320px]">
       {/* the count and today's line: above the list on a phone, atop the side panel on a desktop */}
       <div className="space-y-3 px-5 pt-5 pb-4 lg:col-start-2 lg:row-start-1 lg:border-l lg:border-border lg:bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))] lg:px-6 lg:pt-6 lg:pb-0">
+        <StaleNote since={briefing.stale_since} />
         <p className="flex flex-wrap items-baseline gap-x-1.5" data-testid="briefing-heading">
           {briefing.counts_exact === false && <span className="text-[13px] text-muted">at least </span>}
           <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] tabular-nums">{briefing.count}</span>{" "}
