@@ -16,7 +16,7 @@ class ReviewItemsTest(unittest.TestCase):
         # The reason the runner's prompt asks the agent to write must be the one counted.
         item = fx.item()
         prompt = runner.build_prompt(item, item["question"]["text"])
-        sentence = next(line for line in prompt.splitlines() if "contradict" in line)
+        sentence = next(line for line in prompt.splitlines() if "contradict" in line and 'reason "' in line)
         prompted = re.search(r'reason "(\w+)"', sentence).group(1)
         answer = {"gaps": [{"state": "unknown", "subject": "freight total: mail 9.31 vs PDF",
                             "reason": prompted}]}

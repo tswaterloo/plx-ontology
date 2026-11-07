@@ -3759,7 +3759,7 @@
       }
     },
     "plx.around": {
-      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects; exact_count when every member is listed (filters on the last hop included): the exact count, citing each listed object. Undeclared links are refused. To count, total, or find the latest or earliest date over what a walk reaches (an order's lines, a record's or a channel's mail and Teams messages), send that walk as one plx.query with measures, never plx.around then a read per record.",
+      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects; exact_count when every member is listed (last-hop filters included): the exact count, citing each listed object. Undeclared links are refused. To count, total, or find the latest or earliest date over what a walk reaches (an order's lines, a record's or channel's mail and Teams messages), send that walk as one plx.query with measures, not plx.around then a read per record.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -3773,7 +3773,7 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "description": "A hop names a declared link type and direction, or a link's navigation name on the hop's start type (its name walks it forward, its reverse_name in reverse; e.g. mentioned_in_email), so one path serves every start type declaring that name. An undeclared name is refused (undeclared_link), one meaning several links too (ambiguous_link); the answer's hops name the link type walked.",
+              "description": "A hop names a declared link type and direction, or a link's navigation name on the hop's start type (its name walks forward, its reverse_name in reverse; e.g. mentioned_in_email), so one path serves every start type declaring it. An undeclared name is refused (undeclared_link), one meaning several links too (ambiguous_link); the answer's hops name the link type walked.",
               "properties": {
                 "link_type": {
                   "type": "string",
@@ -4601,7 +4601,7 @@
       }
     },
     "plx.process": {
-      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (three-way match), variant frequency; for one root also the next stage, overdue stages, document-vs-record conflicts and each unreached stage's blockers in other processes. Processes: purchase_to_invoice, po_delivery_window (lateness), sales_order_lifecycle, manufacturing_order, ao_packet (plx.schema lists them); default: the root's.",
+      "description": "Process conformance for a root or set: stages present (cited), missing (typed reason), out of order, quantity checks across roles (three-way match), variant frequency; for one root also the next stage, overdue stages, document-vs-record conflicts and each unreached stage's blockers in other processes. Processes (plx.schema lists them): purchase_to_invoice, po_delivery_window, sales_order_lifecycle, manufacturing_order, ao_packet; default: the root's.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4613,7 +4613,7 @@
           "process": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9_]{0,63}$",
-            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (operating.po_status: issued with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window with its lateness: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised and received dates, days late and the reason chain; any other root gets its type's one implicit process."
+            "description": "A process id (plx.schema section processes). Omitted: an open PurchaseOrder root (operating.po_status: issued with ordered above received, or a BC PO not fully received and not Draft) gets po_delivery_window: per PO and line the requested-by date (missing when no source states one, never a promised or expected date), promised, revised and received dates, days late and the reason chain; any other root gets its type's one implicit process."
           },
           "include_variants": {
             "type": "boolean"
@@ -6215,13 +6215,13 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 1000000,
-            "description": "Read one line (1-based, lines split at newlines in the whole text; a file read as one part is numbered as the file is, from the line after its part marker) of the content, or of the field named by field_path; exclusive with text_offset. The answer is that line without its line ending, cut at max_chars (text_window.line_cut says so); text_window.first_line and last_line name it."
+            "description": "Read one line (1-based, split at newlines in the whole text; a file read as one part is numbered as the file is, from the line after its part marker) of the content, or of the field_path field; exclusive with text_offset. The answer is that line without its line ending, cut at max_chars (text_window.line_cut says so); text_window.first_line and last_line name it."
           },
           "find": {
             "type": "string",
             "minLength": 2,
             "maxLength": 200,
-            "description": "Locate a short phrase (case and white space ignored) in the content, or the field_path field; exclusive with text_offset and line. matches.hits: the first 50 in text order, each with its line, offset (a text_offset reading on from it), chars and a snippet quotable as a window is (page_citation, page_offset on an original's page); matches.total_hits counts all."
+            "description": "Locate a short phrase (case and white space ignored) in the content or field_path field; exclusive with text_offset and line. matches.hits: the first 50 in text order, each with line, offset (a text_offset reading on from it), chars and a snippet quotable as a window is (page_citation, page_offset on an original's page); matches.total_hits counts all."
           },
           "column_offset": {
             "type": "integer",
@@ -6802,7 +6802,7 @@
       }
     },
     "plx.investigate": {
-      "description": "Run the declarative plan for a question family (ontology/plans/<family>.json), or an inline plan when no family fits, from a root in the Workbench. Returns the chain, cited values, gaps, conflicts and computed answerability, with procedure id and digest. Unknown family: no_plan; a refused plan: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder (a listed writer) records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
+      "description": "Run the declarative plan for a question family (ontology/plans/<family>.json), or an inline plan when none fits, from a root. Returns the chain, cited values, gaps, conflicts and computed answerability, with procedure id and digest. Unknown family: no_plan; refused plan: plan_<problem> with a hint. A large answer is paged: pass completeness.next_cursor as cursor. follow_ups {case_id}: a host with a follow-up recorder (a listed writer) records the gaps that ask a person as case follow-ups (nothing sent); other hosts refuse it.",
       "read_only": false,
       "input": {
         "type": "object",
@@ -6814,7 +6814,7 @@
           },
           "plan": {
             "type": "object",
-            "description": "An inline plan (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no listed family answers: family or plan, never both; prefer a family when one fits. Checked against the live schema first: every type, link, property and binding declared, each step a primitive (plx.object, plx.around, ...) with valid arguments, steps <= step_budget <= 128; a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. Runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: $schema \"_plan.schema.json\", format, id, families [\"F<n>\"], title, description, root {object_types, fallback_filters}, step_budget, steps [{id, tool, from (root or a step id), bind (object_id or from), args}], evidence [{name, kind property|count, object_type, properties}]. Examples: ontology/plans/_inline_examples.json."
+            "description": "An inline plan (plx-investigate-plan/v1, as ontology/plans/*.json) for a question no family answers: family or plan, never both; prefer a family. Checked against the live schema first (every type, link, property and binding declared; each step a primitive with valid arguments; steps <= step_budget <= 128); a broken plan is refused as plan_<problem> (undeclared_link, unknown_property, over_budget, ...) with a hint, never run. Runs as a stored plan does (tiers, gaps, claim gate; procedure inline-<id>@<digest>); no follow_ups. Keys: ontology/plans/_plan.schema.json (id, families, root, step_budget, steps [{id, tool, from, bind, args}], evidence [{name, kind, object_type, properties}]); examples: ontology/plans/_inline_examples.json."
           },
           "root": {
             "$ref": "#/$defs/investigate_root"
@@ -6831,13 +6831,13 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 600000,
-            "description": "Wall-clock budget for this run in milliseconds: once it passes, no further primitive is called and the answer is partial (reason time_budget_exhausted, a time_budget gap, completeness reason time_budget). Absent: only the step budget bounds the run."
+            "description": "Wall-clock budget in milliseconds: once it passes, no further primitive is called and the answer is partial (reason time_budget_exhausted, a time_budget gap, completeness reason time_budget). Absent: only the step budget bounds the run."
           },
           "cursor": {
             "type": "string",
             "minLength": 1,
             "maxLength": 512,
-            "description": "completeness.next_cursor of the previous page, with the same other arguments; a cursor whose answer has changed since is refused (cursor_stale)."
+            "description": "completeness.next_cursor of the previous page, other arguments the same; a cursor whose answer has changed since is refused (cursor_stale)."
           },
           "follow_ups": {
             "type": "object",
@@ -6851,7 +6851,7 @@
                 "pattern": "^case-[0-9a-f]{32}$"
               }
             },
-            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, via the action path: one workbench.follow_up.record per gap, one workbench.draft.record per engine-worded request; workbench-internal, nothing sent. A gap already on the case, executor notes, run limits and host state (source_not_configured, freshness_unknown, projection_not_built) record nothing. First page only. No action path: follow_ups_not_configured; an unseen case: case_not_found."
+            "description": "Record this answer's gaps that ask a person on case case_id, as the reader, via the action path: one workbench.follow_up.record per gap, one workbench.draft.record per engine-worded request; nothing sent. A gap already on the case, executor notes, run limits, host state (source_not_configured, freshness_unknown, projection_not_built) record nothing. First page only. No action path: follow_ups_not_configured; an unseen case: case_not_found."
           },
           "response_format": {
             "type": "string",
@@ -7526,7 +7526,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where (a hop's too); measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed (past 20, a summary); cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone. Prefer it for every count, total and date range over a link set: the latest or earliest message of a record's mail or a channel's Teams messages is measures max or min on its sent_at or created_at (rows for which one), one call however many records.",
+      "description": "One read from records, codes (a sheet's items), an entity (all systems), a set, or all of an object_type its where selects; traverse links hop by hop or {\"to\": a type} (each route walked, counted); measures by a property or linked record's (group_path), a date by period (bucket), windowed; having keeps groups by value. All groups computed (past 20: a summary); cursor pages; groups cite inputs. rows: what is reached; per_code: each code alone. Use for every count, total, date range over a link set; a record's mail or channel's Teams latest/earliest is measures max/min on sent_at or created_at.",
       "read_only": true,
       "input": {
         "type": "object",

@@ -905,7 +905,8 @@ class ClosedGrammarTests(unittest.TestCase):
              "teams_message_id": "1616965872395", "search_text": "PO#12345",
              "share_id": "u!aHR0cHM6Ly9wZXRyYWxhYnguc2hhcmVwb2ludC5jb20vOmI6L3MvUUMvRWFC",
              "freightcom_id": "fc-Test_1", "amazon_shipment_id": "FBA1TEST0001",
-             "bc_company_name": "My Company"}
+             "bc_company_name": "My Company", "meeting_id": "AAMkAD-_=1",
+             "planner_id": "AAMkAD-_=1", "plx_api_set": "plxPostedSalesInvoices"}
     # External operations whose closed query grammar requires parameters
     # (live_source_grammar.SP_QUERIES): a valid query, so only the path is under test.
     VALID_QUERY = {
@@ -924,6 +925,9 @@ class ClosedGrammarTests(unittest.TestCase):
         if op == "bc.odata_purchase_orders":  # its closed grammar requires the fixed $select
             from integrations import live_source_grammar as g
             return g.bc_odata_purchase_order_query()
+        if op == "bc.odata_item_ledger_entries":  # likewise: the fixed lot $select and $filter
+            from integrations import live_source_grammar as g
+            return g.bc_odata_item_lot_query()
         return self.VALID_QUERY.get(op.rsplit(".", 1)[-1], {}) if op.startswith("sp_api.") \
             else {}
     GENERIC_BAD = ("", "/", "a/b", "..", "../../x", "%2e%2e", "a%b", "a%2Fb", "a\\b",
@@ -953,6 +957,10 @@ class ClosedGrammarTests(unittest.TestCase):
                          "19:a@thread.tacv2:x", "19:@thread.v2", "19:a@thread.v2/messages",
                          "19:a@thread.v2'"),
         "teams_message_id": ("1.2", "1 2", "1+2", "1:2"),
+        "meeting_id": ("a.b", "a+b", "inbox/../x", "a b"),
+        "planner_id": ("a.b", "a+b", "inbox/../x", "a b"),
+        "plx_api_set": ("plxPostedSalesInvoices/x", "purchaseOrders", "plxPostedSalesInvoices(x)",
+                        "PlxPostedSalesInvoices"),
         # Not in the pinned map, doubled space, quote, parentheses.
         "bc_company_name": ("CRONUS Canada", "My  Company", "My Company'", "a(b)"),
         # s! token, raw id, padding, non-https or space in the decoded URL, '+' / '/'

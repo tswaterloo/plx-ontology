@@ -19,7 +19,7 @@ import json
 from pathlib import Path
 import unittest
 
-from integrations import live_source_grammar as grammar
+from integrations import bc_read, live_source_grammar as grammar
 from ontology import schema
 from ontology.json_contract import check_schema, validate
 
@@ -399,7 +399,8 @@ class BindingsMatchReadableSources(unittest.TestCase):
                 continue  # another module's binding (missing ones are reported by test_zero_orphan_links)
             if binding["source"] != "bc" or CATALOG.type_domain[CATALOG.binding_type[bid]] not in L5B:
                 continue
-            self.assertIn(binding["relation"], grammar.BC_ENTITY_SETS, bid)
+            # the lot set is ODataV4 Page 38, read by its own closed grammar op, not an API v2.0 set
+            self.assertIn(binding["relation"], grammar.BC_ENTITY_SETS | {bc_read.LOT_SET}, bid)
             spec = grammar.BC_QUERY_SPECS.get(binding["relation"])
             if spec is not None and path not in spec.select and availability == "served":
                 unselected.append(f"{bid}:{path}")

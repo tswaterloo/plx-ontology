@@ -610,6 +610,7 @@ class ToolContractsReject(unittest.TestCase):
             "who_can_answer",  # plx.investigate gaps: engine answerers, schema binding owners
             "text",  # plx.process stage reading: the engine's plain words for the typed state
             "basis",  # plx.process gap/outcome: the schema's lineage rules and code refs
+            "object_type", "property",  # plx.find structured leads: declared schema names, not source text
         }
         found: set[str] = set()
 

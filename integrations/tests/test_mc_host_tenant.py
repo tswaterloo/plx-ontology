@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -179,7 +180,9 @@ class IngestModeTests(unittest.TestCase):
         self.assertEqual((options["live_audience"], options["principal"]),
                          (audience, HOST_PRINCIPAL))
         self.assertGreaterEqual(options["max_task_reads"], 10_000)
-        argv = forever.SOURCES["mc"].argv(Path("/state"), options)
+        state = Path(tempfile.mkdtemp())   # building the argv makes the store's private parent
+        self.addCleanup(shutil.rmtree, state, True)
+        argv = forever.SOURCES["mc"].argv(state, options)
         for flag, value in (("--live-audience", audience), ("--principal", HOST_PRINCIPAL),
                             ("--budget-seconds", str(options["budget_seconds"]))):
             self.assertEqual(argv[argv.index(flag) + 1], value)

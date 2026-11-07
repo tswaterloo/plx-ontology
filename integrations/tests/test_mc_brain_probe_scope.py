@@ -232,11 +232,7 @@ class SpecEnabledTests(unittest.TestCase):
         self.assertNotIn("disabled", spec)
         self.assertNotIn("MC_OPERATOR_EMAIL", spec["requires_env"])
         self.assertEqual(spec["command"][-2:], ["--operator-email-default", OPERATOR])
-        sys.path.insert(0, str(ROOT / "devloop"))
-        try:
-            import live_verify
-        finally:
-            sys.path.remove(str(ROOT / "devloop"))
+        from verify import live_verify
         self.assertIn("integrations.mc_brain_probe", live_verify.ALLOWED_MODULES)
         dry = subprocess.run([sys.executable, "devloop/live_verify.py", "--dry-run", "--only",
                               "mc.brain_probe"], cwd=ROOT, capture_output=True, text=True,
