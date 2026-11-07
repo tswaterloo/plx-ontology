@@ -4109,22 +4109,34 @@ def _with_attachment_text(runtime: Any, view: Mapping[str, Any], handle: str,
     passage a claim quotes from the attachment is checked against what the reader was
     shown; a page's view also carries that page's text as ``text``. A message, a view
     already holding the text, or a row the gate does not serve: ``view`` unchanged."""
+    from integrations.captured_text import split_member
     from integrations.graph_evidence import is_mail_attachment_citation
+    from ontology.mentions import cited_page
     row = view.get("row") if isinstance(view.get("row"), Mapping) else None
     if row is None or isinstance(row.get("content_text"), str) or "#" not in handle:
         return view
     try:
-        if not is_mail_attachment_citation(handle.split("#page=", 1)[0]):
+        member = split_member(cited_page(handle)[0])
+        if not is_mail_attachment_citation(handle.split("#page=", 1)[0] if member is None
+                                           else member[0]):
             return view
         served = runtime.mail_capture(handle, actor, text=True)
     except Exception:  # noqa: BLE001 - not served: the view as the gate read it
         return view
-    text = ((served or {}).get("row") or {}).get("content_text") \
-        if isinstance(served, Mapping) else None
-    if not isinstance(text, str):
+    served_row = served.get("row") if isinstance(served, Mapping) else None
+    served_row = served_row if isinstance(served_row, Mapping) else {}
+    text = served_row.get("content_text")
+    # A member's row as the capture reads it from the container's pinned bytes (its
+    # name, bytes and MIME type: ``captured_text.member_view``), which the gate-only
+    # view never opens the container for: the claim gate counts a member as its own
+    # record only on that row (``claim_checks._member_shown``).
+    shown = ({k: v for k, v in served_row.items() if k != "content_text" and k not in row}
+             if member is not None else {})
+    if not isinstance(text, str) and not shown:
         return view
-    out = {**view, "row": {**row, "content_text": text}}
-    if isinstance(view.get("page"), int) and "text" not in view:
+    out = {**view, "row": {**row, **shown,
+                           **({"content_text": text} if isinstance(text, str) else {})}}
+    if isinstance(view.get("page"), int) and "text" not in view and isinstance(text, str):
         out["text"] = text
     return out
 

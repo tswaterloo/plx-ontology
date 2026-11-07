@@ -1237,6 +1237,79 @@ class DeniedReaderTests(unittest.TestCase):
 
 # --------------------------------------------------------------------------- timeline
 
+class OwnerOpenReaderTests(unittest.TestCase):
+    """The owner-open reader (``ReadPolicy.unrestricted``: the owner's full-read grant)
+    over a message type with more item-gated handles than any call can check: whether its
+    item gate (the people exclusion) held anything back is decided on what the hop
+    reached, so a walk that reached everything is whole; one the exclusion trimmed is
+    never whole and names nothing it held back. Every other reader is decided per type
+    as before (never whole over such a type)."""
+
+    EXCLUDED = {D2_H}   # the people exclusion's item, held back even from the owner
+
+    @staticmethod
+    def crowded(s):
+        # More gated SharePoint handles than HOP_SCAN_CAP on the walked types, none of
+        # them reached from O1: no per-type check of their handles is possible.
+        for n in range(tt.HOP_SCAN_CAP + 1):
+            oid = f"Document:sharepoint.docs:crowd-{n:05d}"
+            s.obj(oid, "sharepoint:drive-1", f"sharepoint://drive-1/crowd-{n}@e1",
+                  "sharepoint")
+            s.link(f"l-crowd-{n:05d}", "Document.documents_order", oid, O2)
+
+    def walk(self, *, unrestricted, gate, actor=FULL):
+        policy = ot.ReadPolicy(tenant=POLICY.tenant, audiences=POLICY.audiences,
+                               markings=POLICY.markings, unrestricted=unrestricted)
+        base = ot.OntologyTools(ot.StoreReader(build(extra=self.crowded).conn), policy,
+                                item_gate=gate, schema=SCHEMA, grammar=None,
+                                contracts=CONTRACTS, clock=lambda: NOW,
+                                monotonic=Clock().monotonic)
+        t = tt.TraverseTools(base)
+        args = {"from": O1, "path": [{"link_type": "Document.documents_order",
+                                      "direction": "reverse"}]}
+        out = ok(self, "plx.around", t.call("plx.around", args, actor))
+        count = oa.AggregateTools(base, t).call(
+            "plx.aggregate", {"set": out["set"], "measure": {"op": "count"}}, actor)
+        return out, count
+
+    def test_owner_walk_that_reached_everything_is_whole(self):
+        out, count = self.walk(unrestricted=True, gate=lambda actor, handle: True)
+        self.assertEqual(sorted(ids(out)), sorted([D1, D2]))
+        self.assertEqual((out["completeness"]["complete"], out["completeness"]["total"],
+                          out.get("exact_count")), (True, 2, 2))
+        self.assertNotIn("withheld_by_permission", [g["reason"] for g in out["gaps"]])
+        self.assertEqual(count["groups"][0]["value"], "2")
+        self.assertTrue(count["completeness"]["complete"])
+
+    def test_owner_walk_the_exclusion_trimmed_is_never_whole(self):
+        out, count = self.walk(unrestricted=True,
+                               gate=lambda actor, handle: handle not in self.EXCLUDED)
+        self.assertEqual(ids(out), [D1])
+        self.assertEqual((out["completeness"]["complete"], out["completeness"]["total"],
+                          out["completeness"]["reason"]),
+                         (False, None, "withheld_by_permission"))
+        self.assertNotIn("exact_count", out)
+        self.assertIsNone(count["groups"][0]["value"])
+        self.assertFalse(count["completeness"]["complete"])
+        for blob in (json.dumps(out), json.dumps(count)):
+            self.assertNotIn(D2, blob)
+            self.assertNotIn("item-2", blob)
+
+    def test_other_readers_stay_decided_per_type(self):
+        # A reader without the owner flag, even one whose gate opens every item it
+        # reached, is never whole over a type whose handles cannot all be checked; a
+        # restricted reader's denied item stays hidden.
+        for actor, gate, seen in ((FULL, lambda actor, handle: True, [D1, D2]),
+                                  (OPS, item_gate, [D1])):
+            out, count = self.walk(unrestricted=False, gate=gate, actor=actor)
+            self.assertEqual(sorted(ids(out)), sorted(seen))
+            self.assertEqual((out["completeness"]["complete"],
+                              out["completeness"]["reason"]),
+                             (False, "withheld_by_permission"))
+            self.assertIsNone(count["groups"][0]["value"])
+        self.assertNotIn(D2, json.dumps(out))
+
+
 class TimelineTests(unittest.TestCase):
     def test_dropped_bc_versions_surface_a_gap_on_the_timeline_root(self):
         store = build()

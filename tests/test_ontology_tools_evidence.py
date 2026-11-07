@@ -1985,6 +1985,54 @@ class MailCaptureCitationTests(unittest.TestCase):
         return claim_checks.check_items(
             [item], rows=oi.gate_rows(oi.citation_rows(runtime), actor))
 
+    def test_a_count_of_a_zips_members_rests_on_members_its_bytes_hold(self):
+        """A count over a captured zip's members (the claim gate's rows through the
+        runtime, ``citation_rows``): two members its pinned bytes hold are two records; a
+        path under the same zip that it does not hold counts as the zip, never as a
+        third record, and a reader the mailbox audience withholds counts none."""
+        import base64
+
+        from integrations.captured_text import container_members, member_handle
+        from ontology.tests.test_container_members import zipped
+        from operating import claim_checks
+        from operating import ontology_tools_investigate as oi
+        cm = self.cm
+        content = zipped([("a/one.txt", b"first spec"), ("a/two.txt", b"second spec")])
+        self.graph.put(cm.BOX_A, "MSG-1", "CK-1-2", attachments=[{
+            "id": "ATT-Z", "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": "specs.zip", "contentType": "application/zip",
+            "size": len(content) + 300, "isInline": False,
+            "lastModifiedDateTime": "2026-09-30T10:00:00Z",
+            "contentBytes": base64.b64encode(content).decode()}])
+        self.capture()
+        store = cm.capture_mail.MailCaptureStore(self.state, clock=cm.Clock())
+        try:
+            zip_handle, meta, digest = store.db.execute(
+                "SELECT l1_handle, metadata, content_sha256 FROM attachments").fetchone()
+            found = container_members(store.blobs, {**json.loads(meta),
+                                                    "content_sha256": digest}).members
+        finally:
+            store.close()
+        real = [member_handle(zip_handle, m.path, m.sha256) for m in found]
+        made_up = member_handle(zip_handle, "a/three.txt", None)
+        runtime = self.runtime()
+
+        def count(cited, actor=cm.READER_A):
+            item = {"id": "F1", "texts": [f"At least {len(cited)} specs."],
+                    "citations": [{"handle": h, "status": "resolved"} for h in cited],
+                    "value_claims": claim_checks.parse_value_claims(
+                        [{"value": str(len(cited)), "op": "count",
+                          "of": [{"citation": h} for h in cited]}], cited, [])}
+            return claim_checks.check_items(
+                [item], rows=oi.gate_rows(oi.citation_rows(runtime), actor))
+        self.assertEqual(len(real), 2)
+        self.assertTrue(count(real)["passed"], count(real))
+        for cited in ([real[0], made_up], [*real, made_up], [zip_handle, real[0]]):
+            with self.subTest(cited=cited):
+                self.assertEqual([f["code"] for f in count(cited)["failures"]],
+                                 ["claim_value_mismatch"])
+        self.assertFalse(count(real, cm.OUTSIDER)["passed"])
+
     def test_a_captured_version_is_one_row_for_every_reader_and_passes_the_claim_gate(self):
         from operating.cases import CitationUnresolvable, _digest
         from operating.ontology_host import CaseHostTools

@@ -240,6 +240,9 @@ def order_class(time_basis: str, lineage: str | None) -> int:
 
 DEFAULT_LIMIT = 10
 HOP_SCAN_CAP = 5000
+# The SQL item gate under which every item is open: only to tell whether the owner-open
+# reader's gate held anything back on a hop (``TraverseTools._owner_hidden``).
+OPEN_GATE = "plx_l9_open"
 # How long one reader's item-gate result over a slice's handles is reused (an exclusion
 # list is re-read on a comparable interval), and how many such results are kept.
 SLICE_GATE_SECONDS = 300.0
@@ -501,6 +504,9 @@ class TraverseTools:
             self.store.conn.create_function("plx_l9_time", 1, _store_time,
                                             deterministic=True)
             self.store.conn.create_function("plx_l9_gated", 1, _gated_text,
+                                            deterministic=True)
+            # every item open: an owner hop's reach before the item gate (``_owner_hidden``)
+            self.store.conn.create_function(OPEN_GATE, 1, lambda _handle: 1,
                                             deterministic=True)
 
     @property
@@ -1000,11 +1006,33 @@ class TraverseTools:
                             "give the hop's link_type and direction")
         return found[0]
 
+    def _owner_open(self) -> bool:
+        """Whether this call's reader is the owner-open reader (``ReadPolicy.unrestricted``:
+        the owner's full-read grant over every source and marking, usable now). Their item
+        gate holds back only what the people exclusion names (or what cannot be resolved),
+        so whether it hid anything is decided on what a hop reached (``_owner_hidden``),
+        never on a whole message type's handles, which no call can check."""
+        return getattr(self.policy, "unrestricted", False) is True
+
+    def _owner_hidden(self, scope: _Scope, link_type: str, direction: str,
+                      frontier: Sequence[str], seen: int) -> bool:
+        """For the owner-open reader: whether the item gate held back a link or an object
+        of this hop (the people exclusion, or an item that cannot be resolved): the same
+        reach read with every item open (``OPEN_GATE``) is larger than the ``seen`` rows.
+        A reach past ``HOP_SCAN_CAP`` with items open counts as held back (fail closed).
+        Says only that something was held back, never what or how much."""
+        try:
+            return len(self._hop_edges(scope, link_type, direction, frontier,
+                                       gate=OPEN_GATE)) != seen
+        except ToolError:
+            return True
+
     def _hop_edges(self, scope: _Scope, link_type: str, direction: str,
-                   frontier: Sequence[str]) -> list[sqlite3.Row]:
+                   frontier: Sequence[str], *, gate: str | None = None
+                   ) -> list[sqlite3.Row]:
         anchor, other = (("from_object", "to_object") if direction == "forward"
                          else ("to_object", "from_object"))
-        gate = scope.gate
+        gate = scope.gate if gate is None else gate
         rows = list(self.store.conn.execute(
             f"""SELECT l.*,
                   (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.from_object
@@ -1061,9 +1089,14 @@ class TraverseTools:
         best: dict[str, str] = {}
         empty_at: int | None = None
         frontiers: list[list[str]] = []
+        owner_open = self._owner_open()
+        owner_hidden = False
         for index, (link_type, direction, _source, target) in enumerate(hops):
             frontiers.append(list(frontier))
             rows = self._hop_edges(scope, link_type, direction, frontier) if frontier else []
+            if owner_open and frontier and not owner_hidden:
+                owner_hidden = self._owner_hidden(scope, link_type, direction, frontier,
+                                                  len(rows))
             self._read_corroboration(scope, rows)
             reached: dict[str, list[tuple[str, sqlite3.Row]]] = {}
             best_any: dict[str, str] = {}
@@ -1107,8 +1140,11 @@ class TraverseTools:
         # then not the whole answer. Decided on the reader's grants over the path's link
         # and object types, never on which objects are hidden or how many.
         # A filter undecided on a withheld value trims the answer the same way.
-        trimmed = bool(undecided) or (bool(frontiers and frontiers[0])
-                                      and self._path_trimmed(scope, hops))
+        # The owner-open reader's items are decided on what each hop reached
+        # (``_owner_hidden``); audiences and markings still per type.
+        trimmed = bool(undecided) or owner_hidden or (
+            bool(frontiers and frontiers[0])
+            and self._path_trimmed(scope, hops, reach_checked=owner_open))
         lap("trimmed")
         ranked = sorted(final, key=lambda oid: (_TIER_RANK[best[oid]], oid))
         total = len(ranked)
@@ -1227,14 +1263,18 @@ class TraverseTools:
             out["exact_count"] = len(listed)
         return out
 
-    def _path_trimmed(self, scope: _Scope, hops: Sequence[tuple[str, str, str, str]]
-                      ) -> bool:
+    def _path_trimmed(self, scope: _Scope, hops: Sequence[tuple[str, str, str, str]], *,
+                      reach_checked: bool = False) -> bool:
         """Whether this reader's grants may hide a link of a hop's link type or an
-        object of a hop's target type (``_slice_trimmed``)."""
-        return self._slice_trimmed(scope, [h[3] for h in hops], links=[h[0] for h in hops])
+        object of a hop's target type (``_slice_trimmed``). ``reach_checked``: the
+        caller decided the item gate on what each hop reached (the owner-open reader,
+        ``_owner_hidden``), so the types' item handles are not checked again here."""
+        return self._slice_trimmed(scope, [h[3] for h in hops], links=[h[0] for h in hops],
+                                   items=not reach_checked)
 
     def _slice_trimmed(self, scope: _Scope, object_types: Iterable[str], *,
-                       links: Iterable[str] = (), events: Iterable[str] = ()) -> bool:
+                       links: Iterable[str] = (), events: Iterable[str] = (),
+                       items: bool = True) -> bool:
         """Whether this reader's grants may hide part of a slice: objects of
         ``object_types`` with a version live at T or later, and the links of the link
         types ``links`` and the events of the event types ``events`` live at T or
@@ -1243,7 +1283,9 @@ class TraverseTools:
         ``HOP_SCAN_CAP`` of them, cannot be checked by) the item gate. The answer depends
         only on the reader's grants and the slice's types, never on which objects are
         hidden or how many, so the reader learns no more than ``_absence_state`` already
-        says. The per-type facts are read once per store state (``_slices``)."""
+        says. The per-type facts are read once per store state (``_slices``).
+        ``items`` False: the item gate is not decided here (its caller decided it on the
+        rows it reached); audiences and markings still are."""
         object_types = set(object_types)
         audiences = self._audiences()
         if not all(self.policy.may_read(scope.actor, key)
@@ -1256,11 +1298,12 @@ class TraverseTools:
             slices = self._slices(kind)
             for name in names & slices.keys():
                 kept_marks, kept_handles = slices[name]
-                if kept_handles is None:
+                if kept_handles is None and items:
                     return True
                 # Live at T or later: never superseded, unreadable end, or ended after T.
                 marks.update(m for m, until in kept_marks.items() if until > scope.t)
-                handles.update(h for h, until in kept_handles.items() if until > scope.t)
+                if items:
+                    handles.update(h for h, until in kept_handles.items() if until > scope.t)
         if len(handles) > HOP_SCAN_CAP:
             return True
         if not marks <= set(scope.marking_sets):

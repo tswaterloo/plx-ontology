@@ -44,6 +44,22 @@ def count_of(handles, value=None, role=None):
               [{"citation": h} for h in handles], role=role)
 
 
+def split(handle):
+    from integrations.captured_text import split_member
+    from ontology.mentions import cited_page
+    return split_member(cited_page(handle)[0])
+
+
+def shown_member(handle):
+    """The claim gate's row of a member the capture read from its container's pinned
+    bytes (``captured_text.member_view`` through ``citation_rows``), as served."""
+    _container, path, digest = split(handle)
+    return {"citation": handle, "relation": "sharepoint.containerMembers",
+            "fields": {"state": "unread"},
+            "row": {"path": path, "name": path.rsplit("!/", 1)[-1], "content_sha256": digest,
+                    "mime_type": "application/octet-stream", "content_text": None}}
+
+
 class CountClaimTests(unittest.TestCase):
     def setUp(self) -> None:
         self.rows = dict(receipt(index) for index in range(3))
@@ -73,6 +89,77 @@ class CountClaimTests(unittest.TestCase):
         kept = ontology_query._capped(many)
         self.assertEqual(len(kept), ontology_query.MAX_QUERY_GAPS)
         self.assertEqual(kept[0]["reason"], "source_partly_read")
+
+    def test_members_of_one_container_are_distinct_records(self):
+        # A .msg's parts are cited by the file's handle and their path: each part is
+        # its own record, so a complete count of them binds exactly and an uncovered one
+        # is a lower bound of every part; one part cited under two pins is one record.
+        from integrations.captured_text import member_handle
+        container = "sharepoint://drive-1/item-1@%22e1%22#sha256=" + "a" * 64
+        parts = [member_handle(container, name, digest) for name, digest in
+                 (("MsoDataStore", None), ("\x05SummaryInformation", "b" * 64),
+                  ("__substg1.0_0037001F", "c" * 64))]
+        rows = {h: shown_member(h) for h in parts}
+        claim = count_of(parts)
+        exact = checked(self.check("3 parts.", [claim], counted(parts), rows=rows,
+                                   handles=parts))
+        self.assertEqual([(c["status"], c.get("bound")) for c in exact],
+                         [("passed", "exact")])
+        floor = self.check("At least 3 parts.", [claim], rows=rows, handles=parts)
+        self.assertEqual([(c["status"], c.get("bound")) for c in checked(floor)],
+                         [("passed", "at_least")])
+        self.assertEqual(codes(self.check("3 parts.", [claim], rows=rows, handles=parts)),
+                         ["claim_count_lower_bound"])
+        twice = member_handle(container.replace("a" * 64, "d" * 64), "MsoDataStore", None)
+        rows[twice] = shown_member(twice)
+        self.assertEqual(codes(self.check("2 parts.", [count_of([parts[0], twice])],
+                                          rows=rows, handles=[parts[0], twice])),
+                         ["claim_value_mismatch"])
+        # A citation that is not exactly a member's names its container: never two
+        # records out of one file.
+        bad = container + "&member=x&member=y"
+        rows[bad] = {"citation": bad, "fields": {}}
+        self.assertEqual(codes(self.check("2 parts.", [count_of([container + "&page=1", bad])],
+                                          rows={**rows, container + "&page=1": {
+                                              "citation": container + "&page=1",
+                                              "fields": {}}},
+                                          handles=[container + "&page=1", bad])),
+                         ["claim_value_mismatch"])
+
+    def test_one_containers_citations_never_count_as_more_records_than_it_backs(self):
+        # Review probes: a part and the same part on a page, a file next to its own part,
+        # a nested container's member next to that container, and paths the view never
+        # showed exist (a gate-only resolve: no row read from the pinned bytes) each
+        # count one record of the file, never a floor of two or more.
+        from integrations.captured_text import member_handle
+        container = "sharepoint://drive-1/item-1@%22e1%22#sha256=" + "a" * 64
+        part = member_handle(container, "quote.pdf", "b" * 64)
+        inner = member_handle(container, "inner.zip", "c" * 64)
+        nested = member_handle(container, "inner.zip!/spec.json", "e" * 64)
+        invented = [member_handle(container, f"made-up-{n}.pdf", None) for n in range(3)]
+        rows = {container: {"citation": container, "fields": {}},
+                part: shown_member(part), part + "&page=1": shown_member(part + "&page=1"),
+                inner: shown_member(inner), nested: shown_member(nested),
+                **{h: {"citation": h, "relation": "sharepoint.containerMembers",
+                       "row": {"container": container, "path": split(h)[1],
+                               "content_sha256": None, "content_text": None}}
+                   for h in invented}}
+        for cited in ([container, part], [part, container], [part, part + "&page=1"],
+                      [inner, nested], [nested, inner], invented[:2], invented):
+            with self.subTest(cited=cited):
+                result = self.check(f"At least {len(cited)} records.", [count_of(cited)],
+                                    rows=rows, handles=cited)
+                self.assertEqual(codes(result), ["claim_value_mismatch"])
+        # The parts the view shows stay separate records (two shown parts: at least 2).
+        shown = self.check("At least 2 records.", [count_of([part, nested])], rows=rows,
+                           handles=[part, nested])
+        self.assertEqual([(c["status"], c.get("bound")) for c in checked(shown)],
+                         [("passed", "at_least")])
+        # An invented path counts as its file: with one shown part, still one record.
+        self.assertEqual(codes(self.check("At least 2 records.",
+                                          [count_of([part, invented[0]])], rows=rows,
+                                          handles=[part, invented[0]])),
+                         ["claim_value_mismatch"])
 
     def test_a_count_known_at_a_past_moment_binds_no_present_exact_count(self):
         # Item 1: members first captured after a past as_known_at are not in its count.

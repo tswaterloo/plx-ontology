@@ -1782,7 +1782,54 @@ def _record(handle: str, resolved: Mapping[str, Any]) -> tuple[str, ...]:
                                                         default=str))
     cited = resolved.get("citation") if isinstance(resolved.get("citation"), str) else handle
     body = cited.split("#", 1)[0]
-    return ("record", body.rpartition("@")[0] or body)
+    record = ("record", body.rpartition("@")[0] or body)
+    # A member of a container (a part of a .msg, a file in a zip) is its own record, cited
+    # by its container's handle and its path (``captured_text.member_handle``): two members
+    # of one file are two records, the same member under two pins or on any page one. A
+    # member is its own record only when the view shows the container holds it (the row
+    # the capture reads from the pinned bytes, ``captured_text.member_view``); a path the
+    # view does not show is the container's record, so naming paths adds no record.
+    member = _member(cited)
+    if member is None and isinstance(handle, str) and handle.split("#", 1)[0] == body:
+        member = _member(handle)
+    if member is None or not _member_shown(resolved, *member):
+        return record
+    return (*record, member[0])
+
+
+def _member(handle: str) -> tuple[str, str | None] | None:
+    """(member path, member SHA-256 or None) a container member's citation names, with or
+    without a page (a page of a part is that part), else None: a citation that is not
+    exactly a member's (``captured_text.split_member``) or names the container itself
+    (``.``) names none."""
+    try:
+        from integrations.captured_text import split_member
+        from ontology.mentions import cited_page
+        split = split_member(cited_page(handle)[0])
+    except Exception:  # noqa: BLE001 - not decidable: the container's record (fail closed)
+        return None
+    if split is None or not split[1] or split[1] == ".":
+        return None
+    return split[1], split[2]
+
+
+def _member_shown(resolved: Mapping[str, Any], path: str, digest: str | None) -> bool:
+    """Whether ``resolved`` shows the member at ``path`` (bytes ``digest``) exists: its row
+    is the one the capture reads from the container's pinned bytes for that member
+    (``captured_text.member_view``: its path, bytes and MIME type, which a gate-only
+    resolve that never opens the container does not state)."""
+    row = resolved.get("row")
+    return (isinstance(row, Mapping) and row.get("path") == path
+            and row.get("content_sha256") == digest and "mime_type" in row)
+
+
+def _part_of(part: tuple[str, ...], whole: tuple[str, ...]) -> bool:
+    """Whether the record ``part`` is the record ``whole`` or within it: a member of a
+    file is within the file, a member of a nested container (``inner.zip!/a.pdf``)
+    within that container's member."""
+    if part[0] != "record" or part[:2] != whole[:2] or len(part) < len(whole):
+        return False
+    return len(whole) == 2 or part[2] == whole[2] or part[2].startswith(whole[2] + "!/")
 
 
 def _collection(record: tuple[str, ...]) -> tuple[str, ...]:
@@ -1818,6 +1865,12 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
         if record in records:
             return _fail(out, "claim_value_mismatch", "the count cites one record twice "
                          f"({records[record][:200]} and {handle[:200]}); it counts records")
+        within = next((seen for seen in records
+                       if _part_of(record, seen) or _part_of(seen, record)), None)
+        if within is not None:
+            return _fail(out, "claim_value_mismatch", "the count cites a file together "
+                         f"with its own part ({records[within][:200]} and {handle[:200]}); "
+                         "a file and its parts are not separate records")
         records[record] = handle
     value, cited = to_decimal(claim["value"]), set(records.values())
     if claim.get("op") == "count_distinct":
