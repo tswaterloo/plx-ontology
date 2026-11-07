@@ -750,6 +750,20 @@ class CaseHostTools:
                 return None
         return self._overlay_stamp
 
+    def delta_layer_stamp(self) -> Any:
+        """The delta layers the pointer names now, as plain values (their store paths,
+        newest first; the same in every process): a page kept under it is new with each
+        delta cycle. None: no pointer (or no store). Read from the pointer file itself,
+        not this host's last overlay read, so a page never outlives a layer."""
+        if self.store_path is None:
+            return None
+        try:
+            from . import delta_overlay
+            pointer = delta_overlay.read_pointer(delta_overlay.pointer_path(self.store_path))
+        except Exception:  # noqa: BLE001 - an unreadable pointer keys nothing kept
+            return ("unreadable",)
+        return None if pointer is None else tuple(pointer["layers"])
+
     def store_meta(self) -> dict[str, str]:
         """``store_meta`` of the generation this host reads (its digest, freshness)."""
         reader = self.tools.store

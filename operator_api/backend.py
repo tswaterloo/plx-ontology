@@ -5763,6 +5763,13 @@ def resolve_object(view: Any, object_type: str, object_id: str) -> str:
     return found[0]
 
 
+def _delta_layers(view: Any) -> Any:
+    """The delta layers the reader's host answers with (``delta_layer_stamp``), so a kept
+    page is new with each delta cycle; a host that cannot say keys nothing kept."""
+    stamp = getattr(view.access, "delta_layer_stamp", None)
+    return stamp() if callable(stamp) else None
+
+
 def page_key(view: Any, oid: str) -> Optional[tuple]:
     """What a cached page is valid for: the record, the projection generation answering,
     and the reader's policy now (its fingerprint)
@@ -5774,7 +5781,8 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
         # every part a plain value, the same in every process and after a restart, so a
         # page kept on disk (``page_store``) is found again under the same reader state
         return (oid, meta.get("content_digest"), _fingerprint(policy, gated),
-                bool(getattr(policy, "unrestricted", False)), exclusion_stamp())
+                bool(getattr(policy, "unrestricted", False)), exclusion_stamp(),
+                _delta_layers(view))
     except Exception:  # noqa: BLE001 - an undecidable key is no cache entry
         return None
 

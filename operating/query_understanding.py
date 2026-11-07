@@ -356,6 +356,7 @@ class PgEntityIndex:
     CONNECT_TIMEOUT_S = 5
     STATEMENT_TIMEOUT_MS = 60_000   # a lookup never holds its connection for ever
     COMMON_WORD_ROWS = 1500
+    SLOT_WAIT_S = 30.0   # how long a lookup waits for a free connection before it gives up
     DISTINCTIVE_MAX = 5  # a word in at most this many visible names names something
 
     def __init__(self, dsn: str | None = None, *, table: str = "search.entities",
@@ -382,15 +383,24 @@ class PgEntityIndex:
             import psycopg
             conn = psycopg.connect(self.dsn, autocommit=True,
                                    connect_timeout=self.CONNECT_TIMEOUT_S)
-        conn.execute("SELECT set_config('default_transaction_read_only', 'on', false),"
-                     " set_config('statement_timeout', %s, false)",
-                     (f"{self.STATEMENT_TIMEOUT_MS}ms",))
+        try:
+            conn.execute("SELECT set_config('default_transaction_read_only', 'on', false),"
+                         " set_config('statement_timeout', %s, false)",
+                         (f"{self.STATEMENT_TIMEOUT_MS}ms",))
+        except BaseException:
+            try:
+                conn.close()   # a connection whose setup failed is never lent, never leaked
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         return conn
 
     def _locked(self, call: Callable[[Any], Any]) -> Any:
         """``call`` over a connection of this index's own, lent to it alone; a connection
         that failed is closed, never lent again."""
-        with self._slots:
+        if not self._slots.acquire(timeout=self.SLOT_WAIT_S):
+            raise TimeoutError("entity_index_busy")   # the callers' fallback, not a hang
+        try:
             conn = None
             with self._lock:
                 while self._idle and conn is None:
@@ -410,6 +420,8 @@ class PgEntityIndex:
             with self._lock:
                 self._idle.append(conn)
             return result
+        finally:
+            self._slots.release()
 
     def _run(self, sql: str, params: Any, *, threshold: float | None = None) -> list[tuple]:
         def go(conn):

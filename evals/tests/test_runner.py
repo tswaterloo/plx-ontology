@@ -1132,6 +1132,9 @@ class CaseHostInjectedTransportTests(Temp):
                                runtime=runtime)
         self.addCleanup(host.close)
         catalog = {tool["name"]: tool["read_only"] for tool in host.tools()}
+        # The total cost is a finance figure (source markings): the claim binds for a
+        # reader the host grants finance.
+        host._server._ontology_host().marking_grants = {"finance": frozenset(host.principals)}
         self.assertTrue(catalog["plx.read"])
         self.assertNotIn("plx.source_citation", catalog)  # a host read, never an agent tool
         self.assertFalse(catalog["plx.case_propose"])

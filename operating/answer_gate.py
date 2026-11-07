@@ -1408,9 +1408,18 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
     stated += [number for written, number in written_numbers
                if not claim_checks._percent_written(written)
                and (number in numbers or abs(number) in numbers)]
+    backed_tokens = set()
     for written, number in written_numbers:
         if not backed_number(written, number):
             add(written)
+        else:
+            backed_tokens.add(written)
+    # A number the claims back is backed as the claim states it: written negated or
+    # bounded in the reply ("not 120", "at least 120", "120 or more") it says something
+    # the claim does not, so it is dropped as unbacked (fail closed).
+    for start, end in _prose_tokens(scan):
+        if scan[start:end] in backed_tokens and _qualified(scan, start, end):
+            add(scan[start:end])
     rest = claim_checks.HANDLE.sub(" ", prose)
     for value in sorted(set(covered), key=len, reverse=True):
         rest = rest.replace(value, " ")
@@ -1425,6 +1434,25 @@ def unbacked(text: Any, values: Sequence[Any], *, question: Any = "",
         if token in words and token not in held and token not in asked:
             add(match.group(0))
     return out
+
+
+def _qualified(text: str, start: int, end: int) -> bool:
+    """Whether ``text[start:end]`` is written negated, bounded or as a minimum: a
+    negator, bound or "at least" before it (at most 48 characters back; a line break back too, as the gate's own figure check reaches) or
+    after it (``claim_checks._text_figures``' patterns)."""
+    line = text.rfind("\n", 0, start) + 1
+    reach = max(text.rfind("\n", 0, max(line - 1, 0)) + 1, start - 48)
+    stop = text.find("\n", end)
+    stop = len(text) if stop < 0 else stop
+    return bool(
+        claim_checks._NEGATOR.search(text, reach, start)
+        or claim_checks._EXCLUDED_BEFORE.search(text, reach, start)
+        or claim_checks._BOUND_BEFORE.search(text, reach, start)
+        or claim_checks._AT_LEAST_BEFORE.search(text, reach, start)
+        or claim_checks._NEGATED_AFTER.match(text, end, stop)
+        or claim_checks._ANSWERED_NO.match(text, end, stop)
+        or claim_checks._BOUND_AFTER.match(text, end, stop)
+        or claim_checks._AT_LEAST_AFTER.match(text, end, stop))
 
 
 _UP_WORDS = re.compile(r"\b(?:up|rose|risen|rising|increased?|increases|higher|more)\b", re.I)

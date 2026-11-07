@@ -166,5 +166,18 @@ class PageCounts(unittest.TestCase):
             self.assertIsNone(pc.PageCounts(tmp / "counts.sqlite").count(blobs, row))
 
 
+class DeltaLayerKey(unittest.TestCase):
+    def test_a_new_delta_layer_is_a_new_page_key(self):
+        view = view_of([])
+        layers = [("/d/a.sqlite",)]
+        view.access.delta_layer_stamp = lambda: layers[0]
+        with mock.patch("operating.pg.permissions._fingerprint", lambda p, a: "fp-1"):
+            first = be.page_key(view, "o")
+            self.assertIsNotNone(first)
+            self.assertEqual(first, be.page_key(view, "o"))
+            layers[0] = ("/d/b.sqlite", "/d/a.sqlite")
+            self.assertNotEqual(first, be.page_key(view, "o"))
+
+
 if __name__ == "__main__":
     unittest.main()

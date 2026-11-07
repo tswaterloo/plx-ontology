@@ -76,7 +76,7 @@ class ProjectMcTests(unittest.TestCase):
         types = dict(self.conn.execute(
             "SELECT object_type, COUNT(*) FROM objects WHERE object_type LIKE 'MC%' "
             "OR object_type = 'KnowledgeEntry' GROUP BY object_type").fetchall())
-        self.assertEqual(types, {"MCTask": 4, "MCApproval": 2, "MCBucket": 2,
+        self.assertEqual(types, {"MCTask": 4, "MCApproval": 2, "MCBucket": 2, "MCProject": 2,
                                  "MCTaskEvent": 27, "KnowledgeEntry": 1})
         rows = self.conn.execute(
             "SELECT o.audience_key, v.l1_handle, v.lineage FROM objects o "

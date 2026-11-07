@@ -847,6 +847,22 @@ AS_CHECKED = {"op": "expression", "expression": "x0 + x1", "inputs": [
     for figure, quote in FIGURES]}
 
 
+class QualifiedBackedNumberTests(unittest.TestCase):
+    """A backed number written negated or bounded says what the claim does not."""
+
+    def test_a_backed_number_is_dropped_when_the_reply_negates_or_bounds_it(self):
+        values = ["120.00", 7]
+        plain = ["The total cost is 120.", "There are 7 lines.", "Total: 120 USD."]
+        for text in plain:
+            self.assertEqual(answer_gate.unbacked(text, values), [], text)
+        qualified = ["The total cost is not 120.", "It was never 120 in total.",
+                     "The total is at least 120.", "There are 7 or more lines.",
+                     "No more than 7 lines.",
+                     "The total is more than 120.", "The total is 120 or less."]
+        for text in qualified:
+            self.assertNotEqual(answer_gate.unbacked(text, values), [], text)
+
+
 class RestatedCalculationTests(unittest.TestCase):
     """v9 A03, A08, A11: the gate passed an expression; the final JSON stated its result as
     a plain cited figure and the reply withheld it. A01 added an unchecked role."""
