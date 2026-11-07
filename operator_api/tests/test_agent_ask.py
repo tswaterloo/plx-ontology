@@ -655,12 +655,12 @@ class AgentPath(unittest.TestCase):
         other = 'PurchaseOrder:bc.purchase_orders:{"id":"synthetic-other"}'
         real = preread.resolve
 
-        def two(call, found, object_id=None, same=None):
+        def two(call, found, object_id=None, same=None, question=""):
             item = {"mention": po["label"], "kind": "petra_po", "candidates": [
                 {"object_id": po["object_id"], "object_type": "PurchaseOrder"},
                 {"object_id": other, "object_type": "PurchaseOrder"}]}
             return real(call, {**found, "ambiguous": [item]}, object_id,
-                        same=lambda ids: False)
+                        same=lambda ids: False, question=question)
         lines = [tool_use(1, "plx.case_get", {"answer": {"claims": []}}),
                  tool_result(1, decision(self.handle, "Overdue"))]
         seen = {}

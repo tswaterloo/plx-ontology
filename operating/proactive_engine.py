@@ -2751,7 +2751,10 @@ def currency_word(raw: Any) -> str | None:
 def _suspects(st: _Store, object_type: str, objects: Sequence[str] = ()) -> dict[str, Any]:
     """``suspect_money.suspects`` of ``objects``, judged once over every record of the type
     that states a total (its medians are populations: an incremental pass compares them
-    with the last fold's, ``_Store.population``)."""
+    with the last fold's, ``_Store.population``). Once the run's time is spent no new check
+    is issued: the caller says the total could not be checked."""
+    if st.interrupt is not None and st.interrupt():
+        raise sqlite3.OperationalError("interrupted: the run's time is spent")
     every = st.population(f"suspects:{object_type}", lambda: suspect_money.suspects(
         st, object_type, sorted(st.values([object_type], AMOUNT_OF[object_type][:1]))))
     return {oid: every[oid] for oid in objects if oid in every}
