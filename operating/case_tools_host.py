@@ -1131,7 +1131,10 @@ class CaptureCaseHostTools(CaseHostTools):
         # how many it lacks. A family left undecided (no capture store) is not listed.
         units = dict(policy.units)
         mail_units = [key for key in self._reader_keys if str(key).startswith("mail:")]
-        opened = self._mail() if mail_units else None
+        # A record seen through any of several mailboxes (a person: ``people_directory``):
+        # granted when one of its mailboxes would be, decided as a ``mail:`` unit is.
+        composites = [key for key in self._reader_keys if str(key).startswith("mail-any:")]
+        opened = self._mail() if mail_units or composites else None
         if opened is not None:
             stores, audience = opened
             with stores as store:
@@ -1159,6 +1162,20 @@ class CaptureCaseHostTools(CaseHostTools):
                     grants[unit] = principals if check(actor, mailbox) \
                         and mailbox in admitted else frozenset()
                 units["mail"] = tuple(mail_units)
+                if composites:
+                    from ontology import people_directory
+                    try:
+                        every = [b.mailbox_id for b in people_directory.mailboxes(store.db)]
+                    except Exception:  # noqa: BLE001 - an unreadable list decodes nothing
+                        every = []
+                    for unit in composites:
+                        # a key that no longer decodes (the mailbox list changed) opens
+                        # nothing; each mailbox of it is decided as its own unit
+                        # (the owner's full-read grant reads them all; the item gate
+                        # still decides each person under the exclusion in effect now)
+                        named = people_directory.decode_audience(unit, every) or ()
+                        grants[unit] = principals if policy.unrestricted and admitted or any(
+                            m in admitted and check(actor, m) for m in named) else frozenset()
         sharepoint_units = [key for key in self._reader_keys
                             if str(key).startswith("sharepoint:")]
         store = self._sharepoint() if sharepoint_units else None
@@ -1211,6 +1228,11 @@ class CaptureCaseHostTools(CaseHostTools):
             # A member of a captured zip/.msg/.eml attachment is visible iff its
             # attachment is: every check below decides on the attachment.
             handle = _member_container(handle) or handle
+            from ontology.people_directory import parse_person_handle
+            if parse_person_handle(handle) is not None:
+                # A person (``people_directory``): seen through any mailbox it corresponds
+                # in that this reader is served, decided by the one full check.
+                return citations.read(handle, actor, content=False).get("status") in _READ_OK
             bound = self._call_bound
             if bound.search or _PAGE_BUILD.get():
                 # This host's decisions in this call (the bound is shared by every gate

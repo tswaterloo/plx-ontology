@@ -346,6 +346,48 @@
    ]
   },
   {
+   "id": "CustomerPoDocument.for_purchase_order",
+   "from": "CustomerPoDocument",
+   "to": "PurchaseOrder",
+   "name": "for_purchase_order",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer PO document names this PurchaseOrder: an identifier the one identifier grammar reads in its text (a purchase order number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CustomerPoDocument.for_sales_invoice",
+   "from": "CustomerPoDocument",
+   "to": "SalesInvoice",
+   "name": "for_sales_invoice",
+   "reverse_name": "customer_po_documents",
+   "cardinality": "N:M",
+   "description": "A customer PO document names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "lead",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/document_fields.py"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "DeliveryReceipt.for_shipment",
    "from": "DeliveryReceipt",
    "to": "Shipment",

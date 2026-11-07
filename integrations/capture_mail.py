@@ -147,11 +147,17 @@ compact enough to capture every mailbox continuously:
   are re-read from Graph on demand (``refetch_original``: one GET, checked against the
   pin, never stored).
 * The originals kept for a pending reading are bounded (``max_pending_ocr_bytes``,
-  default 8 GiB): past it, a new PDF attachment is not downloaded
-  (``content_status`` ``deferred:ocr_backlog``; its folder ``incomplete`` with reason
-  ``attachments_deferred``) and a later round reads it once OCR has drained the backlog
+  default 8 GiB): past it, a new PDF attachment is still downloaded and its text layer
+  read at once; only a scan's OCR is put off with its bytes (text status
+  ``ocr_deferred``, read by the ``ocr-deferred`` pass), so the bound gates OCR work,
+  never a born-digital PDF. PDFs stored before as not downloaded (``content_status``
+  ``deferred:ocr_backlog``; their folder ``incomplete`` with reason
+  ``attachments_deferred``) are read by a later round once OCR has drained the backlog
   (every spare core, ``ocr_workers_for``; whether a folder still holds one is answered
-  from the folders known to, ``has_deferred_attachments``, never a count of the pile).
+  from the folders known to, ``has_deferred_attachments``, never a count of the pile),
+  or all at once by ``python3 -m integrations.capture_mail deferred-attachments``
+  (:func:`deferred_attachments_pass`: parallel downloads and extraction processes,
+  under the host's cycle lock and the people exclusion).
 * A scope's ``ocr`` ``deferred`` (or ``compact --defer-ocr``) drops the bytes of scans
   waiting for OCR too: their text status becomes ``ocr_deferred`` (a new text version;
   the text layer stays read and indexed) and every answer on one carries the named gap
@@ -205,7 +211,7 @@ from operating.case_mail_scope import MailScope
 
 from . import live_source_grammar as grammar
 from .captured_text import (COMPRESSED_SUFFIX, DROPPED_SUFFIX, OCR_DEFERRED, OCR_PENDING,
-                            OCR_UNAVAILABLE,
+                            OCR_UNAVAILABLE, TEXT_EXTRACTED,
                             TEXT_OCR, TEXT_UNREAD, UNTYPED_OCR_FAILURES, blob_path,
                             capture_text, captured_text, file_type, image_worth_reading, inflate,
                             member_view,
@@ -728,13 +734,17 @@ _ATTACHMENT_COLUMNS = ("(message_handle, attachment_id, l1_handle, mailbox_id, m
 # bytes is dropped once every reading of it is kept (its ``.dropped`` form), unless a
 # later reading still needs it (OCR pending, never read) or it is a container whose
 # members are cited. Originals kept for a pending reading are bounded by
-# ``MAX_PENDING_OCR_BYTES``: past it, new PDF attachments are not downloaded
-# (``content_status`` ``deferred:ocr_backlog``) until the OCR backlog drains.
+# ``MAX_PENDING_OCR_BYTES``: past it, a new scan's OCR is put off with its bytes
+# (``ocr_deferred``); its text layer, and any born-digital PDF, is read at once.
+# ``deferred:ocr_backlog`` marks PDFs an earlier capture did not download.
 DROP_ORIGINALS_ABOVE = 256 * 1024
 # 8 GiB (was 1 GiB): at 1 GiB the backlog was full live (2026-11-01: 742 MB pending, 19,804
 # PDFs not downloaded, their folders re-read), so OCR gated the capture of attachments.
 MAX_PENDING_OCR_BYTES = 8 << 30
 ATTACHMENT_DEFERRED = "deferred:ocr_backlog"
+# A deferred attachment whose message the people exclusion refused on its backfill read
+# (``deferred-attachments``): never requested again; ``purge_withheld`` deletes it.
+ATTACHMENT_EXCLUDED = "excluded:people"
 _COMPRESSED_KINDS = ("body", "text")
 # attachments.content_status of bytes that failed verification (module docstring).
 MISMATCH_SHA256 = "mismatch:sha256"
@@ -770,6 +780,30 @@ def call_memo() -> dict[Any, Any] | None:
     a call decides once over an unchanged store (the guard and the store do not change
     within one call) is kept here, keyed by its own name."""
     return _VISIBILITY.get()
+
+
+def _address_key_or_none(value: Any) -> str | None:
+    """SQL ``plx_address_key``: ``people_directory.address_key`` of a text, else None."""
+    from ontology.people_directory import address_key
+    return address_key(value) if isinstance(value, str) else None
+
+
+# A message's sender key, in SQL over its stored record (``{}``: the record): the address
+# key of its lowered, trimmed ``from``, '' when it has none, so NULL only ever means "not
+# computed yet" (a row stored before the column, or written by another program).
+_SENDER_KEY_OF = ("coalesce(plx_address_key(lower(trim(json_extract({}, '$.from')))), '')")
+# Current versions by mailbox and sender key; NULL keys included, so the rows not keyed
+# yet are found by the same index and read the slow way.
+_SENDER_INDEX = ("CREATE INDEX IF NOT EXISTS messages_by_sender ON messages(mailbox_id, "
+                 "sender_key) WHERE superseded_at IS NULL")
+# Rows filled per transaction by ``fill_sender_keys``: a short write lock each.
+SENDER_FILL_BATCH = 20000
+# Person decisions a store keeps across calls (``_person_row``), forgotten whole when full.
+PERSON_CACHE_SIZE = 4096
+
+
+def _sender_functions(db: sqlite3.Connection) -> None:
+    db.create_function("plx_address_key", 1, _address_key_or_none, deterministic=True)
 
 
 class MailCaptureStore:
@@ -836,6 +870,14 @@ class MailCaptureStore:
                 self.db.execute("ALTER TABLE attachments ADD COLUMN text_status TEXT")
                 self.db.execute("ALTER TABLE attachments ADD COLUMN text_sha256 TEXT "
                                 "REFERENCES blobs(sha256)")
+        _sender_functions(self.db)
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}
+        if "sender_key" not in columns:
+            # The sender lookup (``_first_sender_mailbox``): set by every insert from
+            # here on; rows stored before stay NULL, read by a scan until
+            # ``fill_sender_keys`` (``sender-index`` command) fills them.
+            with self.db:
+                self.db.execute("ALTER TABLE messages ADD COLUMN sender_key TEXT")
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(folders)")}
         with self.db:
             # The history older than a round's window, read newest first after the round
@@ -870,6 +912,10 @@ class MailCaptureStore:
                              ("text_versions_by_text",
                               "attachment_text_versions(text_sha256)")):
                 self.db.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {on}")
+            # Whether an outside address wrote to a reader's mailbox (a person page,
+            # ``_person_row``): one probe per mailbox, never a scan of its mail
+            # (measured before it: about 5 s per miss at 1M messages and 166 mailboxes).
+            self.db.execute(_SENDER_INDEX)
         if version != STORE_SCHEMA_VERSION:
             self.db.close()
             raise CaptureError("store_schema_outdated")
@@ -903,6 +949,7 @@ class MailCaptureStore:
         store.lock = threading.RLock()
         store._read_only = True
         store.db.row_factory = sqlite3.Row
+        _sender_functions(store.db)
         try:
             version = store.db.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -1034,11 +1081,12 @@ class MailCaptureStore:
             self.db.execute(
                 "INSERT INTO messages (l1_handle, mailbox_id, message_id, change_key, "
                 "folder_id, record, digest, body_status, body_sha256, attachments_status, "
-                "recorded_at, superseded_at, removed_reason, last_seen_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)",
+                "recorded_at, superseded_at, removed_reason, last_seen_at, sender_key) "
+                f"VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,{_SENDER_KEY_OF.format('?')})",
                 (handle, latest["mailbox_id"], latest["message_id"], latest["change_key"],
                  folder_id, latest["record"], latest["digest"], latest["body_status"],
-                 latest["body_sha256"], latest["attachments_status"], now, now))
+                 latest["body_sha256"], latest["attachments_status"], now, now,
+                 latest["record"]))
             self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                             (handle, "reappeared", now))
             self._mark_if_deferred(handle, latest["mailbox_id"], folder_id)
@@ -1188,11 +1236,11 @@ class MailCaptureStore:
             self.db.execute(
                 "INSERT INTO messages (l1_handle, mailbox_id, message_id, change_key, "
                 "folder_id, record, digest, body_status, body_sha256, attachments_status, "
-                "recorded_at, superseded_at, removed_reason, last_seen_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?)",
+                "recorded_at, superseded_at, removed_reason, last_seen_at, sender_key) "
+                f"VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,{_SENDER_KEY_OF.format('?')})",
                 (record["citation"], record["mailbox"], record["id"], record["change_key"],
                  folder_id, stored, record["content_sha256"], body_status, body_sha,
-                 attachments_status, now, now))
+                 attachments_status, now, now, stored))
             self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                             (record["citation"], "recorded", now))
             for item in attachments:
@@ -1218,6 +1266,21 @@ class MailCaptureStore:
                             (stored, record["content_sha256"], body_status, body_sha, handle))
             self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
                             (handle, "body_recovered", now))
+
+    def exclude_attachment(self, message_handle: str, attachment_id: str) -> bool:
+        """Mark one deferred attachment whose message the people exclusion refused
+        (``ATTACHMENT_EXCLUDED``), so no later pass requests it; nothing else of the row
+        changes. Whether it was still deferred."""
+        with self.db:
+            done = self.db.execute(
+                "UPDATE attachments SET content_status=? WHERE message_handle=? AND "
+                "attachment_id=? AND content_status=?",
+                (ATTACHMENT_EXCLUDED, message_handle, attachment_id,
+                 ATTACHMENT_DEFERRED)).rowcount
+            if done:
+                self.db.execute("INSERT INTO message_events VALUES (?,?,?)",
+                                (message_handle, "attachment_excluded", self.now()))
+        return bool(done)
 
     def fill_attachment(self, message_handle: str, entry: Mapping[str, Any]) -> None:
         with self.db:
@@ -1717,6 +1780,7 @@ class MailCaptureStore:
         # the last commits, never consistency, and every cursor is stored after its rows.
         self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.execute("PRAGMA foreign_keys = ON")
+        _sender_functions(self.db)
 
     def degraded(self, mailbox_id: str, folder_id: str, limit: int, *,
                  deferred: bool = True) -> list[dict[str, Any]]:
@@ -2071,9 +2135,183 @@ class MailCaptureStore:
             return None
         return dict(row)
 
+    def _person_row(self, actor: Actor, audience: LiveSourceAudience, handle: str,
+                    within: Iterable[str] | None = None, people: Any = None
+                    ) -> dict[str, Any] | None:
+        """The person a citation names (``ontology.people_directory``: a staff person's
+        ``graph-mail://<oid>/person/<oid>``, an outside contact's
+        ``graph-mail://people/person/<key>`` or the earlier form naming a mailbox), for a
+        reader who may see it, decided again under the exclusion in effect now
+        (unusable: nobody). Decided only on the reader's own mailboxes, less every one
+        the exclusion withholds: no other mailbox is ever read, and a mailbox a handle
+        names is never consulted (anyone can write one), so the answer is the same
+        whatever mailbox a handle names. A staff person: the directory, then its own
+        mailbox if the reader's, else a reader's mailbox it corresponds in. An outside
+        contact: a sender of a current message of a reader's mailbox. ``within``: only
+        those of the reader's mailboxes count (the caller's narrower admission: case mail
+        scope, employee item ACL). None otherwise; the row never says which mailboxes."""
+        import copy
+        from ontology import people_directory as pd
+        parsed = pd.parse_person_handle(handle)
+        if parsed is None:
+            return None
+        guard = people if people is not None else (
+            self.people if self.people is not None else _env_people())
+        if guard is None or not _usable(guard):
+            return None
+        visible = set(self._visible(actor, audience))
+        if within is not None:
+            visible &= set(within)
+        if not visible:
+            return None
+        # The decision is kept per reader for as long as nothing it was made on
+        # changes: the reader's mailboxes now (decided above, every time), the guard and
+        # audience objects, and the store's data (``data_version`` moves with another
+        # connection's commit, ``total_changes`` with this one's). Within a tool call
+        # (``call_memo``) and across calls on this store alike.
+        stamp = (self.db.execute("PRAGMA data_version").fetchone()[0],
+                 self.db.total_changes)
+        key = (str(self.path), actor, id(audience), id(guard), handle,
+               frozenset(visible))
+        memo = call_memo()
+        cache = getattr(self, "_person_cache", None)
+        if cache is None or cache[0] != stamp:
+            cache = self._person_cache = (stamp, {})
+        for held in (memo, cache[1]):
+            if held is not None and ("person_row", key) in held:
+                found = held[("person_row", key)][1]
+                return copy.deepcopy(found)
+        found = self._decide_person(handle, parsed, guard, visible)
+        if len(cache[1]) >= PERSON_CACHE_SIZE:
+            cache[1].clear()
+        for held in (memo, cache[1]):
+            if held is not None:
+                # The objects are held with the decision: an id in the key is never
+                # reused by another object while it is kept.
+                held[("person_row", key)] = ((audience, guard), copy.deepcopy(found))
+        return found
+
+    def _decide_person(self, handle: str, parsed: tuple[Any, str], guard: Any,
+                       visible: set[str]) -> dict[str, Any] | None:
+        import copy
+        from ontology import people_directory as pd
+        named, key = parsed
+        boxes = pd.mailboxes(self.db)
+        # The directory alone (no mail read): which mailboxes the exclusion keeps.
+        staff, _stats = pd.people(boxes, {}, copy.copy(guard))
+        visible &= {item["audience"] for item in staff}
+        if not visible:
+            return None
+        ordered = sorted(visible)
+        counts: dict[tuple[str, str], int] = {}
+        if pd.object_id(key) is not None:
+            if named != key:
+                return None
+            own = next((b for b in boxes if b.mailbox_id == key), None)
+            if own is None:
+                return None
+            addresses = sorted({a for a in (pd.address(own.upn),
+                                            *map(pd.address, own.identities)) if a})
+            if key not in visible:
+                there = next((m for m in ordered if self._corresponds(m, addresses)), None)
+                if there is None:
+                    return None
+                for found in addresses:
+                    counts[(found, there)] = 0
+        else:
+            # The first of the reader's mailboxes (in id order) a current message of which
+            # is from the address the key names.
+            hit = self._first_sender_mailbox(ordered, key)
+            if hit is None:
+                return None
+            counts[(hit[1], hit[0])] = 1
+        found, _stats = pd.people(boxes, counts, copy.copy(guard))
+        item = next((p for p in found if p["key"] == key), None)
+        if item is None or not set(item["mailboxes"]) & visible:
+            return None
+        row = dict(item["row"])
+        return {"relation": "graph-mail.person", "l1_handle": handle, "lineage": LINEAGE,
+                "recorded_at": item["recorded_at"], "superseded_at": None,
+                "digest": item["digest"], "row": row}
+
+    def _keyed(self) -> bool:
+        """Whether this store's messages carry ``sender_key`` and its index (a store a
+        writer has not opened since they were added has neither: read by scan)."""
+        known = getattr(self, "_sender_keyed", None)
+        if known is None:
+            columns = {r[1] for r in self.db.execute("PRAGMA table_info(messages)")}
+            index = self.db.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND "
+                                    "name='messages_by_sender'").fetchone()
+            known = self._sender_keyed = "sender_key" in columns and index is not None
+        return known
+
+    def _first_sender_mailbox(self, ordered: Sequence[str], key: str
+                              ) -> tuple[str, str] | None:
+        """(mailbox, lowered address) of the first of ``ordered`` (in id order) a
+        current message of which is from the address ``key`` names, else None. Keyed
+        rows are probed through ``messages_by_sender``; rows not keyed yet (NULL) are
+        read the slow way, so the answer never depends on whether the fill ran."""
+        from_of = "lower(trim(json_extract(record, '$.from')))"
+        if not self._keyed():
+            marks = ",".join("?" * len(ordered))
+            hit = self.db.execute(
+                f"SELECT mailbox_id, {from_of} FROM messages "
+                f"WHERE mailbox_id IN ({marks}) AND superseded_at IS NULL AND "
+                f"plx_address_key({from_of}) = ? "
+                "ORDER BY mailbox_id LIMIT 1", (*ordered, key)).fetchone()
+            return None if hit is None else (hit[0], hit[1])
+        for mailbox in ordered:
+            hit = self.db.execute(
+                f"SELECT {from_of} FROM messages INDEXED BY messages_by_sender "
+                "WHERE mailbox_id = ? AND sender_key = ? AND superseded_at IS NULL LIMIT 1",
+                (mailbox, key)).fetchone()
+            if hit is None:
+                hit = self.db.execute(
+                    f"SELECT {from_of} FROM messages INDEXED BY messages_by_sender "
+                    "WHERE mailbox_id = ? AND sender_key IS NULL AND superseded_at IS NULL "
+                    f"AND plx_address_key({from_of}) = ? LIMIT 1", (mailbox, key)).fetchone()
+            if hit is not None:
+                return mailbox, hit[0]
+        return None
+
+    def fill_sender_keys(self, *, batch: int = SENDER_FILL_BATCH) -> dict[str, int]:
+        """Key every message not keyed yet (``sender_key`` NULL: stored before the
+        column), ``batch`` rows per transaction; a store already keyed costs one index
+        probe. Idempotent; reads change only in speed."""
+        filled = 0
+        with self.lock:
+            top = self.db.execute("SELECT max(version_id) FROM messages").fetchone()[0] or 0
+        start = 0
+        while start < top:   # by rowid range: each batch a range read, never a rescan
+            with self.lock, self.db:
+                cursor = self.db.execute(
+                    f"UPDATE messages SET sender_key = {_SENDER_KEY_OF.format('record')} "
+                    "WHERE version_id > ? AND version_id <= ? AND sender_key IS NULL",
+                    (start, start + batch))
+            filled += cursor.rowcount
+            start += batch
+        self._sender_keyed = None
+        return {"filled": filled}
+
+    def _corresponds(self, mailbox: str, addresses: Sequence[str]) -> bool:
+        """Whether a current message of ``mailbox`` is from, to or cc one of
+        ``addresses`` (lower case)."""
+        if not addresses:
+            return False
+        marks = ",".join("?" * len(addresses))
+        found = self.db.execute(
+            "SELECT 1 FROM messages m WHERE m.mailbox_id = ? AND m.superseded_at IS NULL AND "
+            f"(lower(trim(json_extract(m.record, '$.from'))) IN ({marks}) OR EXISTS ("
+            "SELECT 1 FROM json_each(m.record, '$.to') j WHERE lower(trim(j.value)) "
+            f"IN ({marks})) OR EXISTS (SELECT 1 FROM json_each(m.record, '$.cc') j "
+            f"WHERE lower(trim(j.value)) IN ({marks}))) LIMIT 1",
+            (mailbox, *addresses, *addresses, *addresses)).fetchone()
+        return found is not None
+
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,
                 text: bool = False, text_version: Any = None,
-                page_exists: bool = False) -> dict[str, Any] | None:
+                page_exists: bool = False, mailboxes: Iterable[str] | None = None,
+                people: Any = None) -> dict[str, Any] | None:
         """The captured row an L1 handle names, offline, for a reader who may see its
         mailbox; ``None`` when not visible or never captured (indistinguishable).
         Shape for ``claim_checks`` rows: ``{"relation", "l1_handle", "lineage",
@@ -2097,7 +2335,11 @@ class MailCaptureStore:
         ``page_exists`` (with ``text``, on an attachment's page citation): the same answer
         but whether the cited page exists is told by the reading's page count kept by its
         digest (``page_counts.PAGE_COUNTS``), never by decoding the text again, and
-        ``row.content_text`` is None (an item gate's question: is the page there)."""
+        ``row.content_text`` is None (an item gate's question: is the page there).
+
+        A person citation (``ontology.people_directory``) resolves for a reader of any
+        mailbox the person corresponds in; ``mailboxes`` narrows the reader's mailboxes
+        to those, ``people`` is the caller's exclusion guard (``_person_row``)."""
         if not isinstance(handle, str):
             return None
         if text_version is not None and not (
@@ -2123,6 +2365,12 @@ class MailCaptureStore:
                     row.pop("content_text")
             return {**view, "relation": "graph-mail.containerMember", "l1_handle": handle,
                     "row": row}
+        if page is None:
+            from ontology.people_directory import parse_person_handle
+            if parse_person_handle(base) is not None:
+                # A person citation (never a message's: those end ``@<change key>``) is
+                # decided on the reader's mailboxes alone; no row is looked up by it.
+                return self._person_row(actor, audience, base, mailboxes, people)
         if is_mail_attachment_citation(base):
             found = self.db.execute("SELECT * FROM attachments WHERE l1_handle=?",
                                     (base,)).fetchone()
@@ -3521,6 +3769,210 @@ def ocr_deferred_pass(store: MailCaptureStore, reader: Any, actor: Actor,
     return counts
 
 
+# ``deferred-attachments``: the least free disk a pass leaves (it stops before), and how
+# many attachments' bytes each worker may hold in flight beside the one it reads.
+DEFERRED_MIN_FREE_BYTES = 250 << 30
+DEFERRED_IN_FLIGHT_PER_WORKER = 2
+
+
+def deferred_attachments_pass(store: MailCaptureStore, reader: Any, actor: Actor, *,
+                              budget_seconds: float, workers: int = MAX_WORKERS,
+                              extract_workers: int | None = None, limit: int | None = None,
+                              min_free_bytes: int = DEFERRED_MIN_FREE_BYTES,
+                              max_pending_ocr_bytes: int | None = MAX_PENDING_OCR_BYTES,
+                              monotonic: Callable[[], float] = time.monotonic,
+                              free_bytes: Callable[[Path], int] | None = None
+                              ) -> dict[str, Any]:
+    """Read the attachments an earlier capture did not download while the OCR backlog was
+    full (``deferred:ocr_backlog``), newest version first, within ``budget_seconds``.
+
+    Fail-closed on the people exclusion: the reader's guard must be ready (its ID list and
+    one directory listing, ``prepare_people``) and the store must be able to say which
+    captured mailboxes it withholds now (``withheld_mailboxes``), else nothing is read
+    (``error`` ``people_exclusion_unavailable``); a withheld mailbox's rows are skipped
+    before any request, and every download goes through ``get_attachment`` without the
+    stored message, so the message's own sender and recipients are checked again
+    (``get_message``): a row whose message the exclusion refuses is marked
+    ``ATTACHMENT_EXCLUDED`` (``excluded_messages``) and never requested again, while any
+    other refusal, an undecided guard included, leaves it deferred. A message whose
+    version moved on since is left to the capture's next delta round (``changed_since``).
+    An unexpected error reading one row is counted by its type (``failed``,
+    ``failed_kinds``; logged without content) and leaves that row deferred; the pass goes
+    on.
+
+    ``workers`` threads download through the capture's reader (each mailbox's
+    ``MAILBOX_CONCURRENCY`` permits, Graph's 429 waits) and hand the bytes to
+    ``extract_workers`` extraction processes at :data:`OCR_NICE` (default: every core
+    but one, at most :data:`MAX_WORKERS`; 0: inline on the download threads). A text layer is read at once and never OCR-read
+    here: a scan is queued for the OCR pool (``ocr_pending``, bytes kept) while the
+    backlog is under ``max_pending_ocr_bytes``, else its OCR is put off with its bytes
+    (``ocr_deferred``, read by ``ocr-deferred``). Rows are written by this thread only,
+    through the capture's own store side (``_commit_attachment``, ``fill_attachment``,
+    ``settle_original``). In flight: at most
+    ``DEFERRED_IN_FLIGHT_PER_WORKER * workers`` attachments' bytes. It stops before the
+    store's file system has less than ``min_free_bytes`` free (``disk_low``). Counts
+    only."""
+    counts: dict[str, Any] = {
+        "selected": 0, "excluded": 0, "captured": 0, "text_layer": 0, "ocr_queued": 0,
+        "ocr_deferred": 0, "other_text": 0, "filled_other": 0, "left": 0,
+        "changed_since": 0, "not_visible": 0, "transient": 0, "budget_spent": 0,
+        "failed": 0, "excluded_messages": 0,
+        "disk_low": 0, "bytes": 0}
+    for value, low, code in ((workers, 1, "workers_invalid"),
+                             (extract_workers if extract_workers is not None else 1, 0,
+                              "extract_workers_invalid")):
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= MAX_WORKERS:
+            raise CaptureError(code)
+    try:
+        reader.prepare_people()
+    except ExclusionUnavailable:
+        return {"error": "people_exclusion_unavailable", **counts}
+    withheld = store.withheld_mailboxes(reader.people)
+    if withheld is None:
+        return {"error": "people_exclusion_unavailable", **counts}
+    withheld_ids = {str(m).lower() for m in withheld}
+    free = free_bytes or (lambda path: shutil.disk_usage(path).free)
+    rows = store.db.execute(
+        "SELECT a.message_handle, a.attachment_id, a.mailbox_id, m.message_id FROM "
+        "attachments a JOIN messages m ON m.l1_handle=a.message_handle AND "
+        "m.superseded_at IS NULL WHERE a.content_status=? ORDER BY m.version_id DESC, "
+        "a.attachment_id" + ("" if limit is None else " LIMIT ?"),
+        (ATTACHMENT_DEFERRED, *(() if limit is None else (limit,)))).fetchall()
+    if extract_workers is None:
+        extract_workers = max(1, min(MAX_WORKERS, (os.cpu_count() or 2) - 1))
+    capture = MailCapture(store, reader, actor, workers=1, defer_ocr=True,
+                          max_pending_ocr_bytes=max_pending_ocr_bytes,
+                          extract_workers=extract_workers)
+    if extract_workers:   # else inline, on the download threads
+        capture._extractor = _Extractors(extract_workers, EXTRACT_SECONDS, nice=OCR_NICE)
+    capture._check_backlog(now=True)
+    gated, deadline = capture.reader, monotonic() + budget_seconds
+
+    def fetch(row: sqlite3.Row, meta: dict[str, Any], hold: bool) -> dict[str, Any]:
+        # One attachment's failure is its own: an unexpected error is counted by its type
+        # (logged without content) and the pass goes on; the row stays deferred.
+        try:
+            return read_one(row, meta, hold)
+        except Exception as exc:  # noqa: BLE001 - counted, the row left for a later pass
+            import logging
+            logging.getLogger(__name__).warning(
+                "deferred-attachments: one read failed (%s)", type(exc).__name__)
+            return {"id": row["attachment_id"], "outcome": "failed",
+                    "error": type(exc).__name__}
+
+    def read_one(row: sqlite3.Row, meta: dict[str, Any], hold: bool) -> dict[str, Any]:
+        # Reader side: Graph and the extraction processes only, never the store.
+        entry: dict[str, Any] = {"id": row["attachment_id"], "metadata": meta}
+        try:
+            read = gated.get_attachment(actor, row["mailbox_id"], row["message_id"],
+                                        row["attachment_id"], max_bytes=MAX_ATTACHMENT_BYTES)
+        except PeopleExcluded:   # the message names an excluded person: never again
+            return {**entry, "outcome": "excluded"}
+        except NotVisible:   # an undecided guard included: left deferred, fail closed
+            return {**entry, "outcome": "not_visible"}
+        except SourceUnavailable as exc:
+            if _transient(unavailable_detail(exc)):
+                return {**entry, "outcome": "transient"}
+            text = str(exc)
+            return {**entry, "outcome": "filled", "content_status": (
+                "not_file_attachment" if "not a file attachment" in text
+                else MISMATCH_SIZE if "exceed its reported size" in text
+                else "exceeds_cap" if "byte bound" in text else "unavailable")}
+        if read["message"].get("citation") != row["message_handle"]:
+            return {**entry, "outcome": "changed_since"}
+        listed, reported = meta.get("size"), read["attachment"].get("size")
+        if listed is not None and reported is not None and listed != reported:
+            return {**entry, "outcome": "filled", "content_status": MISMATCH_SIZE}
+        status, text, readings = capture._extract(read["content"], read["attachment"],
+                                                  hold_ocr=hold)
+        return {**entry, "outcome": "read", "content": read["content"],
+                "read": dict(read["attachment"]), "text_status": status, "text": text,
+                "readings": readings, "hold_ocr": hold}
+
+    def commit(row: sqlite3.Row, entry: dict[str, Any]) -> None:
+        # Store side, this thread only: the capture's own write path for a recovered
+        # attachment (``_repair_degraded``), its original settled once its row is written.
+        outcome = entry.pop("outcome")
+        if outcome in ("not_visible", "transient", "changed_since"):
+            counts[outcome] += 1
+            return
+        if outcome == "failed":
+            counts["failed"] += 1
+            kinds = counts.setdefault("failed_kinds", {})
+            kinds[entry["error"]] = kinds.get(entry["error"], 0) + 1
+            return
+        if outcome == "excluded":
+            counts["excluded_messages"] += store.exclude_attachment(row["message_handle"],
+                                                                    row["attachment_id"])
+            return
+        capture_counts = _new_counts()
+        with store.lock:
+            entry = capture._commit_attachment({"citation": row["message_handle"]}, entry,
+                                               capture_counts)
+            status = entry["content_status"]
+            if status in ("unavailable", ATTACHMENT_DEFERRED) or status.startswith("mismatch:"):
+                counts["left"] += 1
+                return
+            store.fill_attachment(row["message_handle"], entry)
+            capture._settle_new(capture_counts)
+        if status != "captured":
+            counts["filled_other"] += 1
+            return
+        counts["captured"] += 1
+        counts["bytes"] += capture_counts["attachment_bytes"]
+        text_status = store.db.execute(
+            "SELECT text_status FROM attachments WHERE message_handle=? AND attachment_id=?",
+            (row["message_handle"], row["attachment_id"])).fetchone()[0]
+        counts["text_layer" if text_status == TEXT_EXTRACTED else "ocr_queued"
+               if text_status == OCR_PENDING else "ocr_deferred"
+               if text_status == OCR_DEFERRED else "other_text"] += 1
+
+    pending: dict[Future, sqlite3.Row] = {}
+    bound = DEFERRED_IN_FLIGHT_PER_WORKER * workers
+    stop = None
+    try:
+        with reader.directory_cache(), ThreadPoolExecutor(
+                workers, thread_name_prefix="mail-deferred") as pool:
+            for row in rows:
+                if stop is None and monotonic() >= deadline:
+                    stop = "budget_spent"
+                if stop is None and free(store.root) < min_free_bytes:
+                    stop = "disk_low"
+                if stop is not None:
+                    break
+                if str(row["mailbox_id"]).lower() in withheld_ids:
+                    counts["excluded"] += 1   # never requested
+                    continue
+                current = store.db.execute(
+                    "SELECT metadata, content_status FROM attachments WHERE message_handle=? "
+                    "AND attachment_id=?", (row["message_handle"], row["attachment_id"])
+                ).fetchone()
+                if current is None or current["content_status"] != ATTACHMENT_DEFERRED:
+                    continue   # read since the list was taken
+                counts["selected"] += 1
+                capture._check_backlog()
+                pending[pool.submit(fetch, row, json.loads(current["metadata"]),
+                                    capture._backlog_full)] = row
+                while len(pending) >= bound:
+                    done, _ = wait_futures(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        commit(pending.pop(future), future.result())
+            for future in list(pending):
+                commit(pending.pop(future), future.result())
+    finally:
+        for future in pending:
+            future.cancel()
+        if capture._extractor is not None:
+            capture._extractor.close()
+    if stop is not None:
+        counts[stop] = 1
+    counts["remaining"] = store.db.execute(
+        "SELECT COUNT(*) FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle "
+        "AND m.superseded_at IS NULL WHERE a.content_status=?",
+        (ATTACHMENT_DEFERRED,)).fetchone()[0]
+    return counts
+
+
 def _ocr_one(task: tuple[bytes, dict[str, Any]]) -> tuple[str, str | None]:
     content, metadata = task
     if not image_worth_reading(content, metadata):
@@ -3826,15 +4278,18 @@ class MailCapture:
                     self.workers, thread_name_prefix="mail-read")
             return pool
 
-    def _extract(self, content: bytes, attachment: Mapping[str, Any]
-                 ) -> tuple[str, str | None, dict[str, Any] | None]:
+    def _extract(self, content: bytes, attachment: Mapping[str, Any], *,
+                 hold_ocr: bool = False) -> tuple[str, str | None, dict[str, Any] | None]:
         """:func:`extract_attachment`, in the extraction processes when there are any
         (``extract_workers``: text extraction is CPU work that would hold this process's
         interpreter lock from every lane; :class:`_Extractors`), else inline. A reading
         past :data:`EXTRACT_SECONDS`, or whose process died, is that reading's named gap
         (:data:`EXTRACTION_GAPS`, its original kept, read again later in a process); the
-        other readings in flight and the capture go on."""
-        defer_ocr, defer_all = self.defer_ocr or self._defer_all, self._defer_all
+        other readings in flight and the capture go on. ``hold_ocr``: the OCR backlog is at
+        its bound, so a scan's OCR is put off with its bytes (``ocr_deferred``), never run
+        or queued now; a text layer is read as always."""
+        defer_ocr = self.defer_ocr or self._defer_all or hold_ocr
+        defer_all = self._defer_all or hold_ocr
         if not self.extract_workers:
             return extract_attachment(content, attachment, defer_ocr, defer_all)
         with self._extractor_lock:
@@ -3880,12 +4335,14 @@ class MailCapture:
                              metadata={**row["metadata"]}, text_status=row["text_status"],
                              text_sha256=row["text_sha256"], reused=True)
                 return entry
-        if self._backlog_full and is_paged_file({"mime_type": meta.get("content_type"),
-                                                 "name": meta.get("name")}):
-            # A PDF may be a scan whose bytes wait for OCR: not read while the backlog is
-            # at its bound; a later round reads it (degraded, its folder incomplete).
-            entry["content_status"] = ATTACHMENT_DEFERRED
-            return entry
+        # While the OCR backlog is at its bound a PDF is still read and its text layer
+        # extracted now; only a scan's OCR is put off, its bytes dropped and re-read from
+        # Graph by the ``ocr-deferred`` pass (``hold_ocr``), so the bound gates OCR work,
+        # never the download of a born-digital PDF (2026-11-06: 303k PDFs had waited
+        # undownloaded behind a full backlog). ``deferred:ocr_backlog`` rows stored
+        # before are read by ``deferred-attachments`` (:func:`deferred_attachments_pass`).
+        hold = self._backlog_full and is_paged_file({"mime_type": meta.get("content_type"),
+                                                     "name": meta.get("name")})
         try:
             read = self.reader.get_attachment(
                 self.actor, mailbox_id, message["id"], meta["id"],
@@ -3903,16 +4360,17 @@ class MailCapture:
         if listed is not None and reported is not None and listed != reported:
             entry["content_status"] = MISMATCH_SIZE   # not the attachment listed
             return entry
-        status, text, readings = self._extract(read["content"], read["attachment"])
+        status, text, readings = self._extract(read["content"], read["attachment"],
+                                               hold_ocr=hold)
         entry.update(content=read["content"], read=dict(read["attachment"]),
-                     text_status=status, text=text, readings=readings)
+                     text_status=status, text=text, readings=readings, hold_ocr=hold)
         return entry
 
     def _commit_attachment(self, message: Mapping[str, Any], entry: dict[str, Any],
                            counts: dict[str, int]) -> dict[str, Any]:
         """One attachment, store side: bytes pinned by SHA-256, its text stored, counted;
         its original settled once its row is written (``_settle_new``)."""
-        readings = entry.pop("readings", None)
+        readings, hold = entry.pop("readings", None), entry.pop("hold_ocr", False)
         if entry.pop("reused", False):
             counts["attachments_reused"] += 1
         elif "content" in entry:
@@ -3928,7 +4386,7 @@ class MailCapture:
                 return entry
             entry.update(content_status="captured", content_sha256=digest, metadata=read,
                          text_sha256=self.store.put_text(text))
-            self._unsettled_now()[digest] = (content, readings)
+            self._unsettled_now()[digest] = (content, readings, hold)
             counts["attachments_captured"] += 1
             counts["attachment_bytes"] += len(content)
             _count_text(entry["text_status"], counts)
@@ -4053,9 +4511,9 @@ class MailCapture:
         (``MailCaptureStore.settle_original``), then re-measure the OCR backlog."""
         unsettled = self._unsettled_now()
         self._lane.unsettled = {}
-        for digest, (content, readings) in unsettled.items():
+        for digest, (content, readings, hold) in unsettled.items():
             outcome = _settle(self.store, digest, content=content, readings=readings,
-                              defer_ocr=self._defer_all)
+                              defer_ocr=self._defer_all or hold)
             counts["originals_dropped"] += outcome == "dropped"
             if outcome == "kept_pending":   # the backlog grew by these bytes
                 self._pending_added += len(content)
@@ -4184,10 +4642,11 @@ class MailCapture:
         versions of this folder (bounded per round). A read that now returns another
         changeKey is left to the next delta round, which reports the change.
 
-        While the OCR backlog is at its bound an attachment it deferred is not retried
-        (it would be deferred again): every round of a history backfill ends here, and
-        the live store's 118k deferred PDFs made each round re-read the same 100
-        versions' attachments under the store lock for nothing (2026-11-03)."""
+        While the OCR backlog is at its bound an attachment an earlier capture deferred
+        is not retried here: every round of a history backfill ends here, and the live
+        store's 118k deferred PDFs made each round re-read the same 100 versions'
+        attachments under the store lock (2026-11-03). That pile is read in parallel by
+        ``deferred-attachments`` (:func:`deferred_attachments_pass`)."""
         self._check_backlog()
         retry_deferred = not self._backlog_full
         for row in self.store.degraded(mailbox_id, folder_id, REPAIRS_PER_ROUND,
@@ -5276,6 +5735,19 @@ def compact_cli(argv: Sequence[str] | None = None) -> int:
         vacuum=not args.no_vacuum, defer_ocr=args.defer_ocr))
 
 
+def sender_index_cli(argv: Sequence[str] | None = None) -> int:
+    """``python3 -m integrations.capture_mail sender-index --state-dir D``: key the
+    messages stored before the sender lookup (:meth:`MailCaptureStore.fill_sender_keys`),
+    holding the host's cycle lock. Opening the store as a writer adds the column and
+    its index; this fills the rows stored before. Prints counts only."""
+    parser = argparse.ArgumentParser(prog="python3 -m integrations.capture_mail sender-index",
+                                     description=sender_index_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True,
+                        help="Workbench state directory holding mail-capture/")
+    args = parser.parse_args(argv)
+    return _locked(args.state_dir, lambda store: store.fill_sender_keys())
+
+
 def _locked(state_dir: str, work: Callable[[Any], dict[str, Any]], *,
             open_store: Callable[[Path], Any] = lambda state: MailCaptureStore(state),
             exists: Callable[[Path], bool] = lambda state: store_exists(state),
@@ -5346,17 +5818,85 @@ def ocr_deferred_cli(argv: Sequence[str] | None = None, *,
     return _locked(args.state_dir, work)
 
 
+def deferred_attachments_cli(argv: Sequence[str] | None = None, *,
+                             environ: Mapping[str, str] | None = None,
+                             sender: Any = None) -> int:
+    """``python3 -m integrations.capture_mail deferred-attachments --state-dir D
+    --live-audience F --budget-seconds N [--workers K] [--extract-workers E] [--limit L]
+    [--min-free-gb G] [--dry-run]``: read the attachments not downloaded while the OCR
+    backlog was full (:func:`deferred_attachments_pass`), by guarded Graph GETs
+    (credentials and the people exclusion from the environment, as the capture). Holds
+    the host's cycle lock. ``--dry-run`` reads nothing from Graph: it counts the rows a
+    pass would read and those the exclusion withholds. Prints counts only."""
+    from .graph_read import GraphMailReader, build_graph
+    from .live_source_guard import BoundedBackoff
+
+    parser = argparse.ArgumentParser(
+        prog="python3 -m integrations.capture_mail deferred-attachments",
+        description=deferred_attachments_cli.__doc__.splitlines()[0])
+    parser.add_argument("--state-dir", required=True)
+    parser.add_argument("--live-audience", required=True,
+                        help="plx-live-source-audience/v1 file granting the capture principal")
+    parser.add_argument("--principal", default=CAPTURE_PRINCIPAL)
+    parser.add_argument("--budget-seconds", type=float, required=True)
+    parser.add_argument("--workers", type=int, default=MAX_WORKERS,
+                        help="download threads (each mailbox still at most "
+                             f"{MAILBOX_CONCURRENCY} at once)")
+    parser.add_argument("--extract-workers", type=int, default=None,
+                        help="text extraction processes (default: every core but one)")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--min-free-gb", type=float,
+                        default=DEFERRED_MIN_FREE_BYTES / (1 << 30))
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    if not args.budget_seconds > 0:
+        print(json.dumps({"ok": False, "error": "budget_seconds_invalid"}))
+        return 2
+    audience = LiveSourceAudience.from_file(args.live_audience)
+    env = os.environ if environ is None else environ
+    api, _transport = build_graph(env, sender=sender, retry=BoundedBackoff(budget_seconds=60))
+    reader = GraphMailReader(api, audience)
+    actor = Actor(audience.tenant, frozenset({args.principal}), "restricted")
+
+    def work(store: MailCaptureStore) -> dict[str, Any]:
+        store.people = reader.people   # every read applies this run's exclusion
+        if args.dry_run:
+            withheld = store.withheld_mailboxes(reader.people)
+            if withheld is None:
+                return {"error": "people_exclusion_unavailable"}
+            marks = ",".join("?" * len(withheld))
+            total, held = store.db.execute(
+                "SELECT COUNT(*), " + (f"SUM(a.mailbox_id IN ({marks}))" if withheld
+                                       else "0") +
+                " FROM attachments a JOIN messages m ON m.l1_handle=a.message_handle AND "
+                "m.superseded_at IS NULL WHERE a.content_status=?",
+                (*withheld, ATTACHMENT_DEFERRED)).fetchone()
+            return {"dry_run": True, "deferred": total, "excluded": held or 0}
+        return deferred_attachments_pass(
+            store, reader, actor, budget_seconds=args.budget_seconds, workers=args.workers,
+            extract_workers=args.extract_workers, limit=args.limit,
+            min_free_bytes=int(args.min_free_gb * (1 << 30)))
+    return _locked(args.state_dir, work)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["compact"]:
         return compact_cli(argv[1:])
+    if argv[:1] == ["sender-index"]:
+        return sender_index_cli(argv[1:])
     if argv[:1] == ["ocr-deferred"]:
         return ocr_deferred_cli(argv[1:])
     if argv[:1] == ["image-ocr"]:
         return image_ocr_cli(argv[1:])
+    if argv[:1] == ["deferred-attachments"]:
+        return deferred_attachments_cli(argv[1:])
     print("usage: python3 -m integrations.capture_mail compact --state-dir D [--no-vacuum] "
           "[--defer-ocr]\n       python3 -m integrations.capture_mail ocr-deferred "
           "--state-dir D --live-audience F --budget-seconds N"
+          "\n       python3 -m integrations.capture_mail deferred-attachments "
+          "--state-dir D --live-audience F --budget-seconds N [--workers K]"
+          "\n       python3 -m integrations.capture_mail sender-index --state-dir D"
           "\n(capture runs: python3 -m integrations.graph_read mail-capture ...)")
     return 2
 
@@ -5364,7 +5904,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = ["CAPTURE_PRINCIPAL", "PERSISTENT_STATE_ASK", "CaptureError", "CaptureScope",
            "MAIL_KIND", "MailCapture", "MailCaptureStore", "WORKBENCH_STATE_ENV",
            "add_cli_arguments", "assert_outside_git", "blocked_reason", "budget_cut_block",
-           "capture_into", "check_state_dir", "compact_cli", "ocr_deferred_cli",
+           "capture_into", "check_state_dir", "compact_cli", "deferred_attachments_cli",
+           "deferred_attachments_pass", "ocr_deferred_cli",
            "ocr_deferred_gap", "ocr_deferred_pass", "directory_mailboxes", "folder_standing",
            "graph_block", "mail_cut_units", "run_cli", "schedule_units", "store_exists",
            "terminal_reason"]

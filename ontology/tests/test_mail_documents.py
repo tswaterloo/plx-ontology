@@ -943,8 +943,16 @@ class MentionLinkRuleTests(unittest.TestCase):
         hand = [link["id"] for doc in docs.values() for link in doc.get("link_types", [])
                 if link["from"] == schema_loader.MENTION_LINK_RULE["from"]
                 and any(b["kind"] == "mention" for b in link["bindings"])]
-        self.assertEqual(hand, [])
         compiled = schema_loader.load_schema()
+        # The sender and person links build steps write from the message's addresses (never
+        # from its text) are the only hand-declared Email links of the step-written kind; none is a
+        # per-target mention link of the rule.
+        from ontology.step_migrate import STEPS
+        senders = STEPS["sender_parties"].writes(compiled) | STEPS["with_people"].writes(compiled)
+        self.assertEqual(sorted(hand), ["Email.addressed_to_person", "Email.sent_by_customer",
+                                        "Email.sent_by_person", "Email.sent_by_supplier"])
+        self.assertEqual(set(hand) - senders, set())
+        self.assertFalse([h for h in hand if h.split(".", 1)[1].startswith("mentions_")])
         generated = mentions.mention_link_types(compiled.link_types)
         self.assertEqual(generated[("Email", "PurchaseOrder")], LINK)
         link = compiled.link_types[LINK]

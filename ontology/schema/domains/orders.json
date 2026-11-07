@@ -4955,7 +4955,7 @@
           "to_binding": "portal.sage_oe_order_header",
           "pairs": [
             {
-              "from": "custom_fields.sageSourceOrdUniq",
+              "from": "custom_fields.sageOrdUniq",
               "to": "orduniq",
               "compare": "identifier",
               "identifier_kind": "sage_ord_uniq"
@@ -5064,6 +5064,43 @@
           ]
         }
       ]
+    },
+    {
+      "id": "SalesOrder.erp_order",
+      "from": "SalesOrder",
+      "to": "SalesOrder",
+      "name": "erp_order",
+      "reverse_name": "fm_orders",
+      "cardinality": "N:1",
+      "description": "The ERP (Sage) order a FileMaker order entry names by the ERP order number FileMaker stores for it (order_entry.erpcode = Sage oe_order_header.ordnumber). A separate link type from same_record_as so a FileMaker order's one-hop lineage rule through its gold twin is unchanged; corroborated, not verified, because the FileMaker column is typed by hand.",
+      "bindings": [
+        {
+          "kind": "same_record",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.fm_order_entry",
+          "to_binding": "portal.sage_oe_order_header",
+          "pairs": [
+            {
+              "from": "erpcode",
+              "to": "ordnumber",
+              "compare": "identifier",
+              "identifier_kind": "so_number"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.order_entry"
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/domains/orders.json",
+              "note": "FM order_entry.erpcode is the ERP order number FM stores for the order (SalesOrder.fm_erp_code); the Sage OE header's ordnumber is that number. Measured on gen 11: 30 of 30 sampled pairs agree on customer PO and order date; corroborated, not verified, because the FM column is typed by hand."
+            }
+          ]
+        }
+      ],
+      "markings": []
     },
     {
       "id": "SalesOrderLine.line_of",
@@ -6352,6 +6389,185 @@
             {
               "kind": "ref",
               "id": "wb.identity_scoring"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "CustomerPurchaseOrder.same_record_as",
+      "from": "CustomerPurchaseOrder",
+      "to": "CustomerPurchaseOrder",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "N:M",
+      "description": "One customer PO in Sage, FileMaker, the Portal and BC: equal PO numbers (at least three digits) of orders whose customers are one party (customer records joined by confirming same_record_as links, or BC code twins the twins_parties rules corroborate). PO numbers repeat across customers, so the customer is part of the key; a PO split over several orders links to each; a candidate whose customer is unknown is a lead. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_sales_order.po_reference",
+          "to_binding": "portal.sage_oe_order_header.ponumber",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.fm_order_entry.custpocode",
+          "to_binding": "portal.sage_oe_order_header.ponumber",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.sales_orders.external_document_number",
+          "to_binding": "portal.sage_oe_order_header.ponumber",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_sales_order.po_reference",
+          "to_binding": "portal.fm_order_entry.custpocode",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.sales_orders.external_document_number",
+          "to_binding": "portal.fm_order_entry.custpocode",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.sales_orders.external_document_number",
+          "to_binding": "portal.app_sales_order.po_reference",
+          "key": {
+            "from": "customer_po",
+            "party": {
+              "from": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "to": [
+                "~SalesOrder.references_customer_po",
+                "SalesOrder.ordered_by"
+              ],
+              "twin": "Customer.same_record_as"
+            },
+            "targets": "same_party"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
             }
           ]
         }

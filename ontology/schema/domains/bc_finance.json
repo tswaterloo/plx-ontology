@@ -1599,6 +1599,70 @@
       ]
     },
     {
+      "id": "ItemLedgerEntry.posted_by_assembly_order",
+      "from": "ItemLedgerEntry",
+      "to": "AssemblyOrder",
+      "name": "posted_by_assembly_order",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "Ledger entry the Portal posted for the assembly order whose components or output it moves: its document No. is written in a declared Portal posting form (ontology/schema/identifiers.json bc_document_no forms) that names the record exactly, and names one record. Written by the trace_postings build step (ontology/posting_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "portal.fm_assembly_order",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/posting_links.py",
+              "note": "trace_postings step: document forms of bc_document_no resolved to one record of the named type."
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/identifiers.json",
+              "note": "bc_document_no forms: production_cost_ao_code, production_cost_ao, fm_material_relief_ao, batch_posting."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "ItemLedgerEntry.posted_by_batch",
+      "from": "ItemLedgerEntry",
+      "to": "Batch",
+      "name": "posted_by_batch",
+      "reverse_name": "item_ledger_entries",
+      "cardinality": "N:1",
+      "description": "Ledger entry the Portal posted for the batch whose ingredients or bulk output it moves: its document No. is written in a declared Portal posting form (ontology/schema/identifiers.json bc_document_no forms) that names the record exactly, and names one record. Written by the trace_postings build step (ontology/posting_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.item_ledger_entries",
+          "to_binding": "portal.fm_batch",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/posting_links.py",
+              "note": "trace_postings step: document forms of bc_document_no resolved to one record of the named type."
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/schema/identifiers.json",
+              "note": "bc_document_no forms: production_cost_ao_code, production_cost_ao, fm_material_relief_ao, batch_posting."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
       "id": "ItemLedgerEntry.posted_by_credit_memo",
       "from": "ItemLedgerEntry",
       "to": "SalesCreditMemo",
@@ -2067,6 +2131,231 @@
             }
           ]
         }
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_payment",
+      "from": "GeneralLedgerEntry",
+      "to": "Payment",
+      "name": "for_payment",
+      "reverse_name": "payment_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The customer or vendor payment a G/L entry belongs to: its document No. is the payment journal line's own document number (row.documentNumber, not the invoice it applies to) in the same BC company, and names one payment. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.customer_payments",
+          "key": {
+            "from": "bc_document_no",
+            "company": "same_bc_company",
+            "to_field": "row.documentNumber"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.vendor_payments",
+          "key": {
+            "from": "bc_document_no",
+            "company": "same_bc_company",
+            "to_field": "row.documentNumber"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_credit_memo",
+      "from": "GeneralLedgerEntry",
+      "to": "SalesCreditMemo",
+      "name": "for_credit_memo",
+      "reverse_name": "credit_memo_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The sales credit memo a G/L entry belongs to: its document No. is the memo's own number (row.number) in the same BC company, and names one memo. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.sales_credit_memos",
+          "key": {
+            "from": "bc_document_no",
+            "company": "same_bc_company",
+            "to_field": "row.number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_receipt",
+      "from": "GeneralLedgerEntry",
+      "to": "Receipt",
+      "name": "for_receipt",
+      "reverse_name": "receipt_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The posted purchase receipt a G/L entry belongs to: its document No. is the receipt's own number (row.number) in the same BC company, and names one receipt. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.purchase_receipts",
+          "key": {
+            "from": "bc_document_no",
+            "company": "same_bc_company",
+            "to_field": "row.number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "GeneralLedgerEntry.for_shipment",
+      "from": "GeneralLedgerEntry",
+      "to": "Shipment",
+      "name": "for_shipment",
+      "reverse_name": "shipment_ledger_entries",
+      "cardinality": "N:1",
+      "description": "The posted sales shipment a G/L entry belongs to: its document No. is the shipment's own number (row.number) in the same BC company, and names one shipment. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.general_ledger_entries",
+          "to_binding": "bc.sales_shipments",
+          "key": {
+            "from": "bc_document_no",
+            "company": "same_bc_company",
+            "to_field": "row.number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "AgedReceivable.customer_record",
+      "from": "AgedReceivable",
+      "to": "Customer",
+      "name": "customer_record",
+      "reverse_name": "aged_receivables",
+      "cardinality": "N:M",
+      "description": "The Sage and Portal customer records of the customer an aged-receivables row is for: the BC customer No. equals the customer's ERP code (customer_erp_code) and names one record of that binding. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.aged_accounts_receivables",
+          "to_binding": "portal.sage_ar_customer",
+          "key": {
+            "from": "customer_erp_code",
+            "min_digits": 0
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.aged_accounts_receivables",
+          "to_binding": "portal.app_customer",
+          "key": {
+            "from": "customer_erp_code",
+            "min_digits": 0
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
+      ]
+    },
+    {
+      "id": "AgedPayable.supplier_record",
+      "from": "AgedPayable",
+      "to": "Supplier",
+      "name": "supplier_record",
+      "reverse_name": "aged_payables",
+      "cardinality": "N:M",
+      "description": "The Portal supplier record of the vendor an aged-payables row is for: the BC vendor No. equals the supplier code and names one record. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "bc.aged_accounts_payables",
+          "to_binding": "portal.app_supplier",
+          "key": {
+            "from": "supplier_code",
+            "min_digits": 0
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ],
+      "markings": [
+        "finance"
       ]
     }
   ],

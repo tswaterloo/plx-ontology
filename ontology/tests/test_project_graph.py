@@ -57,8 +57,11 @@ class CapturedTextTests(unittest.TestCase):
     @staticmethod
     def links(conn, link_type, object_type, key, value):
         return conn.execute(
+            # the mentions step's own links (unique_mentions writes a firm one beside an
+            # exact unique identifier's lead, from the same reading)
             "SELECT l.to_object, l.reason FROM links l JOIN objects o ON o.object_id = "
-            "l.from_object WHERE l.link_type = ? AND o.object_type = ? AND "
+            "l.from_object WHERE l.link_id LIKE 'mention:%' AND l.link_type = ? AND "
+            "o.object_type = ? AND "
             f"json_extract(o.native_key, '$.{key}') = ?", (link_type, object_type, value)
         ).fetchall()
 
@@ -210,6 +213,30 @@ class ListCaptureStandaloneTests(tsl.CaptureCase):
         SharePointCaptureStore(self.tmp.name).db.close()   # a drive capture beside it
         self.assertEqual(self.build(), (alone, found))
         self.assertNotIn("sharepoint.drive_items", self.unheld)
+
+
+class ListItemDocumentTests(unittest.TestCase):
+    """A SharePoint list item's text field values are a mention document (made-up values)."""
+
+    def test_text_fields_are_cited_by_column_and_system_columns_skipped(self):
+        from ontology import mentions, schema
+        from ontology.list_documents import list_item_document
+        item = {"handle": "sharepoint-list://site-z/list-z/7@1-2", "digest": "d" * 64,
+                "recorded_at": "2026-10-01T00:00:00Z", "superseded_at": None,
+                "row": {"lastModifiedDateTime": "2026-09-30T00:00:00Z",
+                        "fields": {"Title": "Order for PO 99123", "Vendor": "Zeta Parts",
+                                   "@odata.etag": "x", "_UIVersionString": "1.0",
+                                   "Empty": " ", "Paid": True, "Lines": {"n": 1}}}}
+        doc = list_item_document(item)
+        self.assertEqual(doc.kind, "sharepoint_list_item")
+        self.assertEqual(doc.sender_class, "unknown")
+        self.assertEqual([(f.field_path, f.text) for f in doc.fields],
+                         [("row.fields.Title", "Order for PO 99123"),
+                          ("row.fields.Vendor", "Zeta Parts")])
+        self.assertIsNone(list_item_document({**item, "row": {"fields": {"_x": "y"}}}))
+        pairs = mentions.mention_link_types(schema.load_schema().link_types)
+        self.assertEqual(pairs[("SharePointListItem", "PurchaseOrder")],
+                         "SharePointListItem.mentions_purchase_order")
 
 
 if __name__ == "__main__":

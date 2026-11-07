@@ -62,7 +62,7 @@ _SHARED_FAMILIES = {"api": "Portal", "bc": "Business Central", "mc": "Mission Co
                     "sharepoint-list": "SharePoint"}
 # Human fallback labels by family, for a unit the reader may open or a shared unit with
 # no recorded label. Never a raw id.
-_FAMILY_LABELS = {**_SHARED_FAMILIES, "mail": "Mail", "teams": "Teams",
+_FAMILY_LABELS = {**_SHARED_FAMILIES, "mail": "Mail", "mail-any": "Mail", "teams": "Teams",
                   "sharepoint": "SharePoint", "brain": "Knowledge base",
                   "original": "Documents", "repo": "Repository"}
 
@@ -111,6 +111,12 @@ def is_excluded(key: str, unit: Unit | None, exclusion: PeopleExclusion) -> bool
     people = list(unit.people) if unit else []
     if _family(key) == "mail":
         people.append(key.partition(":")[2])
+    if _family(key) == "mail-any":
+        # several mailboxes (``ontology.people_directory``), each granted as its own unit
+        # is (an excluded one never is); a key outside the grammar is dropped
+        from ontology.people_directory import is_composite
+        if not is_composite(key):
+            return True
     for person in people:
         if not is_object_id(person) or exclusion.is_excluded(person):
             return True

@@ -123,8 +123,10 @@ class HostOneBuildTests(HostCase):
         # The live spec's own recorded summary of this run carries the step counts.
         recorded = lv._recorded(spec, document)
         self.assertEqual([sorted(s) for s in recorded["cycles[*].projection.steps"]],
-                         [["confirmations", "document_fields", "mentions", "reviews",
-                           "sender_corroboration", "text_index", "twins", "your_reference"]] * 2)
+                         [["confirmations", "document_fields", "key_joins", "mentions",
+                           "reviews", "roles", "sender_corroboration", "sender_parties", "task_ids", "task_names",
+                           "text_index", "trace_postings", "twins", "twins_parties",
+                           "unique_mentions", "with_people", "your_reference"]] * 2)
         steps = document["cycles"][-1]["projection"]["steps"]
         self.assertGreaterEqual(steps["document_fields"]["links"], 1, steps)
 

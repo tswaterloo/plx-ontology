@@ -3827,7 +3827,7 @@
       "name": "uses_item",
       "reverse_name": "used_in_ao_lines",
       "cardinality": "N:1",
-      "description": "The packaging or bulk consumed. A Portal MO line's product is a lead only: the ETL picks it by a number shared across product families.",
+      "description": "The packaging or bulk consumed. A Portal MO line's product is a lead only: the ETL picks it by a number shared across product families. A Portal MO line's product is corroborated when the FileMaker component lines of the same assembly order use that product (or its confirmed twin): the ETL's guess confirmed by the source's own record (ontology/key_links.py, key_joins).",
       "bindings": [
         {
           "kind": "fk",
@@ -3887,6 +3887,35 @@
             {
               "kind": "ref",
               "id": "upstream-code.build-fm-id-map.b46934"
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_manufacturing_order_line",
+          "to_binding": "portal.app_product",
+          "confirm": {
+            "path": [
+              "AssemblyOrderComponent.component_of",
+              "AssemblyOrder.same_record_as",
+              "~AssemblyOrderComponent.component_of",
+              "AssemblyOrderComponent.uses_item"
+            ],
+            "twin": "Product.same_record_as"
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.etl-mo-lines.b46934"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.build-fm-id-map.b46934"
+            },
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py"
             }
           ]
         }

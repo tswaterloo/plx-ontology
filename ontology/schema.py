@@ -232,17 +232,31 @@ _MC_MENTION_DESCRIPTION = ("An identifier of a {target} written in a captured {w
                            "Always a lead: one candidate is still a candidate, several stay "
                            "several links (ambiguous); the text's author is not verified, "
                            "so every mention is an external assertion.")
+# A task's links are also written by ontology/mc_task_links.py: a lead to a supplier,
+# customer or product the task names by name, and a corroborated link beside an identifier
+# lead whose identifier is written exactly and names one record (so its ceiling is
+# corroborated; gates and knowledge entries stay leads).
+_MC_TASK_DESCRIPTION = ("A {target} the text of a captured Mission Control task (title or "
+                        "description) names: an identifier resolved through the identifier "
+                        "index (ontology/mentions.py), or a name resolved by the general "
+                        "resolver's name rules (ontology/mc_task_links.py). A lead: one "
+                        "candidate is still a candidate, several stay several links "
+                        "(ambiguous), the text's author is not verified, so every mention is "
+                        "an external assertion. An identifier written exactly as the record's "
+                        "own (a whole token of at least three digits) whose candidates of its "
+                        "kind are one record is also linked corroborated, beside the lead "
+                        "(ontology/mc_task_links.py task_ids).")
 MC_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
     {"from": source, "from_binding": binding, "reverse_name": reverse, "cardinality": "N:M",
-     "tier_ceiling": "lead", "evidence": ("wb.mentions", "ctx.mentions"),
-     "description": _MC_MENTION_DESCRIPTION.replace("{what}", what)}
-    for source, binding, reverse, what in (
-        ("MCTask", "mission_control.tasks", "mentioned_in_mc_task",
-         "Mission Control task (title, description or comments)"),
-        ("MCApproval", "mission_control.approvals", "mentioned_in_mc_approval",
-         "Mission Control approval gate reason"),
-        ("KnowledgeEntry", "mission_control.knowledge", "mentioned_in_knowledge_entry",
-         "knowledge entry (title or snippet)")))
+     "tier_ceiling": ceiling, "evidence": ("wb.mentions", "ctx.mentions"),
+     "description": description}
+    for source, binding, reverse, ceiling, description in (
+        ("MCTask", "mission_control.tasks", "mentioned_in_mc_task", "corroborated",
+         _MC_TASK_DESCRIPTION),
+        ("MCApproval", "mission_control.approvals", "mentioned_in_mc_approval", "lead",
+         _MC_MENTION_DESCRIPTION.replace("{what}", "Mission Control approval gate reason")),
+        ("KnowledgeEntry", "mission_control.knowledge", "mentioned_in_knowledge_entry", "lead",
+         _MC_MENTION_DESCRIPTION.replace("{what}", "knowledge entry (title or snippet)"))))
 # Teams messages (integrations/capture_teams.py, ontology/project_graph.py TeamsCaptures
 # .documents): a channel or chat message's subject and body. The sender is a Teams account
 # the capture cannot classify by domain, so every mention is an external assertion, a lead.
@@ -270,8 +284,22 @@ MEETINGS_MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = tuple(
          "Planner task (title or description)"),
         ("MeetingTranscript", "meetings.meeting_transcripts", "mentioned_in_meeting_transcript",
          "Teams meeting transcript (spoken text, cited by the transcript version)")))
+# SharePoint list items (integrations/capture_sharepoint_lists.py, ontology/project.py
+# SharePointCaptures list item documents): each text value of the item's fields. Who typed
+# a list value is not a verified sender, so every mention is an external assertion, a lead.
+SHAREPOINT_LIST_MENTION_LINK_RULE: Mapping[str, Any] = {
+    "from": "SharePointListItem",
+    "from_binding": "gen.sharepoint.list_items",
+    "reverse_name": "mentioned_in_sharepoint_list_item",
+    "cardinality": "N:M",
+    "tier_ceiling": "lead",
+    "evidence": ("wb.mentions", "ctx.mentions"),
+    "description": _MC_MENTION_DESCRIPTION.replace(
+        "{what}", "SharePoint list item (a text value of its fields)"),
+}
 MENTION_LINK_RULES: tuple[Mapping[str, Any], ...] = (MENTION_LINK_RULE,
                                                      SHAREPOINT_MENTION_LINK_RULE,
+                                                     SHAREPOINT_LIST_MENTION_LINK_RULE,
                                                      ATTACHMENT_MENTION_LINK_RULE,
                                                      CONTAINER_MEMBER_MENTION_LINK_RULE,
                                                      *MC_MENTION_LINK_RULES,

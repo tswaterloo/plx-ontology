@@ -1474,6 +1474,7 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
         else:
             added = discover(mirror, state_dir, base, state, plan, stores, exclusion,
                              unavailable, report)
+            reproject_requests(state, base, environ, report)
         if unavailable is not None:   # mail is never read without the guard, forced or not
             report["mail_skipped"] = unavailable
         t = lap("discover", t)
@@ -1687,6 +1688,8 @@ def build_delta(state_dir: Path, mirror: Path, delta_dir: Path, *, tenant: str =
                     from operating.pg.ontology_delta import apply_listed
                     report["postgres"] = apply_listed(
                         [item["store"] for item in layers], pg_config.dsn(environ))
+                    if report["postgres"].get("stalled"):   # loud: the cycle's status too
+                        report["status"] = "postgres_stalled"
                 except Exception as exc:  # noqa: BLE001 - reported; SQLite layers serve
                     report["postgres"] = {"applied": False,
                                           "error": f"{type(exc).__name__}"[:120]}
@@ -1992,6 +1995,8 @@ def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
         for own in ("format", "schema_digest"):
             if own in mine:
                 merged[own] = mine[own]
+        from ontology.step_migrate import steps_digest
+        merged["steps_digest"] = steps_digest()   # the build steps' code (step migrations)
         merged["delta_built_at"] = mine.get("built_at") or _now()
         merged["delta_families"] = json.dumps(sorted(families))
         conn.execute("DELETE FROM store_meta")
@@ -2018,6 +2023,40 @@ def _locked(path: Path, *, wait: bool = True) -> Iterator[bool]:
             yield True
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def reproject_requests(state: State, base: Base, environ: Mapping[str, str],
+                       report: dict[str, Any]) -> int:
+    """Open again the records of the objects a schema migration queued in the Postgres
+    ontology (``ontology.reproject``: changed since its snapshot, or held out of a layer
+    of the schema it moved from): this cycle projects them under its schema, and the
+    queue entry goes when a layer of the served schema replaces the object
+    (``operating.pg.ontology_delta``). Nothing without Postgres; a failure to read the
+    queue is reported and changes nothing."""
+    if not (environ.get("PLX_DELTA_PG") == "1" or base.postgres):
+        return 0
+    try:
+        import psycopg
+        from operating.pg import config as pg_config
+        with psycopg.connect(pg_config.dsn(environ), connect_timeout=5) as pg:
+            if not pg.execute("SELECT to_regclass('ontology.reproject') IS NOT NULL"
+                              ).fetchone()[0]:
+                return 0
+            ids = [r[0] for r in pg.execute("SELECT object_id FROM ontology.reproject")]
+    except Exception as exc:  # noqa: BLE001 - reported; the queue stays for the next cycle
+        report["reproject"] = {"error": type(exc).__name__}
+        return 0
+    if not ids:
+        return 0
+    records = state.owned_records(ids)
+    by_source: dict[str, set[Any]] = {}
+    for source, key in records.values():
+        by_source.setdefault(source, set()).add(key)
+    for source, keys in by_source.items():
+        state.add(source, sorted(keys))
+    report["reproject"] = {"queued": len(ids), "records": len(records),
+                           "unknown": len(ids) - len(records)}
+    return len(records)
 
 
 def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: Base,

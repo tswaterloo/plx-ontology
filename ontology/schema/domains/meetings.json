@@ -1488,6 +1488,232 @@
      ]
     }
    ]
+  },
+  {
+   "id": "CalendarEvent.with_customer",
+   "from": "CalendarEvent",
+   "to": "Customer",
+   "name": "with_customer",
+   "reverse_name": "calendar_events",
+   "cardinality": "N:M",
+   "description": "A Customer whose people organise or attend this calendar event (ontology/sender_parties.py): corroborated when an organizer or attendee address is one the customer stores, a lead when only its domain is one the customer alone holds; never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own people.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "portal.app_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "portal.fm_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "portal.sage_ar_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "bc.customers",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CalendarEvent.with_supplier",
+   "from": "CalendarEvent",
+   "to": "Supplier",
+   "name": "with_supplier",
+   "reverse_name": "calendar_events",
+   "cardinality": "N:M",
+   "description": "A Supplier whose people organise or attend this calendar event (ontology/sender_parties.py): corroborated when an organizer or attendee address is one the supplier stores, a lead when only its domain is one the supplier alone holds; never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own people.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "portal.app_supplier",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "portal.fm_supplier",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "bc.vendors",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Meeting.with_customer",
+   "from": "Meeting",
+   "to": "Customer",
+   "name": "with_customer",
+   "reverse_name": "meetings",
+   "cardinality": "N:M",
+   "description": "A Customer whose people organise or attend this meeting (ontology/sender_parties.py): corroborated when an organizer or attendee address is one the customer stores, a lead when only its domain is one the customer alone holds; never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own people.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "portal.app_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "portal.fm_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "portal.sage_ar_customer",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "bc.customers",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Meeting.with_supplier",
+   "from": "Meeting",
+   "to": "Supplier",
+   "name": "with_supplier",
+   "reverse_name": "meetings",
+   "cardinality": "N:M",
+   "description": "A Supplier whose people organise or attend this meeting (ontology/sender_parties.py): corroborated when an organizer or attendee address is one the supplier stores, a lead when only its domain is one the supplier alone holds; never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own people.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "portal.app_supplier",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "portal.fm_supplier",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "bc.vendors",
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py",
+       "note": "organizer and attendee addresses judged as a message sender is"
+      }
+     ]
+    }
+   ]
   }
  ],
  "event_types": [],

@@ -14,6 +14,21 @@ serves. The steps, each writing into the generation being built
 * ``mentions``: identifier mentions of captured documents as ``lead`` links
   (``ontology.mentions.store_mention_links``, its corroboration by the build's workers:
   ``ontology.finish_parallel``);
+* ``roles``: a customer linked to the supplier record of the same party in the same
+  system (``Customer.same_party_as_supplier``, a lead by equal names:
+  ``ontology.party_roles``; after ``reviews``);
+* ``unique_mentions``: a ``corroborated`` link beside an identifier mention lead from
+  mail, attachments, Teams, SharePoint, meetings or Planner whose anchor identifier is
+  written exactly and names one record (``ontology.mention_firm``; after ``mentions`` and
+  ``reviews``; Mission Control tasks are ``task_ids``'s);
+* ``trace_postings``: a BC ledger entry linked to the batch or assembly order whose
+  posting its document number names in a declared Portal posting form
+  (``ontology.posting_links``; corroborated, one record named exactly; after ``reviews``,
+  so a pair a person rejected is never linked);
+* ``key_joins``: records of two bindings joined on an exact identifier both hold (a BC
+  document No. in one company, a BC system id, a code, a customer PO of one customer), as
+  declared by the schema's key-join bindings (``ontology.key_links``; corroborated when the
+  value names one record, or with a party key when the parties agree; leads otherwise);
 * ``reviews``: a person's accept / reject link decisions as ``reviewed`` /
   ``contradicted`` links (``ontology.reviews.link_step``);
 * ``sender_corroboration``: a document-field link (``SupplierConfirmation.confirms``) whose
@@ -22,6 +37,21 @@ serves. The steps, each writing into the generation being built
   message's own subject/body number as a ``lead`` (``ontology.sender_corroboration``, its
   reads made by the build's workers: ``ontology.sender_parallel``; after ``mentions`` and
   ``reviews``, so a rejected link is never raised);
+* ``sender_parties``: a message linked to the supplier or customer that sent it
+  (``Email.sent_by_supplier`` / ``Email.sent_by_customer``): ``corroborated`` when the
+  sender address is one the party stores, a ``lead`` when only its domain is one the party
+  alone holds (``ontology.sender_parties.sender_parties_step``; after ``reviews``, so a pair
+  a person rejected is never linked);
+* ``task_ids`` and ``task_names``: a Mission Control task linked to the records it names
+  (``ontology.mc_task_links``): a ``corroborated`` link beside an identifier mention lead
+  whose identifier is written exactly and names one record, and a ``lead`` to each
+  supplier, customer or product the task names by name (after ``mentions`` and
+  ``reviews``: steps run in name order, so a rejected pair is never linked);
+* ``with_people``: a message, meeting, Teams post, Planner task or Mission Control task or
+  approval linked to the ``Person`` records it names by an exact address, Entra object id
+  or (Mission Control) a staff person's unique address local part, ``corroborated``
+  (``ontology.people_links.people_links_step``; after ``reviews``, so a pair a person
+  rejected is never linked); an excluded person is no Person, so is never linked;
 * ``text_index``: the words of captured document text ``plx.find`` searches
   (``ontology.text_index.store_text_index``, its documents read by the build's workers:
   ``ontology.text_parallel``).
@@ -29,6 +59,11 @@ serves. The steps, each writing into the generation being built
   corroborated by its supplier and its date or total, as a ``corroborated`` same-record
   link beside the lead (``ontology.identity_scoring.twin_step``; after ``reviews``, so a
   pair a person rejected is never raised);
+* ``twins_parties``: a customer, vendor or item joined to a BC record only on its code (a
+  ``lead`` by the BC company cap), whose code names one record on each side and whose
+  names agree, as a ``corroborated`` same-record link beside the lead
+  (``ontology.identity_scoring.party_twin_step``; after ``reviews``, so a pair a person
+  rejected is never raised);
 * ``your_reference``: a BC purchase order's ``Your Reference`` (ODataV4 Page 50, the
   captured field page ``purchaseOrderReferences``) naming a Portal order's FM PO number,
   as a ``corroborated`` same-record link when the match is unique and the supplier or
@@ -73,11 +108,18 @@ import threading
 from typing import Any, Callable
 
 from ontology import reviews
-from ontology.identity_scoring import twin_step, your_reference_step
+from ontology.identity_scoring import party_twin_step, twin_step, your_reference_step
+from ontology.key_links import key_joins_step
 from ontology.document_fields import store_document_links
 from ontology.finish_parallel import store_mention_links
+from ontology.mc_task_links import task_ids_step, task_names_step
+from ontology.mention_firm_parallel import unique_mentions_step
+from ontology.party_roles import roles_step
+from ontology.posting_links import trace_postings_step
 from ontology.mentions import Document
 from ontology.sender_parallel import sender_corroboration_step
+from ontology.people_links import people_links_step
+from ontology.sender_parties import sender_parties_step
 from ontology.text_parallel import store_text_index
 
 from . import kind_confirmation
@@ -292,9 +334,15 @@ def post_project(state_dir: str | Path, tenant: str, *, scratch: str | Path | No
     return {name: _named(name, step) for name, step in {
         "confirmations": confirmations,
         "document_fields": document_fields, "mentions": _documents_cleaned(mentions),
-        "reviews": reviews.link_step(review_store, tenant),
+        "key_joins": key_joins_step,
+        "reviews": reviews.link_step(review_store, tenant), "roles": roles_step,
         "sender_corroboration": sender_corroboration_step,
-        "text_index": _documents_cleaned(store_text_index), "twins": twin_step,
+        "sender_parties": sender_parties_step,
+        "task_ids": task_ids_step, "task_names": task_names_step,
+        "text_index": _documents_cleaned(store_text_index),
+        "trace_postings": trace_postings_step, "twins": twin_step,
+        "twins_parties": party_twin_step, "unique_mentions": unique_mentions_step,
+        "with_people": people_links_step,
         "your_reference": your_reference_step}.items()}
 
 

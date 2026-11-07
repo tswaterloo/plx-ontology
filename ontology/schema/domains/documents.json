@@ -1181,7 +1181,7 @@
    "name": "sent_by_supplier",
    "reverse_name": "sent_emails",
    "cardinality": "N:M",
-   "description": "The Supplier whose party sent this message: the sender address scored against the supplier's website domain, its name and a BC contact holding the address (ontology/identity_scoring.py mail_sender). Reviewed only: no score links a message by itself.",
+   "description": "The Supplier whose party sent this message (ontology/sender_parties.py): corroborated when the sender address is one the supplier stores (its BC vendor, FM rep or CSR address, or a BC contact a verified link joins to it), a lead when only the sender's domain is one the supplier holds (those addresses' domains or its website); never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own senders. Also a recorded human review.",
    "bindings": [
     {
      "kind": "reviewed",
@@ -1190,6 +1190,54 @@
       {
        "kind": "ref",
        "id": "wb.identity_scoring"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "portal.app_supplier",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "portal.fm_supplier",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "bc.vendors",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
       }
      ]
     }
@@ -1202,7 +1250,7 @@
    "name": "sent_by_customer",
    "reverse_name": "sent_emails",
    "cardinality": "N:M",
-   "description": "The Customer whose party sent this message: the sender address scored against the customer's name and a BC contact holding the address (ontology/identity_scoring.py mail_sender). Reviewed only: no score links a message by itself.",
+   "description": "The Customer whose party sent this message (ontology/sender_parties.py): corroborated when the sender address is one the customer stores (its BC or FM address, or a BC contact a verified link joins to it), a lead when only the sender's domain is one the customer holds; never on a shared mail provider's domain, never on an address or domain two different parties hold, never for our own senders. Also a recorded human review.",
    "bindings": [
     {
      "kind": "reviewed",
@@ -1211,6 +1259,70 @@
       {
        "kind": "ref",
        "id": "wb.identity_scoring"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "portal.app_customer",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "portal.fm_customer",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "portal.sage_ar_customer",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "bc.customers",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.capture_mail"
+      },
+      {
+       "kind": "workbench_code",
+       "path": "ontology/sender_parties.py"
       }
      ]
     }

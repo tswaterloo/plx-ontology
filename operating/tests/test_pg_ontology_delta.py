@@ -17,7 +17,7 @@ from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql")]
+                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
 
 
 class ReloadRoomTests(unittest.TestCase):

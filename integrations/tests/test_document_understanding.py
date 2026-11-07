@@ -981,8 +981,9 @@ class OnePdfReaderTest(unittest.TestCase):
     # The calls that read a PDF or Office file, and the functions allowed to make them.
     READ_CALLS = {"PdfReader", "extract_text", "local_pdf_text_layer", "doc_convert.convert",
                   "convert_stdlib", "_portable_pdf_text", "_macos_pdf_text", "MarkItDown"}
+    # pdf_layout_pages: the layout view a field reader places values by, never pinned text.
     READERS = {"_pypdf_open", "_pypdf_pages", "_pdftotext_pages", "_ocr_reading",
-               "_pdf_reading", "_office_reading", "local_pdf_text_layer"}
+               "_pdf_reading", "_office_reading", "local_pdf_text_layer", "pdf_layout_pages"}
 
     @classmethod
     def references(cls, source):

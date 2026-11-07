@@ -713,7 +713,7 @@ class GroupLoad:
 
 
 # The document group loads of the capture sources (``GroupLoad``), named one by one.
-GROUP_LOADS = ("_file_documents", "_message_documents")
+GROUP_LOADS = ("_file_documents", "_list_documents", "_message_documents")
 
 
 class Reopenable:
@@ -1122,7 +1122,9 @@ class MailCaptures(Reopenable):
     (an own-party send: direction, never projected onto the attachment).
     Relation ``containerMembers``: the members of zip / ``.msg`` / ``.eml`` attachments
     and their parts not read (``ontology.project_graph.member_records``), each also a
-    mention document.
+    mention document. Relation ``people``: our staff (one per captured mailbox) and the
+    outside contacts who wrote to them (``ontology.people_directory``), excluded people
+    never among them; without a usable exclusion list it holds nobody.
     """
 
     source = "graph_mail"
@@ -1302,8 +1304,13 @@ class MailCaptures(Reopenable):
         return [(low, lows[i + 1] if i + 1 < len(lows) else None)
                 for i, low in enumerate(lows)]
 
-    def __init__(self, state_dir: str | Path, *, internal_domains: Iterable[str] = ()) -> None:
+    def __init__(self, state_dir: str | Path, *, internal_domains: Iterable[str] = (),
+                 exclusion: Any = None) -> None:
         root = Path(state_dir).expanduser() / "mail-capture"
+        # The people exclusion relation ``people`` is decided by (None: read from the
+        # environment, ``PeopleExclusion.from_env``, when the relation is read).
+        self.exclusion = exclusion
+        self._people: tuple[Any, list[dict[str, Any]], Any] | None = None
         self.path = root / "capture.db"
         self.blobs = root / "blobs" / "sha256"
         self.internal_domains = tuple(d.strip().lower() for d in internal_domains
@@ -1373,8 +1380,33 @@ class MailCaptures(Reopenable):
                                             if whole else None)}
         version = self._conn.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+        # Without a usable exclusion list relation ``people`` holds nobody: partial.
+        people = dict(state, last_full_traversal_at=None) \
+            if self._exclusion().unavailable else dict(state)
         return {"generation": None if version is None else f"mail-capture/{version[0]}",
-                "relations": {"messages": dict(state), "attachments": dict(state)}}
+                "relations": {"messages": dict(state), "attachments": dict(state),
+                              "people": people}}
+
+    def _exclusion(self) -> Any:
+        if self.exclusion is None:
+            import os
+            from integrations.people_exclusion import PeopleExclusion
+            self.exclusion = PeopleExclusion.from_env(os.environ)
+        return self.exclusion
+
+    def people_records(self) -> tuple[list[dict[str, Any]], Any]:
+        """The ``people`` relation's records and counts (``ontology.people_directory``),
+        read once per snapshot."""
+        from ontology import people_directory
+        if self._people is None or self._people[0] != self._marks:
+            boxes = people_directory.mailboxes(self._conn)
+            # the exclusion is decided first: unavailable reads no mail at all
+            counts = ({} if self._exclusion().unavailable else
+                      people_directory.sender_counts(self.path, [b.mailbox_id for b in boxes]))
+            found, stats = people_directory.people(boxes, counts, self._exclusion(),
+                                                   self.internal_domains)
+            self._people = (self._marks, found, stats)
+        return self._people[1], self._people[2]
 
     @staticmethod
     def _message_row(record_json: str) -> dict[str, Any]:
@@ -1432,6 +1464,18 @@ class MailCaptures(Reopenable):
                         last_seen_at=row["last_seen_at"],
                         audience_key=f"mail:{row['mailbox_id']}",
                         missing_from_source_since=missing)
+            elif relation == "people":   # staff and outside contacts (people_directory)
+                from ontology.people_directory import person_handle
+                for item in self.people_records()[0]:
+                    yield CapturedRecord(
+                        source=self.source, relation=relation,
+                        record_key=canonical([item["key"]]), row=dict(item["row"]),
+                        l1_handle=person_handle(item["audience"], item["key"]),
+                        field_prefix="row", digest=item["digest"],
+                        recorded_at=item["recorded_at"], superseded_at=None,
+                        last_seen_at=item["last_seen_at"],
+                        # every mailbox the person corresponds in (people_directory)
+                        audience_key=item["audience_key"])
             elif relation == "attachments":
                 for row in self._attached_rows():
                     metadata = json.loads(row["metadata"])
@@ -1852,10 +1896,19 @@ class SharePointCaptures(Reopenable):
         """``(key, load)`` per projected file version, as ``MailCaptures.document_groups``:
         the version and its container members; ``key`` digests its row (record, digest,
         bytes and stored text digests, interval), which forms of those blobs are on disk
-        and the code that reads them."""
+        and the code that reads them. Each list item version is a group of its own (its
+        field values: ``ontology.list_documents``)."""
+        code = document_code()
+        if self.lists is not None:
+            from ontology import list_documents
+            lists_code = list_documents.code()
+            for item in list_documents.document_rows(self.lists):
+                key = hashlib.sha256(repr((code, lists_code, [item[name] for name in (
+                    "handle", "digest", "recorded_at", "superseded_at")])).encode(
+                        "utf-8")).hexdigest()
+                yield key, GroupLoad(self, "_list_documents", (item,))
         if self._conn is None:
             return
-        code = document_code()
         for row in _sampled(self.sample, self._conn.execute(
                 self._LATEST + " ORDER BY drive_id, item_id, recorded_at, version_id")):
             key = hashlib.sha256(repr((
@@ -1865,6 +1918,11 @@ class SharePointCaptures(Reopenable):
                 _blob_state(self.blobs, row["content_sha256"]),
                 _blob_state(self.blobs, row["text_sha256"]))).encode("utf-8")).hexdigest()
             yield key, GroupLoad(self, "_file_documents", (row,))
+
+    def _list_documents(self, item: Mapping[str, Any]) -> tuple[list[Any], bool]:
+        from ontology.list_documents import list_item_document
+        document = list_item_document(item)
+        return ([document] if document is not None else []), True
 
     def _file_documents(self, row: Any) -> tuple[list[Any], bool]:
         from integrations.captured_text import captured_text
@@ -4724,6 +4782,10 @@ def finish_generation(builder: StoreBuilder, projector: "Projector",
         "SELECT DISTINCT audience_key FROM objects ORDER BY audience_key")])
     builder.set_meta("build_report", report)
     builder.set_meta("source_condition_unmet", dict(sorted(unmet.items())))
+    # the build steps' code: a Postgres load seeds the deploy check's step baseline with
+    # it (``operating.pg.ontology_migrate.check``)
+    from ontology.step_migrate import steps_digest
+    builder.set_meta("steps_digest", steps_digest())
     digest = builder.commit(built_at=instant(now))
     return {**report, "content_digest": digest, "store": str(builder.target),
             "format": store_ddl.FORMAT}

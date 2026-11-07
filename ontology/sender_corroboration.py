@@ -67,6 +67,12 @@ def _digest(*parts: Any) -> str:
                   .encode("utf-8")).hexdigest()[:32]
 
 
+def properties_read_by_name() -> set[str]:
+    """The properties read store-wide by name, whatever type holds them (every holder of
+    a domain): a step migration declares every type holding one as this step's input."""
+    return set(DOMAIN_PROPERTIES)
+
+
 def _domains(prop: str, value: Any) -> set[str]:
     if not isinstance(value, str):
         return set()
@@ -478,4 +484,4 @@ def sender_corroboration_step(builder: Any, projector: Any) -> dict[str, Any]:
 
 
 __all__ = ["CARRIER_PREFIX", "DOMAIN_PROPERTIES", "FIRM_PREFIX", "corroborable_types",
-           "message_of", "sender_corroboration_step"]
+           "message_of", "properties_read_by_name", "sender_corroboration_step"]

@@ -474,6 +474,19 @@
       }
      },
      "upstream": "plx-customer-portal@6e76a5b:portal/src/lib/business-central/fm-material-relief-sync.ts:308 (aoKey = String(aoId)), :386 (PLX-FMAO-{aoKey}, cut to 20 characters)"
+    },
+    {
+     "form": "batch_posting",
+     "example": "PLX-BAT-11479",
+     "pattern": "PLX-BAT-(?P<id>\\d{1,11})",
+     "reads": {
+      "id": {
+       "kind": "fm_id",
+       "object_type": "Batch",
+       "meaning": "the FileMaker batch id (public.batch.id) whose bulk output and ingredients the Portal posts to BC"
+      }
+     },
+     "upstream": "measured (lane/link-all, gen 11): bc.item_ledger_entries positive adjustments PLX-BAT-<n> post the bulk item FileMaker batch <n> makes (Batch.makes_bulk) in 30 of 30 sampled documents; the negative adjustments of the same document are its ingredients"
     }
    ],
    "carriers": [
@@ -1455,6 +1468,7 @@
    "alias_kinds": [
     "item_code"
    ],
+   "source_prefixes": ["sage-dist-"],
    "forms": [
     {
      "form": "sage",
@@ -1463,6 +1477,14 @@
     }
    ],
    "carriers": [
+    {
+     "system": "portal",
+     "relation": "public.app_product",
+     "field": "external_id",
+     "role": "alias",
+     "served": true,
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:192-257 (upsertItems writes external_id sage-dist-{itemno})"
+    },
     {
      "system": "portal",
      "relation": "public.app_product",
@@ -1808,11 +1830,17 @@
    "exact_compare": "trim",
    "auto_merge": false,
    "alias_kinds": [],
+   "source_prefixes": ["MAKE:"],
    "forms": [
     {
      "form": "decimal",
      "example": "123456",
      "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:1464"
+    },
+    {
+     "form": "company_qualified",
+     "example": "MAKE:123456",
+     "upstream": "plx-customer-portal@b46934a:portal/scripts/etl-sage-distribution-gold.mjs:1464 (sageOrdUniq of an order the MAKE company database holds; sageSourceOrdUniq keeps the bare ORDUNIQ)"
     }
    ],
    "carriers": [

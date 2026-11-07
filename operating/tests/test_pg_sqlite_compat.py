@@ -13,7 +13,7 @@ from operating.tests import pg_testdb
 
 MIGRATIONS = [Path(__file__).resolve().parents[1] / "pg" / "migrations" / name
               for name in ("0006_ontology.sql", "0007_ontology_compact.sql",
-                           "0008_ontology_read.sql")]
+                           "0008_ontology_read.sql", "0009_schema_migrations.sql")]
 VERSIONS = [("A:b:1", "graph-mail://box/1@x", "d", "portal", "[]", "2026-01-01T00:00:00Z", None),
             ("A:b:2", "graph-mail://box/2@x", "d", "portal", '["restricted"]',
              "2026-01-01T00:00:00Z", None),

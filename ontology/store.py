@@ -51,8 +51,10 @@ FORMAT = store_ddl.FORMAT
 _POST_PROJECT = "post_project"   # ontology.project.POST_PROJECT: such values are always cells
 TIER_ORDER = ("verified", "reviewed", "corroborated", "stored_by_text_join", "lead",
               "contradicted")
+# (``steps_digest``: the build steps' code, a Postgres migration's baseline; equal rows
+# from other step code are equal content)
 VOLATILE_META = frozenset({"built_at", "content_digest", "content_digest_parts",
-                           "build_checkpoint"})
+                           "build_checkpoint", "steps_digest"})
 # ``store_meta`` key of a build file kept to resume (``StoreBuilder.keep_to_resume``): what
 # the build has done in it; never in a committed generation.
 CHECKPOINT_META = "build_checkpoint"

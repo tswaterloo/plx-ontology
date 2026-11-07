@@ -113,7 +113,8 @@ TIER = "lead"
 SENDER_CLASSES = ("internal", "external", "unknown")
 DOCUMENT_KINDS = ("email", "attachment", "sharepoint_file", "container_member", "original",
                   "mc_task", "mc_approval", "knowledge_entry", "teams_message",
-                  "calendar_event", "planner_task", "meeting_transcript")
+                  "calendar_event", "planner_task", "meeting_transcript",
+                  "sharepoint_list_item")
 # Why a producer withheld a document's text (``Document.text_withheld``): one known form,
 # ``pdf_pages_skipped_by_cap:<first>-<last>``.
 WITHHELD_PAGES_SKIPPED = "pdf_pages_skipped_by_cap"
@@ -749,12 +750,14 @@ def mention_link_types(link_types: Mapping[str, Mapping[str, Any]]
                        ) -> dict[tuple[str, str], str]:
     """``(document type, target type) -> link type id`` of every declared link type
     with a ``mention`` binding (``ontology/schema/domains/documents.json``:
-    ``Email.mentions_<type>``). A mention of a type with no declared link is not
+    ``Email.mentions_<type>``); a key join's binding (``key``, ``ontology.key_links``) and a
+    confirming path's (``confirm``) are no mention. A mention of a type with no declared link is not
     stored (counted ``undeclared_target``)."""
     out: dict[tuple[str, str], str] = {}
     for link_id in sorted(link_types):
         link = link_types[link_id]
-        if any(b.get("kind") == BINDING_KIND for b in link.get("bindings", ())):
+        if any(b.get("kind") == BINDING_KIND and not b.get("key") and not b.get("confirm")
+               for b in link.get("bindings", ())):
             out.setdefault((link["from"], link["to"]), link_id)
     return out
 
@@ -1719,8 +1722,8 @@ def reader_view(tier: str, reason: Sequence[Mapping[str, Any]],
 def corroborable_link_types(link_types: Mapping[str, Mapping[str, Any]]) -> frozenset[str]:
     """The declared link types whose ``mention`` binding allows ``corroborated``."""
     return frozenset(link_id for link_id, link in link_types.items()
-                     if any(b.get("kind") == BINDING_KIND
-                            and b.get("tier_ceiling") == CORROBORATED
+                     if any(b.get("kind") == BINDING_KIND and not b.get("key")
+                            and not b.get("confirm") and b.get("tier_ceiling") == CORROBORATED
                             for b in link.get("bindings", ())))
 
 
@@ -1752,6 +1755,14 @@ def _held(rows: Iterable[Any], start: str, end: str | None) -> bool:
 def _value_cite(row: Any) -> dict[str, Any]:
     return {"l1_handle": row["l1_handle"], "field_path": row["field_path"],
             "digest": row["digest"], "lineage": row["lineage"]}
+
+
+def properties_read_by_name() -> set[str]:
+    """The properties the corroboration reads store-wide by name, whatever type holds them
+    (a domain held by any object; a conversation's every message): a step migration
+    declares every type holding one as the mention step's input."""
+    return {MENTION_FEATURES["party_domain"]["property"],
+            MENTION_FEATURES["petra_thread"]["document_property"]}
 
 
 def _domain_holders(conn: Any, prop: str) -> dict[str, set[str]]:
@@ -2286,6 +2297,6 @@ __all__ = ["BINDING_KIND", "DOCUMENT_KINDS", "Document", "EXTERNAL_UNCONFIRMABLE
            "CORROBORATION_MIN", "MENTION_FEATURES", "SHARED_MAIL_BRANDS", "SHARED_MAIL_DOMAINS",
            "CORROBORATING_FEATURES", "corroborable_link_types", "corroborate_links",
            "corroboration_handles", "corroboration_objects", "date_order", "day", "reader_view",
-           "domain_under", "mail_domain", "party_domain", "petra_thread",
+           "domain_under", "mail_domain", "party_domain", "petra_thread", "properties_read_by_name",
            "own_mail_domains", "registrable_domain", "sent_from_own_domain",
            "shared_mail_domain", "website_domain"]

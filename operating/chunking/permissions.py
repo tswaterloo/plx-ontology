@@ -37,8 +37,8 @@ from ontology.store_ddl import MARKINGS
 FAMILIES = frozenset({"api", "bc", "mail", "sharepoint", "sharepoint-list", "teams", "mc",
                       "original", "repo", "workbench", "brain", "meetings"})
 # Families whose items are a person's mail, chats or files: the exclusion gates them.
-PERSON_FAMILIES = frozenset({"mail", "teams", "sharepoint", "sharepoint-list", "original",
-                             "repo", "meetings"})
+PERSON_FAMILIES = frozenset({"mail", "mail-any", "teams", "sharepoint", "sharepoint-list",
+                             "original", "repo", "meetings"})
 
 
 def family(key: str) -> str:
@@ -130,6 +130,11 @@ class Exclusion:
         unit = audience_key.split(":", 1)[1]
         if head == "mail":
             return self._oid_clear(unit) if is_object_id(unit) else False
+        if head == "mail-any":
+            # a person seen through several mailboxes (ontology.people_directory): each
+            # mailbox is granted as its own unit, so an excluded one never opens it
+            from ontology.people_directory import is_composite
+            return is_composite(audience_key)
         if head == "sharepoint":
             if unit not in self.drive_owners:
                 return False

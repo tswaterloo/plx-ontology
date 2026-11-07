@@ -495,6 +495,24 @@
       {
        "path": "lotnoqc",
        "op": "present"
+      },
+      {
+       "path": "lotnoqc",
+       "op": "not_in",
+       "value": [
+        "NA",
+        "Na",
+        "nA",
+        "na",
+        "N/A",
+        "N/a",
+        "n/A",
+        "n/a",
+        "NONE",
+        "None",
+        "none",
+        "-"
+       ]
       }
      ],
      "lineage": {
@@ -544,6 +562,24 @@
       {
        "path": "lotnoqc",
        "op": "present"
+      },
+      {
+       "path": "lotnoqc",
+       "op": "not_in",
+       "value": [
+        "NA",
+        "Na",
+        "nA",
+        "na",
+        "N/A",
+        "N/a",
+        "n/A",
+        "n/a",
+        "NONE",
+        "None",
+        "none",
+        "-"
+       ]
       }
      ],
      "lineage": {
@@ -1074,7 +1110,7 @@
    "name": "of_item",
    "reverse_name": "received_lots",
    "cardinality": "N:1",
-   "description": "The item the gold receipt line received in this lot (product_id).",
+   "description": "The item received in this lot: the gold receipt line's product_id; a FileMaker raw-material lot's supplier item (idrawsupp) names its raw material, a packaging lot's line names its packaging (idpack).",
    "bindings": [
     {
      "kind": "fk",
@@ -1092,6 +1128,58 @@
       {
        "kind": "ref",
        "id": "prisma.receipt_line"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_raw_material.lotnoqc",
+     "to_binding": "portal.fm_raw_material",
+     "via": {
+      "binding": "portal.fm_raw_material_supplier",
+      "from_pairs": [
+       {
+        "from": "idrawsupp",
+        "to": "id",
+        "compare": "integer_id"
+       }
+      ],
+      "to_pairs": [
+       {
+        "from": "idraw",
+        "to": "id",
+        "compare": "integer_id"
+       }
+      ]
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_raw_material"
+      },
+      {
+       "kind": "ref",
+       "id": "upstream-code.etlsupplierproducts.ee2e9d"
+      }
+     ]
+    },
+    {
+     "kind": "fk",
+     "tier_ceiling": "verified",
+     "from_binding": "portal.fm_receipt_packaging.lotnoqc",
+     "to_binding": "portal.fm_packaging",
+     "pairs": [
+      {
+       "from": "idpack",
+       "to": "id",
+       "compare": "integer_id"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "allowlist.public.receipt_packaging"
       }
      ]
     }
@@ -1263,6 +1351,15 @@
    "path": "services/workbench-api/manifest/allowlist.json",
    "commit": "52c9116f77ab",
    "note": "public.receipt_raw_material is an approved reporting-API relation served with every column (generated binding gen.public.receipt_raw_material binds status_c). Live mirror 2026-11-02 (counts only): status_c Finished 7411, Released 1666, Expired 158, Quarantine 83, Rejected 15; receipt_packaging.status_c blank on all 8258 rows."
+  },
+  "upstream-code.etlsupplierproducts.ee2e9d": {
+   "kind": "upstream_code",
+   "repo": "plx-customer-portal",
+   "path": "portal/scripts/etl-silver-to-gold.ts",
+   "commit": "b46934a",
+   "note": "etlSupplierProducts: FM raw_material_suppliers + packaging_suppliers -> app_supplier_product (unit_cost = cost_entry, system_cost = cost_system, currency default CAD); inserts with a fresh cuid, so the (supplierId, productId) unique key keeps the first copy.",
+   "symbol": "etlSupplierProducts",
+   "lines": "1746-1798"
   }
  }
 }

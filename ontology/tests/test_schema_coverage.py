@@ -282,7 +282,7 @@ class BoundRelationsProject(unittest.TestCase):
 
 class PendingPeopleAndLots(unittest.TestCase):
     LOT = 'InventoryLot:portal.app_inventory_lot:{"id":"fm-wlp-9"}'
-    PERSON = 'Person:portal.app_user:{"id":"u-1"}'
+    PERSON = 'PortalUser:portal.app_user:{"id":"u-1"}'
 
     PII_READER, OPS_READER = Actor("plx", frozenset({"ops", "hr"})), Actor("plx", frozenset({"ops"}))
 
@@ -311,9 +311,9 @@ class PendingPeopleAndLots(unittest.TestCase):
         cls.temp.cleanup()
 
     def test_person_binds_no_secret_and_no_phone(self):
-        (binding,) = self.schema.object_types["Person"]["bindings"]
+        (binding,) = self.schema.object_types["PortalUser"]["bindings"]
         read = set(binding["key"]) | {src["path"].split(".", 1)[0]
-                                      for p in self.schema.object_types["Person"]["properties"]
+                                      for p in self.schema.object_types["PortalUser"]["properties"]
                                       for src in p["sources"]}
         self.assertTrue(read)
         self.assertEqual({c for c in read
@@ -328,7 +328,7 @@ class PendingPeopleAndLots(unittest.TestCase):
         owners = self.schema.portal_bindings()
         expected = {}
         for fk in coverage["prisma_relations_not_bound"]:
-            to = {"public.app_user": "Person", "public.app_inventory_lot": "InventoryLot"}.get(fk["to"])
+            to = {"public.app_user": "PortalUser", "public.app_inventory_lot": "InventoryLot"}.get(fk["to"])
             if to is None:
                 continue
             self.assertIn("link", fk, fk)   # every such key's from columns are served
@@ -338,14 +338,14 @@ class PendingPeopleAndLots(unittest.TestCase):
         derived = {lid: (link["from"], link["to"], link["bindings"][0]["from_binding"],
                          link["bindings"][0]["pairs"])
                    for lid, link in self.schema.link_types.items()
-                   if link["to"] in ("Person", "InventoryLot") and link["bindings"][0]["kind"] == "fk"}
+                   if link["to"] in ("PortalUser", "InventoryLot") and link["bindings"][0]["kind"] == "fk"}
         self.assertEqual(derived, expected)
         # public.app_user is served live since 2026-10-26: no foreign key to it is "not bound"
         # any more, so the pending Person has no derived link (it was 19 FKs, TASK-3355 added
         # app_approval_record.approved_by). Each key a generated raw type holds is now a
         # verified link to the pii-marked RelPublicAppUser; the keys of curated types wait for
         # the Person promotion.
-        self.assertEqual(len([v for v in expected.values() if v[1] == "Person"]), 0)
+        self.assertEqual(len([v for v in expected.values() if v[1] == "PortalUser"]), 0)
         self.assertNotIn("public.app_user", {fk["to"] for fk in coverage["prisma_relations_not_bound"]})
         link = self.served.link_types["RelPublicAppApprovalRecord.approved_by"]
         self.assertEqual((link["to"], link["bindings"][0]["kind"], link["bindings"][0]["tier_ceiling"]),
@@ -353,11 +353,11 @@ class PendingPeopleAndLots(unittest.TestCase):
         self.assertFalse({lid for lid in derived} & set(self.served.link_types))
 
     def test_served_schema_keeps_not_served_placeholders(self):
-        for tid in ("Person", "InventoryLot"):
+        for tid in ("PortalUser", "InventoryLot"):
             placeholder = self.served.object_types[tid]
             self.assertEqual((placeholder["availability"]["state"], placeholder["bindings"]),
                              ("not_served", []))
-        self.assertEqual(self.served.object_types["Person"]["markings"], ["pii"])
+        self.assertEqual(self.served.object_types["PortalUser"]["markings"], ["pii"])
 
     def test_a_lot_is_found_by_its_number_and_linked_to_item_batch_and_ao(self):
         actor = Actor("plx", frozenset({"ops"}))
@@ -386,7 +386,7 @@ class PendingPeopleAndLots(unittest.TestCase):
         links = dict(self.conn.execute(
             "SELECT link_type, from_object FROM links WHERE to_object = ?", (self.PERSON,)))
         self.assertEqual(links, {})
-        query = {"object_type": "Person",
+        query = {"object_type": "PortalUser",
                  "filters": [{"property": "user_role", "op": "eq", "value": "PROCUREMENT"}]}
         allowed = self.tools.call("plx.find", query, self.PII_READER)
         self.assertEqual([c["object"]["object_id"] for c in allowed["candidates"]], [self.PERSON])

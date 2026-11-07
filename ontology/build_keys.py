@@ -84,6 +84,8 @@ ROWS_CODE_DIGESTS: dict[int, frozenset[str]] = {
         # of the units reading that relation, whose keys name it (``unit_slice`` "etl"),
         # so a unit of an unchanged key writes the same rows
         "7fbff16572c05486c099935abee16b7fa16eca3376f27d1d9817d76d180633da",
+        # the build steps' code recorded in store_meta (steps_digest, the rows are the same)
+        "da822466bbd7d1424228c89eba51e938dc7048ac00d3f944b9d4690e44ba5c5a",
     }),
 }
 

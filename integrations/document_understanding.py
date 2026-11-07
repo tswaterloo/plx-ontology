@@ -54,7 +54,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import urlsplit
 
 from ontology import identifiers as _ids
@@ -933,6 +933,42 @@ def local_pdf_text_layer(content: bytes, *, max_pages: int | None = None,
         return None
     layers = tuple(text[page["start"]:page["end"]] for page in pages)
     return layers + (None,) * (count - len(layers))
+
+
+# The text-layer pages a layout view (:func:`pdf_layout_pages`) is made of: a document's
+# labelled values sit on its first pages, and the view costs about 15-50 ms a page.
+MAX_LAYOUT_PAGES = 10
+
+
+def pdf_layout_pages(content: bytes, pages: Iterable[int]) -> dict[int, str]:
+    """A layout view of the given text-layer pages of a PDF (1-based, at most
+    ``MAX_LAYOUT_PAGES`` of them): pypdf's layout-mode text, where each glyph stands at
+    its column on the page, so a value printed beside or below its label stays there
+    (pypdf's plain reading, the pinned text, joins cells in content-stream order). Never
+    pinned and never cited: a reader places a value by it and cites the same literal in
+    the pinned text (``ontology.document_fields``). A page the view cannot be made of is
+    left out; deterministic for the same bytes and pypdf version."""
+    wanted = sorted({p for p in pages if isinstance(p, int) and p >= 1})[:MAX_LAYOUT_PAGES]
+    if not wanted:
+        return {}
+    try:
+        reader, failure, _warnings = _pypdf_open(content, None)
+    except ValidationError:
+        return {}
+    if reader is None or failure is not None:
+        return {}
+    out: dict[int, str] = {}
+    with _pypdf_logged():
+        for number in wanted:
+            try:
+                if number > len(reader.pages):
+                    break
+                text = reader.pages[number - 1].extract_text(extraction_mode="layout")
+            except BaseException:  # noqa: BLE001 - no view of this page: never its text
+                continue
+            if isinstance(text, str) and text.strip():
+                out[number] = "\n".join(line.rstrip() for line in text.splitlines())
+    return out
 
 
 def pdf_page_count(content: bytes) -> int | None:

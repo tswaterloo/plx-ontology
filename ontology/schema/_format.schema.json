@@ -2016,6 +2016,41 @@
           "description": "A to-one binding (N:1/1:1) links only where exactly one clean candidate answers in the company: an ambiguous key stays unresolved instead of being capped to a lead guess.",
           "type": "boolean"
         },
+        "key": {
+          "description": "A key join (ontology/key_links.py, the key_joins build step; only on a mention binding): the from record's identifier of kind `from` equals the to record's identifier of kind `to` (default `from`), or its BC system id (`to`: system_id). `from_field`/`to_field` keep one field's values; `company` same_bc_company joins within one BC company; `party` adds the party both records reach along a link path (`~` reads a link backwards) closed under the `twin` link; `targets` one (one record is corroborated, two or three are leads) or same_party (each record of the same party is corroborated); `min_digits` (default 3) is the digits a value needs.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from"],
+          "properties": {
+            "from": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+            "to": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+            "from_field": {"type": "string"},
+            "to_field": {"type": "string"},
+            "company": {"enum": ["same_bc_company"]},
+            "targets": {"enum": ["one", "same_party"]},
+            "min_digits": {"type": "integer", "minimum": 0, "maximum": 8},
+            "party": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["from", "to", "twin"],
+              "properties": {
+                "from": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4},
+                "to": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4},
+                "twin": {"type": "string"}
+              }
+            }
+          }
+        },
+        "confirm": {
+          "description": "A confirming path (ontology/key_links.py, the key_joins build step; only on a mention binding): a stored lead of this link type from a record of from_binding to one of to_binding is corroborated when the records the from record reaches along `path` by confirming links (`~` reads a link backwards), closed under the confirming `twin` link, hold the lead's target.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "twin"],
+          "properties": {
+            "path": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 6},
+            "twin": {"type": "string"}
+          }
+        },
         "company_by_reader": {
           "description": "A binding joining a BC record on a number to a record of another source: the projector still caps its links at lead (bc_company_not_known), and plx.process counts such a link at the binding's tier_ceiling only for a reader whose grant and markings cover every BC company and who sees every link of the binding to that far record start in one company (one order carries the number). Several companies, or a projector ambiguous_target, leave it uncounted with an ambiguous_target reason; a narrower reader gets it withheld, never decided.",
           "type": "boolean"
@@ -2205,7 +2240,7 @@
             "$ref": "#/$defs/link_binding"
           },
           "minItems": 1,
-          "maxItems": 8
+          "maxItems": 12
         },
         "markings": {
           "type": "array",

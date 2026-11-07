@@ -751,6 +751,19 @@ class FixtureIdentifierFormTests(unittest.TestCase):
                      "sage_ord_uniq", "so_number", "bc_document_no"):
             self.assertGreater(checked.get(kind, 0), 0, kind)   # not vacuous
 
+    def test_a_value_glued_to_an_underscore_and_digits_is_no_mention(self):
+        self.assertEqual([], [m.normalized for m in ids.find_identifiers(
+            "update PO5109_20260413967 today")])
+        self.assertEqual(["PO5109"], [m.normalized for m in ids.find_identifiers(
+            "file PO5109_v2.pdf")])
+
+    def test_a_company_qualified_orduniq_is_the_bare_orduniq(self):
+        # Sage gold rows write sageOrdUniq as MAKE:<orduniq> for the MAKE company database
+        self.assertEqual(ids.normalize("sage_ord_uniq", "MAKE:8036615"),
+                         ids.normalize("sage_ord_uniq", "8036615"))
+        self.assertEqual(ids.normalize("sage_ord_uniq", "make: 12.0"), "12")
+        self.assertIsNone(ids.normalize("sage_ord_uniq", "XMAKE:1"))
+
     def test_a_sage_backed_sales_order_carries_its_source_orduniq(self):
         from evals.oracle.fixture_world import build_eval_world
         sage = [row["custom_fields"] for row in build_eval_world().relations[
@@ -1135,7 +1148,9 @@ class LeadGrammarTests(unittest.TestCase):
                 self.assertTrue(upstream.startswith("plx-customer-portal@6e76a5b:"), upstream)
                 self.assertIn(cited, upstream)
                 self.assertTrue(ids.document_form("bc_document_no", forms[form]["example"]))
-        for written in ("PO100523", "PLX-AO-", "PLX-BAT-12", "PLX-FMAO-AO-26197B"):
+        # PLX-BAT-<id> is the batch posting form (a FileMaker batch), not an AO form
+        self.assertEqual(ids.document_form("bc_document_no", "PLX-BAT-12").form, "batch_posting")
+        for written in ("PO100523", "PLX-AO-", "PLX-FMAO-AO-26197B"):
             with self.subTest(written=written):
                 self.assertIsNone(ids.document_form("bc_document_no", written))
         # The AO a document names is a lead: the document number never parses as it.

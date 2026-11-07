@@ -424,13 +424,16 @@ def _settings(cur: Any) -> None:
 
 def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: int = 4,
          replace: bool = False, log: Any = sys.stderr, min_free: int = 0,
-         deferred: Sequence[str] = (), state_dir: str | Path | None = None
-         ) -> dict[str, Any]:
+         deferred: Sequence[str] = (), state_dir: str | Path | None = None,
+         steps_digest: str | None = None) -> dict[str, Any]:
     """Load ``tables`` of the generation store at ``path`` into ``ontology.*`` (module
     docstring); returns rows and seconds per table. ``deferred``: tables left out for now
     (recorded in ``generation``; readers read them from the SQLite generation until a
     later load fills them, ``operating.pg.ontology_reader``). ``state_dir``: the state
-    directory whose next build's room the load keeps free (``build_floor``)."""
+    directory whose next build's room the load keeps free (``build_floor``).
+    ``steps_digest``: the build steps' code that built a generation that does not record it
+    (``store_meta`` ``steps_digest``; without either the deploy check refuses until
+    ``seed-steps``)."""
     import psycopg
 
     path = str(path)
@@ -450,6 +453,8 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
         meta = dict(conn.execute("SELECT key, value FROM store_meta "
                                  "WHERE key NOT IN ('content_digest_parts')"))
+    if steps_digest is not None and "steps_digest" not in meta:
+        meta["steps_digest"] = steps_digest
     generation = {"store": path, "content_digest": meta.get("content_digest"),
                   "built_at": meta.get("built_at"), "deferred": sorted(deferred)}
     report: dict[str, Any] = {}
@@ -471,6 +476,10 @@ def load(path: str | Path, dsn: str, *, tables: Sequence[str] = ORDER, workers: 
             generation["deferred"] = sorted(set(generation["deferred"])
                                             | set(held.get("deferred") or ()))
         _put(cur, "generation", {**(held or {}), **generation} if not replace else generation)
+        if not replace and held:   # resuming: what migrations moved since the load stays
+            cur.execute(f"SELECT key, value FROM {SCHEMA}.store_meta WHERE key IN "
+                        "('schema_digest', 'steps_digest')")
+            meta.update(dict(cur.fetchall()))
         _write_meta(cur, meta)
         cur.execute("SELECT pg_advisory_unlock(hashtext('ontology_delta'))")
     for name in tables:
@@ -569,6 +578,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-build-reserve", action="store_true",
                         help="keep only --min-free-gb, not the next projection build's room")
     parser.add_argument("--defer", nargs="*", default=[], choices=DEFERRABLE)
+    parser.add_argument("--steps-ref", default=None,
+                        help="the commit that built a generation recording no steps_digest")
     args = parser.parse_args(argv)
     dsn = args.dsn or config.dsn()
     import signal
@@ -578,10 +589,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     try:
+        steps = None
+        if args.steps_ref:
+            from ontology.step_migrate import steps_digest
+            steps = steps_digest(args.steps_ref)
         load(args.store, dsn, tables=args.tables, workers=args.workers,
              replace=args.replace, min_free=int(args.min_free_gb * 1024 ** 3),
              deferred=args.defer,
-             state_dir=None if args.no_build_reserve else state_of(args.store))
+             state_dir=None if args.no_build_reserve else state_of(args.store),
+             steps_digest=steps)
     except DiskFloor as low:
         print(f"ontology_load stopped at the disk floor: {low}; run again to resume",
               file=sys.stderr, flush=True)

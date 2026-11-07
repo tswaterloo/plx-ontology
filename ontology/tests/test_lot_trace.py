@@ -15,8 +15,10 @@
   lot written in a lab id's shape links no line by its lab id. Lot itself stays unserved.
 * A hop the trace cannot reach is typed by its source cause, never lowered: an FM line
   whose ``idreceipt`` (or receipt whose ``idsupp``) is null reaches no Supplier for
-  ``source_column_empty``, an FM line no Product for ``no_binding``; the PO's vendor reaches
-  the Supplier the receipt does not name. A cause not read from the served gap and row
+  ``source_column_empty``; an FM line reaches its Product only through the supplier item it
+  names (``idrawsupp``, a via binding over a ``finance`` record), so a line naming none
+  stops there for a cause the trace does not read through a via binding (``unknown``); the
+  PO's vendor reaches the Supplier the receipt does not name. A cause not read from the served gap and row
   is ``unknown``.
 """
 
@@ -626,10 +628,12 @@ class LotTraceLiveCheckTests(unittest.TestCase):
     def fm_rows(self, n, idreceipt=None, idsupp=None, idsupplier=None):
         """The live funnel's shape: ``n`` FM raw-material lines (lots FM-0001..) on one FM
         PO chain, gold receipt tables empty; the line's ``idreceipt``, the receipt's
-        ``idsupp`` and the PO's ``idsupplier`` as given (None: the column is null)."""
+        ``idsupp`` and the PO's ``idsupplier`` as given (None: the column is null; the line
+        names no supplier item)."""
         rows = {relation: [] for relation in self.rows(1)}
         rows.update({
-            "public.receipt_raw_material": [{**raw(i, f"FM-{i:04d}"), "idreceipt": idreceipt}
+            "public.receipt_raw_material": [{**raw(i, f"FM-{i:04d}"), "idreceipt": idreceipt,
+                                             "idrawsupp": None}
                                             for i in range(1, n + 1)],
             "public.receipt": [{"id": 5, "idsupp": idsupp}],
             "public.supplier": [{"id": 40, "namesupp": "Ningbo"}],
@@ -665,14 +669,14 @@ class LotTraceLiveCheckTests(unittest.TestCase):
         self.assertEqual({hop: {c: n for c, n in causes.items() if n}
                           for hop, causes in report["hop_shortfall"].items()},
                          {"supplier": {"source_column_empty": 1}, "purchase_order": {},
-                          "product": {"no_binding": 1}})
+                          "product": {"unknown": 1}})
         at = report["hop_shortfall_at"]
         self.assertEqual(at["supplier"][supplied],
                          {"ReceiptLine.line_of source_column_empty": 1})
         self.assertEqual(at["supplier"][via_po],
                          {"PurchaseOrder.ordered_from source_column_empty": 1})
         self.assertEqual(at["product"], {"for_receipt_line>for_item": {
-            "ReceiptLine.for_item no_binding": 1}})
+            "ReceiptLine.for_item unknown": 1}})
         # The line names its receipt, the receipt no supplier: stopped one step later.
         report, code, text = self.run_trace(["fm-0001"], self.fm_rows(1, idreceipt=5))
         self.assertEqual(report["hop_shortfall_at"]["supplier"][supplied],
@@ -706,7 +710,7 @@ class LotTraceLiveCheckTests(unittest.TestCase):
                                  (n, n, n, n), text[:2000])
                 self.assertEqual(report["hop_shortfall"]["supplier"]["source_column_empty"],
                                  n)
-                self.assertEqual(report["hop_shortfall"]["product"]["no_binding"], n)
+                self.assertEqual(report["hop_shortfall"]["product"]["unknown"], n)
                 self.assert_shortfall_sums(report)
 
 

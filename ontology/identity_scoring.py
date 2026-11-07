@@ -69,7 +69,7 @@ import re
 import sqlite3
 import time
 import unicodedata
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import identifiers, store_ddl
 from ontology.mentions import (TWIN_SUPPLIER_FEATURES, mail_domain, registrable_domain,
@@ -2025,3 +2025,229 @@ def _reference_row(order: Any, candidate: Mapping[str, Any], tier: str, rule_cod
             "reviewed_by": None, "reviewed_at": None, "review_action_id": None,
             "markings": markings_text(marks), "recorded_at": max(times),
             "superseded_at": None}
+
+
+# ------------------------------------------------ firm BC copies of parties and items
+#
+# A customer, vendor or item the schema joins to a BC record on its code (a ``same_record``
+# binding whose BC end is reached on a number, not its key) is a ``lead`` by the
+# projector's cap (``bc_company_not_known``: a BC number recurs across books). Such a pair
+# is raised to a firm copy by corroboration recorded with its evidence: a separate
+# ``same_record`` link of tier ``corroborated`` beside the lead (which stays). It is
+# written when all of these hold:
+#
+# * ``code``: the lead's own stored-key pair agreed (its reason's ``pair`` features, the
+#   identifier compare the schema declares);
+# * ``unique``: the code names one record on each side: the BC record has this one partner
+#   in the other end's binding, and the other end has at most one partner in the BC
+#   record's book (a code a bill-to group or a reused number shares never qualifies);
+# * ``name``: the two records' own names agree (``normalize_name`` level ``exact`` or
+#   ``close``, or one is the other cut short at a word: at least ``PARTY_PREFIX_WORDS``
+#   words, as a 100-character BC name copies a longer one); a ``near`` or differing name,
+#   or a missing one, keeps the lead.
+#
+# Never on the code alone. A pair a person rejected (``contradicted``), already firm, or
+# with an end of a lineage that is never authority stays as it is. The link cites both
+# ends' names and the lead; its markings are both ends' and their names'.
+
+PARTY_TWIN_LINKS = ("Customer.same_record_as", "Supplier.same_record_as",
+                    "Product.same_record_as")
+PARTY_TWIN_PREFIX = "crb-party-"
+PARTY_PREFIX_WORDS = 2
+_PARTY_OUTCOMES = ("firm", "rejected", "already_firm", "ambiguous", "lineage_not_authority",
+                   "code_not_agreed", "name_unknown", "name_conflict")
+
+
+def party_twin_step(builder: Any, projector: Any) -> dict[str, Any]:
+    """The ``post_project`` step (``twins_parties``) writing the firm BC copies of the
+    generation being built (:func:`corroborate_party_twins`)."""
+    return corroborate_party_twins(builder.connection, projector.schema,
+                                   lambda rows: builder.add("links", rows))
+
+
+def party_names_agree(a: Any, b: Any) -> str:
+    """``exact``/``close``/``prefix`` when two names name one party or item, else the
+    ``_name_level`` level (``near``/``differ``) or ``unknown``."""
+    left, right = normalize_name(a), normalize_name(b)
+    if not left or not right:
+        return "unknown"
+    if left == right:
+        return "exact"
+    ta, tb = left.split(), right.split()
+    if len(ta) == len(tb) and all(_token_match(x, y) for x, y in zip(sorted(ta), sorted(tb))):
+        return "close"   # word for word, a long word misspelt at most (never a number)
+    short, long_ = sorted((left, right), key=len)
+    if len(short.split()) >= PARTY_PREFIX_WORDS and (long_ + " ").startswith(short + " "):
+        return "prefix"
+    level = _name_level(left, right)
+    return "near" if level in ("exact", "close") else level   # a likeness is no agreement
+
+
+def corroborate_party_twins(conn: sqlite3.Connection, schema: Any,
+                            add: Callable[[list[dict[str, Any]]], int], *,
+                            replace: bool = True) -> dict[str, Any]:
+    """Write a ``corroborated`` ``same_record`` link (id ``crb-party-<sha256 of the lead's
+    id>``) beside each current BC code lead of ``PARTY_TWIN_LINKS`` the rules above
+    corroborate, after removing the ones a previous build wrote. Returns counts per link
+    type and outcome, and ``link_tiers``. ``replace=False`` judges without removing
+    anything (a report over a read-only connection; ``add`` then only counts)."""
+    from ontology.resolve import NEVER_AUTHORITY, _part
+
+    previous = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        if replace:
+            conn.execute("DELETE FROM links WHERE substr(link_id, 1, ?) = ?",
+                         (len(PARTY_TWIN_PREFIX), PARTY_TWIN_PREFIX))
+        declared = _part(schema, "link_types")
+        counts: dict[str, Counter] = {}
+        rows: list[dict[str, Any]] = []
+        for link_type in PARTY_TWIN_LINKS:
+            if link_type not in declared:
+                continue
+            judge = _PartyTwin(conn, link_type, NEVER_AUTHORITY)
+            tally = counts.setdefault(link_type, Counter({c: 0 for c in _PARTY_OUTCOMES}))
+            for lead in judge.leads():
+                code, row = judge.judge(lead)
+                tally[code] += 1
+                if row is not None:
+                    rows.append(row)
+        written = 0
+        for start in range(0, len(rows), _CHUNK):
+            written += add(rows[start:start + _CHUNK]) or 0
+        return {"counts": {t: dict(c) for t, c in counts.items()},
+                "link_tiers": {TWIN_TIER: written}}
+    finally:
+        conn.row_factory = previous
+
+
+class _PartyTwin:
+    """The judge of one link type's BC code leads (see the section comment)."""
+
+    def __init__(self, conn: sqlite3.Connection, link_type: str, never: frozenset[str]) -> None:
+        self.conn, self.link_type, self.never = conn, link_type, never
+        self._bindings: dict[str, str | None] = {}
+
+    def leads(self) -> Iterator[Any]:
+        """Current same-record leads with exactly one BC end (the capped code joins), read
+        from each BC record of the link's types through the link indexes (no scan of every
+        link)."""
+        types = sorted({self.link_type.split(".", 1)[0]})
+        seen: set[str] = set()
+        for (oid,) in self.conn.execute(
+                "SELECT object_id FROM objects WHERE object_type IN (SELECT value FROM "
+                "json_each(?)) AND substr(binding_id, 1, 3) = 'bc.' ORDER BY object_id",
+                (json.dumps(types),)).fetchall():
+            for lead in self.conn.execute(
+                    "SELECT * FROM links WHERE link_id IN (SELECT link_id FROM link_rows "
+                    "WHERE from_object = :o AND link_type = :t UNION SELECT link_id FROM "
+                    "link_rows WHERE to_object = :o AND link_type = :t) AND binding_kind = "
+                    "'same_record' AND tier = 'lead' AND superseded_at IS NULL ORDER BY link_id",
+                    {"o": oid, "t": self.link_type}).fetchall():
+                if lead["link_id"] in seen:
+                    continue
+                seen.add(lead["link_id"])
+                ends = (self.binding(lead["from_object"]), self.binding(lead["to_object"]))
+                if None not in ends and [e.startswith("bc.") for e in ends].count(True) == 1:
+                    yield lead
+
+    def binding(self, oid: str) -> str | None:
+        if oid not in self._bindings:
+            row = self.conn.execute("SELECT binding_id FROM objects WHERE object_id = ?",
+                                    (oid,)).fetchone()
+            self._bindings[oid] = row[0] if row else None
+        return self._bindings[oid]
+
+    def version(self, oid: str) -> Any:
+        return self.conn.execute(
+            "SELECT l1_handle, lineage, markings, recorded_at FROM object_versions "
+            "WHERE object_id = ? AND superseded_at IS NULL", (oid,)).fetchone()
+
+    def names(self, oid: str) -> list[Any]:
+        return [r for r in self.conn.execute(
+            "SELECT value, l1_handle, field_path, digest, lineage, markings, recorded_at "
+            "FROM object_values WHERE object_id = ? AND property = 'name' AND "
+            "superseded_at IS NULL AND value IS NOT NULL ORDER BY l1_handle, field_path",
+            (oid,)) if r["lineage"] not in self.never]
+
+    def pair_tiers(self, a: str, b: str) -> set[str]:
+        return {r[0] for r in self.conn.execute(
+            "SELECT tier FROM links WHERE link_type = ? AND superseded_at IS NULL AND "
+            "((from_object = ? AND to_object = ?) OR (from_object = ? AND to_object = ?))",
+            (self.link_type, a, b, b, a))}
+
+    def partners(self, oid: str, binding: str, book: str | None = None) -> set[str]:
+        """Records of ``binding`` (and, for BC, of book ``book``) a current, not
+        contradicted same-record link of this type joins ``oid`` to."""
+        out = set()
+        for (other,) in self.conn.execute(
+                "SELECT CASE WHEN from_object = :o THEN to_object ELSE from_object END FROM "
+                "links WHERE link_type = :t AND superseded_at IS NULL AND tier <> "
+                "'contradicted' AND (from_object = :o OR to_object = :o)",
+                {"o": oid, "t": self.link_type}):
+            if self.binding(other) != binding:
+                continue
+            if book is not None:
+                version = self.version(other)
+                if version is None or version["lineage"] != book:
+                    continue
+            out.add(other)
+        return out
+
+    def judge(self, lead: Any) -> tuple[str, dict[str, Any] | None]:
+        a, b = lead["from_object"], lead["to_object"]
+        bc, other = (a, b) if self.binding(a).startswith("bc.") else (b, a)
+        tiers = self.pair_tiers(a, b)
+        if "contradicted" in tiers:
+            return "rejected", None
+        if tiers & {"verified", "reviewed", "corroborated"}:
+            return "already_firm", None
+        try:
+            reason = json.loads(lead["reason"] or "[]")
+        except ValueError:
+            reason = []
+        pairs = [f for f in reason if isinstance(f, dict) and f.get("feature") == "pair"]
+        if not pairs or not all(f.get("agrees") is True for f in pairs):
+            return "code_not_agreed", None
+        versions = {oid: self.version(oid) for oid in (bc, other)}
+        if any(v is None or v["lineage"] in self.never for v in versions.values()):
+            return "lineage_not_authority", None
+        book = versions[bc]["lineage"]
+        if self.partners(bc, self.binding(other)) != {other} or \
+                self.partners(other, self.binding(bc), book) != {bc}:
+            return "ambiguous", None
+        names = {oid: self.names(oid) for oid in (bc, other)}
+        if not names[bc] or not names[other]:
+            return "name_unknown", None
+        levels = [(party_names_agree(x["value"], y["value"]), x, y)
+                  for x in names[other] for y in names[bc]]
+        if any(level not in ("exact", "close", "prefix") for level, _x, _y in levels):
+            return "name_conflict", None
+        level, x, y = levels[0]
+        return "firm", self._row(lead, versions, pairs, level, x, y)
+
+    def _row(self, lead: Any, versions: Mapping[str, Any], pairs: Sequence[Mapping[str, Any]],
+             level: str, x: Any, y: Any) -> dict[str, Any]:
+        from ontology.store import canonical, markings_text
+        cite = _Twin._cite
+        marks: set[str] = set(json.loads(lead["markings"] or "[]"))
+        for text in [v["markings"] for v in versions.values()] + [x["markings"], y["markings"]]:
+            marks.update(json.loads(text or "[]"))
+        handles = {v["l1_handle"] for v in versions.values()} | {x["l1_handle"], y["l1_handle"]} \
+            | set(json.loads(lead["evidence_handles"] or "[]"))
+        reason = [*pairs,
+                  {"feature": "name", "agrees": True, "level": level,
+                   "citations": [cite(x), cite(y)]},
+                  {"feature": "unique", "agrees": True},
+                  {"feature": "corroborates", "agrees": True, "binding_kind": "same_record",
+                   "link_id": lead["link_id"]}]
+        times = [lead["recorded_at"], x["recorded_at"], y["recorded_at"],
+                 *(v["recorded_at"] for v in versions.values())]
+        return {"link_id": PARTY_TWIN_PREFIX + sha256(lead["link_id"].encode()).hexdigest()[:32],
+                "link_type": lead["link_type"], "from_object": lead["from_object"],
+                "to_object": lead["to_object"], "tier": TWIN_TIER, "binding_kind": "same_record",
+                "link_contract": None, "reason": canonical(reason), "why_not": "[]",
+                "evidence_handles": canonical(sorted(handles)), "reviewed_by": None,
+                "reviewed_at": None, "review_action_id": None,
+                "markings": markings_text(marks), "recorded_at": max(times),
+                "superseded_at": None}

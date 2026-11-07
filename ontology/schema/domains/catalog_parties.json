@@ -4154,7 +4154,7 @@
       "name": "same_record_as",
       "reverse_name": "same_record_as",
       "cardinality": "N:M",
-      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks.",
+      "description": "Records of one item in different systems. Codes are stored copies (FM->gold ETL, gold->BC serializer), so a code match is verified but non-unique codes yield candidates, never a merge. The gold external_id -> FM id link (fm-<family>-{id}) needs a prefixed-id compare the format lacks. A FileMaker raw-material code and a Sage item number reach the BC item of that number directly too (the gold product carried the code to BC; a packaging code reaches it through its gold product, the format's eight bindings being taken); every BC end is a lead by the BC company cap until the twins_parties build step corroborates a unique code whose names agree.",
       "bindings": [
         {
           "kind": "same_record",
@@ -4293,6 +4293,66 @@
             {
               "kind": "ref",
               "id": "context-pack.03-portal-md-3-6.9db86c"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.app_product",
+          "to_binding": "portal.sage_ic_item",
+          "pairs": [
+            {
+              "from": "external_id",
+              "to": "itemno",
+              "compare": "identifier",
+              "identifier_kind": "erp_item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.upsertitems.b5e83c"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_raw_material",
+          "to_binding": "bc.items",
+          "pairs": [
+            {
+              "from": "rawcode",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
+            }
+          ]
+        },
+        {
+          "kind": "same_record",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_ic_item",
+          "to_binding": "bc.items",
+          "pairs": [
+            {
+              "from": "itemno",
+              "to": "number",
+              "compare": "identifier",
+              "identifier_kind": "item_code"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "upstream-code.bcitemnumber.4ae4db"
             }
           ]
         }
@@ -5057,6 +5117,56 @@
             {
               "kind": "ref",
               "id": "wb.identity_scoring"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "Customer.same_party_as_supplier",
+      "from": "Customer",
+      "to": "Supplier",
+      "name": "same_party_as_supplier",
+      "reverse_name": "same_party_as_customer",
+      "cardinality": "N:M",
+      "description": "A customer and a supplier record of one system (one BC company, one FileMaker file, the Portal's own tables) whose names are equal under the resolver's name rules: a company PLX both sells to and buys from (a customer supplying its own components, a staff member who is also reimbursed). Written by the roles build step (ontology/party_roles.py); a name is no identifier, so always a lead.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "bc.customers",
+          "to_binding": "bc.vendors",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/party_roles.py",
+              "note": "roles step: equal normalized names of a customer and a supplier of one system and audience scope, own parties and many-record names excluded."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.app_customer",
+          "to_binding": "portal.app_supplier",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/party_roles.py",
+              "note": "roles step: equal normalized names of a customer and a supplier of one system and audience scope, own parties and many-record names excluded."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.fm_customer",
+          "to_binding": "portal.fm_supplier",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/party_roles.py",
+              "note": "roles step: equal normalized names of a customer and a supplier of one system and audience scope, own parties and many-record names excluded."
             }
           ]
         }

@@ -422,6 +422,135 @@
           ]
         }
       ]
+    },
+    {
+      "id": "BcEntityMapping.bc_product",
+      "from": "BcEntityMapping",
+      "to": "Product",
+      "name": "bc_product",
+      "reverse_name": "portal_entity_maps",
+      "cardinality": "N:1",
+      "description": "The BC item a Portal BC entity map row names by its BC system id (the item's key). Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_bc_entity_map",
+          "to_binding": "bc.items",
+          "key": {
+            "from": "bc_system_id",
+            "to": "system_id"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "BcEntityMapping.bc_purchase_order",
+      "from": "BcEntityMapping",
+      "to": "PurchaseOrder",
+      "name": "bc_purchase_order",
+      "reverse_name": "portal_entity_maps",
+      "cardinality": "N:1",
+      "description": "The BC purchase order a Portal BC entity map row names by its BC system id (the order's key). Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_bc_entity_map",
+          "to_binding": "bc.purchase_orders",
+          "key": {
+            "from": "bc_system_id",
+            "to": "system_id"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "BcEntityMapping.bc_sales_order",
+      "from": "BcEntityMapping",
+      "to": "SalesOrder",
+      "name": "bc_sales_order",
+      "reverse_name": "portal_entity_maps",
+      "cardinality": "N:1",
+      "description": "The BC sales order a Portal BC entity map row names by its BC system id (the order's key). Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_bc_entity_map",
+          "to_binding": "bc.sales_orders",
+          "key": {
+            "from": "bc_system_id",
+            "to": "system_id"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "BcEntityMapping.bc_sales_invoice",
+      "from": "BcEntityMapping",
+      "to": "SalesInvoice",
+      "name": "bc_sales_invoice",
+      "reverse_name": "portal_entity_maps",
+      "cardinality": "N:1",
+      "description": "The BC sales invoice a Portal BC entity map row names, by its BC system id (the invoice's key) or by its BC number when that is one invoice's own number. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_bc_entity_map",
+          "to_binding": "bc.sales_invoices",
+          "key": {
+            "from": "bc_system_id",
+            "to": "system_id"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        },
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "portal.app_bc_entity_map",
+          "to_binding": "bc.sales_invoices",
+          "key": {
+            "from": "bc_document_no",
+            "to_field": "row.number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+            }
+          ]
+        }
+      ]
     }
   ],
   "evidence_catalog": {

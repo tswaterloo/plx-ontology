@@ -125,8 +125,32 @@ class PgStoreReader(StoreReader):
         load deferred ``text_chunks`` (``ontology_load.DEFERRABLE``), else Postgres."""
         if "text_chunks" in self.deferred and self.text_reader is not None:
             with self.text_reader.lock:
-                return self.text_reader.object_chunks(scope, object_ids)
+                rows = self.text_reader.object_chunks(scope, object_ids)
+            return self.permitted_here(scope, rows)
         return super().object_chunks(scope, object_ids)
+
+    def permitted_here(self, scope: Any, rows: Sequence[Any]) -> list[Any]:
+        """``rows`` (document chunks the SQLite generation's word index found, already
+        checked there) that Postgres also permits: Postgres holds the field with markings
+        the reader holds and its object under an audience the reader sees. A migration in
+        place re-marks and re-keys Postgres only (``ontology_migrate``), so a generation's
+        older markings never decide alone; a field Postgres does not hold is withheld."""
+        if not rows:
+            return []
+        ids = sorted({row["object_id"] for row in rows})
+        with self.lock:
+            held = {(r[0], r[1], r[2], r[3]): (r[4], r[5]) for r in self.conn.execute(
+                "SELECT f.object_id, f.version_handle, f.citation, f.field_path, f.markings, "
+                "o.audience_key FROM text_fields f JOIN objects o ON o.object_id = f.object_id "
+                "WHERE f.object_id IN (SELECT value FROM json_each(?))", (json.dumps(ids),))}
+        marks, audiences = set(scope.marking_sets), set(scope.audience_keys)
+        out = []
+        for row in rows:
+            got = held.get((row["object_id"], row["version_handle"], row["citation"],
+                            row["field_path"]))
+            if got is not None and got[0] in marks and got[1] in audiences:
+                out.append(row)
+        return out
 
     @property
     def word_conn(self) -> Any:
@@ -149,7 +173,8 @@ class PgStoreReader(StoreReader):
         if self.text_reader is None:
             return []
         with self.text_reader.lock:
-            return self.text_reader.chunk_matches(scope, words, object_type, after, batch)
+            rows = self.text_reader.chunk_matches(scope, words, object_type, after, batch)
+        return self.permitted_here(scope, rows)
 
     def holds_text_of(self, schemes: Sequence[str]) -> bool:
         try:

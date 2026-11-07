@@ -271,5 +271,17 @@
    ]
   }
  ],
- "link_types": []
+ "link_types": [],
+ "evidence_catalog": {
+  "ctx.mentions": {
+   "kind": "context_pack",
+   "ref": "devloop/CONTEXT/07-ONTOLOGY-DESIGN.md#C.2",
+   "note": "Document mentions any object: mention resolution (lead/corroborated)."
+  },
+  "wb.mentions": {
+   "kind": "workbench_code",
+   "path": "ontology/mentions.py",
+   "note": "Identifier mentions extracted by the one identifier grammar from a SharePoint list item's field values (ontology/project.py SharePointCaptures list item documents) and resolved through the identifier index; stored as lead links (store_mention_links)."
+  }
+ }
 }

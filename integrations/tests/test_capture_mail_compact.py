@@ -2,11 +2,11 @@
 
 The capture keeps bodies and texts zlib-compressed, drops an attachment original over
 ``DROP_ORIGINALS_ABOVE`` once every reading of it is kept (its ``.dropped`` form), keeps
-the bytes a pending OCR still needs (bounded: past ``max_pending_ocr_bytes`` new PDFs are
-deferred) and compacts an existing store once (``compact``). Every reader of the text --
-resolve (the claim gate's rows), the mention documents, the typed fields -- reads the
-same before and after a drop; a restricted reader sees nothing more. Fixtures: the
-in-process fake Graph of ``test_capture_mail``. Evidence label: injected-transport.
+the bytes a pending OCR still needs (bounded: past ``max_pending_ocr_bytes`` a new scan's
+OCR is put off with its bytes, its text layer read) and compacts an existing store once
+(``compact``). Every reader of the text -- resolve (the claim gate's rows), the mention
+documents, the typed fields -- reads the same before and after a drop; a restricted
+reader sees nothing more. Fixtures: the in-process fake Graph of ``test_capture_mail``. Evidence label: injected-transport.
 """
 
 from __future__ import annotations
@@ -279,7 +279,7 @@ def pending(status):
 
 
 class PendingOcrTests(CompactCase):
-    def test_pending_ocr_keeps_bytes_until_read_and_its_bound_defers_new_pdfs(self):
+    def test_pending_ocr_keeps_bytes_until_read_and_its_bound_puts_off_only_ocr(self):
         scan1 = pdf([["scanned page one"]])
         scan2 = pdf([["scanned page two"], ["and more"]])
         note = b"notes " * 100
@@ -297,30 +297,32 @@ class PendingOcrTests(CompactCase):
                 {"capture": ct.OCR_PENDING})), \
                 mock.patch.object(capture_mail, "DROP_ORIGINALS_ABOVE", 1), engine as ocr:
             # Run 1, no OCR pass: the first scan waits (bytes kept, the backlog at its
-            # bound), so the second PDF is not downloaded; the text file is.
+            # bound). The second PDF is still downloaded and its text layer read; only
+            # its OCR is put off with its bytes (ocr_deferred), so the folder is whole.
             run = self.capture(defer_ocr=True, max_pending_ocr_bytes=len(scan1)).run(tm.SCOPE)
             folder = run["mailboxes"][0]["folders"][0]
-            self.assertEqual((folder["complete"], folder["reason"]),
-                             (False, "attachments_deferred"))
-            # Deferred when its message was captured; the round's repair does not retry it
-            # while the backlog is still at its bound (it would only defer it again).
-            self.assertEqual(folder["counts"]["attachments_deferred"], 1)
+            self.assertTrue(folder["complete"], folder)
+            self.assertEqual(folder["counts"]["attachments_deferred"], 0)
             self.assertEqual(forms(self.store, d1)[""], True)
+            self.assertEqual(forms(self.store, d2), {"": False, ".z": False, ".dropped": True})
             self.assertEqual(self.store.pending_ocr_bytes(), len(scan1))
-            statuses = dict(self.store.db.execute(
-                "SELECT attachment_id, content_status FROM attachments"))
-            self.assertEqual(statuses, {"ATT-1": "captured", "ATT-2": "deferred:ocr_backlog",
-                                        "ATT-3": "captured"})
+            rows = {r[0]: r[1:] for r in self.store.db.execute(
+                "SELECT attachment_id, content_status, text_status FROM attachments")}
+            self.assertEqual(rows, {"ATT-1": ("captured", ct.OCR_PENDING),
+                                    "ATT-2": ("captured", ct.OCR_DEFERRED),
+                                    "ATT-3": ("captured", "extracted")})
             (box,) = self.store.completeness(READER, self.audience)["mailboxes"]
-            self.assertEqual((box["complete"], box["deferred_attachments"]), (False, 1))
+            self.assertEqual((box["complete"], box["deferred_attachments"]), (True, 0))
             with fresh_memos():
                 layer = self.store.resolve(h1, READER, self.audience, text=True)
-            # Run 2, OCR on this host: the scan is read, then its bytes go; the deferred
-            # PDF is still deferred (the repair ran before the reading).
+                put_off = self.store.resolve(h2, READER, self.audience, text=True)["row"]
+            # Its text layer is read; the answer names the gap, never "empty".
+            self.assertEqual((put_off["text_status"], put_off["gaps"]),
+                             (ct.OCR_DEFERRED, [capture_mail.ocr_deferred_gap()]))
+            self.assertIn("scanned page two", put_off["content_text"])
+            # Run 2, OCR on this host: the waiting scan is read, then its bytes go.
             ocr.return_value = True
-            run = self.capture(defer_ocr=True, max_pending_ocr_bytes=len(scan1)).run(tm.SCOPE)
-            self.assertEqual(run["mailboxes"][0]["folders"][0]["reason"],
-                             "attachments_deferred")
+            self.capture(defer_ocr=True, max_pending_ocr_bytes=len(scan1)).run(tm.SCOPE)
             self.assertEqual(forms(self.store, d1), {"": False, ".z": False, ".dropped": True})
             self.assertEqual(self.store.pending_ocr_bytes(), 0)
             with fresh_memos():
@@ -331,11 +333,10 @@ class PendingOcrTests(CompactCase):
                              ("OCR text of scan1.pdf", 2))
             # The reading made before OCR still resolves, from the kept reading.
             self.assertEqual(first["row"]["content_text"], layer["row"]["content_text"])
-            # Run 3: under the bound, the deferred PDF is read, OCR-read, dropped.
-            run = self.capture(defer_ocr=True, max_pending_ocr_bytes=len(scan1)).run(tm.SCOPE)
-            folder = run["mailboxes"][0]["folders"][0]
-            self.assertTrue(folder["complete"], folder)
-            self.assertEqual(folder["counts"]["attachments_recovered"], 1)
+            # The put-off scan is re-read from Graph and OCR-read by the ocr-deferred pass.
+            counts = capture_mail.ocr_deferred_pass(self.store, self.reader(), tm.CAPTURE,
+                                                    tm.capture_audience(), budget_seconds=60)
+            self.assertEqual((counts["read"], counts["left"]), (1, 0))
         self.assertEqual(forms(self.store, d2), {"": False, ".z": False, ".dropped": True})
         with fresh_memos():
             self.assertEqual(self.store.resolve(h2, READER, self.audience, text=True)["row"]
@@ -539,6 +540,167 @@ class DeferredOcrTests(CompactCase):
         self.assertEqual(capture_mail.CaptureScope.from_json({
             "schema": capture_mail.SCOPE_SCHEMA, "mailboxes": [{"address": tm.UPN_A}],
             "ocr": "deferred"}, allowlist=tm.SYNTHETIC).ocr, "deferred")
+
+
+class DeferredAttachmentsTests(CompactCase):
+    """``deferred-attachments``: PDFs an earlier capture left undownloaded behind a full OCR
+    backlog (``deferred:ocr_backlog``) are read in parallel: a text layer at once, a scan
+    queued for OCR (or put off with its bytes while the backlog is full); the people
+    exclusion stays fail-closed."""
+
+    def setUp(self):
+        super().setUp()
+        self.layer = pdf([["PO Number: 4500012345"]])
+        self.scan = pdf([["scanned"]])
+        self.other = pdf([["Invoice 77"]])
+        self.graph.put(tm.BOX_A, "MSG-1", "CK-1", attachments=[
+            attachment("ATT-1", self.layer, "order.pdf", "application/pdf"),
+            attachment("ATT-2", self.scan, "scan.pdf", "application/pdf")])
+        self.graph.put(tm.BOX_B, "MSG-2", "CK-2", attachments=[
+            attachment("ATT-3", self.other, "invoice.pdf", "application/pdf")])
+        real = capture_mail.capture_text
+
+        def fake(content, record, *, max_chars=None, defer_ocr=False, **extra):
+            if (record.get("name") or "").startswith("scan"):   # no text layer
+                return (ct.OCR_PENDING, "") if defer_ocr else (ct.TEXT_OCR, "OCR text")
+            return real(content, record, max_chars=max_chars, defer_ocr=defer_ocr, **extra)
+        self.patches = contextlib.ExitStack()
+        self.addCleanup(self.patches.close)
+        self.patches.enter_context(mock.patch.object(capture_mail, "capture_text", fake))
+        self.patches.enter_context(mock.patch.object(capture_mail, "DROP_ORIGINALS_ABOVE", 1))
+        self.patches.enter_context(mock.patch(
+            "integrations.document_understanding.local_ocr_available", return_value=True))
+        self.capture(defer_ocr=True).run(tm.SCOPE)
+        # As an earlier capture stored them behind a full backlog: not downloaded.
+        for handle, aid, name, content in (
+                (self.message("MSG-1", "CK-1"), "ATT-1", "order.pdf", self.layer),
+                (self.message("MSG-1", "CK-1"), "ATT-2", "scan.pdf", self.scan),
+                (self.message("MSG-2", "CK-2", tm.BOX_B), "ATT-3", "invoice.pdf", self.other)):
+            meta = json.loads(self.store.db.execute(
+                "SELECT metadata FROM attachments WHERE attachment_id=?", (aid,)).fetchone()[0])
+            self.store.fill_attachment(handle, {"id": aid, "metadata": meta,
+                                                "content_status": capture_mail.ATTACHMENT_DEFERRED})
+
+    def message(self, mid, ck, box=tm.BOX_A):
+        return graph_read.mail_citation(box, mid, ck)
+
+    def rows(self):
+        return {r[0]: r[1:] for r in self.store.db.execute(
+            "SELECT attachment_id, content_status, text_status FROM attachments")}
+
+    def reader_with(self, env):
+        api, _ = graph_read.build_graph(env, sender=self.graph, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+        return GraphMailReader(api, tm.capture_audience())
+
+    def run_pass(self, reader=None, **kwargs):
+        kwargs.setdefault("budget_seconds", 60)
+        kwargs.setdefault("extract_workers", 0)
+        kwargs.setdefault("free_bytes", lambda path: 1 << 50)
+        return capture_mail.deferred_attachments_pass(
+            self.store, reader or self.reader(), tm.CAPTURE, workers=4, **kwargs)
+
+    def test_a_text_layer_is_read_now_and_only_a_scan_waits_for_ocr(self):
+        counts = self.run_pass()
+        self.assertEqual((counts["captured"], counts["text_layer"], counts["ocr_queued"],
+                          counts["remaining"]), (3, 2, 1, 0))
+        self.assertEqual(self.rows(), {"ATT-1": ("captured", "extracted"),
+                                       "ATT-2": ("captured", ct.OCR_PENDING),
+                                       "ATT-3": ("captured", "extracted")})
+        h1 = self.handle("MSG-1", "CK-1", "ATT-1", self.layer)
+        with fresh_memos():
+            self.assertIn("4500012345", self.store.resolve(h1, READER, self.audience,
+                                                           text=True)["row"]["content_text"])
+        # The text-layer original goes once read; the scan's bytes wait for the OCR pool.
+        self.assertEqual(forms(self.store, sha256(self.layer).hexdigest())[""], False)
+        self.assertEqual(self.store.pending_ocr_bytes(), len(self.scan))
+        self.assertEqual(self.run_pass()["selected"], 0)   # nothing left to read
+
+    def test_with_the_backlog_full_a_scan_is_put_off_with_its_bytes(self):
+        with mock.patch.object(self.store, "pending_ocr_bytes", return_value=2):
+            counts = self.run_pass(max_pending_ocr_bytes=1)
+        self.assertEqual((counts["text_layer"], counts["ocr_deferred"], counts["remaining"]),
+                         (2, 1, 0))
+        self.assertEqual(self.rows()["ATT-2"], ("captured", ct.OCR_DEFERRED))
+        self.assertEqual(forms(self.store, sha256(self.scan).hexdigest())[""], False)
+
+    def test_the_people_exclusion_stays_fail_closed(self):
+        before = len(self.graph.calls)
+        unguarded = {k: v for k, v in tm.ENV.items() if k != "PLX_EXCLUDED_PEOPLE_OIDS"}
+        counts = self.run_pass(self.reader_with(unguarded))
+        self.assertEqual(counts["error"], "people_exclusion_unavailable")
+        self.assertEqual(len(self.graph.calls), before)   # nothing requested
+        self.assertEqual({r[0] for r in self.rows().values()},
+                         {capture_mail.ATTACHMENT_DEFERRED})
+        # A mailbox the exclusion names is skipped before any request for it.
+        excluding_b = {**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}
+        counts = self.run_pass(self.reader_with(excluding_b))
+        self.assertEqual((counts["captured"], counts["excluded"]), (2, 1))
+        self.assertEqual(self.rows()["ATT-3"][0], capture_mail.ATTACHMENT_DEFERRED)
+        self.assertFalse([c for c in self.graph.calls[before:]
+                          if tm.BOX_B in c[1].lower() or tm.UPN_B in c[1].lower()])
+
+    def test_a_message_the_exclusion_refuses_is_marked_and_not_requested_again(self):
+        # An excluded person on Cc of a message in a mailbox no one excludes.
+        self.graph.messages[tm.BOX_A]["MSG-1"]["ccRecipients"] = [
+            {"emailAddress": {"address": tm.UPN_B}}]
+        reader = self.reader_with({**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B})
+        before = len(self.graph.calls)
+        counts = self.run_pass(reader)
+        self.assertEqual((counts["excluded_messages"], counts["captured"]), (2, 0), counts)
+        self.assertEqual({self.rows()[a][0] for a in ("ATT-1", "ATT-2")},
+                         {capture_mail.ATTACHMENT_EXCLUDED})
+        self.assertFalse([c for c in self.graph.calls[before:] if "/attachments/" in c[1]])
+        # The next pass selects neither, so requests nothing for that message.
+        again = len(self.graph.calls)
+        counts = self.run_pass(reader)
+        self.assertEqual((counts["selected"], counts["remaining"]), (0, 1), counts)
+        self.assertFalse([c for c in self.graph.calls[again:] if "MSG-1" in c[1]])
+
+    def test_an_unexpected_failure_reading_one_row_skips_only_that_row(self):
+        real = capture_mail.MailCapture._extract
+
+        def flaky(capture, content, attachment, **kwargs):
+            if attachment.get("name") == "order.pdf":
+                raise RuntimeError("extractor broke")
+            return real(capture, content, attachment, **kwargs)
+        with mock.patch.object(capture_mail.MailCapture, "_extract", flaky), \
+                self.assertLogs("integrations.capture_mail", "WARNING") as logged:
+            counts = self.run_pass()
+        self.assertEqual((counts["failed"], counts["failed_kinds"], counts["captured"],
+                          counts["remaining"]), (1, {"RuntimeError": 1}, 2, 1), counts)
+        self.assertEqual(self.rows()["ATT-1"][0], capture_mail.ATTACHMENT_DEFERRED)
+        self.assertNotIn("extractor broke", "\n".join(logged.output))   # its type only
+
+    def test_extraction_runs_in_niced_processes(self):
+        # The processes read with the real extractor (each fixture PDF has a text layer).
+        counts = self.run_pass(extract_workers=2)
+        self.assertEqual((counts["captured"], counts["text_layer"]), (3, 3))
+
+    def test_the_pass_stops_before_the_disk_runs_low(self):
+        counts = self.run_pass(free_bytes=lambda path: 0)
+        self.assertEqual((counts["disk_low"], counts["selected"], counts["remaining"]),
+                         (1, 0, 3))
+
+    def test_the_cli_dry_run_counts_under_the_cycle_lock(self):
+        audience = Path(self.tmp.name) / "audience.json"
+        audience.write_text(json.dumps({
+            "schema": "plx-live-source-audience/v1", "tenant": "plx",
+            "audiences": {f"mail:{tm.UPN_A}": ["svc:mail-capture"],
+                          f"mail:{tm.UPN_B}": ["svc:mail-capture"]},
+            "classifications": {"mail:*": "restricted"}}))
+        self.store.close()
+        before, out = len(self.graph.calls), []
+        with mock.patch("builtins.print", side_effect=out.append):
+            code = capture_mail.deferred_attachments_cli(
+                ["--state-dir", str(self.state), "--live-audience", str(audience),
+                 "--budget-seconds", "60", "--dry-run"],
+                environ={**tm.ENV, "PLX_EXCLUDED_PEOPLE_OIDS": tm.BOX_B}, sender=self.graph)
+        self.store = MailCaptureStore(self.state, clock=tm.Clock())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(out[0]), {"ok": True, "dry_run": True, "deferred": 3,
+                                              "excluded": 1})
+        self.assertEqual(len(self.graph.calls), before)
 
 
 class CardinalityTests(CompactCase):

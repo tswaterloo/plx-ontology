@@ -856,7 +856,7 @@ class LanesAndPriorityTests(ThroughputCase):
         def parsed(*_args, **_kwargs):
             raise AssertionError("parsed in the capture process")
         gap = (capture_mail.EXTRACTION_TIMED_OUT, None, None)
-        with mock.patch.object(MailCapture, "_extract", lambda *a: gap), \
+        with mock.patch.object(MailCapture, "_extract", lambda *a, **k: gap), \
                 mock.patch.object(MailCapture, "_read_again", lambda *a: gap), \
                 mock.patch.object(capture_mail, "readings_of", parsed), \
                 mock.patch.object(capture_mail, "capture_text", parsed), \

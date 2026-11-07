@@ -247,6 +247,33 @@
      ]
     }
    ]
+  },
+  {
+   "id": "BatchSchedule.for_batch_record",
+   "from": "BatchSchedule",
+   "to": "Batch",
+   "name": "for_batch_record",
+   "reverse_name": "schedule_entries",
+   "cardinality": "N:1",
+   "description": "The Portal batch record a FileMaker batch schedule entry names by its batch code (BC-26198A), when the code names one batch (the FileMaker batch is BatchSchedule.for_batch). Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+   "bindings": [
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "portal.fm_batch_calibration",
+     "to_binding": "portal.app_batch_record",
+     "key": {
+      "from": "batch_code"
+     },
+     "evidence": [
+      {
+       "kind": "workbench_code",
+       "path": "ontology/key_links.py",
+       "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
+      }
+     ]
+    }
+   ]
   }
  ],
  "event_types": [

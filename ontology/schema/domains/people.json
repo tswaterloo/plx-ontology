@@ -3,14 +3,150 @@
  "format": "plx-ontology-domain/v1",
  "domain": "people",
  "origin": "curated",
- "description": "Persons (Portal users), declared not_served until the reporting API serves app_user. Every Person value is pii-marked.",
+ "description": "Persons: our staff and the outside contacts who wrote to them, from the mail capture (ontology/people_directory.py), with the messages, meetings, Teams posts, Planner tasks and Mission Control work they take part in (ontology/people_links.py). Every Person value is pii-marked. Portal users (app_user) stay pending until the reporting API serves them.",
  "upstream_pins": {
   "plx-customer-portal": "790256ca43"
  },
  "object_types": [
   {
    "id": "Person",
-   "description": "A Portal user: an employee (ADMIN .. ACCOUNTING roles) or a customer/supplier portal login (CUSTOMER, SUPPLIER). Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending. BC contacts stay the Contact type.",
+   "description": "A person the mail capture knows: one of our staff (one per captured mailbox: its Entra object id, UPN and addresses) or an outside contact who wrote to a captured mailbox (one per sender address that is not ours and no automated sender), ontology/people_directory.py. An excluded person is never a Person: without a usable exclusion list there is none at all, a mailbox naming an excluded person is none, and an address at our own domains that no captured mailbox holds is withheld. A staff person is seen by readers of their own mailbox; an outside contact by readers of the one mailbox holding most of their mail. Portal users (app_user) stay pending in ontology/schema/pending/people_lots.json. BC contacts stay the Contact type.",
+   "availability": {
+    "state": "served"
+   },
+   "markings": [
+    "pii"
+   ],
+   "display": [
+    "upn",
+    "domain"
+   ],
+   "bindings": [
+    {
+     "id": "graph_mail.people",
+     "source": "graph_mail",
+     "relation": "people",
+     "key": [
+      "person_key"
+     ],
+     "lineage": {
+      "default": "mail"
+     },
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "note": "One object per staff mailbox (key: its Entra object id) and per outside sender address (key: the sha256 of the lower-case address, as the capture's priority_senders census keys it); cited graph-mail://<audience mailbox>/person/<key>."
+    }
+   ],
+   "properties": [
+    {
+     "name": "kind",
+     "value_type": "enum",
+     "sources": [
+      {
+       "binding": "graph_mail.people",
+       "path": "kind",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "description": "staff: one of ours (a captured mailbox); outside: a contact who wrote to one.",
+     "enum_values": [
+      "staff",
+      "outside"
+     ]
+    },
+    {
+     "name": "object_id",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.people",
+       "path": "object_id",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "description": "A staff person's Entra object id (null for an outside contact)."
+    },
+    {
+     "name": "upn",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.people",
+       "path": "upn",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "description": "A staff person's user principal name (null for an outside contact)."
+    },
+    {
+     "name": "addresses",
+     "value_type": "json",
+     "sources": [
+      {
+       "binding": "graph_mail.people",
+       "path": "addresses",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "description": "Every mail address of the person, lower case: a staff person's UPN and SMTP identities, an outside contact's one sender address."
+    },
+    {
+     "name": "domain",
+     "value_type": "text",
+     "sources": [
+      {
+       "binding": "graph_mail.people",
+       "path": "domain",
+       "parser": "as_is"
+      }
+     ],
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_directory"
+      }
+     ],
+     "description": "The mail domain of the UPN (staff) or the sender address (outside)."
+    }
+   ],
+   "evidence": [
+    {
+     "kind": "ref",
+     "id": "wb.people_directory"
+    }
+   ]
+  },
+  {
+   "id": "PortalUser",
+   "description": "A Portal user (not the Person type: our staff and outside contacts from the mail capture): an employee (ADMIN .. ACCOUNTING roles) or a customer/supplier portal login (CUSTOMER, SUPPLIER). Bindings and links are declared and tested in ontology/schema/pending/people_lots.json, which replaces this placeholder when loaded with include_pending. BC contacts stay the Contact type.",
    "availability": {
     "state": "not_served",
     "reason": "Pending: the reporting-API allowlist (services/workbench-api/manifest/allowlist.json@790256ca43) does not serve public.app_user (nor app_person/people): Portal users are not readable, so a person appears only as an id or a name typed in another record.",
@@ -38,6 +174,315 @@
    "note": "User -> app_user: unique email, name/firstName/lastName, phone, jobTitle, userRole UserRole, departmentId, isActive, Entra ids, password/2FA/reset secrets.",
    "symbol": "User",
    "lines": "778-940"
+  },
+  "wb.people_directory": {
+   "kind": "workbench_code",
+   "path": "ontology/people_directory.py",
+   "note": "Staff from the mail capture's mailboxes table, outside contacts from the current messages' sender addresses; the people exclusion decides first and fails closed."
+  },
+  "wb.people_links": {
+   "kind": "workbench_code",
+   "path": "ontology/people_links.py",
+   "note": "Post-project step: exact address / Entra object id / staff local-part matches to the projected Person records."
   }
- }
+ },
+ "link_types": [
+  {
+   "id": "Email.sent_by_person",
+   "from": "Email",
+   "to": "Person",
+   "name": "sent_by_person",
+   "reverse_name": "emails_sent",
+   "cardinality": "N:M",
+   "description": "The Person whose address is the message's sender, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Email.addressed_to_person",
+   "from": "Email",
+   "to": "Person",
+   "name": "addressed_to_person",
+   "reverse_name": "emails_received",
+   "cardinality": "N:M",
+   "description": "Each Person whose address is among the message's To or Cc addresses, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "graph_mail.messages",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "CalendarEvent.with_person",
+   "from": "CalendarEvent",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "calendar_events",
+   "cardinality": "N:M",
+   "description": "Each Person whose address is the event's organizer's or an attendee's, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.calendar_events",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "Meeting.with_person",
+   "from": "Meeting",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "meetings",
+   "cardinality": "N:M",
+   "description": "Each Person whose address is the meeting's organizer's or an attendee's, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.meetings",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "TeamsChatMessage.sent_by_person",
+   "from": "TeamsChatMessage",
+   "to": "Person",
+   "name": "sent_by_person",
+   "reverse_name": "teams_chat_messages",
+   "cardinality": "N:M",
+   "description": "The staff Person whose Entra object id is the posting user's (from.id of a user), corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "gen.teams.chat_messages",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "TeamsChannelMessage.sent_by_person",
+   "from": "TeamsChannelMessage",
+   "to": "Person",
+   "name": "sent_by_person",
+   "reverse_name": "teams_channel_messages",
+   "cardinality": "N:M",
+   "description": "The staff Person whose Entra object id is the posting user's (from.id of a user), corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "gen.teams.channel_messages",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "PlannerTask.with_person",
+   "from": "PlannerTask",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "planner_tasks",
+   "cardinality": "N:M",
+   "description": "Each staff Person whose Entra object id created, completed or is assigned the task, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "meetings.planner_tasks",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MCTask.with_person",
+   "from": "MCTask",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "mc_tasks",
+   "cardinality": "N:M",
+   "description": "The staff Person a task's assignee or accountable owner names: a bare name that is exactly the local part of one staff person's address at our own domains (and of no other's), corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.tasks",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "MCApproval.with_person",
+   "from": "MCApproval",
+   "to": "Person",
+   "name": "with_person",
+   "reverse_name": "mc_approvals",
+   "cardinality": "N:M",
+   "description": "The Person whose address requested or decided the approval, corroborated. Exact matches only; never to a withheld or excluded person (none is a Person). Also a recorded human review.",
+   "bindings": [
+    {
+     "kind": "reviewed",
+     "tier_ceiling": "reviewed",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    },
+    {
+     "kind": "mention",
+     "tier_ceiling": "corroborated",
+     "from_binding": "mission_control.approvals",
+     "to_binding": "graph_mail.people",
+     "evidence": [
+      {
+       "kind": "ref",
+       "id": "wb.people_links"
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }

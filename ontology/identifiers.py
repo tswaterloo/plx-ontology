@@ -711,6 +711,16 @@ _NORMALIZERS = ("upper_trim", "lower_trim", "trim", "compact_upper", "int_text",
                 "customer_po", "pi_ref", "message_id", "prefixed_int")
 
 
+def _source_unprefixed(spec: Mapping[str, Any], text: str) -> str:
+    """``text`` without one of the kind's declared ``source_prefixes`` (a qualifier a
+    source writes before the key, such as the Sage company database ``MAKE:`` before an
+    ORDUNIQ), compared case-insensitively; unchanged without one."""
+    for prefix in spec.get("source_prefixes") or ():
+        if text[:len(prefix)].upper() == prefix.upper():
+            return text[len(prefix):].strip()
+    return text
+
+
 def parse(kind: str, value: Any) -> Parsed | None:
     """Parse one written value of ``kind``; None when it is not a valid form."""
     spec = kind_spec(kind)
@@ -722,7 +732,7 @@ def parse(kind: str, value: Any) -> Parsed | None:
         return None if number is None else Parsed(kind, (("value", number),), str(value))
     if not isinstance(value, str):
         return None
-    text = value.strip()
+    text = _source_unprefixed(spec, value.strip())
     if not text or len(text) > _MAX_VALUE or _compiled().values[kind].fullmatch(text) is None:
         return None
     if normalizer == "petra_po":
@@ -1088,6 +1098,11 @@ def _mention_value(kind: str, value: str, label_text: str) -> str | None:
     return normalize(kind, value)
 
 
+# A value an underscore and a digit follow is the head of a longer code (a customer's
+# PO5109_20260413967, a file stem), never the identifier it starts with.
+_GLUED = re.compile(r"_[0-9]")
+
+
 def find_identifiers(text: Any) -> list[Mention]:
     """Every identifier mention in ``text``: span of the value, kind, normalised
     value, form (``labelled`` / ``shape``) and the profile that found it.
@@ -1114,6 +1129,8 @@ def find_identifiers(text: Any) -> list[Mention]:
                 end = start + len(value)
                 if not value or (form == "labelled" and not any("0" <= c <= "9" for c in value)):
                     continue
+                if _GLUED.match(text, end):
+                    continue   # "PO5109_20260413967": the head of a longer code, not PO5109
                 if form == "labelled" and is_quantity(text, value, end):
                     continue   # "quote 120 mL": an amount, never an identifier
                 label_text = text[match.start():end]

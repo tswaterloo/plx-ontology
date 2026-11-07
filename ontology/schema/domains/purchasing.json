@@ -5003,7 +5003,7 @@
       "name": "ordered_from",
       "reverse_name": "purchase_orders",
       "cardinality": "N:1",
-      "description": "The PO's supplier per source.",
+      "description": "The PO's supplier per source. A Sage PO's vendor id (vdcode) is the unique code of the Portal supplier copied from that Sage vendor.",
       "bindings": [
         {
           "kind": "fk",
@@ -5068,6 +5068,31 @@
             {
               "kind": "ref",
               "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.sage_po_header",
+          "to_binding": "portal.app_supplier",
+          "pairs": [
+            {
+              "from": "vdcode",
+              "to": "code",
+              "compare": "identifier",
+              "identifier_kind": "supplier_code"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.sage.po_header"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.supplier.56b59a"
             }
           ]
         }
@@ -5292,7 +5317,7 @@
       "name": "for_item",
       "reverse_name": "purchase_order_lines",
       "cardinality": "N:1",
-      "description": "The item ordered on a PO line (gold product_id, BC item No.).",
+      "description": "The item ordered on a PO line (gold product_id, BC item No.). FileMaker lines reach the item through the supplier item they name (idproductsupp, of the table rawpack names, held by the line's own supplier). A Sage line stores no item number (aritemno is blank): its description equal to exactly one Sage item's is a lead.",
       "bindings": [
         {
           "kind": "fk",
@@ -5336,6 +5361,124 @@
               "id": "workbench.bc_same_company_scope"
             }
           ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_generated_purchase_order_item",
+          "to_binding": "portal.fm_raw_material",
+          "via": {
+            "binding": "portal.fm_raw_material_supplier",
+            "from_pairs": [
+              {
+                "from": "idproductsupp",
+                "to": "id",
+                "compare": "integer_id"
+              },
+              {
+                "from": "idsupplier",
+                "to": "idsupplier",
+                "compare": "integer_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "idraw",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ]
+          },
+          "where": [
+            {
+              "path": "rawpack",
+              "op": "in",
+              "value": [
+                "Raw",
+                "raw",
+                "RAW"
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.generated_purchase_order_item"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_generated_purchase_order_item",
+          "to_binding": "portal.fm_packaging",
+          "via": {
+            "binding": "portal.fm_packaging_supplier",
+            "from_pairs": [
+              {
+                "from": "idproductsupp",
+                "to": "id",
+                "compare": "integer_id"
+              },
+              {
+                "from": "idsupplier",
+                "to": "idsupp",
+                "compare": "integer_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "idpack",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ]
+          },
+          "where": [
+            {
+              "path": "rawpack",
+              "op": "in",
+              "value": [
+                "Pack",
+                "pack",
+                "PACK"
+              ]
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.generated_purchase_order_item"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_po_detail",
+          "to_binding": "portal.sage_ic_item",
+          "pairs": [
+            {
+              "from": "itemdesc",
+              "to": "desc",
+              "compare": "text"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.sage.po_detail"
+            }
+          ]
         }
       ]
     },
@@ -5346,7 +5489,7 @@
       "name": "receives",
       "reverse_name": "receipts",
       "cardinality": "N:1",
-      "description": "The PO a receipt was received against. The gold purchase_order_id was filled by PO-number text match, so it can never be verified. A Sage receipt header can cover several POs (multipor/pors) but names one, so the Sage pair is at most corroborated.",
+      "description": "The PO a receipt was received against. The gold purchase_order_id was filled by PO-number text match, so it can never be verified. A Sage receipt header can cover several POs (multipor/pors) but names one, so the Sage pair is at most corroborated. A FileMaker receipt names the PO item it received (idgenpoitem), which names its PO (idpogen): a stored-key path, verified.",
       "bindings": [
         {
           "kind": "fk",
@@ -5448,6 +5591,39 @@
             {
               "kind": "ref",
               "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_receipt",
+          "to_binding": "portal.fm_generated_purchase_order",
+          "via": {
+            "binding": "portal.fm_generated_purchase_order_item",
+            "from_pairs": [
+              {
+                "from": "idgenpoitem",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "idpogen",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.receipt"
+            },
+            {
+              "kind": "ref",
+              "id": "allowlist.public.generated_purchase_order_item"
             }
           ]
         }
@@ -5763,7 +5939,7 @@
       "name": "for_item",
       "reverse_name": "goods_receipt_lines",
       "cardinality": "N:1",
-      "description": "The item received on a gold receipt line.",
+      "description": "The item received on a gold receipt line. FileMaker raw lines reach the raw material through their supplier item (idrawsupp), packaging lines by idpack. A Sage receipt line stores no item number: its description equal to exactly one Sage item's is a lead.",
       "bindings": [
         {
           "kind": "fk",
@@ -5805,6 +5981,78 @@
             {
               "kind": "ref",
               "id": "workbench.bc_same_company_scope"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_receipt_raw_material",
+          "to_binding": "portal.fm_raw_material",
+          "via": {
+            "binding": "portal.fm_raw_material_supplier",
+            "from_pairs": [
+              {
+                "from": "idrawsupp",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ],
+            "to_pairs": [
+              {
+                "from": "idraw",
+                "to": "id",
+                "compare": "integer_id"
+              }
+            ]
+          },
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.receipt_raw_material"
+            },
+            {
+              "kind": "ref",
+              "id": "upstream-code.etlsupplierproducts.ee2e9d"
+            }
+          ]
+        },
+        {
+          "kind": "fk",
+          "tier_ceiling": "verified",
+          "from_binding": "portal.fm_receipt_packaging",
+          "to_binding": "portal.fm_packaging",
+          "pairs": [
+            {
+              "from": "idpack",
+              "to": "id",
+              "compare": "integer_id"
+            }
+          ],
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.public.receipt_packaging"
+            }
+          ]
+        },
+        {
+          "kind": "text_match",
+          "tier_ceiling": "lead",
+          "from_binding": "portal.sage_po_receipt_detail",
+          "to_binding": "portal.sage_ic_item",
+          "pairs": [
+            {
+              "from": "itemdesc",
+              "to": "desc",
+              "compare": "text"
+            }
+          ],
+          "unique_target": true,
+          "evidence": [
+            {
+              "kind": "ref",
+              "id": "allowlist.sage.po_receipt_detail"
             }
           ]
         }
@@ -6390,6 +6638,48 @@
       ]
     },
     {
+      "id": "SupplierConfirmation.for_sales_order",
+      "from": "SupplierConfirmation",
+      "to": "SalesOrder",
+      "name": "for_sales_order",
+      "reverse_name": "confirmations",
+      "cardinality": "N:M",
+      "description": "A supplier confirmation names this SalesOrder: an identifier the one identifier grammar reads in its text (a sales order number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SupplierConfirmation.for_sales_invoice",
+      "from": "SupplierConfirmation",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "confirmations",
+      "cardinality": "N:M",
+      "description": "A supplier confirmation names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "ForwarderQuote.for_purchase_order",
       "from": "ForwarderQuote",
       "to": "PurchaseOrder",
@@ -6453,6 +6743,27 @@
       ]
     },
     {
+      "id": "PackingSlip.for_sales_invoice",
+      "from": "PackingSlip",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "packing_slips",
+      "cardinality": "N:M",
+      "description": "A packing slip names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "SupplierInvoice.for_purchase_order",
       "from": "SupplierInvoice",
       "to": "PurchaseOrder",
@@ -6460,6 +6771,48 @@
       "reverse_name": "supplier_invoices",
       "cardinality": "N:M",
       "description": "A supplier invoice names this PurchaseOrder: an identifier the one identifier grammar reads in its text, resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SupplierInvoice.for_sales_order",
+      "from": "SupplierInvoice",
+      "to": "SalesOrder",
+      "name": "for_sales_order",
+      "reverse_name": "supplier_invoices",
+      "cardinality": "N:M",
+      "description": "A supplier invoice names this SalesOrder: an identifier the one identifier grammar reads in its text (a sales order number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SupplierInvoice.for_sales_invoice",
+      "from": "SupplierInvoice",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "supplier_invoices",
+      "cardinality": "N:M",
+      "description": "A supplier invoice names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
       "bindings": [
         {
           "kind": "mention",
@@ -6531,6 +6884,54 @@
             {
               "kind": "workbench_code",
               "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "FreightBill.for_sales_invoice",
+      "from": "FreightBill",
+      "to": "SalesInvoice",
+      "name": "for_sales_invoice",
+      "reverse_name": "freight_bills",
+      "cardinality": "N:M",
+      "description": "A freight bill names this SalesInvoice: an identifier the one identifier grammar reads in its text (a sales invoice number), resolved through the identifier index (ontology/document_fields.py store_document_links). Always a lead: several candidates stay several links, and the document's author is unknown (an external assertion).",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "lead",
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/document_fields.py"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "FreightBill.same_record_as",
+      "from": "FreightBill",
+      "to": "FreightBill",
+      "name": "same_record_as",
+      "reverse_name": "same_record_as",
+      "cardinality": "1:1",
+      "description": "One freight bill read from mail and filed in SharePoint: the tracking number names one bill on each side. Written by the key_joins build step (ontology/key_links.py); corroborated, never verified.",
+      "bindings": [
+        {
+          "kind": "mention",
+          "tier_ceiling": "corroborated",
+          "from_binding": "graph_mail.freight_bills",
+          "to_binding": "sharepoint.freight_bills",
+          "key": {
+            "from": "tracking_number"
+          },
+          "evidence": [
+            {
+              "kind": "workbench_code",
+              "path": "ontology/key_links.py",
+              "note": "key_joins step: an exact identifier both records hold, joined by the general resolver's normalized value."
             }
           ]
         }
@@ -7667,6 +8068,24 @@
       "kind": "context_pack",
       "ref": "devloop/CONTEXT/03-PORTAL.md#3.11",
       "note": "BC tables are outside the pinned reporting-API manifest; the live catalog (GET /v1/relations, 2026-10-26) lists public.bc_purchase_invoice_snapshot, so its rows are Portal copies of BC invoices with no company column."
+    },
+    "upstream-code.etlsupplierproducts.ee2e9d": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/scripts/etl-silver-to-gold.ts",
+      "commit": "b46934a",
+      "note": "etlSupplierProducts: FM raw_material_suppliers + packaging_suppliers -> app_supplier_product (unit_cost = cost_entry, system_cost = cost_system, currency default CAD); inserts with a fresh cuid, so the (supplierId, productId) unique key keeps the first copy.",
+      "symbol": "etlSupplierProducts",
+      "lines": "1746-1798"
+    },
+    "upstream-code.supplier.56b59a": {
+      "kind": "upstream_code",
+      "repo": "plx-customer-portal",
+      "path": "portal/prisma/schema.prisma",
+      "commit": "b46934a",
+      "note": "model Supplier @@map(\"app_supplier\"): unique code and externalId (fm-supp-{n} or bare FM id), currency, incoterms, deletedAt.",
+      "symbol": "Supplier",
+      "lines": "1482-1539"
     }
   }
 }

@@ -189,7 +189,8 @@ class StepMemoEquivalenceTests(unittest.TestCase):
             then_defs, now_defs = _definitions(tree / path), _definitions(ROOT / path)
             self.assertEqual({n for n in set(then_defs) | set(now_defs)
                               if then_defs.get(n) != now_defs.get(n)}, set(listed), path)
-        self.assertLessEqual(set(ce.STEP_FILE_CHANGES), {"integrations/captured_text.py"})
+        self.assertLessEqual(set(ce.STEP_FILE_CHANGES), {"integrations/captured_text.py",
+                                                     "ontology/identifiers.py"})
         store_then = _definitions(tree / "ontology/store.py")
         store_now = _definitions(ROOT / "ontology/store.py")
         self.assertEqual(store_then["held_stretches"], store_now["held_stretches"])

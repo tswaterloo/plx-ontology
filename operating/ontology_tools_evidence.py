@@ -658,6 +658,10 @@ class RuntimeCitations(CitationReader):
         captured = self._read_mail_capture(handle, gated, audience, content=content)
         if captured is not None:
             return captured
+        from ontology.people_directory import parse_person_handle
+        if parse_person_handle(handle) is not None:
+            # a person is read from the capture alone (no live mail item names one)
+            return self._out("withheld", "person_not_visible")
         if cited_page(handle)[1] is not None:
             if not self._mailbox_served(handle, gated, audience):
                 # Decided on the mailbox alone: nothing of the attachment or page is read.
@@ -870,7 +874,20 @@ class RuntimeCitations(CitationReader):
         from integrations.capture_mail import store_exists
         if not store_exists(self.mail_capture_dir):
             return None
+        from ontology.people_directory import parse_person_handle
         with self._mail_store() as store:
+            if parse_person_handle(handle) is not None:
+                # A person: seen by a reader of any mailbox it corresponds in that this
+                # reader is served (``visible_mailboxes``: exclusion, scope, item ACL).
+                resolved = store.resolve(handle, gated, audience,
+                                         mailboxes=self.visible_mailboxes(store, gated,
+                                                                          audience),
+                                         people=self._people())
+                if resolved is None or resolved["relation"] != "graph-mail.person":
+                    return None
+                return ({"citation": handle, "relation": resolved["relation"],
+                         "recorded_at": resolved["recorded_at"], "row": resolved["row"],
+                         "superseded_at": None}, None)
             resolved = store.resolve(handle, gated, audience, text=text,
                                      **({"page_exists": True} if page_exists else {}))
             if resolved is None:

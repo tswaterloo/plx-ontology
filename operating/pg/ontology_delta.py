@@ -34,7 +34,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import time
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from ontology import store_ddl
 from operating.pg.ontology_load import TABLES, _clean, _context, _number
@@ -152,6 +152,33 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                         (f"delta:{layer.name}",))
             if cur.fetchone() is not None:
                 return {**report, "applied": False, "reason": "already_applied"}
+            # a layer applies only under the schema Postgres serves; one of a schema a
+            # migration moved from applies without the objects the migration rewrote
+            # (those are projected again: ``ontology.reproject``)
+            from operating.pg import ontology_migrate
+            held_out = ontology_migrate.layer_scope(cur, _meta(conn, "schema_digest"))
+            if held_out is None:
+                return {**report, "applied": False, "reason": "other_schema",
+                        "layer_digest": _meta(conn, "schema_digest"),
+                        "served": ontology_migrate.served_schema(cur)}
+            # likewise a layer of build-step code a step migration moved from
+            steps_out = ontology_migrate.steps_scope(cur, _meta(conn, "steps_digest"))
+            if steps_out is None:
+                return {**report, "applied": False, "reason": "other_steps",
+                        "layer_digest": _meta(conn, "steps_digest"),
+                        "served": ontology_migrate.served_steps(cur)}
+            if steps_out:
+                held_out = {"id": held_out.get("id") or steps_out["id"],
+                            "scope": sorted(set(held_out.get("scope") or ())
+                                            | set(steps_out["scope"]))}
+            if held_out:
+                kept = [oid for oid in owned
+                        if not any(oid.startswith(p) for p in held_out["scope"])]
+                ontology_migrate.reproject(cur, sorted(set(owned) - set(kept)),
+                                           held_out["id"])
+                report["held_out"] = len(owned) - len(kept)
+                owned = kept
+                ids = json.dumps(owned)
             cur.execute("CREATE TEMP TABLE owned (object_id text PRIMARY KEY) ON COMMIT DROP")
             with cur.copy("COPY owned (object_id) FROM STDIN") as copy:
                 for oid in owned:
@@ -162,6 +189,9 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                 cur.execute(f"DELETE FROM ontology.{table} WHERE {where}")
                 report[f"deleted.{table}"] = report.get(f"deleted.{table}", 0) + cur.rowcount
             report.update(_insert(conn, str(layer), cur, ids))
+            ontology_migrate.log_owned(cur, layer.name, owned)
+            if not held_out:   # under the served schema: no longer to be projected again
+                ontology_migrate.done(cur)
             report["meta"] = _freshness(conn, cur)
             cur.execute("INSERT INTO ontology.load_state (name, value) VALUES (%s, %s)",
                         (f"delta:{layer.name}", json.dumps({"owned": len(owned),
@@ -188,6 +218,11 @@ def _relation_completeness(held: str | None, layer: str | None, families: set) -
         else:
             out.pop(family, None)
     return json.dumps(out, sort_keys=True)
+
+
+def _meta(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
 
 
 def _freshness(conn: sqlite3.Connection, cur: Any) -> int:
@@ -234,7 +269,11 @@ def _freshness(conn: sqlite3.Connection, cur: Any) -> int:
     return len(out)
 
 
-def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str) -> dict[str, int]:
+def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str, *,
+            every_link: bool = False) -> dict[str, int]:
+    """Copy the rows of the objects ``ids`` (a JSON list) from the layer at ``path``
+    (``conn``) into ``ontology.*``; their links, or with ``every_link`` every link the
+    layer holds (a migration's link units may join objects it does not hold)."""
     report: dict[str, int] = {}
     for table in ("objects", "object_removals", "identifiers", "events", "event_objects"):
         spec = TABLES[table]
@@ -292,8 +331,9 @@ def _insert(conn: sqlite3.Connection, path: str, cur: Any, ids: str) -> dict[str
                                          values())
 
     links = conn.execute(
+        f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links" if every_link else
         f"SELECT {', '.join(store_ddl.LINK_COLUMNS)} FROM links WHERE from_object IN "
-        f"{_OWNED} OR to_object IN {_OWNED}", {"ids": ids})
+        f"{_OWNED} OR to_object IN {_OWNED}", {} if every_link else {"ids": ids})
     report["copied.link_rows"] = _copy(cur, "link_rows", store_ddl.LINK_COLUMNS, links)
 
     try:
@@ -329,11 +369,34 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
         if log is not None:
             print(json.dumps(result, sort_keys=True), file=log, flush=True)
     newly = [r for r in results if r.get("applied")]
-    return {"applied": bool(newly), "layers": len(stores), "applied_now": len(newly),
-            "owned": sum(r.get("owned", 0) for r in newly),
-            "refused": sorted({r.get("reason") for r in results
-                               if not r.get("applied") and r.get("reason")
-                               != "already_applied"} - {None})}
+    out = {"applied": bool(newly), "layers": len(stores), "applied_now": len(newly),
+           "owned": sum(r.get("owned", 0) for r in newly),
+           "refused": sorted({r.get("reason") for r in results
+                              if not r.get("applied") and r.get("reason")
+                              != "already_applied"} - {None})}
+    stalled = [r for r in results if r.get("reason") in STALLS]
+    if stalled:
+        out["stalled"] = stall(stalled[0])
+        print(f"ONTOLOGY DELTA STALLED: {json.dumps(out['stalled'], sort_keys=True)}",
+              file=sys.stderr, flush=True)
+    return out
+
+
+# a layer of code no migration leads from: every later layer waits behind it (the delta
+# stalls until the migration of that code is applied or the code is deployed back)
+STALLS = {"other_steps": "the build steps' code of this delta differs from what Postgres "
+                         "serves and no step migration leads from it",
+          "other_schema": "the schema of this delta differs from what Postgres serves and "
+                          "no migration leads from it"}
+
+
+def stall(result: Mapping[str, Any]) -> dict[str, Any]:
+    """What a stalled delta reports (status and log): why, the digests, what to run."""
+    return {"reason": result["reason"], "why": STALLS[result["reason"]],
+            "layer": result.get("layer"), "layer_digest": result.get("layer_digest"),
+            "served": result.get("served"),
+            "action": "python3 -m operating.pg.ontology_migrate check (then build and apply "
+                      "the migration it names), or deploy the code Postgres serves"}
 
 
 # After a new generation is published, how long the older one stays in Postgres before
@@ -447,7 +510,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
         return {**report, "state": "delta_of_another_generation"}
     stores = [item["store"] for item in body.get("layers") or []]   # newest first
     report["layers"] = apply_listed(stores, dsn, log=log)
-    report["state"] = "current"
+    report["state"] = "stalled" if report["layers"].get("stalled") else "current"
     return report
 
 
@@ -513,7 +576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                      min_free=int(args.min_free_gb * 1024 ** 3))
         print(json.dumps(out, sort_keys=True,
                          default=str), flush=True)
-        return 0
+        return 3 if out.get("state") == "stalled" else 0
     for layer in args.layers:
         print(json.dumps(apply_layer(layer, dsn), sort_keys=True), flush=True)
     return 0
