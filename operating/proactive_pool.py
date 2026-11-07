@@ -20,7 +20,16 @@ the caller as not evaluated, never as a finding or a clean result); a task that 
 Sizing (``workers()``): every core but two, at most ``MAX_WORKERS``, within ``POOL_BYTES``
 and a ``MEMORY_SHARE``-th of the host's available memory at ``WORKER_BYTES`` each;
 ``PLX_PROACTIVE_WORKERS`` overrides (0 or 1: no pool). Spawned, never forked: a worker never inherits the parent's open store
-connections or threads. Evidence label: that of the projection it reads.
+connections or threads.
+
+A worker never runs the parent's main script (``_WorkerContext``): a plain spawn re-runs an
+entry script as ``__mp_main__`` in every worker, so a script without a ``__main__`` guard ran
+a whole engine pass in each worker before it took its first task (2026-11-07: three workers
+each re-ran a full pass, ~4,000 s, and the margins read nothing). A map's time is enforced
+while it waits (``WAIT_SLICE``): ``left()`` may shrink while a map runs (the margins' head
+start reaches its rule's turn), and a map that ends with items still running in workers
+stops those workers (``_stop``), so the next map never queues behind an abandoned read.
+Evidence label: that of the projection it reads.
 """
 
 from __future__ import annotations
@@ -30,9 +39,11 @@ from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wai
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 import multiprocessing
+from multiprocessing import context as mp_context, popen_spawn_posix, spawn as mp_spawn
 import os
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -54,6 +65,7 @@ WORKERS_ENV = "PLX_PROACTIVE_WORKERS"
 ENV_PREFIXES = ("PLX_EXCLUDED_PEOPLE_",)
 TOOL_BUDGET_MAX_MS = 600000      # plx.investigate's schema maximum for time_budget_ms
 WORKER_FAILED = "worker_failed"  # an item whose worker process died under it
+WAIT_SLICE = 1.0   # a map re-reads ``left()`` at least this often while it waits
 
 
 class _NotRead:
@@ -139,6 +151,48 @@ def workers(environ: Mapping[str, str] | None = None) -> int:
     return max(1, min(cores, allowed // WORKER_BYTES, MAX_WORKERS))
 
 
+# --------------------------------------------------------------------------- the launch
+
+_LAUNCHING = threading.local()   # set while this thread starts one of the pool's workers
+_PREPARATION = mp_spawn.get_preparation_data
+
+
+def _preparation_data(name: str) -> dict:
+    """``multiprocessing.spawn``'s preparation data; for a pool worker without the parent's
+    main module, so the worker never re-runs the parent's entry script (its tasks and
+    initializer are module-level functions of this package, found on the ``sys_path`` the
+    data still carries). Every other process is launched unchanged."""
+    data = _PREPARATION(name)
+    if getattr(_LAUNCHING, "worker", False):
+        data.pop("init_main_from_path", None)
+        data.pop("init_main_from_name", None)
+    return data
+
+
+if getattr(mp_spawn.get_preparation_data, "__name__", "") != "_preparation_data":
+    mp_spawn.get_preparation_data = _preparation_data
+
+
+class _WorkerPopen(popen_spawn_posix.Popen):
+    def _launch(self, process_obj: Any) -> None:
+        _LAUNCHING.worker = True
+        try:
+            super()._launch(process_obj)
+        finally:
+            _LAUNCHING.worker = False
+
+
+class _WorkerProcess(mp_context.SpawnProcess):
+    @staticmethod
+    def _Popen(process_obj: Any) -> Any:
+        return _WorkerPopen(process_obj)
+
+
+class _WorkerContext(mp_context.SpawnContext):
+    """The spawn context whose processes never import the parent's main module."""
+    Process = _WorkerProcess
+
+
 # --------------------------------------------------------------------------- the worker
 
 _CALL: Callable[[str, dict], Any] | None = None
@@ -215,7 +269,7 @@ class ToolPool:
             recycle = ({"max_tasks_per_child": TASKS_PER_WORKER}
                        if sys.version_info >= (3, 11) else {})
             self.executor = ProcessPoolExecutor(
-                max_workers=self.size, mp_context=multiprocessing.get_context("spawn"),
+                max_workers=self.size, mp_context=_WorkerContext(),
                 initializer=_init, initargs=(self.spec,), **recycle)
         return self.executor
 
@@ -261,7 +315,10 @@ class ToolPool:
             rest = remaining()
             if rest is not None and rest <= 0:
                 break
-            done, _ = wait(pending, timeout=rest, return_when=FIRST_COMPLETED)
+            # never one long wait: ``left()`` may shrink meanwhile (a window opening), and
+            # the map must end at the new time, not when an order next finishes
+            done, _ = wait(pending, return_when=FIRST_COMPLETED,
+                           timeout=WAIT_SLICE if rest is None else min(rest, WAIT_SLICE))
             for future in done:
                 index = pending.pop(future)
                 try:
@@ -281,10 +338,30 @@ class ToolPool:
                         executor = self._start()
                 except Exception as error:  # noqa: BLE001 - that item fails alone, typed
                     out[index] = Failed(type(error).__name__)
-        for future in pending:
-            future.cancel()   # a running one finishes in its worker; its answer is dropped
+        running = [future for future in pending if not future.cancel()]
+        if running and executor is self.executor:
+            # a read still running past its time holds its worker (an investigation runs up
+            # to its own budget): those workers are stopped, so the next map starts on
+            # fresh ones instead of queueing behind answers that are dropped
+            self._stop()
         self.not_read += sum(1 for r in out if r is NOT_READ)
         return out
+
+    def _stop(self) -> None:
+        """End this executor now: its workers are terminated, never waited on."""
+        executor, self.executor = self.executor, None
+        if executor is None:
+            return
+        processes = list((getattr(executor, "_processes", None) or {}).values())
+        executor.shutdown(wait=False, cancel_futures=True)
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+        for process in processes:
+            process.join(10)
+            if process.is_alive():
+                process.kill()
+                process.join(5)
 
     def close(self) -> None:
         if self.executor is not None:

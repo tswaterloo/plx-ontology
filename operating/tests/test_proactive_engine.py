@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 import tempfile
 import threading
@@ -1874,6 +1875,30 @@ def _die_on_two(_call, item):
     return item * 10
 
 
+def _sleep_for(_call, item):
+    time.sleep(item)
+    return item
+
+
+# An entry script without a ``__main__`` guard (as an operator's one-off pass): each process
+# that runs it appends its pid; it maps on the pool and prints the answers.
+_UNGUARDED = """
+import os, sys, json
+sys.path.insert(0, {root!r})
+with open({marks!r}, "a") as handle:
+    handle.write(str(os.getpid()) + "\\n")
+from unittest import mock
+from operating import proactive_pool as pp
+from operating.tests import test_proactive_engine as t
+pool = pp.ToolPool(None, 2)
+with mock.patch.object(pp, "_init", t._pool_init):
+    try:
+        print(json.dumps(pool.map(t._die_on_two, [1, 3, 4])))
+    finally:
+        pool.close()
+"""
+
+
 class PoolSizeTest(unittest.TestCase):
 
     def test_the_pool_size_is_the_hosts_and_an_unreadable_override_runs_serially(self):
@@ -1905,6 +1930,50 @@ class PoolSizeTest(unittest.TestCase):
                 self.assertEqual(pool.map(_die_on_two, [1, 2, 3, 4, 5]),
                                  [10, pp.Failed(pp.WORKER_FAILED), 30, 40, 50])
                 self.assertEqual(pool.map(_die_on_two, [7]), [70])   # the pool goes on
+            finally:
+                pool.close()
+
+    def test_a_worker_never_reruns_the_entry_script_that_started_the_pool(self):
+        # 2026-11-07: an unguarded entry script ran a whole engine pass in each spawned
+        # worker before its first task; the margins read nothing for ~4,000 s
+        import subprocess
+        with tempfile.TemporaryDirectory() as temp:
+            script, marks = Path(temp) / "entry.py", Path(temp) / "marks"
+            script.write_text(_UNGUARDED.format(root=str(ROOT), marks=str(marks)), "utf-8")
+            done = subprocess.run([sys.executable, str(script)], capture_output=True,
+                                  text=True, timeout=300, cwd=temp,
+                                  env={k: v for k, v in os.environ.items()
+                                       if k.startswith(("PATH", "HOME", "LANG"))})
+            self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+            self.assertEqual(json.loads(done.stdout.strip().splitlines()[-1]), [10, 30, 40])
+            self.assertEqual(len(marks.read_text().split()), 1)   # the parent only
+
+    def test_a_map_ends_at_a_window_that_shrinks_and_frees_its_workers(self):
+        # the margins' head start: its map reads to the run's deadline until its rule's turn
+        # opens a shorter window; it must end then, not when a running read next finishes,
+        # and the next detector's map must not queue behind the abandoned reads
+        import threading
+        from operating import proactive_pool as pp
+        pool = pp.ToolPool(None, 2)
+        end = [time.monotonic() + 600]
+        box: dict = {}
+        with mock.patch.object(pp, "_init", _pool_init):
+            try:
+                self.assertEqual(pool.map(_sleep_for, [0]), [0])   # the workers are up
+                runner = threading.Thread(target=lambda: box.setdefault(
+                    "out", pool.map(_sleep_for, [120, 120, 120],
+                                    left=lambda: end[0] - time.monotonic())))
+                runner.start()
+                time.sleep(1.5)
+                started = time.monotonic()
+                end[0] = started   # the window closes now
+                runner.join(30)
+                self.assertFalse(runner.is_alive())
+                self.assertLess(time.monotonic() - started, 30)
+                self.assertEqual(box["out"], [pp.NOT_READ] * 3)
+                started = time.monotonic()
+                self.assertEqual(pool.map(_die_on_two, [7], left=lambda: 300), [70])
+                self.assertLess(time.monotonic() - started, 100)   # fresh workers, no queue
             finally:
                 pool.close()
 
