@@ -47,6 +47,7 @@ class _Slot:
         self.ready = threading.Event()
         self.gone = threading.Event()
         self.running = 0
+        self.served = 0       # sections read here (its process's start-up reads paid)
         self._start = start
         self.process: Any = None
         self.conn: Any = None
@@ -76,6 +77,7 @@ class _Slot:
                     raise SlotGone("process_ended") from None
                 finally:
                     self.running -= 1
+                self.served += 1
                 if status == "ok":
                     future.set_result(value)
                 else:
@@ -86,6 +88,11 @@ class _Slot:
             self.gone.set()
             self._drain()
             self.stop_process()
+
+    def warm(self) -> bool:
+        """Whether this slot has read a section: its process's start-up reads (the
+        stores, indexes and tokens its first read opens) are paid."""
+        return self.served > 0
 
     def _drain(self) -> None:
         while True:
@@ -157,6 +164,18 @@ class SectionPool:
     def busy(self) -> bool:
         return any(s.running > 0 or not s.jobs.empty() for s in self.slots)
 
+    def wait_ready(self, seconds: float) -> int:
+        """Wait (at most ``seconds`` in all) until every slot serves or has stopped; how
+        many serve."""
+        import time
+        deadline = time.monotonic() + seconds
+        for slot in self.slots:
+            while not slot.ready.is_set() and not slot.gone.is_set():
+                if time.monotonic() >= deadline:
+                    break
+                slot.ready.wait(0.2)
+        return sum(1 for s in self.slots if s.ready.is_set() and not s.gone.is_set())
+
     def stop(self) -> None:
         for slot in self.slots:
             slot.jobs.put((-1, 0, None))
@@ -205,8 +224,9 @@ def child(conn: Any, argv: list[str], settings: dict[str, Any],
                 reader, object_type, object_id, section = message
                 try:
                     view = worker._workspace(reader.session)
-                    out: tuple[str, Any] = ("ok", be.object_section(
-                        backend, view, object_type, object_id, section))
+                    with be.page_scope():   # its mail gates memoized per tool call
+                        out: tuple[str, Any] = ("ok", be.object_section(
+                            backend, view, object_type, object_id, section))
                 except Exception as error:  # noqa: BLE001 - handed to the parent's route
                     out = ("error", error)
                 try:

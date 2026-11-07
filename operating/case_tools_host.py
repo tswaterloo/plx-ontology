@@ -799,6 +799,21 @@ _AHEAD_POOL = concurrent.futures.ThreadPoolExecutor(
 _SEARCH_HITS: ContextVar[int | None] = ContextVar("plx_capture_search_hits", default=None)
 _ACTIVE_CALL: ContextVar[_CallBound | None] = ContextVar("plx_capture_call_bound",
                                                          default=None)
+# True while the app builds a page (Home, the briefing, a record page and its sections, a
+# kept page's re-check: ``page_build``): every mail item gate of each tool call in it is the
+# per-call memoized one (``_mail_search_gate``), as a search's is.
+_PAGE_BUILD: ContextVar[bool] = ContextVar("plx_page_build", default=False)
+
+
+@contextmanager
+def page_build() -> Iterator[None]:
+    """A page build on this context (``_PAGE_BUILD``): its mail item gates decide once per
+    tool call on the capture's rows, with the same decisions as the full check."""
+    token = _PAGE_BUILD.set(True)
+    try:
+        yield
+    finally:
+        _PAGE_BUILD.reset(token)
 
 
 class CapturedCitations(RuntimeCitations):
@@ -1128,9 +1143,14 @@ class CaptureCaseHostTools(CaseHostTools):
                 # one of which the item gate then refuses. Only ever narrower than the
                 # audience check alone; the item gate still decides each message.
                 try:
-                    admitted = RuntimeCitations(
-                        self.runtime, mail_capture_dir=self.mail_capture_dir
-                    ).visible_mailboxes(store, self.runtime.employee_gate(actor), audience)
+                    # the employee resolved once for every mailbox's check (``holding``),
+                    # not once per mailbox: the same entitlement each check resolved
+                    holding = getattr(self.runtime.employee_gate, "holding", None)
+                    with (holding(actor) if holding is not None else
+                          contextlib.nullcontext(self.runtime.employee_gate(actor))) as gated:
+                        admitted = RuntimeCitations(
+                            self.runtime, mail_capture_dir=self.mail_capture_dir
+                        ).visible_mailboxes(store, gated, audience)
                 except Exception:  # noqa: BLE001 - undecidable: no mailbox is granted
                     admitted = frozenset()
                     self._policy_doubts += 1   # transient, maybe: never kept
@@ -1192,9 +1212,11 @@ class CaptureCaseHostTools(CaseHostTools):
             # attachment is: every check below decides on the attachment.
             handle = _member_container(handle) or handle
             bound = self._call_bound
-            if bound.search:
+            if bound.search or _PAGE_BUILD.get():
                 # This host's decisions in this call (the bound is shared by every gate
-                # built inside the call, of any host).
+                # built inside the call, of any host). A page build (``page_build``)
+                # decides its mail citations the same way: the same decision as the
+                # full check below, made once per call on the capture's rows.
                 memo = bound.memo.setdefault(("host", id(self)), {"host": self})
                 if "opened" not in memo:   # one store check per search call
                     opened = self._mail()
@@ -1227,12 +1249,12 @@ class CaptureCaseHostTools(CaseHostTools):
             one, exactly as before. Outside a search call, or without a mail capture,
             nothing is read."""
             bound = self._call_bound
-            if not bound.search:
+            if not (bound.search or _PAGE_BUILD.get()):
                 return
             handles = [_member_container(str(h)) or str(h) for h in handles]
             files = [h for h in handles if h.startswith("sharepoint://")]
-            if files and self.sharepoint_capture_dir is not None:
-                self._sharepoint_ahead(files)
+            if files and self.sharepoint_capture_dir is not None and bound.search:
+                self._sharepoint_ahead(files)   # a page build gates its files as before
             mail = [h for h in handles if h.startswith("graph-mail://")]
             if not mail or self.mail_capture_dir is None:
                 return
@@ -1312,7 +1334,10 @@ class CaptureCaseHostTools(CaseHostTools):
                 with stores() as store:
                     if not store.item_gate(audience)(gated, handle):
                         return False
-                return citations.mail_capture(handle, gated, audience) is not None
+                # the page must be there: its reading's kept page count says so, the
+                # text never decoded (as the full gate's read answers it)
+                return citations.mail_capture(handle, gated, audience, text=True,
+                                              page_exists=True) is not None
             with stores() as store:
                 # What the gate reads of the handle's message (``_mail_facts``: its mailbox
                 # and senders, not the whole record), once per call.

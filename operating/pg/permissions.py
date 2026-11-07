@@ -252,7 +252,45 @@ def load_exclusion(environ: Mapping[str, str] | None = None) -> PeopleExclusion:
         return _EXCLUSION[1]
 
 
+def exclusion_stamp(environ: Mapping[str, str] | None = None) -> str:
+    """A digest of the people exclusion now (``load_exclusion``'s settings and file
+    state, and whether its guard can decide): the same in every process and across
+    restarts while the exclusion is the same, so a result kept under it outlives the
+    process (a page kept on disk) and a change of the exclusion is a new key."""
+    environ = os.environ if environ is None else environ
+    guard = load_exclusion(environ)
+    path = environ.get("PLX_EXCLUDED_PEOPLE_FILE") or ""
+    try:
+        mtime = Path(path).stat().st_mtime_ns if path else None
+    except OSError:
+        mtime = -1
+    body = json.dumps([environ.get("PLX_EXCLUDED_PEOPLE_OIDS"), path, mtime,
+                       getattr(guard, "unavailable", None)])
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+# (id(policy), actor) -> (the policy, its fingerprint): one policy object is fingerprinted
+# once (a page reads its key many times over one request's policy); the policy is held so
+# no id is reused.
+_FINGERPRINTS: OrderedDict[tuple, tuple[ReadPolicy, str]] = OrderedDict()
+_FINGERPRINTS_LOCK = threading.Lock()
+
+
 def _fingerprint(policy: ReadPolicy, actor: Actor) -> str:
+    key = (id(policy), actor)
+    with _FINGERPRINTS_LOCK:
+        hit = _FINGERPRINTS.get(key)
+    if hit is not None and hit[0] is policy:
+        return hit[1]
+    out = _fingerprint_of(policy, actor)
+    with _FINGERPRINTS_LOCK:
+        _FINGERPRINTS[key] = (policy, out)
+        while len(_FINGERPRINTS) > 64:
+            _FINGERPRINTS.popitem(last=False)
+    return out
+
+
+def _fingerprint_of(policy: ReadPolicy, actor: Actor) -> str:
     body = {"tenant": policy.tenant,
             "audiences": {p: sorted(v) for p, v in sorted(policy.audiences.items())},
             "markings": {m: sorted(v) for m, v in sorted(policy.markings.items())},

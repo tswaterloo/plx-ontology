@@ -2071,7 +2071,8 @@ class MailCaptureStore:
         return dict(row)
 
     def resolve(self, handle: Any, actor: Actor, audience: LiveSourceAudience, *,
-                text: bool = False, text_version: Any = None) -> dict[str, Any] | None:
+                text: bool = False, text_version: Any = None,
+                page_exists: bool = False) -> dict[str, Any] | None:
         """The captured row an L1 handle names, offline, for a reader who may see its
         mailbox; ``None`` when not visible or never captured (indistinguishable).
         Shape for ``claim_checks`` rows: ``{"relation", "l1_handle", "lineage",
@@ -2090,7 +2091,12 @@ class MailCaptureStore:
         the newest reading, with ``row.text_version`` and ``row.text_status``; a citation
         made on an earlier reading passes its ``text_version`` (an int, 1 up) and
         resolves to that reading. A version the attachment does not have, or on a handle
-        that is not an attachment's, resolves to None."""
+        that is not an attachment's, resolves to None.
+
+        ``page_exists`` (with ``text``, on an attachment's page citation): the same answer
+        but whether the cited page exists is told by the reading's page count kept by its
+        digest (``page_counts.PAGE_COUNTS``), never by decoding the text again, and
+        ``row.content_text`` is None (an item gate's question: is the page there)."""
         if not isinstance(handle, str):
             return None
         if text_version is not None and not (
@@ -2135,6 +2141,17 @@ class MailCaptureStore:
                 row["text_version"] = None if reading is None else reading["version"]
                 row["text_status"] = found["text_status"] if reading is None \
                     else reading["text_status"]
+                if page_exists and page is not None:
+                    from . import page_counts as ct
+                    if not ct.PAGE_COUNTS.has_page(self.blobs, {
+                            **row, "text_sha256": found["text_sha256"] if reading is None
+                            else reading["text_sha256"]}, page):
+                        return None
+                    row["content_text"] = None
+                    return {"relation": "graph-mail.attachment", "l1_handle": handle,
+                            "lineage": LINEAGE, "recorded_at": found["recorded_at"],
+                            "superseded_at": message["superseded_at"],
+                            "message_handle": found["message_handle"], "row": row}
                 read = captured_text(self.blobs, {
                     **row, "text_status": row["text_status"],
                     "text_sha256": found["text_sha256"] if reading is None

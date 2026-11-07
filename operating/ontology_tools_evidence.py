@@ -851,7 +851,8 @@ class RuntimeCitations(CitationReader):
                     "this mailbox is captured complete for its scope folders and window; the "
                     "message is outside them or gone from the source", searched)
 
-    def mail_capture(self, handle: str, gated: Actor, audience: Any, *, text: bool = False
+    def mail_capture(self, handle: str, gated: Actor, audience: Any, *, text: bool = False,
+                     page_exists: bool = False
                      ) -> tuple[dict[str, Any], str | None] | None:
         """``(captured, current)`` for a ``graph-mail://`` version the mail capture holds
         for the employee-gated reader (the mailbox identities recorded at capture, the
@@ -861,14 +862,17 @@ class RuntimeCitations(CitationReader):
         attachment's row carries its text (``content_text``; a cited page's only, and
         None when the attachment has no such page: ``MailCaptureStore.resolve``). A
         version of an excluded person's mailbox, or one an excluded person sent, is None
-        for every reader, whenever it was captured (``people_excluded``)."""
+        for every reader, whenever it was captured (``people_excluded``).
+        ``page_exists``: a cited page is told present by its reading's kept page count,
+        its text not decoded (``MailCaptureStore.resolve``)."""
         if self.mail_capture_dir is None:
             return None
         from integrations.capture_mail import store_exists
         if not store_exists(self.mail_capture_dir):
             return None
         with self._mail_store() as store:
-            resolved = store.resolve(handle, gated, audience, text=text)
+            resolved = store.resolve(handle, gated, audience, text=text,
+                                     **({"page_exists": True} if page_exists else {}))
             if resolved is None:
                 return None
             found = store.db.execute("SELECT mailbox_id, message_id, record FROM messages "
@@ -931,6 +935,14 @@ class RuntimeCitations(CitationReader):
                 skipped = extraction_skipped(row)
                 if skipped is not None:
                     out["gaps"].append(skipped_gap(handle, skipped))
+        if page is not None and not content:
+            # An item gate's question (is the page there, may it be read): the page's
+            # existence from its reading's kept page count, the text not decoded; a page
+            # not there is answered by the full read below, as before.
+            if self.mail_capture(handle, gated, audience, text=True,
+                                 page_exists=True) is not None:
+                out.update(content_field="row.content_text")
+                page = None
         if page is not None:
             paged = self.mail_capture(handle, gated, audience, text=True)
             text = None if paged is None else paged[0]["row"].get("content_text")

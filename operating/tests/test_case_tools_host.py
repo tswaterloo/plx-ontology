@@ -24,6 +24,7 @@ filled over the capture tests' in-process FakeGraph). No network, no credentials
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -1089,6 +1090,72 @@ class MailUnitsOnTheCaseHostTests(unittest.TestCase):
                     self.assertEqual(search(exclusion, query), want)   # the whole row's
         self.assertTrue(any(h.startswith(f"graph-mail://{BOX_A}/MSG-1@") for h in read),
                         read)
+
+    def test_a_page_builds_memoized_mail_gate_decides_as_the_full_check(self):
+        # A page build (``page_build``) gates each mail citation with the per-call
+        # memoized gate; for every reader, exclusion, case mail scope and citation (a
+        # message, an attachment, its pages present and absent, a member of no capture,
+        # one never captured) it decides exactly as the full check, and a page's
+        # existence is told without decoding the attachment's text again.
+        from integrations import captured_text as ct
+        from integrations import page_counts as pc
+        from integrations.tests.test_capture_mail import file_attachment
+        from operating.case_tools_host import page_build
+        from operating.tests import test_attested_missing as am
+        graph = FakeGraph()
+        graph.put(BOX_A, "MSG-P", "CK-P", subject="PO", body="attached",
+                  attachments=[file_attachment("ATT-P", am.pdf(am.customer_po(
+                      "4500077701", "OR1000777101")), "po.pdf")])
+        graph.put(BOX_B, "MSG-Q", "CK-Q", subject="Finance", body="note",
+                  attachments=[file_attachment("ATT-Q", am.pdf(am.customer_po(
+                      "4500077702", "OR1000777102")), "q.pdf")])
+        self.state = self.root / "paged-mail"
+        store = MailCaptureStore(self.state, clock=Clock())
+        api, _ = graph_read.build_graph(ENV, sender=graph, retry=BoundedBackoff(
+            sleep=lambda s: None, jitter=lambda: 0.0))
+        self.assertTrue(MailCapture(store, GraphMailReader(api, capture_audience()),
+                                    CAPTURE, sleep=lambda s: None).run(SCOPE)["complete"])
+        messages = [r[0] for r in store.db.execute("SELECT l1_handle FROM messages")]
+        attachments = [r[0] for r in store.db.execute(
+            "SELECT l1_handle FROM attachments WHERE l1_handle IS NOT NULL")]
+        store.close()
+        self.assertTrue(messages and attachments)
+        handles = [*messages, *attachments,
+                   *(f"{a}&page={n}" for a in attachments for n in (1, 2, 40)),
+                   f"graph-mail://{BOX_A}/MSG-NONE@CK-0", attachments[0] + "x"]
+        excluded = PeopleExclusion.from_env({**ENV, "PLX_EXCLUDED_PEOPLE_OIDS": BOX_A})
+        undecided = PeopleExclusion(unavailable="excluded_people_oids_absent")
+        outside = MailScope(["someone-else@example-plx.com"],
+                            internal_domains=["example-plx.com"])
+        decided = []
+        for actor, exclusion, scope in ((READER_A, None, None), (OUTSIDER, None, None),
+                                        (READER_A, excluded, None),
+                                        (READER_A, undecided, None),
+                                        (READER_A, None, outside)):
+            server = self.server(actor, exclusion=exclusion, scope=scope)
+            tools = server.ontology
+            gated = self.runtime.employee_gate(actor)
+
+            def decide(memoized):
+                pc.keep_page_counts(None)   # nothing counted yet
+                with (page_build() if memoized else contextlib.nullcontext()), \
+                        tools.per_call():
+                    return {h: tools.tools.item_gate(gated, h) is True for h in handles}
+            full = decide(False)
+            with mock.patch.object(pc, "captured_text", wraps=ct.captured_text) as read:
+                memo = decide(True)
+                memo_again = decide(True)
+            with self.subTest(actor=sorted(actor.principals), excluded=exclusion is not None,
+                              scope=scope is not None):
+                self.assertEqual(memo, full)
+                self.assertEqual(memo_again, full)
+                # one reading per attachment counts its pages; its pages ask no more
+                self.assertLessEqual(read.call_count, 2 * len(attachments))
+            decided.append(full)
+        self.assertTrue(any(any(d.values()) for d in decided))   # some admitted ...
+        admitted = decided[0]
+        self.assertTrue(any(admitted[f"{a}&page=1"] for a in attachments))
+        self.assertFalse(any(admitted[f"{a}&page=40"] for a in attachments))   # ... no page 40
 
     def test_a_search_never_lists_mail_of_an_excluded_person_or_without_a_guard(self):
         # The search decides each message on the capture's rows; the people exclusion

@@ -145,8 +145,36 @@ class PoolTest(unittest.TestCase):
             (n, someone.key, s) for n, s in enumerate(m.PAGE_SECTIONS)))
 
 
+def main_serve(conn, argv, settings, fixtures):
+    """The read worker's own read of a section (``read_section`` over the reader's
+    workspace on the runtime that built it, nothing kept), answering the slot child's
+    messages: what a section read in a slot must equal."""
+    from operator_ui import case_console
+
+    def serve(ctx):
+        backend = be.WorkspaceBackend(ctx["objects_for"], **settings)
+        worker = backend.reads
+        conn.send(("ready",))
+        while (message := conn.recv()) is not None:
+            who, object_type, object_id, section = message
+            try:
+                view = worker._workspace(who.session)
+                with be.page_scope(), view._request():
+                    oid = be.page_oid(backend, view, object_type, object_id)
+                    page = be.read_page(backend, view, oid)
+                    conn.send(("ok", be.read_section(backend, view, page, section)))
+            except Exception as error:  # noqa: BLE001 - compared with the slot's
+                conn.send(("error", error))
+        return 0
+    with contextlib.redirect_stderr(io.StringIO()):
+        return case_console.main(argv, serve_with=serve, fixtures=fixtures)
+
+
 class FixtureChildTest(unittest.TestCase):
-    """The real slot child (``section_pool.child``) over the fixture world, on a thread."""
+    """The real slot child (``section_pool.child``) over the fixture world, on a thread,
+    and the read worker's own read of each section beside it."""
+
+    MARKINGS: tuple = ()   # the fixture reader's markings (``case_console --marking``)
 
     @classmethod
     def setUpClass(cls):
@@ -165,7 +193,8 @@ class FixtureChildTest(unittest.TestCase):
             ["--dev", "--state-dir", str(cls.state), "--pg-dsn", "",
              "--console-arg=--source-mirror-audience",
              f"--console-arg={cls.state / case_fixtures.MIRROR_AUDIENCE_FILE}"]
-            + [a for p in cls.ops for a in ("--dev-fixture-principal", p)])
+            + [a for p in cls.ops for a in ("--dev-fixture-principal", p)]
+            + [f"--console-arg={a}" for mk in cls.MARKINGS for a in ("--marking", mk)])
         argv = be.console_argv(parser, args, "dev")
         settings = {"data_label": "fixture", "state_dir": cls.state, "store_path": store,
                     "pg_dsn": "", "ask_served": False, "data_dir": cls.tmp / "app"}
@@ -177,10 +206,15 @@ class FixtureChildTest(unittest.TestCase):
         for slot in cls.pool.slots:
             assert slot.ready.wait(120), "a slot child did not start"
         cls.backend = be.WorkspaceBackend(lambda session: None, data_label="fixture")
+        main_settings = dict(settings, data_dir=cls.tmp / "main")
+        cls.main = sp.SectionPool(1, thread_start(
+            lambda conn, _: main_serve(conn, argv, main_settings, case_fixtures)))
+        assert cls.main.slots[0].ready.wait(120), "the main read did not start"
 
     @classmethod
     def tearDownClass(cls):
         cls.pool.stop()
+        cls.main.stop()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def section(self, who, name):
@@ -201,6 +235,41 @@ class FixtureChildTest(unittest.TestCase):
                 self.section(outsider, name)
         trail = self.section(ops, "trail")
         self.assertTrue(trail.trail, trail)
+
+    def test_a_section_read_in_a_slot_is_the_main_read_for_the_reader(self):
+        ops = reader(*self.ops)
+        for name in m.PAGE_SECTIONS:
+            slot = self.section(ops, name)
+            main = self.main.submit(self.main.slots[0], ops.key, (
+                ops, "PurchaseOrder", self.fixtures.PO_NUMBER, name)).result(120)
+            self.assertEqual(slot.model_dump(mode="json"), main.model_dump(mode="json"),
+                             name)
+
+
+class FinanceFixtureChildTest(FixtureChildTest):
+    """The same with the reader holding the finance marking: its finance-marked parts
+    (landed cost, margin) read in a slot exactly as the main read reads them."""
+
+    MARKINGS = ("finance",)
+
+
+class PlansOnceTest(unittest.TestCase):
+    """A page read runs each plan over the record once; its later sections reuse it."""
+
+    def test_each_plan_runs_once_per_page_read(self):
+        calls = []
+        view = SimpleNamespace(investigate=lambda family, oid: calls.append(family)
+                               or {"investigation": {"family": family}})
+        families = ("late_po", "people_on_record", "landed_cost")
+        with mock.patch.object(be, "plan_families", return_value=set(families)):
+            with be.plans_once():
+                be.plan_runs(view, "PurchaseOrder", "po", families[:1])
+                be.plan_runs(view, "PurchaseOrder", "po", families[:2])
+                ran = be.plan_runs(view, "PurchaseOrder", "po", families)
+            self.assertEqual(calls, list(families))
+            self.assertEqual(set(ran), set(families))
+            be.plan_runs(view, "PurchaseOrder", "po", families[:1])   # a new read
+            self.assertEqual(calls, [*families, "late_po"])
 
 
 if __name__ == "__main__":

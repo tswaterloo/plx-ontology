@@ -322,6 +322,8 @@ class _Run:
     def __call__(self, name: str, arguments: dict) -> Mapping[str, Any]:
         if time.monotonic() > self.deadline:
             self.incomplete = True
+            from .evidence_trail import note_cut
+            note_cut()   # the time limit, not the records: a read to do again whole
             return {}
         self.calls += 1
         try:

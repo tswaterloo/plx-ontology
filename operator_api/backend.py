@@ -37,6 +37,7 @@ tests); live-unverified until the verifier runs the app over the host's state.
 from __future__ import annotations
 
 import argparse
+import contextvars
 import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
@@ -99,6 +100,11 @@ WARM_PRIORITY = 2
 # section kind: m.PAGE_SECTIONS). None started or up (tests, start-up, a slot gone): the
 # read worker reads them, as before.
 SECTION_WORKERS = 4
+SECTION_START_SECONDS = 300   # how long the API waits for the pool before it serves
+PREWARM_SECONDS = 60          # the known readers' policies decided before it serves
+# The readers' kept pages on disk (``page_store``) and the attachment page counts, in the
+# app's own data directory (never the state's).
+PAGE_DIR = "page-cache"
 WARM_SECONDS = 240         # one warm-up per reader in this window
 # What a reader's warm-up reads ahead on the warm worker (its own runtime, so it never
 # holds up a reader's request): Home's list, the briefing, the pages of the first late
@@ -314,9 +320,16 @@ class ReaderCache:
     """Results kept per key for ``READER_CACHE_SECONDS`` (each key names its reader and
     the store state it was read from), shared by the read and warm workers."""
 
-    def __init__(self, kept: int = READER_CACHE_KEPT) -> None:
+    def __init__(self, kept: int = READER_CACHE_KEPT, store: Any = None) -> None:
+        """``store``: the kept pages on disk (``page_store.PageStore``), shared with the
+        app's other processes and kept across restarts; None: this process only."""
         self.size = kept
-        self._items: dict[tuple, tuple[float, Any]] = {}
+        self.store = store
+        # A reader (the warm-up process) that reads entries older than this again
+        # instead of serving them, so what it keeps never nears its expiry; None: served
+        # while unexpired.
+        self.fresh_for: Optional[float] = None
+        self._items: dict[tuple, tuple[float, Any, float]] = {}
         self._flights: dict[tuple, threading.Event] = {}
         self._lock = threading.Lock()
 
@@ -360,17 +373,24 @@ class ReaderCache:
             with self.flight(key):
                 held = self.get(key)
                 if held is None:
-                    value = read()
-                    self.put(key, copy(value))
-                    return value
+                    return self._read_and_put(key, read, copy)
         listed = sorted(set(handles(held)))
         with view._request():
             decided = view.access.decide(listed) if listed else {}
         if all(decided.get(h) is None for h in listed):
             return copy(held)
         self.pop(key)
-        value = read()
-        self.put(key, copy(value))
+        return self._read_and_put(key, read, copy)
+
+    def _read_and_put(self, key: Optional[tuple], read: Callable[[], Any],
+                      copy: Callable[[Any], Any] = lambda value: value) -> Any:
+        """``read()`` kept under ``key``; one a time limit cut short (a trail not read to
+        its end, a briefing without every trail) is kept in this process only, never on
+        disk: a restart or another process reads it again, whole."""
+        from .page_store import complete
+        with complete() as cuts:
+            value = read()
+        self.put(key, copy(value), durable=not cuts)
         return value
 
     def once(self, key: Optional[tuple], read: Callable[[], Any]) -> Any:
@@ -381,35 +401,59 @@ class ReaderCache:
             with self.flight(key):
                 held = self.get(key)
                 if held is None:
-                    held = read()
-                    self.put(key, held)
+                    held = self._read_and_put(key, read)
         return held
 
     def get(self, key: Optional[tuple]) -> Any:
+        """The value kept under ``key``: in memory, else on disk (``store``: what another
+        process or an earlier run read, held in memory for what is left of its time)."""
         if key is None:
             return None
+        now = time.monotonic()
         with self._lock:
             held = self._items.get(key)
-            if held is None:
-                return None
-            if held[0] <= time.monotonic():
-                del self._items[key]
-                return None
-            return held[1]
+            if held is not None:
+                if held[0] <= now or (self.fresh_for is not None
+                                      and now - held[2] > self.fresh_for):
+                    del self._items[key]
+                else:
+                    return held[1]
+        if self.store is None:
+            return None
+        found = self.store.get(key)
+        if found is None:
+            return None
+        left, value, read_at = found
+        age = max(0.0, time.time() - read_at)
+        if self.fresh_for is not None and age > self.fresh_for:
+            return None
+        self._hold(key, value, left, now - age)
+        return value
 
-    def put(self, key: Optional[tuple], value: Any,
-            seconds: float = READER_CACHE_SECONDS) -> None:
-        if key is None:
-            return
+    def _hold(self, key: tuple, value: Any, seconds: float, read_at: float) -> None:
         with self._lock:
             while len(self._items) >= self.size:
                 self._items.pop(next(iter(self._items)))
-            self._items[key] = (time.monotonic() + seconds, value)
+            self._items[key] = (time.monotonic() + seconds, value, read_at)
+
+    def put(self, key: Optional[tuple], value: Any,
+            seconds: float = READER_CACHE_SECONDS, *, durable: bool = True) -> None:
+        """``durable`` False: kept in memory only (a read a time limit cut short)."""
+        if key is None:
+            return
+        self._hold(key, value, seconds, time.monotonic())
+        if self.store is not None:
+            if durable:
+                self.store.put(key, value, seconds)
+            else:
+                self.store.pop(key)   # never an older whole read beside a cut one
 
     def pop(self, key: Optional[tuple]) -> None:
         if key is not None:
             with self._lock:
                 self._items.pop(key, None)
+            if self.store is not None:
+                self.store.pop(key)
 
     def __len__(self) -> int:
         with self._lock:
@@ -433,6 +477,9 @@ class Worker:
             jobs if jobs is not None else queue.PriorityQueue()
         self.cache: dict[str, Any] = {}
         self.stopped = threading.Event()
+        # what every job runs inside (a page read: ``page_build``, its mail gates
+        # memoized per tool call); nothing for an Ask
+        self.scope: Callable[[], Any] = _no_scope
         self.running = 0                       # jobs running now (read by the warm-up)
         self.last_done = time.monotonic()      # when the last one ended
 
@@ -486,8 +533,9 @@ class Worker:
                     continue
                 self.running += 1
                 try:
-                    future.set_result(_bounded_job(future, job, self._workspace(
-                        reader.session)))
+                    with self.scope():
+                        future.set_result(_bounded_job(future, job, self._workspace(
+                            reader.session)))
                 except BaseException as error:  # noqa: BLE001 - handed to the route
                     future.set_exception(error)
                 finally:
@@ -508,6 +556,28 @@ class Worker:
 
     def idle_for(self) -> float:
         return 0.0 if self.busy() else time.monotonic() - self.last_done
+
+
+@contextmanager
+def _no_scope() -> Iterator[None]:
+    yield
+
+
+def note_cut() -> None:
+    """A time limit cut the read under way short (``evidence_trail.note_cut``): what it
+    returns is kept in this process only, never on disk (``ReaderCache.put``)."""
+    from operating.evidence_trail import note_cut as noted
+    noted()
+
+
+@contextmanager
+def page_scope() -> Iterator[None]:
+    """A page read (the read workers, the warm-up, the section pool): every mail item gate
+    of its tool calls is the per-call memoized one (``case_tools_host.page_build``), with
+    the same decisions as the full check."""
+    from operating.case_tools_host import page_build
+    with page_build():
+        yield
 
 
 def _bounded_job(future: Future, job: Callable[[Any], Any], view: Any) -> Any:
@@ -593,14 +663,18 @@ class WorkspaceBackend(ActionsMixin):
                  agent_sessions: int = ASK_WORKERS, store_path: Optional[Path] = None,
                  freshness_bounds: Mapping[str, float] | None = None,
                  clock: Callable[[], datetime] | None = None,
-                 front_door: Any = None) -> None:
+                 front_door: Any = None, keep_pages: bool = False) -> None:
         """``front_door``: the warm model every question is read by first
         (``operating.front_door.FrontDoor``; None: questions route as typed).
         ``agent_ask``: the scoreboard's agent path (``agent_ask.AgentAsk``; None: the
         objective box answers), at most ``agent_sessions`` sessions at once.
         ``store_path`` and ``freshness_bounds``: the served projection and the host's
         capture bounds (``operating.host.freshness_bounds``), so Home states each source's
-        age and staleness by the rule answers apply (``ontology_tools.aged``)."""
+        age and staleness by the rule answers apply (``ontology_tools.aged``).
+        ``keep_pages``: the readers' pages are kept on disk in ``data_dir`` as well
+        (``page_store``: shared with the warm-up process and the section pool, and kept
+        across restarts), and so are the attachment page counts the mail gate reads
+        (``page_counts.keep_page_counts``)."""
         self.data_label = data_label
         self._warmed: dict[str, float] = {}
         self.store_path = Path(store_path) if store_path else None
@@ -618,6 +692,7 @@ class WorkspaceBackend(ActionsMixin):
         self.ask_served = ask_served
         self.today = today
         self.reads = Worker(objects_for)
+        self.reads.scope = page_scope
         self.read_helpers: list[Worker] = []   # more read workers on the same queue
         self.ask_jobs: "queue.PriorityQueue" = queue.PriorityQueue()
         self.ask_stopped = threading.Event()
@@ -629,12 +704,24 @@ class WorkspaceBackend(ActionsMixin):
         self._notices: dict[tuple[Any, Any], set[str]] = {}
         self._lock = threading.Lock()
         self._pool: Any = None
-        self.page_cache = ReaderCache()   # pages, Home lists, briefings: per reader
+        store = None
+        if keep_pages and self.data_dir is not None:
+            from .page_store import PageStore
+            from integrations.page_counts import keep_page_counts
+            store = PageStore(self.data_dir / PAGE_DIR)
+            keep_page_counts(self.data_dir / PAGE_DIR / "page-counts.sqlite")
+        self.page_cache = ReaderCache(store=store)   # pages, Home lists, briefings: per reader
         # each record's label and supplier as a reader reads them (Home, the late list,
         # the briefing and its cards name the same orders)
         self.cards = ReaderCache(CARD_WORDS_KEPT)
         self.warmer: Optional[Worker] = None   # the warm worker (``add_warm_worker``)
         self.warm_enabled = False   # Today's read-ahead on the read workers (``--warm``)
+        # The warm-up process (``warm_process``): every read-ahead is sent there, none
+        # read in this process; None: read here (``warm``).
+        self.warm_process: Any = None
+        # The warm-up waits for live requests (``wait_idle``); the warm-up process, which
+        # serves none, reads straight on (its CPU priority is the lowest).
+        self.yield_to_live = True
         # employee object id -> its session now, resolved as a sign-in is (None: no
         # known reader is warmed at start)
         self.identity_for: Optional[Callable[[str, int], Any]] = None
@@ -648,6 +735,7 @@ class WorkspaceBackend(ActionsMixin):
         the thread that runs its ``loop``); it stops with the owner thread's."""
         worker = Worker(objects_for, self.reads.jobs)
         worker.stopped = self.reads.stopped
+        worker.scope = page_scope
         self.read_helpers.append(worker)
         return worker
 
@@ -678,6 +766,40 @@ class WorkspaceBackend(ActionsMixin):
             if slot is not None:
                 pool.submit(slot, reader.key, (reader, object_type, object_id, section))
 
+    def _sections_on_pool(self, reader: Reader, object_type: str, object_id: str,
+                          sections: Sequence[str] = m.PAGE_SECTIONS) -> Callable[[], None]:
+        """``sections`` of the page started at once on their slots of the section pool;
+        returns the wait for them (``PAGE_TIMEOUT_SECONDS`` in all). Only a slot that has
+        already read a section is waited for: a slot's first read pays its process's
+        start-up reads, so a live page never waits on it and the full read reads that
+        section itself unless the slot has kept it by then (its read still warms the
+        slot). A section that fails or a slot not serving is left to the read worker's
+        full read, which reads it (or fails) as before."""
+        pool = self.sections
+        if pool is None or getattr(reader.session, "warm_ahead", False):
+            return lambda: None
+        futures = []
+        for section in sections:
+            slot = pool.slot_for(section, m.PAGE_SECTIONS)
+            if slot is not None:
+                warm = slot.warm()
+                future = pool.submit(slot, reader.key,
+                                     (reader, object_type, object_id, section))
+                if warm:
+                    futures.append(future)
+
+        def wait() -> None:
+            deadline = time.monotonic() + PAGE_TIMEOUT_SECONDS
+            for future in futures:
+                try:
+                    future.result(timeout=max(0.0, deadline - time.monotonic()))
+                except FutureTimeout:
+                    future.cancel()
+                    raise TimeoutError("workbench_busy") from None
+                except Exception:  # noqa: BLE001 - the full read reads it, or fails
+                    continue
+        return wait
+
     def _run_section(self, reader: Reader, object_type: str, object_id: str,
                      section: str) -> m.ObjectSection:
         """The section on its slot of the section pool when that serves, else on the read
@@ -703,6 +825,7 @@ class WorkspaceBackend(ActionsMixin):
         thread that built ``objects_for``'s runtime. What it reads lands in the shared
         reader caches, so a reader's first Home, briefing and record pages are ready."""
         self.warmer = Worker(objects_for)
+        self.warmer.scope = page_scope
         return self.warmer
 
     def _known_path(self) -> Optional[Path]:
@@ -790,7 +913,39 @@ class WorkspaceBackend(ActionsMixin):
             warmed += self.warm(reader, force=True, today=today)
         return warmed
 
-    def watch_generation(self, stop: threading.Event) -> None:
+    def prewarm_policies(self, seconds: float = PREWARM_SECONDS) -> int:
+        """Decide each known reader's read policy now, on the calling thread (the read
+        worker's owner, before it serves), as their first request would: the workspace,
+        its policy and its page keys, kept by the workspace only while the policy's
+        inputs (grant, entitlement, audiences, exclusion, generation) stay the same and
+        decided again on every request (``HostAccess``). Only readers resolved again as a
+        sign-in is and not revoked (``warm_known``'s); one that fails is skipped, nothing
+        is served or kept on disk. At most ``seconds`` in all; how many were decided."""
+        if self.identity_for is None:
+            return 0
+        deadline = time.monotonic() + seconds
+        done = 0
+        for oid, held in self.known_readers().items():
+            if time.monotonic() >= deadline:
+                break
+            try:
+                if self.revoked(str(held["ref"])):
+                    continue
+                session = self.identity_for(oid, int(held["exp"]))
+                view = self.reads._workspace(session)
+                with page_scope(), view._request():
+                    page_key(view, ("policy",))
+                    inbox_stamp(view)
+                    watcher_stamp(view)
+                done += 1
+            except Exception as error:  # noqa: BLE001 - decided on their first request
+                logging.getLogger("operator_api").info("policy not prewarmed: %s",
+                                                       type(error).__name__)
+        logging.getLogger("operator_api").info("policies prewarmed: %s", done)
+        return done
+
+    def watch_generation(self, stop: threading.Event,
+                         rewarm_seconds: float = REWARM_SECONDS) -> None:
         """Warm the known readers again whenever a new projection generation is served or
         the gap inbox's findings change (a run, an acknowledgement; not a "seen" mark), and
         every ``REWARM_SECONDS`` while their sessions last (before what was read for them
@@ -799,7 +954,7 @@ class WorkspaceBackend(ActionsMixin):
         last = time.monotonic()
         while not stop.wait(GENERATION_POLL_SECONDS):
             now = self._served_state()
-            if now != seen or time.monotonic() - last >= REWARM_SECONDS:
+            if now != seen or time.monotonic() - last >= rewarm_seconds:
                 seen, last = now, time.monotonic()
                 self.warm_known()
 
@@ -823,7 +978,9 @@ class WorkspaceBackend(ActionsMixin):
         the first late orders' pages and the pages they opened last (``today`` False:
         those only, Today being read ahead already). False when nothing was queued."""
         warmer = self.warmer
-        if not self.warm_enabled and (warmer is None or warmer.stopped.is_set()):
+        process = self.warm_process
+        if process is None and not self.warm_enabled and (
+                warmer is None or warmer.stopped.is_set()):
             return False
         now = time.monotonic()
         with self._lock:
@@ -831,6 +988,10 @@ class WorkspaceBackend(ActionsMixin):
                 return False
             self._warmed[reader.key] = now
             recent = list(self._pages_seen.get(reader.key, ()))[:WARM_RECENT_PAGES]
+        if process is not None:
+            # read in the warm-up process, never on this one's read workers: what it
+            # reads is kept on disk, where this process's requests find it
+            return process.warm(reader, recent, today=today)
 
         def pages(view: Any) -> None:
             try:
@@ -860,7 +1021,11 @@ class WorkspaceBackend(ActionsMixin):
             if today:
                 self.reads.submit(reader, warm_timed(name, job), priority=WARM_PRIORITY)
         if warmer is not None and not warmer.stopped.is_set():
-            warmer.submit(reader, self.yielding(warm_timed("pages", pages)))
+            # on the read workers' own queue (the warm-up process: one worker), the pages
+            # go after Today: what a reader opens first after a restart is read first
+            warmer.submit(reader, self.yielding(warm_timed("pages", pages)),
+                          priority=WARM_PRIORITY + 1 if warmer is self.reads and today
+                          else 0)
         return True
 
     def _briefing_ahead(self, reader: Reader) -> Callable[[Any], Any]:
@@ -878,6 +1043,8 @@ class WorkspaceBackend(ActionsMixin):
         """Read the reader's briefing ahead again (its "new since your visit" marks are
         keyed on the visit, so a "seen" mark reads it anew): queued on the read workers
         behind live requests. False when the read-ahead is off."""
+        if self.warm_process is not None:
+            return self.warm_process.warm_briefing(reader)
         if not self.warm_enabled:
             return False
         self.reads.submit(reader, warm_timed("briefing", self._briefing_ahead(reader)),
@@ -891,9 +1058,18 @@ class WorkspaceBackend(ActionsMixin):
             return job(view)
         return run
 
+    def serving(self) -> bool:
+        """Whether a live request is being read now (or one ended under
+        ``WARM_IDLE_SECONDS`` ago): a read worker or the section pool at work."""
+        return (self.reads_idle_for() < WARM_IDLE_SECONDS
+                or (self.sections is not None and self.sections.busy()))
+
     def wait_idle(self) -> None:
         """Wait (on the warm-up) until the read worker and the section pool have been idle ``WARM_IDLE_SECONDS``,
-        then a short pause; returns at once when the backend stops."""
+        then a short pause; returns at once when the backend stops, and at once in the
+        warm-up process (``yield_to_live`` False: it serves no live request)."""
+        if not self.yield_to_live:
+            return
         while not self.reads.stopped.is_set() and \
                 (self.reads_idle_for() < WARM_IDLE_SECONDS
                  or (self.sections is not None and self.sections.busy())):
@@ -929,6 +1105,8 @@ class WorkspaceBackend(ActionsMixin):
         self.reads.stop()
         if self.warmer is not None:
             self.warmer.stop()
+        if self.warm_process is not None:
+            self.warm_process.stop()
         self.ask_stopped.set()
         self.ask_jobs.put((-1, 0, None))
         if self.sections is not None:
@@ -2321,7 +2499,7 @@ class WorkspaceBackend(ActionsMixin):
         """``_attention`` as this reader read it last (``reader_key``), when every source
         its listed gaps cite still opens for them; else read now and kept."""
         with view._request():
-            key = reader_key(view, ("attention",))
+            key = reader_key(view, ("attention",), watcher=False)
         return self.page_cache.kept(view, key, lambda: self._attention(view, self.cards),
                                     lambda held: (
             h for g in held[0].get("gaps") or () for h in g.get("citations") or ()
@@ -2366,7 +2544,7 @@ class WorkspaceBackend(ActionsMixin):
         supplier (the inbox read, the ordered gaps, labels, suppliers), kept per reader
         (``reader_key``) for the late list's pages and its read-ahead."""
         with view._request():
-            key = reader_key(view, ("late_list",))
+            key = reader_key(view, ("late_list",), watcher=False)
 
         def read() -> tuple[Any, list[Mapping[str, Any]], dict[str, str], dict[str, str]]:
             inbox, _, _ = without_tests(view.gap_inbox(limit=LATE_COUNT_LIMIT), {}, {},
@@ -2474,10 +2652,10 @@ class WorkspaceBackend(ActionsMixin):
             for item in items[:BRIEFING_TRAILS]:
                 left = deadline - time.monotonic()
                 if left <= 1.0:
+                    note_cut()   # an item left without its trail: not complete
                     break
-                trails[item["id"]] = briefing_trail(self, view, item,
-                                                    labels.get(item["object_id"]),
-                                                    seconds=left)
+                trails[item["id"]] = self._briefing_trail_kept(
+                    view, item, labels.get(item["object_id"]), left)
         # each shown purchase order's supplier, read as this reader reads it (as Home's
         # late list names it), so a row says whom it is about
         suppliers: dict[str, str] = {}
@@ -2495,6 +2673,23 @@ class WorkspaceBackend(ActionsMixin):
                              counterpart=suppliers.get(item["object_id"]))
                for item in (found.get("items") or [])[:bf.TOP_ITEMS]]
         return found, top, labels, int(found.get("tests_hidden") or 0)
+
+    def _briefing_trail_kept(self, view: Any, item: Mapping[str, Any], label: Optional[str],
+                             seconds: float) -> Optional[m.EvidenceTrail]:
+        """``briefing_trail`` of one item as this reader read it last (``reader_key``: the
+        gap inbox's state but not the reader's visit, so a "seen" mark reads the briefing
+        again without reading its trails again), when every source it shows still opens
+        for them; else read now and kept. The trail reads the record, its kind, its event
+        type and its label, nothing else of the item."""
+        with view._request():
+            key = reader_key(view, ("briefing_trail", item["object_id"],
+                                    str(item.get("object_type") or ""),
+                                    str(item.get("event_type") or ""), label),
+                             watcher=False)
+        return self.page_cache.kept(
+            view, key, lambda: briefing_trail(self, view, item, label, seconds=seconds),
+            page_handles,
+            copy=lambda trail: trail.model_copy(deep=True) if trail is not None else None)
 
     def briefing_items(self, reader: Reader, event_type: str, *, offset: int = 0,
                        limit: int = 25, since_visit: bool = False) -> m.BriefingItems:
@@ -2601,6 +2796,7 @@ class WorkspaceBackend(ActionsMixin):
                     continue
                 left = deadline - time.monotonic()
                 if left <= 1.0:
+                    note_cut()   # a card left without its trail: not complete
                     break
                 trail = briefing_trail(self, view, head, labels.get(head["object_id"]),
                                        seconds=min(left, BRIEFING_TRAIL_SECONDS))
@@ -2617,8 +2813,9 @@ class WorkspaceBackend(ActionsMixin):
 
     def briefing_seen(self, reader: Reader) -> m.BriefingSeen:
         try:
+            # a write a reader waits on: ahead of every queued page read
             at = self.reads.run(reader, lambda view: view.briefing_seen(),
-                                timeout=READ_TIMEOUT_SECONDS)
+                                timeout=READ_TIMEOUT_SECONDS, priority=-1)
         except (FileNotFoundError, ValueError):
             return m.BriefingSeen(ok=False)
         self.warm_briefing(reader)   # the next visit's briefing is ready
@@ -2650,6 +2847,21 @@ class WorkspaceBackend(ActionsMixin):
         beside the quick read, so they are kept (or in progress) when the app asks."""
         if quick:
             self._sections_ahead(reader, object_type, object_id)
+        elif self.sections is not None and self.page_cache.store is not None:
+            # The full page not kept: its quick read here; the sections that run no plan
+            # read at once on the section pool's processes (kept on disk, where the full
+            # read below finds them) while the plans' sections are read here, in the
+            # page's order, each plan once (a plan's section rests on the plans before
+            # it, so splitting them over processes only runs those plans again).
+            first = self.reads.run(reader, lambda view: object_page(
+                self, view, object_type, object_id, quick=True), timeout=PAGE_TIMEOUT_SECONDS)
+            if not first.complete:
+                waits = self._sections_on_pool(reader, object_type, object_id,
+                                               POOL_SECTIONS)
+                self.reads.run(reader, lambda view: page_sections(
+                    self, view, object_type, object_id, PLAN_SECTIONS),
+                    timeout=PAGE_TIMEOUT_SECONDS)
+                waits()
         page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
                                                                object_id, quick=quick),
                               timeout=PAGE_TIMEOUT_SECONDS)
@@ -5555,12 +5767,14 @@ def page_key(view: Any, oid: str) -> Optional[tuple]:
     """What a cached page is valid for: the record, the projection generation answering,
     and the reader's policy now (its fingerprint)
     with the people exclusion it was built under. None: never cached."""
-    from operating.pg.permissions import _fingerprint, load_exclusion
+    from operating.pg.permissions import _fingerprint, exclusion_stamp
     try:
         gated, policy = view.access.reader_policy()
         meta = view.access.store_meta() or {}
+        # every part a plain value, the same in every process and after a restart, so a
+        # page kept on disk (``page_store``) is found again under the same reader state
         return (oid, meta.get("content_digest"), _fingerprint(policy, gated),
-                id(load_exclusion()))
+                bool(getattr(policy, "unrestricted", False)), exclusion_stamp())
     except Exception:  # noqa: BLE001 - an undecidable key is no cache entry
         return None
 
@@ -5575,12 +5789,17 @@ def overlay_stamp(view: Any) -> Any:
         return ("unreadable", time.monotonic())
 
 
-def reader_key(view: Any, what: tuple) -> Optional[tuple]:
+def reader_key(view: Any, what: tuple, *, watcher: bool = True) -> Optional[tuple]:
     """``page_key`` of ``what`` for this reader (inside its ``_request``), with the state
     of the gap inbox beside the store (a new run or an acknowledgement is a new key; a
-    "seen" mark only in the briefing's, ``last_visit_of``); None: never cached."""
+    "seen" mark only in the briefing's, ``last_visit_of``) and, for what reads the AI
+    watcher's items (the briefing and what is made of it: ``watcher``), the watcher's
+    state; None: never cached. What reads no watcher item (Home's gap list, the late list,
+    a trail) is not read again for a watcher run."""
     key = page_key(view, what)
-    return None if key is None else key + (inbox_stamp(view), watcher_stamp(view))
+    if key is None:
+        return None
+    return key + (inbox_stamp(view), watcher_stamp(view) if watcher else None)
 
 
 def watcher_stamp(view: Any) -> Optional[tuple]:
@@ -5694,7 +5913,7 @@ def object_page(backend: WorkspaceBackend, view: Any, object_type: str,
     in section by section (``object_section``). The full page is the quick read with
     every section merged (``full_page``), each section kept on its own."""
     cache = backend.page_cache
-    with view._request():   # one grant and generation for the whole page
+    with view._request(), plans_once():   # one grant and generation for the whole page
         oid = page_oid(backend, view, object_type, object_id)
         key = page_key(view, oid)
         if not quick or cache.get(key) is not None:
@@ -5753,17 +5972,31 @@ def object_section(backend: WorkspaceBackend, view: Any, object_type: str,
     reader cannot see is not found, and no section is read for it."""
     if section not in m.PAGE_SECTIONS:
         raise ValueError("unknown_section")
-    with view._request():   # one grant and generation for the whole section
+    with view._request(), plans_once():   # one grant and generation for the section
         oid = page_oid(backend, view, object_type, object_id)
         page = quick_page(backend, view, oid)   # KeyError when not visible; kept
         return kept_section(backend, view, page, section)
+
+
+def page_sections(backend: WorkspaceBackend, view: Any, object_type: str,
+                  object_id: str, sections: Sequence[str]) -> None:
+    """``sections`` of the record's page read and kept in the page's order in one read,
+    as the page's full read reads them (``full_page``): each plan once, every later
+    section after the plans before it."""
+    with view._request(), plans_once():
+        oid = page_oid(backend, view, object_type, object_id)
+        page = quick_page(backend, view, oid)
+        for name in m.PAGE_SECTIONS:
+            if name in sections:
+                kept_section(backend, view, page, name)
 
 
 def kept_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
                  section: str) -> m.ObjectSection:
     with view._request():
         what = ("section", section, page.object_id)
-        key = reader_key(view, what) if section == "trail" else page_key(view, what)
+        key = reader_key(view, what, watcher=False) if section == "trail" \
+            else page_key(view, what)
     return backend.page_cache.kept(
         view, key, lambda: read_section(backend, view, page, section), page_handles,
         copy=lambda model: model.model_copy(deep=True))
@@ -5772,6 +6005,10 @@ def kept_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
 # The plan (``ontology/plans``) each section runs, if any.
 SECTION_PLANS = {"late": "late_po", "people": "people_on_record",
                  "landed_cost": "landed_cost"}
+# A page's sections that run a plan (read in order, in one read) and the rest (each read
+# on its own, on the section pool when it serves).
+PLAN_SECTIONS = tuple(s for s in m.PAGE_SECTIONS if s in SECTION_PLANS)
+POOL_SECTIONS = tuple(s for s in m.PAGE_SECTIONS if s not in SECTION_PLANS)
 
 
 def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
@@ -5847,6 +6084,14 @@ def bc_customer_of(view: Any, page: m.ObjectPage) -> Optional[tuple[str, list[st
     return str(exact[0]["object_id"]), [str(c["object_id"]) for c in exact[1:]]
 
 
+def plans_before(section: str) -> tuple[str, ...]:
+    """The plans of the page's sections read before ``section`` (``m.PAGE_SECTIONS``
+    order) by the page's full read."""
+    names = list(m.PAGE_SECTIONS)
+    before = names[:names.index(section)] if section in names else []
+    return tuple(SECTION_PLANS[n] for n in before if n in SECTION_PLANS)
+
+
 def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
                  section: str) -> m.ObjectSection:
     """One section of ``page`` (the quick read) for this reader."""
@@ -5859,7 +6104,14 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
         out.applies = out.profitability is not None
         return presentation.polished(out)
     if family is not None:
-        plans = plan_runs(view, kind, oid, (family,))
+        # The plans of the sections before it on the page run first, in the same request,
+        # as the page's full read runs them (``full_page``: late, people, landed cost): a
+        # plan's answer depends on what the request already read (the landed cost plan
+        # alone over a large order did not fit one response; after the late plan it did),
+        # so a section read on its own (a slot of the section pool, ``object_section``) is
+        # the main read's section, never another.
+        with view._request():
+            plans = plan_runs(view, kind, oid, (*plans_before(section), family))
         if family not in plans:
             out.applies = family in plan_families(kind)
             return out
@@ -6190,21 +6442,53 @@ def plan_families(kind: str) -> set[str]:
     return {plan["family"] for plan in plans_for(kind)} if kind else set()
 
 
+_PLANS_RUN: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "plx_page_plans", default=None)
+
+
+@contextmanager
+def plans_once() -> Iterator[None]:
+    """One page read (``object_page``, ``object_section``, ``page_sections``): each plan
+    over a record runs once in it, in the page's order, and every section after it reuses
+    that run (``plan_runs``), as one ``plan_runs`` over the page's plans would; a read
+    inside another is part of it. Never kept past the read."""
+    if _PLANS_RUN.get() is not None:
+        yield
+        return
+    token = _PLANS_RUN.set({})
+    try:
+        yield
+    finally:
+        _PLANS_RUN.reset(token)
+
+
 def plan_runs(view: Any, kind: str, oid: str, families: Sequence[str] = PAGE_PLANS
               ) -> dict[str, Mapping[str, Any]]:
     """The record page's plan runs (late PO, landed cost, people on the record) as the
     console's investigate route returns them to this reader: the plan's structured
-    ``investigation`` and its ``verdict``. A plan that fails is left out (fails closed)."""
+    ``investigation`` and its ``verdict``. A plan that fails is left out (fails closed).
+    Inside one page read (``plans_once``) a plan already run over the record in that read
+    is not run again: its run is the one every later section uses."""
+    import copy
     served = plan_families(kind)
+    memo = _PLANS_RUN.get()
     out: dict[str, Mapping[str, Any]] = {}
     for family in families:
         if family not in served:
             continue
+        key = (id(view), oid, family)
+        if memo is not None and key in memo:
+            if memo[key] is not None:
+                out[family] = copy.deepcopy(memo[key])
+            continue
         try:
             ran = view.investigate(family, oid)
         except Exception:  # noqa: BLE001 - one plan's failure never costs the page
-            continue
-        if isinstance(ran, Mapping):
+            ran = None
+        ran = ran if isinstance(ran, Mapping) else None
+        if memo is not None:
+            memo[key] = copy.deepcopy(ran) if ran is not None else None
+        if ran is not None:
             out[family] = ran
     return out
 
@@ -6387,7 +6671,7 @@ def listed_late(view: Any, oid: str, label: str, today: Optional[date] = None, *
         held = None
         if kept is not None:
             with view._request():
-                held = kept.get(reader_key(view, ("attention",)))
+                held = kept.get(reader_key(view, ("attention",), watcher=False))
         inbox = held[0] if held is not None else view.gap_inbox()
     except Exception:  # noqa: BLE001 - no list: the trail's own verdict stands alone
         return []
@@ -6641,6 +6925,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="1 (default): a warm worker (its own runtime) reads each "
                             "signed-in reader's Home, briefing and first pages ahead, and the "
                             "served generation's facts at start; 0: none")
+    group.add_argument("--keep-pages", type=int, choices=(0, 1), default=1,
+                       help="1 (default): the readers' pages are kept on disk in the app's "
+                            "data directory, shared with the warm-up process and the "
+                            "section pool and kept across restarts; 0: in memory only")
     group.add_argument("--dev-ticket-login", action="store_true",
                        help="--dev over live state: dev-login takes a console session ticket "
                             "(python3 -m operator_ui.console_ticket mint)")
@@ -6701,6 +6989,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         from operating.search import plug
         plug.warm_if_enabled()   # models load at start, so early questions are reranked
 
+    live = fixtures is None and planner is None
+
     def serve_with(ctx: Mapping[str, Any]) -> int:
         auth, auth_config = make_auth(parser, args, mode, ctx)
         label = (ctx.get("evidence") or {}).get("label") or "source-mirror captures " \
@@ -6726,7 +7016,8 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    understand=optional_understanding(),
                                    ask_served=bool(args.ask),
                                    agent_ask=agent, agent_sessions=max(1, args.ask_workers),
-                                   front_door=front_door)
+                                   front_door=front_door,
+                                   keep_pages=live and getattr(args, "keep_pages", 1) == 1)
         resolver = ctx.get("resolver")
         if resolver is not None and not args.dev_fixture_principal:
             from operating.session_identity import warm_session
@@ -6747,22 +7038,50 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         if fixtures is None and planner is None:
             threads += [start_read_worker(backend, argv, n)
                         for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
-        if getattr(args, "section_workers", 0) > 0 and fixtures is None and planner is None:
-            from . import section_pool
-            backend.sections = section_pool.SectionPool(
-                args.section_workers, section_pool.spawn(argv, {
-                    "data_label": str(label), "state_dir": Path(ctx["state_dir"]),
+        settings = {"data_label": str(label), "state_dir": Path(ctx["state_dir"]),
                     "store_path": ctx.get("ontology_path"),
                     "freshness_bounds": ctx.get("freshness_bounds"),
                     "data_dir": args.app_data_dir, "pg_dsn": args.pg_dsn,
-                    "ask_served": False}))
-        if getattr(args, "warm", 0):
+                    "ask_served": False,
+                    "keep_pages": backend.page_cache.store is not None}
+        if getattr(args, "section_workers", 0) > 0 and live:
+            from . import section_pool
+            backend.sections = section_pool.SectionPool(
+                args.section_workers, section_pool.spawn(argv, settings))
+        if getattr(args, "warm", 0) and live:
+            # the read-ahead in its own low-priority process: none of it on this one's
+            # read workers or under its interpreter lock; started once the first live
+            # requests are served, and each read-ahead only while none is
+            from . import warm_process
+            backend.warm_process = warm_process.spawn(argv, settings, mode,
+                                                      busy=backend.serving)
+        elif getattr(args, "warm", 0):
             backend.warm_enabled = True
             # the known readers' Today is read as soon as the read worker serves, not once
             # the warm worker's own runtime is up (that one reads their pages after)
             threading.Thread(target=backend.warm_known, name="app-warm-start",
                              daemon=True).start()
             threads.append(start_warm_worker(backend, argv, fixtures, planner))
+        if backend.warm_process is not None:
+            # the served generation's reader-independent facts (audience keys, BC units),
+            # read once in this process before it serves, while the pool comes up: the
+            # warm-up process reads its own, so no reader's first request pays for them
+            facts = threading.Thread(target=backend.warm_store, name="app-store-facts",
+                                     daemon=True)
+            facts.start()
+        else:
+            facts = None
+        # the known readers' permission setup decided here (the thread that serves their
+        # reads) while the pool comes up, so their first Home or briefing does not pay it
+        backend.prewarm_policies()
+        if backend.sections is not None:
+            # a page's sections are read on the pool from the first request: none on a
+            # request's read worker while the pool comes up
+            ready = backend.sections.wait_ready(SECTION_START_SECONDS)
+            logging.getLogger("operator_api").info("section pool: %s of %s slots up",
+                                                   ready, len(backend.sections.slots))
+        if facts is not None:
+            facts.join(SECTION_START_SECONDS)
         try:
             return start(backend, auth, auth_config)
         finally:

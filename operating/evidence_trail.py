@@ -31,6 +31,7 @@ Evidence label of fixture runs: ``isolated-fixture``.
 
 from __future__ import annotations
 
+import contextvars
 from datetime import date
 import json
 from pathlib import Path
@@ -172,12 +173,26 @@ def ordered(steps: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [dict(s) for _, s in indexed]
 
 
+# The reads under way that a time limit cut short (``note_cut``): a list per read the
+# caller watches (``operator_api.page_store.complete``), None when nobody watches.
+CUTS: "contextvars.ContextVar[list | None]" = contextvars.ContextVar("trail_cuts",
+                                                                     default=None)
+
+
+def note_cut() -> None:
+    """A time limit cut the read under way short: what it returns is not complete."""
+    cuts = CUTS.get()
+    if cuts is not None:
+        cuts.append(1)
+
+
 class _Budget:
     def __init__(self, seconds: float | None) -> None:
         self.deadline = None if seconds is None else time.monotonic() + seconds
 
     def check(self) -> None:
         if self.deadline is not None and time.monotonic() > self.deadline:
+            note_cut()
             raise TrailCut()
 
 
