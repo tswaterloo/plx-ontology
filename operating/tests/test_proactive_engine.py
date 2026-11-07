@@ -900,18 +900,24 @@ class ServedGenerationTest(Engine):
         self.run_engine(world, ids["coverage"], at=first + timedelta(hours=2))
         self.assertIn(ids["unconfirmed"], self.late_ids(self.read()))
 
-    def test_an_inbox_without_per_rule_records_is_read_by_its_last_full_run(self):
+    def test_an_inbox_without_per_rule_records_is_of_older_code(self):
         world, ids = seeded()
         self.run_engine(world, ids["coverage"])
         with sqlite3.connect(self.inbox) as conn:   # as an earlier engine wrote it
             conn.execute("DELETE FROM meta WHERE key LIKE 'generation:%'")
+        # an earlier engine's findings are never shown as the deployed code's
+        found = self.read()
+        self.assertNotIn(ids["unconfirmed"], self.late_ids(found))
+        self.assertTrue(found["older_code"] and found["stale"])
+        # the deployed engine's run records its code: listed again
+        self.run_engine(world, ids["coverage"])
         self.assertIn(ids["unconfirmed"], self.late_ids(self.read()))
         world.obj("ForwarderQuote", {"valid_until": "2026-02-01"})
         world.build(self.store)
         found = self.read()
         self.assertEqual((found["gaps"], found["stale"]), ([], True))
         with sqlite3.connect(self.inbox) as conn:   # an unreadable record: of no known data
-            conn.execute("INSERT INTO meta VALUES ('generation:expired_quote', '{')")
+            conn.execute("INSERT OR REPLACE INTO meta VALUES ('generation:expired_quote', '{')")
         self.assertIn("expired_quote", self.read()["refreshing"])
 
 

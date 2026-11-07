@@ -316,6 +316,17 @@ def apply_listed(stores: Sequence[str | Path], dsn: str, *, log: Any = None
 RELOAD_GRACE_SECONDS = 600
 
 
+def _note_code(state_dir: Path) -> None:
+    """The loader code the Postgres ontology was loaded by (``operating.derived_status``):
+    other code's load is reported stale until the next load."""
+    try:
+        from operating import derived_status as ds
+        ds.stamp("postgres-ontology", state_dir / ds.CODE_DIR / "postgres-ontology",
+                 state_dir=state_dir)
+    except Exception:  # noqa: BLE001 - unstamped: reported as older code's, never a failure
+        pass
+
+
 def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int = 12,
            min_free: int = 0, log: Any = sys.stderr) -> dict[str, Any]:
     """Bring the Postgres ontology up to what is served now, once: when the served
@@ -399,6 +410,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
                                                   replace=replace, min_free=min_free, log=log,
                                                   deferred=deferred, state_dir=state_dir)
         report["held"] = digest
+        _note_code(Path(state_dir))
     pointer = projection / "delta" / "CURRENT.json"
     try:
         body = json.loads(pointer.read_text(encoding="utf-8"))

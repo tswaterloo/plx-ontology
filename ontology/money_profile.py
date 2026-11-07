@@ -275,15 +275,24 @@ def profile_state(state_dir: Path, *, rows: int = 30000, workers: int = 4,
         except (OSError, ValueError):
             kept = {}
         if now is not None and kept.get("mirror_fingerprint") == now \
-                and kept.get("rules") == RULES:
+                and kept.get("rules") == RULES \
+                and (kept.get("derived_code") or {}).get("code") == _code_version():
             # Still current: say when it was last found so (``check`` ages it from then).
             kept["checked_at"] = _now()
             write(kept, out_path)
             return {"skipped": "mirror_unchanged", "mirror_fingerprint": now}
     doc = profile(Path(state_dir) / MIRROR, rows, workers)
+    # the code that profiled it (``operating.derived_status``): other code profiles again
+    from operating import derived_status
+    doc["derived_code"] = derived_status.record("money-profile", state_dir=state_dir)
     write(doc, out_path)
     return {"relations": len(doc["relations"]), "mirror_generation": doc["mirror_generation"],
             "money_columns": sum(len(v["money"]) for v in doc["relations"].values())}
+
+
+def _code_version() -> str | None:
+    from operating import derived_status
+    return derived_status.version("money-profile")
 
 
 def check(state_dir: Path, *, max_age_days: float = MAX_AGE_DAYS,

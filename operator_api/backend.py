@@ -175,6 +175,23 @@ TRUTH_STATUS = Path("truth-check") / "status.json"
 TRUTH_MAX_AGE = timedelta(hours=2)
 
 
+def derived_code_status(state_dir: Optional[Path]) -> Optional[m.DerivedCode]:
+    """Derived data made by older code than this process's (``operating.derived_status``;
+    cached a short while there): None when all is current or there is no state dir."""
+    if state_dir is None:
+        return None
+    try:
+        from operating import derived_status
+        found = derived_status.served(state_dir)
+    except Exception:  # noqa: BLE001 - the freshness line never fails on it
+        return None
+    if not found or not (found.get("stale") or found.get("flagged")):
+        return None
+    return m.DerivedCode(stale=list(found["stale"]), flagged=list(found["flagged"]),
+                         titles=dict(found.get("titles") or {}),
+                         checked_at=found.get("checked_at"))
+
+
 def truth_flag(state_dir: Optional[Path], now: Optional[datetime] = None
                ) -> Optional[m.TruthFlag]:
     """The latest truth check's counts, None when it never ran or cannot be read; ``stale``
@@ -1117,8 +1134,15 @@ class WorkspaceBackend(ActionsMixin):
             label += f"; next build waits for {_gigabytes(waits.needed_bytes)} free" + (
                 f" ({_gigabytes(waits.free_bytes)} now)" if waits.free_bytes is not None
                 else "")
+        derived = derived_code_status(self.state_dir)
+        if label and derived is not None and derived.stale:
+            label += "; refreshing results made by older code: " + ", ".join(
+                derived.titles.get(n, n) for n in derived.stale)
+        if label and derived is not None and derived.flagged:
+            label += "; made by older code (labelled): " + ", ".join(
+                derived.titles.get(n, n) for n in derived.flagged)
         return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth,
-                           build_wait=waits, documents=documents)
+                           build_wait=waits, documents=documents, derived_code=derived)
 
     # ---- sources ------------------------------------------------------------------------
 

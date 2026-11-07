@@ -1211,6 +1211,17 @@ def _money_profile(state_dir: Path) -> dict[str, Any]:
         return {"ok": False, "problems": [f"unavailable:{type(error).__name__}"]}
 
 
+def _derived_code(state_dir: Path) -> dict[str, Any] | None:
+    """The code this report was made by and the versions of the claims and profile it
+    read (``operating.derived_status``): a later engine run makes it stale."""
+    try:
+        from operating import derived_status as ds
+        return ds.record("truth-check", state_dir=state_dir,
+                         inputs=ds.inputs_of("truth-check", state_dir))
+    except Exception as error:  # noqa: BLE001 - reported, never the check's failure
+        return {"code": None, "error": type(error).__name__}
+
+
 def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = None,
         exclude: str | None = None, late_json: Path | None = None,
         now: datetime | None = None) -> dict[str, Any]:
@@ -1233,7 +1244,8 @@ def run(state_dir: Path, *, out_dir: Path | None = None, pg_dsn: str | None = No
            "search": "used" if src.search is not None else f"skipped: {skipped}",
            **check(src, claims, late), "probes": probes(src, claims),
            "detectors": detector_health(state_dir / INBOX, now),
-           "money_profile": _money_profile(state_dir)}
+           "money_profile": _money_profile(state_dir),
+           "derived_code": _derived_code(state_dir)}
     target = out_dir or state_dir / OUT_DIR
     target.mkdir(parents=True, exist_ok=True)
     for name, body in (("report.json", json.dumps(out, indent=1, default=str)),

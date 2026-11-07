@@ -1848,6 +1848,19 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
                     report: Mapping[str, Any]) -> None:
     """``layers``: newest first; an object is read from the newest layer owning it.
     ``store``/``owned`` name the newest (a reader of one layer reads that one)."""
+    # each new layer names the step code that projected it, and the pointer the code its
+    # documents were read by (``operating.derived_status``: a layer of older code is
+    # stale until a fold, ``compact``, projects every change again)
+    # A failed version lookup never fails the publish: the layer is published unstamped and
+    # reads as stale (older code) until a fold stamps it, never as current.
+    try:
+        from operating import derived_status
+        code = layers[0].get("code") or derived_status.version("delta-layers")
+    except Exception:  # noqa: BLE001 - the publish matters more than the stamp
+        code = None
+    layers = [dict(layers[0], code=code,
+                   derivation=layers[0].get("derivation") or _derivation_code()),
+              *layers[1:]]
     body = {"format": FORMAT, "base_digest": base.digest, "store": layers[0]["store"],
             "owned": layers[0]["owned"], "layers": list(layers), "built_at": _now(),
             "changed": report.get("changed"), "seconds": report.get("seconds"),
@@ -1855,6 +1868,14 @@ def publish_pointer(delta_dir: Path, layers: Sequence[Mapping[str, Any]], base: 
     temp = delta_dir / f".{POINTER}.tmp"
     temp.write_text(json.dumps(body, sort_keys=True), encoding="utf-8")
     os.replace(temp, delta_dir / POINTER)
+
+
+def _derivation_code() -> str | None:
+    try:
+        from ontology.project import derivation_code
+        return derivation_code()
+    except Exception:  # noqa: BLE001 - unknown: the readings count as older code's
+        return None
 
 
 def prune(delta_dir: Path, keep: set[Path], *, grace: float = 900.0) -> None:

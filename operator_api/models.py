@@ -217,6 +217,19 @@ class DocumentsPending(_Model):
                     "pending.")
 
 
+class DerivedCode(_Model):
+    """Derived data on screen made by older code than the code deployed
+    (``operating.derived_status``): being refreshed, or flagged when model-made."""
+    stale: list[str] = Field(default_factory=list, description="Artifacts made by older "
+                             "code, being refreshed (their findings are held back or "
+                             "labelled meanwhile).")
+    flagged: list[str] = Field(default_factory=list, description="Model-made artifacts of "
+                               "older code: labelled, refreshed by their own schedule.")
+    titles: dict[str, str] = Field(default_factory=dict, description="Each named artifact's "
+                                   "title.")
+    checked_at: Optional[str] = Field(None, description="When it was checked (ISO).")
+
+
 class Freshness(_Model):
     as_of: Optional[str] = Field(None, description="The data cut-off (ISO): the newest "
                                  "capture the served data holds, the same on every screen. "
@@ -235,6 +248,10 @@ class Freshness(_Model):
         None, json_schema_extra=_optional,
         description="Documents the latest delta cycle has not read yet; the label names "
                     "them, and on a record's page whether its document fields are pending.")
+    derived_code: Optional[DerivedCode] = Field(
+        None, json_schema_extra=_optional,
+        description="Derived data made by older code than the code deployed: the label "
+                    "says it is being refreshed; never presented as current.")
 
 
 class ObjectRef(_Model):

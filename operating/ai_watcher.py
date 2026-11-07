@@ -1670,6 +1670,7 @@ def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
                 states = _reader_states(conn, reader)
                 day = today or _now().date()
                 rows = [r for r in rows if not set_aside(states.get(r["item_id"]), day)]
+            since_run = _code_since(conn)
         seen: dict[str, bool] = {}
 
         def visible(object_id: str | None) -> bool:
@@ -1704,6 +1705,9 @@ def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
                 "summary": row["text"], "citations": list(dict.fromkeys(
                     c["handle"] for c in open_)),
                 "detected_by": "watcher", "state": "open",
+                # made by an older watcher code or model than the deployed one: labelled
+                "older_code": since_run is None or row["run_id"] is None
+                or row["run_id"] < since_run,
                 "first_seen": row["first_seen"], "last_seen": row["last_seen"],
                 "follow_up": {"object_id": row["subject"], "why": row["why"],
                               "next_step": row["next_step"],
@@ -1712,6 +1716,21 @@ def read_items(directory: Path, store: Path, *, may_read: Callable[[str], bool],
         return out
     finally:
         places.close()
+
+
+def _code_since(conn: sqlite3.Connection) -> int | None:
+    """The first run of the deployed watcher code and model; None: none yet (every item
+    is older code's)."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'derived_code'").fetchone()
+        held = json.loads(row[0]) if row else None
+        from . import derived_status
+        if not isinstance(held, dict) or held.get("code") != derived_status.version(
+                "ai-watcher") or held.get("model") != (os.environ.get(MODEL_ENV) or MODEL):
+            return None
+        return int(held["since_run"])
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        return None
 
 
 SNOOZE_DAYS = 7
@@ -2279,7 +2298,33 @@ def _record(ws: sqlite3.Connection, now: dt.datetime, summary: Mapping[str, Any]
                         "(?, ?, ?, ?)", (_iso(now), str(summary.get("status") or "ran"),
                                           int(model_run), json.dumps(summary, sort_keys=True,
                                                                      default=str)))
-    return int(cursor.lastrowid)
+    run_id = int(cursor.lastrowid)
+    if model_run:
+        _note_code(ws, run_id, now)
+    return run_id
+
+
+def _note_code(ws: sqlite3.Connection, run_id: int, now: dt.datetime) -> None:
+    """Record the code and model of a model run (``operating.derived_status``): an item
+    last made by a run before the first of this code is of older code, labelled
+    (``read_items``'s ``older_code``) and never rerun outside the watcher's schedule."""
+    try:
+        from . import derived_status
+        code = derived_status.version("ai-watcher")
+    except Exception:  # noqa: BLE001 - unknown code: every item is older code's
+        code = None
+    model = os.environ.get(MODEL_ENV) or MODEL
+    row = ws.execute("SELECT value FROM meta WHERE key = 'derived_code'").fetchone()
+    try:
+        held = json.loads(row[0]) if row else None
+    except ValueError:
+        held = None
+    if isinstance(held, dict) and held.get("code") == code and held.get("model") == model:
+        return
+    ws.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('derived_code', ?)",
+               (json.dumps({"scheme": "plx-derived-code/v1", "artifact": "ai-watcher",
+                            "code": code, "model": model, "at": _iso(now),
+                            "since_run": run_id}, sort_keys=True),))
 
 
 # --------------------------------------------------------------------------- report

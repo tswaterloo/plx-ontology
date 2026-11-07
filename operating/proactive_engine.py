@@ -3283,11 +3283,22 @@ def _note_generation(conn: sqlite3.Connection, detector: str, digest: str | None
         held = json.loads(row[0]) if row is not None else None
     except ValueError:
         held = None
+    # and the code it ran: a gap found by older code than the deployed engine is of
+    # older code (``_current_since``), never shown as current (``operating.derived_status``)
+    code = engine_code()
     if isinstance(held, dict) and held.get("digest") == digest \
-            and isinstance(held.get("since"), str):
+            and isinstance(held.get("since"), str) and held.get("code") == code:
         return
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-                 (key, json.dumps({"digest": digest, "since": run_at}, sort_keys=True)))
+                 (key, json.dumps({"digest": digest, "since": run_at, "code": code},
+                                  sort_keys=True)))
+
+
+def engine_code() -> str | None:
+    """The deployed engine's code version (``operating.derived_status``): what each rule's
+    record names, so findings of older code are told apart from this code's."""
+    from . import derived_status
+    return derived_status.version("proactive-inbox")
 
 
 def _moment(text: Any) -> datetime | None:
@@ -3300,13 +3311,16 @@ def _moment(text: Any) -> datetime | None:
     return moment
 
 
-def _current_since(conn: sqlite3.Connection, served: str | None
+def _current_since(conn: sqlite3.Connection, served: str | None,
+                   older: set[str] | None = None
                    ) -> tuple[dict[str, datetime | None], dict[str, str | None]]:
     """Per detector, from when its gaps are of the data served now (``served``: the store's
     content digest): ``{detector: since}`` for those that ran over it (None: every gap, an
     inbox written before per-detector records whose last full run was over this data), and
     ``{detector: last run}`` for those that did not (their gaps are of older data: never
-    shown as current, ``read_inbox``'s ``refreshing``)."""
+    shown as current, ``read_inbox``'s ``refreshing``). A rule whose last run was by
+    other code than the deployed engine's is behind too (``older``: its name added)."""
+    older = set() if older is None else older
     held: dict[str, Any] = {}
     for key, value in conn.execute("SELECT key, value FROM main.meta WHERE key LIKE ?",
                                    (_GENERATION_KEY + "%",)):
@@ -3318,10 +3332,20 @@ def _current_since(conn: sqlite3.Connection, served: str | None
                         "LIMIT 1").fetchone()
     ran = {row[0]: row[1] for row in conn.execute(
         "SELECT detector, run_at FROM main.detector_runs")}
+    statuses = {row[0]: row[1] for row in conn.execute(
+        "SELECT detector, status FROM main.detector_runs")}
     current: dict[str, datetime | None] = {}
     behind: dict[str, str | None] = {}
+    code = engine_code()
     for name in sorted(set(DETECTORS) | set(ran) | set(held)):
         record = held.get(name, ...)
+        if (isinstance(record, dict) and (code is None or record.get("code") != code)) or (
+                record is ... and statuses.get(name) in READ_WHOLE_DATA):
+            # found by older code than the engine deployed (or one not known): its gaps
+            # wait for a run of this code (the deploy's refresh), as older data's do
+            behind[name] = ran.get(name)
+            older.add(name)
+            continue
         if record is ...:
             # no per-detector record (an older engine's inbox): its last full run says
             if last is not None and last[0] == served:
@@ -3364,7 +3388,10 @@ def served_behind(store_path: Any, inbox: Any = None) -> bool:
                             "LIMIT 1").fetchone()
         served = conn.execute(
             "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
-    return last is None or last[0] != (served[0] if served else None)
+        older: set[str] = set()
+        _current_since(conn, served[0] if served else None, older)
+    # or a rule's findings are of older code than the engine deployed
+    return last is None or last[0] != (served[0] if served else None) or bool(older)
 
 
 def _reader_view(conn: sqlite3.Connection, may_read: Callable[[str], bool],
@@ -3536,7 +3563,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         last = conn.execute("SELECT * FROM runs ORDER BY run_id DESC LIMIT 1").fetchone()
         digest = conn.execute(
             "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
-        current, behind = _current_since(conn, digest[0] if digest else None)
+        older: set[str] = set()
+        current, behind = _current_since(conn, digest[0] if digest else None, older)
         scanned = conn.execute(
             "SELECT COALESCE(SUM(objects), 0) FROM scope WHERE audience_key IN (SELECT value "
             "FROM json_each(:aud)) AND markings IN (SELECT value FROM json_each(:marks))",
@@ -3637,6 +3665,9 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
             "stale": bool(refreshing) or (bool(last) and (digest[0] if digest else None)
                                           != last["store_digest"]),
             "refreshing": refreshing, "checked_on": checked[0] if checked else None,
+            # of those, the rules whose findings older code made: held back until the
+            # deployed engine's run (``operating.derived_status refresh``)
+            "older_code": sorted(name for name in older if name in detectors),
             "scanned": scanned, "truncated": truncated or bool(failed),
             "max_objects": None, "unscanned": None,
             "unread": {f"{name}_failed": 1 for name in failed},

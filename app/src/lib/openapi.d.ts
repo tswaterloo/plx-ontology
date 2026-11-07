@@ -1117,6 +1117,34 @@ export type components = {
             /** Ok */
             ok: boolean;
         };
+        /**
+         * BuildWait
+         * @description The next projection build waits for disk space (``operating.host.build_wait``):
+         *     the last one was skipped because its estimate did not fit, and the host builds again
+         *     once this much is free; captures go on meanwhile.
+         */
+        BuildWait: {
+            /**
+             * Checked At
+             * @description When the host last checked (ISO).
+             */
+            checked_at?: string | null;
+            /**
+             * Free Bytes
+             * @description Free bytes now (the latest check's when the disk cannot be measured here).
+             */
+            free_bytes?: number | null;
+            /**
+             * Mode
+             * @description The build the estimate is for.
+             */
+            mode?: ("cold" | "incremental") | null;
+            /**
+             * Needed Bytes
+             * @description Free bytes the next build waits for: its estimate, margin and input copies.
+             */
+            needed_bytes: number;
+        };
         /** Candidate */
         Candidate: {
             /** Label */
@@ -1314,6 +1342,35 @@ export type components = {
              */
             same_name?: components["schemas"]["ObjectRef"][];
         };
+        /**
+         * DerivedCode
+         * @description Derived data on screen made by older code than the code deployed
+         *     (``operating.derived_status``): being refreshed, or flagged when model-made.
+         */
+        DerivedCode: {
+            /**
+             * Checked At
+             * @description When it was checked (ISO).
+             */
+            checked_at?: string | null;
+            /**
+             * Flagged
+             * @description Model-made artifacts of older code: labelled, refreshed by their own schedule.
+             */
+            flagged?: string[];
+            /**
+             * Stale
+             * @description Artifacts made by older code, being refreshed (their findings are held back or labelled meanwhile).
+             */
+            stale?: string[];
+            /**
+             * Titles
+             * @description Each named artifact's title.
+             */
+            titles?: {
+                [key: string]: string;
+            };
+        };
         /** DevLoginRequest */
         DevLoginRequest: {
             /**
@@ -1327,6 +1384,36 @@ export type components = {
             me: components["schemas"]["Me"];
             /** Ok */
             ok: boolean;
+        };
+        /**
+         * DocumentsPending
+         * @description Documents the latest delta cycle has not read yet (its reading budget ran out or a
+         *     file timed out): the records holding them are current, their document fields pending;
+         *     the served generation's document objects stay served until a later cycle reads them.
+         *     Counts only, without the excluded people's mail or OneDrives.
+         */
+        DocumentsPending: {
+            /**
+             * Files
+             * @description Files not read yet; omitted when some are held by an excluded person's mail or OneDrive (the count could not leave theirs out).
+             */
+            files?: number | null;
+            /**
+             * Records
+             * @description Records whose document fields are pending, not counting the excluded people's mail or OneDrives.
+             * @default 0
+             */
+            records: number;
+            /**
+             * This Record
+             * @description On a record's page: whether this record's document fields are pending.
+             */
+            this_record?: boolean | null;
+            /**
+             * Timed Out
+             * @description Of those, files whose read timed out; omitted with files.
+             */
+            timed_out?: number | null;
         };
         /** DraftFact */
         DraftFact: {
@@ -1536,6 +1623,12 @@ export type components = {
              * @description The data cut-off (ISO): the newest capture the served data holds, the same on every screen. A source read over a day before it is named in the label and keeps its own time in sources.
              */
             as_of?: string | null;
+            /** @description The next projection build waits for disk space; the label says how much ('next build waits for 374 GB free'). */
+            build_wait?: components["schemas"]["BuildWait"] | null;
+            /** @description Derived data made by older code than the code deployed: the label says it is being refreshed; never presented as current. */
+            derived_code?: components["schemas"]["DerivedCode"] | null;
+            /** @description Documents the latest delta cycle has not read yet; the label names them, and on a record's page whether its document fields are pending. */
+            documents?: components["schemas"]["DocumentsPending"] | null;
             /**
              * Label
              * @description e.g. 'Data as of 10:42 today'.

@@ -211,6 +211,13 @@ def history_window(args: argparse.Namespace, store: Path, since: str, until: str
             "seconds": round(time.monotonic() - started, 1)}
 
 
+def chunk_code() -> str | None:
+    """The deployed version of the code that chunks and indexes text (``operating.
+    derived_status``): the cursors name the version their pass ran."""
+    from operating import derived_status
+    return derived_status.version("search-index")
+
+
 def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[str, Any],
                       values: dict[str, str], report: dict[str, Any]) -> None:
     """Step 1 and the mail history, under their own lock and cursor (a long run that
@@ -228,6 +235,12 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
             if old.get("generation_indexed_at"):
                 cursor = {k: old[k] for k in ("generation", "digest", "generation_indexed_at")
                           if k in old}
+        code = chunk_code()
+        if cursor.get("code") != code:
+            # chunked by older code (``operating.derived_status``): the generation and its
+            # history are chunked again; a chunk of the same text keeps its embedding
+            # (``content_sha``), so only the chunks the change affects are embedded again
+            cursor = {k: v for k, v in cursor.items() if k not in ("digest", "history_until")}
         if cursor.get("digest") != now_served["digest"]:
             if args.min_free_gb and _free_gb(state) < args.min_free_gb:
                 report["generation_pass"] = {"skipped": "disk_below_min_free"}
@@ -238,7 +251,8 @@ def generation_follow(args: argparse.Namespace, state: Path, now_served: dict[st
                 report["refused"] = done["refused"]
                 return
             cursor = dict(cursor, generation=now_served["generation"],
-                          digest=now_served["digest"], generation_indexed_at=_now())
+                          digest=now_served["digest"], generation_indexed_at=_now(),
+                          code=code)
             save_cursor(path, cursor)
         if not args.history_days or not args.window_days:
             return

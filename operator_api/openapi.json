@@ -2347,6 +2347,50 @@
         "title": "CustomerSummary",
         "type": "object"
       },
+      "DerivedCode": {
+        "additionalProperties": false,
+        "description": "Derived data on screen made by older code than the code deployed\n(``operating.derived_status``): being refreshed, or flagged when model-made.",
+        "properties": {
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it was checked (ISO).",
+            "title": "Checked At"
+          },
+          "flagged": {
+            "description": "Model-made artifacts of older code: labelled, refreshed by their own schedule.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Flagged",
+            "type": "array"
+          },
+          "stale": {
+            "description": "Artifacts made by older code, being refreshed (their findings are held back or labelled meanwhile).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Stale",
+            "type": "array"
+          },
+          "titles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each named artifact's title.",
+            "title": "Titles",
+            "type": "object"
+          }
+        },
+        "title": "DerivedCode",
+        "type": "object"
+      },
       "DevLoginRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2950,6 +2994,17 @@
               }
             ],
             "description": "The next projection build waits for disk space; the label says how much ('next build waits for 374 GB free')."
+          },
+          "derived_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DerivedCode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Derived data made by older code than the code deployed: the label says it is being refreshed; never presented as current."
           },
           "documents": {
             "anyOf": [
