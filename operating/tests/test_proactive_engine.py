@@ -273,6 +273,29 @@ class Engine(unittest.TestCase):
         return pe.read_inbox(self.inbox, self.store, reader=reader, may_read=may_read,
                              held=held, decide=decide, **options)
 
+    def test_a_quantity_only_an_older_record_still_holds_is_superseded_not_a_conflict(self):
+        """The newest system of record wins: a Portal manufacturing order edited after the
+        legacy FileMaker assembly order it replaced states the quantity; the legacy value is
+        superseded, no risk. Without an edit time on every side nothing is decided."""
+        w = World()
+        newer = w.obj("AssemblyOrder", {"ordered_pieces": ("400", "each"),
+                                        "portal_updated_at": "2026-11-05T14:00:00"})
+        older = w.obj("AssemblyOrder", {"ordered_pieces": ("770", "each"),
+                                        "fm_modified_at": "2026-10-28T09:00:00Z"},
+                      audience="api:b")
+        w.link("AssemblyOrder.same_record_as", newer, older)
+        undated = w.obj("AssemblyOrder", {"ordered_pieces": ("10", "each")})
+        dated = w.obj("AssemblyOrder", {"ordered_pieces": ("12", "each"),
+                                        "fm_modified_at": "2026-10-28T09:00:00Z"},
+                      audience="api:b")
+        w.link("AssemblyOrder.same_record_as", undated, dated)
+        summary = self.run_engine(w)
+        found = [g["object_id"] for g in self.read()["gaps"]
+                 if g["kind"] == "conflicting_quantity"]
+        self.assertEqual(found, [min(undated, dated)])
+        self.assertEqual(summary["not_evaluated"]["conflicting_quantity"],
+                         {"superseded_by_newer_record": 1})
+
 
 class DetectorTest(Engine):
 

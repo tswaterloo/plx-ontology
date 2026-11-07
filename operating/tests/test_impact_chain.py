@@ -43,11 +43,13 @@ def setUpModule():
 
 
 def late_po(s, key="ic", planned="2099-01-15", promise="2099-01-20"):
-    """A Portal PO planned for 2099-01-15 (its FM twin), confirmed for 2099-01-20 and not
-    received by 2099-02-01: late, measured today. Its one line (open by quantity) is
-    the chain's, added by ``chain_fixture``."""
+    """A Portal PO requested and planned for 2099-01-15 (its own and its FM twin's date),
+    confirmed for 2099-01-20 and not received by 2099-02-01: late, measured today, and on
+    the late list (the one late rule reads the requested-by date). Its one line (open by
+    quantity) is the chain's, added by ``chain_fixture``."""
     po = portal_po(s, key=f"po-{key}", number=f"PO9{abs(hash(key)) % 100000:05d}",
-                   ordered=None)
+                   ordered=None, expected=planned)
+    s.val(po, "expected_date", "date", planned)
     fm_twin(s, po, planned, key=f"fm-{key}")
     confirm(s, po, f"c-{key}", promise, "2099-01-02")
     return po
@@ -1258,6 +1260,42 @@ class ScanAndProactiveTests(unittest.TestCase):
                     self.assertEqual(len(shown[name]), 1, name)
                     self.assertTrue(shown[name][0]["summary"].startswith(days))
                 self.assertEqual(shown["sales"], [])
+
+    def test_one_late_rule_an_impact_rests_on_the_late_list_never_on_today(self):
+        """plx.process may judge a PO late that the late list does not hold (a Portal order
+        with no requested-by date, its FileMaker copy's planned arrival passed): with its
+        material not received the walk would date it by today. Such an impact is not
+        raised (counted ``po_not_on_late_list``); a PO on the list states its due date,
+        never today as the material's date."""
+        s = tp.Store()
+        undated = portal_po(s, key="po-undated", number="PO900777", ordered=None)
+        fm_twin(s, undated, "2099-01-15", key="fm-undated")
+        confirm(s, undated, "c-undated", "2099-01-20", "2099-01-02")
+        chain_fixture(s, required="2099-01-20", po=undated, key="undated")
+        listed = chain_fixture(s, required="2099-01-22", key="listed")
+        path = store_file(s, self.dir.name)
+        st = pe._Store(path)
+        try:
+            scanned = ic.scan(st, self.caller(s, STAFF))
+        finally:
+            st.close()
+        self.assertEqual(len(scanned["assessment"].at_risk), 2)   # the walk finds both
+        inbox = pe.inbox_path(path)
+        summary = pe.run(path, inbox, date(2099, 2, 1), call=self.caller(s, STAFF))
+        self.assertEqual(summary["not_evaluated"]["orders_at_risk"].get("po_not_on_late_list"),
+                         2)   # the undated PO's order and its impact
+        with sqlite3.connect(inbox) as conn:
+            rows = conn.execute("SELECT kind, object_id, follow_up FROM gaps WHERE detector = "
+                                "'orders_at_risk'").fetchall()
+        self.assertEqual(sorted(k for k, _, _ in rows), ["order_at_risk", "po_impact"])
+        self.assertEqual({o for k, o, _ in rows if k == "po_impact"}, {listed["po"]})
+        (follow,) = [json.loads(f) for k, _, f in rows if k == "order_at_risk"]
+        self.assertIn("its material is not received yet (the purchase order was due "
+                      "2099-01-15)", follow["why"])
+        self.assertNotIn("2099-02-01", follow["why"])
+        self.assertNotIn("material", follow["event"])
+        self.assertEqual((follow["event"]["material_pending"], follow["event"]["due"]),
+                         (True, "2099-01-15"))
 
     def test_an_order_at_risk_gap_without_recorded_requirements_shows_to_nobody(self):
         s = tp.Store()

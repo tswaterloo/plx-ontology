@@ -75,6 +75,12 @@ class Case(unittest.TestCase):
             out.setdefault(gap["kind"], []).append(gap)
         return out
 
+    def stored(self, oid: str, **grant) -> dict:
+        """The engine's stored item of ``oid`` as the reader's grant trims it (the briefing
+        leaves a suspect one out)."""
+        return next(g for gaps in self.events(**grant).values() for g in gaps
+                    if g["object_id"] == oid)
+
     def brief(self, routing: bf.Routing, *, reader="r", **grant) -> dict:
         grant = {"may_read": everyone, "held": ALL, "decide": admit, **grant}
         return bf.read(self.inbox, self.store, reader=reader, routing=routing, **grant)
@@ -595,6 +601,146 @@ class DetectorTest(Case):
                          {"margin_not_decided": 1})
         # a reader without finance may not open the figure: never sees the loss
         self.assertNotIn("negative_margin", self.events(held=frozenset()))
+
+    def test_one_event_is_one_item_and_a_suspect_impact_stays_unranked(self):
+        """A late PO's impact and the order it holds up are one item; an impact resting on
+        a suspect total stays, marked suspect and never ranked by its figure; an order whose
+        PO item the reader cannot see keeps its own."""
+        suspect = {"value": "4410000.21", "currency": "CAD", "basis": "total_cost",
+                   "suspect": "the total is over 1,000 times this vendor's usual order in CAD"}
+
+        def gap(kind, oid, **event):
+            return {"id": f"g-{kind}-{oid}", "kind": kind, "object_id": oid, "state": "open",
+                    "object_type": "PurchaseOrder" if kind != "order_at_risk" else "SalesOrder",
+                    "event": event, "follow_up": {}}
+        inbox = {"status": "read", "gaps": [
+            gap("po_impact", "PO-typo", orders=["SO-1"], orders_affected=1, days=63,
+                amount=suspect),
+            gap("order_at_risk", "SO-1", pos=["PO-typo"], orders_affected=1, days=63),
+            gap("po_impact", "PO-a", orders=["SO-2"], orders_affected=1, days=9),
+            gap("po_impact_margin", "PO-a", orders=["SO-2"], orders_affected=1, days=9),
+            gap("order_at_risk", "SO-2", pos=["PO-a"], orders_affected=1, days=9),
+            gap("order_at_risk", "SO-3", pos=["PO-hidden"], orders_affected=1, days=4)]}
+        out = bf.build(inbox, routing=EVERYTHING, hidden=None, last_visit=None)
+        self.assertEqual(sorted((i["kind"], i["object_id"]) for i in out["items"]),
+                         [("order_at_risk", "SO-3"), ("po_impact", "PO-typo"),
+                          ("po_impact_margin", "PO-a")])
+        self.assertEqual(out["left_out"], {"same_event": 3})
+        self.assertEqual(out["count"], 3)
+        typo = next(i for i in out["items"] if i["object_id"] == "PO-typo")
+        self.assertTrue(bf.money_words(typo["facts"]).startswith(bf.SUSPECT_WORDS))
+
+    def test_overdue_orders_and_losses_stay_whatever_their_total_check_says(self):
+        """A suspect or unchecked total never removes an overdue order, an order at risk or a
+        loss: it stays, its figure unranked and marked (not checked is said so, never dropped)."""
+        def gap(kind, oid, otype, **event):
+            return {"id": f"g-{oid}", "kind": kind, "object_id": oid, "state": "open",
+                    "object_type": otype, "event": event, "follow_up": {}}
+        big = {"value": "9000000.00", "currency": "CAD", "basis": "total_amount",
+               "suspect": "the total is over 1,000 times this customer's usual order in CAD"}
+        unchecked = {"value": "500.00", "currency": "CAD", "basis": "total_amount",
+                     "suspect": bf.NOT_CHECKED}
+        loss = {"value": "80.00", "currency": "CAD", "basis": "loss",
+                "suspect": bf.NOT_CHECKED}
+        inbox = {"status": "read", "gaps": [
+            gap("late_customer_order", "SO-21", "SalesOrder", days=21, amount=big),
+            gap("late_customer_order", "SO-30", "SalesOrder", days=30, amount=unchecked),
+            gap("negative_margin", "SO-loss", "SalesOrder", amount=loss),
+            gap("order_at_risk", "SO-risk", "SalesOrder", pos=["PO-x"], days=5,
+                amount=unchecked)]}
+        out = bf.build(inbox, routing=EVERYTHING, hidden=None, last_visit=None)
+        self.assertEqual({i["object_id"] for i in out["items"]},
+                         {"SO-21", "SO-30", "SO-loss", "SO-risk"})
+        self.assertEqual(out["left_out"], {})
+        by = {i["object_id"]: i for i in out["items"]}
+        self.assertTrue(bf.money_words(by["SO-21"]["facts"]).startswith(bf.SUSPECT_WORDS))
+        self.assertEqual(bf.money_words(by["SO-30"]["facts"]),
+                         "500.00 CAD order total, figure not checked")
+        self.assertEqual(bf.money_words(by["SO-loss"]["facts"]),
+                         "80.00 CAD lost, figure not checked")
+
+    def test_a_no_charge_order_is_its_own_kind_never_a_loss(self):
+        """Nothing invoiced net of credits (a sample, a replacement): its item cost is
+        stated as a no-charge order, never "lost"."""
+        from decimal import Decimal
+        w = World()
+        free, sold = w.obj("SalesOrder", {}), w.obj("SalesOrder", {})
+        figures = {}
+        for order in (free, sold):
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+
+        def read_order(_call, order):
+            order.revenue = Decimal("0") if order.object_id == free else Decimal("100")
+            order.cost = Decimal("31.78")
+            order.margin, order.currency = order.revenue - order.cost, "CAD"
+            order.lines = [cp.Line(1, "l", None, invoice_handles=[figures[order.object_id]])]
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        found = self.events()
+        self.assertEqual([g["object_id"] for g in found.get("negative_margin", [])], [])
+        (charge,) = found["no_charge_order"]
+        self.assertEqual((charge["object_id"], charge["summary"]),
+                         (free, "No-charge order: nothing invoiced, item cost 31.78 CAD"))
+        self.assertNotIn("event", charge)
+        self.assertNotIn(free, json.dumps(self.brief(EVERYTHING)["items"]))
+
+    def test_a_credited_order_is_a_loss_unless_its_goods_came_back(self):
+        """Revenue zero after credit memos: a no-charge order only when the goods were
+        returned; credited without a return stays a loss (a write-off)."""
+        from decimal import Decimal
+        w = World()
+        orders = {k: w.obj("SalesOrder", {}) for k in ("returned", "written_off")}
+        figures = {}
+        for order in orders.values():
+            invoice = w.obj("SalesInvoice", {"posting_date": "2026-08-10"},
+                            markings='["finance"]')
+            figures[order] = handle(w.n)
+            w.link("SalesInvoice.bills", invoice, order)
+
+        def read_order(_call, order):
+            order.revenue, order.cost = Decimal("0"), Decimal("31.78")
+            order.margin, order.currency = Decimal("-31.78"), "CAD"
+            back = [figures[order.object_id]] if order.object_id == orders["returned"] else []
+            order.lines = [cp.Line(1, "l", None, credited=Decimal("2"),
+                                   credit_amount=Decimal("100"),
+                                   invoice_handles=[figures[order.object_id]],
+                                   return_handles=back)]
+            return order
+
+        with mock.patch.object(cp, "read_order", read_order):
+            self.run_engine(w, call=lambda *_: {})
+        found = self.events()
+        self.assertEqual([g["object_id"] for g in found["no_charge_order"]],
+                         [orders["returned"]])
+        self.assertEqual([g["object_id"] for g in found["negative_margin"]],
+                         [orders["written_off"]])
+
+    def test_a_late_check_that_failed_keeps_the_impacts_marked_not_checked(self):
+        """When the late rule failed or timed out, no impact is dropped for not being on
+        the late list; each says its late status was not checked."""
+        def gap(kind, oid, **event):
+            return {"kind": kind, "object_id": oid, "follow_up": {"event": event}}
+        for status in ("failed", "truncated"):
+            gaps = [gap("order_at_risk", "SO-1", pos=["PO-1"], material_pending=True),
+                    gap("po_impact", "PO-1", orders=["SO-1"])]
+            results = {"orders_at_risk": {"gaps": gaps, "not_evaluated": {}},
+                       pe.LATE_RULE: {"status": status, "gaps": [], "reasons": []}}
+            pe._late_list_only(None, results, date(2026, 11, 7))
+            self.assertEqual(len(results["orders_at_risk"]["gaps"]), 2, status)
+            self.assertNotIn("po_not_on_late_list", results["orders_at_risk"]["not_evaluated"])
+            for g in gaps:
+                self.assertTrue(g["follow_up"]["event"]["late_status_not_checked"])
+        # a complete late list that does not hold the PO still drops it (one late rule)
+        gaps = [gap("order_at_risk", "SO-1", pos=["PO-1"], material_pending=True)]
+        results = {"orders_at_risk": {"gaps": gaps, "not_evaluated": {}},
+                   pe.LATE_RULE: {"status": "complete", "gaps": [], "reasons": []}}
+        pe._late_list_only(None, results, date(2026, 11, 7))
+        self.assertEqual(results["orders_at_risk"]["gaps"], [])
 
     def test_negative_margin_window_counts_back_from_each_systems_own_newest_invoice(self):
         """BC's invoices end months before Sage's: each system's 30 days count back from
@@ -1198,7 +1344,8 @@ class BriefingTest(Case):
 
     def test_a_suspect_total_is_flagged_never_ranked_nor_stated_as_fact(self):
         """A total far beyond its vendor's usual orders (a unit cost typed in cents) is
-        "suspect source data (why)": never the ranking's money, never a stated figure."""
+        "suspect source data (why)": the briefing keeps the item, never ranks by it nor
+        states the figure."""
         w = World()
         for _ in range(4):     # the vendor's usual order: about 100 CAD
             po_with(w, "100.00", "CAD", vendor_number="V1")
@@ -1210,15 +1357,14 @@ class BriefingTest(Case):
         self.run_engine(w)
         out = self.brief(EVERYTHING)
         items = {i["object_id"]: i for i in out["items"]}
-        amount = items[typo]["facts"]["amount"]
-        self.assertEqual(amount["suspect"],
+        self.assertEqual(self.stored(typo)["event"]["amount"]["suspect"],
                          "the total is over 10,000 times this vendor's usual order in CAD")
         self.assertNotIn("suspect", items[fair]["facts"]["amount"])
-        # ranked by the fair amount, never by the suspect one (it has none to rank by)
-        self.assertEqual([i["object_id"] for i in out["items"]][:2], [fair, typo])
+        # kept and marked suspect, never ranked by its figure; the fair amount leads
+        self.assertIn(typo, items)
+        self.assertEqual(out["left_out"], {})
+        self.assertEqual([i["object_id"] for i in out["items"]][:1], [fair])
         text = bf.digest_text(out, first_name="Synth")
-        self.assertIn("(suspect source data (the total is over 10,000 times this vendor's "
-                      "usual order in CAD))", text)
         self.assertNotIn("4410000", text)
         self.assertEqual(bf.money_words(items[fair]["facts"]), "120.00 CAD order total")
 
@@ -1260,9 +1406,10 @@ class BriefingTest(Case):
         self.assertNotIn("disagree", items[portal]["facts"]["amount"])
         self.assertEqual(bf.money_words(items[wrong]["facts"]),
                          "order total 900.00 CAD and its lines disagree (lines sum to 1500 CAD)")
-        self.assertEqual(items[typo]["facts"]["amount"]["suspect"],
+        self.assertEqual(self.stored(typo)["event"]["amount"]["suspect"],
                          "a line's unit cost is over 1,000 times what this item costs on "
                          "other orders")
+        self.assertIn("suspect", items[typo]["facts"]["amount"])   # kept, marked suspect
         # a reader of api:a only: the lines' sum is not stated, the band is dropped
         own = self.brief(EVERYTHING, may_read=lambda key: key == "api:a")
         mine = {i["object_id"]: i for i in own["items"]}
@@ -1270,13 +1417,13 @@ class BriefingTest(Case):
         self.assertEqual(bf.money_words(mine[wrong]["facts"]),
                          "900.00 CAD total (not checked against its lines)")
         self.assertNotIn("disagree", json.dumps(mine[wrong]))
-        self.assertEqual(mine[typo]["facts"]["amount"]["suspect"],
-                         "a line's unit cost is far above what this item costs on other "
-                         "orders")
-        # neither a disagreeing nor a suspect total is ranked by money
+        self.assertEqual(bf.money_words(bf._out(bf._item(
+            self.stored(typo, may_read=lambda key: key == "api:a"), 0, None, None), 1, {})[
+            "facts"]), "suspect source data (a line's unit cost is far above what this item "
+                       "costs on other orders)")
+        # a disagreeing total is not ranked by money
         ranked = [i["object_id"] for i in self.brief(EVERYTHING)["items"]]
         self.assertLess(ranked.index(bc), ranked.index(wrong))
-        self.assertLess(ranked.index(portal), ranked.index(typo))
 
     def test_portal_currency_spellings_are_read_and_its_unit_price_total_said_as_such(self):
         """The Portal writes CAD$ and USD$ (C$ and US$ read the same way): its orders carry
@@ -1349,8 +1496,9 @@ class BriefingTest(Case):
             po("11.30", "1", "10")
         outlier = po("1130.00", "100", "1000")    # unit prices x 1.13, the cost 100 x usual
         self.run_engine(w)
-        found = {i["object_id"]: i for i in self.brief(EVERYTHING)["items"]}
-        self.assertEqual(bf.money_words(found[outlier]["facts"]),
+        stored = self.stored(outlier)
+        self.assertIn(outlier, [i["object_id"] for i in self.brief(EVERYTHING)["items"]])
+        self.assertEqual(bf.money_words(bf._out(bf._item(stored, 0, None, None), 1, {})["facts"]),
                          "suspect source data (a line's unit cost is over 100 times what "
                          "this item costs on other orders)")
 
@@ -1493,6 +1641,26 @@ class BriefingTest(Case):
                          ["pe-x0", "pe-x1", "pe-x12", "pe-x30"])
         self.assertEqual(order[:2], ["pe-new", "pe-old"])
         self.assertIn("then what the latest check found new", out["rank_basis"])
+
+    def test_undated_pos_are_listed_but_rank_below_every_real_event(self):
+        """An open PO with no due date is ranked by money among its own kind, yet however
+        large its amount it follows a loss, an overdue order or a late PO."""
+        def amt(v):
+            return {"amount": {"value": v, "currency": "USD", "basis": "total_cost"}}
+
+        def gap(n, kind, event, **extra):
+            return {"id": f"pe-{n}", "kind": kind, "object_id": f"X:{n}", "summary": "s",
+                    "first_seen": "2026-10-20", "event": event, **extra}
+        gaps = [gap(1, "undated_po", amt("900000.00")), gap(2, "undated_po", amt("500000.00")),
+                gap(3, "negative_margin", amt("10.00")),
+                gap(4, "late_po", amt("5.00"), days_late=3),
+                gap(5, "order_at_risk", {"orders_affected": 1})]
+        out = bf.build({"status": "read", "gaps": gaps, "complete": True},
+                       routing=EVERYTHING, hidden={}, last_visit=None)
+        kinds = [i["kind"] for i in out["items"]]
+        self.assertEqual(len(kinds), 5)
+        self.assertEqual(kinds[3:], ["undated_po", "undated_po"])
+        self.assertEqual([i["object_id"] for i in out["items"][3:]], ["X:1", "X:2"])
 
     def test_today_in_one_line(self):
         """The line names what is new (the latest check, or since the reader's last visit)

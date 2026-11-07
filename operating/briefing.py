@@ -32,7 +32,10 @@ more widely, writes to a business system or sends anything.
   total
   ``operating.suspect_money`` finds implausible (against its lines, the item's usual
   price, the vendor's or customer's usual order, or every order in that currency) is never
-  ranked by and is shown only as "suspect source data (why)". Ties keep the inbox's order.
+  ranked by: its item is left out (``real_impact``, counted in ``left_out``), with any
+  order put at risk only by it. Ties keep the inbox's order.
+* **One event, one item** (``real_impact``): a late PO's impact item stands for the orders
+  at risk it names and for its plain impact when it states the margin at stake.
 * **Late is Home's late**: a purchase order of the one late list's kinds is late when the
   status rule states its days late (Home's ``late_total``); due today it is "due today".
   Acknowledged items stay listed (marked), so the counts reconcile with Home's.
@@ -91,6 +94,12 @@ EVERYTHING = frozenset({"EXEC"})
 # (no ``days_late`` yet) is "due today", never late. A PO with a late BC line
 # (``late_order``) is not late unless its own status rule says so.
 LATE_KINDS = ("late_po", "unconfirmed_po")
+# The kinds whose money figure is the event itself (an amount anomaly): the only items a
+# suspect figure removes. No current event type is one.
+AMOUNT_EVENT_KINDS: frozenset[str] = frozenset()
+# What ``proactive_engine._with_amounts`` states when the plausibility check did not run.
+NOT_CHECKED = "its plausibility could not be checked"
+LATE_TYPES = ("po_late", "po_due")   # the late list's event types (one late rule)
 
 EVENT_TYPES: dict[str, dict[str, Any]] = {
     "po_late": {"kinds": LATE_KINDS, "label": "Late purchase order",
@@ -395,7 +404,8 @@ def rank(items: list[Item]) -> tuple[list[Item], str]:
     """The items worst first (``RANK_BASIS``). Money is placed within its own currency:
     each usable amount's place among the amounts of that currency (0 the largest), so
     one amount in another currency neither switches money ranking off nor is compared
-    with the rest; a suspect total, or one its own lines disagree with, has no place."""
+    with the rest; a suspect total, or one its own lines disagree with, has no place. An open PO with no due date is listed after every real event
+    (loss, overdue order, late PO) and ranked by money only among its own kind."""
     usable = [i for i in items if i.amount and not i.suspect and i.disagree is None
               and i.basis not in UNRANKED_BASES]
     by_currency: dict[str, list[Decimal]] = {}
@@ -408,9 +418,61 @@ def rank(items: list[Item]) -> tuple[list[Item], str]:
             item.money_place = values.index(item.amount[0]) / len(values)
     ordered = sorted(items, key=lambda i: i.order)
     ordered.sort(key=lambda i: str(i.gap.get("first_seen") or ""), reverse=True)
-    ordered.sort(key=lambda i: (i.acknowledged, -i.orders_affected, i.money_place,
-                                not i.new_this_generation, -_urgency(i)))
+    ordered.sort(key=lambda i: (i.acknowledged, i.event_type == "po_undated",
+                                -i.orders_affected, i.money_place, not i.new_this_generation, -_urgency(i)))
     return ordered, RANK_BASIS
+
+
+def _event(item: Item) -> Mapping[str, Any]:
+    event = item.gap.get("event")
+    return event if isinstance(event, Mapping) else {}
+
+
+def _ids(value: Any) -> set[str]:
+    return {v for v in value if isinstance(v, str)} if isinstance(value, (list, tuple)) else set()
+
+
+def real_impact(items: list[Item]) -> tuple[list[Item], dict[str, int]]:
+    """The items that are each one real event, and how many were left out and why:
+
+    * ``suspect_source_data``: an item whose money figure IS the event (``AMOUNT_EVENT_KINDS``:
+      an amount anomaly) and that ``suspect_money`` finds implausible is no business event;
+      it is left out and counted. Every other item stays, however its total checks: a total
+      found implausible is unranked and said to be suspect, a total whose check could not
+      run is unranked and said not to have been checked (``NOT_CHECKED``); nothing is ever
+      dropped for a check that did not run;
+    * ``same_event``: one late purchase order and the customer orders it holds up are one
+      event: a PO's impact with the margin at stake stands for its plain impact, and a PO's
+      impact item stands for each order at risk it names (an order at risk whose every
+      late PO has a visible impact item naming it). A reader who may not see the PO's item
+      keeps the order's own.
+    """
+    out: dict[str, int] = {}
+    kept: list[Item] = []
+    for item in items:
+        if item.suspect and item.suspect != NOT_CHECKED \
+                and item.gap.get("kind") in AMOUNT_EVENT_KINDS:
+            out["suspect_source_data"] = out.get("suspect_source_data", 0) + 1
+        else:
+            kept.append(item)
+    with_margin = {i.gap.get("object_id") for i in kept if i.gap.get("kind") == "po_impact_margin"}
+    names: dict[str, set[str]] = {}
+    for i in kept:
+        if i.gap.get("kind") in ("po_impact", "po_impact_margin"):
+            names.setdefault(str(i.gap.get("object_id")), set()).update(
+                _ids(_event(i).get("orders")))
+    final: list[Item] = []
+    for item in kept:
+        kind = item.gap.get("kind")
+        pos = _ids(_event(item).get("pos"))
+        same = (kind == "po_impact" and item.gap.get("object_id") in with_margin) or (
+            kind == "order_at_risk" and bool(pos) and all(
+                item.gap.get("object_id") in names.get(p, ()) for p in pos))
+        if same:
+            out["same_event"] = out.get("same_event", 0) + 1
+        else:
+            final.append(item)
+    return final, out
 
 
 def _urgency(item: Item) -> int:
@@ -516,6 +578,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             mine.append(item)
         else:
             others += 1
+    mine, left_out = real_impact(mine)
     new = sum(1 for i in mine if i.new_since_visit)
     late = len({i.gap.get("object_id") for i in mine if i.event_type == "po_late"})
     if since_visit:
@@ -546,7 +609,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             "counts_exact": not inbox.get("more"),
             "new_since_visit": new, "since_visit": since_visit,
             "acknowledged": sum(1 for i in ordered if i.acknowledged),
-            "late_total": late, "other_teams": others,
+            "late_total": late, "other_teams": others, "left_out": left_out,
             "hidden": None if hidden_by_type is None else sum(hidden_by_type.values()),
             "hidden_by_type": hidden_by_type or {}, "last_visit": last_visit,
             "checks": checks, "types": types,
@@ -634,11 +697,13 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
     if item.days is not None:
         facts["days"] = item.days
     found = _first_found(item.event_type, kinds) is not None
+    if isinstance(gap.get("event"), Mapping) and gap["event"].get("late_status_not_checked"):
+        facts["late_status"] = "late status not checked"
     # the records a finding joins (a late PO and the customer orders it holds up): the
     # gap's own event, so they are among what this reader may see whenever the gap is
     event = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
     links = {k: list(event[k]) if isinstance(event[k], (list, tuple)) else event[k]
-             for k in ("pos", "orders", "required", "material", "line_promised")
+             for k in ("pos", "orders", "required", "material", "due", "line_promised")
              if isinstance(event.get(k), (str, list, tuple))}
     return {"rank": n, "id": gap.get("id"), "event_type": item.event_type,
             "label": spec["label"], "kind": gap.get("kind"),
@@ -676,6 +741,9 @@ def money_words(facts: Mapping[str, Any]) -> str:
     amount = facts.get("amount")
     if not amount:
         return ""
+    if amount.get("suspect") == NOT_CHECKED:
+        what = _AMOUNT_WORDS.get(amount["basis"], "at stake")
+        return f"{amount['value']} {amount['currency']} {what}, figure not checked"
     if amount.get("suspect"):
         return f"{SUSPECT_WORDS} ({amount['suspect']})"
     if amount.get("basis") in BASIS_WORDS:
@@ -812,7 +880,9 @@ def digest_text(briefing: Mapping[str, Any], *, first_name: str,
             (" [acknowledged]" if item.get("acknowledged") else "")
         lines.append(f"{item['rank']}. {item['label']}: {label}{marks}")
         money = money_words(item.get("facts") or {})
-        lines.append(f"   {item.get('summary') or ''}" + (f" ({money})" if money else ""))
+        lines.append(f"   {item.get('summary') or ''}" + (f" ({money})" if money else "")
+                     + (f" [{item['facts']['late_status']}]"
+                        if (item.get("facts") or {}).get("late_status") else ""))
         if item.get("why"):
             lines.append(f"   Why: {item['why']}")
         lines.append(f"   Next: {item['next_action']['text']}")

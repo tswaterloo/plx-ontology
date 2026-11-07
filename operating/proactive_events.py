@@ -56,7 +56,9 @@ make the rule ``truncated``):
 * ``negative_margin`` (F10 ``order_margin`` through ``operating.customer_profit``): a
   sales order invoiced within ``MARGIN_DAYS`` before the newest invoice date its own
   system holds (BC's and Sage's each count back from their own) whose decided, checked
-  margin is below zero; every figure it rests on is its own citation group.
+  margin is below zero; every figure it rests on is its own citation group. An order whose
+  invoiced revenue net of credits is zero is a ``no_charge_order`` (its item cost stated,
+  low priority), never a loss.
 
 Late purchase orders, a late PO hitting a customer order (``orders_at_risk``) and the
 receipt quantity mismatch are the engine's own rules; ``operating.briefing`` maps every
@@ -1319,6 +1321,14 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
             continue
         if order.margin >= 0:
             continue
+        # nothing invoiced net of credits: a no-charge order (a sample, a replacement, a
+        # fully credited invoice) costs its items but loses no sale; its own kind, no loss
+        # A fully credited order whose goods were NOT returned stays a loss (a write-off):
+        # only nothing invoiced, or credited and returned, is no-charge
+        credited = any(line.credited or line.credit_amount for line in order.lines)
+        returned = any(line.return_handles for line in order.lines)
+        no_charge = order.revenue is not None and order.revenue == 0 and (
+            not credited or returned)
         handles = sorted({h for line in order.lines for h in (
             *line.invoice_handles, *line.credit_handles, *line.ledger_handles,
             *line.return_handles) if isinstance(h, str)})
@@ -1329,6 +1339,20 @@ def negative_margin(st: Any, as_of: date, call: Callable | None, *, gap: Callabl
         subject = st.versions(objects=[root])
         marks = _value_markings(st, {rows[h]["object_id"] for h in handles})
         loss = -order.margin
+        if no_charge:
+            gaps.append(gap(
+                "no_charge_order", "negative_margin", root, "SalesOrder", "no_charge",
+                summary=f"No-charge order: nothing invoiced, item cost {order.cost} "
+                        f"{order.currency}",
+                missing="Whether this order was meant to ship at no charge (a sample, a "
+                        "replacement or a credited invoice)",
+                why="Its invoiced revenue net of credit memos is zero, so it is a no-charge "
+                    "order, not a loss on a sale; its booked item cost is stated (each "
+                    "figure cited).",
+                priority="low", about=("SalesOrder", "margin"),
+                groups=[cites(subject)] + [cites([rows[h]], *marks.get(h, ()))
+                                           for h in handles]))
+            continue
         gaps.append(gap(
             "negative_margin", "negative_margin", root, "SalesOrder", "margin",
             summary=f"Lost {loss} {order.currency} on item cost only: revenue {order.revenue} "

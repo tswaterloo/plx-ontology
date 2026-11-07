@@ -1664,10 +1664,16 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
                 for (top, _t, _p), members in grouped.items()
                 if len({m["l1_handle"] for m in members}) >= 2}
     closed = _closed_clusters(st, disputed, {row["object_type"] for row in rows})
+    edited = _edit_times(st, disputed, {row["object_type"] for row in rows})
     gaps = []
     skipped: Counter[str] = Counter()
     for (top, object_type, prop), members in sorted(grouped.items()):
         if len({m["l1_handle"] for m in members}) < 2:
+            continue
+        if _superseded(members, edited):
+            # the newest system of record wins: a value only an older record of the same
+            # identity still holds is superseded, no risk (the record page shows both)
+            skipped["superseded_by_newer_record"] += 1
             continue
         by_handle = {m["l1_handle"]: m for m in members}
         subject = f"{object_type}.{prop}"
@@ -1687,6 +1693,47 @@ def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
                 groups=[_cites((by_handle[h] for h in group), *marks.get(top, []))
                         for group in item["requires"]]))
     return _result(gaps, not_evaluated=skipped)
+
+
+# A record's own last-edit time as its system stamps it (never when it was read).
+EDIT_TIME_PROPS = ("portal_updated_at", "fm_modified_at", "bc_last_modified_at")
+
+
+def _edit_times(st: _Store, disputed: Mapping[str, set[str]], types: Iterable[str]
+                ) -> dict[str, Any]:
+    """object id -> its newest own edit time (``EDIT_TIME_PROPS``), of the objects holding
+    a disputed value; an object with none stated is absent."""
+    from .answer_conflicts import parse_time
+    objects = sorted({o for members in disputed.values() for o in members})
+    if not objects:
+        return {}
+    out: dict[str, Any] = {}
+    for oid, entry in st.values(sorted(types), EDIT_TIME_PROPS, objects=objects).items():
+        times = [t for p in EDIT_TIME_PROPS for r in entry["props"].get(p, [])
+                 for t in [parse_time(r["value"])] if t is not None]
+        if times:
+            out[oid] = max(times)
+    return out
+
+
+def _superseded(members: Sequence[Mapping[str, Any]], edited: Mapping[str, Any]) -> bool:
+    """Whether one value of a disputed quantity is held by the newest edited record of the
+    identity: the one conflict rule (``answer_conflicts.resolve``'s "newest", records
+    dated by their own edit time) decides, never a value two records of one system hold
+    alike. Each disagreeing record must state its edit time, and they must be different
+    records (one record stating two values is no supersession)."""
+    from .answer_conflicts import Reading, resolve
+    if len({m["object_id"] for m in members}) < 2 \
+            or any(m["object_id"] not in edited for m in members):
+        return False
+    by_value: dict[str, set[str]] = defaultdict(set)
+    for m in members:
+        by_value[str(pg._decimal(m["value"]))].add(m["object_id"])
+    if any(a & b for x, a in by_value.items() for y, b in by_value.items() if x < y):
+        return False
+    found = resolve("quantity", [Reading(value=m["value"], handle=m["l1_handle"],
+                                         as_of=edited[m["object_id"]]) for m in members])
+    return bool(found) and found.get("rule") == "newest"
 
 
 def _closed_clusters(st: _Store, disputed: Mapping[str, set[str]],
@@ -2335,6 +2382,14 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
         groups += [[cite(ref)] for ref in chain.refs]
         pos = len({c.po for c in order.chains})
         noun = "purchase order" if pos == 1 else "purchase orders"
+        # the day measured stands for "not received yet", never for a date the material
+        # comes: the PO's own due date is stated, and the event holds no material date
+        pending = order.material_how.startswith("not received as of")
+        due = verdict.governing
+        material = (("its material is not received yet"
+                     + (f" (the purchase order was due {due.isoformat()})" if due else ""))
+                    if pending else
+                    f"material {order.material.isoformat()} ({order.material_how})")
         firm = chain.tier == "firm"
         how = ("an assembly order made or allocated for this order (recorded links, each "
                "cited)" if firm else
@@ -2348,14 +2403,16 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
             missing="Confirm whether the order's required date still holds, or when the "
                     "late purchase order's material will arrive"
                     + ("" if firm else ", and whether this assembly order is made for it"),
-            why=pg._clip(f"The item of a late purchase order is consumed by {how}: material "
-                         f"{order.material.isoformat()} ({order.material_how}) against the "
-                         f"required date {order.required.isoformat()}."),
+            why=pg._clip(f"The item of a late purchase order is consumed by {how}: "
+                         f"{material}, against the required date "
+                         f"{order.required.isoformat()}."),
             priority=("high" if order.days >= 7 else "medium") if firm else
                      ("medium" if order.days >= 7 else "low"),
             about=("SalesOrder", "required_date"), groups=groups,
             event={"days": order.days, "orders_affected": 1, "pos": [order.worst],
-                   "material": order.material.isoformat(),
+                   **({"material_pending": True,
+                       **({"due": due.isoformat()} if due else {})} if pending else
+                      {"material": order.material.isoformat()}),
                    **({"required": order.required.isoformat()} if order.required else {}),
                    **_line_event(own, chain, order.required)})
         if gap is None:
@@ -2468,6 +2525,78 @@ def _orders_at_risk(st: _Store, as_of: date, call: Callable | None, bound: int,
 
 
 LATE_FOUND_KINDS = frozenset({"late_po", "late_order", "unconfirmed_po", "eta_slipped"})
+IMPACT_KINDS = ("order_at_risk", "po_impact", "po_impact_margin")
+
+
+def _late_list_only(st: _Store, results: dict[str, dict[str, Any]], as_of: date) -> None:
+    """One late rule for Late, Home and the briefing: a customer order is at risk from a
+    purchase order that is not received only while that order is on the late list
+    (``LATE_RULE``'s gaps that state days late, Home's ``late_total``), across its copies
+    (the rule's ``po_orders`` join). ``plx.process`` may judge a PO late that the list does
+    not hold (a line's bulk import date, or no requested date at all) and then dates the
+    material by the day measured: such an impact is dropped, counted
+    ``po_not_on_late_list``. A material date that is a cited fact (a receipt, a supplier's
+    promise for the line) stands on its own citation. When the late rule did not run this
+    run it is read once; when it failed nothing is on the list."""
+    found = results.get("orders_at_risk")
+    if not found or not found.get("gaps"):
+        return
+    def event_of(gap: Mapping[str, Any]) -> Mapping[str, Any]:
+        return (gap.get("follow_up") or {}).get("event") or {}
+
+    late = results.get(LATE_RULE)
+    if late is None:
+        try:
+            late = _late_or_unconfirmed_po(st, as_of)
+        except Exception:  # noqa: BLE001 - a late check that cannot run drops nothing
+            late = None
+    if late is None or late.get("status") in ("failed", "truncated"):
+        # the late list is unknown or incomplete: every impact stays, and the ones resting
+        # on the day measured say their late status was not checked
+        for gap in found["gaps"]:
+            event = event_of(gap)
+            if isinstance(event, dict) and (event.get("material_pending")
+                                            or gap.get("kind") != "order_at_risk"):
+                event["late_status_not_checked"] = True
+        return
+    joined = late.get("po_orders") or {}
+    listed = {((gap.get("follow_up") or {}).get(_ORDER) or {}).get("key") or gap["object_id"]
+              for gap in late.get("gaps") or ()
+              if (gap.get("follow_up") or {}).get("days_late") is not None}
+
+    def on_list(po: Any) -> bool:
+        return isinstance(po, str) and (joined.get(po) or (po,))[0] in listed
+
+    # a PO with an order whose material date is a cited fact, not the day measured
+    dated = {p for gap in found["gaps"] if gap.get("kind") == "order_at_risk"
+             and not event_of(gap).get("material_pending") for p in event_of(gap).get("pos") or ()}
+
+    def stands(gap: Mapping[str, Any]) -> bool:
+        if gap.get("kind") == "order_at_risk":
+            pos = event_of(gap).get("pos") or ()
+            return bool(pos) and (not event_of(gap).get("material_pending")
+                                  or all(on_list(p) for p in pos))
+        po = gap.get("object_id")
+        return on_list(po) or po in dated
+
+    kept, dropped = [], 0
+    for gap in found["gaps"]:
+        if gap.get("kind") not in IMPACT_KINDS or stands(gap):
+            kept.append(gap)
+        else:
+            dropped += 1
+    if dropped:
+        found["gaps"] = kept
+        skipped = found.setdefault("not_evaluated", {})
+        if isinstance(skipped, dict):
+            skipped["po_not_on_late_list"] = skipped.get("po_not_on_late_list", 0) + dropped
+        finding = found.get("finding")
+        if isinstance(finding, dict):
+            risky = sum(1 for g in kept if g.get("kind") == "order_at_risk")
+            pos = len({g["object_id"] for g in kept if g.get("kind") == "po_impact"})
+            from . import impact_chain as ic
+            finding.update({"orders_at_risk": risky, "late_pos": pos,
+                            "text": ic.headline(risky, pos)})
 
 
 def _late_found(results: Mapping[str, Mapping[str, Any]]) -> set[str]:
@@ -3220,6 +3349,7 @@ def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             for name, result in results.items():
                 mine = scope.subjects.get(name, frozenset())
                 result["gaps"] = [g for g in result["gaps"] if g["object_id"] in mine]
+        _late_list_only(st, results, as_of)
         _with_amounts(st, results)
         # one test-record filter for every detector (never a page's own): a claim about a
         # test, UAT, demo or proof record, a go-live first document or a carried-over old
