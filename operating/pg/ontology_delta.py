@@ -175,11 +175,28 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
         conn.close()
 
 
+def _relation_completeness(held: str | None, layer: str | None, families: set) -> str:
+    """``relation_completeness`` after a layer that read ``families``: each such
+    family's facts are the layer's, or none when the layer states none."""
+    out = json.loads(held or "{}")
+    mine = json.loads(layer or "{}")
+    if not isinstance(out, dict) or not isinstance(mine, dict):
+        raise ValueError("relation_completeness is not an object")
+    for family in families:
+        if isinstance(mine.get(family), dict):
+            out[family] = mine[family]
+        else:
+            out.pop(family, None)
+    return json.dumps(out, sort_keys=True)
+
+
 def _freshness(conn: sqlite3.Connection, cur: Any) -> int:
     """The layer's capture freshness for the families it read (``delta_families``) into
     ``ontology.store_meta`` (``source_freshness`` per family, ``freshness`` per source,
     ``source_condition_unmet`` united), so a reader's freshness is the newest layer's;
-    the keys written."""
+    the keys written. ``relation_completeness`` follows per family: the layer's when it
+    states one, else the family's is dropped (a stale per-relation fact never vouches
+    for a newer partial read)."""
     mine = dict(conn.execute("SELECT key, value FROM store_meta"))
     try:
         families = set(json.loads(mine.get("delta_families") or "[]"))
@@ -188,7 +205,8 @@ def _freshness(conn: sqlite3.Connection, cur: Any) -> int:
     if not families:
         return 0
     cur.execute("SELECT key, value FROM ontology.store_meta WHERE key IN "
-                "('source_freshness', 'freshness', 'source_condition_unmet') FOR UPDATE")
+                "('source_freshness', 'freshness', 'source_condition_unmet', "
+                "'relation_completeness') FOR UPDATE")
     held = dict(cur.fetchall())
     out: dict[str, str] = {}
     try:
@@ -206,6 +224,8 @@ def _freshness(conn: sqlite3.Connection, cur: Any) -> int:
         for where, handles in json.loads(mine.get("source_condition_unmet") or "{}").items():
             unmet[where] = sorted(set(unmet.get(where, ())) | set(handles))
         out["source_condition_unmet"] = json.dumps(unmet, sort_keys=True)
+        out["relation_completeness"] = _relation_completeness(
+            held.get("relation_completeness"), mine.get("relation_completeness"), families)
     except (ValueError, TypeError, AttributeError, KeyError):
         return 0
     for key, value in out.items():

@@ -246,3 +246,35 @@ class DeltaToPostgresTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LayerFreshnessTests(unittest.TestCase):
+    """A layer's freshness reaches ``ontology.store_meta`` with its per-relation
+    completeness: a family the layer read takes the layer's facts, or none, so a
+    build-time "read in full" never vouches for a newer partial read."""
+
+    def test_relation_completeness_follows_the_layer_per_family(self):
+        import json
+        from operating.pg import ontology_delta
+        layer = sqlite3.connect(":memory:")
+        layer.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT)")
+        partial = {"orders": {"completeness": "partial", "stale": False}}
+        complete = {"orders": {"completeness": "complete", "stale": False}}
+        layer.executemany("INSERT INTO store_meta VALUES (?, ?)", [
+            ("delta_families", json.dumps(["bc", "mail"])),
+            ("relation_completeness", json.dumps({"bc": partial}))])
+        held = {"relation_completeness": json.dumps(
+            {"bc": complete, "mail": complete, "portal_api": complete})}
+        written = {}
+
+        class Cursor:
+            def execute(self, sql, params=()):
+                if sql.startswith("INSERT"):
+                    written[params[0]] = params[1]
+
+            def fetchall(self):
+                return list(held.items())
+
+        ontology_delta._freshness(layer, Cursor())
+        self.assertEqual(json.loads(written["relation_completeness"]),
+                         {"bc": partial, "portal_api": complete})

@@ -57,7 +57,9 @@ this reader (``returned["counts"]``, ``returned_evidence``: a ``plx.aggregate`` 
 of a complete answer with no gap, listing every record it counts, taken now: a call naming
 an ``as_known_at`` counts what was known then; that tool's identity lookup already left a
 group with twins, one record held in two systems, without a value): the claimed value is
-the entry's and every record the claim cites is one of the entry's. Any other count is a
+the entry's and every record the claim cites is one of the entry's (under any version
+pin, or a twin the entry names as confirmed: ``twins_cited``, the same record held in
+another system; a lead twin never). Any other count is a
 **lower bound** (``bound: at_least``): the records it cites, where records of two source
 collections (two relations, entity sets, mailboxes, drives) may be one record held twice
 and so count once: the claimed value must be the most records it cites that are surely
@@ -1010,8 +1012,12 @@ class _Evidence:
         # claim of that op, and its records (several may hold one value) tell none apart.
         entries = [entry for entry in returned.get("counts") or () if isinstance(entry, Mapping)]
         records = [entry for entry in entries if entry.get("op", "count") == "count"]
+        # A complete entry also maps each confirmed twin it names (the same record held
+        # in another system) to the member it is (``twins``): citing the twin cites it.
         self.counts = [(to_decimal(entry.get("value")), frozenset(entry.get("records") or ()))
                        for entry in records if entry.get("complete") is True]
+        self.count_twins = [dict(entry.get("twins") or {})
+                            for entry in records if entry.get("complete") is True]
         self.distinct = [frozenset(entry.get("records") or ()) for entry in records
                          if entry.get("complete") is True or entry.get("distinct") is True]
         self.value_counts = [(to_decimal(entry.get("value")),
@@ -1884,8 +1890,10 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
                 "plx.aggregate count_distinct of now counts it"))
         bound = "exact"
     else:
-        bound = "exact" if any(total == value and cited <= listed
-                               for total, listed in evidence.counts) else "at_least"
+        bound = "exact" if any(
+            total == value and _members_named(cited, listed, twins)
+            for (total, listed), twins in zip(evidence.counts, evidence.count_twins)) \
+            else "at_least"
     if bound == "at_least":
         sources: dict[tuple[str, ...], int] = {}
         for record in records:
@@ -1906,6 +1914,30 @@ def _check_count(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequenc
                      f"a count of records has no unit, the claim says {claim['unit']}")
     return {**out, "status": "passed", "role_basis": "calculation", "quantity_type": None,
             "bound": bound}
+
+
+def _unpinned(handle: str) -> str:
+    """A record handle without its version pin (``...@rev``): the record, any revision.
+    A handle with a fragment (a field, a page, a container member) stays whole."""
+    return handle if "#" in handle else (handle.rpartition("@")[0] or handle)
+
+
+def _members_named(cited: set[str], listed: frozenset[str],
+                   twins: Mapping[str, str]) -> bool:
+    """Whether every cited record is a member a complete count entry lists: the member's
+    handle (under any version pin), or a confirmed twin of it the entry names
+    (``twins``: twin handle -> member handle; a lead twin is never named), and no two
+    citations name one member (a member and its twin are one record)."""
+    members = {_unpinned(h): h for h in listed}
+    pairs = {_unpinned(t): m for t, m in twins.items() if m in listed}
+    named: set[str] = set()
+    for handle in cited:
+        member = handle if handle in listed else (
+            members.get(_unpinned(handle)) or pairs.get(_unpinned(handle)))
+        if member is None or member in named:
+            return False
+        named.add(member)
+    return True
 
 
 def _check_expression(claim: Mapping[str, Any], out: dict[str, Any], handles: Sequence[str],
@@ -2272,7 +2304,10 @@ def _query_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
 AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift"),
                            # records set apart because only lead links reach them
                            # (``possibly_related``): never members of what was counted
-                           ("unknown", "possibly_related")})
+                           ("unknown", "possibly_related"),
+                           # a source read only in relations holding none of the
+                           # answer's records (``ontology_tools._partly_read_elsewhere``)
+                           ("unknown", "partly_read_elsewhere")})
 # A result whose records rest on lead-tier links (a set walked from a lead set, twins
 # joined only by a lead): what it counts or lists is a likely match, said as a lead.
 LEAD_BASIS_GAP = "lead_basis"
@@ -2371,11 +2406,19 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
             continue
         records = [cite.get("l1_handle") for cite in group.get("inputs_citations") or ()
                    if isinstance(cite, Mapping)]
-        # a count of members cites each member's own record (``members_cited``)
+        # a count of members cites each member's own record (``members_cited``, per
+        # group with group_by); its other citations (a group key's fix) are no members
         cited = group.get("members_cited")
-        if not records and not measure.get("property") and not arguments.get("group_by") \
-                and isinstance(cited, list) and all(isinstance(h, str) for h in cited):
+        if not measure.get("property") and isinstance(cited, list) \
+                and all(isinstance(h, str) for h in cited):
             records = list(cited)
+        elif not measure.get("property") and arguments.get("group_by"):
+            records = []
+        pairs = group.get("twins_cited") if records else None
+        twins = {pair[1]: pair[0] for pair in pairs or ()
+                 if isinstance(pair, list) and len(pair) == 2
+                 and all(isinstance(h, str) for h in pair) and pair[0] in records
+                 and pair[1] not in records}
         if listed is not None and group.get("key") == {}:
             if to_decimal(group.get("value")) == len(listed):
                 records = records or list(listed)
@@ -2392,8 +2435,11 @@ def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
         distinct = now and unique and (value == len(records) or (
             capped and value is not None and len(records) == MAX_COUNT_CITATIONS
             and value > len(records)))
-        into["counts"].append({"value": group.get("value"), "records": records,
-                               "distinct": distinct, "complete": whole and distinct})
+        entry = {"value": group.get("value"), "records": records,
+                 "distinct": distinct, "complete": whole and distinct}
+        if twins and distinct:
+            entry["twins"] = twins
+        into["counts"].append(entry)
     return into
 
 

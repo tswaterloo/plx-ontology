@@ -750,6 +750,53 @@ class AggregateTools:
             clusters.setdefault(find(oid), set()).add(oid)
         return [c for c in clusters.values() if len(c) > 1]
 
+    def _twins_cited(self, scope: Any, members: Sequence[str],
+                     versions: Mapping[str, Any], allowed: Callable[[str], bool]
+                     ) -> list[list[str]]:
+        """[member record, twin record] per confirmed twin of a counted member outside the
+        counted set: the same record held in another system, joined by an identity link
+        at an identity tier (verified or reviewed, as ``_twins``) that this reader sees,
+        whose other end is live and readable, so a claim citing the twin names the
+        member. A lead-tier link names none. At most ``MAX_CITATIONS`` pairs."""
+        if not members or not self.schema:
+            return []
+        inside = set(members)
+        pairs: dict[str, str] = {}
+        for row in self.store.conn.execute(
+                f"""SELECT l.from_object, l.to_object, l.tier,
+                      (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.from_object
+                         AND {_live('v')}) AS from_lineage,
+                      (SELECT v.lineage FROM object_versions v WHERE v.object_id = l.to_object
+                         AND {_live('v')}) AS to_lineage
+                    FROM links l WHERE l.link_type IN (SELECT value FROM json_each(:itypes))
+                    AND (l.from_object IN (SELECT value FROM json_each(:ids))
+                         OR l.to_object IN (SELECT value FROM json_each(:ids)))
+                    AND {_live('l')} AND l.markings IN (SELECT value FROM json_each(:marks))
+                    AND NOT EXISTS (SELECT 1 FROM json_each(l.evidence_handles) h
+                                    WHERE NOT {scope.gate}(h.value))""",
+                scope.params(ids=json.dumps(sorted(inside)), itypes=json.dumps(sorted(
+                    self.schema.identity_link_types())))):
+            if _effective_tier(row) not in _IDENTITY_TIERS:
+                continue
+            member, twin = (row[0], row[1]) if row[0] in inside else (row[1], row[0])
+            if twin not in inside and member in inside:
+                pairs.setdefault(twin, member)
+        if not pairs:
+            return []
+        visible = set(self.walk._visible_ids(scope, sorted(pairs)))
+        twins = self.walk._versions_at(scope, sorted(visible))
+        out: list[list[str]] = []
+        for twin in sorted(visible):
+            mine = versions.get(pairs[twin])
+            handle = twins[twin]["l1_handle"] if twin in twins else None
+            if mine is None or not isinstance(handle, str) or not handle \
+                    or not allowed(handle):
+                continue
+            out.append([mine["l1_handle"], handle])
+            if len(out) >= MAX_CITATIONS:
+                break
+        return out
+
     def _base_scope(self, scope: Any) -> Any:
         """This call's read scope as the base tools read it (the same grants)."""
         from operating.ontology_tools import _Scope as _BaseScope
@@ -883,11 +930,13 @@ class AggregateTools:
                      "answer is partial (plx.object shows each copy)", disagree)
         return [o for o in roots if o not in dropped], bool(disagree)
 
-    def _meta(self, scope: Any, sources: Iterable[str | None]) -> tuple[dict, list[dict]]:
+    def _meta(self, scope: Any, sources: Iterable[str | None], types: Iterable[str] = (),
+              link_types: Iterable[str] = ()) -> tuple[dict, list[dict]]:
         """The walk's meta and freshness gaps; sources beyond what ``meta.freshness``
         can list (the contract's 8) are stated with their total, never dropped
-        silently (``TraverseTools._meta``)."""
-        return self.walk._meta(scope, sources)
+        silently (``TraverseTools._meta``; ``types``/``link_types``: what was counted
+        and the path it was grouped over)."""
+        return self.walk._meta(scope, sources, types, link_types)
 
     def _sources(self, scope: Any, rows: Iterable[Mapping[str, Any]],
                  ids: Iterable[str]) -> set[str]:
@@ -1201,11 +1250,15 @@ class AggregateTools:
                 raise ToolError("invalid_input", "name a set or an object_type, never both",
                                 "filters keep either one's members")
             roots, root_gaps = self.walk._root(scope, arguments["set"])
+            # the links walked to make the set (None: not known, so a source read only
+            # in part is never taken as holding none of its members)
+            walked = self.walk.set_links(arguments["set"], actor)
             if arguments.get("filters"):
                 roots, kept_gaps = self._kept_members(roots, arguments, actor)
                 root_gaps = list(root_gaps) + kept_gaps
         else:
             roots, root_gaps = self._filtered_root(scope, arguments, actor)
+            walked = frozenset()
         gaps = _Gaps()
         gaps.extend(root_gaps)
         # A member its source asserts removed at T is no member then (left out of every
@@ -1527,12 +1580,15 @@ class AggregateTools:
             out, incomplete = self._group_out(group, op, prop, gaps, lost, bucket)
             partial = partial or incomplete
             used_rows.extend(group["rows"])
-            if op == "count" and prop is None and not group_by \
-                    and out.get("value") is not None:
-                cited = _members_cited(group["members"], versions,
-                                       lambda h: self.base._item_allowed(actor, h))
+            if op == "count" and prop is None and out.get("value") is not None:
+                # each group's members, grouped or not: a count names what it counts
+                allowed = lambda h: self.base._item_allowed(actor, h)  # noqa: E731
+                cited = _members_cited(group["members"], versions, allowed)
                 if cited is not None:
                     out["members_cited"] = cited
+                    twins = self._twins_cited(scope, group["members"], versions, allowed)
+                    if twins:
+                        out["twins_cited"] = twins
             out_groups.append(out)
         if not groups and not group_by:
             # An empty readable set: a count is 0, any other measure has no value. Members
@@ -1552,7 +1608,9 @@ class AggregateTools:
             if total > SUMMARY_FROM or offset or having is not None else None
         shown_groups = out_groups[offset:offset + MAX_GROUPS]
         truncated = offset + len(shown_groups) < total
-        meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots))
+        meta, fresh = self._meta(scope, self._sources(scope, used_rows, roots),
+                                 root_types | dim_types if walked is not None else (),
+                                 (walked or frozenset()) | {hop[0] for hop in hops})
         gaps.extend(fresh)
         complete = not truncated and not offset and not partial
         completeness: dict[str, Any] = {

@@ -737,6 +737,15 @@ class TraverseTools:
         return self._store_cached("audience_keys",
                                   lambda: tuple(self.store.audience_keys()))
 
+    def set_links(self, root: str, actor: Any) -> frozenset[str] | None:
+        """The link types walked to reach a root's records: none for one object id, the
+        set's recorded ones for a set handle, None when the set's making is not known
+        (a registry recording none, a set made without them): fail closed."""
+        if not root.startswith("set:"):
+            return frozenset()
+        links = getattr(self.sets, "links", None)
+        return links(root, actor) if links is not None else None
+
     def _root(self, scope: _Scope, root: str) -> tuple[list[str], list[dict]]:
         """(visible object ids of an object id or set handle root, its gaps: a
         ``not_in_projection`` gap when some ids of the root are not in this store and a
@@ -900,14 +909,17 @@ class TraverseTools:
         """The source families an answer is about: those it read, else the reader's."""
         return {s for s in sources if s} or set(scope.sources)
 
-    def _meta(self, scope: _Scope, sources: Iterable[str | None]) -> tuple[dict, list[dict]]:
+    def _meta(self, scope: _Scope, sources: Iterable[str | None], types: Iterable[str] = (),
+              link_types: Iterable[str] = ()) -> tuple[dict, list[dict]]:
         """Meta and freshness gaps. Sources beyond what ``meta.freshness`` can list
         (the contract's 8) are stated with their total in a ``freshness_truncated``
-        gap, never dropped silently."""
+        gap, never dropped silently. ``types`` and ``link_types``: what the answer's
+        records are and the links it walked, so a source read only in part elsewhere
+        says so (``OntologyTools._freshness_gaps``)."""
         store_meta = self.base._store_meta()
         used = self._used_sources(scope, sources)
         meta = self.base._meta(store_meta, scope.at, used)
-        gaps = self.base._freshness_gaps(meta, store_meta)
+        gaps = self.base._freshness_gaps(meta, store_meta, types, link_types)
         listed = len(meta["freshness"])
         if len(used) > listed:
             gaps.append(_gap("unknown", "freshness_truncated", "meta.freshness",
@@ -916,13 +928,14 @@ class TraverseTools:
                              f"{len(used) - listed} is not shown"))
         return meta, gaps
 
-    def _listed_meta(self, scope: _Scope, sources: Iterable[str | None]
+    def _listed_meta(self, scope: _Scope, sources: Iterable[str | None],
+                     types: Iterable[str] = (), link_types: Iterable[str] = ()
                      ) -> tuple[dict, list[dict], dict[str, Any]]:
         """``_meta`` plus ``freshness_coverage``: how many sources fed the answer and
         whether ``meta.freshness`` lists them all, in the output itself (the gap list
         is capped and may not carry the ``freshness_truncated`` gap)."""
         used = self._used_sources(scope, sources)
-        meta, gaps = self._meta(scope, used)
+        meta, gaps = self._meta(scope, used, types, link_types)
         listed = len(meta["freshness"])
         return meta, gaps, {"total": len(used), "listed": listed,
                             "truncated": len(used) > listed}
@@ -1215,14 +1228,21 @@ class TraverseTools:
         # start rests on a lead link however firm the later hops are.
         root_lead = root.startswith("set:") and bool(
             getattr(self.sets, "is_lead", None) and self.sets.is_lead(root, actor))
+        # The links walked to these records: the root set's own (unknown: None, so no
+        # partly read source is ever taken as read in full for them) and this path's.
+        walked = self.set_links(root, actor)
+        if walked is not None:
+            walked = walked | {hop[0] for hop in hops}
         handle = None
         if cursor_set is not None and self.sets.resolve(cursor_set, actor) == tuple(ranked):
             handle = cursor_set
         if handle is None:
-            handle = self.sets.new(actor, ranked, withheld=lost, lead=root_lead)
+            handle = self.sets.new(actor, ranked, withheld=lost, lead=root_lead,
+                                   links=walked)
         related: dict[str, Any] | None = None
         if leads:
-            lead_handle = self.sets.new(actor, leads, withheld=lost, lead=True)
+            lead_handle = self.sets.new(actor, leads, withheld=lost, lead=True,
+                                        links=walked)
             related = {"set": lead_handle, "count": len(leads)}
             gaps.append(_gap("unknown", POSSIBLY_RELATED, lead_handle,
                              f"{len(leads)} more record(s) are reached only through "
@@ -1262,7 +1282,11 @@ class TraverseTools:
                 if len(lead_page) <= 1:
                     break
                 lead_page = lead_page[:len(lead_page) // 2]
-        meta, fresh_gaps, coverage = self._listed_meta(scope, sources | edge_sources)
+        # the records walked: the roots' and each hop's type, over the hops' links
+        meta, fresh_gaps, coverage = self._listed_meta(
+            scope, sources | edge_sources,
+            {oid.split(":", 1)[0] for oid in roots} | {hop[3] for hop in hops}
+            if walked is not None else (), walked or ())
         lap("page")
         if empty_at is not None and not any(g["reason"] == "below_tier_floor" for g in gaps):
             link_type, direction, _, target = hops[empty_at]

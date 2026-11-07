@@ -279,7 +279,7 @@ COPIED = frozenset({"cached_mirror", "persisted_capture"})
 REFUSED_CODES = frozenset({"relation_unavailable", "unknown_relation"})
 # Gaps about how a source was captured or served (``_source_freshness_gaps``).
 FRESHNESS_REASONS = frozenset({"stale_source", "freshness_unknown", "source_partly_read", "source_unavailable",
-                               "schema_drift"}) | REFUSED_CODES
+                               "schema_drift", "partly_read_elsewhere"}) | REFUSED_CODES
 # The scan_cap gap's opening when every record named by the query's words was read before
 # the cut (``fast_answer`` reads a name's cards as complete on it).
 NAMED_READ_NOTE = ("the search stopped at its scan cap, after every record whose name is or "
@@ -2240,9 +2240,12 @@ class SetRegistry:
         # handle -> (owner, ids, expiry, live, withheld, lead): ``withheld`` marks a set
         # made from an answer this reader's grants trimmed (it is never the whole set);
         # ``lead`` one whose records were reached only through lead-tier links (possibly
-        # related, never confirmed: whatever is counted or walked from it stays a lead).
+        # related, never confirmed: whatever is counted or walked from it stays a lead);
+        # ``links`` the link types walked to make it (empty: listed from its object types
+        # alone), or None when how it was made is not known: a source read only in part
+        # is then never taken as read in full for its members (``links``).
         self._sets: dict[str, tuple[tuple[str, tuple[str, ...]], tuple[str, ...], float,
-                                    bool, bool, bool]] = {}
+                                    bool, bool, bool, frozenset[str] | None]] = {}
         # Object ids plx.find answered from a live lookup (not in the projection store),
         # with their expiry: traversal tools name them instead of answering "nothing".
         # Insertion order is expiry order (a refreshed id moves to the end), so the
@@ -2268,7 +2271,7 @@ class SetRegistry:
 
     def _drop_set(self, handle: str) -> None:
         """Forget a set and the live ids that only it held. Caller holds the lock."""
-        owner, ids, _, live, _, _ = self._sets.pop(handle)
+        owner, ids, _, live, _, _, _ = self._sets.pop(handle)
         if not live:
             return
         for oid in set(ids):
@@ -2281,11 +2284,13 @@ class SetRegistry:
                 self._drop_live(owner, oid)
 
     def new(self, actor: Actor, object_ids: Sequence[str], *, live: bool = False,
-            withheld: bool = False, lead: bool = False) -> str:
+            withheld: bool = False, lead: bool = False,
+            links: Iterable[str] | None = None) -> str:
         """A handle for ``object_ids``; ``live`` marks a set plx.find answered from a
         live lookup (its objects exist only in a discarded throw-away store),
         ``withheld`` one whose answer this reader's grants trimmed, ``lead`` one whose
-        records only lead-tier links reach."""
+        records only lead-tier links reach; ``links`` the link types walked to reach its
+        records (``()``: listed from their object types alone; None: not known)."""
         handle = "set:" + secrets.token_urlsafe(18).replace("=", "")
         now = self.monotonic()
         with self._lock:
@@ -2300,7 +2305,8 @@ class SetRegistry:
                 self._drop_set(min(self._sets, key=lambda k: self._sets[k][2]))
             ids = tuple(object_ids[:MAX_SET_OBJECTS])
             owner = self._owner(actor)
-            self._sets[handle] = (owner, ids, now + self.ttl, live, withheld, lead)
+            self._sets[handle] = (owner, ids, now + self.ttl, live, withheld, lead,
+                                  None if links is None else frozenset(links))
             if live:
                 mine = self._live_by_owner.get(owner) or OrderedDict()
                 new_ids = dict.fromkeys(ids)
@@ -2346,6 +2352,17 @@ class SetRegistry:
         return (entry is not None and entry[2] > self.monotonic()
                 and entry[0] == self._owner(actor) and entry[5])
 
+    def links(self, handle: str, actor: Actor) -> frozenset[str] | None:
+        """The link types walked to make this actor's live handle (empty when its records
+        were listed from their object types alone); None when that is not known, or the
+        handle is unknown, expired or another reader's. A count over a set of unknown
+        making never takes a source read only in part as holding none of its records."""
+        with self._lock:
+            entry = self._sets.get(handle)
+        if entry is None or entry[2] <= self.monotonic() or entry[0] != self._owner(actor):
+            return None
+        return entry[6]
+
     def live_id(self, object_id: str, actor: Actor) -> bool:
         """Whether plx.find recently answered this object id to this same actor
         (tenant, principals, clearance) from a live lookup. Owner-bound: another
@@ -2381,7 +2398,9 @@ class _LiveSets:
     def __init__(self, registry: SetRegistry) -> None:
         self.registry = registry
 
-    def new(self, actor: Actor, object_ids: Sequence[str]) -> str:
+    def new(self, actor: Actor, object_ids: Sequence[str],
+            links: Iterable[str] | None = None) -> str:
+        # a live set is never walked or counted (``not_in_projection``): no links kept
         return self.registry.new(actor, object_ids, live=True)
 
     def resolve(self, handle: str, actor: Actor) -> tuple[str, ...] | None:
@@ -2888,7 +2907,8 @@ class OntologyTools:
         return {"schema_digest": digest, "as_known_at": _format_time(at),
                 "freshness": self._freshness(store_meta, sources)}
 
-    def _source_gaps(self, freshness: Sequence[Mapping[str, Any]]) -> list[dict]:
+    def _source_gaps(self, freshness: Sequence[Mapping[str, Any]],
+                     elsewhere: Mapping[str, Sequence[str]] | None = None) -> list[dict]:
         """``_source_freshness_gaps``, except that a source this host configured no
         reader for, and that nothing was read from (no capture time, no unit served),
         has no unknown or unavailable state to report: it states once that it is not
@@ -2898,7 +2918,7 @@ class OntologyTools:
                   and item.get("served_from") in (None, "none")
                   and all(u.get("served_from") == "none" for u in item.get("relations", ()))}
         gaps, dropped = [], set()
-        for gap in _source_freshness_gaps(freshness):
+        for gap in _source_freshness_gaps(freshness, elsewhere):
             if gap["subject"] in unread and gap["reason"] in (
                     "freshness_unknown", "source_unavailable"):
                 dropped.add(gap["subject"])
@@ -2909,14 +2929,85 @@ class OntologyTools:
                             "read: nothing is known about what it holds")
                        for source in sorted(dropped)]
 
-    def _freshness_gaps(self, meta: Mapping[str, Any], store_meta: Mapping[str, str]) -> list[dict]:
-        gaps = self._source_gaps(meta["freshness"])
+    def _freshness_gaps(self, meta: Mapping[str, Any], store_meta: Mapping[str, str],
+                        types: Iterable[str] = (), link_types: Iterable[str] = ()
+                        ) -> list[dict]:
+        """Freshness gaps of the sources ``meta`` lists. Given the object ``types`` an
+        answer's records are of and the ``link_types`` it walked, a source read only in
+        part whose unread relations hold none of them (``partly_read_elsewhere``) says so
+        instead of ``source_partly_read``: the part not read could hold no record of this
+        answer, so a count over it stays exact."""
+        elsewhere = self._partly_read_elsewhere(store_meta, types, link_types) \
+            if types else {}
+        gaps = self._source_gaps(meta["freshness"], elsewhere)
         store_digest = _HEX64.match(store_meta.get("schema_digest", ""))
         if store_digest and self.schema and self.schema.digest_hex \
                 and store_digest.group(1) != self.schema.digest_hex:
             gaps.append(_gap("stale", "schema_drift", "projection",
                              "the projection was built from another schema version"))
         return gaps
+
+    def _partly_read_elsewhere(self, store_meta: Mapping[str, str], types: Iterable[str],
+                               link_types: Iterable[str] = ()) -> dict[str, list[str]]:
+        """Source family -> its relations read only in part (or served from a copy), for
+        each family whose part not read cannot hold a record of ``types`` reached over
+        ``link_types``: every relation a binding of those types, or of those links (a
+        ``via`` table), reads in that family is complete and not stale in
+        ``store_meta.relation_completeness``. Fail closed: a link without a stored-key
+        binding (a mention, a text match), an undeclared type or link, a family with
+        no relation of those types, or a relation the store states no completeness for
+        leaves the family out (its ``source_partly_read`` gap stands)."""
+        schema = self.schema
+        if schema is None:
+            return {}
+        try:
+            raw = json.loads(store_meta.get("relation_completeness", "{}"))
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        needed: dict[str, set[str]] = {}
+        by_id: dict[str, Mapping[str, Any]] = {}
+        for name in schema.object_types:
+            for binding in schema.object_types[name].get("bindings", ()):
+                if isinstance(binding.get("source"), str) \
+                        and isinstance(binding.get("relation"), str):
+                    by_id[binding.get("id")] = binding
+        for name in set(types):
+            spec = schema.object_types.get(name)
+            if spec is None:
+                return {}
+            for binding in spec.get("bindings", ()):
+                if binding.get("id") not in by_id:
+                    return {}   # a binding naming no source relation: not decidable
+                needed.setdefault(binding["source"], set()).add(binding["relation"])
+        for name in set(link_types):
+            link = schema.link_types.get(name)
+            if link is None:
+                return {}
+            for binding in link.get("bindings", ()):
+                ids = [binding.get("from_binding"), binding.get("to_binding")]
+                via = binding.get("via")
+                if isinstance(via, Mapping):
+                    ids.append(via.get("binding"))
+                ids = [i for i in ids if i is not None]
+                if binding.get("kind") not in ("fk", "same_record", "json_path") \
+                        or not ids or any(i not in by_id for i in ids):
+                    return {}
+                for i in ids:
+                    needed.setdefault(by_id[i]["source"], set()).add(by_id[i]["relation"])
+        out: dict[str, list[str]] = {}
+        for source, relations in raw.items():
+            facts = relations if isinstance(relations, dict) else {}
+            unread = sorted(r for r, f in facts.items() if not (
+                isinstance(f, dict) and f.get("completeness") == "complete"
+                and f.get("stale") is False))
+            mine = needed.get(source)
+            if not unread or not mine or any(r not in facts for r in mine) \
+                    or set(unread) & mine:
+                continue
+            out[source] = unread
+        return out
 
     # ------------------------------------------------------------------ visibility
 
@@ -4113,7 +4204,9 @@ class OntologyTools:
                              "object ids"))
             result["gaps"] = _freshness_first(fresh, gaps)
         elif ranked:
-            result["set"] = self._new_set(actor, [m.object_id for m in ranked])
+            # a listing of one object type (no search text) walked no link to its records
+            result["set"] = self._new_set(actor, [m.object_id for m in ranked],
+                                          () if query is None and object_type else None)
         result["meta"] = meta
         named_gaps = self._named_not_found(query, candidates)
         if named_gaps:
@@ -5359,8 +5452,9 @@ class OntologyTools:
 
     # ------------------------------------------------------------------ sets
 
-    def _new_set(self, actor: Actor, object_ids: list[str]) -> str:
-        return self.sets.new(actor, object_ids)
+    def _new_set(self, actor: Actor, object_ids: list[str],
+                 links: Iterable[str] | None = None) -> str:
+        return self.sets.new(actor, object_ids, links=links)
 
     def resolve_set(self, handle: str, actor: Actor) -> tuple[str, ...] | None:
         """Object ids of a set handle this actor created, or None (unknown, expired
@@ -5815,7 +5909,9 @@ def _scope_freshness_entry(entry: Mapping[str, Any],
     return out
 
 
-def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]],
+                           elsewhere: Mapping[str, Sequence[str]] | None = None
+                           ) -> list[dict[str, Any]]:
     """One gap per source whose capture is stale (a persisted capture: its label), whose
     state is unknown, one per source read only in part (``source_partly_read``), and one per source with units the live source did not serve at
     all and no persisted capture holds (``inaccessible``: their HTTP status and error
@@ -5831,7 +5927,15 @@ def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[
         elif item.get("completeness") == "unknown":
             gaps.append(_gap("unknown", "freshness_unknown", item["source"],
                              "the projection does not state this source's capture state"))
-        if item.get("completeness") == "partial":
+        if item.get("completeness") == "partial" and item["source"] in (elsewhere or {}):
+            # read only in part, but only in relations holding none of the answer's
+            # records (``OntologyTools._partly_read_elsewhere``): no record of it is missing
+            unread = ", ".join(elsewhere[item["source"]][:8])
+            gaps.append(_gap("unknown", "partly_read_elsewhere", item["source"],
+                             "this source's last capture read some relations only in "
+                             f"part ({unread}); none of them holds records of this answer, "
+                             "whose relations were read whole"[:600]))
+        elif item.get("completeness") == "partial":
             # a source read only in part (a relation not traversed whole) may hold records
             # no answer reached: never an age-only gap, so a count over it stays a lower
             # bound (claim_checks.AGE_ONLY_GAPS)

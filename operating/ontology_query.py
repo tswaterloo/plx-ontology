@@ -1387,6 +1387,12 @@ def _fitted(out: dict[str, Any], limit: int = RESULT_BYTES) -> dict[str, Any]:
                     continue
                 trimmed = 0
                 for group in groups:
+                    members = group.get("members_cited")
+                    if isinstance(members, list) and len(members) > keep:
+                        # a member listing cut short lists no count: dropped whole
+                        trimmed += 1
+                        group.pop("members_cited")
+                        group.pop("twins_cited", None)
                     cites = group.get("inputs_citations")
                     if isinstance(cites, list) and len(cites) > keep:
                         trimmed += 1

@@ -4447,7 +4447,11 @@
                         "$ref": "#/$defs/handle"
                       },
                       "maxItems": 50,
-                      "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
+                      "description": "A count of members (no property; per group): each member's record handle; absent past 50 or when one is not citable."
+                    },
+                    "twins_cited": {
+                      "type": "array", "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/handle"}},
+                      "description": "[member, its confirmed twin outside the set]; never a lead twin."
                     },
                     "markings": {
                       "$ref": "#/$defs/markings"
@@ -8082,7 +8086,11 @@
                                     "$ref": "#/$defs/handle"
                                   },
                                   "maxItems": 50,
-                                  "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
+                                  "description": "A count of members (no property; per group): each member's record handle; absent past 50 or when one is not citable."
+                                },
+                                "twins_cited": {
+                                  "type": "array", "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/handle"}},
+                                  "description": "[member, its confirmed twin outside the set]; never a lead twin."
                                 },
                                 "markings": {
                                   "$ref": "#/$defs/markings"
@@ -8262,7 +8270,11 @@
                               "$ref": "#/$defs/handle"
                             },
                             "maxItems": 50,
-                            "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
+                            "description": "A count of members (no property; per group): each member's record handle; absent past 50 or when one is not citable."
+                          },
+                          "twins_cited": {
+                            "type": "array", "maxItems": 50, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/handle"}},
+                            "description": "[member, its confirmed twin outside the set]; never a lead twin."
                           },
                           "markings": {
                             "$ref": "#/$defs/markings"

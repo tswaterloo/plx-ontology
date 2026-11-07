@@ -10,6 +10,7 @@ rows; the case paths run over ``FakeWorkbench``). Nothing here is live data.
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from operating import case_verification, claim_checks
@@ -600,3 +601,216 @@ class CountAskedWithRowsTests(unittest.TestCase):
                                             rows=rows, calculations=(),
                                             returned=returned)),
                                  ["claim_count_lower_bound"])
+
+
+class CountsAcrossCallsTests(unittest.TestCase):
+    """11-07 regrade cause 2 (13 answers "count: at least N" with the right N after
+    exact-counts): counts a separate plx.aggregate took (grouped), counts citing a member's
+    record in another system (its twin), and counts over a source whose capture is partial
+    only in relations that hold none of the counted records. Each is bound exactly only
+    when the tool's own answer backs it; a lead twin, a member listing past the citation
+    cap and a partial read of the counted records' own relation stay a lower bound.
+    Evidence label ``isolated-fixture``: the real plx.aggregate over a hand-filled
+    projection (``tests.test_ontology_tools_aggregate``), its answer through the claim
+    gate."""
+
+    def setUp(self):
+        from tests import test_ontology_tools_aggregate as fx
+        fx.setUpModule()
+        self.fx = fx
+        self.store = fx.world()
+        self.tools = fx.tools(self.store)
+
+    def handle(self, oid):
+        return self.store.handles[oid][0]
+
+    def view(self, oid):
+        handle = self.handle(oid)
+        _type, binding, native = oid.split(":", 2)
+        return handle, {"relation": self.fx._relation(binding)[1], "key": {"id": native},
+                        "row": {"id": native}}
+
+    def aggregate(self, ids, links=(), **extra):
+        # ``links``: how the set was made (``()``: listed from its object type, as a
+        # plx.find listing; None: not known)
+        self.store.conn.commit()
+        arguments = {"set": self.tools.base.sets.new(self.fx.STAFF, list(ids), links=links),
+                     "measure": {"op": "count"}, **extra}
+        out = self.tools.call("plx.aggregate", arguments, self.fx.STAFF)
+        self.assertEqual(self.fx.validate(out, self.fx.CONTRACTS["tools"]["plx.aggregate"][
+            "output"], root=self.fx.CONTRACTS), [], out)
+        return arguments, out
+
+    def bound(self, arguments, out, oids, value=None, text=None):
+        rows = dict(self.view(oid) for oid in oids)
+        value = len(oids) if value is None else value
+        returned = claim_checks.returned_evidence("plx.aggregate", arguments, out)
+        result = gate(text or f"{value} purchase orders.", list(rows),
+                      [count_of(list(rows), value)], rows=rows, calculations=(),
+                      returned=returned)
+        return result
+
+    def purchase_orders(self, size, status="Complete"):
+        oids = []
+        for n in range(size):
+            oid = self.store.obj(f"PurchaseOrder:portal.app_purchase_order:q{n}")
+            self.store.val(oid, "status", "text", status)
+            oids.append(oid)
+        return oids
+
+    def test_a_grouped_aggregate_count_binds_exactly_through_the_members_it_lists(self):
+        for size in (1, 10, 60):
+            with self.subTest(size=size):
+                self.setUp()
+                done = self.purchase_orders(size)
+                open_ = [self.store.obj("PurchaseOrder:portal.app_purchase_order:o1")]
+                self.store.val(open_[0], "status", "text", "Open")
+                arguments, out = self.aggregate(done + open_, group_by=["status"])
+                group = next(g for g in out["groups"]
+                             if g["key"]["status"]["untrusted_text"] == "Complete")
+                self.assertEqual(group["value"], str(size))
+                cited = done[:min(size, 3)]
+                result = self.bound(arguments, out, cited, value=size)
+                if size <= 50:
+                    # every member listed: the count is the tool's, exact
+                    self.assertEqual(len(group["members_cited"]), size)
+                    self.assertTrue(result["passed"], result["failures"])
+                    self.assertEqual(checked(result)[0]["bound"], "exact")
+                else:
+                    # past the citation cap no member list backs it: a lower bound
+                    self.assertNotIn("members_cited", group)
+                    self.assertEqual(codes(result), ["claim_value_mismatch"])
+                # a record of another group never binds to this one
+                other = self.bound(arguments, out, done[:1] + open_, value=size)
+                self.assertFalse(other["passed"])
+
+    def twin(self, tier):
+        bc_po = self.store.obj("PurchaseOrder:bc.purchase_orders:b1")
+        self.store.link("PurchaseOrder.same_record_as", self.fx.PO1, bc_po, tier=tier,
+                        kind="same_record")
+        return bc_po
+
+    def test_a_count_citing_a_confirmed_twin_of_a_member_binds_exactly(self):
+        bc_po = self.twin("verified")
+        arguments, out = self.aggregate([self.fx.PO1, self.fx.PO2])
+        [group] = out["groups"]
+        self.assertEqual(group["twins_cited"], [[self.handle(self.fx.PO1),
+                                                 self.handle(bc_po)]])
+        result = self.bound(arguments, out, [bc_po, self.fx.PO2])
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual(checked(result)[0]["bound"], "exact")
+        # the member and its twin are one record: never two of the two counted
+        both = self.bound(arguments, out, [bc_po, self.fx.PO1])
+        self.assertNotEqual([c.get("bound") for c in checked(both)], ["exact"])
+
+    def test_a_lead_twin_names_no_member_and_stays_a_lower_bound(self):
+        bc_po = self.twin("lead")
+        arguments, out = self.aggregate([self.fx.PO1, self.fx.PO2])
+        self.assertNotIn("twins_cited", out["groups"][0])
+        self.assertEqual(codes(self.bound(arguments, out, [bc_po, self.fx.PO2])),
+                         ["claim_value_mismatch"])
+        # records of two systems no confirmed link tells apart: at least 1
+        floor = self.bound(arguments, out, [bc_po, self.fx.PO2], value=1,
+                           text="At least 1 purchase order.")
+        self.assertEqual([c.get("bound") for c in checked(floor)], ["at_least"])
+
+    def partly_read(self, unread):
+        bound = {b["relation"] for b in self.fx.SCHEMA.object_types["PurchaseOrder"]["bindings"]
+                 if b["source"] == "portal_api"}
+        facts = {r: {"completeness": "complete", "full_traversal_at": "2099-02-01T10:00:00Z",
+                     "stale": False} for r in bound | {"public.app_customer"}}
+        facts[unread] = {"completeness": "partial", "full_traversal_at": None, "stale": False}
+        fresh = [{"source": "portal_api", "captured_at": "2099-02-01T11:00:00Z",
+                  "lag_seconds": 3600, "completeness": "partial", "stale": False}]
+        for key, value in (("relation_completeness", {"portal_api": facts}),
+                           ("freshness", fresh)):
+            self.store.conn.execute("DELETE FROM store_meta WHERE key = ?", (key,))
+            self.store.conn.execute("INSERT INTO store_meta VALUES (?, ?)",
+                                    (key, json.dumps(value)))
+
+    def test_a_partial_capture_elsewhere_leaves_the_count_exact(self):
+        self.partly_read("public.app_customer")
+        arguments, out = self.aggregate([self.fx.PO1, self.fx.PO2])
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("partly_read_elsewhere", reasons)
+        self.assertNotIn("source_partly_read", reasons)
+        result = self.bound(arguments, out, [self.fx.PO1, self.fx.PO2])
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual(checked(result)[0]["bound"], "exact")
+
+    def test_a_set_of_unknown_making_keeps_a_partial_capture_a_lower_bound(self):
+        # nothing says which links were walked to make the set: the part not read
+        # could hold its records
+        self.partly_read("public.app_customer")
+        arguments, out = self.aggregate([self.fx.PO1, self.fx.PO2], links=None)
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("source_partly_read", reasons)
+        self.assertNotIn("partly_read_elsewhere", reasons)
+        self.assertEqual(codes(self.bound(arguments, out, [self.fx.PO1, self.fx.PO2])),
+                         ["claim_count_lower_bound"])
+
+    def contacts_of_a_customer(self, unread):
+        """Two contacts linked to one customer over Contact.bc_customer, with bc read in
+        full except ``unread``; the plx.around walk to the contacts and the gate's
+        evidence of it."""
+        cust = self.store.obj("Customer:bc.customers:c1")
+        contacts = [self.store.obj(f"Contact:bc.contacts:k{n}") for n in range(2)]
+        for k in contacts:
+            self.store.link("Contact.bc_customer", k, cust)
+        facts = {b["relation"]: {"completeness": "complete", "stale": False,
+                                 "full_traversal_at": "2099-02-01T10:00:00Z"}
+                 for ty in ("Contact", "Customer", "ContactRelation")
+                 for b in self.fx.SCHEMA.object_types[ty]["bindings"] if b["source"] == "bc"}
+        facts[unread] = {"completeness": "partial", "full_traversal_at": None, "stale": False}
+        fresh = [{"source": "bc", "captured_at": "2099-02-01T11:00:00Z", "lag_seconds": 3600,
+                  "completeness": "partial", "stale": False}]
+        for key, value in (("relation_completeness", {"bc": facts}), ("freshness", fresh)):
+            self.store.conn.execute("DELETE FROM store_meta WHERE key = ?", (key,))
+            self.store.conn.execute("INSERT INTO store_meta VALUES (?, ?)",
+                                    (key, json.dumps(value)))
+        self.store.conn.commit()
+        walk = {"from": cust, "path": [{"link_type": "Contact.bc_customer",
+                                        "direction": "reverse"}]}
+        around = self.tools.walk.call("plx.around", walk, self.fx.STAFF)
+        return contacts, around, claim_checks.returned_evidence("plx.around", walk, around)
+
+    def count_of_walked_set(self, unread):
+        contacts, around, walked = self.contacts_of_a_customer(unread)
+        arguments = {"set": around["set"], "measure": {"op": "count"}}
+        out = self.tools.call("plx.aggregate", arguments, self.fx.STAFF)
+        rows = dict(self.view(oid) for oid in contacts)
+        result = gate("2 contacts.", list(rows), [count_of(list(rows), 2)], rows=rows,
+                      calculations=(), returned=claim_checks.returned_evidence(
+                          "plx.aggregate", arguments, out, walked))
+        return around, out, result
+
+    def test_a_set_walked_over_a_partly_read_link_keeps_its_count_a_lower_bound(self):
+        # The link's via table (bc.contactsInformation) is read only in
+        # part, so the walk may have missed contacts; the count of its set says so
+        around, out, result = self.count_of_walked_set("contactsInformation")
+        self.assertIn("source_partly_read", {g["reason"] for g in around["gaps"]})
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("source_partly_read", reasons)
+        self.assertNotIn("partly_read_elsewhere", reasons)
+        self.assertEqual(codes(result), ["claim_count_lower_bound"])
+        self.assertNotIn("exact", [c.get("bound") for c in checked(result)])
+
+    def test_a_set_walked_over_links_read_in_full_counts_exactly(self):
+        # the part not read (a relation no walked link or counted type reads) holds none
+        # of the walked records
+        around, out, result = self.count_of_walked_set("someUnrelatedRelation")
+        self.assertIn("partly_read_elsewhere", {g["reason"] for g in around["gaps"]})
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("partly_read_elsewhere", reasons)
+        self.assertNotIn("source_partly_read", reasons)
+        self.assertTrue(result["passed"], result["failures"])
+        self.assertEqual([c.get("bound") for c in checked(result)], ["exact"])
+
+    def test_a_partial_capture_of_the_counted_records_keeps_a_lower_bound(self):
+        self.partly_read("public.app_purchase_order")
+        arguments, out = self.aggregate([self.fx.PO1, self.fx.PO2])
+        reasons = {g["reason"] for g in out["gaps"]}
+        self.assertIn("source_partly_read", reasons)
+        self.assertNotIn("partly_read_elsewhere", reasons)
+        self.assertEqual(codes(self.bound(arguments, out, [self.fx.PO1, self.fx.PO2])),
+                         ["claim_count_lower_bound"])

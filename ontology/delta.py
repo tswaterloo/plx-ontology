@@ -1975,8 +1975,18 @@ def finish_store(store: Path, base: Base, changed: Mapping[str, Sequence[Any]]
             for where, handles in json.loads(mine.get("source_condition_unmet") or "{}").items():
                 unmet[where] = sorted(set(unmet.get(where, ())) | set(handles))
             merged["source_condition_unmet"] = json.dumps(unmet, sort_keys=True)
+            # per-relation completeness of a family this delta read is the delta's, or
+            # none (a build-time fact never vouches for a newer partial read)
+            completeness = json.loads(theirs.get("relation_completeness") or "{}")
+            layer = json.loads(mine.get("relation_completeness") or "{}")
+            for family in families:
+                if isinstance(layer, dict) and isinstance(layer.get(family), dict):
+                    completeness[family] = layer[family]
+                else:
+                    completeness.pop(family, None)
+            merged["relation_completeness"] = json.dumps(completeness, sort_keys=True)
         except (ValueError, TypeError, AttributeError):
-            pass
+            merged.pop("relation_completeness", None)   # unreadable: vouches for nothing
         # the delta's own format and schema: a reader applies it only when both are the
         # served generation's (a delta built by other code is never read as this one)
         for own in ("format", "schema_digest"):
