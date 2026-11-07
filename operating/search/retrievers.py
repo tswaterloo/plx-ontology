@@ -14,8 +14,8 @@ so a row the reader may not read never takes a slot of a retriever's list.
   word; a lexeme in more than a quarter of the rows is left out while rarer ones remain):
   every readable row of each rare lexeme is a candidate, common lexemes come from the
   column statistics, and candidates are ranked before any cut (``bm25``).
-* ``fuzzy``: trigram word similarity of the question's words to the chunk header (title,
-  ids, what it is about): typo tolerance.
+* ``fuzzy``: trigram word similarity of the question's plain words (letters only) to the
+  chunk header (title, ids, what it is about): typo tolerance.
 
 Hidden matches are counted by the ``operating.pg.permissions.hidden_counts``.
 """
@@ -392,7 +392,10 @@ def fuzzy(conn: Any, scope: dict[str, Any], question: str, limit: int
           ) -> list[tuple[str, float]]:
     """Trigram word similarity of each content word (4+ letters) to the chunk header,
     summed: a misspelt name or subject word still finds its chunk."""
-    terms = [t for t in words([question]) if len(t) >= 4 and not t.isdigit()][:8]
+    # Plain words only: a typo is of a word, and a compound token ("lot-trace",
+    # "map.md", "procure-to-gl") no row holds as typed is not one; its trigram scan of
+    # every header ran past the statement timeout (3.2 s, measured) and found nothing.
+    terms = [t for t in words([question]) if len(t) >= 4 and t.isalpha()][:8]
     if not terms:
         return []
     # Only the words no readable row holds as typed (a typo, a variant spelling): a word

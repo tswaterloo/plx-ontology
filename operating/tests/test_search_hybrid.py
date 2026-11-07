@@ -9,6 +9,7 @@ skipped when Postgres or psycopg is not available.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -26,6 +27,7 @@ except ImportError:  # pragma: no cover
 from operating.search import SearchReader, search
 from operating.search import retrievers as rt
 from operating.search.config import WeightsError, load_weights, parse_weights
+from operating.search.core import _title_words, title_share
 from operating.search.fusion import rrf
 from operating.tests.search_fixture import (BC, EXCLUDED, FINANCE, NOW, PURCHASING,
                                             QUALITY, FixtureDb, HashEmbedder, _t, chunks)
@@ -553,6 +555,12 @@ class HybridSearchTests(unittest.TestCase):
         hit = next(h for h in result.hits if h["chunk_id"] == "sop1#0")
         self.assertIsNotNone(hit["signals"]["fuzzy"])
         self.assertEqual(result.hits[0]["chunk_id"], "sop1#0")
+        # a compound token no row holds as typed is not a typo: it is never
+        # trigram-scanned (that scan ran past the statement timeout on real headers)
+        scope = {"allowed": [PURCHASING, BC, QUALITY, TEAMS], "held": [], "kinds": None}
+        with psycopg.connect(self.db.dsn, autocommit=True) as conn:
+            self.assertEqual(rt.fuzzy(conn, scope, "lable-artwrok aproval.md", 50), [])
+            self.assertTrue(rt.fuzzy(conn, scope, "lable artwrok", 50))
 
     def test_exact_id_and_graph_from_the_understanding(self):
         who = reader([PURCHASING, BC, QUALITY, TEAMS])
@@ -965,6 +973,49 @@ class HybridSearchTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_PG, "Postgres not available")
+class DocumentRankingTests(unittest.TestCase):
+    """A document the question names by its title."""
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {"PLX_EXCLUDED_PEOPLE_OIDS": EXCLUDED})
+        env.start()
+        self.addCleanup(env.stop)
+
+    @staticmethod
+    def doc(cid, title, body, *, kind="sharepoint", key=QUALITY, authority=2, days=5):
+        return dict(chunk_id=cid, source_handle=f"sharepoint://quality-site/{cid}",
+                    kind=kind, title=title, occurred_at=_t(days),
+                    header=f"Title: {title}", body=body, audience_key=key,
+                    authority=authority)
+
+    def ranked(self, db, question, keys, **weights):
+        shipped = load_weights()
+        chosen = dataclasses.replace(shipped, **weights) if weights else shipped
+        result = search(question, reader(keys), dsn=db.dsn, now=NOW, embedder=EMB,
+                        reranker=None, owners={}, log=False, weights=chosen)
+        return [h["chunk_id"] for h in result.hits], result
+
+    def test_a_document_the_question_names_by_its_title_ranks_first(self):
+        named = self.doc("map#0", "2026-10-14 Screening Process Map.html",
+                         "Stage 3: hold, inspect, then release or send back.")
+        notes = self.doc("notes#0", "Weekly notes.docx",
+                         "Rework of screened units: rework counts, rework labour and "
+                         "rework cost for the screening of returned soap.")
+        question = "What does the Screening Process Map say about rework?"
+        with FixtureDb() as db:
+            db.add([named, notes])
+            order, _ = self.ranked(db, question, [QUALITY])
+            self.assertEqual(order, ["map#0", "notes#0"])
+            order, _ = self.ranked(db, question, [QUALITY], title_match=0.0)
+            self.assertEqual(order[0], "notes#0")
+            # one shared title word is chance, and dates, versions and file types never count
+            self.assertEqual(title_share("Weekly notes.docx", {"weekly", "soap"}), 0.0)
+            self.assertEqual(title_share("2026-08-19_GEN_Notes_v01.pdf", {"gen", "pdf",
+                                                                          "note"}), 0.0)
+            asked = set(_title_words("Where are the screening process maps?"))
+            self.assertEqual(title_share("Screening Process Map.html", asked), 1.0)
+
+
 class ToolPathTests(unittest.TestCase):
     """plx.find and plx.documents under PLX_SEARCH=hybrid over the evidence-tools store:
     contract-valid, the hybrid hit gated by the store, a hidden mailbox never shown."""

@@ -283,6 +283,26 @@ class MetricsTest(unittest.TestCase):
                                  for i in range(20)], many, k=10)
         self.assertEqual(got["recall"], 1.0)
 
+    def test_a_hit_read_from_the_targets_bytes_counts_wherever_it_was_fetched(self):
+        a, other = "a" * 64, "d" * 64
+        wanted = [{"key": f"sha256:{a}", "handles": [f"original://sha256/{a}"]}]
+        member = (f"sharepoint://b%21d/I7@v1#sha256={a}&member=pkg%2Fmap.md"
+                  f"&member_sha256={other}")
+        attachment = f"graph-mail://box/M1@C1#attachment=A1&sha256={a}&page=2"
+        for handle in (member, attachment):
+            self.assertEqual(retrieval.measure([{"handle": handle, "title": "x"}],
+                                               wanted)["found"], [f"sha256:{a}"], handle)
+        # a member's own bytes, another file's bytes or a non-hex pin are not the target
+        for handle in (f"sharepoint://b%21d/I7@v1#sha256={other}&member_sha256={a}",
+                       f"graph-mail://box/M1#attachment=A1&sha256={a[:-1]}x",
+                       f"original://co-9#page=1&xsha256={a}"):
+            self.assertEqual(retrieval.measure([{"handle": handle, "title": "x"}],
+                                               wanted)["found"], [], handle)
+        # two pages of the attachment take one slot
+        self.assertEqual(len(retrieval.dedupe([{"handle": attachment, "title": "x"},
+                                               {"handle": attachment[:-1] + "3",
+                                                "title": "x"}], wanted)), 1)
+
     def test_targets_join_the_registry_pins_catalog_and_record(self):
         rows = [{"id": "co-111111", "name": "Process Map.md", "expected": {"sha256": "a" * 64},
                  "source": {"drive_id": "b!d", "item_id": "I1"}},

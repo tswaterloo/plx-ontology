@@ -64,6 +64,9 @@ class Weights:
     # What the word and meaning retrievers read: ``question`` (the question as asked) or
     # ``rewrites`` (the question and its understanding's rewrites, at most 6).
     query_texts: str = "rewrites"
+    # Final-score lift of a candidate whose title's words the question names: this
+    # weight x the share of the title's words named (``core.title_share``); 0: none.
+    title_match: float = 0.0
 
     def for_intent(self, intent: str | None) -> IntentWeights:
         """An unknown or missing intent reads the ``default`` weights."""
@@ -82,7 +85,7 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
         raise WeightsError("weights_invalid:schema")
     allowed = {"schema", "notes", "fusion", "rrf_k", "candidates_per_retriever",
                "rerank_top", "rerank_timeout_s", "rerank_passage_chars", "intents", "tuned",
-               "dense_ef_search", "query_texts",
+               "dense_ef_search", "query_texts", "title_match",
                "authority"}
     unknown = set(raw) - allowed
     if unknown:
@@ -118,7 +121,8 @@ def parse_weights(raw: Mapping[str, Any]) -> Weights:
         int(_number(raw.get("rerank_passage_chars", 1200), "rerank_passage_chars",
                     100, 4000)),
         int(_number(raw.get("dense_ef_search", 100), "dense_ef_search", 10, 1000)),
-        _choice(raw.get("query_texts", "rewrites"), "query_texts", ("question", "rewrites")))
+        _choice(raw.get("query_texts", "rewrites"), "query_texts", ("question", "rewrites")),
+        _number(raw.get("title_match", 0.0), "title_match", 0, 1))
 
 
 def _choice(value: Any, where: str, allowed: tuple[str, ...]) -> str:

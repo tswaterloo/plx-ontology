@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import AbstractSet, Any, Callable, Mapping, Sequence
 
 from operating.search import authority as au
 from operating.search import retrievers as rt
@@ -294,6 +294,8 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
         t = time.perf_counter()
         info = rt.details(conn, scope, [cid for cid, _ in fused[:pool_size * 3]])
         timings["details"] = _ms(t)
+        if weights.title_match > 0:
+            fused = title_lifted(fused, info, query.question, weights.title_match)
         reps = _representatives(fused, info, pool_size)
         terms = rt.words([query.question])
         rerank_scores: dict[str, float] = {}
@@ -376,6 +378,52 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             borrowed.__exit__(RuntimeError, None, None)   # closed, never lent again
         else:
             borrowed.__exit__(None, None, None)
+
+
+# File-name words that say nothing about what a document is about.
+_FILE_WORDS = frozenset("md pdf docx doc xlsx xls xlsm csv json html htm txt pptx ppt png jpg "
+                        "jpeg eml msg zip gen inv rpt ctr stmt".split())
+
+
+def _title_words(text: str | None) -> list[str]:
+    """The letter words of a title or question (folded, stopwords and file-name words
+    out, a plural's ``s`` dropped): digits, dates and version tags never count."""
+    out: list[str] = []
+    for word in re.findall(r"[^\W\d_]+", (text or "").casefold()):
+        if len(word) < 2 or word in rt.STOPWORDS or word in _FILE_WORDS:
+            continue
+        if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        if word not in out:
+            out.append(word)
+    return out
+
+
+def title_share(title: str | None, question_words: AbstractSet[str]) -> float:
+    """The share of a title's words the question names, when it names two or more of
+    them ("the Screening Process Map" names all of "2026-10-14 Screening Process
+    Map.html"); 0.0 otherwise (one shared word is chance)."""
+    words = _title_words(title)
+    named = sum(1 for word in words if word in question_words)
+    return named / len(words) if named >= 2 else 0.0
+
+
+def title_lifted(fused: Sequence[tuple[str, float]], info: Mapping[str, Mapping[str, Any]],
+                 question: str, weight: float) -> list[tuple[str, float]]:
+    """The fused list with each candidate whose title the question names lifted by
+    ``weight`` x its ``title_share`` x the best fused score, re-sorted: a document the
+    question names by its title reaches the pool even when its text matches weakly."""
+    if not fused:
+        return []
+    words = set(_title_words(question))
+    best = fused[0][1]
+    out = []
+    for cid, score in fused:
+        row = info.get(cid)
+        share = title_share(row.get("title"), words) if row is not None else 0.0
+        out.append((cid, score + weight * best * share))
+    out.sort(key=lambda kv: (-kv[1], kv[0]))
+    return out
 
 
 def _priors(weights: Weights, reps: Sequence[tuple[str, float]],

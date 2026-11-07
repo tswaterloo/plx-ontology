@@ -14,8 +14,9 @@ handles name it:
   it cites; a document is matched by ``original://sha256/<hex>``, by
   ``original://<row id>`` of every registry row holding those bytes, by the
   ``sharepoint://<drive>/<item>`` the row was fetched from (any version), and by the
-  row's file name when no registry row of other bytes carries that name (a package member
-  served from SharePoint carries no bytes pin; ``README.md`` names nothing);
+  row's file name when no registry row of other bytes carries that name (``README.md``
+  names nothing), and by the ``sha256=<hex>`` its handle's fragment pins (a mail
+  attachment's bytes, or the package a SharePoint member was read from);
 - the use-case catalog's documents of the card's use case (``examples/use_case_catalog.json``:
   its map as an original row or a SharePoint item);
 - the record the card is about (``root`` of an anchored card: ``PO5447``,
@@ -220,7 +221,19 @@ def matches(hit: Mapping[str, Any], target: Mapping[str, Any]) -> bool:
         return bool(target["text"]) and target["text"] in _hit_text(hit)
     handles = set(target["handles"])
     return normalize_handle(hit.get("handle")) in handles \
-        or f"{NAME_PREFIX}{_fold(hit.get('title'))}" in handles
+        or f"{NAME_PREFIX}{_fold(hit.get('title'))}" in handles \
+        or any(f"original://sha256/{sha}" in handles for sha in byte_pins(hit.get("handle")))
+
+
+_BYTE_PIN = re.compile(r"[#&]sha256=([0-9a-f]{64})(?=&|$)")
+
+
+def byte_pins(handle: Any) -> list[str]:
+    """The bytes a hit's handle pins in its fragment: a mail attachment's or a package
+    member's ``sha256=<hex>`` (the attachment's, or the package's the member came from),
+    so a hit read from the target's own bytes counts wherever it was fetched from. A
+    member's ``member_sha256`` is its own bytes, never the package's."""
+    return _BYTE_PIN.findall(unquote(str(handle or "")))
 
 
 def document_key(hit: Mapping[str, Any], wanted: Sequence[Mapping[str, Any]]) -> str:
