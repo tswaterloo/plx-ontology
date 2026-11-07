@@ -124,7 +124,7 @@ tools retired into which successor, so the host stays within the contract's
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 import dataclasses
 from dataclasses import dataclass, field
@@ -144,7 +144,8 @@ import time
 import zlib
 # The abstract collection classes (not their ``typing`` aliases): an ``isinstance`` check
 # against a ``typing`` alias costs several times more, and a find makes hundreds per call.
-from collections.abc import Callable, Collection, Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import (Callable, Collection, Iterable, Iterator, Mapping,
+                             MutableMapping, Sequence)
 from typing import Any, Protocol
 from urllib.parse import unquote
 
@@ -302,11 +303,16 @@ EMPTY_SCAN_MARGIN_SECONDS = 12.0
 SCAN_CURSOR_PREFIX = "s1."  # a filter listing's resumable scan cursor
 CURSOR_MAX_CHARS = 512  # the contract's cursor bound (ontology_tool_contracts.json)
 SCAN_ROW_BUDGET = 50000  # rows read per search, item-ACL denials included
-# Word-index rows past which a display-text pass reads its candidate rows from the
-# layout index first (``StoreReader._layout_candidates``), and how many of them one
-# query then reads.
+# The first window of word matches a display-text pass tests against its layouts
+# (``StoreReader._layout_candidates``; later windows double), and how many candidate
+# rows one query then reads.
 TEXT_LAYOUT_NARROW_ROWS = 5000
 TEXT_LAYOUT_CHUNK = 2000
+TEXT_LAYOUT_WINDOW_MAX = 80000  # word matches one lazy layout window reads at most
+# Layout cells per word match in a window past which its matches' cells are read by row
+# number rather than by walking the layouts' index ranges (a random read costs about as
+# much as this many sequential index entries).
+TEXT_LAYOUT_RANGE_FACTOR = 8
 SET_TTL_SECONDS = 1800.0
 MAX_SETS = 256
 MAX_SET_OBJECTS = 5000
@@ -788,6 +794,15 @@ class _Scope:
 
 # --------------------------------------------------------------------------- store
 
+def _then(first: list[int], rest: Iterator[list[int]]) -> Iterator[list[int]]:
+    """``first`` and then ``rest``; closing it closes ``rest`` (its open statement)."""
+    try:
+        yield first
+        yield from rest
+    finally:
+        rest.close()
+
+
 class StoreReader:
     """Read-only access to a ``plx-ontology-store/v10`` SQLite file.
 
@@ -957,32 +972,81 @@ class StoreReader:
             "WHERE " + where + " ORDER BY lf.layout", params)]
 
     def _layout_candidates(self, words: str, layouts: Sequence[int], after: int
-                           ) -> list[int] | None:
+                           ) -> Iterator[list[int]] | None:
         """The value rows past ``after`` the word index matches whose cell has one of
-        ``layouts``, in row order, read from the layout index (one sequential range per
-        layout) instead of one random cell read per word match; None when the word index
-        matches too few rows for that to pay (``TEXT_LAYOUT_NARROW_ROWS``) or the store
-        cannot read it that way. ``+c.rowid`` keeps the plan walking each layout's range
-        and testing the word matches as a set (cold "470": 1.5 s; probing each layout per
-        match: 2.5 s)."""
+        ``layouts``, in row order, tested against the layouts before any value, object
+        or permission row is joined; None when the store cannot read it that way.
+
+        Read lazily, one window of word matches at a time (``TEXT_LAYOUT_NARROW_ROWS``
+        of them, doubling up to ``TEXT_LAYOUT_WINDOW_MAX``), each tested as one set
+        against its cells' layouts by row number, so a caller that fills its page from
+        the first rows stops there. Intersecting the layouts' whole index ranges with
+        every word match instead read every cell of those layouts on every page: a
+        broad "purchase order" read 79,000 candidates over 118 layouts (1.5 to 6 s) per
+        page of 401, while one window's test reads 5,000 cells by row number (10 to
+        20 ms warm). The windows are consecutive and each is sorted, so their
+        concatenation is the whole candidate list in row order."""
+        matches = self._word_windows(words, after)
         try:
-            # counted only up to the threshold: the whole count of a common word read
-            # every match a second time (the candidates below read them once)
-            hits = self.conn.execute(
-                "SELECT count(*) FROM (SELECT rowid FROM value_text WHERE value_text "
-                "MATCH :words AND rowid > :after LIMIT :narrow)",
-                {"words": words, "after": after, "narrow": TEXT_LAYOUT_NARROW_ROWS}
-            ).fetchone()[0]
-            if hits < TEXT_LAYOUT_NARROW_ROWS:
-                return None
-            return sorted(row[0] for row in self.conn.execute(
-                "SELECT c.rowid FROM value_cells c INDEXED BY value_cells_by_layout "
-                "WHERE c.layout IN (SELECT value FROM json_each(:layouts)) "
-                "AND c.rowid > :after AND +c.rowid IN (SELECT rowid FROM value_text "
-                "WHERE value_text MATCH :words AND rowid > :after)",
-                {"layouts": json.dumps(list(layouts)), "after": after, "words": words}))
+            # A word matching few rows is one window, read once: handing the plain scan
+            # its rows to read again cost a common prefix's merge (3 s) twice.
+            hits = next(matches, [])
+            windows = self._layout_windows(json.dumps(list(layouts)), hits, matches)
+            first = next(windows, [])
         except sqlite3.OperationalError:
-            return None   # no such index or plan: the word index drives the pass
+            matches.close()
+            return None   # a store that cannot read it so: the word index drives the pass
+        return _then(first, windows)
+
+    def _word_windows(self, words: str, after: int) -> Iterator[list[int]]:
+        """The value rows past ``after`` holding ``words``, in row order, in windows of
+        ``TEXT_LAYOUT_NARROW_ROWS`` doubling up to ``TEXT_LAYOUT_WINDOW_MAX``: one
+        statement read as far as its consumer goes (a prefix word's matches are merged
+        once: 3 s for a common one, which every new statement would pay again)."""
+        cursor = self.conn.execute(
+            "SELECT rowid FROM value_text WHERE value_text MATCH :words AND rowid > :after "
+            "ORDER BY rowid", {"words": words, "after": after})
+        try:
+            window = max(TEXT_LAYOUT_NARROW_ROWS, 1)
+            while rows := cursor.fetchmany(window):
+                yield [row[0] for row in rows]
+                if len(rows) < window:
+                    return   # the word index's last rows
+                window = max(min(window * 2, TEXT_LAYOUT_WINDOW_MAX), 1)
+        finally:
+            cursor.close()
+
+    def _layout_windows(self, layouts: str, hits: list[int], matches: Iterator[list[int]]
+                        ) -> Iterator[list[int]]:
+        """Each window's candidates, read the cheaper way: its word matches' cells by row
+        number (a random read each), unless the layouts hold fewer than
+        ``TEXT_LAYOUT_RANGE_FACTOR`` cells per match between the window's first and last
+        match: their index ranges there are then walked and tested against the matches
+        as a set (sequential reads; a type's own few properties among a common word's
+        matches). Counting those cells stops at that bound, so a window never reads more
+        of the layout index than it would have probed."""
+        try:
+            while hits:
+                bounds = {"layouts": layouts, "after": hits[0] - 1, "upto": hits[-1],
+                          "hits": json.dumps(hits)}
+                held = self.conn.execute(
+                    "SELECT count(*) FROM (SELECT 1 FROM value_cells c INDEXED BY "
+                    "value_cells_by_layout WHERE c.layout IN (SELECT value FROM "
+                    "json_each(:layouts)) AND c.rowid > :after AND c.rowid <= :upto "
+                    "LIMIT :most)", dict(bounds, most=len(hits) * TEXT_LAYOUT_RANGE_FACTOR)
+                ).fetchone()[0]
+                yield sorted(row[0] for row in self.conn.execute(
+                    "SELECT c.rowid FROM json_each(:hits) h JOIN value_cells c "
+                    "ON c.rowid = h.value "
+                    "WHERE c.layout IN (SELECT value FROM json_each(:layouts))"
+                    if held >= len(hits) * TEXT_LAYOUT_RANGE_FACTOR else
+                    "SELECT c.rowid FROM value_cells c INDEXED BY value_cells_by_layout "
+                    "WHERE c.layout IN (SELECT value FROM json_each(:layouts)) "
+                    "AND c.rowid > :after AND c.rowid <= :upto "
+                    "AND +c.rowid IN (SELECT value FROM json_each(:hits))", bounds))
+                hits = next(matches, [])
+        finally:
+            matches.close()   # the word statement ends with the pass, read or not
 
     def text_matches(self, scope: _Scope, words: str,
                      typed_properties: Sequence[str] | None, after: int, batch: int, *,
@@ -998,9 +1062,9 @@ class StoreReader:
         A word match's cell is first tested against the layouts the pass can match
         (``_text_layouts``: the declared properties, else text values) before its value,
         object and permission rows are read; among declared properties, a word matching
-        many rows is intersected with the layout index first (``_layout_candidates``),
-        so a common number costs one index range per property, not one random read per
-        row that holds it. ``type_properties`` (the asked type's declared properties, for
+        many rows has its matches' layouts tested first, one window of matches at a time
+        (``_layout_candidates``), so a common word costs one cell read per match the
+        page needs, never a join per row that holds it nor a read of every match. ``type_properties`` (the asked type's declared properties, for
         a ``beside`` pass of one ``object_type``) narrows it the same way: a value of
         that type is one of its properties, so a name every other record repeats (our
         own company's, on every order) is no longer read row by row only to be dropped
@@ -1025,6 +1089,8 @@ class StoreReader:
                 + " AND v.markings IN (SELECT value FROM json_each(:marks)) "
                 + where + "ORDER BY f.rowid LIMIT :batch")
         select = "SELECT v.*, o.object_type, o.binding_id AS object_binding, o.audience_key "
+        if not layouts:
+            return []   # no cell can pass the layout test (a type declaring no display text)
         candidates = self._layout_candidates(words, layouts, after) \
             if named or narrowed else None
         if candidates is None:
@@ -1033,14 +1099,16 @@ class StoreReader:
                 "AND cell.layout IN (SELECT value FROM json_each(:layouts)) "
                 + tail.format(match="value_text MATCH :words AND"), params))
         out: list[sqlite3.Row] = []
-        for start in range(0, len(candidates), TEXT_LAYOUT_CHUNK):
-            out.extend(self.conn.execute(
-                select + "FROM (SELECT value AS rowid FROM json_each(:rows)) f "
-                + tail.format(match=""),
-                dict(params, rows=json.dumps(candidates[start:start + TEXT_LAYOUT_CHUNK]),
-                     batch=batch - len(out))))
-            if len(out) >= batch:
-                break
+        with closing(candidates):   # its word statement ends here, the page full or not
+            for rows in candidates:
+                for start in range(0, len(rows), TEXT_LAYOUT_CHUNK):
+                    out.extend(self.conn.execute(
+                        select + "FROM (SELECT value AS rowid FROM json_each(:rows)) f "
+                        + tail.format(match=""),
+                        dict(params, rows=json.dumps(rows[start:start + TEXT_LAYOUT_CHUNK]),
+                             batch=batch - len(out))))
+                    if len(out) >= batch:
+                        return out
         return out
 
     def holds_text_of(self, schemes: Sequence[str]) -> bool:
@@ -4571,6 +4639,8 @@ class OntologyTools:
                         out.append(match)
                     if scanned >= SCAN_ROW_BUDGET:
                         return cut()
+                    if reason != "document_text" and len(rows) < batch:
+                        break   # a short page is the pass's last: no statement to say so
         except sqlite3.OperationalError:
             return out, True, None   # a query the index cannot read proves no absence
         return out, False, None

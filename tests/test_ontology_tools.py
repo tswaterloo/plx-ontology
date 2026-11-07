@@ -1237,7 +1237,7 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
         # Cold "SO 470" took 20-25 s: each display pass read every value row holding a
         # common number before testing its property. Narrowed (layout test, layout-index
         # candidates read in chunks), each pass returns the same rows, order and cap.
-        def run(narrow_rows, chunk, cap, gated):
+        def run(narrow_rows, chunk, cap, gated, window=80000, factor=8):
             s = build()
             self._mails(s, 6, prefix="n", subject="more acme sprockets")
             self._mails(s, 3, prefix="v", subject="Acme Sprockets")
@@ -1247,14 +1247,16 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                   "graph-mail://mbx-1/x1@ck", "mail")
             s.val("MailMessage:mail.po_inbox:x1", "notes", "text", "acme sprockets noted",
                   "graph-mail://mbx-1/x1@ck", "row.notes", "mail")
-            saved = (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP)
-            ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP = (
-                narrow_rows, chunk, cap)
+            saved = (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP,
+                     ot.TEXT_LAYOUT_WINDOW_MAX, ot.TEXT_LAYOUT_RANGE_FACTOR)
+            (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP,
+             ot.TEXT_LAYOUT_WINDOW_MAX, ot.TEXT_LAYOUT_RANGE_FACTOR) = (
+                narrow_rows or 1, chunk, cap, window, factor)
             narrowed = []
             plain = ot.StoreReader._layout_candidates
 
             def spy(reader, *args):
-                found = plain(reader, *args)
+                found = None if narrow_rows is None else plain(reader, *args)
                 narrowed.append(found is not None)
                 return found
             ot.StoreReader._layout_candidates = spy
@@ -1263,24 +1265,63 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
                     "plx.find", {"query": "acme sprockets", "limit": 20}, SALES)
             finally:
                 ot.StoreReader._layout_candidates = plain
-                ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP = saved
+                (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_LAYOUT_CHUNK, ot.TEXT_SCAN_CAP,
+                 ot.TEXT_LAYOUT_WINDOW_MAX, ot.TEXT_LAYOUT_RANGE_FACTOR) = saved
             self.assertContract("plx.find", found)
             return without_set(found), any(narrowed)
 
         for cap in (2, 4, 50):
             for gated in (False, True):
-                scanned, used = run(10 ** 9, 2000, cap, gated)
+                scanned, used = run(None, 2000, cap, gated)   # the plain word scan
                 self.assertFalse(used)
                 for chunk in (1, 3, 2000):
                     narrowed, used = run(0, chunk, cap, gated)
                     self.assertTrue(used)
                     self.assertEqual(narrowed, scanned, (cap, gated, chunk))
+                # read lazily in windows of word matches (the first one also the
+                # threshold), doubling up to the largest, each window's cells read by row
+                # number (factor 0) or by layout range (a large factor): the same rows,
+                # order and cap
+                for narrow_rows, window in ((1, 1), (1, 2), (2, 3), (5, 10 ** 6), (10 ** 9, 1)):
+                    for factor in (0, 1, 10 ** 6):
+                        narrowed, used = run(narrow_rows, 2, cap, gated, window, factor)
+                        self.assertTrue(used)
+                        self.assertEqual(narrowed, scanned,
+                                         (cap, gated, narrow_rows, window, factor))
         whole, _used = run(0, 1, 50, True)
         ids = [c["object"]["object_id"] for c in whole["candidates"]]
         self.assertEqual(ids[:3], [f"MailMessage:mail.po_inbox:v{at}" for at in range(3)])
         self.assertNotIn("MailMessage:mail.po_inbox:s0", ids)   # marked: never read
         self.assertNotIn("MailMessage:mail.po_inbox:d0", ids)   # item ACL: never read
         self.assertIn("MailMessage:mail.po_inbox:x1", ids)   # other text: the last pass
+
+    def test_a_narrowed_text_page_reads_only_the_word_matches_it_needs(self):
+        # A broad "purchase order" read every word match's layout cell (79,000) for a
+        # page of 401, on every page: 16-25 s. A page now stops at the window that
+        # fills it, and the next page resumes after it.
+        s = build()
+        self._mails(s, 40, prefix="n", subject="acme sprockets")
+        saved = (ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_SCAN_CAP, ot.TEXT_LAYOUT_WINDOW_MAX)
+        ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_SCAN_CAP, ot.TEXT_LAYOUT_WINDOW_MAX = 2, 3, 2
+        read = []
+        plain = ot.StoreReader._word_windows
+
+        def spy(reader, *args):
+            for rows in plain(reader, *args):
+                read.extend(rows)
+                yield rows
+        ot.StoreReader._word_windows = spy
+        try:
+            found = tools(s).call("plx.find", {"query": "acme sprockets", "limit": 20}, SALES)
+            total = sum(map(len, plain(tools(s).store, '"acme"* AND "sprockets"*', 0)))
+        finally:
+            ot.StoreReader._word_windows = plain
+            ot.TEXT_LAYOUT_NARROW_ROWS, ot.TEXT_SCAN_CAP, ot.TEXT_LAYOUT_WINDOW_MAX = saved
+        self.assertContract("plx.find", found)
+        self.assertEqual(len(found["candidates"]), 3)
+        self.assertGreaterEqual(total, 40)
+        self.assertTrue(read)
+        self.assertLess(len(read), total // 2, (len(read), total))
 
     def test_filter_listing_uses_the_same_tier_rule_and_drops_no_object(self):
         by_id = {}
