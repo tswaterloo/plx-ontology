@@ -643,7 +643,7 @@ class HostileCellProjectionTests(OutputFirewallTestCase):
                                "property = 'ordered_quantity'", (unit, fixture.L3))
             store.conn.commit()
             tools = fixture.tools(store)
-            handle = tools.base.sets.new(fixture.STAFF, [fixture.L3])
+            handle = tools.base.sets.new(fixture.STAFF, [fixture.L3], complete=True)
             built = tools.call("plx.aggregate", {"set": handle, "measure": {
                 "property": "ordered_quantity", "op": "sum"}}, fixture.STAFF)
             with self.subTest(unit=unit):
@@ -672,7 +672,7 @@ class HostileCellProjectionTests(OutputFirewallTestCase):
                                "property = 'ordered_quantity'", (unit, line))
         store.conn.commit()
         tools = fixture.tools(store)
-        handle = tools.base.sets.new(fixture.STAFF, list(units))
+        handle = tools.base.sets.new(fixture.STAFF, list(units), complete=True)
         built = tools.call("plx.aggregate", {"set": handle, "group_by": ["description"],
                                              "measure": {"property": "ordered_quantity",
                                                          "op": "sum"}}, fixture.STAFF)
@@ -885,7 +885,7 @@ class HostileCellPropertyTests(OutputFirewallTestCase):
             planted(store.conn, agg_fx.L2, mixed)
             tools = agg_fx.tools(store)
             lines = [agg_fx.L1, _hostile_id(agg_fx.L2), agg_fx.L3, agg_fx.L4]
-            handle = tools.base.sets.new(agg_fx.STAFF, lines)
+            handle = tools.base.sets.new(agg_fx.STAFF, lines, complete=True)
             calls = [("plx.aggregate", {"set": handle, "measure": {
                          "property": "ordered_quantity", "op": "sum"}}),
                      ("plx.aggregate", {"set": handle, "group_by": ["description"], "measure": {

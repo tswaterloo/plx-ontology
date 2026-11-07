@@ -165,7 +165,7 @@ class Tools:
         the member groups under the far record's value, never under null with a
         ``below_tier_floor`` gap."""
         out = self._valid("plx.aggregate", self.aggregate_tools.call("plx.aggregate", {
-            "set": self.base.sets.new(STAFF, [member]), "measure": {"op": "count"},
+            "set": self.base.sets.new(STAFF, [member], complete=True), "measure": {"op": "count"},
             "group_by": [far_property],
             "path": [{"link_type": link_type, "direction": direction}]}, STAFF))
         self.test.assertNotIn("refused", out, out)

@@ -697,7 +697,7 @@ class SalesOrderTests(Mixin, unittest.TestCase):
         self.assertEqual(answer.roots[0]["variant"], "make")
 
     def test_set_handle_reports_variants_and_mixed_stages(self):
-        handle = self.t.base._new_set(STAFF, [self.ids["make"], self.ids["dist"]])
+        handle = self.t.base._new_set(STAFF, [self.ids["make"], self.ids["dist"]], complete=True)
         answer = self.answer(self.t, {"from": handle})
         st = stages(answer.result)
         self.assertEqual(st["manufacturing_order"]["missing"]["reason"], "mixed_across_set")
@@ -737,7 +737,7 @@ class SalesOrderTests(Mixin, unittest.TestCase):
         self.assertIn("policy_changed_since_handle", [g["reason"] for g in stale["gaps"]])
 
     def test_another_actors_set_handle_is_refused(self):
-        handle = self.t.base._new_set(SALES, [self.ids["make"]])
+        handle = self.t.base._new_set(SALES, [self.ids["make"]], complete=True)
         result = self.t.call("plx.process", {"from": handle}, STAFF)
         self.assertEqual(result["error"]["code"], "handle_expired")
 
@@ -775,7 +775,7 @@ class PurchaseTests(Mixin, unittest.TestCase):
         self.assertEqual(len(findings), 2)
 
     def test_set_of_decided_pos_reports_variants_and_current_stage(self):
-        handle = self.t.base._new_set(STAFF, [self.ids["po_a"], self.ids["po_b"]])
+        handle = self.t.base._new_set(STAFF, [self.ids["po_a"], self.ids["po_b"]], complete=True)
         result = self.answer(self.t, {"from": handle}).result
         self.assertEqual(sorted((v["sequence"], v["count"]) for v in result["variants"]),
                          [(["purchase_order", "receipt"], 1),
@@ -2247,7 +2247,7 @@ class PermissionMonotonicityTests(unittest.TestCase):
                                 contracts=CONTRACTS, clock=lambda: NOW)
         arguments = {"from": root}
         if isinstance(root, tuple):
-            arguments = {"from": base._new_set(self.READER, list(root)), "include_variants": True}
+            arguments = {"from": base._new_set(self.READER, list(root), complete=True), "include_variants": True}
         if process is not None:
             arguments["process"] = process
         answer = op.ProcessTools(base, graphs or GRAPHS).process(arguments, self.READER)

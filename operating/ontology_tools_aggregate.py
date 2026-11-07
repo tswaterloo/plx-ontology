@@ -171,6 +171,7 @@ from operating.ontology_tools import (  # noqa: F401 (origin_rank: re-exported)
 )
 from operating.ontology_tools_traverse import (
     CAPTURED_AFTER,
+    SET_INCOMPLETE,
     DEFAULT_TIER_FLOOR,
     PERMISSION_LOSSES,
     TraverseTools,
@@ -1287,10 +1288,14 @@ class AggregateTools:
         # whose date is not on record (date_not_on_record) is lost: partial
         # A lead set's mark (lead_basis) loses no member either: the count is computed and
         # stays marked as resting on lead links.
-        lost_gaps = [g for g in root_gaps if g["reason"] not in (CAPTURED_AFTER,
-                                                                 "filter_not_sourced",
-                                                                 "lead_basis")]
-        partial = bool(lost_gaps)
+        # A set whose making answer did not hold every match (``set_incomplete``): a count
+        # of its members is computed and stays a lower bound (partial: "at least"); any
+        # other measure of it is no value, since the matches left out would change it.
+        short = any(g["reason"] == SET_INCOMPLETE for g in root_gaps)
+        lost_gaps = [g for g in root_gaps if g["reason"] not in (
+            CAPTURED_AFTER, "filter_not_sourced", "lead_basis")
+            and not (g["reason"] == SET_INCOMPLETE and op == "count")]
+        partial = bool(lost_gaps) or short
         withheld_objects = any(g["reason"] in PERMISSION_LOSSES for g in root_gaps)
         # Types of every readable member, removed or not: whether a measure applies never
         # depends on which members the source still holds.
@@ -1595,7 +1600,7 @@ class AggregateTools:
             # left out (hidden, not in the projection; the set's own gap says so) make the
             # count unknown, never 0.
             out_groups.append({"key": {}, "value": "0" if op in ("count", "count_distinct")
-                               and not lost_gaps else None, "inputs": 0, "markings": []})
+                               and not lost_gaps and not short else None, "inputs": 0, "markings": []})
         having = arguments.get("having")
         if having is not None:
             # Groups whose value holds the condition, every one of them (a group with no

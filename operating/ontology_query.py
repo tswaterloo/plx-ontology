@@ -111,6 +111,9 @@ class TableBackend:
         self.withheld_set: Callable[[Any, list[str]], str] | None = None
         # a set marked as reached only through lead-tier links (``SetRegistry.new`` lead)
         self.lead_set: Callable[..., str] | None = None
+        # record that a set handle this query returns is not every match
+        # (``SetRegistry.mark_incomplete``): a later count of it is a lower bound
+        self.set_incomplete: Callable[[Any, str], None] | None = None
         # the records a set handle holds (the host's set registry), for the type a walk
         # starts from
         self.members = members
@@ -250,6 +253,13 @@ def _superseded(gaps: list, since: int) -> list:
                            or g.get("reason") not in DEAD_ENDS]
 
 
+# Gaps of a walk that leave out no member of the set it returns: the age of what was
+# read, records set apart as leads or marked as resting on leads, a part not read that
+# holds none of them, records first captured after as_known_at, and a filter's note on
+# the sources never recording it (it matched every record it could).
+LOSSLESS_GAPS = frozenset({"stale_source", "schema_drift", POSSIBLY_RELATED, LEAD_BASIS,
+                           "partly_read_elsewhere", "captured_after_as_known_at",
+                           "filter_not_sourced"})
 TRIMMED_REASONS = frozenset({"withheld_by_permission", "marking_withheld",
                              "policy_changed_since_handle"})
 IDENTIFIER_GAPS = frozenset({"no_identifier_match", "identifier_leads",
@@ -327,9 +337,29 @@ class QueryTool:
         if problems:
             return _error("invalid_input", "; ".join(problems))
         try:
-            return self._query(arguments, actor)
+            result = self._query(arguments, actor)
         except _Refused as exc:
             return exc.result
+        self._mark_short(result, actor)
+        return result
+
+    def _mark_short(self, result: Any, actor: Any) -> None:
+        """A set this answer returns is every match only when no gap of its walk says a
+        member may be missing (a capped scan, an incomplete start set, a trim, a part not
+        read): otherwise the registry records it incomplete, so a later plx.aggregate of
+        it counts "at least", never exactly. Sets made inside the walk are complete as
+        made; the walk's gaps carry what each step lost, as here."""
+        if not isinstance(result, Mapping) or self.backend.set_incomplete is None:
+            return
+        handles = [result.get("set")] + [r.get("set") for r in result.get("by_record") or ()
+                                         if isinstance(r, Mapping)]
+        lossy = any(isinstance(g, Mapping) and g.get("reason") not in LOSSLESS_GAPS
+                    for g in result.get("gaps") or ())
+        if not lossy:
+            return
+        for handle in handles:
+            if isinstance(handle, str) and handle.startswith("set:"):
+                self.backend.set_incomplete(actor, handle)
 
     # ------------------------------------------------------------------ the query
 
@@ -1551,7 +1581,13 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
     def members(actor: Any, handle: str) -> Sequence[str] | None:
         return base.resolve_set(handle, actor)
 
-    backend = TableBackend(call, getattr(base, "_new_set", None), getattr(base, "schema", None),
+    # A set the query makes holds the records its walk chose; whether that walk lost any
+    # is in its gaps, and the set it returns is marked incomplete when so (``_mark_short``).
+    new_set = getattr(base, "_new_set", None)
+    made = (lambda actor, ids: new_set(actor, ids, complete=True)) \
+        if new_set is not None and hasattr(getattr(base, "sets", None), "completeness") \
+        else new_set
+    backend = TableBackend(call, made, getattr(base, "schema", None),
                            visible if hasattr(base, "_visible_versions") else None,
                            codes if hasattr(base, "_visible_versions") else None,
                            rows if hasattr(base, "_visible_versions") else None,
@@ -1559,9 +1595,12 @@ def register(table: dict[str, dict[str, Any]], base: Any) -> QueryTool:
                            members if hasattr(base, "resolve_set") else None)
     if hasattr(getattr(base, "sets", None), "new"):
         backend.withheld_set = lambda actor, ids: base.sets.new(actor, list(ids),
-                                                                withheld=True)
+                                                                withheld=True, complete=True)
         backend.lead_set = lambda actor, ids, withheld=False: base.sets.new(
-            actor, list(ids), withheld=bool(withheld), lead=True)
+            actor, list(ids), withheld=bool(withheld), lead=True, complete=True)
+        if hasattr(base.sets, "mark_incomplete"):
+            backend.set_incomplete = lambda actor, handle: base.sets.mark_incomplete(
+                handle, actor)
     tool = QueryTool(backend)
     if TOOL_NAME in table:
         raise ValueError(f"tool already registered: {TOOL_NAME}")

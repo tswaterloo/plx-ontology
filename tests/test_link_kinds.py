@@ -185,11 +185,11 @@ class LinkKindTests(unittest.TestCase):
         # reviewed share only, never its whole quantity or a share plus the mention.
         aggregate = oa.AggregateTools(self.base)
         twins = self.call(aggregate, "plx.aggregate", {
-            "set": self.base.sets.new(A.actor, [SO, TWIN]), "measure": {"op": "count"}})
+            "set": self.base.sets.new(A.actor, [SO, TWIN], complete=True), "measure": {"op": "count"}})
         self.assertEqual([g["value"] for g in twins["groups"]], [None])
         self.assertIn("cross_system_twins", {g["reason"] for g in twins["gaps"]})
         produced = self.call(aggregate, "plx.aggregate", {
-            "set": self.base.sets.new(A.actor, [PACKET]),
+            "set": self.base.sets.new(A.actor, [PACKET], complete=True),
             "measure": {"property": "produced_quantity", "op": "sum"},
             "group_by": ["order_number"],
             "path": [{"link_type": "AssemblyOrderPacket.for_sales_order",
@@ -220,7 +220,7 @@ class LinkKindTests(unittest.TestCase):
         # plx.aggregate: the order and its customer PO are two records, never twins.
         aggregate = oa.AggregateTools(self.base)
         pair = self.call(aggregate, "plx.aggregate", {
-            "set": self.base.sets.new(A.actor, [SO, CPO]), "measure": {"op": "count"}})
+            "set": self.base.sets.new(A.actor, [SO, CPO], complete=True), "measure": {"op": "count"}})
         self.assertNotIn("cross_system_twins", {g["reason"] for g in pair["gaps"]})
         self.assertEqual(sum(int(g["value"]) for g in pair["groups"]), 2)
 

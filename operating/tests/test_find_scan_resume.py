@@ -181,7 +181,7 @@ class FindScanResumeTests(ContractMixin, unittest.TestCase):
         got = agg.select(PRESENT, READER)
         self.assertEqual(sorted(got["ids"]), sorted(_oid(f"bulk-{i:04d}a") for i in range(12)))
         some = t._new_set(READER, [_oid("bulk-0001a"), _oid("bulk-0001b"),
-                                   _oid("bulk-0002a")])
+                                   _oid("bulk-0002a")], complete=True)
         kept = agg.select({"set": some, "filters": PRESENT["filters"]}, READER)
         self.assertEqual(sorted(kept["ids"]), [_oid("bulk-0001a"), _oid("bulk-0002a")])
         refused = agg.select({"set": some, "filters": [{"property": "nope", "op": "present"}]},

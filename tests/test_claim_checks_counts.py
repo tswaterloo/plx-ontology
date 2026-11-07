@@ -634,7 +634,7 @@ class CountsAcrossCallsTests(unittest.TestCase):
         # ``links``: how the set was made (``()``: listed from its object type, as a
         # plx.find listing; None: not known)
         self.store.conn.commit()
-        arguments = {"set": self.tools.base.sets.new(self.fx.STAFF, list(ids), links=links),
+        arguments = {"set": self.tools.base.sets.new(self.fx.STAFF, list(ids), links=links, complete=True),
                      "measure": {"op": "count"}, **extra}
         out = self.tools.call("plx.aggregate", arguments, self.fx.STAFF)
         self.assertEqual(self.fx.validate(out, self.fx.CONTRACTS["tools"]["plx.aggregate"][
@@ -814,3 +814,142 @@ class CountsAcrossCallsTests(unittest.TestCase):
         self.assertNotIn("partly_read_elsewhere", reasons)
         self.assertEqual(codes(self.bound(arguments, out, [self.fx.PO1, self.fx.PO2])),
                          ["claim_count_lower_bound"])
+
+    # A set records whether the answer that made it held every match (set-complete): a count of a set made from an answer short of its matches
+    # (a listing cut at the set size, a walk from such a set, a plx.query whose walk
+    # lost records) is a lower bound, "at least N", never an exact N; a set made from a
+    # whole listing counts exactly however the listing was paged.
+
+    def find(self, **arguments):
+        self.store.conn.commit()
+        return self.tools.base.call("plx.find", {"object_type": "PurchaseOrder",
+                                                 "filters": [{"property": "status",
+                                                              "op": "eq",
+                                                              "value": "Complete"}],
+                                                 **arguments}, self.fx.STAFF)
+
+    def counted_set(self, handle):
+        arguments = {"set": handle, "measure": {"op": "count"}}
+        out = self.tools.call("plx.aggregate", arguments, self.fx.STAFF)
+        self.assertEqual(self.fx.validate(out, self.fx.CONTRACTS["tools"]["plx.aggregate"][
+            "output"], root=self.fx.CONTRACTS), [], out)
+        return arguments, out
+
+    def test_a_paged_listing_s_set_counts_every_match_exactly(self):
+        for size in (1, 10, 60):
+            with self.subTest(size=size):
+                self.setUp()
+                oids = self.purchase_orders(size)
+                found = self.find(limit=1)
+                self.assertEqual(found["completeness"]["total"], size)
+                self.assertLessEqual(len(found["candidates"]), 2)
+                self.assertEqual(found["completeness"]["truncated"], size > 2)
+                arguments, out = self.counted_set(found["set"])
+                self.assertEqual(out["groups"][0]["value"], str(size))
+                self.assertTrue(out["completeness"]["complete"])
+                self.assertNotIn("set_incomplete", {g["reason"] for g in out["gaps"]})
+                result = self.bound(arguments, out, oids[:3], value=size)
+                if size <= 50:
+                    self.assertTrue(result["passed"], result["failures"])
+                    self.assertEqual(checked(result)[0]["bound"], "exact")
+
+    def test_a_set_short_of_its_listing_counts_at_least_never_exactly(self):
+        from unittest import mock
+        from operating import ontology_tools
+        for size in (3, 10, 60):
+            with self.subTest(size=size):
+                self.setUp()
+                oids = self.purchase_orders(size)
+                held = size - 1
+                with mock.patch.object(ontology_tools, "MAX_SET_OBJECTS", held):
+                    found = self.find(limit=1)
+                self.assertEqual(self.tools.base.sets.completeness(
+                    found["set"], self.fx.STAFF), (False, size))
+                arguments, out = self.counted_set(found["set"])
+                # the members held are counted, as a lower bound
+                self.assertEqual(out["groups"][0]["value"], str(held))
+                self.assertTrue(out["partial"])
+                self.assertFalse(out["completeness"]["complete"])
+                gap = next(g for g in out["gaps"] if g["reason"] == "set_incomplete")
+                self.assertIn(f"{size} matched", gap["detail"])
+                cited = oids[:held] if held <= 50 else oids[:3]
+                exact = self.bound(arguments, out, cited, value=held)
+                self.assertNotIn("exact", [c.get("bound") for c in checked(exact)])
+                self.assertFalse(exact["passed"])
+                if held <= 50:
+                    floor = self.bound(arguments, out, cited, value=held,
+                                       text=f"At least {held} purchase orders.")
+                    self.assertEqual([c.get("bound") for c in checked(floor)], ["at_least"])
+                # any other measure of it has no value: the left-out matches would change it
+                _, total = self.counted_set(found["set"])
+                summed = self.tools.call("plx.aggregate", {
+                    "set": found["set"], "measure": {"op": "count_distinct",
+                                                     "property": "status"}}, self.fx.STAFF)
+                self.assertIsNone(summed["groups"][0]["value"])
+                self.assertTrue(summed["partial"])
+
+    def test_what_is_walked_from_a_short_set_stays_short(self):
+        cust = self.store.obj("Customer:bc.customers:c1")
+        contacts = [self.store.obj(f"Contact:bc.contacts:k{n}") for n in range(2)]
+        for k in contacts:
+            self.store.link("Contact.bc_customer", k, cust)
+        self.store.conn.commit()
+        walk = {"path": [{"link_type": "Contact.bc_customer", "direction": "reverse"}]}
+        for complete, bound in ((True, "exact"), (False, "at_least")):
+            with self.subTest(complete=complete):
+                root = self.tools.base.sets.new(self.fx.STAFF, [cust], links=(),
+                                                complete=complete)
+                around = self.tools.walk.call("plx.around", {"from": root, **walk},
+                                              self.fx.STAFF)
+                self.assertEqual(self.tools.base.sets.completeness(
+                    around["set"], self.fx.STAFF)[0], complete)
+                arguments, out = self.counted_set(around["set"])
+                self.assertEqual(out["groups"][0]["value"], "2")
+                rows = dict(self.view(oid) for oid in contacts)
+                text = "2 contacts." if complete else "At least 2 contacts."
+                result = gate(text, list(rows), [count_of(list(rows), 2)], rows=rows,
+                              calculations=(), returned=claim_checks.returned_evidence(
+                                  "plx.aggregate", arguments, out))
+                self.assertEqual([c.get("bound") for c in checked(result)], [bound])
+
+    def test_an_unknown_or_foreign_handle_is_never_complete(self):
+        oids = self.purchase_orders(2)
+        handle = self.tools.base.sets.new(self.fx.STAFF, oids, complete=True)
+        self.assertEqual(self.tools.base.sets.completeness(handle, self.fx.STAFF),
+                         (True, 2))
+        self.assertEqual(self.tools.base.sets.completeness("set:unknownhandle1",
+                                                           self.fx.STAFF), (False, None))
+        # not said: incomplete; a total short of the members held is never complete
+        self.assertEqual(self.tools.base.sets.completeness(
+            self.tools.base.sets.new(self.fx.STAFF, oids), self.fx.STAFF), (False, None))
+        self.assertFalse(self.tools.base.sets.completeness(self.tools.base.sets.new(
+            self.fx.STAFF, oids, complete=True, total=3), self.fx.STAFF)[0])
+        # marking only ever goes from complete to incomplete
+        self.tools.base.sets.mark_incomplete(handle, self.fx.STAFF)
+        self.assertEqual(self.tools.base.sets.completeness(handle, self.fx.STAFF),
+                         (False, None))
+
+    def test_a_query_over_a_short_set_counts_at_least_and_returns_it_short(self):
+        from operating import ontology_query
+        oids = self.purchase_orders(3)
+        self.store.conn.commit()
+        table = {name: {"handler": (lambda n: lambda a, actor: self.tools.base.call(
+            n, a, actor))(name)} for name in ("plx.find", "plx.around")}
+        tool = ontology_query.register(table, self.tools.base)
+        rows = dict(self.view(oid) for oid in oids)
+        for complete, bound in ((True, "exact"), (False, "at_least")):
+            with self.subTest(complete=complete):
+                start = self.tools.base.sets.new(self.fx.STAFF, oids, links=(),
+                                                 complete=complete)
+                arguments = {"from": {"set": start}, "measures": [{"op": "count"}]}
+                out = tool.call(arguments, self.fx.STAFF)
+                self.assertEqual(out["results"][0]["groups"][0]["value"], "3")
+                self.assertEqual(out["results"][0]["completeness"]["complete"], complete)
+                # the set it returns says so to whatever counts it next
+                self.assertEqual(self.tools.base.sets.completeness(
+                    out["set"], self.fx.STAFF)[0], complete)
+                text = "3 purchase orders." if complete else "At least 3 purchase orders."
+                result = gate(text, list(rows), [count_of(list(rows), 3)], rows=rows,
+                              calculations=(), returned=claim_checks.returned_evidence(
+                                  "plx.query", arguments, out))
+                self.assertEqual([c.get("bound") for c in checked(result)], [bound])

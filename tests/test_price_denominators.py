@@ -120,7 +120,7 @@ class PriceDenominatorTests(unittest.TestCase):
         return row["comparison"], row.get("reason")
 
     def aggregate(self, natives, prop, op):
-        handle = self.tools.base.sets.new(STAFF, [line(n) for n in natives])
+        handle = self.tools.base.sets.new(STAFF, [line(n) for n in natives], complete=True)
         return self.call("plx.aggregate", {"set": handle,
                                            "measure": {"property": prop, "op": op}})
 

@@ -1828,7 +1828,7 @@ class LiveIdCeilingTests(unittest.TestCase):
         first = sets.new(SALES, ["only-first", "shared"], live=True)
         sets.new(SALES, ["shared", "second"], live=True)
         for i in range(ot.MAX_SETS - 1):   # pushes only the first set out of the limit
-            sets.new(FULL, [f"x:{i}"], live=False)
+            sets.new(FULL, [f"x:{i}"], live=False, complete=True)
         self.assertIsNone(sets.resolve(first, SALES))
         self.assertFalse(sets.live_id("only-first", SALES))
         self.assertTrue(sets.live_id("shared", SALES))

@@ -645,7 +645,7 @@ class OnePartNeverRefusesTheRead(unittest.TestCase):
         self.addCleanup(store.conn.close)
         t = tools(store)
         agg = oa.AggregateTools(t)
-        some = t._new_set(READER, [_oid("bulk-0000a"), _oid("bulk-0001a")])
+        some = t._new_set(READER, [_oid("bulk-0000a"), _oid("bulk-0001a")], complete=True)
         got = agg.rows({"set": some, "properties": ["po_number", "line_amount_x"]}, READER)
         self.assertNotIn("error", got, got)
         self.assertEqual(sorted(r["values"]["po_number"]["value"] for r in got["rows"]),
@@ -653,7 +653,7 @@ class OnePartNeverRefusesTheRead(unittest.TestCase):
         [gap] = [g for g in got["gaps"] if g["reason"] == "unknown_property"]
         self.assertEqual(gap["subject"], "line_amount_x")
         self.assertIn("po_number", gap["detail"])
-        empty = agg.rows({"set": t._new_set(READER, []), "properties": ["po_number"],
+        empty = agg.rows({"set": t._new_set(READER, [], complete=True), "properties": ["po_number"],
                           "date": {"property": "order_date"}}, READER)
         self.assertNotIn("error", empty, empty)
         self.assertEqual((empty["count"], empty["rows"]), (0, []))

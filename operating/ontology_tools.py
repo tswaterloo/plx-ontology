@@ -2243,9 +2243,13 @@ class SetRegistry:
         # related, never confirmed: whatever is counted or walked from it stays a lead);
         # ``links`` the link types walked to make it (empty: listed from its object types
         # alone), or None when how it was made is not known: a source read only in part
-        # is then never taken as read in full for its members (``links``).
+        # is then never taken as read in full for its members (``links``); ``complete``
+        # whether the answer that made it held every match (no capped scan, no cut, no
+        # unbuilt projection, no member left out) and ``total`` how many matched when
+        # known: a count of an incomplete set is a lower bound, never exact.
         self._sets: dict[str, tuple[tuple[str, tuple[str, ...]], tuple[str, ...], float,
-                                    bool, bool, bool, frozenset[str] | None]] = {}
+                                    bool, bool, bool, frozenset[str] | None, bool,
+                                    int | None]] = {}
         # Object ids plx.find answered from a live lookup (not in the projection store),
         # with their expiry: traversal tools name them instead of answering "nothing".
         # Insertion order is expiry order (a refreshed id moves to the end), so the
@@ -2271,7 +2275,7 @@ class SetRegistry:
 
     def _drop_set(self, handle: str) -> None:
         """Forget a set and the live ids that only it held. Caller holds the lock."""
-        owner, ids, _, live, _, _, _ = self._sets.pop(handle)
+        owner, ids, _, live, *_ = self._sets.pop(handle)
         if not live:
             return
         for oid in set(ids):
@@ -2285,12 +2289,16 @@ class SetRegistry:
 
     def new(self, actor: Actor, object_ids: Sequence[str], *, live: bool = False,
             withheld: bool = False, lead: bool = False,
-            links: Iterable[str] | None = None) -> str:
+            links: Iterable[str] | None = None, complete: bool = False,
+            total: int | None = None) -> str:
         """A handle for ``object_ids``; ``live`` marks a set plx.find answered from a
         live lookup (its objects exist only in a discarded throw-away store),
         ``withheld`` one whose answer this reader's grants trimmed, ``lead`` one whose
         records only lead-tier links reach; ``links`` the link types walked to reach its
-        records (``()``: listed from their object types alone; None: not known)."""
+        records (``()``: listed from their object types alone; None: not known);
+        ``complete`` that the answer making it held every match (the default, not said,
+        is incomplete: a count of it is never exact) and ``total`` how many matched when
+        known. A set cut at ``MAX_SET_OBJECTS`` is never complete."""
         handle = "set:" + secrets.token_urlsafe(18).replace("=", "")
         now = self.monotonic()
         with self._lock:
@@ -2305,8 +2313,12 @@ class SetRegistry:
                 self._drop_set(min(self._sets, key=lambda k: self._sets[k][2]))
             ids = tuple(object_ids[:MAX_SET_OBJECTS])
             owner = self._owner(actor)
+            whole = bool(complete) and not live and len(ids) == len(object_ids) and (
+                total is None or total == len(ids))
+            known = total if isinstance(total, int) and total >= len(ids) else None
             self._sets[handle] = (owner, ids, now + self.ttl, live, withheld, lead,
-                                  None if links is None else frozenset(links))
+                                  None if links is None else frozenset(links), whole,
+                                  len(ids) if whole else known)
             if live:
                 mine = self._live_by_owner.get(owner) or OrderedDict()
                 new_ids = dict.fromkeys(ids)
@@ -2363,6 +2375,24 @@ class SetRegistry:
             return None
         return entry[6]
 
+    def completeness(self, handle: str, actor: Actor) -> tuple[bool, int | None]:
+        """(complete, total) of this actor's live handle: complete only when the answer
+        that made it held every match; total how many matched when known. An unknown,
+        expired or another reader's handle is (False, None): never complete."""
+        with self._lock:
+            entry = self._sets.get(handle)
+        if entry is None or entry[2] <= self.monotonic() or entry[0] != self._owner(actor):
+            return False, None
+        return entry[7], entry[8]
+
+    def mark_incomplete(self, handle: str, actor: Actor) -> None:
+        """Record that this actor's handle is not every match (a later answer that
+        returned it lost members): only ever from complete to incomplete."""
+        with self._lock:
+            entry = self._sets.get(handle)
+            if entry is not None and entry[0] == self._owner(actor) and entry[7]:
+                self._sets[handle] = entry[:7] + (False, None)
+
     def live_id(self, object_id: str, actor: Actor) -> bool:
         """Whether plx.find recently answered this object id to this same actor
         (tenant, principals, clearance) from a live lookup. Owner-bound: another
@@ -2399,9 +2429,14 @@ class _LiveSets:
         self.registry = registry
 
     def new(self, actor: Actor, object_ids: Sequence[str],
-            links: Iterable[str] | None = None) -> str:
-        # a live set is never walked or counted (``not_in_projection``): no links kept
+            links: Iterable[str] | None = None, complete: bool = False,
+            total: int | None = None) -> str:
+        # a live set is never walked or counted (``not_in_projection``): no links kept,
+        # and never complete (the registry records none live as complete)
         return self.registry.new(actor, object_ids, live=True)
+
+    def completeness(self, handle: str, actor: Actor) -> tuple[bool, int | None]:
+        return self.registry.completeness(handle, actor)
 
     def resolve(self, handle: str, actor: Actor) -> tuple[str, ...] | None:
         return self.registry.resolve(handle, actor)
@@ -4205,8 +4240,13 @@ class OntologyTools:
             result["gaps"] = _freshness_first(fresh, gaps)
         elif ranked:
             # a listing of one object type (no search text) walked no link to its records
+            # Complete only when this answer holds every match: no capped scan, no
+            # unbuilt projection, no filter left undecided on a withheld value.
             result["set"] = self._new_set(actor, [m.object_id for m in ranked],
-                                          () if query is None and object_type else None)
+                                          () if query is None and object_type else None,
+                                          complete=not (scan_truncated or unbuilt
+                                                        or undecided),
+                                          total=reported_total)
         result["meta"] = meta
         named_gaps = self._named_not_found(query, candidates)
         if named_gaps:
@@ -5453,8 +5493,9 @@ class OntologyTools:
     # ------------------------------------------------------------------ sets
 
     def _new_set(self, actor: Actor, object_ids: list[str],
-                 links: Iterable[str] | None = None) -> str:
-        return self.sets.new(actor, object_ids, links=links)
+                 links: Iterable[str] | None = None, complete: bool = False,
+                 total: int | None = None) -> str:
+        return self.sets.new(actor, object_ids, links=links, complete=complete, total=total)
 
     def resolve_set(self, handle: str, actor: Actor) -> tuple[str, ...] | None:
         """Object ids of a set handle this actor created, or None (unknown, expired

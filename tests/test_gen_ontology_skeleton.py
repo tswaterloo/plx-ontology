@@ -413,7 +413,7 @@ class SyntheticReadersTests(unittest.TestCase):
                     sums = []
                     for base, actor in ((holder, holder_actor), (other, other_actor)):
                         out = oa.AggregateTools(base).call("plx.aggregate", {
-                            "set": base.sets.new(actor, ids),
+                            "set": base.sets.new(actor, ids, complete=True),
                             "measure": {"property": prop, "op": "sum"}}, actor)
                         sums.append(out)
                     self.assertIsNotNone(sums[0]["groups"][0]["value"])

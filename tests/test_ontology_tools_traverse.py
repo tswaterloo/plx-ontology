@@ -628,7 +628,7 @@ class AroundTests(unittest.TestCase):
 
     def test_find_set_handle_is_a_root(self):
         t, _ = tools()
-        handle = t.base._new_set(FULL, [O1, O2])
+        handle = t.base._new_set(FULL, [O1, O2], complete=True)
         out = ok(self, "plx.around", t.call("plx.around", {"from": handle, "path": [
             {"link_type": "Shipment.ships_order", "direction": "reverse"}]}, FULL))
         self.assertEqual(ids(out), [S1])
@@ -734,7 +734,7 @@ class AroundTests(unittest.TestCase):
                       display=("number", "identifier", f"MANY-{n:04d}-" + "y" * 60))
                 s.link(f"l-many-{n:04d}", "Order.placed_by", oid, P1)
         t, _ = tools(build(extra=many))
-        handle = t.base._new_set(FULL, orders)
+        handle = t.base._new_set(FULL, orders, complete=True)
         for fmt in ("concise", "detailed"):
             out = ok(self, "plx.around", t.call("plx.around", {
                 "from": handle, "response_format": fmt,
@@ -1638,7 +1638,7 @@ class AsKnownAtTests(unittest.TestCase):
 
     def test_member_captured_after_t_is_counted_only_where_the_reader_may_read_it(self):
         t = self.world(self.LATER)
-        handle = t.sets.new(OPS, [O1, self.O9, self.O10])
+        handle = t.sets.new(OPS, [O1, self.O9, self.O10], complete=True)
         around, timeline = self.ask(t, OPS, handle, as_known_at=self.T)
         for out in (around, timeline):
             gap = self.gaps(out)[tt.CAPTURED_AFTER]
@@ -1672,7 +1672,7 @@ class AsKnownAtTests(unittest.TestCase):
         # Whether the revoked member was first captured before or after T does not
         # change the denied reader's answer at all.
         t_early = self.world(T0)
-        early_handle = t_early.sets.new(OPS, [O1, self.O9, self.O10])
+        early_handle = t_early.sets.new(OPS, [O1, self.O9, self.O10], complete=True)
         t_early.base.policy = self.REVOKED
         for late_out, early_out in zip((around, timeline),
                                        self.ask(t_early, OPS, early_handle,
@@ -1682,7 +1682,7 @@ class AsKnownAtTests(unittest.TestCase):
                              json.dumps(early_out["gaps"]).replace(early_handle, "ROOT"))
 
         # A reader who still holds the marking counts both; at now nothing is left out.
-        full = t.sets.new(FULL, [O1, self.O9, self.O10])
+        full = t.sets.new(FULL, [O1, self.O9, self.O10], complete=True)
         for out in self.ask(t, FULL, full, as_known_at=self.T):
             self.assertIn("2 object(s)", self.gaps(out)[tt.CAPTURED_AFTER]["detail"])
         around, timeline = self.ask(t, OPS, handle)
@@ -1708,7 +1708,7 @@ class AsKnownAtTests(unittest.TestCase):
             base = ot.OntologyTools(ot.StoreReader(build().conn), policy, item_gate=item_gate,
                                     schema=SCHEMA, contracts=contracts, clock=lambda: NOW)
             t = tt.TraverseTools(base)
-            empty = t.sets.new(FULL, [])
+            empty = t.sets.new(FULL, [], complete=True)
             outs = [t.call("plx.around", {"from": empty, "path": [
                         {"link_type": "Order.placed_by", "direction": "forward"}]}, FULL),
                     t.call("plx.timeline", {"from": empty}, FULL)]

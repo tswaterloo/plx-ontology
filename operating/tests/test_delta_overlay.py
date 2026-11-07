@@ -299,7 +299,7 @@ class DeltaOverlayTests(unittest.TestCase):
             return [gap["reason"] for gap in result["gaps"]]
         tools = self.host.tools
         counted = self.call("plx.aggregate", {
-            "set": tools.sets.new(fx.FULL, [NEW, BC_NEW, fx.PO2]), "measure": {"op": "count"}})
+            "set": tools.sets.new(fx.FULL, [NEW, BC_NEW, fx.PO2], complete=True), "measure": {"op": "count"}})
         gap = counted["gaps"][-1]
         self.assertEqual(gap["reason"], delta_overlay.NOT_AGGREGATED)
         self.assertIn("2 record(s)", gap["detail"])
@@ -307,11 +307,11 @@ class DeltaOverlayTests(unittest.TestCase):
         self.assertIn(delta_overlay.NOT_AGGREGATED, reasons(compared))
         # only the changed records this reader may read are counted
         sales = self.call("plx.aggregate", {
-            "set": tools.sets.new(fx.SALES, [NEW, BC_NEW, fx.PO2]),
+            "set": tools.sets.new(fx.SALES, [NEW, BC_NEW, fx.PO2], complete=True),
             "measure": {"op": "count"}}, actor=fx.SALES)
         self.assertIn("1 record(s)", sales["gaps"][-1]["detail"])
         # nothing changed among them: no gap
-        plain = self.call("plx.aggregate", {"set": tools.sets.new(fx.FULL, [fx.PO2]),
+        plain = self.call("plx.aggregate", {"set": tools.sets.new(fx.FULL, [fx.PO2], complete=True),
                                             "measure": {"op": "count"}})
         self.assertNotIn(delta_overlay.NOT_AGGREGATED, reasons(plain))
 

@@ -231,6 +231,10 @@ POSSIBLY_RELATED = "possibly_related"
 # result's bytes.
 RELATED_OBJECTS = 50
 LEAD_BASIS = "lead_basis"
+# A set whose making answer did not hold every match (a capped scan, a cut at the set
+# size, an unbuilt projection, a walk from such a set): what is counted or walked from
+# it is a lower bound ("at least"), never an exact count or all there is.
+SET_INCOMPLETE = "set_incomplete"
 # What a link is (ER-06), shown beside its tier on every edge (``_link_kind``).
 LINK_KINDS = ("reference", "identity", "allocation", "dependency")
 # L1 handle schemes / audience prefixes whose items carry their own ACL (L8's rule).
@@ -805,6 +809,17 @@ class TraverseTools:
                 gaps.append(_gap("inaccessible", WITHHELD, root[:700],
                                  "this set came from an answer this reader's grants trimmed: "
                                  "it holds only what the reader may read, not the whole set"))
+            whole, matched = (self.sets.completeness(root, scope.actor)
+                              if getattr(self.sets, "completeness", None) else (False, None))
+            if not whole:
+                gaps.append(_gap("unknown", SET_INCOMPLETE, root[:700],
+                                 "this set came from an answer that did not hold every "
+                                 "match (a capped scan, a cut, an unbuilt projection or a "
+                                 "walk from such a set)"
+                                 + (f": {matched} matched, the set holds {len(ids)}"
+                                    if matched is not None else "")
+                                 + "; whatever is counted or walked from it is at least "
+                                 "that many, never all there is"))
             if getattr(self.sets, "is_lead", None) and self.sets.is_lead(root, scope.actor):
                 gaps.append(_gap("unknown", LEAD_BASIS, root[:700],
                                  "this set holds records reached only through lead-tier "
@@ -1236,13 +1251,19 @@ class TraverseTools:
         handle = None
         if cursor_set is not None and self.sets.resolve(cursor_set, actor) == tuple(ranked):
             handle = cursor_set
+        # Every match is in the set unless the root lost some (an incomplete root set,
+        # members not in the projection): then what it reaches is a lower bound too.
+        whole = not any(g["reason"] in (SET_INCOMPLETE, "not_in_projection")
+                        for g in root_gaps)
         if handle is None:
             handle = self.sets.new(actor, ranked, withheld=lost, lead=root_lead,
-                                   links=walked)
+                                   links=walked, complete=whole,
+                                   total=len(ranked) if whole else None)
         related: dict[str, Any] | None = None
         if leads:
             lead_handle = self.sets.new(actor, leads, withheld=lost, lead=True,
-                                        links=walked)
+                                        links=walked, complete=whole,
+                                        total=len(leads) if whole else None)
             related = {"set": lead_handle, "count": len(leads)}
             gaps.append(_gap("unknown", POSSIBLY_RELATED, lead_handle,
                              f"{len(leads)} more record(s) are reached only through "

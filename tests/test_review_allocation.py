@@ -147,7 +147,7 @@ class AllocationTests(unittest.TestCase):
 
     def produced_by_order(self, actor=A.actor, ids=(P1, P2)):
         out = oa.AggregateTools(self.base).call("plx.aggregate", {
-            "set": self.base.sets.new(actor, list(ids)),
+            "set": self.base.sets.new(actor, list(ids), complete=True),
             "measure": {"property": "produced_quantity", "op": "sum"},
             "group_by": ["order_number"], "path": [{"link_type": LINK, "direction": "forward"}]},
             actor)

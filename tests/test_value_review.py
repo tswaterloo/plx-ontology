@@ -297,7 +297,7 @@ class ValueReviewTests(unittest.TestCase):
     def aggregate(self, actor: Actor, *, clock: dt.datetime = NOW) -> dict:
         base = self.world.tools(self, self.review_file, clock)
         return self.ok("plx.aggregate", oa.AggregateTools(base).call("plx.aggregate", {
-            "set": base.sets.new(actor, [self.invoice]),
+            "set": base.sets.new(actor, [self.invoice], complete=True),
             "measure": {"op": "sum", "property": "quantity"}}, actor))
 
     def compare(self, actor: Actor) -> dict:
@@ -490,7 +490,7 @@ class ValueReviewTests(unittest.TestCase):
 
         def aggregate(actor: Actor, arguments: dict) -> dict:
             return self.ok("plx.aggregate", oa.AggregateTools(base).call("plx.aggregate", dict(
-                arguments, set=base.sets.new(actor, [self.invoice])), actor))
+                arguments, set=base.sets.new(actor, [self.invoice], complete=True)), actor))
         by_quantity = {"measure": {"op": "count"}, "group_by": ["quantity"]}
         price = {"measure": {"op": "max", "property": "unit_price"}}
         out = aggregate(a, by_quantity)

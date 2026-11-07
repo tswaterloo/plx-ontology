@@ -151,7 +151,7 @@ class MirrorRemovalReaderTests(unittest.TestCase):
                 tools = AggregateTools(base)
                 started = time.monotonic()
                 out = checked(self, "plx.aggregate", tools.call("plx.aggregate", {
-                    "set": base.sets.new(A, ids), "measure": {"op": "count"}}, A))
+                    "set": base.sets.new(A, ids, complete=True), "measure": {"op": "count"}}, A))
                 self.assertLess(time.monotonic() - started, 5)
                 deleted = len(range(0, count, 3))
                 # The source asserts the deleted ones gone: left out, never a member, and
@@ -170,7 +170,7 @@ class MirrorRemovalReaderTests(unittest.TestCase):
                 else:
                     self.assertNotIn("missing_from_source", gaps)
                 # A reader without the grant counts nothing it cannot see, nor its removal.
-                hidden = tools.call("plx.aggregate", {"set": base.sets.new(STRANGER, ids),
+                hidden = tools.call("plx.aggregate", {"set": base.sets.new(STRANGER, ids, complete=True),
                                                       "measure": {"op": "count"}}, STRANGER)
                 self.assertEqual(removal_gaps(hidden), {})
                 self.assertNotIn("c00", json.dumps(hidden))

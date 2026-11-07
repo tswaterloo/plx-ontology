@@ -189,7 +189,7 @@ class _Base(unittest.TestCase):
         self.tools = tools(self.store)
 
     def set_of(self, actor, *ids):
-        return self.tools.base.sets.new(actor, list(ids))
+        return self.tools.base.sets.new(actor, list(ids), complete=True)
 
     def call(self, name, arguments, actor=STAFF):
         # A store is served as committed (an uncommitted word-index write keeps SQLite
@@ -1171,7 +1171,7 @@ class AsKnownAtTests(_Base):
             base = ot.OntologyTools(ot.StoreReader(self.store.conn), policy, schema=SCHEMA,
                                     contracts=contracts, clock=lambda: NOW)
             tools_ = oa.AggregateTools(base)
-            out = tools_.call("plx.aggregate", {"set": base.sets.new(STAFF, []),
+            out = tools_.call("plx.aggregate", {"set": base.sets.new(STAFF, [], complete=True),
                                                 "measure": {"op": "count"}}, STAFF)
         self.assertEqual(len(out["meta"]["freshness"]), 8, out)
         gap = self.reasons(out)["freshness_truncated"]
@@ -1204,7 +1204,7 @@ class HostWiringTests(unittest.TestCase):
 
         host = Host(runtime=None, actor=STAFF, schema=SCHEMA)
         host._tools = tools(store).base
-        handle = host._tools.sets.new(STAFF, [L1, L2])
+        handle = host._tools.sets.new(STAFF, [L1, L2], complete=True)
         measure = {"set": handle, "measure": {"property": "ordered_quantity", "op": "sum"}}
         self.assertEqual(host.call("plx.aggregate", measure, STAFF)["groups"][0]["value"], "150")
         rows = host.call("plx.compare", {"left": L1, "right": L2,
