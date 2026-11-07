@@ -5,6 +5,7 @@ nothing."""
 
 from __future__ import annotations
 
+import os
 import io
 from pathlib import Path
 import sqlite3
@@ -64,6 +65,9 @@ class ReloadRoomTests(unittest.TestCase):
                          (1000, {"reserve_bytes": 1000}))
         self.assertEqual(ontology_load.build_floor(str(self.state), 5000, self.state)[1], 5000)
         self.assertEqual(ontology_load.build_floor("/x", 7, None), ("/x", 7, None))
+        # builds retired: no build's room is held, only the fixed floor
+        with mock.patch.dict(os.environ, {"PLX_BUILDS_OFF": "1"}):
+            self.assertEqual(ontology_load.build_floor(None, 7, self.state), (None, 7, None))
         (self.state / "projection" / "CURRENT").write_text("{}")
         self.assertEqual(ontology_load.state_of(self.source), self.state.resolve())
         self.assertIsNone(ontology_load.state_of(self.state / "elsewhere.sqlite"))

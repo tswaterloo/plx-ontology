@@ -261,6 +261,10 @@ def build_floor(folder: str | None, min_free: int, state_dir: str | Path | None
     the state directory's is measured)."""
     if state_dir is None:
         return folder, min_free, None
+    # Builds retired (``PLX_BUILDS_OFF=1``, the ingest's "builds": "off"): no projection build
+    # will need room, so only ``min_free`` holds.
+    if os.environ.get("PLX_BUILDS_OFF") == "1":
+        return folder, min_free, None
     try:
         shared = folder is None or os.stat(folder).st_dev == os.stat(state_dir).st_dev
     except OSError:
