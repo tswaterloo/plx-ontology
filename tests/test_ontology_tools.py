@@ -596,6 +596,43 @@ class FindTests(ContractMixin, unittest.TestCase):
                             SALES)
             self.assertNotIn("absent_in_source", [g["state"] for g in words["gaps"]], extra)
 
+    def test_an_unparsed_carrier_is_named_only_to_a_reader_of_its_binding(self):
+        """The readable check behind an unparsed carrier (``_binding_readable``) gives the
+        same answer whether the store's kept facts answer it, the store is read, or an
+        earlier answer of this store state is reused; facts of another store state are
+        never used, and a reader holding none of the binding's keys never sees it."""
+        whole = ot.ReadPolicy(tenant="plx", audiences={"api:*": {"sales"}})
+        other = ot.ReadPolicy(tenant="plx", audiences={"bc:*": {"sales"}})
+        store = build()
+        store.conn.execute("INSERT INTO store_meta VALUES ('build_report', ?)", (json.dumps(
+            {"gaps": [{"code": "parse_not_identifier",
+                       "where": "PurchaseOrder.po_number@portal.app_purchase_order",
+                       "count": 1, "samples": []}]}),))
+        store.conn.commit()
+
+        def named(policy, facts=None, stale=False):
+            reader = tools(store, policy=policy)
+            if facts is not None:
+                stamp = reader._store_stamp()
+                reader.store.facts = ((stamp[0] + 1, stamp[1]) if stale else stamp,
+                                      {"audiences": facts})
+            found = []
+            for _ in range(2):   # the second call reuses the first's answer
+                result = self.ok(reader, "plx.find", {"query": "PO 99999"}, SALES)
+                found.append(any("PurchaseOrder.po_number" in g["detail"]
+                                 for g in result["gaps"]
+                                 if g["reason"] == "identifier_unparsed"))
+            self.assertEqual(found[0], found[1])
+            return found[0]
+        held = {"PurchaseOrder": ("api:public.app_purchase_order",)}
+        self.assertTrue(named(whole))
+        self.assertTrue(named(whole, held))
+        self.assertFalse(named(other))
+        self.assertFalse(named(other, held))
+        # facts of another store state claiming the type holds nothing are not used
+        self.assertTrue(named(whole, {"PurchaseOrder": ()}, stale=True))
+        self.assertFalse(named(whole, {"PurchaseOrder": ()}))
+
     def test_a_kind_narrowed_away_without_a_type_never_proves_absence(self):
         """Review f732d09 M1: PO1000999 also reads as a Petra PO; narrowing to BC
         document numbers without object_type leaves PurchaseOrder.po_number unsearched,

@@ -1361,28 +1361,55 @@ class StoreReader:
 
 # --------------------------------------------------------------------------- schema
 
-# What a find derives from a schema alone (its display properties, identifier carriers),
-# kept per schema object: a SchemaView is frozen and every layer of a delta overlay
-# shares its host's, so each find no longer derives them again per store it reads.
-_SCHEMA_MEMO: dict[int, tuple[Any, dict[Any, Any]]] = {}
+# What a find derives from a schema alone (its display properties, identifier carriers,
+# the bindings a candidate is compared with), kept per schema: a SchemaView is frozen, every
+# layer of a delta overlay shares its host's, and every session of one process loads its
+# own view of the same compiled schema. Kept by the schema's content digest (a SHA-256 over
+# its whole canonical form, ``ontology.schema.schema_digest``) so each new session reuses
+# what an earlier one derived (measured 2026-11-07: a new session's first find spent 3 to
+# 5 s deriving binding comparisons again); a schema without such a digest is kept per
+# object.
+_SCHEMA_MEMO: dict[Any, tuple[Any, dict[Any, Any]]] = {}
 _SCHEMA_MEMO_LOCK = threading.Lock()
 _SCHEMA_MEMO_KEPT = 32
+_CONTENT_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
+
+
+# Reader-scoped answers kept per store state on its reader (``OntologyTools._store_kept``).
+_STORE_KEPT_LOCK = threading.Lock()
+_STORE_KEPT_MAX = 4096
+
+
+def _schema_key(schema: Any) -> tuple[Any, Any]:
+    """(memo key, what a held entry must be): the content digest and itself, or the
+    object's id and the object."""
+    digest = getattr(schema, "digest", None)
+    if isinstance(digest, str) and _CONTENT_DIGEST.match(digest):
+        return ("digest", digest), digest
+    return ("id", id(schema)), schema
+
+
+def _same_owner(held: Any, owner: Any) -> bool:
+    """A content digest matches by value (each session unpickles its own copy); an object
+    kept by id matches only itself (an id can be reused after the object is freed)."""
+    return held == owner if isinstance(owner, str) else held is owner
 
 
 def _schema_memo(schema: Any, key: Any, build: Callable[[], Any]) -> Any:
-    """``build()`` for ``schema`` and ``key``, built once per schema object (the caller
+    """``build()`` for ``schema`` and ``key``, built once per schema content (the caller
     never changes the value)."""
+    memo_key, owner = _schema_key(schema)
     with _SCHEMA_MEMO_LOCK:
-        held = _SCHEMA_MEMO.get(id(schema))
-        if held is not None and held[0] is schema and key in held[1]:
+        held = _SCHEMA_MEMO.get(memo_key)
+        if held is not None and _same_owner(held[0], owner) and key in held[1]:
             return held[1][key]
     value = build()
     with _SCHEMA_MEMO_LOCK:
-        held = _SCHEMA_MEMO.get(id(schema))
-        if held is None or held[0] is not schema:
+        held = _SCHEMA_MEMO.get(memo_key)
+        if held is None or not _same_owner(held[0], owner):
             if len(_SCHEMA_MEMO) >= _SCHEMA_MEMO_KEPT:
                 _SCHEMA_MEMO.clear()
-            held = _SCHEMA_MEMO[id(schema)] = (schema, {})
+            held = _SCHEMA_MEMO[memo_key] = (owner, {})
         return held[1].setdefault(key, value)
 
 
@@ -2647,13 +2674,67 @@ class OntologyTools:
             if prop is None or not prop.get("identifier_kind") or not scope.holds(
                     set(spec.get("markings", ())) | set(prop.get("markings", ()))):
                 continue
-            readable = (self.store.conn.execute(
-                "SELECT 1 FROM objects WHERE object_type = :tid AND binding_id = :bid "
-                "AND audience_key IN (SELECT value FROM json_each(:aud)) LIMIT 1",
-                scope.params(tid=tid, bid=binding)).fetchone() for binding in sorted(bindings))
-            if any(readable):
+            if any(self._binding_readable(scope, tid, binding)
+                   for binding in sorted(bindings)):
                 out.append(name)
         return out
+
+    def _binding_readable(self, scope: _Scope, tid: str, binding: str) -> bool:
+        """Whether some object of ``tid`` from ``binding`` carries an audience key of
+        ``scope``. No index leads with an audience key, so a reader holding none of a
+        large binding's keys scanned all of it (3.3M mail messages: 20 to 40 s a find,
+        live 2026-11-07). The store's kept facts (``TraverseTools._audiences``: each
+        type's audience keys, read for every reader at once) answer no without a scan
+        when the reader holds none of the type's keys; every answer is kept on the
+        store's reader per store state and audience list (``_store_kept``)."""
+        audiences = frozenset(scope.audience_keys)
+        typed = self._store_fact("audiences")
+        if isinstance(typed, Mapping) and not audiences.intersection(typed.get(tid, ())):
+            return False
+        return self._store_kept(("binding_readable", tid, binding, audiences), lambda: (
+            self.store.conn.execute(
+                "SELECT 1 FROM objects WHERE object_type = :tid AND binding_id = :bid "
+                "AND audience_key IN (SELECT value FROM json_each(:aud)) LIMIT 1",
+                scope.params(tid=tid, bid=binding)).fetchone() is not None))
+
+    def _store_stamp(self) -> tuple[int, int] | None:
+        conn = getattr(self.store, "conn", None)
+        if not isinstance(conn, sqlite3.Connection):
+            return None
+        return (conn.execute("PRAGMA data_version").fetchone()[0], conn.total_changes)
+
+    def _store_fact(self, key: str) -> Any:
+        """A reader-independent fact the store's reader keeps for its current state
+        (``TraverseTools._store_cached``), or None when it holds none for that state."""
+        facts = getattr(self.store, "facts", None)
+        stamp = self._store_stamp()
+        if stamp is None or not isinstance(facts, tuple) or facts[0] != stamp:
+            return None
+        return facts[1].get(key)
+
+    def _store_kept(self, key: Any, read: Callable[[], Any]) -> Any:
+        """``read()`` kept on the store's reader while the store's state is unchanged (a
+        commit on another connection or a write on this one reads it again); a store
+        without a SQLite connection reads it every time."""
+        stamp = self._store_stamp()
+        if stamp is None:
+            return read()
+        with _STORE_KEPT_LOCK:
+            kept = getattr(self.store, "_kept_answers", None)
+            if kept is None or kept[0] != stamp:
+                kept = (stamp, {})
+                try:
+                    self.store._kept_answers = kept
+                except AttributeError:
+                    return read()
+            if key in kept[1]:
+                return kept[1][key]
+        value = read()
+        with _STORE_KEPT_LOCK:
+            if len(kept[1]) >= _STORE_KEPT_MAX:
+                kept[1].clear()
+            kept[1][key] = value
+        return value
 
     def _schema_digest(self, store_meta: Mapping[str, str]) -> str | None:
         found = _HEX64.match(store_meta.get("schema_digest", ""))
@@ -5039,13 +5120,14 @@ class OntologyTools:
             return {}
         from ontology import resolve
         binding_of = lambda oid: oid.split(":", 2)[1]  # noqa: E731
+        schema = self.schema
         for match in page:
             binding = binding_of(match.object_id)
             if binding not in self._compared:
-                self._compared[binding] = [
-                    b["id"] for spec in self.schema.object_types.values()
+                self._compared[binding] = _schema_memo(schema, ("compared", binding), lambda: [
+                    b["id"] for spec in schema.object_types.values()
                     for b in spec.get("bindings", ())
-                    if resolve.comparable(self.schema, b["id"], binding)]
+                    if resolve.comparable(schema, b["id"], binding)])
         wanted = {m.object_id: self._compared[binding_of(m.object_id)] for m in page}
         wanted = {oid: found for oid, found in wanted.items() if found}
         if not wanted:
@@ -5082,14 +5164,18 @@ class OntologyTools:
         out = []
         declared = {p["name"]: p for p in (self.schema.object_types.get(
             oid.split(":", 1)[0]) or {}).get("properties", ())}
-        for prop, value_type in resolve.shared_properties(self.schema, peer_binding,
-                                                          cand_binding):
+        schema = self.schema
+        for prop, value_type in _schema_memo(schema, ("shared", peer_binding, cand_binding),
+                                             lambda: tuple(resolve.shared_properties(
+                                                 schema, peer_binding, cand_binding))):
             spec = declared.get(prop)
             out.append(resolve.compare_shared(
                 prop, value_type, _cited_values(values.get(peer, ()), prop, value_type, spec),
                 _cited_values(values.get(oid, ()), prop, value_type, spec)))
         normalize = getattr(self.grammar, "normalize", None)
-        for check in resolve.corroborations(self.schema, peer_binding, cand_binding):
+        for check in _schema_memo(schema, ("corroborations", peer_binding, cand_binding),
+                                  lambda: tuple(resolve.corroborations(
+                                      schema, peer_binding, cand_binding))):
             root = [_cited(row, row["raw"]) for row in idents.get(peer, ())
                     if row["identifier_kind"] == check.kind
                     and _column_path(row["field_path"]) == check.root_path]

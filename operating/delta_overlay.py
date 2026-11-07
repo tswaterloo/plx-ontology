@@ -141,17 +141,13 @@ class Overlay:
 
     def __init__(self, layers: list[Layer], stamp: tuple) -> None:
         self.layers, self.stamp = layers, stamp
-        newer: set[str] = set()
-        self._owner: dict[str, Layer] = {}
-        for layer in layers:
-            layer.serves = layer.owned - newer
-            newer |= layer.owned
-            for object_id in layer.serves:
-                self._owner[object_id] = layer
-        self.owned = frozenset(newer)
+        serves, self._owner, self.owned = _ownership(tuple(layer.owned for layer in layers))
+        for layer, served in zip(layers, serves):
+            layer.serves = served
 
     def owner(self, object_id: Any) -> Layer | None:
-        return self._owner.get(object_id) if isinstance(object_id, str) else None
+        index = self._owner.get(object_id) if isinstance(object_id, str) else None
+        return None if index is None else self.layers[index]
 
     def audience_keys(self) -> list[str]:
         return sorted({key for layer in self.layers for key in layer.reader.audience_keys()})
@@ -159,6 +155,38 @@ class Overlay:
     def close(self) -> None:
         for layer in self.layers:
             layer.close()
+
+
+# Which layer serves each owned object, kept per list of layers' owned sets (the very
+# set objects ``_LAYER_FACTS`` keeps per layer file): every host of this process derives
+# the same from the same layers, and with hundreds of thousands of owned ids that cost a
+# new session a quarter of a second before its first find.
+_OWNERSHIP: list[tuple[tuple[frozenset[str], ...], Any]] = []
+_OWNERSHIP_LOCK = threading.Lock()
+_OWNERSHIP_KEPT = 4
+
+
+def _ownership(owned: tuple[frozenset[str], ...]
+               ) -> tuple[tuple[frozenset[str], ...], dict[str, int], frozenset[str]]:
+    """Per layer (newest first) the ids it serves (owned there and by no newer layer),
+    each served id's layer index, and every owned id."""
+    with _OWNERSHIP_LOCK:
+        for key, value in _OWNERSHIP:
+            if len(key) == len(owned) and all(a is b for a, b in zip(key, owned)):
+                return value
+    newer: set[str] = set()
+    serves: list[frozenset[str]] = []
+    index: dict[str, int] = {}
+    for position, ids in enumerate(owned):
+        served = ids - newer
+        newer |= ids
+        serves.append(served)
+        index.update(dict.fromkeys(served, position))
+    value = (tuple(serves), index, frozenset(newer))
+    with _OWNERSHIP_LOCK:
+        _OWNERSHIP.insert(0, (owned, value))
+        del _OWNERSHIP[_OWNERSHIP_KEPT:]
+    return value
 
 
 def open_overlay(pointer: Path, stamp: tuple, base: Any) -> Overlay | None:
