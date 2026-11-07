@@ -100,6 +100,52 @@ def ask_worker_count(requested: int, available_gb: Optional[float]) -> int:
     return max(1, min(wanted, fits))
 
 
+class SessionSlots:
+    """The agent sessions an API runs at once: up to ``most``, a second or later one only
+    while the memory available then holds another session above the floor
+    (``ask_worker_count`` asked at that moment). Decided at each admission, never once at
+    start-up: measured 2026-11-07, an API started at a moment of 17 GB available kept one
+    session slot all day, and four readers' questions waited 70-110 s each for it (14 of
+    the graded hard set's 28 answers stopped at the time limit) while 30 GB stood free.
+    The first session is always admitted. ``available``: MemAvailable in GB (tests)."""
+
+    POLL_SECONDS = 1.0
+
+    def __init__(self, most: int,
+                 available: Callable[[], Optional[float]] = lambda: memory_available_gb()
+                 ) -> None:
+        self.most = max(1, int(most))
+        self.held = 0
+        self._available = available
+        self._cond = threading.Condition()
+
+    def _admits(self) -> bool:
+        if self.held >= self.most:
+            return False
+        return self.held == 0 or ask_worker_count(self.held + 1, self._available()) \
+            > self.held
+
+    def acquire(self, blocking: bool = True, timeout: Optional[float] = None) -> bool:
+        ends = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._cond:
+            while not self._admits():
+                if not blocking:
+                    return False
+                left = None if ends is None else ends - time.monotonic()
+                if left is not None and left <= 0:
+                    return False
+                # memory frees without a release: look again each POLL_SECONDS
+                self._cond.wait(self.POLL_SECONDS if left is None
+                                else min(self.POLL_SECONDS, left))
+            self.held += 1
+            return True
+
+    def release(self) -> None:
+        with self._cond:
+            self.held = max(0, self.held - 1)
+            self._cond.notify()
+
+
 def memory_available_gb(meminfo: Path = Path("/proc/meminfo")) -> Optional[float]:
     """MemAvailable in GB, or None where it cannot be read."""
     try:
@@ -744,7 +790,7 @@ class WorkspaceBackend(ActionsMixin):
         self.front_door = front_door
         self._original_slots: dict[str, threading.BoundedSemaphore] = {}
         self._original_all = threading.BoundedSemaphore(ORIGINAL_READS)
-        self._sessions = threading.Semaphore(max(1, agent_sessions))
+        self._sessions = SessionSlots(agent_sessions)
         self.state_dir = state_dir
         self.data_dir = Path(data_dir) if data_dir else None
         self.pg_dsn = pg_dsn
@@ -7532,7 +7578,10 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
                                    ask_served=bool(args.ask),
-                                   agent_ask=agent, agent_sessions=max(1, ask_workers),
+                                   # sessions admitted by the memory available
+                                   # at each one (``SessionSlots``), up to the request
+                                   agent_ask=agent, agent_sessions=max(
+                                       1, min(args.ask_workers, ASK_WORKERS_MOST)),
                                    front_door=front_door,
                                    keep_pages=live and getattr(args, "keep_pages", 1) == 1)
         resolver = ctx.get("resolver")

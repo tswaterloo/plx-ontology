@@ -227,3 +227,20 @@ def timed_out_text(name: Any, limit: float | None) -> str:
                     "read before it stands. Narrow it (one record, fewer hops, a more "
                     "specific query, a page of the document) or go on with what you have "
                     "and say this part was not checked.")})
+
+
+def repeated_timeout_text(name: Any, limit: Any) -> str:
+    """The answer to an exact repeat of a call that stopped at its limit earlier in the
+    session (``agent_session.serve_gate``'s read cache): not run again, since the same
+    call on the same store would stop again."""
+    try:
+        seconds = round(float(limit or 0), 1)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return json.dumps({
+        "ok": False, "error": TIMED_OUT, "tool": str(name or ""), "repeated": True,
+        "limit_seconds": seconds,
+        "message": ("This exact call already stopped at its time limit earlier in this "
+                    "session and was not run again. Narrow it (one record, fewer hops, a "
+                    "filter on the hop, a shorter period) or go on with what you have and "
+                    "say this part was not checked.")})

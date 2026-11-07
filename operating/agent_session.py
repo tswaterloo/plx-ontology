@@ -42,6 +42,7 @@ from operating.answer_contract import (ACTION_TOOL, ANSWER_FORMAT, ANSWERABILITY
 # (``evals.measure``); an answer carrying one unresolved is partial.
 from operating.answer_gate import ANSWER_BACKING, CONFLICT_REASON, DOCUMENT_READ_RULE
 from operating import deep_investigation as deep
+from operating import call_limits as _call_limits
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # The answer contract's enums (``evals/item.schema.json`` ``quantity_role``, ``gap_state``;
@@ -805,6 +806,42 @@ HOST_HELPER_STARTS = 4
 _SET_HANDLE = re.compile(r"set:[A-Za-z0-9_-]{16,}")
 HELPER_INIT_ID = "plx-helper-init"
 PEER_GONE = "tool_host_stopped"
+# The session's read cache (``serve_gate``): a call of a read tool repeating one this
+# session already made (same tool, same arguments once aliases are expanded) is answered
+# with that call's result at once, never run again. Measured 2026-11-07 (graded-1107c,
+# five hard DEV timeouts): repeated schema and find calls, and a 60 s query whose exact
+# repeat would take its full limit again under load. A call the host stopped at its limit
+# is answered timed out again at once (``call_limits.repeated_timeout_text``): the same
+# call on the same store would stop again. Only the read tools ``call_limits`` limits;
+# never the answer gate, never an error other than a time-out (a refusal may clear).
+CACHED_TOOLS = frozenset(_call_limits.LIMITS)
+READ_CACHE_MOST = 200     # results one session keeps (each a tool result, bounded)
+
+
+def read_cache_key(name: Any, arguments: Any) -> str | None:
+    """The cache key of a tools/call of ``name`` with ``arguments`` (``CACHED_TOOLS``
+    only), or None: not cached."""
+    if not isinstance(name, str) or name not in CACHED_TOOLS:
+        return None
+    try:
+        return name + "\n" + json.dumps(arguments if arguments is not None else {},
+                                         sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+
+
+def repeated_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer to a repeat of a call whose result is ``result``: a copy of it, or, for
+    a call the host stopped at its limit, its time-out said as a repeat."""
+    if not _timed_out(result):
+        return json.loads(json.dumps(result))
+    from operating import call_limits
+    try:
+        told = json.loads(str((result.get("content") or [{}])[0].get("text") or "{}"))
+    except (ValueError, AttributeError, IndexError, TypeError):
+        told = {}
+    return {"content": [{"type": "text", "text": call_limits.repeated_timeout_text(
+        told.get("tool"), told.get("limit_seconds"))}], "isError": True}
 
 
 class _Peer:
@@ -978,6 +1015,10 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
     gone = threading.Event()   # the client cannot be written to
     waiting: set[str] = set()  # the client's requests forwarded and not yet answered
     aliased: set[str] = set()  # forwarded tools/call whose result the client reads aliased
+    kept: dict[str, Any] = {}          # read cache key -> the host's result (``CACHED_TOOLS``)
+    keeping: dict[str, str] = {}       # forwarded call -> its read cache key
+    from_cache: set[str] = set()       # calls answered from the read cache
+    began_at: dict[str, float] = {}    # forwarded budgeted call -> its start (``clock``)
 
     def note(entry: Mapping[str, Any]) -> None:
         if timing is None:
@@ -1049,12 +1090,20 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                                   "params": {"key": pool.key, "record": exported}})
                 except (OSError, ValueError):
                     pass
-        if pool is not None and key in calls and isinstance(result, dict):
+        if pool is not None and key in calls and isinstance(result, dict) \
+                and key not in from_cache:
             for handle in _SET_HANDLE.findall(json.dumps(result)):
                 owners[handle] = peer
         if key in abandoned and "method" not in message:
             abandoned.discard(key)
             return   # answered timed out by the gate already
+        if "method" not in message and key in keeping:
+            with lock:
+                cache_key = keeping.pop(key)
+                if isinstance(result, dict) and (not result.get("isError")
+                                                 or _timed_out(result)) \
+                        and len(kept) < READ_CACHE_MOST:
+                    kept[cache_key] = json.loads(json.dumps(result))
         if message.get("id") in listing and isinstance(result, dict):
             listing.discard(message["id"])
             result["tools"] = [tool for tool in result.get("tools") or []
@@ -1084,6 +1133,8 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
         if budget is not None and "id" in message and key in noted:
             with lock:
                 budget.observe(result)   # a walk that reached nothing (``after_answer``)
+                if key in began_at:
+                    budget.took(clock() - began_at.pop(key))
             if _timed_out(result):
                 # the host stopped the call at its limit (``call_limits``)
                 with lock:
@@ -1187,6 +1238,10 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                     abandoned.add(key)
                     with lock:
                         noted.pop(key, None)
+                        cache_key = keeping.pop(key, None)
+                        if cache_key is not None and len(kept) < READ_CACHE_MOST:
+                            kept[cache_key] = {"content": [{"type": "text", "text":
+                                call_limits.timed_out_text(name, limit)}], "isError": True}
                         if budget is not None:
                             budget.stopped_call()
                     emit({"jsonrpc": "2.0", "id": json.loads(key), "result": {
@@ -1257,6 +1312,24 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                          "detail": "cite only a handle or alias a tool returned in this "
                                    "session"})}], "isError": True}})
             continue
+        cache_key = read_cache_key(params.get("name"), params.get("arguments")) \
+            if message.get("method") == "tools/call" and "id" in message else None
+        with lock:
+            hit = kept.get(cache_key) if cache_key is not None else None
+        if hit is not None:
+            # a repeat of a read this session made: its result again, at once, never run
+            # again and never a step of the budget
+            key = json.dumps(message["id"])
+            with lock:
+                from_cache.add(key)
+                waiting.add(key)
+                if aliases is not None:
+                    aliased.add(key)
+                if budget is not None and budget.active:
+                    noted[key] = budget.note(clock())
+            deliver(primary, {"jsonrpc": "2.0", "id": message["id"],
+                              "result": repeated_result(hit)})
+            continue
         if message.get("method") == "tools/call" and budget is not None and budget.active:
             with lock:
                 at = clock()
@@ -1275,6 +1348,7 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                                                              params.get("arguments")):
                 # the note as of the call's start: its step and the time left then
                 noted[json.dumps(message["id"])] = budget_note
+                began_at[json.dumps(message["id"])] = at
             elif "id" in message:
                 with lock:
                     answering.add(json.dumps(message["id"]))
@@ -1286,6 +1360,9 @@ def serve_gate(allowed: Iterable[str], server: Sequence[str], log: Path, *,
                 if aliases is not None and message.get("method") == "tools/call":
                     aliased.add(json.dumps(message["id"]))
         target = route(params) if message.get("method") == "tools/call" else primary
+        if cache_key is not None:
+            with lock:
+                keeping[json.dumps(message["id"])] = cache_key
         if "id" in message and "method" in message:
             target.open[json.dumps(message["id"])] = (
                 time.monotonic(), params.get("name")
@@ -2222,13 +2299,16 @@ def _wall(seconds: Any) -> str | None:
     return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str]) -> None:
+def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str],
+                       origin: float | None = None) -> None:
     """Give each ``tool_call`` event the gate's wall-clock times of its call (``serve_gate``
     ``timing`` lines): ``started_at``, ``ended_at`` (None: no answer came back, as for a
     call still waiting when the session was killed) and ``elapsed_ms``. Calls are paired
     in order by tool name and arguments (parallel calls of one turn may reach the gate in
-    any order); an event the gate never saw (a built-in tool) gets no times. Harness
-    timing only: nothing scores it."""
+    any order); an event the gate never saw (a built-in tool) gets no times. ``origin``:
+    the session's start (wall-clock seconds), from which each call's ``start_ms`` is
+    counted, so a log shows which calls overlapped. Harness timing only: nothing scores
+    it."""
     starts: list[dict[str, Any]] = []
     ends: dict[str, float] = {}
     for line in lines:
@@ -2259,6 +2339,8 @@ def attach_call_timing(events: Sequence[dict[str, Any]], lines: Iterable[str]) -
         event["ended_at"] = _wall(ended)
         event["elapsed_ms"] = None if ended is None else max(
             0, round((ended - start["at"]) * 1000))
+        if origin is not None:
+            event["start_ms"] = max(0, round((start["at"] - origin) * 1000))
 
 
 class ClaudeCodeAgent:
@@ -2553,11 +2635,14 @@ class ClaudeCodeAgent:
             run.events[:0] = [_prefetched_event(read) for read in gate.prefetched]
             for seq, event in enumerate(run.events):
                 event["seq"] = seq
-        attach_call_timing(run.events, timed)
+        attach_call_timing(run.events, timed, started)
         # Where the session's time went (milliseconds; tool names only): the first reads,
         # when the task reached the session, and each call the session made.
         run.agent["timing"] = {**phases, "prefetch": [list(r) for r in gate.prefetch_ms],
-                               "calls": [[e.get("name"), e.get("elapsed_ms")]
+                               # [tool, ms it took, ms after the session's start it
+                               # began]: calls that overlap ran at once
+                               "calls": [[e.get("name"), e.get("elapsed_ms"),
+                                          e.get("start_ms")]
                                          for e in run.events if e.get("type") == "tool_call"
                                          and "elapsed_ms" in e]}
         if submission is not None and gate.served:

@@ -64,3 +64,31 @@ class WorkerDeadlineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionSlotsTests(unittest.TestCase):
+    """Agent sessions are admitted by the memory available at each admission
+    (``backend.SessionSlots``), never by a count fixed at start-up: the first is always
+    admitted, another only while memory holds it above the floor, and a session waiting
+    for memory starts once memory frees, without any release."""
+
+    def test_admission_follows_the_memory_available_now(self):
+        free = [be.ASK_MEMORY_FLOOR_GB + 2.0]     # room for one session only
+        slots = be.SessionSlots(4, available=lambda: free[0])
+        slots.POLL_SECONDS = 0.02
+        self.assertTrue(slots.acquire(blocking=False))     # the first: always
+        self.assertFalse(slots.acquire(blocking=False))    # a second does not fit now
+        started = time.monotonic()
+        self.assertFalse(slots.acquire(timeout=0.1))       # waits, then gives up
+        self.assertGreaterEqual(time.monotonic() - started, 0.09)
+        threading.Timer(0.1, lambda: free.__setitem__(0, 40.0)).start()
+        self.assertTrue(slots.acquire(timeout=5))          # memory freed: admitted
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertFalse(slots.acquire(blocking=False))    # never past the most asked
+        slots.release()
+        self.assertTrue(slots.acquire(blocking=False))
+        # unknown memory: the request stands
+        unknown = be.SessionSlots(2, available=lambda: None)
+        self.assertTrue(unknown.acquire(blocking=False) and unknown.acquire(blocking=False))
+        self.assertFalse(unknown.acquire(blocking=False))

@@ -207,6 +207,116 @@ class GateBudget(Temp):
                          [False, False, False, True])
 
 
+class GateReadCache(Temp):
+    """The session's read cache (``agent_session.serve_gate``): an exact repeat of a read is
+    answered at once with the first call's result and never reaches the host again; a
+    repeat of a call the host stopped at its limit is answered timed out at once; a
+    different call, an error that may clear and the answer gate are always forwarded."""
+
+    CACHE_HOST = textwrap.dedent("""
+        import json, sys
+        seen = open(sys.argv[1], "a")
+        for line in sys.stdin:
+            m = json.loads(line)
+            if "id" not in m:
+                continue
+            name = m["params"]["name"]
+            arguments = m["params"].get("arguments") or {}
+            seen.write(json.dumps([name, arguments]) + "\\n"); seen.flush()
+            if arguments.get("slow"):
+                text, error = json.dumps({"ok": False, "error": "tool_timed_out",
+                                          "tool": name, "limit_seconds": 60.0}), True
+            elif arguments.get("flaky"):
+                text, error = json.dumps({"ok": False, "error": "tool_host_stopped"}), True
+            else:
+                text, error = json.dumps({"tool": name, "args": arguments,
+                                          "n": sum(1 for _ in open(sys.argv[1]))}), False
+            r = {"content": [{"type": "text", "text": text}], "isError": error}
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"],
+                                         "result": r}) + "\\n")
+            sys.stdout.flush()
+    """)
+
+    def run_gate(self, calls, budget=None):
+        host, seen = self.root / "cache_host.py", self.root / "seen.jsonl"
+        host.write_text(self.CACHE_HOST, encoding="utf-8")
+        out = io.StringIO()
+        lines = _calls(calls).splitlines(keepends=True)
+
+        def one_at_a_time():
+            # each call goes in once the previous one is answered, as the agent's turns do
+            for n, line in enumerate(lines):
+                ends = time.monotonic() + 10
+                while out.getvalue().count("\n") < n and time.monotonic() < ends:
+                    time.sleep(0.01)
+                yield line
+            ends = time.monotonic() + 10
+            while out.getvalue().count("\n") < len(lines) and time.monotonic() < ends:
+                time.sleep(0.01)
+        agent_session.serve_gate(
+            ["plx.find", "plx.query", "plx.read", "plx.case_get"],
+            [sys.executable, str(host), str(seen)], self.root / "refused.jsonl",
+            stdin=one_at_a_time(), stdout=out, budget=budget,
+            budget_log=self.root / "budget.jsonl" if budget is not None else None)
+        replies = {m["id"]: m["result"] for m in map(json.loads, out.getvalue().splitlines())}
+        forwarded = [json.loads(line) for line in seen.read_text().splitlines()]
+        return [replies[n + 1] for n in range(len(calls))], forwarded
+
+    def test_an_exact_repeat_is_answered_from_the_first_call_and_costs_no_step(self):
+        calls = [("plx.find", {"query": "PO 5457", "limit": 10}),
+                 ("plx.find", {"limit": 10, "query": "PO 5457"}),   # same call, keys reordered
+                 ("plx.find", {"query": "PO 5458", "limit": 10}),   # another call
+                 ("plx.case_get", ANSWER), ("plx.case_get", ANSWER)]
+        results, forwarded = self.run_gate(calls, deep.Budget(max_steps=10))
+        self.assertEqual([name for name, _ in forwarded],
+                         ["plx.find", "plx.find", "plx.case_get", "plx.case_get"])
+        first = json.loads(results[0]["content"][0]["text"])
+        again = json.loads(results[1]["content"][0]["text"])
+        self.assertEqual((again["n"], again["args"]), (first["n"], first["args"]))
+        self.assertEqual(json.loads(results[2]["content"][0]["text"])["n"], 2)
+        # the repeat carries the budget note and took no step of its own
+        self.assertEqual([json.loads(r["content"][-1]["text"])[deep.BUDGET_KEY]["steps_used"]
+                          for r in results[:3]], [1, 1, 2])
+
+    def test_a_repeat_of_a_timed_out_call_is_answered_timed_out_without_running(self):
+        calls = [("plx.query", {"from": "Shipment", "slow": True}),
+                 ("plx.query", {"from": "Shipment", "slow": True}),
+                 ("plx.read", {"citation": "x", "flaky": True}),
+                 ("plx.read", {"citation": "x", "flaky": True})]
+        results, forwarded = self.run_gate(calls)
+        self.assertEqual([name for name, _ in forwarded],
+                         ["plx.query", "plx.read", "plx.read"])
+        again = json.loads(results[1]["content"][0]["text"])
+        self.assertTrue(results[1]["isError"])
+        self.assertEqual((again["error"], again["repeated"], again["limit_seconds"]),
+                         (call_limits.TIMED_OUT, True, 60.0))
+        # an error that may clear is never kept: the repeat ran again
+        self.assertEqual(json.loads(results[3]["content"][0]["text"])["error"],
+                         "tool_host_stopped")
+
+
+class AdaptiveAnswerDeadline(unittest.TestCase):
+    """The note's wrap-up (``Budget.wrapping_up``): in research's last third, or sooner
+    when this session's calls are slower than the time left, the agent is told to start
+    no new part and submit what is established; never after research ends or once it
+    submitted."""
+
+    def test_the_wrap_up_comes_in_the_last_third_or_when_calls_are_slower_than_the_rest(self):
+        budget = deep.Budget(deadline=100.0, ends_at=150.0)
+        self.assertIsNone(budget.decide("plx.find", {"query": "a"}, 0.0))
+        self.assertNotIn("next", budget.note(50.0))
+        self.assertEqual(budget.note(70.0)["next"], deep.WRAP_UP_NEXT)
+        slow = deep.Budget(deadline=100.0, ends_at=150.0)
+        slow.decide("plx.query", {"from": "Shipment"}, 0.0)
+        slow.took(55.0)    # one query took 55 s: a new one would not end in the 45 s left
+        self.assertEqual(slow.note(55.0)["next"], deep.WRAP_UP_NEXT)
+        self.assertNotIn("next", slow.note(40.0))
+        # research over: the grace-read note, not the wrap-up; after a submission: neither
+        self.assertNotEqual(slow.note(100.0)["next"], deep.WRAP_UP_NEXT)
+        slow.decide("plx.case_get", ANSWER, 80.0)
+        self.assertNotIn("next", slow.note(80.0))
+
+
 class OpenPartsContinue(Temp):
     """An answer submitted with research time left whose decision leaves parts open goes
     back once with them, and that decision does not end the session (``GateEnd``); the

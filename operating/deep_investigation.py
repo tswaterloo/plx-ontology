@@ -133,6 +133,16 @@ MAX_OPEN_SHOWN = 8
 # reply opened on its second bullet.
 MAX_TEXT_REPAIRS = 1
 TEXT_REPAIR_SECONDS = 25
+# The adaptive answer deadline (``Budget.note``): once the research seconds left fall
+# under a third of the research window, or under the slowest call this session has made
+# (a loaded host's queries took 30-60 s each, measured 2026-11-07 on five hard DEV
+# timeouts: two such calls spent the whole research window), each result's note tells the
+# agent to start no new part and submit what is established with gaps for the rest, so
+# the answer is written before the cap instead of the session stopping mid-read.
+WRAP_UP_SHARE = 1 / 3
+WRAP_UP_NEXT = ("time is nearly up: start no new part; read only what an open part's "
+                "answer needs, then submit each established part with its citation and "
+                "each other part as a gap saying what was not checked")
 
 
 
@@ -291,9 +301,10 @@ DECOMPOSE = (
     "total is sum, the largest, smallest or latest is max, min or rows (newest first), "
     "and a comparison is one query per side, all in the same turn. Then send it as one "
     "plx.query (from, traverse with each hop's where, where, measures) instead of a "
-    "call per hop. Calls are served one at a time, in the order sent: send the call "
-    "that settles the question first and a text search after it, never a broad text "
-    "search ahead of a record query. A figure is the tool's, never your own tally: count and total with "
+    "call per hop. Independent calls sent in one turn run at once (a few at a time; more "
+    "wait their turn, in the order sent), so a question's parts are read side by side, "
+    "never one turn after another: send the call that settles the question first and a "
+    "text search after it, never a broad text search ahead of a record query. A figure is the tool's, never your own tally: count and total with "
     "plx.query or plx.aggregate, not by reading a list (records reached one by one with "
     "plx.object, plx.around or plx.read are counted by sending that walk, with its "
     "filters, as one plx.query with measures count, or plx.aggregate count over the set "
@@ -413,7 +424,12 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "its likely forms, each company or product by its full and its short name, "
         "synonyms of the key words (late: overdue, delayed, ETA, expected receipt; "
         "pricing: price, quote, cost), and one expected-answer query written as the "
-        "sentence a source holding the answer would contain.",
+        "sentence a source holding the answer would contain. A question with several "
+        "parts (a comparison's sides, several named records, several figures, who and "
+        "where, the list and its count) lists them as its plan's first lines, one record "
+        "query each, and your first turn sends each part's query together: the parts are "
+        "read at once, a part whose call times out does not hold the others, and each "
+        "part ends with its value or its gap.",
         "(2) Your first turn reads records only: plx.find on the names and codes "
         "(an identifier or a name; object_type with filters), plx.object on every record "
         "of what they name (its links counted per link type), plx.query or plx.around "
@@ -472,7 +488,12 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "past that, or once the steps are used, the tools refuse further reads ("
         + BUDGET_REFUSAL + ") and only the answer gate stays open: submit what you have "
         "established then, never nothing. Each call also has a time limit: a call that "
-        "passes it returns tool_timed_out with nothing; narrow it or go on without it. "
+        "passes it returns tool_timed_out with nothing; narrow it or go on without it "
+        "(the exact call again times out again at once: a repeated read is answered from "
+        "the session's first result, never run twice). Once the note shows less than a "
+        "third of the time left, start no new part: read only what an open part's answer "
+        "needs, then submit each part established with its citation and each other part "
+        "as a gap that says what was not checked. "
         "When research was cut short (the time limit, a refused or timed-out call), begin "
         "your reply with \"I stopped researching at the time limit; not yet checked: <the "
         "open sub-questions>\". Spend the budget: a question answered in three calls was "
@@ -799,6 +820,8 @@ class Budget:
         self.roots = [dict(root) for root in roots if isinstance(root, Mapping)
                       and isinstance(root.get("object_id"), str)][:MAX_SCOPE_ROOTS]
         self.scoped = False   # a type-wide query was sent to start from the named records
+        self.began: float | None = None   # the first call's second (the research window)
+        self.slowest = 0.0                # the longest call this session made, seconds
 
     @property
     def active(self) -> bool:
@@ -823,6 +846,8 @@ class Budget:
         refusal the agent gets. Fails closed on nothing: an unbudgeted gate forwards."""
         if not self.active:
             return None
+        if self.began is None:
+            self.began = now
         if self.is_answer(name, arguments):
             self.submissions += 1
             return None
@@ -887,6 +912,23 @@ class Budget:
         from operating.call_limits import MIN_SECONDS
         return self.ends_at is None or now < self.ends_at - SUBMIT_SECONDS - MIN_SECONDS
 
+    def took(self, seconds: Any) -> None:
+        """A forwarded call came back after ``seconds`` (the adaptive deadline's measure
+        of how slow this session's calls are)."""
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) \
+                and seconds > self.slowest:
+            self.slowest = float(seconds)
+
+    def wrapping_up(self, now: float) -> bool:
+        """Whether research is in its last stretch (``WRAP_UP_SHARE`` of its window, or
+        less than the slowest call took): research time is left but a new part would not
+        finish in it."""
+        if self.deadline is None or self.spent(now) or self.submissions:
+            return False
+        left = self.deadline - now
+        window = self.deadline - (self.began if self.began is not None else now)
+        return left <= max(window * WRAP_UP_SHARE, self.slowest)
+
     def stopped_call(self) -> None:
         """A call the host stopped at its limit (``call_limits``)."""
         self.timed_out += 1
@@ -919,6 +961,8 @@ class Budget:
                            "then submit to the answer gate")
         elif self.spent(now):
             out["next"] = "submit your answer to the answer gate now"
+        elif self.wrapping_up(now):
+            out["next"] = WRAP_UP_NEXT
         return out
 
     def scope_from_named(self, name: Any, arguments: Any, now: float
