@@ -3717,7 +3717,7 @@
       }
     },
     "plx.around": {
-      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects; exact_count when every member is listed (filters on the last hop included): the exact count, citing each listed object. Undeclared links are refused.",
+      "description": "Search-around from an object or set along declared link types (at most 3 hops, tier floor, filters). Returns a new set handle, per-hop counts by tier and the top edges and objects; exact_count when every member is listed (filters on the last hop included): the exact count, citing each listed object. Undeclared links are refused. To count, total, or find the latest or earliest date over what a walk reaches (an order's lines, a record's or a channel's mail and Teams messages), send that walk as one plx.query with measures, never plx.around then a read per record.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7451,7 +7451,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where (a hop's too); measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed (past 20, a summary); cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone.",
+      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where (a hop's too); measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed (past 20, a summary); cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone. Prefer it for every count, total and date range over a link set: the latest or earliest message of a record's mail or a channel's Teams messages is measures max or min on its sent_at or created_at (rows for which one), one call however many records.",
       "read_only": true,
       "input": {
         "type": "object",

@@ -474,6 +474,23 @@ class Query(unittest.TestCase):
         tool.call({"from": {"object_id": SAGE}, "traverse": hop_where}, "actor")
         self.assertEqual(next(a for n, a in table.calls if n == "plx.around")["filters"], mid)
 
+    def test_a_measured_walk_asks_for_its_set_never_a_page_of_its_records(self):
+        """A count, total or date range over a link set is one set per hop, never a page
+        of edges per hop: a hop only walked on or measured asks plx.around for its
+        smallest concise listing (the set holds every record the hop reaches) and the
+        measure is plx.aggregate's over that whole set."""
+        table = Table()
+        tool = oq.QueryTool(oq.TableBackend(table, lambda actor, ids: "set:new00001", Schema()))
+        got = tool.call({"from": {"object_id": SAGE}, "traverse": [
+            {"link_type": "SalesInvoiceLine.for_item", "direction": "reverse"}],
+            "measures": [{"op": "max", "property": "invoice_date"}]}, "actor")
+        walked = [args for name, args in table.calls if name == "plx.around"]
+        self.assertEqual([(a["limit"], a["response_format"]) for a in walked],
+                         [(1, "concise")])
+        measured = [args for name, args in table.calls if name == "plx.aggregate"]
+        self.assertEqual(measured[0]["set"], "set:lines0001")
+        self.assertEqual(got["hops"][0]["count"], 2)
+
     def test_a_bad_request_is_refused_by_the_contract(self):
         tool = oq.QueryTool(oq.TableBackend(Table(), None, Schema()))
         self.assertEqual(tool.call({"from": {}}, "actor")["error"]["code"], "invalid_input")

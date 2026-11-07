@@ -406,7 +406,8 @@ class QueryTool:
                     break
                 continue
             got = self._around(call, current, self._directed(here, hop), filters, arguments,
-                               common)
+                               common, listed=arguments.get("rows") is not None
+                               and index == len(traverse) - 1)
             if got.get("error"):
                 raise _Refused(_error(got["error"].get("code") or "traverse_refused",
                                       f"hop {index + 1}: " + str(got["error"].get("message")),
@@ -452,9 +453,16 @@ class QueryTool:
 
     def _around(self, call, current: Any, hop: Mapping[str, Any],
                 filters: list[Any] | None, arguments: Mapping[str, Any],
-                common: Mapping[str, Any]) -> Mapping[str, Any]:
-        """One hop of ``plx.around`` from ``current`` (its last hop filtered)."""
-        args = {"from": current, "path": [_hop(hop)], "limit": 50, **common}
+                common: Mapping[str, Any], listed: bool = True) -> Mapping[str, Any]:
+        """One hop of ``plx.around`` from ``current`` (its last hop filtered). The hop's set
+        holds every record it reaches whatever its listing's size; a hop whose records are
+        only walked on or measured (never listed: ``listed`` False) asks for the smallest
+        concise listing, so a link set of hundreds of lines costs one set, not a page of
+        edges, displays and citations nobody reads (11-07 round A: a count over an
+        order's component lines, a latest date over a channel's messages)."""
+        args = {"from": current, "path": [_hop(hop)], "limit": 50 if listed else 1, **common}
+        if not listed:
+            args["response_format"] = "concise"
         if arguments.get("tier_floor"):
             args["tier_floor"] = arguments["tier_floor"]
         if filters:
