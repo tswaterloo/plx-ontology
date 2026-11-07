@@ -324,6 +324,74 @@ class OpenPartsContinue(Temp):
         self.assertFalse(deep.searches_mail("plx.documents", {"sources": ["sharepoint"]}))
         self.assertTrue(deep.searches_mail("plx.read", {"citation": "graph-mail://m/1"}))
 
+    def test_answer_duties_a_decision_skips_go_back_once(self):
+        """Graded 11-07c: dev 0100 led with FileMaker's figure for a record the question
+        named by its Portal number; q17 compared two years' totals with no total; q01
+        searched mail once for many suppliers; q03 gave up with the named supplier's
+        records unwalked and no mail searched. Each duty a decision skips goes back once
+        while time is left; a decision that does it is not sent back."""
+        now = time.time()
+
+        def decision(lead="", *ops, outcome="answered", state="answerable"):
+            claims = [{"id": f"c{n}", "check": {"status": "passed"}, "value_claims": [
+                {"value": "10", "op": op, "of": [{"citation": f"h{n}", "field": "amount"}]}]}
+                for n, op in enumerate(ops)]
+            return {"structuredContent": {
+                "outcome": outcome, "claims": claims, "answerability": {"state": state},
+                "reply": {"text": lead + "\n- detail"}}}
+
+        def open_parts(question, made, roots=(), calls=()):
+            budget = deep.Budget(deadline=now + 100, max_steps=30, question=question,
+                                 roots=roots)
+            for name, arguments in calls:
+                budget.decide(name, arguments, now)
+            note = budget.after_answer(made, now)
+            return [] if note is None else note["open"]
+
+        order = {"object_id": 'AssemblyOrder:portal.app_manufacturing_order:{"id":"x"}',
+                 "object_type": "AssemblyOrder", "mention": "MO-FM-1", "same_as": []}
+        asked = "How many components of AO MO-FM-1 have a planned quantity under 840?"
+        led = open_parts(asked, decision("In FileMaker, 5 components have it.", "count"),
+                         [order])
+        self.assertEqual(len(led), 1, led)
+        self.assertIn("asks about the Portal record", led[0])
+        self.assertEqual(open_parts(asked, decision("In the Portal, 22 components.",
+                                                    "count"), [order]), [])
+        # the system named in words decides over the record's own system
+        self.assertEqual(open_parts("What does BC hold for AO MO-FM-1?", decision(
+            "Business Central holds 3 lines.", "count"), [order]), [])
+        self.assertTrue(open_parts("What does BC hold for AO MO-FM-1?", decision(
+            "The Portal holds 3 lines.", "count"), [order]))
+
+        totals = "Total value of POs to the supplier this year compared to last year?"
+        self.assertIn("on each side it compares",
+                      open_parts(totals, decision("This year 5 POs.", None))[0])
+        self.assertTrue(open_parts(totals, decision("This year 10.", "sum")))
+        self.assertEqual(open_parts(totals, decision("This year 10.", "sum", "sum")), [])
+        self.assertEqual(open_parts("How many POs in total this year?",
+                                    decision("12 POs.", "count")), [])
+
+        wrote = "Which suppliers have lots in quarantine, and has anyone emailed them?"
+        once = [("plx.find", {"query": "quarantine"}),
+                ("plx.documents", {"query": "quarantine", "sources": ["graph_mail"]})]
+        self.assertIn("once per party", open_parts(wrote, decision("Three.", "count"),
+                                                   calls=once)[0])
+        self.assertEqual(open_parts(wrote, decision("Three.", "count"), calls=once + [
+            ("plx.documents", {"participant": "Supplier:x", "sources": ["graph_mail"]})]),
+            [])
+
+        supplier = {"object_id": "Supplier:portal.app_supplier:7", "object_type": "Supplier",
+                    "mention": "Acme", "same_as": []}
+        paid = "What did we pay Acme per kg before and after the increase?"
+        gave_up = decision(outcome="abstained", state="blocked")
+        parts = open_parts(paid, gave_up, [supplier], [("plx.find", {"query": "price"})])
+        self.assertTrue(any("Acme were not walked" in p for p in parts), parts)
+        self.assertTrue(any("no mail was searched" in p for p in parts), parts)
+        self.assertEqual([p for p in open_parts(paid, gave_up, [supplier], [
+            ("plx.query", {"from": {"object_ids": [supplier["object_id"]]}}),
+            ("plx.documents", {"query": "Acme price", "sources": ["graph_mail"]})])
+            if "walked" in p or "mail" in p], [])
+
     def test_a_type_wide_query_starts_from_the_record_the_question_names(self):
         """11-07 dev 0093: the question named a task and asked about buckets; the agent
         counted every bucket with the word in its name. A query over a whole type of

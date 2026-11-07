@@ -244,6 +244,35 @@ RECORDS_FIRST = (
 )
 
 
+# What every answer owes the question, whatever its kind (both methods; the answer gate
+# sends back a decision that skips one while research time is left, ``required_parts``):
+# the asked system's figure, the asked total, the searches before an absence, the asked
+# stock measure.
+ANSWER_DUTIES = (
+    "Answer duties. (A) The system decides: when the question names a system (\"in the "
+    "Portal\", \"BC says\", \"per FileMaker\") or names a record by the number one "
+    "system writes for it, the answer is that system's record and figure, said with its "
+    "system in the first sentence (\"In the Portal, 22 ...\"); another system's copy is "
+    "context after it, never the answer in its place. Distinct records of one system are "
+    "never dismissed as repeated copies: they are counted unless a tool marks them as "
+    "duplicates. (B) A total asked (total, combined, altogether, in all, overall, sum) "
+    "is claimed as a sum (op sum over its inputs from plx.query or plx.aggregate): one "
+    "per side or period a comparison names, and the combined figure when the question "
+    "asks for one; rows alone are no total. (C) Before a part is called unknown or not "
+    "found: the named party's own records are walked (a supplier's or customer's orders, "
+    "lines and items; a maker's product also bought through a distributor or reseller is "
+    "reached from the item to its purchase lines, whoever the vendor), and mail is "
+    "searched for the party and the subject. When the question asks whether anyone wrote "
+    "to or heard from a set of parties (these suppliers, those customers), mail is "
+    "searched once per party the answer names (plx.documents participant or the party's "
+    "name), never one search for all. (D) Stock: \"in stock\", \"on hand\" is the "
+    "quantity on hand and \"available\" the quantity free to use (on hand less what is "
+    "reserved or allocated), each read from the item's or lot's own quantity property "
+    "(plx.schema lists it), as the question words it; a movement, adjustment or "
+    "transaction entry is never a stock level, and its largest value is no balance."
+)
+
+
 # How any question becomes a query (both methods): one walk, its filters and its measure
 # in one plx.query call, counted by the tool, checked part by part before the gate.
 DECOMPOSE = (
@@ -310,7 +339,8 @@ DECOMPOSE = (
     "values are the answer and the document is supporting evidence, often an older copy: "
     "a status, quantity or party the question asks about now is read from the records "
     "(plx.find lists the record properties whose values the question names under "
-    "structured), and a document that disagrees is said as such, with its date."
+    "structured), and a document that disagrees is said as such, with its date. "
+    + ANSWER_DUTIES
 )
 
 
@@ -640,6 +670,28 @@ CORRESPONDENCE = re.compile(
     r"\b(?:e-?mail(?:s|ed|ing)?|mailed|thread|correspondence|wrote|written to|"
     r"repl(?:y|ied|ies)|respond(?:ed)?|who said|said (?:that|we|they)|messag(?:e|es|ed)|"
     r"contacted|reached out|why|holding (?:\w+ )?up|held up|reason)\b", re.I)
+# A set of parties a correspondence question asks about (``required_parts``: one mail
+# search per party, never one for all).
+PARTY_SET = re.compile(
+    r"\b(?:suppliers|vendors|customers|clients|parties|companies|distributors|carriers|"
+    r"manufacturers|them)\b", re.I)
+# A total the question asks for (``required_parts``: claimed as a sum), and a comparison
+# whose sides each need one; a how-many question's "in total" asks a count, not a sum.
+TOTAL_ASKED = re.compile(
+    r"\b(?:total|totals|combined|altogether|in all|overall|sum|add(?:ed|s)? up)\b", re.I)
+COUNT_ASKED = re.compile(r"\b(?:how many|number of|count of)\b", re.I)
+COMPARED = re.compile(r"\b(?:compared?|comparison|versus|vs\.?|than|against)\b", re.I)
+# The systems a question or a reply names, by their own words (``asked_system``); a short
+# name never matches inside an identifier (MO-FM-5320 names no system).
+SYSTEM_WORDS = (
+    ("Portal", re.compile(r"\bportal\b", re.I)),
+    ("Business Central", re.compile(r"\bbusiness central\b|(?<![\w-])BC(?![\w-])", re.I)),
+    ("FileMaker", re.compile(r"\bfile ?maker\b|(?<![\w-])FM(?![\w-])", re.I)),
+    ("Sage", re.compile(r"\bsage\b", re.I)),
+    ("Mission Control", re.compile(r"\bmission control\b|(?<![\w-])MC(?![\w-])", re.I)))
+# Record types of a party, whose own records are walked before an absence is stated.
+PARTY_TYPES = re.compile(r"supplier|vendor|customer|party|company|organi[sz]ation|"
+                         r"manufacturer|distributor|account", re.I)
 # Gap reasons of a walk that reached nothing (plx.query, plx.around).
 DEAD_END = re.compile(r'"reason":\s*"(?:nothing_reached|twin_route|other_routes)"')
 
@@ -658,6 +710,51 @@ def searches_mail(name: Any, arguments: Any) -> bool:
         # a walk to the messages that mention a record
         return '"Email.' in json.dumps(arguments, default=str)
     return False
+
+
+def systems_named(text: Any) -> list[str]:
+    """The systems ``text`` names by their words (``SYSTEM_WORDS``), in that order."""
+    if not isinstance(text, str):
+        return []
+    return [name for name, words in SYSTEM_WORDS if words.search(text)]
+
+
+def asked_system(question: Any, roots: Sequence[Mapping[str, Any]] = ()) -> str | None:
+    """The system whose record answers the question: the one system it names in words;
+    else, when it names one record and no system, that record's own system (the number
+    one system writes for it names its record there, ``entity_resolution.system_of``).
+    None: no system, or several named."""
+    named = systems_named(question)
+    if named:
+        return named[0] if len(named) == 1 else None
+    ids = {root.get("object_id") for root in roots if isinstance(root, Mapping)}
+    if len(ids) != 1:
+        return None
+    from operating.entity_resolution import system_of
+    system = {"Mail": None, "other": None}.get(found := system_of(str(next(iter(ids)))),
+                                                found)
+    return system if system in {name for name, _ in SYSTEM_WORDS} else None
+
+
+def lead_sentence(decision: Mapping[str, Any]) -> str:
+    """The first sentence (or line) of a decision's reply text, else of its text."""
+    reply = decision.get("reply")
+    text = _plain(reply.get("text")) if isinstance(reply, Mapping) else None
+    if not isinstance(text, str) or not text.strip():
+        text = _plain(decision.get("text"))
+    if not isinstance(text, str):
+        return ""
+    first = text.strip().split("\n", 1)[0]
+    return re.split(r"(?<=[.!?])\s+(?=[A-Z])", first, maxsplit=1)[0]
+
+
+def sums_passed(decision: Mapping[str, Any]) -> int:
+    """How many passed value claims of an answered decision state a total: a sum, or an
+    expression adding cited figures."""
+    from operating.answer_gate import passed_cells
+    return sum(1 for cell in passed_cells(decision)
+               if cell.get("op") == "sum" or (cell.get("op") == "expression"
+                                              and "+" in str(cell.get("expression") or "")))
 
 
 class Budget:
@@ -689,6 +786,11 @@ class Budget:
         # the question (``after_answer``: correspondence it names is searched in mail)
         self.question = question if isinstance(question, str) else ""
         self.mail_searched = False   # a mail search or message read was forwarded
+        # the distinct mail searches forwarded (their arguments): one per party a
+        # correspondence question names (``required_parts``)
+        self.mail_searches: set[str] = set()
+        # the named records (object_id) a forwarded record call started from or named
+        self.walked: set[str] = set()
         # the step of the last walk that reached nothing (``observe``): a decision with no
         # call forwarded after it tried no other route
         self.dead_end_step: int | None = None
@@ -744,8 +846,20 @@ class Budget:
             self.timeout_open = False   # research went on after any stopped call
             if name in RECORD_TOOLS:
                 self.records_read += 1
+                said = json.dumps(arguments, default=str).casefold()
+                for root in self.roots:
+                    words = [root["object_id"], *(i for i in root.get("same_as") or ()
+                                                  if isinstance(i, str))]
+                    if isinstance(root.get("mention"), str) and root["mention"].strip():
+                        words.append(root["mention"].strip())
+                    if any(word.casefold() in said for word in words):
+                        self.walked.add(root["object_id"])
             if searches_mail(name, arguments):
                 self.mail_searched = True
+                if name == "plx.documents":
+                    self.mail_searches.add(json.dumps(
+                        {k: arguments.get(k) for k in ("query", "participant", "object_id")},
+                        sort_keys=True, default=str))
             return None
         if why == "time" and not self.submissions and self.grace < self.grace_calls \
                 and name in GRACE_TOOLS and self._grace_fits(now):
@@ -867,20 +981,84 @@ class Budget:
         if DEAD_END.search(text):
             self.dead_end_step = self.steps
 
-    def required_parts(self) -> list[str]:
+    def required_parts(self, decision: Mapping[str, Any] | None = None) -> list[str]:
         """Parts any decision leaves open while research may go on: correspondence the
-        question names that no mail search read (``CORRESPONDENCE``), and a walk that
-        reached nothing with no call after it (no other route tried)."""
+        question names that no mail search read (``CORRESPONDENCE``), or a set of parties
+        searched in one mail search (``PARTY_SET``); and a walk that reached nothing with
+        no call after it (no other route tried). Of ``decision`` (the gate's): a total
+        the question asks that no passed claim sums (``TOTAL_ASKED``, one per side a
+        comparison names); a lead sentence answering from another system than the one
+        asked (``asked_system``); an abstention or partial answer with the named party's
+        records not walked or no mail searched (``ANSWER_DUTIES`` (C))."""
         parts: list[str] = []
         if CORRESPONDENCE.search(self.question) and not self.mail_searched:
             parts.append("the question asks what people wrote, and no mail was searched: "
                          "search mail (plx.documents sources [\"graph_mail\"], one call per "
                          "party and subject it names) and read the messages that match")
+        elif CORRESPONDENCE.search(self.question) and PARTY_SET.search(self.question) \
+                and len(self.mail_searches) < 2:
+            parts.append("the question asks whether anyone wrote to a set of parties, and "
+                         "mail was searched once for all of them: search mail once per "
+                         "party your answer names (plx.documents sources [\"graph_mail\"] "
+                         "with participant, its object_id or address, or its name as "
+                         "query) and say for each whether a message was found")
+        if isinstance(decision, Mapping):
+            parts += self._decision_parts(decision)
         if self.dead_end_step is not None and self.dead_end_step >= self.steps:
             parts.append("a walk reached nothing and no other route was tried: take the "
                          "next route (the other routes or twin_route it names, the "
                          "records' copies in another system with tier_floor lead, a text "
                          "or mail search for the start) before stating an absence")
+        return parts
+
+    def _decision_parts(self, decision: Mapping[str, Any]) -> list[str]:
+        """The answer duties (``ANSWER_DUTIES``) a gate decision leaves undone."""
+        parts: list[str] = []
+        answered = decision.get("outcome") == "answered"
+        if answered and TOTAL_ASKED.search(self.question) \
+                and not COUNT_ASKED.search(self.question):
+            wanted = 2 if COMPARED.search(self.question) else 1
+            if sums_passed(decision) < wanted:
+                parts.append(
+                    "the question asks for a total" + (" on each side it compares"
+                                                       if wanted > 1 else "")
+                    + " and no passed claim states it: total the records with plx.query "
+                    "or plx.aggregate (measures sum; group_by or bucket for each period "
+                    "or side) and claim each total as {\"op\": \"sum\", \"of\": its "
+                    "inputs}, the combined figure too when the question asks for one")
+        asked = asked_system(self.question, self.roots)
+        if answered and asked:
+            lead = systems_named(lead_sentence(decision))
+            if lead and asked not in lead:
+                parts.append(
+                    f"the question asks about the {asked} record, and the answer leads "
+                    f"with {', '.join(lead)}: give the {asked} figure first, from the "
+                    f"{asked} records (each distinct record counts; none is a repeated "
+                    "copy unless a tool says so), said as the " + asked + "'s, and the "
+                    "other system's figure after it as context")
+        state = _plain((decision.get("answerability") or {}).get("state")) \
+            if isinstance(decision.get("answerability"), Mapping) else None
+        # an answer that establishes little (abstained, blocked, or partial on a question
+        # that is not one count): a count bound "at least N" asks no mail search
+        if self.question.strip() and (
+                decision.get("outcome") == "abstained" or state == "blocked"
+                or (state == "partial" and not COUNT_ASKED.search(self.question))):
+            unwalked = [root for root in self.roots
+                        if root["object_id"] not in self.walked
+                        and PARTY_TYPES.search(str(root.get("object_type")
+                                                   or root["object_id"].split(":", 1)[0]))]
+            for root in unwalked:
+                parts.append(
+                    f"part of the answer is open and the records of "
+                    f"{root.get('mention') or root['object_id']} were not walked: read "
+                    "its record (plx.object) and walk its orders, lines and items "
+                    "(plx.query from its object_id), and the items' purchase or sales "
+                    "lines whoever the other party is, before stating anything absent")
+            if not self.mail_searched:
+                parts.append(
+                    "part of the answer is open and no mail was searched: search mail "
+                    "(plx.documents sources [\"graph_mail\"]) for the parties and the "
+                    "subject the question names before stating it unknown")
         return parts
 
     def after_answer(self, result: Any, now: float) -> dict[str, Any] | None:
@@ -915,7 +1093,7 @@ class Budget:
             # decision lists (11-07: absences stated after one empty walk, correspondence
             # answered from the records alone), only while the session has the time for
             # them: a send-back never costs the answer (11-07 q42: no answer at the limit)
-            parts = list(dict.fromkeys(parts + self.required_parts()))
+            parts = list(dict.fromkeys(parts + self.required_parts(decision)))
         if parts and self.sent_open is not None and not settled(self.sent_open, parts):
             # The research the last send-back asked for settled none of its open parts:
             # another round costs a minute for what the last one did not find, so this
