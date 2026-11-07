@@ -144,11 +144,33 @@ def _text_facts(document: Document) -> dict[str, Any]:
     class, and per non-blank field of its own its citation, path, the digest of its
     indexed text and its length (``ontology.mention_memo`` texts)."""
     return {"citation": document.citation, "kind": document.kind,
-            "sender_class": document.sender_class,
+            "sender_class": document.sender_class, "sensitive": _sensitive(document),
             "fields": [[citation, field_path,
                         hashlib.sha256(text[:FIELD_CAP].encode("utf-8")).hexdigest(), len(text)]
                        for citation, field_path, text in _fields(document)
                        if isinstance(text, str) and text.strip()]}
+
+
+def _sensitive(document: Document) -> bool:
+    """Whether the document is personal financial or HR-confidential content
+    (``operating.chunking.sensitive``: a statement, a pay stub, an offer or termination
+    letter, a payroll or HR confidentiality label): its fields then carry ``finance`` and
+    ``pii`` too, as its search chunks do. Its name or subject supports a content signal;
+    the folders of its path and its recorded labels are labels."""
+    from operating.chunking.sensitive import folders, personal_financial
+    texts, title, labels = [], None, []
+    for _citation, field_path, text in _fields(document):
+        if not isinstance(text, str):
+            continue
+        prop = field_path[len("row."):] if field_path.startswith("row.") else field_path
+        if prop in ("name", "subject") and title is None:
+            title = text
+        if prop == "path":
+            labels.extend(folders(text))
+        elif prop in ("sensitivity_label", "retention_label", "compliance_tag"):
+            labels.append(text)
+        texts.append(text[:FIELD_CAP])
+    return personal_financial("\n".join(texts), title=title, labels=labels) is not None
 
 
 def _pieces(text: str) -> list[tuple[int, str, bytes]]:
@@ -278,6 +300,8 @@ def store_text_index(builder: Any, projector: Any, *,
                     if marks is None:
                         more["fields_unmarked"] += 1
                         continue
+                    if document.get("sensitive"):
+                        marks = markings_text(set(json.loads(marks)) | {"finance", "pii"})
                     keys.add(key)
                     more["fields_truncated"] += length > FIELD_CAP
                     facts = (document["citation"], document["kind"], document["sender_class"],

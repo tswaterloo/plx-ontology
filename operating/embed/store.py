@@ -32,6 +32,15 @@ _ENTITY_COLUMNS = ("entity_id", "object_id", "type", "name", "alias", "normalize
                    "audience_key", "markings")
 
 
+# A chunk re-marked ``finance`` and ``pii`` in place (``python3 -m operating.chunking.remark``:
+# a label the projection does not hold, a rule newer than the run) keeps both while its
+# text is unchanged: a rewrite never unmarks a sensitive document (fail closed).
+_STICKY_MARKINGS = (
+    "CASE WHEN t.content_sha = EXCLUDED.content_sha AND t.markings @> '{finance,pii}' "
+    "THEN ARRAY(SELECT DISTINCT m FROM unnest(EXCLUDED.markings || '{finance,pii}'::text[]) "
+    "AS m ORDER BY m) ELSE EXCLUDED.markings END")
+
+
 class SchemaMissing(RuntimeError):
     pass
 
@@ -126,14 +135,16 @@ class ChunkWriter:
                                 list(c.linked_ids), c.audience_key, list(c.markings),
                                 c.authority, "now"))
         cols = ", ".join(_CHUNK_COLUMNS)
-        changed = " OR ".join(f"t.{col} IS DISTINCT FROM EXCLUDED.{col}"
+        new = {col: f"EXCLUDED.{col}" for col in _CHUNK_COLUMNS}
+        new["markings"] = _STICKY_MARKINGS
+        changed = " OR ".join(f"t.{col} IS DISTINCT FROM {new[col]}"
                               for col in _CHUNK_COLUMNS if col != "chunk_id")
         rows = cur.execute(
             f"INSERT INTO search.chunks AS t ({cols}, updated_at) "
             f"SELECT DISTINCT ON (chunk_id) {cols}, now() FROM stage_chunks "
             f"ORDER BY chunk_id "
             f"ON CONFLICT (chunk_id) DO UPDATE SET "
-            + ", ".join(f"{col} = EXCLUDED.{col}" for col in _CHUNK_COLUMNS if col != "chunk_id")
+            + ", ".join(f"{col} = {new[col]}" for col in _CHUNK_COLUMNS if col != "chunk_id")
             + ", embedding = CASE WHEN t.content_sha = EXCLUDED.content_sha THEN t.embedding END"
             ", embed_model = CASE WHEN t.content_sha = EXCLUDED.content_sha THEN t.embed_model "
             "END, updated_at = now() WHERE " + changed + " RETURNING (xmax = 0)").fetchall()

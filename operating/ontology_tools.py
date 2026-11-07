@@ -376,6 +376,13 @@ def run_memo() -> Any:
         _RUN_MEMO.reset(token)
 
 
+@functools.lru_cache(maxsize=4)
+def _visible_object_sql(store: str) -> str:
+    # imported here: operating.search reads this module's item schemes
+    from operating.search import document_marks
+    return store + "AND " + document_marks.sql("o.object_id") + " "
+
+
 def run_memo_for(kind: Any) -> dict[Any, Any] | None:
     """The decisions of ``kind`` kept for the plan run in progress (``run_memo``); None
     outside a run (each call decides afresh)."""
@@ -763,9 +770,16 @@ class _Scope:
         return (encoded_list(self.audience_keys), encoded_list(self.marking_sets),
                 _format_time(self.at))
 
+    @functools.cached_property
+    def _documents(self) -> dict[str, str]:
+        # once per scope: the documents search marks beyond this reader
+        # (``operating.search.document_marks``), withheld as any unreadable object
+        from operating.search import document_marks
+        return document_marks.params(self.held)
+
     def params(self, **extra: Any) -> dict[str, Any]:
         aud, marks, at = self._encoded
-        return dict(extra, aud=aud, marks=marks, at=at)
+        return dict(extra, aud=aud, marks=marks, at=at, **self._documents)
 
     def holds(self, markings: Iterable[str]) -> bool:
         return set(markings) <= self.held
@@ -860,7 +874,7 @@ class StoreReader:
     # at :at carries only permitted markings, and so does its latest version (a
     # marking added later applies to every earlier version too: as_known_at never
     # reads around a reclassification).
-    _VISIBLE_OBJECT = (
+    _VISIBLE_OBJECT_STORE = (
         "o.audience_key IN (SELECT value FROM json_each(:aud)) "
         "AND EXISTS (SELECT 1 FROM object_versions ov WHERE ov.object_id = o.object_id "
         "AND julianday(ov.recorded_at) <= julianday(:at) "
@@ -869,6 +883,12 @@ class StoreReader:
         "AND (SELECT lv.markings FROM object_versions lv WHERE lv.object_id = o.object_id "
         "ORDER BY julianday(lv.recorded_at) DESC LIMIT 1) "
         "IN (SELECT value FROM json_each(:marks)) ")
+
+    @property
+    def _VISIBLE_OBJECT(self) -> str:  # noqa: N802 - the predicate every object read uses
+        """The store's visibility, and not a document whose search chunks carry a marking
+        the reader lacks (a pay stub: ``operating.search.document_marks``)."""
+        return _visible_object_sql(self._VISIBLE_OBJECT_STORE)
 
     def _scoped_identifiers(self) -> str:
         return ("SELECT i.*, o.object_type, o.binding_id, o.audience_key "

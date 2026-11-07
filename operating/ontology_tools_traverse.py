@@ -166,6 +166,7 @@ from ontology.json_contract import validate
 from ontology.reviews import ALLOCATED, effective
 from ontology.store import instant
 from ontology.types import Actor
+from operating.search import document_marks
 # L8's reader, policy and contract helpers (operating/ontology_tools.py): one
 # store reader, one policy, one envelope/gap/completeness shape for every tool.
 from operating.ontology_tools import (  # noqa: F401 - re-exported for hosts
@@ -430,9 +431,15 @@ class _Scope:
         # once per scope: every query of the call passes the reader's audience keys
         return encoded_list(self.audience_keys), encoded_list(self.marking_sets)
 
+    @cached_property
+    def _documents(self) -> dict[str, str]:
+        # once per scope: the documents search marks beyond this reader
+        # (``operating.search.document_marks``), withheld as any unreadable object
+        return document_marks.params(self.held)
+
     def params(self, **extra: Any) -> dict[str, Any]:
         aud, marks = self._encoded
-        return {"t": self.t, "aud": aud, "marks": marks, **extra}
+        return {"t": self.t, "aud": aud, "marks": marks, **self._documents, **extra}
 
 
 def _live(alias: str) -> str:
@@ -454,7 +461,8 @@ def _visible_object(alias: str, gate: str) -> str:
             f"AND NOT EXISTS (SELECT 1 FROM object_versions v2 WHERE v2.object_id = "
             f"{alias}.object_id AND {_from_t('v2')} AND (v2.markings NOT IN "
             f"(SELECT value FROM json_each(:marks)) OR NOT {gate}(v2.l1_handle) "
-            f"OR plx_l9_time(v2.recorded_at) IS NULL))")
+            f"OR plx_l9_time(v2.recorded_at) IS NULL)) "
+            f"AND {document_marks.sql(alias + '.object_id')}")
 
 
 def _visible_value(alias: str, gate: str) -> str:

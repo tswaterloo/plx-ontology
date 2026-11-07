@@ -1702,6 +1702,7 @@ class EvidenceTools:
             seen = {d["citation"] for d in documents}
             documents.extend(d for d in originals if d["citation"] not in seen)
             gaps.extend(original_gaps)
+        documents = self._search_marked(documents, actor)
         if scope_info["bare"] is not None and scope_info["bare"]["readings"]:
             gaps.insert(0, _reading_gap(arguments["query"], scope_info["bare"]["readings"],
                                          sources))
@@ -2249,6 +2250,39 @@ class EvidenceTools:
                 out.append(_gap("not_ingested", "binding_partial", tid,
                                 (spec.get("availability") or {}).get("reason")))
         return out
+
+    def _held(self, actor: Actor) -> frozenset[str]:
+        try:
+            return frozenset(self.base.policy.held_markings(actor))
+        except Exception:  # noqa: BLE001 - undecidable: nothing held (fail closed)
+            return frozenset()
+
+    def _document_withheld(self, handle: str, held: frozenset[str]) -> bool:
+        """Whether the document cited at ``handle`` (or an object the store holds at it)
+        is marked in search beyond ``held`` (``document_marks.handle_withheld``)."""
+        from operating.search import document_marks
+        if not document_marks.enabled() or document_marks.holds_every(held):
+            return False
+        try:
+            with self.store.lock:
+                ids = [row[0] for row in self.store.conn.execute(
+                    "SELECT DISTINCT object_id FROM object_versions WHERE l1_handle = ?",
+                    (handle,))]
+        except sqlite3.Error:
+            ids = []
+        return document_marks.handle_withheld(handle, held, ids)
+
+    def _search_marked(self, documents: list[dict[str, Any]], actor: Actor
+                       ) -> list[dict[str, Any]]:
+        """``documents`` less those whose search chunks carry a marking the reader does not
+        hold (a pay stub, an offer letter, a payroll-labelled file:
+        ``operating.search.document_marks``), as search itself withholds them."""
+        from operating.search import document_marks
+        ids = [doc.get("_object") or doc.get("object_id") for doc in documents]
+        if not any(ids):
+            return documents
+        hidden = document_marks.withheld([i for i in ids if i], self._held(actor))
+        return [doc for doc, oid in zip(documents, ids) if oid not in hidden]
 
     def _linked_documents(self, scope: Any, ids: Sequence[str], families: Sequence[str]
                           ) -> tuple[set[str], bool]:
@@ -3066,6 +3100,13 @@ class EvidenceTools:
                                    "this host passed no citation reader")],
                         completeness={"complete": False, "truncated": False, "returned": 0,
                                       "reason": "source_not_configured"})
+        held = self._held(actor)
+        if self._document_withheld(handle, held):
+            # a document whose search chunks carry a marking the reader lacks (a pay stub):
+            # withheld as any other citation the reader may not read
+            return dict(base, status="withheld", gaps=[],
+                        completeness={"complete": False, "truncated": False, "returned": 0,
+                                      "reason": "withheld"})
         read = self.reader.read(handle, actor, page=page)
         status = read.get("status")
         gaps = list(read.get("gaps") or [])
@@ -3145,7 +3186,11 @@ class EvidenceTools:
         if fields or "content" not in result:
             result["fields"] = fields
         if read.get("attachments") and wanted is None and page is None:
-            result["attachments"] = list(read["attachments"])
+            listed = [a for a in read["attachments"] if not (
+                isinstance(a, Mapping) and isinstance(a.get("citation"), str)
+                and self._document_withheld(a["citation"], held))]
+            if listed:
+                result["attachments"] = listed
         result["gaps"] = gaps[:MAX_GAPS]
         result["completeness"] = _completeness(len(fields) + ("content" in result), None,
                                                truncated, "max_chars" if truncated else None,

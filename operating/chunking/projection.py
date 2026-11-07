@@ -35,7 +35,7 @@ from . import MIN_BODY, Chunk, make_chunk
 from . import headers as hd
 from .normalise import normalise
 from .permissions import Exclusion, family, parse_markings, valid_key
-from .sensitive import MARKS as SENSITIVE_MARKS, personal_financial
+from .sensitive import MARKS as SENSITIVE_MARKS, folders, personal_financial
 from .split import (is_workbook_text, mail_own_text, not_a_document, pack, sections,
                     sheet_blocks)
 
@@ -54,7 +54,9 @@ _META = ("id", "subject", "sender", "sent_at", "received_at", "conversation_id",
          "last_modified", "from", "created_at", "reply_to_id", "chat_id", "channel_id",
          "team_id", "title", "stage", "bucket", "task_id", "topic", "description",
          "display_name", "po_number", "order_number", "vendor_name", "lot_number", "code",
-         "erp_code", "start", "organizer", "attendees", "is_cancelled")
+         "erp_code", "start", "organizer", "attendees", "is_cancelled",
+         # classification labels a source records (``sensitive.labelled``)
+         "sensitivity_label", "retention_label", "compliance_tag")
 _NAME_PROPS = ("name", "vendor_name", "display_name", "title", "topic")
 _MAP_TITLE = re.compile(r"process[ _-]?map|\bmap\b|workflow|\bSOP\b|procedure", re.I)
 TEAMS_WINDOW = 4            # replies a Teams message carries with it
@@ -498,7 +500,8 @@ class ProjectionChunker:
                 continue
             texts[(f.citation, f.field_path)] = field_text(self.conn, f.field_id)
         full = "\n".join(texts.values())
-        self._mark_sensitive(doc, full)
+        self._mark_sensitive(doc, full, ctx)
+        marks = doc.markings
         value = lambda prop, oid=primary: self._value(ctx, oid, prop, marks)  # noqa: E731
         parent = self._parent(ctx, primary)
         grand = self._parent(ctx, parent) if parent else None
@@ -511,10 +514,26 @@ class ProjectionChunker:
         else:
             yield from self._file(doc, kind, ctx, texts, full, value, parent, grand)
 
-    def _mark_sensitive(self, doc: _Doc, text: str) -> None:
-        """A card or bank statement, or a text carrying a card or bank account number
-        (``sensitive.personal_financial``), is ``finance`` and ``pii`` in every chunk."""
-        reason = personal_financial(text)
+    def _mark_sensitive(self, doc: _Doc, text: str, ctx: Mapping[str, Any]) -> None:
+        """A card or bank statement, a text carrying a card or social insurance number, a
+        pay stub, offer or termination letter, or a document filed under a payroll or HR
+        confidentiality label (``sensitive.personal_financial``: its text, its name or
+        subject as support, the folders of its path as labels), is ``finance`` and
+        ``pii`` in every chunk."""
+        title, labels = None, []
+        for oid in doc.objects:
+            values = ctx.get("values", {}).get(oid, {}) if isinstance(ctx, Mapping) else {}
+            for prop in ("name", "subject"):
+                found = (values.get(prop) or (None,))[0]
+                if title is None and isinstance(found, str):
+                    title = found
+            path = (values.get("path") or (None,))[0]
+            labels.extend(folders(path) if isinstance(path, str) else ())
+            for prop in ("sensitivity_label", "retention_label", "compliance_tag"):
+                found = (values.get(prop) or (None,))[0]
+                if isinstance(found, str):
+                    labels.append(found)
+        reason = personal_financial(text, title=title, labels=labels)
         if reason:
             doc.markings = tuple(sorted(set(doc.markings) | set(SENSITIVE_MARKS)))
             self.counts.documents[f"marked_finance_pii:{reason}"] += 1

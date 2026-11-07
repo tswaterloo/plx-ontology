@@ -1203,7 +1203,12 @@ class ToolPathTests(unittest.TestCase):
 
     def test_search_down_falls_back_to_the_word_index(self):
         fx = self.fx
-        with mock.patch.dict(os.environ, {"PLX_PG_DSN": "postgresql:///plx_no_such_db_d"}):
+        # the file's search markings are taken as checked (unreadable, a file is
+        # withheld: ``test_payroll_marking``); the word index answers the rest
+        with mock.patch.dict(os.environ, {"PLX_PG_DSN": "postgresql:///plx_no_such_db_d"}), \
+                mock.patch("operating.search.document_marks.withheld", return_value=set()), \
+                mock.patch("operating.search.document_marks.withheld_set",
+                           return_value=(frozenset(), frozenset())):
             out = fx.ok(self, "plx.documents",
                         fx.tools().call("plx.documents", {"query": "packing list",
                                                           "sources": ["graph_mail"]}, fx.OPS))

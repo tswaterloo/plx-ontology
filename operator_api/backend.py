@@ -5911,7 +5911,24 @@ def page_oid(backend: WorkspaceBackend, view: Any, object_type: str, object_id: 
     oid = cache.once(ref, read)[0]
     if oid is None:
         raise KeyError("object_not_found")   # resolved to nothing for this reader
+    _search_marked(view, oid)   # a document marked beyond the reader in search
     return oid
+
+
+def _search_marked(view: Any, oid: str) -> None:
+    """KeyError (not found, as any record the reader may not see) when the document's
+    search chunks carry a marking the reader does not hold (a pay stub, an offer letter,
+    a payroll-labelled file: ``operating.search.document_marks``)."""
+    from operating.search import document_marks
+    if not document_marks.enabled():
+        return
+    try:
+        grant = getattr(view.access, "grant", None)
+        held = frozenset(grant()[1]) if callable(grant) else frozenset()
+    except Exception:  # noqa: BLE001 - undecidable: nothing held (fail closed)
+        held = frozenset()
+    if oid in document_marks.withheld([oid], held):
+        raise KeyError("object_not_found")
 
 
 def object_page(backend: WorkspaceBackend, view: Any, object_type: str,
