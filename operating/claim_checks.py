@@ -2183,6 +2183,46 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
     if tool == "plx.around":
         _note_listing(arguments, result, into)
         return into
+    if tool == "plx.query":
+        _query_counts(arguments, result, into)
+        return into
+    return _aggregate_counts(tool, arguments, result, into)
+
+
+def _query_counts(arguments: Any, result: Mapping[str, Any], into: dict[str, Any]) -> None:
+    """The counts a ``plx.query`` measured, each as the ``plx.aggregate`` call it made over
+    the set its walk reached (``ontology_query._measure``): its groups, completeness and
+    partial flag, with every gap of the walk (a hop's gap leaves its count incomplete).
+    Walks of several records of one thing (``by_record``) are each that record's own,
+    never a count of the thing: none is kept."""
+    if not isinstance(arguments, Mapping) or result.get("by_record") is not None:
+        return
+    common = {key: arguments[key] for key in ("as_known_at", "group_by")
+              if key in arguments}
+    gaps = list(result.get("gaps") or ())
+    for measured in result.get("results") or ():
+        if not isinstance(measured, Mapping) or measured.get("error") \
+                or not isinstance(measured.get("measure"), Mapping) \
+                or "partial" not in measured:
+            continue
+        call = {"set": result.get("set"), "measure": measured["measure"], **common}
+        got = {key: measured[key] for key in ("groups", "completeness", "partial",
+                                               "refused", "withheld") if key in measured}
+        if measured.get("inputs_citations_kept") is not None:
+            got["partial"] = True   # citations cut to fit: its records are not all listed
+        _aggregate_counts("plx.aggregate", call, {**got, "gaps": gaps}, into)
+
+
+# Gaps that state only the age of what was read, never a member left out of a count.
+AGE_ONLY_GAPS = frozenset({("stale", "stale_source"), ("stale", "schema_drift")})
+
+
+def _age_only(gap: Any) -> bool:
+    return isinstance(gap, Mapping) and (gap.get("state"), gap.get("reason")) in AGE_ONLY_GAPS
+
+
+def _aggregate_counts(tool: str, arguments: Any, result: Mapping[str, Any],
+                      into: dict[str, Any]) -> dict[str, Any]:
     measure = arguments.get("measure") if isinstance(arguments, Mapping) else None
     op = measure.get("op") if isinstance(measure, Mapping) else None
     if tool != "plx.aggregate" or op not in COUNT_OPS \
@@ -2192,14 +2232,20 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
     # still the tool's exact count: it lists a sample of its records, all distinct.
     # A count whose filter some sources never record (``filter_not_sourced``) is not: it
     # counted only the records of the sources that record the filtered property.
-    gaps = [gap for gap in result.get("gaps") or () if isinstance(gap, Mapping)]
+    # A gap that says only how old the captures are (``AGE_ONLY_GAPS``: a source captured
+    # before the host's bound, a projection built under another schema version) leaves
+    # no member out: the count is the tool's over every record captured, and the answer
+    # states the data's end beside it. Every other gap (a delta not yet merged or
+    # aggregated among them) still makes it a lower bound.
+    gaps = [gap for gap in result.get("gaps") or () if not _age_only(gap)]
     capped = bool(gaps) and all(gap.get("reason") == CITATIONS_CAPPED for gap in gaps)
     # A page of the groups (``group_page``: paged, or only those ``having`` keeps; or cut
     # at the result size) leaves other groups out, never a member of a group shown: each
     # group returned is whole as the tool computed it over all of its members.
     done = result.get("completeness") or {}
     whole = (result.get("partial") is False and (not gaps or capped)
-             and len(gaps) == len(result.get("gaps") or ())
+             and len(gaps) == len([gap for gap in result.get("gaps") or ()
+                                   if not _age_only(gap)])
              and not {"refused", "withheld"} & set(result)
              and (done.get("complete") is True
                   or done.get("reason") in GROUP_PAGE_REASONS))
@@ -2213,6 +2259,11 @@ def returned_evidence(tool: str, arguments: Any, result: Any,
             continue
         records = [cite.get("l1_handle") for cite in group.get("inputs_citations") or ()
                    if isinstance(cite, Mapping)]
+        # a count of members cites each member's own record (``members_cited``)
+        cited = group.get("members_cited")
+        if not records and not measure.get("property") and not arguments.get("group_by") \
+                and isinstance(cited, list) and all(isinstance(h, str) for h in cited):
+            records = list(cited)
         if not records and listed is not None and group.get("key") == {} \
                 and to_decimal(group.get("value")) == len(listed):
             records = list(listed)
@@ -2271,8 +2322,8 @@ def _note_listing(arguments: Any, result: Mapping[str, Any], into: dict[str, Any
     withheld = result.get("withheld")
     if done.get("complete") is not True or done.get("truncated") is not False \
             or done.get("next_cursor") is not None or done.get("total") != len(objects) \
-            or result.get("gaps") or (isinstance(withheld, Mapping)
-                                      and withheld.get("objects")):
+            or any(not _age_only(gap) for gap in result.get("gaps") or ()) \
+            or (isinstance(withheld, Mapping) and withheld.get("objects")):
         return
     records: list[str] = []
     for obj in objects:
@@ -3861,8 +3912,12 @@ def _lower_bound_failures(texts: Iterable[str],
             seen.add((floor, found))
             out.append({"value": found, "status": "failed", "code": "claim_count_lower_bound",
                         "detail": "no complete count entry a tool returned lists these "
-                                  "records, so the count is a lower bound: state it as at "
-                                  f"least {_plain(floor)}"})
+                                  "records, so the count is a lower bound. Make it exact: "
+                                  "count them with a tool (plx.aggregate with the set handle "
+                                  "the walk returned and measure count, or the same "
+                                  "plx.query walk with measures count) and claim that "
+                                  "count with the records it cites; if no tool can count "
+                                  f"them, state it as at least {_plain(floor)}"})
     return out
 
 

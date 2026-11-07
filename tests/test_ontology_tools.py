@@ -1281,6 +1281,20 @@ class ReviewL81Tests(ContractMixin, unittest.TestCase):
         self.assertEqual([[oid[-2:] for oid in n] for n in narrowed],
                          [["01", "02", "03", "04"], ["00"], ["05"], ["05", "06"],
                           ["07"], ["08"], ["09"], ["09"], ["05", "06"]])
+        # contains (a name that mentions a word), over and at most: the same either way
+        more = [[{"property": "customer_po", "op": "contains", "value": "WIDGETS"}],
+                [{"property": "customer_po", "op": "contains", "value": "cme wid"}],
+                [{"property": "total_amount", "op": "gt", "value": "1200.5"}],
+                [{"property": "total_amount", "op": "gt", "value": "1200"}],
+                [{"property": "total_amount", "op": "lte", "value": "1200.5"}],
+                [{"property": "promised_date", "op": "lte", "value": "2026-06-30"}]]
+        narrowed = [listed(f) for f in more]
+        with mock.patch.object(ot, "_value_narrowing", lambda filters: []):
+            whole = [listed(f) for f in more]
+        self.assertEqual(narrowed, whole)
+        self.assertEqual([[oid[-2:] for oid in n] for n in narrowed[:5]],
+                         [["05", "06"], ["05", "06"], [], ["09"], ["09"]])
+        self.assertIn("SalesOrder:portal.app_sales_order:narrow-00", narrowed[5])
 
     def test_a_filter_names_related_records_by_link(self):
         """A filter on a link keeps the records it joins to the named ones: their ids,
@@ -1722,3 +1736,34 @@ class LiveIdCeilingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StructuredLeadTests(ContractMixin, unittest.TestCase):
+    """A free-text find names the system-of-record properties whose declared values the
+    query's words name, so a question about a status is read from the records holding it
+    before the documents that mention it; documents' own properties are never leads."""
+
+    def setUp(self):
+        domain = copy.deepcopy(DOMAIN)
+        types = {t["id"]: t for t in domain["object_types"]}
+        types["SalesOrder"]["properties"].append(_prop(
+            "stage", "text", "portal.app_sales_order", "stage",
+            description="The order's stage in the Portal (Draft, Released, Shipped, "
+                        "Cancelled)."))
+        types["MailMessage"]["properties"].append(_prop(
+            "folder", "text", "mail.po_inbox", "folder",
+            description="Mail folder (Inbox/Shipped/Archive)."))
+        self.t = tools(schema=ot.SchemaView.from_documents([domain]))
+
+    def test_a_status_word_leads_to_the_records_holding_that_value(self):
+        result = self.ok(self.t, "plx.find", {"query": "which orders have we shipped"})
+        self.assertEqual(result["structured"], [{
+            "object_type": "SalesOrder", "property": "stage", "value": "Shipped",
+            "find": {"object_type": "SalesOrder",
+                     "filters": [{"property": "stage", "op": "eq", "value": "Shipped"}]}}])
+        listed = self.ok(self.t, "plx.find", result["structured"][0]["find"])
+        self.assertNotIn("structured", listed)
+
+    def test_no_declared_value_named_or_an_identifier_gives_no_lead(self):
+        for query in ("confirmation for blue", "PO100012"):
+            self.assertNotIn("structured", self.ok(self.t, "plx.find", {"query": query}))

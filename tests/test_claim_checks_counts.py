@@ -54,12 +54,36 @@ class CountClaimTests(unittest.TestCase):
         return gate(text, handles or self.handles, claims or [self.claim],
                     rows=rows or self.rows, calculations=(), returned=returned, outcome=outcome)
 
+    def test_a_source_read_only_in_part_keeps_its_counts_a_lower_bound(self):
+        from operating import ontology_query, ontology_tools
+        fresh = [{"source": "portal_api", "stale": True, "label": "old",
+                  "completeness": "partial", "relations": []}]
+        gaps = ontology_tools._source_freshness_gaps(fresh)
+        self.assertIn("source_partly_read", [g["reason"] for g in gaps])
+        aged = [g for g in gaps if g["reason"] == "stale_source"]
+        self.assertTrue(self.check("3 receipts.", returned=counted(self.handles,
+                                                                    gaps=aged))["passed"])
+        self.assertEqual(codes(self.check("3 receipts.",
+                                          returned=counted(self.handles, gaps=gaps))),
+                         ["claim_count_lower_bound"])
+        # plx.query's gap cap drops age-only gaps first: the partly-read gap behind 25
+        # stale ones is kept
+        many = [{"state": "stale", "reason": "stale_source", "subject": f"s{i}"}
+                for i in range(25)] + gaps[-1:]
+        kept = ontology_query._capped(many)
+        self.assertEqual(len(kept), ontology_query.MAX_QUERY_GAPS)
+        self.assertEqual(kept[0]["reason"], "source_partly_read")
+
     def test_a_count_known_at_a_past_moment_binds_no_present_exact_count(self):
         # Item 1: members first captured after a past as_known_at are not in its count.
         past = counted(self.handles, {"as_known_at": "2026-01-01T00:00:00Z"})
         self.assertEqual(codes(self.check("3 receipts.", returned=past)),
                          ["claim_count_lower_bound"])
         self.assertTrue(self.check("At least 3 receipts.", returned=past)["passed"])
+        # the refusal names how to make the count exact before settling for "at least"
+        detail = self.check("3 receipts.", returned=past)["failures"][0]["detail"]
+        self.assertIn("plx.aggregate", detail)
+        self.assertIn("at least 3", detail)
         now = self.check("3 receipts.", returned=counted(self.handles))
         self.assertTrue(now["passed"], now["failures"])
         self.assertEqual(checked(now)[0]["bound"], "exact")

@@ -202,7 +202,7 @@ RECORDS_FIRST = (
     "counts, mins or maxes a set (group_by a property, or "
     "a property of a linked record through path, e.g. each invoice line by its invoice's "
     "date for a time window); plx.case_compute does the arithmetic between cited figures "
-    "(a difference, a balance, a ratio). A count is plx.aggregate's count over a set (or "
+    "(a difference, a balance, a ratio). A count is plx.aggregate's or plx.query's count over a set (or "
     "object_type with filters: no scan cap), claimed as {\"op\": \"count\", \"of\": the "
     "records it listed}; one it marks incomplete is said as at least N. "
     "(d) Search mail and documents (plx.documents) only for what the records cannot hold, "
@@ -230,6 +230,62 @@ RECORDS_FIRST = (
 )
 
 
+# How any question becomes a query (both methods): one walk, its filters and its measure
+# in one plx.query call, counted by the tool, checked part by part before the gate.
+DECOMPOSE = (
+    "Turn the question into one query before you call: (i) the start: the record or "
+    "records it names, in the system it names (a question naming a system's record "
+    "starts from that record's object_id alone, not from every copy of it; its "
+    "\"matching\" records in another system are its own copies there, along its "
+    "identity link, never every record of that type there; a record named by the "
+    "number one system writes for it, in that system's own form, starts at that "
+    "system's record, not at its copy in another system); (ii) the "
+    "chain: each \"of the\", \"for the\", \"on the\", \"linked to\" is a hop along a "
+    "link (plx.object lists a record's link types; plx.schema the types'); (iii) the "
+    "filters, each on the hop whose records it describes (a traverse hop's own where): "
+    "a name that mentions a word is contains, over is gt, under is lt, at least gte, "
+    "at most lte, a period a gte and lt pair; (iv) the measure: how many is count, a "
+    "total is sum, the largest, smallest or latest is max, min or rows (newest first), "
+    "and a comparison is one query per side, all in the same turn. Then send it as one "
+    "plx.query (from, traverse with each hop's where, where, measures) instead of a "
+    "call per hop. Calls are served one at a time, in the order sent: send the call "
+    "that settles the question first and a text search after it, never a broad text "
+    "search ahead of a record query. A figure is the tool's, never your own tally: count and total with "
+    "plx.query or plx.aggregate, not by reading a list (records reached one by one with "
+    "plx.object, plx.around or plx.read are counted by sending that walk, with its "
+    "filters, as one plx.query with measures count, or plx.aggregate count over the set "
+    "plx.around returned). One record held in several "
+    "systems (copies an identity link joins) is one thing; two records of one system "
+    "are two, however alike their names: a count over copies shows no value (cross_system_twins), so count one system's records; an "
+    "entity's records walked one by one (by_record) are the same thing seen in each "
+    "system, never added together: give the figure of the system the question names, "
+    "else each system's figure with its system (\"22 in the Portal, 5 in FileMaker\"). Absence is a finding "
+    "only when the data shows it: a complete query over the right records that returned "
+    "zero or nothing reached, said with what was queried; a refusal, a time-out or an "
+    "error proves nothing: correct the call (its hint names valid properties, links or "
+    "routes) or narrow it and call again. A name the records spell differently (a typo) "
+    "is matched to the nearest name they hold, and the answer says which. Before the "
+    "gate, check every part of the question: each has a claimed value or a gap; each "
+    "count and total came from a tool; each filter is the question's (over is not at "
+    "least; the period's bounds); the start is the record named. A date the question "
+    "reads \"as of\" that is at or after the data's end (each source's captured_at) "
+    "is now: read without as_known_at, which makes a count only a lower bound. Claim a count as "
+    "{\"op\": \"count\", \"value\": N, \"of\": [{\"citation\": each counted record's "
+    "handle}]} (a citation alone, no field). A count or figure the gate refuses is "
+    "corrected and kept, never dropped: a count the gate calls a lower bound is counted "
+    "by a tool before you answer (plx.aggregate count over the set your walk returned, or "
+    "the same plx.query with measures count), and said as \"at least N\" only when no "
+    "tool can count it; a "
+    "record cited twice is cited once, a wrong field is the one the tool named; "
+    "\"could not confirm\" is only for a value no tool returned. When a system of record's "
+    "records and a document (a sheet, report or mail) both answer, the records' current "
+    "values are the answer and the document is supporting evidence, often an older copy: "
+    "a status, quantity or party the question asks about now is read from the records "
+    "(plx.find lists the record properties whose values the question names under "
+    "structured), and a document that disagrees is said as such, with its date."
+)
+
+
 def method_for(question: Any, route: str | None = None) -> str:
     """The method a question is asked with: the short one for a lookup (the front door's
     reading, else one named record by the identifier grammar, ``is_lookup``), the deep one
@@ -251,6 +307,7 @@ def lookup_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "record and what links to it; never guess, and do not give up while a source you "
         "can open may hold the answer.",
         RECORDS_FIRST,
+        DECOMPOSE,
         "(1) No written plan: start with your tool calls. Make independent calls together "
         "in one turn: in your first turn, plx.find on the identifier (its forms in the "
         "question analysis) and, when a plan family fits the question (plx.investigate; "
@@ -287,6 +344,7 @@ def method_rule(seconds: int = SESSION_SECONDS, steps: int = MAX_STEPS,
         "How to investigate: work as a careful analyst who answers from the sources, never "
         "guesses, and does not give up while a source you can open may hold the answer.",
         RECORDS_FIRST,
+        DECOMPOSE,
         "(1) Plan first, in a few lines before your first tool call: the question restated "
         "cleanly; its sub-questions (each fact or value the answer needs); for each, the "
         "records, documents and messages that would settle it and the system that owns it "

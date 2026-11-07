@@ -157,7 +157,7 @@ class PortalConfigurationTests(ContractMixin, unittest.TestCase):
         result = self.ok(tools(store, unconfigured=("portal_api",)), "plx.object",
                          {"object_id": PO})
         reasons = {g["reason"] for g in result["gaps"] if g["subject"] == "portal_api"}
-        self.assertEqual(reasons, {"stale_source"})
+        self.assertEqual(reasons, {"stale_source", "source_partly_read"})
 
 
 class UnstatedWhenColumnTests(ContractMixin, unittest.TestCase):

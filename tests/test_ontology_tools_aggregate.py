@@ -443,6 +443,19 @@ class AggregateTests(_Base):
         self.assertFalse(out["completeness"]["complete"])
         self.assertIn("policy_changed_since_handle", {g["reason"] for g in out["gaps"]})
 
+    def test_filters_keep_a_sets_members_before_the_measure(self):
+        """A set and filters: the members every filter holds on are measured (a count of
+        the lines over a quantity), as an object_type's are; never refused."""
+        out = self.agg(STAFF, [L1, L2, L4], {"op": "count"},
+                       filters=[{"property": "ordered_quantity", "op": "gt", "value": "20"}])
+        self.assertEqual([g["value"] for g in out["groups"]], ["2"])   # 100 and 50
+        out = self.agg(STAFF, [L1, L2, L4], {"property": "ordered_quantity", "op": "sum"},
+                       filters=[{"property": "ordered_quantity", "op": "lte", "value": "20"}])
+        self.assertEqual([g["value"] for g in out["groups"]], ["20"])
+        refused = self.agg(STAFF, [L1], {"op": "count"},
+                           filters=[{"property": "no_such_property", "op": "present"}])
+        self.assertEqual(refused["error"]["code"], "unknown_property")
+
     def test_twins_in_two_systems_are_never_counted_or_summed_twice(self):
         """One record held in two systems counts once, from the origin system's record
         (the Portal's before its BC posting); twins with no single origin (two copies
@@ -463,6 +476,10 @@ class AggregateTests(_Base):
                 self.assertEqual(out["partial"], measure["op"] == "sum")
                 self.assertEqual("twin_copies_disagree" in {g["reason"] for g in out["gaps"]},
                                  measure["op"] == "sum")
+        # a count of members cites each record it counted, so a count claim binds
+        out = self.agg(STAFF, [R1], {"op": "count"})
+        self.assertEqual((out["groups"][0]["value"], len(out["groups"][0]["members_cited"])),
+                         ("1", 1))
         alone = self.agg(STAFF, [R1], {"property": "received_quantity", "op": "sum"})
         self.assertEqual(alone["groups"][0]["value"], "98")
         other = self.store.obj("ReceiptLine:bc.purchase_receipt_lines:r9")

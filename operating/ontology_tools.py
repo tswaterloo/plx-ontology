@@ -276,7 +276,7 @@ COPIED = frozenset({"cached_mirror", "persisted_capture"})
 # not failing to answer: the relation is inaccessible now, whatever copy is held.
 REFUSED_CODES = frozenset({"relation_unavailable", "unknown_relation"})
 # Gaps about how a source was captured or served (``_source_freshness_gaps``).
-FRESHNESS_REASONS = frozenset({"stale_source", "freshness_unknown", "source_unavailable",
+FRESHNESS_REASONS = frozenset({"stale_source", "freshness_unknown", "source_partly_read", "source_unavailable",
                                "schema_drift"}) | REFUSED_CODES
 # The scan_cap gap's opening when every record named by the query's words was read before
 # the cut (``fast_answer`` reads a name's cards as complete on it).
@@ -1115,8 +1115,8 @@ class StoreReader:
             extra.update({f"n{n}_{k}": v for k, v in values.items() if k != "property"})
         for n, (event_type, op, day) in enumerate(events):
             # a filter on the type's event: only records holding one of its times
-            bound = "" if op not in ("gte", "lt") or day is None else (
-                f"AND e.time {'>=' if op == 'gte' else '<'} :ed{n} ")
+            bound = "" if op not in ("gte", "gt", "lt", "lte") or day is None else (
+                f"AND e.time {'>=' if op in ('gte', 'gt') else '<'} :ed{n} ")
             narrow += ("EXISTS (SELECT 1 FROM event_objects eo JOIN events e ON e.event_id = "
                        f"eo.event_id WHERE eo.object_id = o.object_id AND e.event_type = :et{n} "
                        + bound + ") AND ")
@@ -1801,6 +1801,48 @@ def _text_tokens(query: str, keys: Sequence[_Key], *, limit: int | None = 6) -> 
                 chars[index] = " "
     words = re.findall(r"[^\W_]{3,}", "".join(chars))
     return words if limit is None else words[:limit]
+
+
+# plx.find's structured leads (``OntologyTools._structured_leads``): the sources whose
+# records are a system of record's own rows (the Portal's reporting API carries the
+# Portal, FileMaker and Sage; Business Central; Mission Control), never documents; how
+# many leads one find returns; the shortest query word compared.
+RECORD_SOURCES = frozenset({"portal_api", "bc", "mission_control"})
+STRUCTURED_LEADS = 5
+STRUCTURED_WORD_MIN = 4
+# A value list a property description names: "(Released, Quarantine, Rejected)" or
+# "INTAKE/RELEASED/QUARANTINE".
+_VALUE_GROUP = re.compile(r"\(([^()]{3,300})\)")
+_SLASH_VALUES = re.compile(r"\b[A-Za-z][A-Za-z ]{0,23}(?:/[A-Za-z][A-Za-z ]{0,23}){2,}\b")
+
+
+def _word_stem(word: str) -> str:
+    """``word`` folded with one common inflection cut ("quarantined" and "quarantine",
+    "rejected" and "rejecting" compare equal), never below four letters."""
+    folded = word.casefold()
+    for suffix in ("ing", "ed", "es", "s", "e"):
+        if folded.endswith(suffix) and len(folded) - len(suffix) >= 4:
+            return folded[:-len(suffix)]
+    return folded
+
+
+def _declared_values(prop: Mapping[str, Any]) -> list[str]:
+    """The values a property declares: its ``enum_values``, else each value list its
+    description names (three or more short items, comma or slash separated)."""
+    declared = prop.get("enum_values")
+    if isinstance(declared, list):
+        return [str(v) for v in declared if isinstance(v, (str, int))
+                and not isinstance(v, bool)]
+    text = str(prop.get("description") or "")
+    out: list[str] = []
+    for group in _VALUE_GROUP.findall(text):
+        parts = [part.strip() for part in group.split(",")]
+        if len(parts) >= 3 and all(0 < len(part) <= 24 and len(part.split()) <= 2
+                                   for part in parts):
+            out += parts
+    for group in _SLASH_VALUES.findall(text):
+        out += [part.strip() for part in group.split("/") if part.strip()]
+    return out
 
 
 def _literal_forms(query: str) -> list[str]:
@@ -2936,17 +2978,20 @@ class OntologyTools:
                              + (f"; or a link, naming its records, a set or a name: "
                                 f"{', '.join(named[:12])}" if named else ""))[:600])
         for f in events:
-            if f.get("op") not in ("gte", "lt", "eq", "in", "prefix", "present", "absent"):
+            if f.get("op") not in ("gte", "gt", "lt", "lte", "eq", "in", "prefix", "present",
+                                   "absent"):
                 raise ToolError("invalid_input",
                                 f"a filter on the event {f['property']} takes a date (gte, "
-                                "lt, eq, prefix) or present/absent",
+                                "gt, lt, lte, eq, prefix) or present/absent",
                                 "a date bound as YYYY-MM-DD")
         for f in links:
-            if f.get("op") not in ("eq", "in", "prefix") or f.get("value") in (None, [], ""):
+            if f.get("op") not in ("eq", "in", "prefix", "contains") \
+                    or f.get("value") in (None, [], ""):
                 raise ToolError("invalid_input",
                                 f"a filter on the link {f['property']} takes eq or in (the "
-                                "records it reaches: object ids or a set) or prefix (their "
-                                "name)", "plx.find the records first, or name them")
+                                "records it reaches: object ids or a set), prefix or "
+                                "contains (their name)", "plx.find the records first, or "
+                                "name them")
         rest = [f for f in filters if f not in links and f not in events]
         self._require_co_sourced(object_type, rest)
         return (self._filters_as_stored(object_type, rest) + [dict(f) for f in events]
@@ -3077,8 +3122,8 @@ class OntologyTools:
         declared = {p["name"] for p in spec.get("properties", ()) if isinstance(p, Mapping)}
         unsure = False
         for prop in [p for p in spec.get("display") or () if p in declared] if names else ():
-            wanted = [{"property": prop, "op": "prefix" if f["op"] == "prefix" else "in",
-                       "value": names}]
+            wanted = [{"property": prop, "op": f["op"] if f["op"] in ("prefix", "contains")
+                       else "in", "value": names}]
             start, segments = "", 0
             while True:
                 matches, truncated, undecided, position = self._match_filters(
@@ -3283,6 +3328,13 @@ class OntologyTools:
                 plug.prefetch(self.policy, actor, self._item_allowed, query)
             with self.store.lock:
                 result = self._find_store(arguments, actor)
+                if isinstance(query, str) and object_type is None \
+                        and "as_known_at" not in arguments and arguments.get("cursor") is None \
+                        and result.get("status") in ("found", "ambiguous", "not_found") \
+                        and not _names_identifier(query):
+                    leads = self._structured_leads(self._scope(actor, self.clock()), query)
+                    if leads:
+                        result["structured"] = leads
             if isinstance(query, str) and "as_known_at" not in arguments \
                     and result.get("status") in ("found", "ambiguous", "not_found") \
                     and arguments.get("cursor") is None and self.resolves_entities:
@@ -3292,6 +3344,51 @@ class OntologyTools:
                 result["gaps"] = (list(result.get("gaps") or ()) + gaps)[:20]
                 _fit_entities(result, result_limit(self.limits))
             return self._find_after(arguments, actor, result)
+
+    def _structured_leads(self, scope: Any, query: str) -> list[dict[str, Any]]:
+        """The record properties of a system of record (``RECORD_SOURCES``) whose declared
+        values hold a word of ``query`` (``_declared_values``; words compared by
+        ``_word_stem``), each with that value and the ``plx.find`` call listing those
+        records, at most ``STRUCTURED_LEADS``: a question about a status, kind or stage
+        is answered from the records holding it before the documents that mention it.
+        Only types and properties this reader holds the markings of and may list a
+        record of (one ``LIMIT 1`` read per type)."""
+        if self.schema is None:
+            return []
+        words = {_word_stem(word) for word in _text_tokens(query, [], limit=None)
+                 if len(word) >= STRUCTURED_WORD_MIN}
+        if not words:
+            return []
+        out: list[dict[str, Any]] = []
+        for tid, spec in sorted(self.schema.object_types.items()):
+            if not isinstance(spec, Mapping):
+                continue
+            sources = {b.get("source") for b in spec.get("bindings") or ()
+                       if isinstance(b, Mapping)}
+            if not sources or not sources <= RECORD_SOURCES:
+                continue
+            found = []
+            for prop in spec.get("properties") or ():
+                if not isinstance(prop, Mapping) or prop.get("identifier_kind") \
+                        or not scope.holds(set(spec.get("markings") or ())
+                                           | set(prop.get("markings") or ())):
+                    continue
+                for value in _declared_values(prop):
+                    if words & {_word_stem(w) for w in re.findall(r"[^\W_]+", value)}:
+                        found.append((str(prop["name"]), value))
+                        break
+            if not found or self.store.conn.execute(
+                    "SELECT 1 FROM objects WHERE object_type = :tid AND audience_key IN "
+                    "(SELECT value FROM json_each(:aud)) LIMIT 1",
+                    scope.params(tid=tid)).fetchone() is None:
+                continue
+            for name, value in found:
+                out.append({"object_type": tid, "property": name, "value": value,
+                            "find": {"object_type": tid, "filters": [
+                                {"property": name, "op": "eq", "value": value}]}})
+                if len(out) >= STRUCTURED_LEADS:
+                    return out
+        return out
 
     def _entities(self, actor: Actor, text: str, object_type: str | None = None
                   ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -5505,7 +5602,7 @@ def _scope_freshness_entry(entry: Mapping[str, Any],
 
 def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One gap per source whose capture is stale (a persisted capture: its label), whose
-    state is unknown, and one per source with units the live source did not serve at
+    state is unknown, one per source read only in part (``source_partly_read``), and one per source with units the live source did not serve at
     all and no persisted capture holds (``inaccessible``: their HTTP status and error
     code). A relation the live source now refuses (``REFUSED_CODES``) is inaccessible
     too, by its own name, although a copy of it is held: the copy is only stale.
@@ -5519,6 +5616,14 @@ def _source_freshness_gaps(freshness: Sequence[Mapping[str, Any]]) -> list[dict[
         elif item.get("completeness") == "unknown":
             gaps.append(_gap("unknown", "freshness_unknown", item["source"],
                              "the projection does not state this source's capture state"))
+        if item.get("completeness") == "partial":
+            # a source read only in part (a relation not traversed whole) may hold records
+            # no answer reached: never an age-only gap, so a count over it stays a lower
+            # bound (claim_checks.AGE_ONLY_GAPS)
+            gaps.append(_gap("unknown", "source_partly_read", item["source"],
+                             "this source's last capture read it only in part; records "
+                             "it holds may be missing, so a count over it is a lower "
+                             "bound"))
         for unit in item.get("relations", ()):
             if unit.get("served_from") in COPIED and unit.get("error_code") in REFUSED_CODES:
                 gaps.append(_gap("inaccessible", unit["error_code"], unit["relation"],
@@ -5908,9 +6013,10 @@ def _event_bound(f: Mapping[str, Any]) -> str | None:
     wanted = f.get("value")
     wanted = wanted[0] if isinstance(wanted, list) and wanted else wanted
     moment = _parse_time(wanted) if isinstance(wanted, str) else None
-    if f.get("op") not in ("gte", "lt") or moment is None:
+    if f.get("op") not in ("gte", "gt", "lt", "lte") or moment is None:
         return None
-    return (moment.date() + dt.timedelta(days=-2 if f["op"] == "gte" else 2)).isoformat()
+    return (moment.date() + dt.timedelta(days=-2 if f["op"] in ("gte", "gt") else 2)
+            ).isoformat()
 
 
 def _value_narrowing(filters: Sequence[Mapping[str, Any]]
@@ -5920,9 +6026,9 @@ def _value_narrowing(filters: Sequence[Mapping[str, Any]]
     can match meets it, so an object holding no such value (and no value of the property
     the reader may not read: ``objects_of_type`` adds that) can neither match nor leave
     the filter undecided, and the scan skips it. A superset, never the verdict itself:
-    ``present``; ``prefix`` (an ASCII prefix, any case); ``eq``/``in`` on text (a word
-    of the wanted value, any case; numbers compare as numbers and are kept); ``gte``/
-    ``lt`` on a date or time (ISO days two days wide of the bound; other kinds kept).
+    ``present``; ``prefix`` (an ASCII prefix, any case); ``contains`` (the text anywhere); ``eq``/``in`` on text (a word
+    of the wanted value, any case; numbers compare as numbers and are kept); ``gte``/``gt``/
+    ``lt``/``lte`` on a date or time (ISO days two days wide of the bound; other kinds kept).
     Values outside ASCII are kept wherever case folding decides. Other filters (``ne``,
     ``absent``, a number bound) narrow nothing."""
     out: list[tuple[str, dict[str, Any]]] = []
@@ -5935,16 +6041,17 @@ def _value_narrowing(filters: Sequence[Mapping[str, Any]]
         if op == "present":
             out.append(("x.value IS NOT NULL", {"property": prop}))
             continue
-        if op not in ("prefix", "eq", "in", "gte", "lt") or not targets \
-                or len(targets) > 20:
+        if op not in ("prefix", "contains", "eq", "in", "gte", "gt", "lt", "lte") \
+                or not targets or len(targets) > 20:
             continue
-        if op in ("gte", "lt"):
+        if op in ("gte", "gt", "lt", "lte"):
             moment = _parse_time(targets[0]) if isinstance(targets[0], str) else None
             if moment is None:
                 continue
-            day = (moment.date() + dt.timedelta(days=-2 if op == "gte" else 2)).isoformat()
+            lower = op in ("gte", "gt")
+            day = (moment.date() + dt.timedelta(days=-2 if lower else 2)).isoformat()
             out.append((f"x.value_type NOT IN ('date', 'timestamp') OR NOT {_ISO_DAY} OR "
-                        f"x.value {'>=' if op == 'gte' else '<'} :n_day",
+                        f"x.value {'>=' if lower else '<'} :n_day",
                         {"property": prop, "day": day}))
             continue
         words: list[str] = []
@@ -5960,7 +6067,7 @@ def _value_narrowing(filters: Sequence[Mapping[str, Any]]
         else:
             # LIKE ignores ASCII case (ILIKE on Postgres); a % or _ in a word only
             # widens what is kept
-            keep = f"{_NOT_ASCII} OR " + ("" if op == "prefix" else
+            keep = f"{_NOT_ASCII} OR " + ("" if op in ("prefix", "contains") else
                                           f"x.value_type IN {_NUMERIC_TYPES} OR ")
             likes = " OR ".join(f"x.value LIKE :n_w{i}" for i in range(len(words)))
             values = {"property": prop}
@@ -6027,10 +6134,18 @@ def _filter_holds(values: list[tuple[str, Any]], spec: Mapping[str, Any],
     if op == "prefix":
         return any(str(v).casefold().startswith(str(w).casefold()) for _, v in present
                    for w in targets) or unsure
-    if op in ("gte", "lt"):
+    if op == "contains":
+        # the text holds the wanted words anywhere, any case ("whose name mentions")
+        def spaced(text: Any) -> str:
+            return " ".join(str(text).casefold().split())
+        return any(spaced(w) in spaced(v) for _, v in present
+                   for w in targets if spaced(w)) or unsure
+    if op in ("gte", "gt", "lt", "lte"):
+        holds = {"gte": lambda sign: sign >= 0, "gt": lambda sign: sign > 0,
+                 "lt": lambda sign: sign < 0, "lte": lambda sign: sign <= 0}[op]
         for value_type, value in present:
             sign = order(value_type, value, targets[0])
-            if sign is not None and (sign >= 0 if op == "gte" else sign < 0):
+            if sign is not None and holds(sign):
                 return True
         return unsure
     return False

@@ -454,6 +454,26 @@ class Query(unittest.TestCase):
         self.assertIn("Note.mentions_product", refused["error"]["hint"])
         self.assertEqual(selected, [])
 
+    def test_a_hops_own_where_keeps_what_it_reaches_before_the_next_hop(self):
+        """One call walks, filters along the way and counts at the end: a hop's where
+        filters that hop's records, the top-level where the last hop's."""
+        table = Table()
+        tool = oq.QueryTool(oq.TableBackend(table, lambda actor, ids: "set:new00001", Schema()))
+        mid = [{"property": "invoice_date", "op": "gte", "value": "2026-01-01"}]
+        last = [{"property": "name", "op": "contains", "value": "north"}]
+        tool.call({"from": {"object_id": SAGE}, "traverse": [
+            {"link_type": "SalesInvoiceLine.for_item", "direction": "reverse"},
+            {"link_type": "SalesInvoiceLine.line_of", "direction": "forward", "where": mid}],
+            "where": last, "measures": [{"op": "count"}]}, "actor")
+        walked = [args for name, args in table.calls if name == "plx.around"]
+        self.assertNotIn("filters", walked[0])
+        self.assertEqual(walked[1]["filters"], mid + last)
+        hop_where = [{"link_type": "SalesInvoiceLine.for_item", "direction": "reverse",
+                      "where": mid}]
+        table.calls.clear()
+        tool.call({"from": {"object_id": SAGE}, "traverse": hop_where}, "actor")
+        self.assertEqual(next(a for n, a in table.calls if n == "plx.around")["filters"], mid)
+
     def test_a_bad_request_is_refused_by_the_contract(self):
         tool = oq.QueryTool(oq.TableBackend(Table(), None, Schema()))
         self.assertEqual(tool.call({"from": {}}, "actor")["error"]["code"], "invalid_input")

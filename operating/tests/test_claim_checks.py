@@ -3054,6 +3054,53 @@ class AskClaimFormTests(unittest.TestCase):
                              calculations=(), returned=aggregate_count(handles))
                 self.assertTrue(bound["passed"], bound["failures"])
                 self.assertEqual(checked(bound)[0]["bound"], "exact")
+        rows = dict(receipt(index) for index in range(2))
+        pair = list(rows)
+        # plx.query measures its walk's set with plx.aggregate: that count binds the same
+        # way, a gap anywhere on the walk leaves it a lower bound, and walks of several
+        # records of one thing (by_record) are no count of the thing.
+        two = op("2", "count", [{"citation": h} for h in pair], role="receipt_count")
+        measured = {"measure": {"op": "count"}, "groups": [
+            {"key": {}, "value": "2", "inputs": 2, "markings": [], "inputs_citations": [
+                {"l1_handle": h, "field_path": "row.id", "digest": "0" * 64,
+                 "lineage": "portal_native"} for h in pair]}],
+            "partial": False, "completeness": {"complete": True, "truncated": False,
+                                               "returned": 1, "total": 1}}
+        walked = {"from": {"records": []}, "hops": [], "set": "set:s2",
+                  "results": [measured], "gaps": []}
+        query_args = {"from": {"object_ids": ["Product:x"]}, "measures": [{"op": "count"}]}
+        bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
+                     returned=claim_checks.returned_evidence("plx.query", query_args, walked))
+        self.assertTrue(bound["passed"], bound["failures"])
+        self.assertEqual(checked(bound)[0]["bound"], "exact")
+        hop_gap = dict(walked, gaps=[{"state": "unknown", "reason": "nothing_reached",
+                                      "subject": "traverse"}])
+        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+            "plx.query", query_args, hop_gap)["counts"]], [False])
+        self.assertEqual(claim_checks.returned_evidence(
+            "plx.query", query_args, dict(walked, by_record=[]))["counts"], [])
+        # A count of members cites each member's record (members_cited): it binds exactly
+        # beside gaps that state only the captures' age, never beside any other gap.
+        members = {"measure": {"op": "count"}, "groups": [
+            {"key": {}, "value": "2", "inputs": 0, "markings": [], "members_cited": pair}],
+            "partial": False, "completeness": {"complete": True, "truncated": False,
+                                               "returned": 1, "total": 1}}
+        aged = [{"state": "stale", "reason": "stale_source", "subject": "portal_api"},
+                {"state": "stale", "reason": "schema_drift", "subject": "projection"}]
+        bound = gate("2 receipts.", pair, [two], rows=rows, calculations=(),
+                     returned=claim_checks.returned_evidence(
+                         "plx.query", query_args, dict(walked, results=[members],
+                                                       gaps=aged)))
+        self.assertTrue(bound["passed"], bound["failures"])
+        self.assertEqual(checked(bound)[0]["bound"], "exact")
+        for gap in ({"state": "stale", "reason": "delta_overlay_unmerged", "subject": "x"},
+                    {"state": "unknown", "reason": "nothing_reached", "subject": "x"}):
+            self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+                "plx.query", query_args, dict(walked, results=[members],
+                                              gaps=aged + [gap]))["counts"]], [False])
+        self.assertEqual([c["complete"] for c in claim_checks.returned_evidence(
+            "plx.query", query_args, dict(walked, results=[dict(members, groups=[
+                dict(members["groups"][0], members_cited=pair[:1])])]))["counts"]], [False])
         # 12 receipts seen, 8 cited: "12" binds to the complete count of the 12, "8" does
         # not (no entry of 8), whatever the claim's own citations add up to.
         rows = dict(receipt(index) for index in range(12))

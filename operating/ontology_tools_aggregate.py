@@ -256,6 +256,23 @@ def _corrected(row: Mapping[str, Any], correction: Mapping[str, Any]) -> dict[st
     return dict(row, value=correction["value"], unit=unit, currency=correction.get("currency"))
 
 
+def _members_cited(members: Sequence[str], versions: Mapping[str, Any],
+                   allowed: Callable[[str], bool]) -> list[str] | None:
+    """The record handle of each member a count of members counted (its live version's
+    L1 handle), so a claim of that count names the records it counts; None (nothing cited) when a member has no version, a handle the
+    reader may not open, or more members than ``MAX_CITATIONS``."""
+    if not members or len(members) > MAX_CITATIONS:
+        return None
+    out: list[str] = []
+    for oid in members:
+        version = versions.get(oid)
+        handle = version["l1_handle"] if version is not None else None
+        if not isinstance(handle, str) or not handle or not allowed(handle):
+            return None
+        out.append(handle)
+    return out
+
+
 def _cite(row: Mapping[str, Any]) -> dict[str, Any] | None:
     value, _ = _value_out(row, "X", 1)
     return None if value is None else value["citation"]
@@ -1073,6 +1090,35 @@ class AggregateTools:
                 out[row["near"]] = _merge_reason(out.get(row["near"]), row["reason"])
         return out
 
+    def _kept_members(self, roots: Sequence[str], arguments: Mapping[str, Any],
+                      actor: Actor) -> tuple[list[str], list[dict]]:
+        """(the members of a set that every filter holds on, their gaps): plx.find's
+        filter grammar and matcher per member type (``OntologyTools._filter_objects``). A
+        member whose filtered value is withheld from the reader is neither kept nor
+        dropped: its gap makes the answer partial, never a smaller exact count. A filter
+        on a link is refused here (plx.query walks a link and filters what it reaches)."""
+        base = self.base
+        filters = list(arguments.get("filters") or ())
+        found_scope = base._scope(actor, base._as_known_at(arguments))
+        by_type: dict[str, list[str]] = {}
+        for oid in roots:
+            by_type.setdefault(oid.split(":", 1)[0], []).append(oid)
+        kept: set[str] = set()
+        gaps: list[dict] = []
+        for object_type, ids in sorted(by_type.items()):
+            if base._link_filters(object_type, filters):
+                raise ToolError("invalid_input", "a filter on a link keeps an object_type's "
+                                "records, never a set's", "plx.query: traverse the link, "
+                                "then where")
+            from operating.ontology_tools import _withheld_filter_gap
+            checked = base._checked_filters(object_type, filters)
+            passing, undecided = base._filter_objects(found_scope, ids, checked)
+            kept |= set(passing)
+            if undecided:
+                gaps.append(_withheld_filter_gap(object_type, undecided))
+            gaps += base.unsourced_filter_gaps(object_type, filters)
+        return [oid for oid in roots if oid in kept], gaps
+
     def _filtered_root(self, scope: Any, arguments: Mapping[str, Any], actor: Actor
                        ) -> tuple[list[str], list[dict]]:
         """(the members, their gaps) of an ``object_type`` + ``filters`` aggregate: every
@@ -1151,10 +1197,13 @@ class AggregateTools:
             raise ToolError("invalid_input", "path leads to the objects whose properties "
                             "group the measure; name them in group_by")
         if "set" in arguments:
-            if "object_type" in arguments or "filters" in arguments:
-                raise ToolError("invalid_input", "name a set or object_type with filters, "
-                                "never both")
+            if "object_type" in arguments:
+                raise ToolError("invalid_input", "name a set or an object_type, never both",
+                                "filters keep either one's members")
             roots, root_gaps = self.walk._root(scope, arguments["set"])
+            if arguments.get("filters"):
+                roots, kept_gaps = self._kept_members(roots, arguments, actor)
+                root_gaps = list(root_gaps) + kept_gaps
         else:
             roots, root_gaps = self._filtered_root(scope, arguments, actor)
         gaps = _Gaps()
@@ -1475,6 +1524,12 @@ class AggregateTools:
             out, incomplete = self._group_out(group, op, prop, gaps, lost, bucket)
             partial = partial or incomplete
             used_rows.extend(group["rows"])
+            if op == "count" and prop is None and not group_by \
+                    and out.get("value") is not None:
+                cited = _members_cited(group["members"], versions,
+                                       lambda h: self.base._item_allowed(actor, h))
+                if cited is not None:
+                    out["members_cited"] = cited
             out_groups.append(out)
         if not groups and not group_by:
             # An empty readable set: a count is 0, any other measure has no value. Members

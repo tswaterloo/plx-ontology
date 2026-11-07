@@ -742,7 +742,8 @@ PLANNER_RULES = (
     'is one claim {"id":...,"value":...,"op":"count" or "sum","of":[{"citation":...,'
     '"field":... (sum only)},...],"role":...}: a count\'s role is the value\'s '
     "name (receipt_count), never a quantity type; each record once. A count is exact "
-    "only when a plx.aggregate count of this run (without as_known_at) returned it "
+    "only when a plx.aggregate or plx.query count of this run (without as_known_at) "
+    "returned it "
     "complete, listing the records the claim cites; otherwise the answer shows it as "
     "\"at least N\", N the records it cites, where records from two sources (a Portal "
     "row and a BC record) may be one record and count once, unless one such count group "
@@ -794,8 +795,8 @@ PLANNER_RULES = (
     "shown the rest, before you answer from what was omitted. A transcript step 0 holds "
     "calls made for you before your first step (the object in view, and its question "
     "family's plan when one was chosen), read as of now: they are your calls, cite them, "
-    "do not repeat them; when the question states a time, make them again with "
-    "as_known_at. "
+    "do not repeat them; when the question states a time before the data's end, make "
+    "them again with as_known_at (a time at or after it is now: read without it). "
     "plx.investigate runs the plan of a question family (its description lists the "
     "families) from a root. When a family fits the question, run it first: its result is "
     "your answer. Run it by replying "

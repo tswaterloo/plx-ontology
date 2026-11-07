@@ -1949,8 +1949,11 @@
             "ne",
             "in",
             "prefix",
+            "contains",
+            "gt",
             "gte",
             "lt",
+            "lte",
             "present",
             "absent"
           ]
@@ -2653,7 +2656,7 @@
       }
     },
     "plx.find": {
-      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; aliases included) or filter objects of one type (an undeclared property is unknown_property, naming the valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
+      "description": "Resolve an identifier (any kind: PO, SO, AO, customer PO, BC number, invoice; aliases included) or filter objects of one type (an undeclared property: unknown_property, naming valid ones). An exact unique match returns it; several return ranked candidates with key, binding and reason, never a winner. A query its own eq filter repeats on a reference property lists its holders as lead candidates (reference_match). Returns a set handle; object_type alone pages it; a portfolio question ranks by its plan.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -3220,6 +3223,7 @@
               "meta": {
                 "$ref": "#/$defs/meta"
               },
+              "structured": {"type": "array", "maxItems": 5, "description": "A free-text find's leads into system-of-record records (Portal, FileMaker, Sage, Business Central, Mission Control): each record property whose declared values (enum_values, or the value list its description names) hold a word of the query, with that value and the plx.find call that lists those records. Records answer before documents when both do; a document holding the words is supporting evidence. Only properties this reader may read, of types it may list.", "items": {"type": "object", "additionalProperties": false, "required": ["object_type", "property", "value", "find"], "properties": {"object_type": {"type": "string"}, "property": {"type": "string"}, "value": {"type": "string"}, "find": {"type": "object"}}}},
               "portfolio": {
                 "type": "object",
                 "additionalProperties": false,
@@ -4139,7 +4143,7 @@
       }
     },
     "plx.aggregate": {
-      "description": "Exact Decimal count/sum/min/max over a set, or an exact count of object_type matching filters (no scan cap), grouped by up to two properties; only what this reader may read counts. Every group is computed: past 20 a summary covers all, pages via cursor. Mixed roles, units or currencies, unknown ones, or a sum across a fan-out hop is refused; a many-to-many hop splits only by reviewed allocations. Corrections in force are used, cited. Totals carry their inputs' markings.",
+      "description": "Exact Decimal count/sum/min/max over a set or an object_type, filters keeping members (no scan cap), grouped by up to two properties; only what this reader may read counts. Every group is computed (past 20, a summary); cursor pages. Mixed roles, units or currencies, unknown ones, or a sum across a fan-out hop is refused; a many-to-many hop splits only by reviewed allocations. Corrections in force: used, cited. Totals carry inputs' markings.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -4360,6 +4364,14 @@
                     "inputs": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "members_cited": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/$defs/handle"
+                      },
+                      "maxItems": 50,
+                      "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
                     },
                     "markings": {
                       "$ref": "#/$defs/markings"
@@ -7434,7 +7446,7 @@
       }
     },
     "plx.query": {
-      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where; measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed: past 20 a summary covers all; cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone.",
+      "description": "One read from records, codes (a sheet's items), an entity (its records in every system, each walked on its own), a set, or every record of an object_type its where selects; traverse links hop by hop, or {\"to\": a type}: each declared route there walked and counted; where (a hop's too); measures grouped by a property or a linked record's (group_path), a date by period (bucket), in a window; having keeps groups whose value holds. All groups computed (past 20, a summary); cursor pages. Groups cite inputs. rows lists what is reached (cited values, a date, newest first); per_code: each code alone.",
       "read_only": true,
       "input": {
         "type": "object",
@@ -7510,6 +7522,14 @@
                   "type": "string",
                   "pattern": "^[A-Z][A-Za-z0-9]{1,63}$",
                   "description": "The object type this hop goes to: the records are walked on along the declared links that lead there (as deep as cost allows), each route reaching it listed and counted; the one reaching most records is taken."
+                },
+                "where": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/filter"
+                  },
+                  "minItems": 1,
+                  "maxItems": 8
                 }
               }
             },
@@ -7972,6 +7992,14 @@
                                   "type": "integer",
                                   "minimum": 0
                                 },
+                                "members_cited": {
+                                  "type": "array",
+                                  "items": {
+                                    "$ref": "#/$defs/handle"
+                                  },
+                                  "maxItems": 50,
+                                  "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
+                                },
                                 "markings": {
                                   "$ref": "#/$defs/markings"
                                 },
@@ -7991,6 +8019,10 @@
                               ]
                             },
                             "maxItems": 200
+                          },
+                          "partial": {
+                            "type": "boolean",
+                            "description": "plx.aggregate's own: true when the count or total is not complete."
                           },
                           "completeness": {
                             "$ref": "#/$defs/completeness"
@@ -8139,6 +8171,14 @@
                           "inputs": {
                             "type": "integer",
                             "minimum": 0
+                          },
+                          "members_cited": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/$defs/handle"
+                            },
+                            "maxItems": 50,
+                            "description": "A count of members (no property, no group_by): each member's record handle; absent past 50 or when one is not citable."
                           },
                           "markings": {
                             "$ref": "#/$defs/markings"

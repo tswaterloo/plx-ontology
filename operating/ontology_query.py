@@ -367,13 +367,13 @@ class QueryTool:
             if len(unroutable) == len(starts):
                 raise unroutable[0]
             out.update({"hops": [], "set": None, "results": [], "by_record": by_record})
-            out["gaps"] = _fold(gaps + [g for r in by_record for g in r.pop("gaps", [])])[:20]
+            out["gaps"] = _capped(_fold(gaps + [g for r in by_record for g in r.pop("gaps", [])]))
             out["meta"] = meta
             return _fitted(_clean(out))
         root = start if records is None else self._set_of(records, actor)
         run = self._run(call, root, traverse, arguments, gaps, actor)
         out.update(run)
-        out["gaps"] = _fold(out.get("gaps") or [])[:20]
+        out["gaps"] = _capped(_fold(out.get("gaps") or []))
         return _fitted(_clean(out))
 
     def _run(self, call, root: Any, traverse: Sequence[Mapping[str, Any]],
@@ -387,8 +387,11 @@ class QueryTool:
         current, meta = root, None
         here = self._type_of(arguments, root, actor)
         for index, hop in enumerate(traverse):
-            filters = list(arguments["where"]) \
-                if index == len(traverse) - 1 and arguments.get("where") else None
+            # a hop's own where keeps what it reaches before the next hop walks on; the
+            # top-level where filters what the last hop reaches
+            filters = list(hop.get("where") or ()) + (
+                list(arguments.get("where") or ()) if index == len(traverse) - 1 else [])
+            filters = filters or None
             goal = hop.get("to") or (self._named_type(here, hop.get("link"))
                                      if hop.get("link") else None)
             if goal is not None:
@@ -1080,7 +1083,7 @@ class QueryTool:
         groups = list(got.get("groups") or ())
         out: dict[str, Any] = {"measure": dict(measure), "groups": groups,
                                "meta": got.get("meta")}
-        for key in ("completeness", "total", "withheld", "summary", "refused"):
+        for key in ("completeness", "partial", "total", "withheld", "summary", "refused"):
             if key in got:
                 out[key] = got[key]
         window = arguments.get("window")
@@ -1237,6 +1240,21 @@ def _fold(gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             seen.add(key)
             out.append(dict(gap))
     return out
+
+
+# Gaps one plx.query answer keeps.
+MAX_QUERY_GAPS = 20
+
+
+def _capped(gaps: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """At most ``MAX_QUERY_GAPS`` gaps, every gap that keeps a count a lower bound (any
+    gap but an age-only one, ``claim_checks.AGE_ONLY_GAPS``) ahead of the age-only ones,
+    each group in its own order: the cut drops age-only gaps first, so a gap that makes a
+    count inexact is never cut behind others."""
+    from operating.claim_checks import _age_only
+    kept = [dict(g) for g in gaps if not _age_only(g)] + [dict(g) for g in gaps
+                                                         if _age_only(g)]
+    return kept[:MAX_QUERY_GAPS]
 
 
 def _clean(result: dict[str, Any]) -> dict[str, Any]:
