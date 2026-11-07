@@ -808,7 +808,7 @@ class HomeFreshnessTest(unittest.TestCase):
         # said 29 Oct from Teams while the late list said 1 Nov)
         self.assertEqual(backend.freshness().as_of, "2026-10-31T05:00:00Z")
         self.assertEqual(backend.freshness().label,
-                         "Data as of 31 Oct 2026 05:00 UTC; Teams to 29 Oct")
+                         "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct")
         # with hybrid search on, a source whose searchable text ends over a day before its
         # capture says so (records after it exist but search cannot find them yet)
         with mock.patch.dict(os.environ, {"PLX_SEARCH": "hybrid"}), mock.patch(
@@ -816,7 +816,7 @@ class HomeFreshnessTest(unittest.TestCase):
                 return_value={"Teams": "2026-10-27T22:00:00+00:00",
                               "Portal": "2026-10-30T15:00:00+00:00"}):
             fresh = backend.freshness()
-        self.assertEqual(fresh.label, "Data as of 31 Oct 2026 05:00 UTC; Teams to 29 Oct; "
+        self.assertEqual(fresh.label, "Data as of 31 Oct 2026 1:00 AM ET; Teams to 29 Oct; "
                                       "searchable text: Teams to 27 Oct")
         self.assertEqual({s.system: s.searchable_to for s in fresh.sources}["Teams"],
                          "2026-10-27T22:00:00+00:00")

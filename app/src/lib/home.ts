@@ -35,3 +35,13 @@ export function refreshingLine(checkedOn?: string | null): string {
     : "";
   return `Some checks are re-running on the latest data${when}. Results appear here when they finish.`;
 }
+
+/** A page served from the last good read because a fresh one did not come in time. */
+export function staleLine(staleSince?: string | null, now: Date = new Date()): string | null {
+  const t = staleSince ? new Date(staleSince) : null;
+  if (!t || Number.isNaN(t.getTime())) return null;
+  const mins = Math.max(0, Math.round((now.getTime() - t.getTime()) / 60000));
+  const age = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`;
+  const clock = t.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
+  return `Showing the page as of ${clock} ET (${age}). A fresh one is on its way.`;
+}

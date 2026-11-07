@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline } from "./home";
+import { headline, staleLine } from "./home";
 import type { Briefing, BriefingItem, HomeResponse } from "./types";
 
 const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
@@ -29,5 +29,16 @@ describe("Home headline", () => {
     expect(h?.text).toBe("Rechecking against the latest data.");
     expect(h?.sub).toMatch(/re-running on the latest data \(last checked 1 Nov\)/);
     expect(headline(home(0), brief([], { refreshing: true }))?.text).toBe("Rechecking against the latest data.");
+  });
+});
+
+describe("staleLine", () => {
+  it("says when the shown page was read, in Eastern time, and that a fresh one is coming", () => {
+    const line = staleLine("2026-11-07T02:08:00Z", new Date("2026-11-07T02:38:00Z"));
+    expect(line).toBe("Showing the page as of 9:08 p.m. ET (30 min ago). A fresh one is on its way.");
+  });
+  it("shows nothing for a fresh page or an unreadable time", () => {
+    expect(staleLine(null)).toBeNull();
+    expect(staleLine("nonsense")).toBeNull();
   });
 });

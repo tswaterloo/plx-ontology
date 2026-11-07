@@ -979,6 +979,11 @@ export type components = {
              */
             since_visit: boolean;
             /**
+             * Stale Since
+             * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
+            /**
              * Status
              * @enum {string}
              */
@@ -1922,6 +1927,11 @@ export type components = {
             needs_attention: components["schemas"]["NeedsAttention"];
             /** Recent Questions */
             recent_questions: components["schemas"]["RecentQuestion"][];
+            /**
+             * Stale Since
+             * @description Set when the server could not read this page in time and serves the last page it read for this same reader instead: when that page was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
         };
         /**
          * ItemFeedbackRequest
@@ -2022,6 +2032,11 @@ export type components = {
             next_offset: number;
             /** Offset */
             offset: number;
+            /**
+             * Stale Since
+             * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
             /** Total */
             total: number;
         };
@@ -3043,6 +3058,11 @@ export type components = {
              * @constant
              */
             sent: false;
+            /**
+             * Stale Since
+             * @description Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.
+             */
+            stale_since?: string | null;
             /**
              * Status
              * @enum {string}

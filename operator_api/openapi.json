@@ -1182,6 +1182,18 @@
             "title": "Since Visit",
             "type": "boolean"
           },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
+          },
           "status": {
             "enum": [
               "read",
@@ -3682,6 +3694,18 @@
             },
             "title": "Recent Questions",
             "type": "array"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this page in time and serves the last page it read for this same reader instead: when that page was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
           }
         },
         "required": [
@@ -4000,6 +4024,18 @@
             "minimum": 0.0,
             "title": "Offset",
             "type": "integer"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
           },
           "total": {
             "minimum": 0.0,
@@ -6710,6 +6746,18 @@
             "default": false,
             "title": "Sent",
             "type": "boolean"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
           },
           "status": {
             "enum": [

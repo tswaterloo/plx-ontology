@@ -42,7 +42,7 @@ import hashlib
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 import logging
 import os
@@ -124,6 +124,9 @@ WARM_RECENT_PAGES = 4
 # only a count (a hidden count, Home's late total) can lag an item-level grant change,
 # by at most this long. Known readers are read ahead again within it (REWARM_SECONDS).
 READER_CACHE_SECONDS = 1200
+LAST_GOOD_SECONDS = 12 * 3600   # a main screen's last good page is served stale up to this
+LAST_GOOD_KEPT = 400
+ACCESS_WAIT_SECONDS = 3       # reading the reader's access state to keep or serve a page
 REWARM_SECONDS = 900
 READER_CACHE_KEPT = 512
 CARD_WORDS_KEPT = 20000
@@ -308,6 +311,15 @@ def teams(codes: Iterable[Any]) -> str:
         if word and word not in words:
             words.append(word)
     return " or ".join(words)
+
+
+def eastern_words(moment: datetime) -> str:
+    """``moment`` in the business's time (US Eastern) for a person: '6 Nov 2026 9:08 PM ET'."""
+    from operating.po_status import BUSINESS_TZ
+    local = moment.astimezone(BUSINESS_TZ)
+    hour = local.hour % 12 or 12
+    return (f"{local.day} {local.strftime('%b %Y')} {hour}:{local.minute:02d} "
+            f"{'AM' if local.hour < 12 else 'PM'} ET")
 
 
 def _iso_now() -> str:
@@ -700,6 +712,9 @@ class WorkspaceBackend(ActionsMixin):
         self.sections: Any = None   # the section pool (``section_pool.SectionPool``)
         self._answers: dict[str, dict[str, Any]] = {}
         self._recent: dict[str, list[m.RecentQuestion]] = {}
+        # the last good page of each main screen per reader: (read at, model)
+        self._good: dict[tuple, tuple[float, Any]] = {}
+        self._refreshing: set[tuple] = set()
         # The data notes said per (reader, conversation) (``_first_notice``).
         self._notices: dict[tuple[Any, Any], set[str]] = {}
         self._lock = threading.Lock()
@@ -1308,7 +1323,7 @@ class WorkspaceBackend(ActionsMixin):
         if as_of:
             try:
                 moment = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
-                label = "Data as of " + moment.strftime("%d %b %Y %H:%M UTC").lstrip("0")
+                label = "Data as of " + eastern_words(moment)
             except ValueError:
                 label = f"Data as of {as_of}"
             if behind:
@@ -1335,17 +1350,13 @@ class WorkspaceBackend(ActionsMixin):
                       f"{'s' if documents.records != 1 else ''} not read yet") + (
                 "; this record's document fields are pending" if documents.this_record
                 else "")
-        if label and waits is not None:
-            label += f"; next build waits for {_gigabytes(waits.needed_bytes)} free" + (
-                f" ({_gigabytes(waits.free_bytes)} now)" if waits.free_bytes is not None
-                else "")
+        # a build waiting for disk space is an operator's matter: in ``build_wait``, not
+        # in the sentence a reader sees
         derived = derived_code_status(self.state_dir)
         if label and derived is not None and derived.stale:
-            label += "; refreshing results made by older code: " + ", ".join(
-                derived.titles.get(n, n) for n in derived.stale)
-        if label and derived is not None and derived.flagged:
-            label += "; made by older code (labelled): " + ", ".join(
-                derived.titles.get(n, n) for n in derived.flagged)
+            label += "; some figures are refreshing"   # which artifacts: in derived_code
+        if label and derived is not None and derived.flagged and not derived.stale:
+            label += "; some summaries will refresh on their own schedule"
         return m.Freshness(as_of=as_of, label=label, sources=sources, truth=truth,
                            build_wait=waits, documents=documents, derived_code=derived)
 
@@ -2510,7 +2521,145 @@ class WorkspaceBackend(ActionsMixin):
         from .test_records import listed
         return listed(self.data_dir)
 
+    # ---- the last good page of each main screen, per reader ------------------------------
+
+    def _serving(self, reader: Reader, name: tuple, read: Callable[[], Any]) -> Any:
+        """``read()`` (a main screen: Home, briefing, suggestions, late list) for this
+        reader; when it times out or the server is busy, the last page this same reader
+        read for this same screen (never another's: the key holds the reader's principals
+        and sign-in mode), marked ``stale_since`` and read again in the background; with no
+        such page the busy refusal stands (the app shows a calm retry).
+
+        A page is kept with the reader's access state it was read under (``_access_now``:
+        policy fingerprint, unrestricted, people exclusion, as ``page_key``) and served
+        stale only while the reader's access state now is exactly that: a marking or grant
+        revoked, or an exclusion added, with the same principals refuses it. Every source
+        handle the kept page shows (``page_handles``) must also still open for the reader
+        now (item-level permissions, a mailbox or a SharePoint ACL, are in no state, as
+        ``ReaderCache.kept`` re-decides them). Both are read in one job on the read worker
+        ahead of the screen's read; an answer that is not "the same and all open", or no
+        answer in time, keeps the busy refusal. A fresh page is returned at once and kept
+        off the request path."""
+        key = (reader.key, reader.mode, name)
+        with self._lock:
+            held = self._good.get(key)
+        before = self._access_later(reader, page_handles(held[1]) if held else ())
+        try:
+            value = read()
+        except (TimeoutError, errors.UserFacing) as error:
+            if isinstance(error, errors.UserFacing) and error.code != errors.BUSY.code:
+                before.cancel()
+                raise
+            with self._lock:
+                still = self._good.get(key)
+            if held is None or still is not held \
+                    or time.time() - held[0] > LAST_GOOD_SECONDS:
+                before.cancel()
+                raise
+            now = self._access_result(before, ACCESS_WAIT_SECONDS)
+            if now is None or now[0] != held[2] or now[1] is not True:
+                raise
+            self._refresh_later(reader, key, read)
+            return held[1].model_copy(deep=True, update={
+                "stale_since": datetime.fromtimestamp(held[0], timezone.utc).isoformat(
+                    timespec="seconds").replace("+00:00", "Z")})
+        if getattr(value, "stale_since", None) is None:
+            kept = value.model_copy(deep=True)
+            self._after(lambda: self._keep_good(
+                key, kept, self._state_of(self._access_result(before, ACCESS_WAIT_SECONDS)),
+                self._access_now(reader)))
+        return value
+
+    def _after(self, step: Callable[[], None]) -> None:
+        """``step`` off the request path (keeping a page waits on the read worker)."""
+        def run() -> None:
+            try:
+                step()
+            except Exception:  # noqa: BLE001 - nothing kept; the next read keeps it
+                pass
+        threading.Thread(target=run, name="last-good-keep", daemon=True).start()
+
+    def _access_later(self, reader: Reader, handles: Iterable[str] = ()) -> Future:
+        """(the reader's access state, every one of ``handles`` still opens for them),
+        asked of the read worker ahead of the screen's own read (it runs before it, or the
+        worker is stuck and it never does). The state: policy fingerprint, unrestricted,
+        people exclusion stamp, the parts ``page_key`` keys a page on."""
+        from operating.pg.permissions import _fingerprint, exclusion_stamp
+        listed = sorted(set(handles))
+
+        def job(view: Any) -> tuple:
+            with view._request():
+                gated, policy = view.access.reader_policy()
+                state = (_fingerprint(policy, gated),
+                         bool(getattr(policy, "unrestricted", False)), exclusion_stamp())
+                decided = view.access.decide(listed) if listed else {}
+                opens = isinstance(decided, dict) and all(
+                    h in decided and decided[h] is None for h in listed)
+                return state, opens
+        try:
+            return self.reads.submit(reader, job, priority=-1,
+                                     deadline=time.monotonic() + ACCESS_WAIT_SECONDS)
+        except Exception:  # noqa: BLE001 - an unreadable state is no state
+            failed: Future = Future()
+            failed.set_exception(LookupError("access_unread"))
+            return failed
+
+    @staticmethod
+    def _state_of(answer: Optional[tuple]) -> Optional[tuple]:
+        return None if answer is None else answer[0]
+
+    @staticmethod
+    def _access_result(future: Future, wait: float) -> Optional[tuple]:
+        try:
+            return future.result(timeout=wait)
+        except Exception:  # noqa: BLE001 - undecidable: never matches a kept page
+            future.cancel()
+            return None
+
+    def _access_now(self, reader: Reader) -> Optional[tuple]:
+        """(policy fingerprint, unrestricted, people exclusion stamp) of the reader now,
+        the parts ``page_key`` keys a page on; None when it cannot be read in time."""
+        return self._state_of(self._access_result(self._access_later(reader),
+                                                  ACCESS_WAIT_SECONDS))
+
+    def _keep_good(self, key: tuple, value: Any, before: Optional[tuple],
+                   after: Optional[tuple]) -> None:
+        """Keep a fresh page under the access state it was read under: the same before and
+        after the read (a state that changed or could not be read keeps nothing)."""
+        if getattr(value, "stale_since", None) is not None:
+            return   # never a page served stale kept as a fresh one
+        with self._lock:
+            self._good.pop(key, None)
+            if before is None or before != after:
+                return   # the page may not match any one access state: never served stale
+            while len(self._good) >= LAST_GOOD_KEPT:
+                self._good.pop(next(iter(self._good)))
+            self._good[key] = (time.time(), value.model_copy(deep=True), before)
+
+    def _refresh_later(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> None:
+        """Read the screen again off the request (one at a time per screen and reader)."""
+        with self._lock:
+            if key in self._refreshing:
+                return
+            self._refreshing.add(key)
+
+        def run() -> None:
+            try:
+                before = self._access_now(reader)
+                value = read()
+                self._keep_good(key, value, before, self._access_now(reader))
+            except Exception:  # noqa: BLE001 - the next request tries again
+                pass
+            finally:
+                with self._lock:
+                    self._refreshing.discard(key)
+
+        threading.Thread(target=run, name="last-good-refresh", daemon=True).start()
+
     def home(self, reader: Reader) -> m.Home:
+        return self._serving(reader, ("home",), lambda: self._home(reader))
+
+    def _home(self, reader: Reader) -> m.Home:
         inbox, labels, suppliers = without_tests(*self.reads.run(
             reader, self._attention_cached, timeout=READ_TIMEOUT_SECONDS),
             named=self.test_named())
@@ -2573,6 +2722,10 @@ class WorkspaceBackend(ActionsMixin):
         return self.page_cache.once(key, read)
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
+        return self._serving(reader, ("late", offset, limit), lambda: self._late_list(
+            reader, offset=offset, limit=limit))
+
+    def _late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25) -> m.LateList:
         """Every late purchase order the reader may see, a page at a time, in Home's order
         (longest late first): Home and the late-list answer show the first
         ``LATE_LIST_LIMIT``; "show all" pages through the rest."""
@@ -2610,8 +2763,9 @@ class WorkspaceBackend(ActionsMixin):
         trail) read as the reader, all trails within ``BRIEFING_TRAIL_SECONDS`` (each trail
         gets what is left and stops itself at it); every other item counted in its type's
         group; each check's state; the daily digest text as a preview (never sent)."""
-        return self.reads.run(reader, lambda view: self._briefing_cached(
-            view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS)
+        return self._serving(reader, ("briefing", since_visit), lambda: self.reads.run(
+            reader, lambda view: self._briefing_cached(
+                view, reader, since_visit=since_visit), timeout=READ_TIMEOUT_SECONDS))
 
     def _briefing_cached(self, view: Any, reader: Reader, *,
                          since_visit: bool) -> m.Briefing:
@@ -2736,7 +2890,8 @@ class WorkspaceBackend(ActionsMixin):
         cited values only (never sent), confidence and what is missing. Purchase order
         trails are read as the reader within ``SUGGESTION_TRAIL_SECONDS``; a card whose
         trail did not fit says so (low confidence), never guesses."""
-        return self.reads.run(reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS)
+        return self._serving(reader, ("suggestions",), lambda: self.reads.run(
+            reader, self._suggestions_cached, timeout=READ_TIMEOUT_SECONDS))
 
     def _suggestions_cached(self, view: Any) -> m.Suggestions:
         """The reader's suggestion cards as read last for them (``reader_key``), when every
@@ -3089,7 +3244,10 @@ def briefing_aged(found: Mapping[str, Any], today: Optional[date] = None) -> dic
              if isinstance(g.get("days_late"), int) else i
              for i, g in zip(found.get("items") or (), shifted.get("gaps") or ())] \
         if shifted.get("gaps") else list(found.get("items") or ())
-    return {**found, "items": items}
+    # the day the counts are made to is the briefing's date (the business day, ET), not
+    # the day the engine ran
+    as_of = shifted.get("days_as_of") or found.get("as_of")
+    return {**found, "items": items, "as_of": as_of}
 
 
 BRIEFING_TEST_SLACK = 8   # items past the top read too, so a test record's place is filled
@@ -6055,8 +6213,11 @@ def page_profitability(backend: WorkspaceBackend, view: Any, page: m.ObjectPage
         if found is None:
             return None
         oid, also = found
-    if kind not in ("Customer", "SalesOrder") or not oid.split(":")[1:2] \
-            or not oid.split(":")[1].startswith("bc."):
+    from operating.customer_profit import SAGE_ORDER_BINDING
+    system = oid.split(":")[1:2]
+    if kind not in ("Customer", "SalesOrder") or not system or not (
+            system[0].startswith("bc.") or (kind == "SalesOrder"
+                                            and system[0] == SAGE_ORDER_BINDING)):
         return None
     today = backend.today() if backend.today is not None else date.today()
     customer, focus, period = oid, None, None
@@ -6793,12 +6954,65 @@ def _page_model(backend: WorkspaceBackend, view: Any, page: Mapping[str, Any]) -
     conflicts = backend._conflicts(view, page.get("conflicts") or (), label)
     conflicts += received_before_ordered(backend, view, values, page, label)
     summary = next((a["text"] for a in verdicts if a is not lead), None) or kind
+    if kind == "SalesOrder":
+        said, facts, absent = sales_order_view(label, values, related, facts, currency)
+        summary = said if summary == kind else summary   # an answer's own words stand
+        not_found = absent + not_found
     return m.ObjectPage(object_id=oid, type=kind, label=label[:200], summary=str(summary)[:600],
                         status=status, facts=facts, timeline=timeline[:50], linked=linked,
                         people=None, landed_cost=None, late_lines=[], related=related,
                         not_found=dedupe_not_found(not_found)[:10], conflicts=conflicts[:6],
                         hidden=None,
                         freshness=backend.freshness(page, handles=page_handles(facts)))
+
+
+def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
+                     related: Sequence[m.ObjectRef], facts: list[m.Fact],
+                     currency: Optional[str]
+                     ) -> tuple[str, list[m.Fact], list[m.NotFound]]:
+    """What a customer order's page says about itself, from the same records the briefing
+    cites: a plain summary (the customer, the order date, the total when it is a real
+    figure) instead of the bare kind, with the customer named, and what the records do
+    not hold said plainly (``not_found``). A header total of zero is not shown as a fact:
+    an invoiced order's header often reads 0.00, and its invoiced figures are in the
+    margin section (cost lines, profit, when this reader may read them)."""
+    by_name = {str(v.get("property") or ""): plain(v.get("value")) for v in values}
+    customer = next((r for r in related if r.type == "Customer"), None)
+    name = customer.label if customer else (
+        by_name.get("customer_name") or by_name.get("bill_to_name") or None)
+    total_names = [n for n in by_name if re.fullmatch(r"(?:total|total_amount|subtotal)", n)]
+    shown, zero = None, set()
+    for n in total_names:
+        try:
+            amount = Decimal(str(by_name[n]).replace(",", ""))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if amount == 0:
+            zero.add(presentation.field_label(n))
+        elif shown is None:
+            shown = _decimal_money(str(amount), currency)
+    facts = [f for f in facts if not (f.text.split(":", 1)[0] in zero and re.fullmatch(
+        r"[^:]+:\s*0+(?:\.0+)?(?:\s*[A-Z]{3})?", f.text))]
+    ordered = by_name.get("order_date")
+    parts = [f"Customer order {label}" + (f" for {name}" if name else "")]
+    if isinstance(ordered, str) and re.match(r"\d{4}-\d{2}-\d{2}", ordered):
+        parts.append(f"ordered {ordered[:10]}")
+    if shown is not None:
+        parts.append(f"total {shown.amount} {shown.currency}")
+    summary = "; ".join(parts) + "."
+    absent = []
+    if not name:
+        absent.append(m.NotFound(
+            what="The customer of this order",
+            where_it_would_live="No customer is linked to this order in the records you can "
+                                "open."))
+    if shown is None:
+        absent.append(m.NotFound(
+            what="The order total",
+            where_it_would_live="The order header holds no amount; see the margin section "
+                                "for invoiced revenue, cost lines and profit when you may "
+                                "read them."))
+    return summary, facts, absent
 
 
 # A receipt event of an order (its goods received or posted).

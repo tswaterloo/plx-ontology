@@ -15,7 +15,7 @@ import { getActionStates, getBriefing, getBriefingItems, getSuggestions, markBri
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, refreshingLine } from "@/lib/home";
+import { headline, refreshingLine, staleLine } from "@/lib/home";
 import type { ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -368,6 +368,11 @@ function Today() {
         </div>
       )}
 
+      {staleLine(home?.stale_since ?? briefing?.stale_since) && (
+        <p className="px-5 py-1.5 text-meta text-muted" data-testid="stale-page" role="status">
+          {staleLine(home?.stale_since ?? briefing?.stale_since)}
+        </p>
+      )}
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing || !suggestionsRead ? { "data-pending": "" } : {})}>
         {error ? (
           <div className="p-4">

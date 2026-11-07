@@ -660,6 +660,11 @@ class LateList(_Model):
     next_offset: int = Field(0, ge=0, description="Where the next page starts: past every "
                              "order this page read, shown or left out (stable paging).")
     as_of: Optional[str] = None
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this page in time and serves the "
+                    "last page it read for this same reader: when that page was read "
+                    "(ISO). It is refreshed in the background.")
 
 
 class RecentQuestion(_Model):
@@ -675,6 +680,11 @@ class Home(_Model):
     needs_attention: NeedsAttention
     recent_questions: list[RecentQuestion]
     freshness: Freshness
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this page in time and serves the "
+                    "last page it read for this same reader instead: when that page was "
+                    "read (ISO). It is refreshed in the background.")
 
 
 # ---- object page -----------------------------------------------------------------------
@@ -1284,6 +1294,11 @@ class Briefing(_Model):
         None, json_schema_extra=_optional,
         description="How many test or placeholder records were left out, in words "
                     "('2 test records hidden'); null for none.")
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this page in time and serves the "
+                    "last page it read for this same reader: when that page was read "
+                    "(ISO). It is refreshed in the background.")
 
 
 class BriefingEventType(_Model):
@@ -1556,3 +1571,8 @@ class Suggestions(_Model):
     as_of: Optional[str] = None
     complete: bool = False
     sent: Literal[False] = False
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this page in time and serves the "
+                    "last page it read for this same reader: when that page was read "
+                    "(ISO). It is refreshed in the background.")
