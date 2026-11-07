@@ -331,7 +331,9 @@ class AgentAsk:
             try:
                 host = self.host_for(session)
                 host.tools()
-                self.agent_for(lambda line: None)._start_spare(host)
+                agent = self.agent_for(lambda line: None)
+                agent._start_spare(host)
+                agent.warm_pool(host)   # hosts any reader's next session can bind
             except Exception:  # noqa: BLE001 - a warm-up never fails an Ask
                 logging.getLogger("operator_api.ask").info(json.dumps(
                     {"prewarm": "failed"}))

@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import hmac
 import os
-from typing import Any, Mapping
+from pathlib import Path
+import time
+from typing import Any, Callable, Mapping
 
 ROLE_ENV = "PLX_HOST_PEER_ROLE"      # "primary" or "helper"; unset: neither
 KEY_ENV = "PLX_HOST_PEER_KEY"        # the session's import key (the primary only)
@@ -89,3 +91,52 @@ def keyed(params: Any, key: Any) -> bool:
     given = params.get("key")
     return isinstance(given, str) and hmac.compare_digest(given.encode("utf-8"),
                                                           expected.encode("utf-8"))
+
+
+# A warm host (``agent_session.HostSpares.start_warm``) is started before any reader is
+# known: it runs the identity-independent start-up (imports, search models) and then waits
+# for its one session's ticket in this file, written by the session that takes it. Until
+# then it holds no reader, grant or session state; once bound it serves that one session
+# and is stopped with it, never returned to the pool.
+TICKET_FILE_ENV = "PLX_HOST_TICKET_FILE"
+TICKET_WAIT_SECONDS = 4 * 3600.0
+_TICKET_POLL_SECONDS = 0.02
+MAX_TICKET_BYTES = 16 * 1024
+
+
+class TicketRefused(RuntimeError):
+    """A warm host's ticket file is unusable: the host serves no one."""
+
+
+def await_ticket(path: Path, *, seconds: float = TICKET_WAIT_SECONDS,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep) -> str:
+    """The session ticket written to ``path`` (read once, then removed), waiting at most
+    ``seconds``. Fails closed (``TicketRefused``): no ticket in time, a file another user
+    owns or others may read or write, an empty or oversized one."""
+    end = clock() + seconds
+    while True:
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            if clock() >= end:
+                raise TicketRefused("ticket_not_given")
+            sleep(_TICKET_POLL_SECONDS)
+            continue
+        except OSError as error:
+            raise TicketRefused("ticket_unreadable") from error
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise TicketRefused("ticket_file_not_private")
+            data = os.read(fd, MAX_TICKET_BYTES + 1)
+        finally:
+            os.close(fd)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        ticket = data.decode("utf-8", "replace").strip()
+        if not ticket or len(data) > MAX_TICKET_BYTES:
+            raise TicketRefused("ticket_invalid")
+        return ticket

@@ -1446,6 +1446,13 @@ class EarlyStart:
 # most this many wait at once (one per reader, the least recently started stopped first).
 SPARE_SECONDS = 300.0
 SPARE_MOST = 4 * (1 + HOST_HELPERS)   # four readers' primaries and their helpers
+# Hosts started before any reader is known (``HostSpares.start_warm``): this many
+# sessions' worth (a primary and its helpers each) wait for their one reader, at most
+# ``WARM_SECONDS``; a session that finds no spare of its own reader binds one, and one more
+# is started in its place. ``WARM_HOSTS_ENV`` sets the count (0: none).
+WARM_HOSTS = 0   # the API sets its own (``--warm-hosts``)
+WARM_HOSTS_ENV = "PLX_ASK_WARM_HOSTS"
+WARM_SECONDS = 3600.0
 
 
 @dataclass
@@ -1469,6 +1476,16 @@ class Spare:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as out:
             out.write(key)
+        os.replace(tmp, path)
+
+    def bind(self, ticket: str) -> None:
+        """A warm spare's one session (``HostSpares.start_warm``): its reader's ticket,
+        written where the waiting host reads it once (``host_peers.await_ticket``)."""
+        path = self.directory / "ticket"
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(ticket)
         os.replace(tmp, path)
 
     def stop(self) -> None:
@@ -1508,6 +1525,26 @@ class HostSpares:
         self._lock = threading.Lock()
         self._held: dict[str, Spare] = {}
 
+    def take_warm(self, key: str) -> Spare | None:
+        """A warm spare of ``key`` (``start_warm``), removed from the pool: the caller
+        binds it to its one session (``Spare.bind``) or stops it."""
+        for n in range(self.most):
+            spare = self.take(_warm_key(key, n))
+            if spare is not None:
+                return spare
+        return None
+
+    def start_warm(self, key: str, count: int, command: Sequence[str],
+                   env: Mapping[str, str], cwd: str | None, ticket_env: str) -> None:
+        """Keep ``count`` hosts of ``key`` started before any reader is known: past their
+        identity-independent start-up, each waits for its one session's ticket
+        (``host_peers.TICKET_FILE_ENV``) and is started without one (``ticket_env``
+        removed), so it holds no reader's identity, grant or state until a session binds
+        it, and serves that session only. ``key`` (``warm_key``) names no person."""
+        env = {name: value for name, value in env.items() if name != ticket_env}
+        for n in range(min(max(0, count), self.most)):
+            self.start(_warm_key(key, n), command, env, cwd, warm=True)
+
     def take(self, key: str) -> Spare | None:
         with self._lock:
             spare = self._held.pop(key, None)
@@ -1519,7 +1556,7 @@ class HostSpares:
         return spare
 
     def start(self, key: str, command: Sequence[str], env: Mapping[str, str],
-              cwd: str | None) -> None:
+              cwd: str | None, *, warm: bool = False) -> None:
         from operating import call_limits
         stale: list[Spare] = []
         with self._lock:
@@ -1536,7 +1573,9 @@ class HostSpares:
                 directory = Path(tempfile.mkdtemp(prefix="plx-host-spare-"))
                 deadline = directory / "deadline"
                 env = {name: value for name, value in env.items()
-                       if name != call_limits.DEADLINE_ENV}
+                       if name not in (call_limits.DEADLINE_ENV, host_peers.TICKET_FILE_ENV)}
+                if warm:
+                    env[host_peers.TICKET_FILE_ENV] = str(directory / "ticket")
                 try:
                     child = _host_process(command, {
                         **env, call_limits.DEADLINE_FILE_ENV: str(deadline),
@@ -1545,13 +1584,15 @@ class HostSpares:
                 except OSError:
                     directory.rmdir()
                     child = None
+                lasts = WARM_SECONDS if warm else self.seconds
                 spare = None if child is None else Spare(child, deadline, directory,
-                                                         now + self.seconds)
+                                                         now + lasts)
                 if spare is not None:
                     self._held[key] = spare
         if spare is not None:
             import threading
-            timer = threading.Timer(self.seconds, self._expire, args=(key, spare))
+            timer = threading.Timer(spare.expires - self.clock(), self._expire,
+                                    args=(key, spare))
             timer.daemon = True
             timer.start()
         for held in stale:
@@ -1580,6 +1621,39 @@ def _close_spares() -> None:
 
 import atexit  # noqa: E402 - the spares stop with the process that started them
 atexit.register(_close_spares)
+
+
+def _warm_key(key: str, n: int) -> str:
+    """The ``HostSpares`` key of the ``n``-th warm host of ``key`` (``warm_key``)."""
+    return json.dumps(["warm", n, key])
+
+
+def warm_hosts(environ: Mapping[str, str] | None = None) -> int:
+    """How many sessions' hosts are kept warm for any reader (``WARM_HOSTS_ENV``, default
+    ``WARM_HOSTS``; 0 keeps none): each is a primary and its helpers, about 1.2 GB each."""
+    raw = (os.environ if environ is None else environ).get(WARM_HOSTS_ENV, "")
+    try:
+        return max(0, min(int(raw), 4)) if raw.strip() else WARM_HOSTS
+    except ValueError:
+        return WARM_HOSTS
+
+
+def warm_key(host: Any, command: Sequence[str], cwd: Any, env: Mapping[str, str]
+             ) -> str | None:
+    """``HostSpares``' key of a warm host (``start_warm``): everything it is started with
+    but its reader (``warm_identity``: the actor kind, state, config and agent; never a
+    person), or None when ``host`` keeps no warm hosts."""
+    from operating import call_limits
+    identity = getattr(host, "warm_identity", None)
+    named = identity() if callable(identity) else None
+    if named is None:
+        return None
+    ticket = getattr(host, "ticket_env", None)
+    kept = {name: value for name, value in env.items() if name not in (
+        ticket, call_limits.DEADLINE_ENV, call_limits.DEADLINE_FILE_ENV,
+        host_peers.KEY_ENV, host_peers.KEY_FILE_ENV, host_peers.TICKET_FILE_ENV)}
+    return json.dumps(["warm", named, list(command), None if cwd is None else str(cwd),
+                       sorted(kept.items())], sort_keys=True, default=str)
 
 
 def _helper_key(key: str, n: int) -> str:
@@ -2332,6 +2406,13 @@ class ClaudeCodeAgent:
                             server.get("cwd"), {**agent_environment(os.environ),
                                                 **server_env})
             spare = SPARES.take(key) if key is not None else None
+            warmed = None
+            if spare is None:
+                # else a host started before any reader was known, bound to this
+                # session's own fresh ticket: it serves this session only
+                warmed = self._take_warm(host, server, {**agent_environment(os.environ),
+                                                        **server_env})
+                spare = warmed
             if spare is not None and deadline is not None:
                 spare.set_deadline(deadline)
             if spare is not None:
@@ -2464,7 +2545,8 @@ class ClaudeCodeAgent:
                                               if event["name"] not in allowed)
         run.agent["allowed_tools"] = allowed
         run.agent["gate_refused"] = gate_refused
-        run.agent["host_start"] = "spare" if spare is not None else "started"
+        run.agent["host_start"] = ("warm" if warmed is not None else "spare"
+                                   if spare is not None else "started")
         if budgeted:
             # The steps the session used against its budget (counts only).
             run.agent["budget"] = {**(spent or {"steps_used": 0, "refused_after_budget": 0}),
@@ -2525,6 +2607,18 @@ class ClaudeCodeAgent:
                 return spare.child
             # a fresh server of the same reader: its own single-use ticket
             server = host.mcp_server()
+            # a warm helper (started before any reader was known), bound to that ticket
+            helper = self._take_warm(host, server, {
+                **agent_environment(os.environ), **(server.get("env") or {}),
+                **{name: value for name, value in helper_env.items()
+                   if name != getattr(host, "ticket_env", None)}})
+            if helper is not None:
+                at = deadline_now() if deadline_now is not None else None
+                if at is not None:
+                    helper.set_deadline(at)
+                if taken is not None:
+                    taken.append(helper)
+                return helper.child
             env = {**agent_environment(os.environ), **(server.get("env") or {}),
                    **{name: value for name, value in helper_env.items()
                       if name != getattr(host, "ticket_env", None)}}
@@ -2562,6 +2656,59 @@ class ClaudeCodeAgent:
                   if name != getattr(host, "ticket_env", None)}}
         return spare_key(host, [server["command"], *server.get("args", [])],
                          server.get("cwd"), env)
+
+    def _take_warm(self, host: Host, server: Mapping[str, Any], env: Mapping[str, str]
+                   ) -> "Spare | None":
+        """A warm host (``HostSpares.start_warm``) for ``server`` (the server made for this
+        session, its ticket fresh and unused), bound to that ticket, or None; one more is
+        started in its place."""
+        ticket_env = getattr(host, "ticket_env", None)
+        ticket = (server.get("env") or {}).get(ticket_env) if ticket_env else None
+        command = [server["command"], *server.get("args", [])]
+        cwd = None if server.get("cwd") is None else str(server.get("cwd"))
+        key = warm_key(host, command, cwd, env) if ticket else None
+        if key is None or warm_hosts() <= 0:
+            return None
+        spare = SPARES.take_warm(key)
+        if spare is not None:
+            try:
+                spare.bind(ticket)
+            except OSError:
+                spare.stop()
+                spare = None
+        self._refill_warm(key, command, env, cwd, ticket_env)
+        return spare
+
+    def _refill_warm(self, key: str, command: Sequence[str], env: Mapping[str, str],
+                     cwd: str | None, ticket_env: str) -> None:
+        import threading
+        threading.Thread(target=SPARES.start_warm, args=(
+            key, warm_hosts(), command, dict(env), cwd, ticket_env),
+            name="plx-warm-host", daemon=True).start()
+
+    def warm_pool(self, host: Host) -> None:
+        """Start the warm hosts (``HostSpares.start_warm``) any reader's session of this
+        agent can bind: its primary and helpers, ``warm_hosts()`` sessions' worth."""
+        ticket_env = getattr(host, "ticket_env", None)
+        count = warm_hosts()
+        if ticket_env is None or count <= 0:
+            return
+        server = host.mcp_server()
+        command = [server["command"], *server.get("args", [])]
+        cwd = None if server.get("cwd") is None else str(server.get("cwd"))
+        env = {**agent_environment(os.environ), **self._server_env(server, None)}
+        key = warm_key(host, command, cwd, env)
+        if key is None:
+            return
+        SPARES.start_warm(key, count, command, env, cwd, ticket_env)
+        if self.helpers <= 0:
+            return
+        helper_env = {**env, host_peers.ROLE_ENV: host_peers.HELPER}
+        helper_env.pop(host_peers.KEY_ENV, None)
+        helper_key = warm_key(host, command, cwd, helper_env)
+        if helper_key is not None:
+            SPARES.start_warm(helper_key, count * self.helpers, command, helper_env, cwd,
+                              ticket_env)
 
     def _start_spare(self, host: Host) -> None:
         """The reader's host for their next session (``HostSpares``), started now with a
@@ -3116,6 +3263,11 @@ class ReaderHost:
             config = None
         return [sorted(self._identity.items()), self.actor, str(self.state_dir),
                 str(self.config), config, self.agent]
+
+    def warm_identity(self) -> list[Any]:
+        """What a warm host serving this reader's sessions is started for, never who
+        (``warm_key``): the actor kind, the state, the config as it is now, the agent."""
+        return self.spare_identity()[1:]
 
     def tools(self) -> list[dict[str, Any]]:
         """The catalog this reader's server lists (name, read-only annotation): one

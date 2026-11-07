@@ -40,7 +40,7 @@ from ontology.store_ddl import FORMAT as STORE_FORMAT
 
 from . import case_context_tools, case_verification, confirmation_forms, kind_confirmation
 from . import injection_guard, mcp_portfolio, ontology_tools, status_card
-from . import playbook_tools
+from . import host_peers, playbook_tools
 from . import ontology_tools_aggregate, ontology_tools_evidence, ontology_tools_process
 from . import meeting_agenda, ontology_query, ontology_tools_changes, ontology_tools_investigate
 from . import ontology_tools_traverse
@@ -4613,6 +4613,24 @@ def playbook_session_tools(runtime: CaseRuntime, actor: Actor, state_dir: Path,
     return playbook_tools.PlaybookTools(store, ontology_tools.load_contracts(), forms)
 
 
+def _bind_warm_ticket(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """A warm host (``host_peers.TICKET_FILE_ENV`` set, its ticket variable empty): the
+    identity-independent start-up runs now (the search models load), then the host waits
+    for its one session's ticket, which only then names its reader; nothing before this
+    reads, grants or serves anything. A host given its ticket at start is unchanged."""
+    path = os.environ.get(host_peers.TICKET_FILE_ENV)
+    name = args.session_ticket_env
+    if not path or name is None or os.environ.get(name):
+        return
+    from operating.search import plug as search_plug
+    search_plug.warm_if_enabled()
+    try:
+        os.environ[name] = host_peers.await_ticket(
+            Path(path), seconds=host_peers.TICKET_WAIT_SECONDS)
+    except host_peers.TicketRefused as error:
+        parser.error("session identity refused: " + str(error))
+
+
 def session_server(argv: list[str] | None = None, *,
                    directory: Callable[[Any], Any] | None = None,
                    clock: Callable[[], Any] | None = None
@@ -4662,6 +4680,7 @@ def session_server(argv: list[str] | None = None, *,
                         default=None, help="fixture clearance (--fixture only; default internal)")
     args = parser.parse_args(argv)
     capture_bounds = check_host_arguments(parser, args)
+    _bind_warm_ticket(parser, args)
     session, resolver = _session_from_args(parser, args, directory=directory)
     host = SessionHost(parser, args, tenant=session.tenant, resolver=resolver,
                        fixture=session.fixture, dev=args.dev_configured_employee,

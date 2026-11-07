@@ -78,6 +78,37 @@ MAX_SOURCES_PER_FACT = 4
 MAX_ANSWERS_KEPT = 2000
 ASK_TIMEOUT_SECONDS = 600
 ASK_WORKERS = 2
+# An Ask worker's session at its peak: its host and helpers (``agent_session.HOST_HELPERS``,
+# about 1.2 GB each) and the model CLI; more workers than the memory available beside
+# ``ASK_MEMORY_FLOOR_GB`` holds are not started (``ask_worker_count``), and never past
+# ``ASK_WORKERS_MOST``.
+ASK_WORKER_GB = 4.5
+ASK_MEMORY_FLOOR_GB = 12.0
+ASK_WORKERS_MOST = 4
+WARM_HOSTS = 1
+
+
+def ask_worker_count(requested: int, available_gb: Optional[float]) -> int:
+    """The Ask workers started for ``--ask-workers requested``: at most
+    ``ASK_WORKERS_MOST``, and past one only as many as ``available_gb`` (MemAvailable;
+    None: unknown, the request stands) holds above the floor; at least one when any is
+    asked for."""
+    wanted = max(0, min(int(requested), ASK_WORKERS_MOST))
+    if wanted <= 1 or available_gb is None:
+        return wanted
+    fits = int((available_gb - ASK_MEMORY_FLOOR_GB) // ASK_WORKER_GB)
+    return max(1, min(wanted, fits))
+
+
+def memory_available_gb(meminfo: Path = Path("/proc/meminfo")) -> Optional[float]:
+    """MemAvailable in GB, or None where it cannot be read."""
+    try:
+        for line in meminfo.read_text(encoding="ascii").splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 # Page reads served at once: the owner thread and helpers, each its own runtime and thread
 # on one shared queue, so one slow read (a briefing read again after a visit, a cold
 # list) never holds up another reader's or another route's kept answer.
@@ -7189,7 +7220,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                        help="the model an Ask about one named record runs on "
                             "(agent_ask.LOOKUP_MODEL; empty: the session's model)")
     group.add_argument("--ask-workers", type=int, default=ASK_WORKERS,
-                       help="Asks answered at once (each its own runtime and thread)")
+                       help="Asks answered at once (each its own runtime and thread), at "
+                            f"most {ASK_WORKERS_MOST}; past one, only as many as the memory "
+                            "available at start holds (ask_worker_count)")
+    group.add_argument("--warm-hosts", type=int, default=WARM_HOSTS,
+                       help="sessions' tool hosts kept started before any reader is known "
+                            "(agent_session.HostSpares.start_warm; each bound to one "
+                            "session's reader only); 0: none")
     group.add_argument("--read-workers", type=int, default=READ_WORKERS,
                        help="page reads served at once (each its own runtime and thread "
                             "on one queue); 1: the owner thread only")
@@ -7271,6 +7308,14 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         label = (ctx.get("evidence") or {}).get("label") or "source-mirror captures " \
             "(live-unverified)"
         agent = None
+        ask_workers = ask_worker_count(args.ask_workers, memory_available_gb())
+        if ask_workers != max(0, args.ask_workers):
+            logging.getLogger("operator_api").info(json.dumps(
+                {"ask_workers": ask_workers, "requested": args.ask_workers,
+                 "reason": "memory_available"}))
+        from operating import agent_session
+        os.environ.setdefault(agent_session.WARM_HOSTS_ENV,
+                              str(max(0, getattr(args, "warm_hosts", WARM_HOSTS))))
         if args.ask and args.ask_path == "agent":
             from .agent_ask import AgentAsk
             agent = AgentAsk.from_args(Path(ctx["state_dir"]), args.host_config, os.environ,
@@ -7290,7 +7335,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
                                    data_dir=args.app_data_dir, pg_dsn=args.pg_dsn,
                                    understand=optional_understanding(),
                                    ask_served=bool(args.ask),
-                                   agent_ask=agent, agent_sessions=max(1, args.ask_workers),
+                                   agent_ask=agent, agent_sessions=max(1, ask_workers),
                                    front_door=front_door,
                                    keep_pages=live and getattr(args, "keep_pages", 1) == 1)
         resolver = ctx.get("resolver")
@@ -7309,7 +7354,7 @@ def run(parser: argparse.ArgumentParser, args: argparse.Namespace, mode: str,
         except OSError:
             pass   # read by the first page that needs it
         threads = [start_ask_worker(backend, argv, fixtures, planner, n)
-                   for n in range(max(0, args.ask_workers) if args.ask else 0)]
+                   for n in range(ask_workers if args.ask else 0)]
         if fixtures is None and planner is None:
             threads += [start_read_worker(backend, argv, n)
                         for n in range(max(0, getattr(args, "read_workers", 1) - 1))]
