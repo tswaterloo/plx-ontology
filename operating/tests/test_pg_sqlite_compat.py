@@ -107,14 +107,57 @@ class CompatTests(unittest.TestCase):
         self.assertEqual(translate("SELECT * FROM object_versions WHERE rowid > ?"),
                          "SELECT object_id, l1_handle, digest, lineage, markings, recorded_at, "
                          "superseded_at FROM object_versions WHERE ver > %s")
-        self.assertIn("sq_json_each_int(%(rows)s)",
+        # an IN list of a named parameter is bound as an array the planner counts
+        self.assertIn("unnest(%(rows__list_int)s::bigint[]) AS u(value)",
                       translate("SELECT 1 FROM value_sources s WHERE s.ver IN (SELECT value "
                                 "FROM json_each(:rows))"))
+        self.assertIn("v.object_id IN (SELECT value FROM unnest(%(ids__list_text)s::text[]) "
+                      "AS u(value))", translate("SELECT 1 FROM object_versions v WHERE "
+                                                "v.object_id IN (SELECT value FROM "
+                                                "json_each(:ids))"))
+        self.assertIn("s.ver IN (SELECT value FROM unnest(%s::bigint[]) AS u(value))",
+                      translate("SELECT 1 FROM value_sources s WHERE s.ver IN (SELECT value "
+                                "FROM json_each(?))"))
         self.assertIn("lineage ~ ontology.sq_glob_re( 'bc_*')",
                       translate("SELECT 1 FROM t WHERE lineage GLOB 'bc_*'"))
         self.assertIn("coalesce(a <= b, TRUE)", translate("SELECT COALESCE(a <= b, 1)"))
         self.assertIn("IS NOT DISTINCT FROM %(x)s", translate("SELECT 1 WHERE a IS :x"))
         self.assertEqual(translate("PRAGMA data_version"), "SELECT ontology.sq_data_version()")
+
+    def test_an_in_list_reads_the_same_rows_as_sqlite_for_every_json_shape(self):
+        """A ``json_each(:name)`` IN list bound as an array keeps the function's answer:
+        strings, nulls, an empty list, numbers, other JSON shapes and unreadable text."""
+        from operating.pg.sqlite_compat import PgCompatConnection
+        pg = PgCompatConnection(self.dsn)
+        self.addCleanup(pg.close)
+        lite = self.sqlite()
+        texts = ['["A:b:1", "A:b:3"]', '["A:b:2", null]', "[]", '{"k": "A:b:1"}',
+                 '[1, "A:b:3"]', '["A:b:1", ["A:b:2"]]', "null"]
+        by_text = ("SELECT object_id FROM object_versions WHERE object_id IN "
+                   "(SELECT value FROM json_each(:ids)) ORDER BY object_id")
+        for ids in texts:
+            with self.subTest(ids=ids):
+                self.assertEqual([r[0] for r in pg.execute(by_text, {"ids": ids})],
+                                 [r[0] for r in lite.execute(by_text, {"ids": ids})])
+        by_row = ("SELECT object_id FROM object_versions WHERE rowid IN "
+                  "(SELECT value FROM json_each(:rows)) ORDER BY object_id")
+        for rows in ("[1, 3]", "[]", "[2, 2]", '["3"]', "[9223372036854775807]"):
+            with self.subTest(rows=rows):
+                self.assertEqual([r[0] for r in pg.execute(by_row, {"rows": rows})],
+                                 [r[0] for r in lite.execute(by_row, {"rows": rows})])
+        # positional lists among other parameters, and a literal percent sign
+        mixed = ("SELECT object_id FROM object_versions WHERE l1_handle LIKE '%@x' AND "
+                 "object_id IN (SELECT value FROM json_each(?)) AND recorded_at >= ? AND "
+                 "rowid IN (SELECT value FROM json_each(?)) ORDER BY object_id")
+        for args in (('["A:b:1", "A:b:3"]', "2026", "[1, 3]"), ('["A:b:1"]', "2026", "[2]"),
+                     ('{"k": "A:b:3"}', "2026", "[3]")):
+            with self.subTest(args=args):
+                self.assertEqual([r[0] for r in pg.execute(mixed, args)],
+                                 [r[0] for r in lite.execute(mixed, args)])
+        for bad in ("[1.5]", "not json"):
+            with self.subTest(bad=bad), self.assertRaises(sqlite3.OperationalError):
+                pg.execute(by_row if bad == "[1.5]" else by_text,
+                           {"rows": bad, "ids": bad})
 
 
 if __name__ == "__main__":

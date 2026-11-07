@@ -881,7 +881,7 @@ class TraverseTools:
             return "unknown"
         marks: set[str] = set()
         for slice_kind, wanted in (("object", set(object_types)), (kind, set(names))):
-            slices = self._slices(slice_kind)
+            slices = self._slices_of(slice_kind, wanted)
             for name in wanted & slices.keys():
                 kept_marks, kept_handles = slices[name]
                 marks.update(kept_marks)
@@ -1393,7 +1393,7 @@ class TraverseTools:
         handles: set[str] = set()
         for kind, names in (("object", object_types), ("link", set(links)),
                             ("event", set(events))):
-            slices = self._slices(kind)
+            slices = self._slices_of(kind, names)
             for name in names & slices.keys():
                 kept_marks, kept_handles = slices[name]
                 if kept_handles is None and items:
@@ -1458,6 +1458,43 @@ class TraverseTools:
             return by_object, by_event
 
         return self._store_cached("event_types", read)
+
+    def _slices_of(self, kind: str, names: Iterable[str]
+                   ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+        """``_slices(kind)`` of these type names (a name of no row is absent). On the
+        Postgres ontology each type is read alone by its type index and kept per store
+        state (``_store_cached``): no facts are kept beside a file there and every delta
+        layer is a new store state, so the whole-table read (minutes over its 25M links,
+        each composing its evidence text) ran again in every process after every layer;
+        a type's own rows are the same rows ``_slices`` aggregates for it."""
+        if not getattr(self.store.conn, "postgres", False):
+            return self._slices(kind)
+        out = {}
+        for name in sorted(set(names)):
+            found = self._store_cached(("slice_of", kind, name),
+                                       lambda name=name: self._read_slices(kind, name))
+            out.update(found)
+        return out
+
+    def _read_slices(self, kind: str, name: str | None = None
+                     ) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
+        """``_slices``' read, of every type of ``kind`` or of the type ``name`` alone."""
+        rows = _SLICE_ROWS[kind] if name is None else \
+            f"{_SLICE_ROWS[kind]} WHERE {_SLICE_NAMES[kind]} = :name"
+        out: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
+        for found, markings, gated, until in self.store.conn.execute(
+                f"SELECT name, markings, {_GATED_SQL}, MAX(CASE WHEN "
+                f"superseded_at IS NULL OR plx_l9_time(superseded_at) IS NULL THEN "
+                f"'{_OPEN}' ELSE plx_l9_time(superseded_at) END) "
+                f"FROM ({rows}) GROUP BY 1, 2, 3", {} if name is None else {"name": name}):
+            kept_marks, kept_handles = out.setdefault(found, ({}, {}))
+            kept_marks[markings] = max(until, kept_marks.get(markings, until))
+            for handle in json.loads(gated) if gated else ():
+                kept_handles[handle] = max(until, kept_handles.get(handle, until))
+        return {found: (kept_marks, None if sum(until == _OPEN for until in
+                                                kept_handles.values()) > HOP_SCAN_CAP
+                        else kept_handles)
+                for found, (kept_marks, kept_handles) in out.items()}
 
     def _slices(self, kind: str) -> dict[str, tuple[dict[str, str], dict[str, str] | None]]:
         """Per type of ``kind`` (object, link or event): {markings: last end} and
@@ -2520,6 +2557,8 @@ def _read_fact(store: str, key: Any) -> Any:
 # leads its table's primary key; the slices of the ranges merge into the whole one's (each
 # end is a maximum, over rows that partition the table).
 _SLICE_KEYS = {"object": "ov.object_id", "link": "link_id", "event": "event_id"}
+# The type name column of each kind's rows (``_SLICE_ROWS``): read by its type index.
+_SLICE_NAMES = {"object": "o.object_type", "link": "link_type", "event": "event_type"}
 _SLICE_KEY_SOURCES = {"object": ("object_versions", "object_id"),
                       "link": ("link_rows", "link_id"), "event": ("events", "event_id")}
 SLICE_RANGES_PER_WORKER = 3

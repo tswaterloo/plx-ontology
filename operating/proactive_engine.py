@@ -337,6 +337,8 @@ class _Store:
         # queries do (it reads the window of the thread running the statement)
         self._memo: dict[str, Any] = {}
         self._making: dict[str, threading.Lock] = {}
+        self._removed: frozenset[str] | None = None
+        self._removed_lock = threading.Lock()
 
     @property
     def scoped(self) -> bool:
@@ -502,11 +504,6 @@ class _Store:
 
     def _scan_links(self, types: Sequence[str]) -> dict[str, list[tuple]]:
         """type -> its rows (``_LinkRows``), in rowid order (``_ranged``)."""
-        sql = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
-               "l.markings, (" + ostore.removed_at_sql("l.from_object") + " OR "
-               + ostore.removed_at_sql("l.to_object") + ") AS gone FROM link_rows l "
-               "WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
-               "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
         out: dict[str, list[tuple]] = defaultdict(list)
         if self.scoped:
             # an incremental pass: the links with an end in its scope, by the end indexes
@@ -529,11 +526,33 @@ class _Store:
             if not rest:
                 return out
             types = rest
-        for rows in self._ranged("link_rows", "l", sql, " ORDER BY l.rowid",
-                                 {"types": json.dumps(list(types))}, _link_row):
+        # a whole scan: the records removed now are read once and each row's ends looked
+        # up in them, never a removal probe per end of every link row (two index probes
+        # per row, a correlated subquery per row on Postgres)
+        removed = self.removed()
+        plain = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
+                 "l.markings FROM link_rows l "
+                 "WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
+                 "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
+
+        def shape(r: Sequence[Any]) -> tuple:
+            return _link_row((*r[:7], r[3] in removed or r[4] in removed))
+        for rows in self._ranged("link_rows", "l", plain, " ORDER BY l.rowid",
+                                 {"types": json.dumps(list(types))}, shape):
             for row in rows:   # the ranges in rowid order, each in rowid order
                 out[row[2]].append(row)
         return out
+
+    def removed(self) -> frozenset[str]:
+        """Every record not held by its source now (``ostore.removed_at_sql`` at the
+        store's latest knowledge), read once per run."""
+        # its own lock: a link scan asks for it while holding the link cache's lock,
+        # which ``memo`` takes too
+        with self._removed_lock:
+            if self._removed is None:
+                self._removed = frozenset(
+                    r[0] for r in self.conn.execute(ostore.removed_ids_sql()))
+            return self._removed
 
     def _type_count(self, object_type: str) -> int:
         return self.memo("count:" + object_type, lambda: self.conn.execute(
@@ -629,7 +648,7 @@ class _Store:
 
         def read() -> frozenset[str]:
             return frozenset(key for rows in self._ranged(
-                "objects", "o", "SELECT DISTINCT o.audience_key FROM objects o WHERE 1",
+                "objects", "o", "SELECT DISTINCT o.audience_key FROM objects o WHERE 1 = 1",
                 "", {}, lambda r: r[0]) for key in rows)
         return set(self.memo("audience_keys", read))
 
@@ -1607,7 +1626,9 @@ def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
     layouts that hold a quantity, then their cells by layout). Through the view the
     planner scanned every value source of the store (51 s on 2.8M). The order is the
     view's scan order: value source, then cell, then the field's place in its layout."""
-    if st.scoped:
+    if getattr(st.conn, "postgres", False):
+        found = _pg_quantity_rows(st)
+    elif st.scoped:
         found = _scoped_quantity_rows(st)
     else:
         found = st.conn.execute(
@@ -1626,6 +1647,29 @@ def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
     keep = ("object_id", "object_type", "property", "value", "unit", "quantity_role",
             "l1_handle", "markings")
     return [{key: row[key] for key in keep} for row in found]
+
+
+def _pg_quantity_rows(st: _Store) -> list[Any]:
+    """``_quantity_rows``' rows on the Postgres ontology, which holds no packed layouts
+    (``value_layout_fields``): one cell per field, each with its own value kind, so the
+    quantity cells are read by kind (every one's ``cell_field`` its field, read in field
+    order as SQLite reads its unpacked cells); an incremental pass reads its scope's
+    records' own value sources."""
+    sql = ("SELECT s.src, c.field AS cell_field, 0 AS pos, v.object_id, o.object_type, "
+           "f.property, c.value, k.unit, k.quantity_role, v.l1_handle, k.markings "
+           "FROM value_kinds k JOIN value_cells c ON c.kind = k.kind "
+           "JOIN value_sources s ON s.src = c.src JOIN object_versions v ON v.rowid = s.ver "
+           "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = c.field "
+           "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
+           + ostore.removed_at_sql("o.object_id"))
+    if not st.scoped:
+        return st.conn.execute(sql).fetchall()
+    found: list[Any] = []
+    sql += " AND v.object_id IN (SELECT value FROM json_each(:chunk))"
+    ids = st._scope_ids
+    for start in range(0, len(ids), SCOPE_CHUNK):
+        found.extend(st.conn.execute(sql, {"chunk": json.dumps(ids[start:start + SCOPE_CHUNK])}))
+    return found
 
 
 def _scoped_quantity_rows(st: _Store) -> list[Any]:
@@ -3154,21 +3198,37 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         return _run(store_path, inbox, as_of, **options)
 
 
+LOCK_POLL_SECONDS = 2.0   # how often a pass waiting for the inbox's lock tries it
+
+
 @contextlib.contextmanager
-def pass_lock(inbox: Any, *, wait: bool = True) -> Iterator[bool]:
+def pass_lock(inbox: Any, *, wait: bool | float = True,
+              monotonic: Callable[[], float] = time.monotonic,
+              sleep: Callable[[float], None] = time.sleep) -> Iterator[bool]:
     """The inbox's pass lock (``<inbox>.lock``); ``wait`` False:
-    yields False at once when another pass holds it."""
+    yields False at once when another pass holds it; a number of seconds: waits up to
+    that long for it (a pass that ends meanwhile hands it over), then yields False. The
+    lock is the kernel's, so a pass that died holds nothing."""
     import fcntl
 
     path = Path(inbox).with_name(Path(inbox).name + ".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-        except BlockingIOError:
-            yield False
-            return
+        if wait is True:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            until = monotonic() + max(0.0, float(wait or 0))
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    left = until - monotonic()
+                    if left <= 0:
+                        yield False
+                        return
+                    sleep(min(LOCK_POLL_SECONDS, left))
         yield True
     finally:
         os.close(fd)

@@ -167,6 +167,16 @@ def removed_at_sql(object_sql: str, at_sql: str = LATEST_SQL) -> str:
             f"AND {_in_force(at_sql)})")
 
 
+def removed_ids_sql(at_sql: str = LATEST_SQL) -> str:
+    """SQL listing every record not held by its source at ``at_sql``: exactly the records
+    :func:`removed_at_sql` holds for, read once (its removal rows and its open absences)
+    rather than probed per row of a large read."""
+    return (f"SELECT mo.object_id FROM object_removals rm JOIN objects mo "
+            f"ON mo.object_id = rm.object_id WHERE {_in_force(at_sql)} UNION "
+            f"SELECT mo.object_id FROM {_REMOVALS_FROM} "
+            f"WHERE mo.missing_from_source_since IS NOT NULL AND {_in_force(at_sql)}")
+
+
 def removals_at(conn: sqlite3.Connection, object_ids: Iterable[str], at: str
                 ) -> dict[str, tuple[str, str]]:
     """The removal in force at ``at`` (store time text) of each of these records that has

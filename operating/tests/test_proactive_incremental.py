@@ -17,6 +17,7 @@ import random
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -308,11 +309,26 @@ class LayerChanges(unittest.TestCase):
                                 wait=True, holds_layers=True)
         self.assertEqual(compacted["candidates"], 3)
         self.assertEqual(compacted["changed"], 1)   # only the one never fingerprinted
-        # a pass while another holds the inbox's lock skips, never waits
+        # a pass while another holds the inbox's lock waits for it within its bound: a
+        # full pass that ends meanwhile hands it over, one that does not leaves it "busy"
         with pe.pass_lock(pe.inbox_path(store)):
             busy = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
-                              holds_layers=True)
+                               holds_layers=True, wait=0.3)
         self.assertEqual(busy["state"], "busy")
+        held, release = threading.Event(), threading.Event()
+
+        def full_pass() -> None:
+            with pe.pass_lock(pe.inbox_path(store)):
+                held.set()
+                release.wait(10)
+        holder = threading.Thread(target=full_pass)
+        holder.start()
+        self.assertTrue(held.wait(10))
+        threading.Timer(0.5, release.set).start()
+        handed = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),
+                             holds_layers=True, wait=30)
+        holder.join(10)
+        self.assertEqual(handed["state"], "ran", handed)
         # the SQLite generation holds no layer: none is taken in, nothing marked seen
         publish("delta-3.sqlite", [ids["late_with_lead"]])
         blind = pi.run_pass(store, clock=lambda: MOMENT, as_of=AS_OF, people=people(),

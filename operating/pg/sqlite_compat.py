@@ -45,6 +45,13 @@ ROWID = {"objects": "row_no", "link_rows": "row_no",
 # Columns compared with a json_each list of numbers (the list read as bigint).
 INT_COLUMNS = frozenset({"rowid", "ver", "src", "field_id", "chunk_id", "layout", "field",
                          "kind", "id", "pos", "row_no", "ek"})
+# A ``json_each(:name)`` IN list bound as an array: the parameter's suffix (text, bigint),
+# its members read in Python (``_members``), else by the very SQL function (``_FALLBACK``).
+LIST_SUFFIX = {False: "__list_text", True: "__list_int"}
+_PLACEHOLDER = re.compile(r"%%|%s|%\(([A-Za-z_][A-Za-z0-9_]*)\)s")
+_LISTED_AS = {"::text[]) AS u(value)": False, "::bigint[]) AS u(value)": True}
+_FALLBACK = {False: "SELECT array(SELECT value FROM ontology.sq_json_each(%s))",
+             True: "SELECT array(SELECT value FROM ontology.sq_json_each_int(%s))"}
 _RENAME = {"julianday": "ontology.sq_julianday", "json_extract": "ontology.sq_json_extract",
            "json_array_length": "ontology.sq_json_array_length", "ifnull": "coalesce",
            "instr": "strpos", "plx_l9_time": "ontology.sq_l9_time"}
@@ -198,6 +205,7 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                 p4 = _prev(tokens, p3 - 1)
                 p5 = _prev(tokens, p4 - 1)
                 numeric = False
+                listed = False   # ``x IN (SELECT value FROM json_each(:name))``
                 if p >= 0 and tokens[p][1].upper() == "FROM" and p2 >= 0:
                     if tokens[p2][1].lower() == "value" and p3 >= 0 and \
                             tokens[p3][1].upper() == "SELECT" and p5 >= 0 and \
@@ -205,10 +213,27 @@ def translate(sql: str, functions: tuple[str, ...] = (),
                         before = _prev(tokens, p5 - 1)
                         column = tokens[before][1].split(".")[-1].lower() if before >= 0 else ""
                         numeric = column in INT_COLUMNS
+                        listed = True
                     elif tokens[p2][1].lower() in INT_COLUMNS and p3 >= 0 and \
                             tokens[p3][1].upper() == "AS":
                         numeric = True
-                out.append("ontology.sq_json_each_int" if numeric else "ontology.sq_json_each")
+                arg = _next(tokens, j + 1)
+                shut = _next(tokens, arg + 1)
+                if listed and arg < len(tokens) and tokens[arg][0] == "param" and \
+                        shut < len(tokens) and \
+                        tokens[shut][1] == ")" and _next(tokens, shut + 1) < len(tokens) and \
+                        tokens[_next(tokens, shut + 1)][1] == ")":
+                    # an IN list bound as a real array (``PgCompatConnection._lists``): the
+                    # planner counts its members, so a list of one id is read by index, never
+                    # as a hash join over a whole table guessed from a 200-row estimate
+                    bound = ("%s" if tokens[arg][1] == "?"
+                             else f"%({tokens[arg][1][1:]}{LIST_SUFFIX[numeric]})s")
+                    out.append(f"unnest({bound}::{'bigint' if numeric else 'text'}[]) "
+                               "AS u(value)")
+                    skip_until = shut
+                else:
+                    out.append("ontology.sq_json_each_int" if numeric
+                               else "ontology.sq_json_each")
             elif call and name in ("json_array", "json_group_array"):
                 out.append("json_build_array" if name == "json_array" else "json_agg")
                 suffix[_close(tokens, j)] = "::text"
@@ -426,6 +451,36 @@ def _value(value: Any) -> Any:
     return value
 
 
+def _members(raw: Any, *, numeric: bool) -> list[Any] | None:
+    """The members of a JSON list ``ontology.sq_json_each`` (``_int``) reads, when the
+    text is a JSON array of strings or nulls (of integers): exactly that function's
+    values; None for anything else (another JSON shape, a number in a text list, a
+    character Postgres JSON refuses), left to the function."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        items = json.loads(raw, parse_constant=_refuse)
+    except (ValueError, _Refused):
+        return None
+    if not isinstance(items, list):
+        return None
+    if numeric:
+        return items if all(type(v) is int and -2**63 <= v < 2**63 for v in items) else None
+    for v in items:
+        if v is not None and (not isinstance(v, str) or "\x00" in v
+                              or any("\ud800" <= ch <= "\udfff" for ch in v)):
+            return None
+    return items
+
+
+class _Refused(Exception):
+    pass
+
+
+def _refuse(_: str) -> Any:
+    raise _Refused   # NaN / Infinity: not JSON to Postgres
+
+
 class Row:
     """A result row as ``sqlite3.Row`` gives it: by index, by column name, ``keys()``."""
 
@@ -509,6 +564,9 @@ class PgCompatConnection:
 
     in_transaction = False
     total_changes = 0
+    # A caller whose SQLite query reads a table Postgres holds in another shape (the
+    # packed value layouts: one Postgres cell per field) asks this to take its own form.
+    postgres = True
 
     def __init__(self, dsn: str, *, statement_timeout_ms: int = STATEMENT_TIMEOUT_MS) -> None:
         import psycopg
@@ -551,6 +609,8 @@ class PgCompatConnection:
             params = self._params(parameters)
             gated = "ontology.sq_call(" in text
             try:
+                if "AS u(value)" in text:
+                    params = self._lists(text, params)
                 for _ in range(MAX_ROUNDS):
                     with self._pg.cursor() as cur:
                         cur.execute(text, params)
@@ -624,6 +684,45 @@ class PgCompatConnection:
         if isinstance(parameters, Mapping):
             return dict(parameters)
         return tuple(parameters or ())
+
+    def _lists(self, text: str, params: Any) -> Any:
+        """``params`` with each IN list ``translate`` binds as an array (``unnest(...)``):
+        the members ``ontology.sq_json_each`` (``_int``) gives for the JSON text bound,
+        read in Python when it is a plain list of strings (of integers), else by that
+        function itself."""
+        named = isinstance(params, Mapping)
+        out: Any = dict(params) if named else list(params)
+        at = -1
+        for m in _PLACEHOLDER.finditer(text):
+            if m.group(0) == "%%":
+                continue
+            if m.group(1) is None:
+                at += 1
+            if text[max(0, m.start() - 7):m.start()] != "unnest(":
+                continue
+            numeric = next((n for tail, n in _LISTED_AS.items()
+                            if text.startswith(tail, m.end())), None)
+            if numeric is None:
+                continue
+            if m.group(1) is None:
+                if named or at >= len(out):
+                    raise sqlite3.ProgrammingError("a listed parameter has no value")
+                out[at] = self._members_of(out[at], numeric)
+            else:
+                key = m.group(1)
+                base = key[:-len(LIST_SUFFIX[numeric])]
+                if not named or not key.endswith(LIST_SUFFIX[numeric]) or base not in params:
+                    raise sqlite3.ProgrammingError(f"no value for parameter :{base}")
+                out[key] = self._members_of(params[base], numeric)
+        return out if named else tuple(out)
+
+    def _members_of(self, raw: Any, numeric: bool) -> list[Any]:
+        members = _members(raw, numeric=numeric)
+        if members is None:
+            with self._pg.cursor() as cur:
+                cur.execute(_FALLBACK[numeric], (raw,))
+                members = list(cur.fetchone()[0] or [])
+        return members
 
     def _answer(self) -> int:
         """Answer the queued function calls in Python; how many were queued."""

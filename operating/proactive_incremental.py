@@ -67,6 +67,10 @@ from . import proactive_engine as pe
 CHANGES_SUFFIX = ".changes.sqlite"
 READ_CAP = 400_000   # a scope larger than this: its rules are judged whole instead
 CHUNK = 500
+# a pass finding the full engine running waits this long for it (it then reads what that
+# pass folded and judges what changed since), well inside the unit's 30-minute limit; a
+# full pass still running then: "busy", the next timer tick tries again
+LOCK_WAIT_SECONDS = 900.0
 
 
 @dataclass(frozen=True)
@@ -406,13 +410,14 @@ def _rss_mb() -> float:
 def run_pass(store_path: Any, *, as_of: date | None = None,
              clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
              changed: Iterable[str] | None = None, base: Any = None,
-             people: Any = None, wait: bool = False,
+             people: Any = None, wait: bool | float = LOCK_WAIT_SECONDS,
              read_cap: int = READ_CAP, holds_layers: bool | None = None) -> dict[str, Any]:
     """One incremental pass over the store served at ``store_path`` into its inbox; counts
     and enums only. ``changed``: the records that changed since the last pass (a test or a
     replay; default the delta layers', ``layer_owned``, fingerprinted); ``base``: the
     generation file whose links the changed records had before (default ``store_path``).
-    ``wait``: wait for a running engine pass instead of returning ``busy``.
+    ``wait``: how long to wait for a running engine pass before returning ``busy`` (True:
+    until it ends; False: not at all).
     ``holds_layers``: whether the store read holds the delta layers (None: when the engine
     reads Postgres, its applied ones); a store that does not (the SQLite generation) takes
     no layer in, so none is marked seen before a store holding it is read."""
@@ -425,11 +430,12 @@ def run_pass(store_path: Any, *, as_of: date | None = None,
     out: dict[str, Any] = {"as_of": day.isoformat()}
     if not inbox.is_file():
         return {**out, "state": "no_inbox"}   # no full run yet: the full pass makes it
-    # a rule whose findings are of another generation or older code is judged whole
-    behind = pe.rules_behind(store, inbox) & set(STORE_ONLY)
     with pe.pass_lock(inbox, wait=wait) as held:
         if not held:
             return {**out, "state": "busy"}
+        # a rule whose findings are of another generation or older code is judged whole
+        # (read under the lock: a full pass waited for has just brought it current)
+        behind = pe.rules_behind(store, inbox) & set(STORE_ONLY)
         with closing(_open(changes_path(inbox))) as ch:
             st = pe._Store(store)
             try:
@@ -544,10 +550,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--state-dir", required=True, type=Path)
     parser.add_argument("--as-of", type=date.fromisoformat, default=None)
     parser.add_argument("--wait", action="store_true",
-                        help="wait for a running engine pass instead of skipping")
+                        help="wait for a running engine pass however long it takes")
+    parser.add_argument("--wait-seconds", type=float, default=LOCK_WAIT_SECONDS,
+                        help="wait this long for a running engine pass before skipping "
+                             f"(default {LOCK_WAIT_SECONDS:.0f})")
     args = parser.parse_args(argv)
+    if args.wait_seconds < 0:
+        parser.error("--wait-seconds must not be negative")
     print(json.dumps(run_pass(projection_path(args.state_dir), as_of=args.as_of,
-                              wait=args.wait), indent=1, sort_keys=True))
+                              wait=True if args.wait else args.wait_seconds),
+                     indent=1, sort_keys=True))
     return 0
 
 

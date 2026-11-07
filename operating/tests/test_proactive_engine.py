@@ -2025,5 +2025,77 @@ class LiveCheckTest(unittest.TestCase):
             self.spec, code, summary, self.spec["expect_blocked"]), [])
 
 
+class PostgresStoreTest(Engine):
+    """The detectors read the Postgres ontology (``PLX_ONTOLOGY_PG``) as they read the
+    SQLite generation: the same gaps, no detector failed on SQL only SQLite takes (an
+    integer ``WHERE 1``, the packed value layouts Postgres does not hold)."""
+
+    def postgres(self, world: World) -> str:
+        """A throwaway Postgres database holding ``world``'s store (built here)."""
+        from operating.pg import ontology_load
+        from operating.tests import pg_testdb
+        name, dsn = pg_testdb.create_db()
+        self.addCleanup(pg_testdb.drop_db, name)
+        import psycopg
+        here = Path(__file__).resolve().parents[1] / "pg" / "migrations"
+        with psycopg.connect(dsn, autocommit=True) as pg:
+            for migration in ("0006_ontology.sql", "0007_ontology_compact.sql",
+                              "0008_ontology_read.sql"):
+                pg.execute((here / migration).read_text(encoding="utf-8"))
+        world.build(self.store)
+        ontology_load.load(self.store, dsn, workers=1, replace=True, log=io.StringIO())
+        return dsn
+
+    def test_a_types_slice_is_read_alone_on_postgres_and_equals_the_whole_read(self):
+        """Every delta layer is a new store state on Postgres: the hop checks read the
+        slices of the types they ask by the type index, never the whole link table, and
+        get exactly what the whole-table read holds for those types (none for a type
+        with no rows)."""
+        from operating import ontology_tools, ontology_tools_traverse as tt
+        from operating.pg.ontology_reader import PgStoreReader
+        from operating.pg.sqlite_compat import PgCompatConnection
+        world, _ids = seeded()
+        conn = PgCompatConnection(self.postgres(world))
+        self.addCleanup(conn.close)
+        tools = tt.TraverseTools(ontology_tools.OntologyTools(
+            PgStoreReader(conn), ontology_tools.ReadPolicy(tenant="plx", audiences={})))
+        for kind in ("object", "link", "event"):
+            whole = tools._slices(kind)
+            if kind != "event":
+                self.assertTrue(whole, kind)
+            with mock.patch.object(tt.TraverseTools, "_slices",
+                                   side_effect=AssertionError("whole-table read")):
+                for name in whole:
+                    self.assertEqual(tools._slices_of(kind, [name, "Nothing.no_such"]),
+                                     {name: whole[name]})
+
+    def test_every_detector_finds_on_postgres_what_it_finds_on_sqlite(self):
+        from operating.pg.sqlite_compat import PgCompatConnection
+        world, ids = seeded()
+        lite = self.run_engine(world, ids["coverage"])
+        expected = sorted((g["kind"], g["object_id"]) for g in self.read()["gaps"])
+        dsn = self.postgres(world)
+        self.inbox = self.dir / "pg-inbox.sqlite"
+        opened: list = []
+
+        def connect(_path):
+            opened.append(PgCompatConnection(dsn))
+            return opened[-1]
+        # rowid ranges side by side even on a small store: the ranged reads run too
+        with mock.patch.object(pe, "_connect", connect), \
+                mock.patch.object(pe, "PARALLEL_LINK_ROWS", 1):
+            summary = pe.run(self.store, self.inbox, AS_OF, coverage=ids["coverage"],
+                             qc_link_types=(QC_LINK,), people=people(), threads=2,
+                             clock=lambda: datetime(2026, 10, 19, 6, tzinfo=timezone.utc))
+        self.assertTrue(opened)   # read from Postgres, not the SQLite file
+        self.assertEqual({d: s for d, s in summary["detectors"].items() if s == "failed"},
+                         {}, summary["detector_reasons"])
+        self.assertEqual(summary["detectors"], lite["detectors"])
+        self.assertEqual(sorted((g["kind"], g["object_id"]) for g in self.read()["gaps"]),
+                         expected)
+        self.assertIn(("conflicting_quantity", min(ids["conflict_a"], ids["conflict_b"])),
+                      expected)
+
+
 if __name__ == "__main__":
     unittest.main()
