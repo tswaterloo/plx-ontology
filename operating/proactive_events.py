@@ -1000,7 +1000,8 @@ def _instant(raw: Any) -> datetime | None:
 def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                     result: Callable, people: Any, orders: Mapping[str, tuple[str, str]],
                     order_key: str = "order",
-                    colliding: Callable[[str], bool] = lambda _oid: False) -> dict[str, Any]:
+                    colliding: Callable[[str], bool] = lambda _oid: False,
+                    resolver: Any = None) -> dict[str, Any]:
     """F28 over the whole store, set-based: every OPEN purchase order (``orders``: record ->
     (its order across systems, that order's class), the late rule's join) whose mail shows
     a request of ours to the outside, within ``NO_REPLY_WINDOW_DAYS``, unanswered for
@@ -1023,7 +1024,10 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
     rule's ``coverage``: open orders, judged (some cleared conversation names them) and not
     (by reason). ``colliding(record)``: the order's number is another order's too
     (``po_status.StoreSource.colliding``): a number-text mention of it (a lead link) may be
-    the other order's, so it ties no message to this order."""
+    the other order's, so it ties no message to this order, unless ``resolver``
+    (``ontology.po_mention_resolve.Resolver``) picks the one order it is about from the
+    message's cleared conversation (its outside senders' supplier, its date in the order's
+    life): the pick stays a lead, and ``mention_resolution`` counts the links by reason."""
     if people is None or getattr(people, "unavailable", None):
         # the guard's own code (an enum, never an ID) says why: no list, a bad entry, ...
         cause = getattr(people, "unavailable", None) or "exclusion_not_loaded"
@@ -1054,11 +1058,12 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             audience[oid] = key
     named: dict[str, set[str]] = defaultdict(set)
     lead: dict[tuple[str, str], bool] = {}
-    reused = 0
+    reused_by: dict[str, set[str]] = defaultdict(set)
     for link in st.links([MAIL_PO_LINK], held=False):
         mail, po, tier = link["from_object"], link["to_object"], link["tier"]
         if tier not in ("verified", "reviewed", "corroborated") and colliding(po):
-            reused += mail in audience   # a reused number's mention: not this order's
+            if mail in audience:   # a reused number's mention: this order's only if resolved
+                reused_by[mail].add(po)
             continue
         if mail in audience:
             named[mail].add(po)
@@ -1070,6 +1075,9 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
             "AND superseded_at IS NULL AND object_id LIKE 'Email:%'"):
         if oid in audience and value not in (None, ""):
             values[oid]["conversation_id"] = str(value)
+    resolution: Counter = Counter()
+    reused = _resolve_reused(st, reused_by, values, resolver, named, lead, resolution,
+                             getattr(resolver, "trail", None))
     # the rest of a message is read only for the conversations a message naming an open
     # order (few enough records) sits in: every copy of each, cleared (each a scan of the
     # store's whole mail before, minutes on the live store)
@@ -1188,6 +1196,100 @@ def vendor_no_reply(st: Any, as_of: date, *, gap: Callable, cites: Callable,
                            "participants_not_cleared": len(uncleared - judged),
                            "no_cleared_mail_names_it": len(unjudged - uncleared)}.items())
                            if v}}
+    if resolution:
+        out["mention_resolution"] = dict(sorted(resolution.items()))
+    return out
+
+
+def _resolve_reused(st: Any, reused_by: Mapping[str, set[str]],
+                    values: dict[str, dict[str, str]], resolver: Any,
+                    named: dict[str, set[str]], lead: dict[tuple[str, str], bool],
+                    resolution: Counter, trail: list | None = None) -> int:
+    """The lead links on reused numbers (``reused_by``: cleared message -> records) that
+    ``resolver`` ties to one order, added to ``named`` as leads; returns how many links stay
+    unresolved. Per message and number: its sent time and the senders of its cleared
+    conversation (``values``: cleared messages only) are the evidence; ``resolution``
+    counts links by reason (``resolved:<reason>``, ``ambiguous:<reason>``); ``trail``, when
+    given, gets ``(message, record, reason, picked, number)`` per link (ids, reasons)."""
+    if not reused_by:
+        return 0
+    if resolver is None:
+        resolution["ambiguous:no_resolver"] += sum(len(p) for p in reused_by.values())
+        return sum(len(p) for p in reused_by.values())
+    conversations = {values.get(m, {}).get("conversation_id") for m in reused_by} - {None}
+    peers = sorted({oid for oid, row in values.items()
+                    if row.get("conversation_id") in conversations} | set(reused_by))
+    for start in range(0, len(peers), 500):
+        for oid, prop, value in st.conn.execute(
+                "SELECT object_id, property, value FROM object_values WHERE superseded_at IS "
+                "NULL AND property IN ('sent_at', 'sender') AND "
+                "object_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(peers[start:start + 500]),)):
+            if value not in (None, "") and oid in values:
+                values[oid][prop] = str(value)
+    in_thread: dict[str, list[str]] = defaultdict(list)
+    for oid in peers:
+        conversation = values.get(oid, {}).get("conversation_id")
+        if conversation is not None:
+            in_thread[conversation].append(oid)
+    cited = _lead_numbers(st, reused_by)
+    left = 0
+    for mail, records in sorted(reused_by.items()):
+        row = values.get(mail, {})
+        thread = in_thread.get(row.get("conversation_id"), []) or [mail]
+        found = resolver.mail(row.get("sent_at"), {o: values.get(o, {}).get("sender")
+                                                    for o in {mail, *thread}})
+        chosen: set[str] = set()
+        # the numbers the message's own leads cite (each lead's mention), never a number
+        # a linked record merely also holds
+        by_number: dict[str, set[str]] = defaultdict(set)
+        for record in records:
+            for number in cited.get((mail, record), ()):
+                by_number[number].add(record)
+        for number, linked in sorted(by_number.items()):
+            picked = resolver.resolve_linked(number, found, linked)
+            mine = linked & set(picked.order.records) if picked.order is not None else set()
+            chosen |= mine
+            if mine:
+                resolution["resolved:" + picked.reason] += len(mine)
+            else:
+                resolution["ambiguous:" + (picked.reason if picked.order is None
+                                           else "pick_not_linked")] += len(linked)
+            if trail is not None:
+                trail.extend((mail, r, picked.reason, r in mine, number) for r in sorted(linked))
+        for record in chosen:
+            named[mail].add(record)
+            lead[(mail, record)] = lead.get((mail, record), True)
+        rest = records - chosen
+        left += len(rest)
+        untold = {r for r in records if not cited.get((mail, r))}
+        if untold:
+            resolution["ambiguous:number_not_told"] += len(untold)
+    return left
+
+
+def _lead_numbers(st: Any, reused_by: Mapping[str, set[str]]) -> dict[tuple[str, str], set[str]]:
+    """(message, record) -> the order number keys its current lead links cite (their
+    ``identifier_mention`` features' normalised values), for the messages of ``reused_by``."""
+    from ontology.po_mention_resolve import number_key
+
+    mails = sorted(reused_by)
+    out: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for start in range(0, len(mails), 500):
+        for frm, to, raw in st.conn.execute(
+                "SELECT from_object, to_object, reason FROM links WHERE superseded_at IS "
+                "NULL AND tier = 'lead' AND link_type = ? AND from_object IN (SELECT value "
+                "FROM json_each(?))", (MAIL_PO_LINK, json.dumps(mails[start:start + 500]))):
+            if to not in reused_by.get(frm, ()):
+                continue
+            try:
+                features = json.loads(raw or "[]")
+            except ValueError:
+                continue   # an unreadable reason cites no number: the link stays unresolved
+            for feature in features if isinstance(features, list) else ():
+                if isinstance(feature, dict) and feature.get("feature") == "identifier_mention" \
+                        and number_key(feature.get("normalized")):
+                    out[(frm, to)].add(number_key(feature.get("normalized")))
     return out
 
 

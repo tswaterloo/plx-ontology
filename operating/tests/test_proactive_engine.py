@@ -85,11 +85,12 @@ class World:
                 "markings": markings, "recorded_at": T0})
         return oid
 
-    def link(self, link_type: str, a: str, b: str, tier: str = "verified") -> None:
+    def link(self, link_type: str, a: str, b: str, tier: str = "verified", *,
+             reason: str = "[\"fixture\"]") -> None:
         self.rows["links"].append({
             "link_id": f"l{len(self.rows['links'])}", "link_type": link_type,
             "from_object": a, "to_object": b, "tier": tier,
-            "binding_kind": "fk" if tier != "lead" else "mention", "reason": "[\"fixture\"]",
+            "binding_kind": "fk" if tier != "lead" else "mention", "reason": reason,
             "evidence_handles": json.dumps([handle(1)]), "why_not": "[]", "markings": "[]",
             "recorded_at": T0})
 

@@ -885,6 +885,21 @@ def _po_source(st: _Store) -> po_status.StoreSource:
                          lambda src: (sorted(src.colliding), src.defaults.values))
 
 
+def _mention_resolver(st: _Store, people: Any) -> Any:
+    """The store's reused-number mention resolver (``ontology.po_mention_resolve``) with
+    our own domains from the people exclusion; None without them (nothing resolves)."""
+    from ontology import po_mention_resolve
+
+    own = tuple(getattr(people, "internal", ()) or ())
+    if people is None or getattr(people, "unavailable", None) or not own:
+        return None
+    try:
+        with st.whole():
+            return po_mention_resolve.Resolver(st.conn, own)
+    except Exception:  # noqa: BLE001 - unreadable here: nothing resolves (counted), never a guess
+        return None
+
+
 def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
     """Each settled PO read by the one purchase-order reader (``po_status.read`` over
     ``po_status.StoreSource``: status, lines, FM QC log, ranked need date, promise and
@@ -2766,9 +2781,10 @@ def _event_steps(st: _Store, as_of: date, call: Callable | None,
         if found is None:
             return _result([], status="blocked", reasons=["order_status_not_read"])
         src = _po_source(st)
-        return ev.vendor_no_reply(st, as_of, people=people(), orders=found,
+        exclusion = people()
+        return ev.vendor_no_reply(st, as_of, people=exclusion, orders=found,
                                   order_key=_ORDER, colliding=src.colliding.__contains__,
-                                  **common)
+                                  resolver=_mention_resolver(st, exclusion), **common)
     return {
         "eta_slipped": lambda: ev.eta_slipped(
             st, as_of, settled=SETTLED, confirming=CONFIRMING,

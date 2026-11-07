@@ -351,9 +351,14 @@ STEPS: dict[str, Spec] = {
     "twins_parties": Spec(("crb-party-",), ("ontology/identity_scoring.py",),
                           reads=("twins",), inputs=_party_twin_inputs),
     "unique_mentions": Spec(("crb-mid:",), ("ontology/mention_firm.py",
-                                            "ontology/mention_firm_parallel.py"),
+                                            "ontology/mention_firm_parallel.py",
+                                            "ontology/po_mention_resolve.py"),
                             writes=_firm_mention_links, reads=("mentions",),
-                            inputs=_union(_mention_inputs(False), _identifier_types),
+                            # a reused order number's resolution reads the orders, their
+                            # suppliers and the messages' senders (po_mention_resolve)
+                            inputs=_union(_mention_inputs(False), _identifier_types,
+                                          _fixed("PurchaseOrder", "Supplier", "Contact",
+                                                 "Customer", "Email")),
                             from_inputs=_mention_froms(False)),
     "your_reference": Spec(("yrf-po-",), ("ontology/identity_scoring.py",),
                            reads=("twins",), inputs=_twin_inputs),

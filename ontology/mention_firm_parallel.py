@@ -46,16 +46,21 @@ def _init(store: str) -> None:
     _WORKER["conn"] = conn
 
 
-def _judge(chunk: Sequence[str], types: Sequence[str]) -> tuple[list[dict[str, Any]], Counter]:
+def _judge(chunk: Sequence[str], types: Sequence[str]
+           ) -> tuple[list[dict[str, Any]], Counter, list]:
     counts: Counter[str] = Counter()
-    rows = list(MF.firm_links(_WORKER["conn"], types, counts, objects=chunk))
-    return rows, counts
+    pending: list = []
+    rows = list(MF.firm_links(_WORKER["conn"], types, counts, objects=chunk,
+                              pending=pending))
+    return rows, counts, pending
 
 
 def parallel_firm_links(builder: Any, types: Sequence[str], counts: Counter,
-                        processes: int | None = None) -> list[dict[str, Any]] | None:
-    """The serial rows, judged by worker processes; None when the step should run
-    serially (module docstring)."""
+                        processes: int | None = None, own: Sequence[str] = ()
+                        ) -> list[dict[str, Any]] | None:
+    """The serial rows, judged by worker processes (the reused purchase order numbers
+    they leave pending resolved here, once, ``MF.resolved_rows``); None when the step
+    should run serially (module docstring)."""
     from ontology.finish_parallel import _committed, workers
     from ontology.store import main_not_imported
 
@@ -73,18 +78,21 @@ def parallel_firm_links(builder: Any, types: Sequence[str], counts: Counter,
         LAST.update(mode="serial", reason="uncommitted")
         return None
     rows: list[dict[str, Any]] = []
+    pending: list = []
     try:
         with main_not_imported(), futures.ProcessPoolExecutor(
                 max_workers=count, mp_context=multiprocessing.get_context("spawn"),
                 initializer=_init, initargs=(str(Path(temp).resolve()),)) as pool:
-            for found, tally in pool.map(_judge, _chunks(iter(objects)),
+            for found, tally, left in pool.map(_judge, _chunks(iter(objects)),
                                          [tuple(types)] * (len(objects) // CHUNK + 1)):
                 rows += found
                 counts.update(tally)
+                pending += left
     except Exception as exc:  # noqa: BLE001 - judged serially instead
         LAST.update(mode="serial", reason=f"workers_failed:{type(exc).__name__}")
         counts.clear()
         return None
+    rows += MF.resolved_rows(conn, pending, counts, own)
     LAST.update(mode="parallel", workers=count, objects=len(objects))
     return rows
 
@@ -94,7 +102,9 @@ def unique_mentions_step(builder: Any, projector: Any) -> dict[str, Any]:
     conn = builder.connection
     types = list((getattr(projector, "types", None) or {}).keys())
     counts: Counter[str] = Counter()
-    rows = parallel_firm_links(builder, types, counts)
+    from ontology.sender_parties import own_domains
+
+    rows = parallel_firm_links(builder, types, counts, own=own_domains(projector))
     if rows is None:
         return MF.unique_mentions_step(builder, projector)
     conn.execute("DELETE FROM link_rows WHERE link_id >= ? AND link_id < ?",

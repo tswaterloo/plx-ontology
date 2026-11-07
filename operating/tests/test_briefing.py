@@ -93,6 +93,12 @@ PROC = bf.Routing(frozenset({"PROC"}))
 QUALITY = bf.Routing(frozenset({"QUALITY"}))
 
 
+def said(number: str) -> str:
+    """A mention lead's reason: the order number the message's text names."""
+    return json.dumps([{"feature": "identifier_mention", "agrees": True,
+                        "identifier_kind": "petra_po", "normalized": number}])
+
+
 def po_with(w: World, total=None, currency="USD", *, markings="[]", audience="api:a",
             binding="fx", **values) -> str:
     props = dict(values)
@@ -503,8 +509,9 @@ class DetectorTest(Case):
         self.inbox.unlink()
         blind = self.run_engine(w, people=people(unavailable=True))
         self.assertEqual(blind["detectors"]["vendor_no_reply"], "blocked")
-        self.assertEqual(blind["detector_reasons"]["vendor_no_reply"],
-                         ["people_exclusion_unavailable"])
+        # blocked for the missing exclusion list; other truthful reasons may accompany it
+        self.assertIn("people_exclusion_unavailable",
+                      blind["detector_reasons"]["vendor_no_reply"])
         self.assertNotIn("vendor_no_reply", self.events())
 
     def test_a_mention_of_a_reused_number_ties_no_mail_to_the_order(self):
@@ -537,6 +544,95 @@ class DetectorTest(Case):
                 if reused:
                     self.assertEqual(summary["not_evaluated"]["vendor_no_reply"],
                                      {"mention_of_reused_number": 2})
+
+    def test_a_reused_number_resolves_to_the_order_of_the_conversations_supplier(self):
+        """Two orders hold PO4820; the mail mentions it (a lead to each). The vendor who
+        wrote in the conversation is one order's supplier: the request waits on that order,
+        and the other order gets nothing. A vendor who supplies neither (or both, with no
+        date to tell): ambiguous, no alert, and why is counted."""
+        cases = {"supplier": "sales@synth-vendor.example",
+                 "neither": "sales@other-vendor.example",
+                 "both": "sales@synth-vendor.example"}
+        for case, writer in cases.items():
+            with self.subTest(case=case):
+                w = World()
+                vendor = w.obj("Supplier", {"name": "Synth Vendor",
+                                            "bc_email": "sales@synth-vendor.example"})
+                other_vendor = w.obj("Supplier", {"name": "Northwind Resins",
+                                                  "bc_email": "info@northwind.example"})
+                orders = []
+                for number, supplier in (("PO4820", vendor),
+                                         ("4820", vendor if case == "both" else other_vendor)):
+                    order = w.obj("PurchaseOrder", {"status": "Pending",
+                                                    "expected_date": "2026-11-30",
+                                                    "po_number": number})
+                    w.link("PurchaseOrder.ordered_from", order, supplier)
+                    w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                        "ordered_quantity": ("10", "ea"),
+                        "received_quantity": ("0", "ea", "received")}), order)
+                    orders.append(order)
+                for sent, sender, preview in (
+                        ("2026-09-20T10:00:00Z", writer, "Got it."),
+                        ("2026-10-01T10:00:00Z", "ops@synth-tenant.example",
+                         "Could you please confirm the delivery date?")):
+                    mail = w.obj("Email", {"conversation_id": "c1", "sent_at": sent,
+                                           "sender": sender, "subject": "RE: PO4820",
+                                           "body_preview": preview}, audience=BOX_OURS)
+                    for order in orders:
+                        w.link("Email.mentions_purchase_order", mail, order, "lead",
+                               reason=said("PO4820"))
+                if self.inbox.exists():
+                    self.inbox.unlink()
+                summary = self.run_engine(w)
+                found = [g["object_id"] for g in self.events().get("vendor_no_reply", [])]
+                skipped = summary["not_evaluated"].get("vendor_no_reply", {})
+                if case == "supplier":
+                    self.assertEqual(found, [orders[0]])
+                    self.assertTrue(self.stored(orders[0])["summary"].startswith("Lead"))
+                    self.assertEqual(skipped, {"mention_of_reused_number": 2})
+                else:
+                    self.assertEqual(found, [])
+                    self.assertEqual(skipped, {"mention_of_reused_number": 4})
+
+    def test_a_mention_of_a_records_other_number_is_that_numbers_one_order(self):
+        """A Portal order holds its BC number PO100025 (also a BC order's) and its
+        FileMaker number PO5081 (its FileMaker twin's too). A mail naming PO5081 leads to
+        the Portal and FileMaker records: one order, so the request waits on it. A mail
+        naming PO100025 leads to the Portal and BC records: two orders, nothing decides,
+        also when no FileMaker twin shares PO5081 (the Portal row's own unique number is
+        not what the mail named: only a number the leads cite counts)."""
+        for told, alert, twin in (("PO5081", True, True), ("PO100025", False, True),
+                                  ("PO100025", False, False)):
+            with self.subTest(said=told, twin=twin):
+                w = World()
+                portal = w.obj("PurchaseOrder", {"status": "Pending", "po_number": "PO100025",
+                                                 "fm_po_number": "PO5081",
+                                                 "expected_date": "2026-11-30"})
+                fm = w.obj("PurchaseOrder", {"fm_status": "Pending",
+                                             "fm_po_number": "PO5081" if twin else "PO9"},
+                           binding="fm")
+                bc = w.obj("PurchaseOrder", {"bc_status": "Open", "po_number": "PO100025"},
+                           binding="bc")
+                w.link("PurchaseOrder.same_record_as", portal, fm)
+                w.link("PurchaseOrderLine.line_of", w.obj("PurchaseOrderLine", {
+                    "ordered_quantity": ("10", "ea"),
+                    "received_quantity": ("0", "ea", "received")}), portal)
+                named = [portal, fm] if told == "PO5081" else [portal, bc]
+                for sent, sender, preview in (
+                        ("2026-09-20T10:00:00Z", "sales@synth-vendor.example", "Got it."),
+                        ("2026-10-01T10:00:00Z", "ops@synth-tenant.example",
+                         "Could you please confirm the delivery date?")):
+                    mail = w.obj("Email", {"conversation_id": "c1", "sent_at": sent,
+                                           "sender": sender, "subject": f"RE: {told}",
+                                           "body_preview": preview}, audience=BOX_OURS)
+                    for order in named:
+                        w.link("Email.mentions_purchase_order", mail, order, "lead",
+                               reason=said(told))
+                if self.inbox.exists():
+                    self.inbox.unlink()
+                self.run_engine(w)
+                found = [g["object_id"] for g in self.events().get("vendor_no_reply", [])]
+                self.assertEqual(len(found), 1 if alert else 0)
 
     def test_vendor_no_reply_cardinality_one_ten_sixty(self):
         for n in (1, 10, 60):
