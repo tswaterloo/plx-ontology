@@ -967,6 +967,46 @@ class ReaderOpenUnderWriteLockTests(MirrorTestCase):
                     self.assertEqual(reopened._meta(name), saved[0])
                 reopened.close()
 
+    def test_open_that_needs_a_write_retries_until_the_writer_lets_go(self):
+        # the startup race: the file needs a migration while ingest holds the lock
+        self.filled()
+        db = sqlite3.connect(str(self.path), isolation_level=None)
+        db.execute("DELETE FROM mirror_meta WHERE name = 'replacement_rule'")
+        db.close()
+        holder = self.hold_write_lock()
+        waits = []
+
+        def sleeper(seconds):
+            waits.append(seconds)
+            if len(waits) == 2:   # the writer finishes during the backoff
+                holder.execute("COMMIT")
+
+        reopened = SourceMirror(self.path, None, ALL, clock=self.clock, sleep=sleeper,
+                                _busy_timeout_ms=50)
+        self.addCleanup(reopened.close)
+        self.assertEqual(len(waits), 2)
+        self.assertLess(waits[0], waits[1])   # backoff
+        self.assertIsNotNone(reopened._meta("replacement_rule"))
+
+    def test_open_retries_stop_when_the_writer_made_the_file_current(self):
+        self.filled()
+        db = sqlite3.connect(str(self.path), isolation_level=None)
+        saved = db.execute("SELECT value FROM mirror_meta WHERE name = 'replacement_rule'"
+                           ).fetchone()[0]
+        db.execute("DELETE FROM mirror_meta WHERE name = 'replacement_rule'")
+        db.close()
+        holder = self.hold_write_lock()
+
+        def sleeper(seconds):   # the other process stamps the file, then lets go
+            holder.execute("INSERT OR REPLACE INTO mirror_meta VALUES "
+                           "('replacement_rule', ?)", (saved,))
+            holder.execute("COMMIT")
+
+        reopened = SourceMirror(self.path, None, ALL, clock=self.clock, sleep=sleeper,
+                                _busy_timeout_ms=50)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened._meta("replacement_rule"), saved)
+
     def test_missing_added_column_is_migrated_not_skipped(self):
         self.filled()
         db = sqlite3.connect(str(self.path), isolation_level=None)

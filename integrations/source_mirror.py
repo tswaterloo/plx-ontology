@@ -1465,6 +1465,8 @@ _DDL_OBJECTS = frozenset(re.findall(
 CHANGE_TRIGGERS = frozenset(re.findall(r"CREATE\s+TRIGGER\s+IF\s+NOT\s+EXISTS\s+(\w+)",
                                         _CHANGE_DDL))
 CHANGE_EPOCH = "change_epoch"
+# Retries (with backoff) of the open's own write when another process holds the lock.
+OPEN_WRITE_RETRIES = 3
 _ROW_CURRENT_COLUMNS = ("relation, key_json, run_index, run_length, row_json, row_digest, "
                         "capture_id, first_seen_capture, first_seen_at, last_seen_capture, "
                         "last_seen_at, absent_since_capture, missing_from_source_since, "
@@ -1696,8 +1698,7 @@ class SourceMirror:
             self._open_scoped()
             return
         bound_wal(self._db)
-        if not self._is_current():
-            self._open_for_write(tenant)
+        self._open_current_or_write(tenant)
         self.generation: str = self._meta("generation")
         legacy_max = self._meta("legacy_capture_max")
         self._legacy_capture_max = int(legacy_max) if legacy_max is not None else None
@@ -1734,6 +1735,26 @@ class SourceMirror:
             if self._source_digest is not None and self._meta("source_digest") is None:
                 return False
         return True
+
+    def _open_current_or_write(self, tenant: str) -> None:
+        """Open without a write when the file is current. Otherwise write it, and when
+        another process (a capture) holds the lock past the busy timeout, retry with
+        backoff, each time asking again whether that writer has made the file current: a
+        reader starting while ingest writes waits it out instead of failing to start.
+        The write path is idempotent, so a retry after a partial attempt is safe."""
+        delay = max(0.05, self._busy_timeout_ms / 1000)
+        for attempt in range(OPEN_WRITE_RETRIES + 1):
+            if self._is_current():
+                return
+            try:
+                self._open_for_write(tenant)
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == OPEN_WRITE_RETRIES:
+                    raise
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
+            self._sleep(min(delay * 2 ** attempt, 15.0))
 
     def _open_for_write(self, tenant: str) -> None:
         """Create, migrate, stamp and pin a fresh or legacy file (needs the write
