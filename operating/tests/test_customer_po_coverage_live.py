@@ -2,7 +2,7 @@
 
 Evidence label: ``injected-transport``. Kept apart from ``test_customer_po_coverage``
 (whose fixtures other tests import): this module reads the live-check specs, so the
-spec's test selection runs it without pulling in every
+spec's test selection (``tools/affected_tests.py``) runs it without pulling in every
 importer of those fixtures.
 """
 

@@ -1,4 +1,4 @@
-"""Legacy-ontology import ratchet.
+"""Legacy-ontology import ratchet (`no-legacy-ontology-imports` in tools/gate-checks.json).
 
 New features land only on the new
 ontology path. The legacy uni-temporal store ``ontology.core.OntologyStore`` and its

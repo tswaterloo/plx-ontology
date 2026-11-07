@@ -2,7 +2,7 @@
 
 :func:`verdict` mirrors ``live_verify.run`` once the command has run. It lives outside the
 test modules so a test importing it does not import (and observe) every capture test
-module ``test_capture_carried_specs`` drives.
+module ``test_capture_carried_specs`` drives (tools/affected_tests.py data observers).
 """
 
 from __future__ import annotations

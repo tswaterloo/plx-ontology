@@ -5,8 +5,8 @@ USAGE
     python3 scripts/gen_codemap.py [--section PREFIX ...] [--out FILE] [--root DIR]
 
 Each line gives the module's purpose (docstring), main public names, first-party imports
-and the test modules that import it, from the AST import graph of the
-development tooling. Modules that
+and the test modules that import it, from the AST import graph in
+``tools/import_graph.py`` (the graph ``tools/affected_tests.py`` uses). Modules that
 the upstream pin file lists as mirroring upstream files also name those pins.
 The map is built on demand and never committed. It goes to stdout, or to ``--out``;
 each ``--section`` keeps only a package (``operating``) or the modules under a path
@@ -41,14 +41,14 @@ Built from the AST on demand by `python3 scripts/gen_codemap.py [--section PREFI
 How to use
 - Read your package's section before touching code instead of grepping around:
   `--section operating` for a package, `--section operating/case_` for modules by prefix.
-- Tests for a change: `python3 devloop/affected_tests.py --base origin/main` (tests of the
+- Tests for a change: `python3 tools/affected_tests.py --base origin/main` (tests of the
   changed modules and of everything that imports them, transitively; `ALL` means the
   whole gate set). Run them with `python3 -m unittest <modules>`.
 - Line: path: purpose | names (public top-level names, those other modules import first)
   | imports (first-party) | tests (test modules importing it) | pins (upstream files it
   mirrors, from `devloop/upstream-pins.json`). Lists are capped, `+N` is the rest.
 - Edges are static imports plus string references to a module name or file name
-  (`devloop/import_graph.py`). Dependents are not listed; ask `affected_tests.py`.
+  (`tools/import_graph.py`). Dependents are not listed; ask `affected_tests.py`.
 """
 
 

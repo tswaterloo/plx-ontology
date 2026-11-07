@@ -1,4 +1,4 @@
-"""Static HTTP-egress gate.
+"""Static HTTP-egress gate (`http-egress` in tools/gate-checks.json).
 
 Hard rule: Graph, SharePoint, BC, Portal, MC and mail HTTP is read-only. This AST
 scan is a tripwire, not a sandbox: it fails when non-test code under the scanned
@@ -34,8 +34,6 @@ re-export (``from integrations.http import Request``) cannot hide a non-GET call
 ALLOWED lists (path, qualified enclosing function) pairs verified by reading the code:
   integrations/live_source_guard.py urllib_sender  the one guarded sender: runs
       after check_request (GET, or the OAuth client-credentials token POST).
-      It reaches no
-      business system.
   operating/messages_planner.py post_messages  the opt-in Messages API planner:
       one POST to
       https://api.anthropic.com/v1/messages (API_URL; any other url raises before the
@@ -60,7 +58,7 @@ absent under ROOT is never clean: text mode exits 1; ``--json`` prints only
 ``blocked_reason`` ``scan_tree_missing`` and the missing names and exits 0, so the live
 check reads blocked (its ``blocked_when`` holds only at the expected exit code).
 The gate runs main's copy of this script against the candidate tree (ROOT), so a
-candidate cannot widen its own allowlist. The gate
+candidate cannot widen its own allowlist; see tools/gate-checks.json. The gate
 command still falls back to the candidate's copy when origin/main has no such file
 (first introduction or a shallow clone without the ref); that fallback is kept on
 purpose, because dropping it would fail the gate where the ref is missing.
@@ -89,7 +87,6 @@ REQUIRED_TREES = ("integrations", "operating", "scripts", "devloop")
 SENDER_FILES = {"integrations/live_source_guard.py", "integrations/plx_hub_guard.py"}
 ALLOWED = {
     ("integrations/live_source_guard.py", "urllib_sender"),
-    ("devloop/wake_bridge.py", "fire"),
     ("operating/messages_planner.py", "post_messages"),
     ("operating/embed_sender.py", "post_embeddings"),
 }
@@ -100,7 +97,6 @@ ALLOWED_IMPORTS = {("integrations/live_source_guard.py", "http.client.Incomplete
 URLLIB_FILES = {
     "integrations/http.py",
     "integrations/live_source_guard.py",
-    "devloop/wake_bridge.py",
     "operating/messages_planner.py",
     "operating/embed_sender.py",
 }

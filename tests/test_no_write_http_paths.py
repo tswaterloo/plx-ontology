@@ -42,7 +42,7 @@ BYPASSES = [
     ("import urllib.request as ur\nur.install_opener(ur.build_opener())",
      "integrations/http.py", "install-opener"),
     ("class C:\n    def fire(self):\n        Request(u, data=b'x', method='POST')",
-     "devloop/wake_bridge.py", "non-get-request"),
+     "operating/embed_sender.py", "non-get-request"),
     ("from urllib.request import build_opener\nclass C:\n    def __init__(s):\n"
      "        s.o = build_opener()\n    def go(s):\n        s.o.open(u, b'x')",
      "integrations/http.py", "opener-body"),
@@ -199,7 +199,7 @@ class HttpEgressScanTests(unittest.TestCase):
                 "def {name}():\n    return Request(u, data=b'x', method='POST')\n")
         self.assertEqual(rules(post.format(name="urllib_sender"),
                                "integrations/live_source_guard.py"), set())
-        self.assertEqual(rules(post.format(name="fire"), "devloop/wake_bridge.py"), set())
+        self.assertEqual(rules(post.format(name="post_embeddings"), "operating/embed_sender.py"), set())
         # same code elsewhere, or under another function name, is flagged
         self.assertIn("non-get-request", rules(post.format(name="other"),
                                                "integrations/live_source_guard.py"))
@@ -208,7 +208,7 @@ class HttpEgressScanTests(unittest.TestCase):
         # qualified name: a method named like an allowed function is not excused
         method = ("from urllib.request import Request\nclass C:\n    def fire(self):\n"
                   "        Request(u, data=b'x', method='POST')\n")
-        self.assertIn("non-get-request", rules(method, "devloop/wake_bridge.py"))
+        self.assertIn("non-get-request", rules(method, "operating/embed_sender.py"))
         # the allowlist never excuses a banned import
         self.assertIn("banned-import", rules("import http.client",
                                              "integrations/live_source_guard.py"))
@@ -331,7 +331,7 @@ class HttpEgressScanTests(unittest.TestCase):
         document = json.loads(out.getvalue())
         self.assertEqual(live_verify.check_expectations(spec, code, document), [])
         self.assertTrue({"integrations/live_source_guard.py:urllib_sender",
-                         "devloop/wake_bridge.py:fire"} <= set(document["allowlisted_senders"]))
+                         "operating/messages_planner.py:post_messages"} <= set(document["allowlisted_senders"]))
         # one finding fails it
         failed = {**document, "status": "findings", "findings": 1,
                   "unlisted_senders": ["operating/x.py:f:non-get-request"]}

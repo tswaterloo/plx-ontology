@@ -1,4 +1,4 @@
-"""Hardcoded-case gate.
+"""Hardcoded-case gate (`no-hardcoded-cases` in tools/gate-checks.json).
 
 Real evaluation cases (AO-26005B, PO5447, SoapBox, ...) are evaluation data: they
 belong in live-checks, tests, EVIDENCE and docs, never in product code paths. This
@@ -88,7 +88,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-DENYLIST = "devloop/hardcoded-case-denylist.json"
+DENYLIST = "tools/hardcoded-case-denylist.json"
 SCHEMA = "plx-hardcoded-case-denylist/v1"
 SCANNED = ("ontology", "integrations", "operating", "operator_ui", "operator_api",
            "ops_plane", "reasoning", "engineering", "scripts", "twin")
@@ -436,7 +436,8 @@ def candidate_files(root: Path) -> list[Path]:
     files = [path for top in SCANNED for path in (root / top).rglob("*")
              if path.suffix in (".py", ".json")]
     files += (root / "operator_ui").glob("*.js")
-    files += (root / "devloop").glob("*.py")
+    for tree in ("devloop", "tools"):
+        files += (root / tree).glob("*.py")
     keep = []
     for path in sorted(set(files)):
         relative = path.relative_to(root).as_posix()
@@ -602,10 +603,10 @@ class _Module:
 
 def eval_reference_files(root: Path) -> list[Path]:
     """Product code for the ``eval_reference`` rule: Python and operator_ui JS of the
-    scanned trees, without tests, development tooling or the eval tooling."""
+    scanned trees, without tests, devloop/, tools/ or the eval tooling."""
     return [path for path in candidate_files(root)
             if path.suffix in (".py", ".js")
-            and path.relative_to(root).parts[0] != "devloop"
+            and path.relative_to(root).parts[0] not in ("devloop", "tools")
             and not any(fnmatch.fnmatch(path.relative_to(root).as_posix(), glob)
                         for glob in EVAL_TOOLING)]
 

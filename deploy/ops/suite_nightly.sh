@@ -1,6 +1,7 @@
 #!/bin/bash
 # The whole test suite on origin/main, every test module in its own process across all
-# cores (and a module starts only
+# cores (tools/main_ci.py: slowest modules first from the last run's timings, each wrapped
+# in tools/testslot.py so builders and gates share the machine, and a module starts only
 # while PLX_SUITE_MIN_FREE_GB of memory is available). Tests the tree of a detached
 # worktree (never the dev checkout), so a landing mid-run cannot mix versions.
 # Writes $PLX_SUITE_OUT/suite-<stamp>.{txt,json} and latest.{txt,json}; the last line of the
@@ -18,7 +19,7 @@ git -C "$wt" checkout -qf --detach "$ref"
 git -C "$wt" clean -qfdx -e app/node_modules
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 set +e
-PATH="$PLX_VENV/bin:$PATH" nice -n 5 python3 "$wt/devloop/main_ci.py" --repo "$wt" \
+PATH="$PLX_VENV/bin:$PATH" nice -n 5 python3 "$wt/tools/main_ci.py" --repo "$wt" \
   --workers "${PLX_SUITE_WORKERS:-$(nproc)}" --slots --min-free-gb "${PLX_SUITE_MIN_FREE_GB:-10}" \
   --timings "$out/timings.json" --report "$out/suite-$stamp.json" > "$out/suite-$stamp.txt" 2>&1
 code=$?

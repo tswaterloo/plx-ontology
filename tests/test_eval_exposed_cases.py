@@ -166,7 +166,7 @@ class ExposedItemsTest(unittest.TestCase):
                 self.assertIn("Pending human label", item["label"]["note"])
 
     def test_root_identifiers_are_denylisted_for_product_code(self):
-        denylist = json.loads((ROOT / "devloop" / "hardcoded-case-denylist.json")
+        denylist = json.loads((ROOT / "tools" / "hardcoded-case-denylist.json")
                               .read_text(encoding="utf-8"))
         patterns = [re.compile(entry["pattern"]) for entry in denylist["identifiers"]]
         for item in self.items:

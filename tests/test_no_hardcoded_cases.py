@@ -49,7 +49,7 @@ class HardcodedCaseGateTests(unittest.TestCase):
 
     def _reset(self):
         for top in self.root.iterdir():
-            if top.name != "devloop":
+            if top.name != "tools":
                 shutil.rmtree(top)
 
     def write(self, relative: str, text: str):
@@ -175,9 +175,9 @@ class HardcodedCaseGateTests(unittest.TestCase):
         self.write("tests/ao_case_script.py", "X = 1\n")
         self.assert_passes()
 
-    def test_top_level_devloop_python_is_scanned(self):
-        self.write("devloop/controller.py", "X = 'PO5447'\n")
-        self.assert_fails("devloop/controller.py:1 identifier PO5447=")
+    def test_top_level_tools_python_is_scanned(self):
+        self.write("tools/controller.py", "X = 'PO5447'\n")
+        self.assert_fails("tools/controller.py:1 identifier PO5447=")
 
     def test_allowlist_passes_before_expiry_and_fails_after(self):
         self.write("operating/packaging_case_script.py", "X = 'SoapBox example'\n")

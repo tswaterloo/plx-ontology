@@ -74,7 +74,7 @@ def orders(modules: list[str]) -> dict[str, list[str]]:
 
 class GateModuleOrderTest(unittest.TestCase):
     def test_every_checks_modules_import_alike_in_any_order(self) -> None:
-        spec = json.loads((ROOT / "devloop/gate-checks.json").read_text())
+        spec = json.loads((ROOT / "tools/gate-checks.json").read_text())
         root_tests = [str((ROOT / "tests").resolve())]
         probed = 0
         for check in spec["checks"]:

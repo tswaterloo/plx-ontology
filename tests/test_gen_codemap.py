@@ -35,7 +35,7 @@ class RenderTests(unittest.TestCase):
 
     def test_how_to_use_comes_first(self) -> None:
         self.assertTrue(self.text.startswith("# Code map (generated)"))
-        self.assertIn("python3 devloop/affected_tests.py --base origin/main", self.text[:1500])
+        self.assertIn("python3 tools/affected_tests.py --base origin/main", self.text[:1500])
         self.assertLess(self.text.index("How to use"), self.text.index("## pkg"))
 
     def test_packages_are_sections_with_module_and_test_counts(self) -> None:

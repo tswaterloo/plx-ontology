@@ -71,7 +71,7 @@ class ObjectiveFamilyRetiredTests(unittest.TestCase):
         self.assertGreater(scanned, 200)
 
     def test_every_gate_unittest_target_exists(self):
-        gate = json.loads((ROOT / "devloop" / "gate-checks.json").read_text(encoding="utf-8"))
+        gate = json.loads((ROOT / "tools" / "gate-checks.json").read_text(encoding="utf-8"))
         targets = []
         for check in gate["checks"]:
             # A check's command line is `command` then its `modules`.
@@ -86,7 +86,7 @@ class ObjectiveFamilyRetiredTests(unittest.TestCase):
                                 for name in modules), target)
 
     def test_runtime_gate_checks_the_goal2_action_path(self):
-        gate = json.loads((ROOT / "devloop" / "gate-checks.json").read_text(encoding="utf-8"))
+        gate = json.loads((ROOT / "tools" / "gate-checks.json").read_text(encoding="utf-8"))
         command = next(" ".join([check["command"], *check.get("modules", [])])
                        for check in gate["checks"] if check["name"] == "runtime-focused")
         modules = {target.rsplit(".", 2)[0] for target in command.split()[3:]}

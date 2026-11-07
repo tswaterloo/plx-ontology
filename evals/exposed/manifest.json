@@ -2,7 +2,7 @@
  "format": "plx-eval-exposed-manifest/v1",
  "split": "dev",
  "exposure": "exposed",
- "rule": "Exposed real cases: builder-visible, so dev/regression only and never held-out (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md 1.1 assessment; advisory batch classification). They are evaluation data only: product code must not name them (gate no-hardcoded-cases, devloop/hardcoded-case-denylist.json). The leakage unit is the whole cluster: the four soapbox-po5447 items are one transaction.",
+ "rule": "Exposed real cases: builder-visible, so dev/regression only and never held-out (devloop/CONTEXT/02-CASES-AND-ARTIFACTS.md 1.1 assessment; advisory batch classification). They are evaluation data only: product code must not name them (gate no-hardcoded-cases, tools/hardcoded-case-denylist.json). The leakage unit is the whole cluster: the four soapbox-po5447 items are one transaction.",
  "evidence_label": "advisory-curated (expected values copied from the Dot's records; no live read, no host run, no human audit)",
  "run": "python3 -m evals.runner run --items evals/exposed --split dev ... (kept apart from evals/dev so the fixture baseline over the synthetic dev set is unchanged)",
  "families": {

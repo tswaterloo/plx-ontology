@@ -1,4 +1,4 @@
-"""Oracle import ban.
+"""Oracle import ban (gate check ``oracle-import-ban`` in tools/gate-checks.json).
 
 It must never run Workbench code (``ontology``, ``operating``,
 ``integrations``, ``scripts``, ...), so its joins cannot share a bug with the projection and
