@@ -15,7 +15,7 @@ import { getActionStates, getBriefing, getBriefingItems, getSuggestions, markBri
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, recordLabel, safeHref } from "@/lib/format";
-import { headline, refreshingLine } from "@/lib/home";
+import { headline, refreshingLine, staleLine, yourMorning } from "@/lib/home";
 import type { ActionResult, Briefing, BriefingItem, HomeResponse, LatePo, ProactiveSuggestion } from "@/lib/types";
 
 const TZ = "America/Toronto";
@@ -300,6 +300,7 @@ function Today() {
   }, [selectedKey]);
 
   const head = headline(home, briefing);
+  const morning = yourMorning(briefing);
   const na = home?.needs_attention;
   const lateTotal = na?.status === "read" ? (na.late_total ?? (na.late_pos ?? []).length) : null;
   const total = (briefing?.status === "read" ? briefing.count : null) ?? groups.reduce((n, g) => n + g.count, 0);
@@ -370,6 +371,19 @@ function Today() {
 
       <StaleNote since={home?.stale_since ?? briefing?.stale_since} className="px-5 py-1.5" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto pb-4" data-testid="needs-you" {...(!briefing || !suggestionsRead ? { "data-pending": "" } : {})}>
+        {morning && (
+          <div className="border-b border-border px-5 py-3" data-testid="your-morning">
+            <h2 className="text-[13px] font-semibold">Your morning</h2>
+            <p className="mt-0.5 text-[12px] text-muted">{morning.line}</p>
+            {morning.items.map((i) => (
+              <Link key={i.id} href={i.open_url} className="mt-2 block text-[13px] hover:underline" data-testid="your-morning-item">
+                <span className="font-medium">{i.subject_label}</span>
+                <span className="text-muted"> · {i.label}</span>
+                {(i.why_yours ?? [])[0] && <span className="block text-[12px] text-faint">{(i.why_yours ?? [])[0]}</span>}
+              </Link>
+            ))}
+          </div>
+        )}
         {error ? (
           <div className="p-4">
             <LoadProblem message={error} busy={busy} onRetry={() => load(true)} />

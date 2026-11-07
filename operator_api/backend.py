@@ -2931,7 +2931,8 @@ class WorkspaceBackend(ActionsMixin):
 
         with view._request():
             key = reader_key(view, ("briefing", since_visit,
-                                    tuple(sorted(self.test_named())), last_visit_of(view)))
+                                    tuple(sorted(self.test_named())), last_visit_of(view),
+                                    identity_of(view)))
         # kept without the reader's name (a read-ahead does not know it): the greeting
         # in the digest is written for the reader now
         found, top, labels, tests_hidden = self.page_cache.kept(
@@ -2950,6 +2951,9 @@ class WorkspaceBackend(ActionsMixin):
         named = self.test_named()
         found = briefing_aged(view.briefing(since_visit=since_visit),
                               self.today() if self.today else None)
+        if isinstance(found.get("involvement"), Mapping) \
+                and not found["involvement"].get("complete"):
+            note_cut()   # some items' involvement not checked: kept in this process only
         # test and placeholder records are left out (judged on the label each reads as,
         # in the top and among every late order, as Home judges them), the count says how
         # many fewer there are
@@ -3016,7 +3020,8 @@ class WorkspaceBackend(ActionsMixin):
         now and kept."""
         with view._request():
             key = reader_key(view, ("briefing_items", event_type, offset, limit, since_visit,
-                                    tuple(sorted(self.test_named())), last_visit_of(view)))
+                                    tuple(sorted(self.test_named())), last_visit_of(view),
+                                    identity_of(view)))
         return self.page_cache.kept(view, key, lambda: self._briefing_items(
             view, event_type, offset=offset, limit=limit, since_visit=since_visit),
             page_handles, copy=lambda model: model.model_copy(deep=True))
@@ -3537,7 +3542,36 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
         sources=[m.Source(system=system_of(h), handle=h, label=record_words(h),
                           open_url=open_url(h))
                  for h in (item.get("citations") or ())[:3] if isinstance(h, str)],
-        trail=trail)
+        trail=trail, yours=bool(item.get("yours")),
+        why_yours=yours_words(item.get("involvement") or ()))
+
+
+# Why an item is the reader's (``operating.involvement``), in words.
+YOURS_WORDS = {"your_mail": "Mentioned in your mail",
+               "you_correspond": "Its {kind} writes to your mailbox"}
+
+
+def yours_words(reasons: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Each distinct reason an item is the reader's, in words; an unknown reason is not
+    stated (never guessed into words)."""
+    out: list[str] = []
+    for reason in reasons:
+        if not isinstance(reason, Mapping):
+            continue
+        code, via = reason.get("reason"), str(reason.get("via") or "")
+        if code == "named" and via:
+            words = f"You are named as its {via.replace('_', ' ')}"
+        elif code == "you_correspond":
+            kind = via.split(":", 1)[0] or "counterpart"
+            words = YOURS_WORDS[code].format(kind=re.sub(r"(?<!^)(?=[A-Z])", " ",
+                                                         kind).lower())
+        elif code in YOURS_WORDS:
+            words = YOURS_WORDS[code]
+        else:
+            continue
+        if words not in out:
+            out.append(words)
+    return out
 
 
 SUGGESTION_TEST_PASSES = 3        # rounds of leaving out test records a card would show
@@ -3654,7 +3688,16 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
             "event_type", "label", "status", "words", "found_live", "first_found")})
                for t in found.get("types") or ()],
         today=str(found.get("today") or bf.today_line(found)),
-        digest_preview=digest, test_records_hidden=hidden_words(tests_hidden))
+        digest_preview=digest, test_records_hidden=hidden_words(tests_hidden),
+        yours=int(found.get("yours") or 0),
+        involvement=involvement_state(found.get("involvement")))
+
+
+def involvement_state(found: Any) -> str:
+    """``Briefing.involvement`` from ``Involvement.out()`` (None: no identity)."""
+    if not isinstance(found, Mapping):
+        return "no_identity"
+    return "checked" if found.get("complete") else "partly_checked"
 
 
 def briefing_trail(backend: "WorkspaceBackend", view: Any, item: Mapping[str, Any],
@@ -4959,8 +5002,22 @@ def profitability_model(backend: "WorkspaceBackend", view: Any,
         products=[product_margin(backend, view, p, items) for p in products[:30]],
         breakdown=cost_breakdown(backend, view, breakdown, drivers,
                                  why=profit.get("why") or ()) if breakdown else None,
+        drivers=[profit_driver(backend, view, d) for d in profit.get("customer_drivers")
+                 or ()],
         next_action=m.NextAction(text=action["text"], rule=action["rule"])
         if action else None)
+
+
+def profit_driver(backend: "WorkspaceBackend", view: Any, row: Mapping[str, Any]
+                  ) -> m.ProfitDriver:
+    """``customer_profit.customer_drivers``' row as the contract's ``ProfitDriver``, its
+    sources decided for this reader again (a withheld one left out, never named)."""
+    return m.ProfitDriver(
+        kind=row["kind"], text=str(row["text"])[:600], established=bool(row["established"]),
+        amount=_money(row.get("amount"), row.get("currency")) if row.get("established")
+        else None,
+        where_it_would_live=str(row["where"])[:300] if row.get("where") else None,
+        sources=_decided_sources(backend, view, row.get("handles") or ()))
 
 
 def product_words(row: Mapping[str, Any], items: Mapping[str, Any]) -> str:
@@ -6229,6 +6286,21 @@ def inbox_content(inbox: Path, files: tuple) -> tuple:
     return stamp
 
 
+def identity_of(view: Any) -> Optional[tuple]:
+    """The reader's identity in the sources (``ObjectWorkspace.identity``: addresses and
+    object ids), for the briefing's key: an address confirmed or removed is a new key.
+    None when the view names none."""
+    get = getattr(view, "identity", None)
+    if not callable(get):
+        return None
+    try:
+        found = get()
+    except Exception:  # noqa: BLE001 - undecidable: a key of its own, read again
+        return ("unreadable", time.monotonic())
+    return (tuple(sorted(getattr(found, "addresses", ()))),
+            tuple(sorted(getattr(found, "object_ids", ()))), getattr(found, "basis", None))
+
+
 def last_visit_of(view: Any) -> tuple:
     """("visit", when this reader last marked its briefing seen): the briefing's own key
     part (its "new since your visit" marks and counts read it)."""
@@ -6454,6 +6526,11 @@ def bc_customer_of(view: Any, page: m.ObjectPage) -> Optional[tuple[str, list[st
     return str(exact[0]["object_id"]), [str(c["object_id"]) for c in exact[1:]]
 
 
+# The records whose page has a trail section: a purchase order's lateness trail, and the
+# materials walk of a customer order or a customer (``trail.for_page``).
+TRAIL_TYPES = ("PurchaseOrder", "SalesOrder", "Customer")
+
+
 def plans_before(section: str) -> tuple[str, ...]:
     """The plans of the page's sections read before ``section`` (``m.PAGE_SECTIONS``
     order) by the page's full read."""
@@ -6493,10 +6570,13 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
                 out.people = people_of(backend, view, ran)
             else:
                 out.landed_cost = landed_cost_of(backend, view, ran)
-    elif kind != "PurchaseOrder":
+    elif kind not in TRAIL_TYPES:
         out.applies = False
         return out
     else:
+        # a purchase order's lateness trail; a customer order's or customer's materials
+        # walk (the late materials holding it, each late PO with its cited trail), as Ask
+        # reads it for this reader (``trail.for_page``)
         from . import trail as trails
         with view._request():
             out.trail = trails.for_page(
@@ -6504,7 +6584,7 @@ def read_section(backend: WorkspaceBackend, view: Any, page: m.ObjectPage,
                 host_schemes=HOST_READ_SCHEMES,
                 late=listed_late(view, oid, page.label,
                                  backend.today() if backend.today else None,
-                                 kept=backend.page_cache))
+                                 kept=backend.page_cache) if kind == "PurchaseOrder" else ())
             out.not_found = reconciled_not_found(page.not_found, out.trail)
     out = presentation.polished(out)
     if section == "trail":

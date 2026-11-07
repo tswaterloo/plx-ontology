@@ -43,3 +43,26 @@ export function staleLine(staleSince?: string | null): string | null {
   const clock = t.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/Toronto" });
   return `As of ${clock} ET · refreshing`;
 }
+
+/** The local hour from which Home opens with "Your morning". */
+export const MORNING_HOUR = 5;
+
+/**
+ * "Your morning" at the top of Home: from 5 AM local, the reader's own items of their
+ * briefing (records they are named on, that their mail mentions, or whose supplier or
+ * customer writes to them; the server ranks them first, read as the reader) and the
+ * day's line. Null before 5 AM local or without a read briefing.
+ */
+export function yourMorning(
+  briefing: Briefing | null,
+  now: Date = new Date(),
+  limit = 3,
+): { line: string; items: NonNullable<Briefing["items"]>; yours: number } | null {
+  if (!briefing || briefing.status !== "read" || now.getHours() < MORNING_HOUR) return null;
+  const items = (briefing.items ?? []).filter((i) => i.yours).slice(0, limit);
+  const yours = briefing.yours ?? 0;
+  const line = yours > 0
+    ? `${plural(yours, "item")} about your own orders, tasks and contacts.`
+    : briefing.today || "Nothing of yours needs action this morning.";
+  return { line, items, yours };
+}

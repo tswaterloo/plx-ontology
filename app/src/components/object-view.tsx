@@ -1073,8 +1073,8 @@ if (c.signal.aborted) return;
       {(isCustomer || isSalesOrder) &&
         (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} />)}
       {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
-      {isPo && trailPending ? (
-        <SectionSkeleton name="trail" title="How we know" lines={3} />
+      {(isPo || isSalesOrder || isCustomer) && trailPending ? (
+        <SectionSkeleton name="trail" title={isPo ? "How we know" : "Materials"} lines={3} />
       ) : (
         <div>
           <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />

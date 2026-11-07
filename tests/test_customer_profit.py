@@ -417,6 +417,38 @@ class CustomerProfitTests(unittest.TestCase):
                          "FG-9 (Synthetic tube): the last 2 orders with it ran below item cost "
                          "(SO-101, SO-102).")
 
+    def test_why_the_customer_loses_money_names_its_drivers_from_checked_orders(self):
+        """The customer's why: its losing orders, its losing item, its credits, each a sum
+        of checked figures with their records; discounts and freight said as not broken
+        out, never a figure."""
+        got = {d["kind"]: d for d in self.answer["customer_drivers"]}
+        self.assertEqual(list(got), ["losing_orders", "credit", "low_margin_item",
+                                     "discount", "freight"])
+        losing = got["losing_orders"]
+        self.assertEqual(losing["text"], "2 of 3 checked orders lost money: −65.00 CAD in "
+                         "all (on item cost only); worst SO-101, −45.00 CAD.")
+        decided = [o for o in self.answer["orders"] if o["decided"]]
+        self.assertEqual(losing["amount"], sum(o["margin"] for o in decided if o["margin"] < 0))
+        self.assertEqual(len(losing["handles"]), 2)
+        self.assertEqual((got["credit"]["amount"], got["credit"]["currency"]),
+                         (Decimal("-10"), "CAD"))
+        self.assertTrue(got["credit"]["handles"])
+        self.assertTrue(got["low_margin_item"]["text"].startswith(
+            "Item FG-9 (Synthetic tube) lost 65.00 CAD (-43.3%) on 14 PCS over 2 orders"))
+        for kind in ("discount", "freight"):
+            self.assertFalse(got[kind]["established"])
+            self.assertIsNone(got[kind]["amount"])
+            self.assertEqual(got[kind]["handles"], [])
+        # each currency on its own: an order in another currency is never summed in
+        usd = cp.Order("o2", "SO-9", [TODAY], margin=Decimal(-5), revenue=Decimal(1),
+                       cost=Decimal(6), currency="USD")
+        cad = [o for o in self.world_orders() if o.decided]
+        mixed = [d for d in cp.customer_drivers(cad + [usd], [], {})
+                 if d["kind"] == "losing_orders"]
+        self.assertEqual({(d["currency"], d["amount"]) for d in mixed},
+                         {("CAD", Decimal(-65)), ("USD", Decimal(-5))})
+        self.assertEqual(cp.customer_drivers([], [], {}), [])
+
     def test_margin_per_product_sums_to_the_customer_margin(self):
         got = self.answer
         rows = {got["items"][r["item"]]["code"]: r for r in got["products"]}
@@ -559,6 +591,7 @@ class RestrictedReaderTests(unittest.TestCase):
         self.assertIsNone(got["totals"]["margin"])
         self.assertIsNone(got["breakdown"])
         self.assertEqual(got["drivers"], [])
+        self.assertEqual(got["customer_drivers"], [])
         self.assertIn("ORDER_RECORDS_WITHHELD", {g["code"] for g in got["gaps"]})
         shown = json.dumps(got, default=str)
         for figure in ("90", "135", "150", "100.0", "60.0", "80.0"):

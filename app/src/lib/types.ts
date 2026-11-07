@@ -32,6 +32,7 @@ export type CostLine = S["CostLine"];
 export type CostSource = S["CostSource"];
 export type OrderMargin = S["OrderMargin"];
 export type ProductMargin = S["ProductMargin"];
+export type ProfitDriver = S["ProfitDriver"];
 export type ApiErrorBody = S["ErrorBody"];
 export type AskRequest = S["AskRequest"];
 export type HistoryTurn = S["HistoryTurn"];

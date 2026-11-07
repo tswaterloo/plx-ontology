@@ -1193,6 +1193,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         out["breakdown"]["previous"] = previous_sales(focus_order, decided)
     out["products"] = products(decided, blocking, covered)
     out["drivers"] = drivers(out["breakdown"], items) if out["breakdown"] else []
+    out["customer_drivers"] = customer_drivers(decided, out["products"], items)
     out["why"] = why(out["drivers"])
     out["next_action"] = next_action(out, visible, items)
     out["items"] = items
@@ -1533,6 +1534,83 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
                         f"the {unit_words(row['unit_price'], cur, row['line'].unit)} it sold "
                         f"for on {order.number}."})
             break
+    return out
+
+
+# A reason a customer's margin is what it is, in the order the page lists them.
+CUSTOMER_DRIVER_KINDS = ("losing_orders", "low_margin_item", "credit", "discount", "freight")
+
+
+def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[str, Any]],
+                     items: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Why the customer makes or loses money, over the orders with a checked margin only
+    (``decided``: never a withheld or unchecked order), each currency on its own (nothing
+    converted or summed across currencies), every figure a Decimal sum of the orders' own
+    checked figures with their handles:
+
+    * ``losing_orders``: the checked orders that lost money, their loss and the worst one;
+    * ``low_margin_item``: the items losing money over the checked lines (``products``),
+      worst first, at most two; else the item with the lowest margin % when the customer
+      has more than one;
+    * ``credit``: credit memos taken off invoiced revenue (passed-check credit memo lines);
+    * ``discount`` and ``freight``: not established (``established`` false), said with where
+      they would live: discounts are already netted out of revenue and not broken out, and
+      inbound freight is expensed outside item cost (BC) or in Sage's item cost as costed.
+    Nothing when no order has a checked margin."""
+    if not decided:
+        return []
+    out: list[dict[str, Any]] = []
+    currencies = sorted({o.currency for o in decided if o.currency}) or [None]
+    for cur in currencies:
+        mine = [o for o in decided if o.currency == cur or len(currencies) == 1]
+        losing = sorted((o for o in mine if o.margin < 0), key=lambda o: (o.margin, o.number))
+        if losing:
+            lost = _sum([o.margin for o in losing])
+            worst = losing[0]
+            out.append({
+                "kind": "losing_orders", "established": True, "amount": lost, "currency": cur,
+                "text": f"{len(losing)} of {len(mine)} checked order"
+                        f"{'s' if len(mine) != 1 else ''} lost money: "
+                        f"{_signed(lost, cur)} in all ({MARGIN_BASIS}); worst "
+                        f"{worst.number}, {_signed(worst.margin, cur)}.",
+                "handles": [o.handle for o in losing if o.handle][:4]})
+        credited = [ln for o in mine for ln in o.lines if ln.credit_amount]
+        if credited:
+            amount = _sum([ln.credit_amount for ln in credited])
+            orders = {o.number for o in mine for ln in o.lines if ln.credit_amount}
+            out.append({
+                "kind": "credit", "established": True, "amount": -amount, "currency": cur,
+                "text": f"Credit memos took {money_words(amount, cur)} off invoiced revenue "
+                        f"on {len(orders)} order{'s' if len(orders) != 1 else ''}.",
+                "handles": [h for ln in credited for h in ln.credit_handles][:4]})
+    loss_items = [r for r in product_rows if r["margin"] < 0][:2]
+    if not loss_items and len(product_rows) > 1:
+        priced = [r for r in product_rows if r.get("margin_pct") is not None]
+        loss_items = sorted(priced, key=lambda r: (r["margin_pct"], str(r["item"])))[:1]
+    for row in loss_items:
+        label = item_label(items.get(row["item"], {}))
+        verb = "lost" if row["margin"] < 0 else "made the lowest margin,"
+        pct = f" ({_pct(row['margin_pct'])})" if row.get("margin_pct") is not None else ""
+        n = len(row["orders"])
+        out.append({
+            "kind": "low_margin_item", "established": True, "amount": row["margin"],
+            "currency": row["currency"],
+            "text": f"{label[0].upper()}{label[1:]} {verb} "
+                    f"{money_words(abs(row['margin']), row['currency'])}{pct} on "
+                    f"{_plain(row['quantity'], Decimal('1'))} {row['unit'] or 'units'} over "
+                    f"{n} order{'s' if n != 1 else ''}.",
+            "handles": list(row.get("handles") or ())[:4]})
+    out.append({"kind": "discount", "established": False, "amount": None, "currency": None,
+                "text": "Discounts are already taken off the revenue above; their amounts "
+                        "are not broken out.",
+                "where": "the invoice lines' discount amounts (Business Central line "
+                         "discount, Sage invoice discount share)", "handles": []})
+    bc = any(not o.sage for o in decided)
+    out.append({"kind": "freight", "established": False, "amount": None, "currency": None,
+                "text": "Freight is not in this margin: " + (
+                    FREIGHT_GAP[1] if bc else SAGE_COST_GAP[1]) + ".",
+                "where": "the G/L freight and duty postings, or a purchase order's landed "
+                         "cost", "handles": []})
     return out
 
 

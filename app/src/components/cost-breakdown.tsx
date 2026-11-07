@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { money, objectHref, plural, safeHref } from "@/lib/format";
-import type { CostBreakdownView, CostSource, CustomerAmount, ObjectRef, OrderMargin, ProductMargin, Profitability, Source } from "@/lib/types";
+import type { CostBreakdownView, CostSource, CustomerAmount, ObjectRef, OrderMargin, ProductMargin, ProfitDriver, Profitability, Source } from "@/lib/types";
 import { EtaPill } from "./eta-confirmed";
 import { NextActionCard } from "./evidence-trail";
 import { SourceChips } from "./source-chip";
@@ -235,6 +235,24 @@ export function CostBreakdown({ breakdown }: { breakdown: CostBreakdownView }) {
 
 /** A customer's profitability: four numbers, the ranking, the worst order's breakdown and the
  * suggested next step (a suggestion only: nothing is written). */
+/** Why the customer makes or loses money: losing orders, low-margin items, credits, each with
+ * its sources; discounts and freight said plainly when the records do not break them out. */
+export function MarginDrivers({ drivers }: { drivers: ProfitDriver[] }) {
+  if (drivers.length === 0) return null;
+  return (
+    <section className="space-y-1.5" data-testid="margin-drivers">
+      <h3 className="text-[13px] font-semibold">Why</h3>
+      <ul className="max-w-[72ch] space-y-1 text-[13px] leading-5">
+        {drivers.map((d, i) => (
+          <li key={i} className={d.established ? undefined : "text-muted"} data-testid={`driver-${d.kind}`}>
+            {d.text} {(d.sources ?? []).length > 0 && <SourceChips sources={d.sources ?? []} max={2} />}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function ProfitabilityView({ p }: { p: Profitability }) {
   const counted = p.orders_counted;
   const inPeriod = p.orders_in_period;
@@ -252,6 +270,7 @@ export function ProfitabilityView({ p }: { p: Profitability }) {
           caption={counted < inPeriod ? "the rest have no cost yet" : "every order counted"}
         />
       </StatRow>
+      <MarginDrivers drivers={p.drivers ?? []} />
       <OrderRanking orders={p.orders ?? []} note={p.ranking} more={p.orders_more ?? 0} inPeriod={inPeriod} />
       {p.test_records_hidden && (
         <p className="text-[12px] leading-4 text-muted" data-testid="tests-hidden">

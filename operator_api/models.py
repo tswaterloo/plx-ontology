@@ -766,6 +766,20 @@ class ProductMargin(_Model):
     sources: list[Source] = Field(default_factory=list)
 
 
+class ProfitDriver(_Model):
+    """One reason a customer's margin is what it is, over its checked orders only."""
+    kind: Literal["losing_orders", "low_margin_item", "credit", "discount", "freight"]
+    text: str = Field(description="The reason in one plain sentence; every figure in it is "
+                                  "``amount`` or a checked order's own.")
+    established: bool = Field(description="False: not established from the records (the "
+                                          "text says so and ``where_it_would_live`` where "
+                                          "it would be read); no figure is stated.")
+    amount: Optional[Money] = Field(None, description="Its effect on the margin, signed.")
+    where_it_would_live: Optional[str] = None
+    sources: list[Source] = Field(default_factory=list, description="The cited records "
+                                                                    "this reader may open.")
+
+
 class Profitability(_Model):
     customer: ObjectRef
     period_start: str
@@ -807,6 +821,11 @@ class Profitability(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Margin per item over the checked orders, worst first.")
     breakdown: Optional[CostBreakdown] = None
+    drivers: list[ProfitDriver] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Why the customer makes or loses money (losing orders, low-margin items, "
+                    "credits; discounts and freight said as not established), over the "
+                    "checked orders only, one currency each.")
     next_action: Optional[NextAction] = Field(None, description="A suggested next step "
                                                                 "from the facts only.")
     test_records_hidden: Optional[str] = Field(
@@ -1236,6 +1255,11 @@ class BriefingItem(_Model):
     sources: list[Source] = Field(default_factory=list)
     trail: Optional[EvidenceTrail] = Field(None, description="How we know, read as this "
                                                              "reader (top items only).")
+    yours: bool = Field(False, description="About a record you are involved in (named on "
+                                           "it, mentioned in your mail, or its supplier or "
+                                           "customer writes to you), read as you.")
+    why_yours: list[str] = Field(default_factory=list, description="Why it is yours, in "
+                                                                   "words.")
 
 
 class BriefingGroup(_Model):
@@ -1309,6 +1333,12 @@ class Briefing(_Model):
         description="Set when the server could not read this page in time and serves the "
                     "last page it read for this same reader: when that page was read "
                     "(ISO). It is refreshed in the background.")
+    yours: int = Field(0, ge=0, description="Items about records you are involved in; "
+                                             "they are ranked first.")
+    involvement: Literal["checked", "partly_checked", "no_identity"] = Field(
+        "no_identity", description="Whether your involvement was checked for every item "
+                                   "('partly_checked': some were not, they rank as not "
+                                   "yours), or you have no identity on record.")
 
 
 class BriefingEventType(_Model):

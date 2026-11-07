@@ -432,6 +432,25 @@ class ProfitAskTests(unittest.TestCase):
         customer = view.world.customer("C-50")
         section = be.read_section(backend, view, SimpleNamespace(
             object_id=customer, type="Customer", label="Northwind Test Foods"), "margin")
+        # why it loses money, over the checked orders (stated even without a total)
+        drivers = {d.kind: d for d in section.profitability.drivers}
+        self.assertEqual(drivers["losing_orders"].amount.model_dump(),
+                         {"amount": "-65.00", "currency": "CAD"})
+        self.assertTrue(drivers["credit"].sources and drivers["low_margin_item"].sources)
+        self.assertIsNone(drivers["freight"].amount)
+        self.assertIn("/itemLedgerEntries/", json.dumps([d.model_dump() for d in
+                                                         drivers.values()]))
+        # a reader who may not open the item ledger: the reasons stand on the figures its
+        # tools read, the ledger records behind them are never shown
+        held_view = View(self, "/itemLedgerEntries/")
+        self.addCleanup(held_view.close)
+        held = be.read_section(be.WorkspaceBackend(
+            lambda session: held_view, data_label="isolated-fixture", today=lambda: TODAY),
+            held_view, SimpleNamespace(object_id=customer, type="Customer",
+                                       label="Northwind Test Foods"), "margin")
+        shown = json.dumps([d.model_dump() for d in held.profitability.drivers])
+        self.assertIn("lost money", shown)
+        self.assertNotIn("/itemLedgerEntries/", shown)
         self.assertEqual(section.profitability.margin.amount, "-41.00")
         self.assertEqual(section.profitability.breakdown.order.label, "SO-101")
         calls = view.calls
@@ -440,6 +459,36 @@ class ProfitAskTests(unittest.TestCase):
             label="PO9001"), "margin")
         self.assertFalse(other.applies)
         self.assertIsNone(other.profitability)
+        self.assertEqual(view.calls, calls)
+
+    def test_order_and_customer_pages_walk_the_materials_holding_them(self):
+        """The ``trail`` section of a customer order's and a customer's page is the
+        materials walk Ask runs (late materials holding the order, each late PO's cited
+        trail); a link the records do not hold is a typed gap, never a guess. Other records
+        than a purchase order, customer order or customer have no trail section."""
+        view = View(self)
+        backend = be.WorkspaceBackend(lambda session: view, data_label="isolated-fixture",
+                                      today=lambda: TODAY)
+        self.addCleanup(view.close)
+        found = view._call("plx.find", {"query": "SO-101", "object_type": "SalesOrder"})
+        order = next(c["object"]["object_id"] for c in found["candidates"]
+                     if c["object"]["object_id"].split(":")[1].startswith("bc."))
+        for oid, kind, label in ((order, "SalesOrder", "SO-101"),
+                                 (view.world.customer("C-50"), "Customer",
+                                  "Northwind Test Foods")):
+            with self.subTest(kind=kind):
+                page = m.ObjectPage.model_construct(
+                    object_id=oid, type=kind, label=label, not_found=[], late_lines=[],
+                    facts=[], status=m.ObjectStatus(state="read", text=""))
+                section = be.read_section(backend, view, page, "trail")
+                self.assertTrue(section.applies)
+                self.assertEqual(section.trail.kind, "materials")
+                self.assertIn("assembly_order_not_linked_to_order_line",
+                              {g.reason for g in section.trail.gaps})
+        calls = view.calls
+        other = be.read_section(backend, view, SimpleNamespace(
+            object_id="Item:bc.items:x", type="Item", label="FG-9"), "trail")
+        self.assertFalse(other.applies)
         self.assertEqual(view.calls, calls)
 
     def test_no_customer_found_goes_on_and_several_are_offered_never_merged(self):

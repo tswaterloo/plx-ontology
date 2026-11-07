@@ -739,7 +739,41 @@ class ObjectWorkspace:
                 pe.inbox_path(path) if inbox is None else inbox, path,
                 reader=pe.reader_key(self.actor), may_read=may_read, held=held,
                 decide=self.access.decide, routing=self.routing(),
-                since_visit=since_visit)}
+                since_visit=since_visit, involved=self.involved())}
+
+    def identity(self) -> Any:
+        """Who this reader is in the sources (``operating.involvement.Identity``): an
+        employee's confirmed addresses and Entra object id; a reader that is no employee,
+        or whose rights cannot be resolved, has none (involved in nothing)."""
+        from operating import involvement
+        from operating.employee_permissions import employee_principals
+
+        if not employee_principals(self.actor):
+            return involvement.Identity(basis="not_an_employee")
+        gate = getattr(getattr(self.access, "runtime", None), "employee_gate", None)
+        try:
+            entitlement = gate.entitlement(self.actor) if gate is not None else None
+        except Exception:  # noqa: BLE001 - an unresolved employee is involved in nothing
+            return involvement.Identity(basis="rights_unresolved")
+        return involvement.Identity.of(entitlement)
+
+    def involved(self) -> Any:
+        """What the briefing asks of this reader's involvement (``build``'s ``involved``):
+        each record read through this reader's own tools, so a record, message or
+        counterpart it may not open never makes an item theirs; None without an identity
+        (nothing is read)."""
+        from operating import involvement
+
+        identity = self.identity()
+        if not identity.known:
+            return None
+        try:
+            schema = getattr(self.access, "schema", None)
+        except Exception:  # noqa: BLE001 - no schema: no paths, named properties only
+            schema = None
+        return lambda ids: involvement.derive(
+            lambda name, args, _actor: self._call(name, dict(args)), self.actor, schema,
+            identity, ids)
 
     def routing(self) -> Any:
         """Where this reader's work is routed (``operating.briefing.Routing``): an

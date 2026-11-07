@@ -20,7 +20,13 @@ more widely, writes to a business system or sends anything.
   role (ADMIN or above) is routed every type. A reader with no department on record is routed nothing
   (``no_department_on_record``): the events it may see are counted as other teams'.
   Routing never widens what a reader sees: it only chooses among visible events.
-* **Ranking** (``RANK_BASIS``), over what the reader sees only: customer orders affected,
+* **Yours** (``operating.involvement``): an event about a record the reader is involved
+  in (named on it, mentioned in their own mailbox, or its supplier or customer writes to
+  them), read as the reader from the ontology's links and their employee identity, is in
+  their briefing even when not routed to their department, and ranked before the rest.
+  It only chooses among the events the reader's own trimmed inbox holds.
+* **Ranking** (``RANK_BASIS``), over what the reader sees only: the reader's own first,
+  then customer orders affected,
   then money involved, then what the latest run found new, then days (the most late,
   slipped or waiting; the FEWEST to expiry, ``COUNTDOWN_HORIZON``), then the most recently
   first seen; acknowledged items after the others. Money
@@ -185,7 +191,8 @@ REASON_WORDS = {"time_budget": "time ran out", "event_bound": "only the most rec
                 "card_bound": "only the first ones were read",
                 "read_apart": "the rest wait for the vendor-mail pass"}
 
-RANK_BASIS = ("Ranked by customer orders affected, then money involved (largest first within "
+RANK_BASIS = ("Your own items first (records you are named on, that your mail mentions, or "
+              "whose supplier or customer writes to you), then by customer orders affected, then money involved (largest first within "
               "each currency; amounts in different currencies are never converted or "
               "compared, and a suspect total is never used), then what the latest check "
               "found new, then the most days late, slipped or waiting and the fewest days "
@@ -356,6 +363,7 @@ class Item:
     new_this_generation: bool = False
     acknowledged: bool = False
     money_place: float = 1.0   # 0: the largest amount in its currency; 1: no usable amount
+    yours: list[dict[str, str]] = field(default_factory=list)   # why it is the reader's
 
 
 def _item(gap: Mapping[str, Any], order: int, since: str | None, run_at: str | None
@@ -418,7 +426,7 @@ def rank(items: list[Item]) -> tuple[list[Item], str]:
             item.money_place = values.index(item.amount[0]) / len(values)
     ordered = sorted(items, key=lambda i: i.order)
     ordered.sort(key=lambda i: str(i.gap.get("first_seen") or ""), reverse=True)
-    ordered.sort(key=lambda i: (i.acknowledged, i.event_type == "po_undated",
+    ordered.sort(key=lambda i: (not i.yours, i.acknowledged, i.event_type == "po_undated",
                                 -i.orders_affected, i.money_place, not i.new_this_generation, -_urgency(i)))
     return ordered, RANK_BASIS
 
@@ -550,31 +558,51 @@ def _hidden(hidden: Mapping[str, int] | None, routing: Routing) -> dict[str, int
 
 
 def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, int] | None,
-          last_visit: str | None, limit: int = MAX_ITEMS, since_visit: bool = False
-          ) -> dict[str, Any]:
+          last_visit: str | None, limit: int = MAX_ITEMS, since_visit: bool = False,
+          involved: Any = None) -> dict[str, Any]:
     """One reader's briefing from its own trimmed inbox read (``read_inbox``, open and
     acknowledged) and the counts of events it may not see (``hidden_counts``): every
     routed item ranked (``items``, the first ``TOP_ITEMS`` shown one by one), the groups
     by type with their counts, each check's state and the hidden counts by type.
-    ``since_visit``: only what is new since the reader's last visit."""
+    ``since_visit``: only what is new since the reader's last visit.
+
+    ``involved``: what the reader is involved in (``operating.involvement``), called with
+    the records of every item the reader may see, in ranked order, returning an
+    ``Involvement``. An item about the reader's own record (``yours``) is in their
+    briefing whether or not it is routed to their department, and every one of theirs is
+    ranked before the rest (``RANK_BASIS``); it only ever chooses among items the reader's
+    own trimmed inbox holds, so it never widens what they see."""
     if inbox.get("status") != "read":
         return {"schema": SCHEMA, "status": str(inbox.get("status") or "unavailable"),
                 "items": [], "top": 0, "groups": [], "checks": [], "types": [], "count": 0,
                 "new_since_visit": 0, "other_teams": 0, "hidden": None, "hidden_by_type": {},
                 "rank_basis": RANK_BASIS, "routing": _routing_out(routing),
                 "last_visit": last_visit, "as_of": None, "run_at": None, "complete": False,
-                "since_visit": since_visit, "late_total": None,
+                "since_visit": since_visit, "late_total": None, "yours": 0,
+                "involvement": None,
                 "today": today_line({"status": "unavailable"})}
     run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
-    mine: list[Item] = []
-    others = 0
+    visible: list[Item] = []
     for n, gap in enumerate(inbox.get("gaps") or ()):
         if gap.get("state", "open") not in ("open", "acknowledged"):
             continue
         item = _item(gap, n, last_visit, run_at)
-        if item is None:
-            continue
-        if routing.routes(item.departments):
+        if item is not None:
+            visible.append(item)
+    involvement = None
+    if involved is not None and visible:
+        from .involvement import gather, related_ids
+        involvement = involved(gather(oid for i in rank(list(visible))[0]
+                                      for oid in related_ids(i.gap)))
+        for item in visible:
+            reasons = [r for oid in related_ids(item.gap)
+                       for r in involvement.by_object.get(oid, ())]
+            if reasons:
+                item.yours = reasons
+    mine: list[Item] = []
+    others = 0
+    for item in visible:
+        if item.yours or routing.routes(item.departments):
             mine.append(item)
         else:
             others += 1
@@ -608,6 +636,8 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             # the read stopped at ``MAX_READ``: the counts are "at least"
             "counts_exact": not inbox.get("more"),
             "new_since_visit": new, "since_visit": since_visit,
+            "yours": sum(1 for i in ordered if i.yours),
+            "involvement": involvement.out() if involvement is not None else None,
             "acknowledged": sum(1 for i in ordered if i.acknowledged),
             "late_total": late, "other_teams": others, "left_out": left_out,
             "hidden": None if hidden_by_type is None else sum(hidden_by_type.values()),
@@ -626,7 +656,7 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
 
 def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[str],
          decide: Any, routing: Routing, limit: int = MAX_ITEMS,
-         since_visit: bool = False) -> dict[str, Any]:
+         since_visit: bool = False, involved: Any = None) -> dict[str, Any]:
     """One reader's briefing from the inbox beside ``store``: its open and acknowledged
     events only (other gap kinds never use up the read), the events routed to it that it
     may not see as counts, and its last visit; the reader's grant is ``may_read``/
@@ -644,7 +674,7 @@ def read(inbox: Any, store: Any, *, reader: str, may_read: Any, held: Iterable[s
     hidden = pe.hidden_counts(inbox, store, kinds=EVENT_KINDS, may_read=may_read, held=held,
                               decide=decide) if found.get("status") == "read" else None
     return build(found, routing=routing, hidden=hidden, last_visit=pe.last_visit(inbox, reader),
-                 limit=limit, since_visit=since_visit)
+                 limit=limit, since_visit=since_visit, involved=involved)
 
 
 def _routing_out(routing: Routing) -> dict[str, Any]:
@@ -718,7 +748,9 @@ def _out(item: Item, n: int, kinds: Mapping[str, Any],
             "acknowledged": item.acknowledged,
             "first_seen": gap.get("first_seen"), "last_seen": gap.get("last_seen"),
             "new_since_visit": item.new_since_visit,
-            "new_this_generation": item.new_this_generation}
+            "new_this_generation": item.new_this_generation,
+            "yours": bool(item.yours),
+            "involvement": [dict(r) for r in item.yours]}
 
 
 _AMOUNT_WORDS = {"loss": "lost", "margin_at_stake": "margin at stake",

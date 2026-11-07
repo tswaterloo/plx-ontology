@@ -100,3 +100,24 @@ describe("ProfitabilityView", () => {
     expect(screen.queryByTestId("order-ranking")).toBeNull();
   });
 });
+
+describe("MarginDrivers", () => {
+  it("lists why the customer loses money with each reason's sources, and says plainly what is not broken out", () => {
+    render(
+      <ProfitabilityView
+        p={{
+          ...p,
+          drivers: [
+            { kind: "losing_orders", established: true, text: "2 of 3 checked orders lost money: −65.00 CAD in all.", amount: cad("-65.00"), sources: [ledger] },
+            { kind: "freight", established: false, text: "Freight is not in this margin.", amount: null, where_it_would_live: "the G/L", sources: [] },
+          ],
+        }}
+      />,
+    );
+    const why = screen.getByTestId("margin-drivers");
+    expect(within(why).getByTestId("driver-losing_orders").textContent).toContain("lost money");
+    expect(within(within(why).getByTestId("driver-losing_orders")).getAllByTestId("source-chip")).toHaveLength(1);
+    expect(within(within(why).getByTestId("driver-freight")).queryAllByTestId("source-chip")).toHaveLength(0);
+    expect(within(why).getByTestId("driver-freight").className).toContain("text-muted");
+  });
+});

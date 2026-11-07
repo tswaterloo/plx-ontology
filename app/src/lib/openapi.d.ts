@@ -939,6 +939,13 @@ export type components = {
                 [key: string]: number;
             };
             /**
+             * Involvement
+             * @description Whether your involvement was checked for every item ('partly_checked': some were not, they rank as not yours), or you have no identity on record.
+             * @default no_identity
+             * @enum {string}
+             */
+            involvement: "checked" | "partly_checked" | "no_identity";
+            /**
              * Items
              * @description The top items.
              */
@@ -1001,6 +1008,12 @@ export type components = {
             today: string;
             /** Types */
             types?: components["schemas"]["BriefingEventType"][];
+            /**
+             * Yours
+             * @description Items about records you are involved in; they are ranked first.
+             * @default 0
+             */
+            yours: number;
         };
         /**
          * BriefingCheck
@@ -1164,6 +1177,17 @@ export type components = {
             trail?: components["schemas"]["EvidenceTrail"] | null;
             /** Why */
             why?: string | null;
+            /**
+             * Why Yours
+             * @description Why it is yours, in words.
+             */
+            why_yours?: string[];
+            /**
+             * Yours
+             * @description About a record you are involved in (named on it, mentioned in your mail, or its supplier or customer writes to you), read as you.
+             * @default false
+             */
+            yours: boolean;
         };
         /**
          * BriefingItems
@@ -2556,11 +2580,46 @@ export type components = {
              */
             unit_cost_range?: string | null;
         };
+        /**
+         * ProfitDriver
+         * @description One reason a customer's margin is what it is, over its checked orders only.
+         */
+        ProfitDriver: {
+            /** @description Its effect on the margin, signed. */
+            amount?: components["schemas"]["Money"] | null;
+            /**
+             * Established
+             * @description False: not established from the records (the text says so and ``where_it_would_live`` where it would be read); no figure is stated.
+             */
+            established: boolean;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "losing_orders" | "low_margin_item" | "credit" | "discount" | "freight";
+            /**
+             * Sources
+             * @description The cited records this reader may open.
+             */
+            sources?: components["schemas"]["Source"][];
+            /**
+             * Text
+             * @description The reason in one plain sentence; every figure in it is ``amount`` or a checked order's own.
+             */
+            text: string;
+            /** Where It Would Live */
+            where_it_would_live?: string | null;
+        };
         /** Profitability */
         Profitability: {
             booked_cost?: components["schemas"]["Money"] | null;
             breakdown?: components["schemas"]["CostBreakdown"] | null;
             customer: components["schemas"]["ObjectRef"];
+            /**
+             * Drivers
+             * @description Why the customer makes or loses money (losing orders, low-margin items, credits; discounts and freight said as not established), over the checked orders only, one currency each.
+             */
+            drivers?: components["schemas"]["ProfitDriver"][];
             margin?: components["schemas"]["Money"] | null;
             /**
              * Margin Basis

@@ -510,10 +510,18 @@ def for_page(backend: Any, view: Any, oid: str, label: str, *,
              late: Sequence[tuple[Any, Optional[str]]] = (),
              seconds: float = PO_SECONDS) -> Optional[m.EvidenceTrail]:
     """A purchase order page's trail (the same as the answer's), or None; ``seconds``:
-    its time, checked between its reads (the trail stops itself, it is not cut after)."""
+    its time, checked between its reads (the trail stops itself, it is not cut after).
+    A customer order's or customer's page (``et.START_TYPES``): the materials walk Ask runs
+    for "which late materials hold this order" (``materials_trail``: the POs of the
+    materials it consumes, each with its lateness verdict, the late ones with their full
+    cited trail: confirmations, follow-up mail), over recorded links as this reader."""
     mapper = Mapper(backend, view, object_url=object_url, open_url=open_url,
                     host_schemes=host_schemes)
+    kind = oid.split(":", 1)[0]
     try:
+        if kind in et.START_TYPES:
+            return materials_trail(mapper, view, [(oid, kind, label)],
+                                   seconds=max(seconds, MATERIALS_SECONDS))
         return po_trails(mapper, view, [oid], {oid: label}, seconds=seconds,
                          late={po.object_id: (po, run_at) for po, run_at in late})
     except Exception as error:  # noqa: BLE001 - the page stands without it

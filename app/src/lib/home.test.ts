@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { headline, staleLine } from "./home";
+import { headline, staleLine, yourMorning } from "./home";
 import type { Briefing, BriefingItem, HomeResponse } from "./types";
 
 const home = (late_total: number | null, status: "read" | "unavailable" = "read") =>
@@ -39,5 +39,22 @@ describe("staleLine", () => {
   it("shows nothing for a fresh page or an unreadable time", () => {
     expect(staleLine(null)).toBeNull();
     expect(staleLine("nonsense")).toBeNull();
+  });
+});
+
+describe("Your morning", () => {
+  const mine = { ...it_(null), yours: true, why_yours: ["Mentioned in your mail"] } as unknown as BriefingItem;
+  const b = brief([mine, it_(null)], { yours: 1, today: "2 new late POs." });
+  it("opens Home from 5 AM local with the reader's own items, ranked first by the server", () => {
+    const at = (h: number) => new Date(2026, 10, 7, h, 10);
+    expect(yourMorning(b, at(4))).toBeNull();
+    const m = yourMorning(b, at(5));
+    expect(m?.items).toEqual([mine]);
+    expect(m?.line).toBe("1 item about your own orders, tasks and contacts.");
+  });
+  it("falls back to the day's line when nothing is theirs, and claims nothing unread", () => {
+    expect(yourMorning(brief([it_(null)], { yours: 0, today: "2 new late POs." }), new Date(2026, 10, 7, 8))?.line).toBe("2 new late POs.");
+    expect(yourMorning(brief([], { status: "unavailable" } as Partial<Briefing>), new Date(2026, 10, 7, 8))).toBeNull();
+    expect(yourMorning(null, new Date(2026, 10, 7, 8))).toBeNull();
   });
 });

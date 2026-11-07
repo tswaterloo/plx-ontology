@@ -20,6 +20,8 @@ const item = (over: Partial<BriefingItem>): BriefingItem => ({
   amount_disagree: false,
   new_since_visit: false,
   new_this_generation: false,
+  yours: false,
+  why_yours: [],
   open_url: "/object/PurchaseOrder/PurchaseOrder%3Ax%3A1",
   sources: [],
   ...over,
@@ -50,6 +52,8 @@ const briefing: Briefing = {
   today: "In the latest check: 1 PO went late.",
   digest_preview: "Hello Synth,\n\n2 items need your attention.\n\n(Preview only: this digest is not sent.)",
   digest_sent: false,
+  yours: 0,
+  involvement: "no_identity",
 };
 
 describe("BriefingCard", () => {

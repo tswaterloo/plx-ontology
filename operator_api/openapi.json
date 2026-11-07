@@ -1114,6 +1114,17 @@
             "title": "Hidden By Type",
             "type": "object"
           },
+          "involvement": {
+            "default": "no_identity",
+            "description": "Whether your involvement was checked for every item ('partly_checked': some were not, they rank as not yours), or you have no identity on record.",
+            "enum": [
+              "checked",
+              "partly_checked",
+              "no_identity"
+            ],
+            "title": "Involvement",
+            "type": "string"
+          },
           "items": {
             "description": "The top items.",
             "items": {
@@ -1227,6 +1238,13 @@
             },
             "title": "Types",
             "type": "array"
+          },
+          "yours": {
+            "default": 0,
+            "description": "Items about records you are involved in; they are ranked first.",
+            "minimum": 0.0,
+            "title": "Yours",
+            "type": "integer"
           }
         },
         "required": [
@@ -1627,6 +1645,20 @@
               }
             ],
             "title": "Why"
+          },
+          "why_yours": {
+            "description": "Why it is yours, in words.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Why Yours",
+            "type": "array"
+          },
+          "yours": {
+            "default": false,
+            "description": "About a record you are involved in (named on it, mentioned in your mail, or its supplier or customer writes to you), read as you.",
+            "title": "Yours",
+            "type": "boolean"
           }
         },
         "required": [
@@ -5578,6 +5610,70 @@
         "title": "ProductMargin",
         "type": "object"
       },
+      "ProfitDriver": {
+        "additionalProperties": false,
+        "description": "One reason a customer's margin is what it is, over its checked orders only.",
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Money"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Its effect on the margin, signed."
+          },
+          "established": {
+            "description": "False: not established from the records (the text says so and ``where_it_would_live`` where it would be read); no figure is stated.",
+            "title": "Established",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "losing_orders",
+              "low_margin_item",
+              "credit",
+              "discount",
+              "freight"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "sources": {
+            "description": "The cited records this reader may open.",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "text": {
+            "description": "The reason in one plain sentence; every figure in it is ``amount`` or a checked order's own.",
+            "title": "Text",
+            "type": "string"
+          },
+          "where_it_would_live": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Where It Would Live"
+          }
+        },
+        "required": [
+          "kind",
+          "text",
+          "established"
+        ],
+        "title": "ProfitDriver",
+        "type": "object"
+      },
       "Profitability": {
         "additionalProperties": false,
         "properties": {
@@ -5603,6 +5699,14 @@
           },
           "customer": {
             "$ref": "#/components/schemas/ObjectRef"
+          },
+          "drivers": {
+            "description": "Why the customer makes or loses money (losing orders, low-margin items, credits; discounts and freight said as not established), over the checked orders only, one currency each.",
+            "items": {
+              "$ref": "#/components/schemas/ProfitDriver"
+            },
+            "title": "Drivers",
+            "type": "array"
           },
           "margin": {
             "anyOf": [
