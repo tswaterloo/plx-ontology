@@ -1002,6 +1002,11 @@ class ObjectPage(_Model):
         default_factory=list, json_schema_extra=_optional,
         description="Follow-up drafts and proposed updates built from this page's gated "
                     "facts and trail; never sent or applied.")
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this page in time and serves the "
+                    "last page it read for this same reader: when that page was read "
+                    "(ISO). It is refreshed in the background.")
 
 
 PAGE_SECTIONS = ("late", "people", "landed_cost", "trail", "margin")
@@ -1039,6 +1044,11 @@ class ObjectSection(_Model):
                     "the record, its late lines and this trail (replace the quick read's); "
                     "never sent or applied. Omitted for the other sections.")
     access_label: Optional[str] = None
+    stale_since: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Set when the server could not read this section in time and serves "
+                    "the last one it read for this same reader: when that was read (ISO). "
+                    "It is refreshed in the background.")
 
 
 # ---- source view -----------------------------------------------------------------------

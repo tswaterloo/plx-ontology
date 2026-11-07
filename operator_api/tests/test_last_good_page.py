@@ -11,6 +11,7 @@ import time
 import unittest
 from concurrent.futures import Future
 from datetime import date, datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -224,6 +225,175 @@ class LastGoodPage(unittest.TestCase):
             started = time.monotonic()
             self.assertEqual(self.serve(reader("grp-a"), lambda: page(5)).total, 5)
             self.assertLess(time.monotonic() - started, 1)
+
+
+def slow(value, seconds=0.6, started=None):
+    """A read that takes ``seconds`` (past the fast budget the tests set)."""
+    def read():
+        if started is not None:
+            started.set()
+        time.sleep(seconds)
+        return value
+    return read
+
+
+class NeverServedCold(LastGoodPage.__base__):
+    """A screen or record page whose read is not done within the fast budget (a delta
+    layer landed, nothing kept yet) serves the reader's last good page at once and keeps
+    the fresh one when the read ends; every access rule of the busy path still holds."""
+
+    def setUp(self):
+        LastGoodPage.setUp(self)
+        fast = mock.patch.object(be, "SERVE_FAST_SECONDS", 0.1)
+        fast.start()
+        self.addCleanup(fast.stop)
+        self.marks = None
+        marks = mock.patch.object(be, "_marks_stamp", lambda view: self.marks)
+        marks.start()
+        self.addCleanup(marks.stop)
+
+    serve = LastGoodPage.serve
+
+    def wait_kept(self, who, total):
+        key = (who.key, who.mode, ("late", 0, 25))
+        for _ in range(100):
+            held = self.backend._good.get(key)
+            if held is not None and held[1].total == total and not self.backend._refreshing:
+                return
+            time.sleep(0.05)
+        self.fail("fresh page not kept")
+
+    def test_a_slow_read_serves_the_last_page_at_once_and_keeps_the_fresh_one(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        started = time.monotonic()
+        got = self.serve(who, slow(page(8)))
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(got.total, 3)
+        self.assertIsNotNone(got.stale_since)
+        self.wait_kept(who, 8)
+        fresh = self.serve(who, lambda: page(8))
+        self.assertEqual(fresh.total, 8)
+        self.assertIsNone(fresh.stale_since)
+
+    def test_while_a_read_is_under_way_the_last_page_is_served_without_another(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.serve(who, slow(page(8)))
+        calls = []
+        got = self.serve(who, lambda: calls.append(1) or page(9))
+        self.assertEqual((got.total, calls), (3, []))
+        self.wait_kept(who, 8)
+
+    def test_with_no_kept_page_or_changed_access_the_slow_read_is_waited_for(self):
+        who = reader("grp-a")
+        self.assertEqual(self.serve(who, slow(page(4), 0.3)).total, 4)   # nothing kept
+        self.reads.policy = policy()                                   # finance revoked
+        got = self.serve(who, slow(page(5), 0.3))
+        self.assertEqual((got.total, got.stale_since), (5, None))
+
+    def test_a_document_re_marked_beyond_the_reader_refuses_the_kept_page(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.marks = "re-marked"
+        got = self.serve(who, slow(page(6), 0.3))
+        self.assertEqual((got.total, got.stale_since), (6, None))
+        self.marks = None   # the page kept under the mark is not this state's either
+        with self.assertRaises(TimeoutError):
+            self.serve(who, busy)
+
+    def test_the_last_page_is_kept_on_disk_for_a_restart_under_the_same_rules(self):
+        import tempfile
+        from operator_api.page_store import PageStore
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.backend.page_cache = SimpleNamespace(store=PageStore(Path(folder.name), "c1"))
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.backend._good.clear()                 # a restart: nothing in memory
+        got = self.serve(who, slow(page(8)))
+        self.assertEqual((got.total, bool(got.stale_since)), (3, True))
+        self.wait_kept(who, 8)
+        self.backend._good.clear()
+        for other in (reader("grp-b"), reader("grp-a", mode="entra")):
+            self.assertEqual(self.serve(other, slow(page(1), 0.3)).total, 1)
+        self.backend._good.clear()
+        self.reads.policy = policy()               # finance revoked since it was kept
+        self.assertEqual(self.serve(who, slow(page(2), 0.3)).stale_since, None)
+
+    def revoked_mid_read(self, value):
+        """A read that outlasts the fast budget, with finance revoked once it started."""
+        def read():
+            self.reads.policy = policy()
+            time.sleep(0.6)
+            return value
+        return read
+
+    def wait_finished(self):
+        for _ in range(100):
+            if not self.backend._refreshing:
+                return
+            time.sleep(0.05)
+        self.fail("read under way never finished")
+
+    def test_a_page_read_while_a_grant_is_revoked_is_not_kept_under_the_new_access(self):
+        who = reader("grp-a")
+        self.serve(who, lambda: page(3))
+        self.serve(who, self.revoked_mid_read(page(99)))
+        self.wait_finished()
+        self.assertNotIn((who.key, who.mode, ("late", 0, 25)), self.backend._good)
+        with self.assertRaises(TimeoutError):   # neither the old page nor the one read across
+            self.serve(who, busy)
+
+    def test_after_a_restart_no_disk_copy_read_across_a_revoke_is_served(self):
+        import tempfile
+        from operator_api.page_store import PageStore
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        store = PageStore(Path(folder.name), "c1")
+        self.backend.page_cache = SimpleNamespace(store=store)
+        who = reader("grp-a")
+        key = ("last-good", who.key, who.mode, ("late", 0, 25))
+        self.serve(who, lambda: page(3))
+        self.assertIsNotNone(store.get(key))
+        self.backend._good.clear()                 # a restart: the disk copy only
+        self.serve(who, self.revoked_mid_read(page(99)))
+        self.wait_finished()
+        self.assertIsNone(store.get(key))          # the copy that no longer matches is gone
+        self.backend._good.clear()                 # another restart
+        with self.assertRaises(TimeoutError):
+            self.serve(who, busy)
+
+
+class RewarmOnDeltaLayer(unittest.TestCase):
+    def test_a_new_delta_layer_pointer_reads_the_known_readers_ahead(self):
+        import tempfile
+        from operating import delta_overlay
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        store = Path(folder.name) / "ontology.sqlite"
+        store.write_bytes(b"")
+        backend = be.WorkspaceBackend.__new__(be.WorkspaceBackend)
+        backend.store_path = store
+        warmed, stop = [], threading.Event()
+        backend.warm_known = lambda: warmed.append(1) or 0
+        with mock.patch.dict(os.environ, {delta_overlay.DIR_ENV: ""}), \
+                mock.patch.object(be, "GENERATION_POLL_SECONDS", 0.05):
+            watcher = threading.Thread(target=backend.watch_generation, args=(stop,),
+                                       kwargs={"rewarm_seconds": 3600}, daemon=True)
+            watcher.start()
+            time.sleep(0.3)
+            self.assertEqual(warmed, [])           # nothing changed: no read-ahead
+            pointer = delta_overlay.pointer_path(store)
+            pointer.parent.mkdir(parents=True, exist_ok=True)
+            pointer.write_text("{}")               # a cycle lands a layer
+            for _ in range(60):
+                if warmed:
+                    break
+                time.sleep(0.05)
+            stop.set()
+            watcher.join(2)
+        self.assertEqual(warmed, [1])
 
 
 class PlainWordsAndBusinessDay(unittest.TestCase):

@@ -4799,6 +4799,18 @@
             "title": "Related",
             "type": "array"
           },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this page in time and serves the last page it read for this same reader: when that page was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
+          },
           "status": {
             "$ref": "#/components/schemas/ObjectStatus"
           },
@@ -4976,6 +4988,18 @@
             ],
             "title": "Section",
             "type": "string"
+          },
+          "stale_since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the server could not read this section in time and serves the last one it read for this same reader: when that was read (ISO). It is refreshed in the background.",
+            "title": "Stale Since"
           },
           "status": {
             "anyOf": [

@@ -170,6 +170,9 @@ WARM_RECENT_PAGES = 4
 # by at most this long. Known readers are read ahead again within it (REWARM_SECONDS).
 READER_CACHE_SECONDS = 1200
 LAST_GOOD_SECONDS = 12 * 3600   # a main screen's last good page is served stale up to this
+# A screen read not done in this long serves the reader's last good page (pages load in
+# under 2 s): the read goes on and keeps its page for the next request.
+SERVE_FAST_SECONDS = 1.2
 LAST_GOOD_KEPT = 400
 ACCESS_WAIT_SECONDS = 3       # reading the reader's access state to keep or serve a page
 REWARM_SECONDS = 900
@@ -181,7 +184,7 @@ CARD_WORDS_KEPT = 20000
 # name), kept owner-only in the app's own data directory, never the state's.
 KNOWN_READERS_FILE = "known-readers.json"
 KNOWN_READERS = 8
-GENERATION_POLL_SECONDS = 60
+GENERATION_POLL_SECONDS = 10   # a delta layer, generation or inbox change read ahead
 FLIGHT_SECONDS = 120   # how long a read waits for the same read in progress elsewhere
 ORIGINAL_READS = 4             # captured-original reads through a reader's host at once
 ORIGINAL_READS_PER_READER = 2
@@ -757,7 +760,7 @@ class WorkspaceBackend(ActionsMixin):
         self.sections: Any = None   # the section pool (``section_pool.SectionPool``)
         self._answers: dict[str, dict[str, Any]] = {}
         self._recent: dict[str, list[m.RecentQuestion]] = {}
-        # the last good page of each main screen per reader: (read at, model)
+        # the last good page of each main screen per reader: (read at, model, access state)
         self._good: dict[tuple, tuple[float, Any]] = {}
         self._refreshing: set[tuple] = set()
         # The data notes said per (reader, conversation) (``_first_notice``).
@@ -1006,8 +1009,8 @@ class WorkspaceBackend(ActionsMixin):
 
     def watch_generation(self, stop: threading.Event,
                          rewarm_seconds: float = REWARM_SECONDS) -> None:
-        """Warm the known readers again whenever a new projection generation is served or
-        the gap inbox's findings change (a run, an acknowledgement; not a "seen" mark), and
+        """Warm the known readers again whenever a new projection generation is served, a
+        delta cycle lands a layer, or the gap inbox's findings change (a run, an acknowledgement; not a "seen" mark), and
         every ``REWARM_SECONDS`` while their sessions last (before what was read for them
         expires)."""
         seen = self._served_state()
@@ -1019,14 +1022,17 @@ class WorkspaceBackend(ActionsMixin):
                 self.warm_known()
 
     def _served_state(self) -> Optional[tuple]:
-        """The served store file's identity, the gap inbox's findings (``inbox_state``) and
-        the AI watcher's state (``watcher_stamp``)."""
+        """The served store file's identity, the delta layer pointer's (a cycle that
+        lands a layer: every page key holds the layers, ``_delta_layers``), the gap
+        inbox's findings (``inbox_state``) and the AI watcher's state (``watcher_stamp``)."""
         if not self.store_path:
             return None
         from operating.ontology_host import _file_identity
         from operating.proactive_engine import inbox_path
-        from operating import ai_watcher
-        return (_file_identity(self.store_path), inbox_state(inbox_path(self.store_path)),
+        from operating import ai_watcher, delta_overlay
+        return (_file_identity(self.store_path),
+                delta_overlay.pointer_stamp(delta_overlay.pointer_path(self.store_path)),
+                inbox_state(inbox_path(self.store_path)),
                 ai_watcher.stamp(Path(self.store_path)))
 
     def warm(self, reader: Reader, *, force: bool = False, today: bool = True) -> bool:
@@ -2571,51 +2577,144 @@ class WorkspaceBackend(ActionsMixin):
     # ---- the last good page of each main screen, per reader ------------------------------
 
     def _serving(self, reader: Reader, name: tuple, read: Callable[[], Any]) -> Any:
-        """``read()`` (a main screen: Home, briefing, suggestions, late list) for this
-        reader; when it times out or the server is busy, the last page this same reader
-        read for this same screen (never another's: the key holds the reader's principals
-        and sign-in mode), marked ``stale_since`` and read again in the background; with no
-        such page the busy refusal stands (the app shows a calm retry).
+        """``read()`` (a main screen: Home, briefing, suggestions, late list; a record's
+        page) for this reader. With a last good page of this same reader and screen (never
+        another's: the key holds the reader's principals and sign-in mode) the read gets
+        ``SERVE_FAST_SECONDS``: a read not done by then (a delta layer or generation that
+        landed since, a cold cache, a busy server) serves that page, marked ``stale_since``,
+        while the read goes on and keeps its page when done; one read at a time per screen
+        and reader. With no such page the read is waited for (a busy refusal stands: the
+        app shows a calm retry).
 
         A page is kept with the reader's access state it was read under (``_access_now``:
-        policy fingerprint, unrestricted, people exclusion, as ``page_key``) and served
-        stale only while the reader's access state now is exactly that: a marking or grant
-        revoked, or an exclusion added, with the same principals refuses it. Every source
-        handle the kept page shows (``page_handles``) must also still open for the reader
-        now (item-level permissions, a mailbox or a SharePoint ACL, are in no state, as
+        policy fingerprint, unrestricted, people exclusion and the document markings beyond
+        the reader, as ``page_key``) and served stale only while the reader's access state
+        now is exactly that: a marking or grant revoked, a document re-marked, or an
+        exclusion added, with the same principals refuses it. Every source handle the kept
+        page shows (``page_handles``) must also still open for the reader now (item-level
+        permissions, a mailbox or a SharePoint ACL, are in no state, as
         ``ReaderCache.kept`` re-decides them). Both are read in one job on the read worker
         ahead of the screen's read; an answer that is not "the same and all open", or no
-        answer in time, keeps the busy refusal. A fresh page is returned at once and kept
-        off the request path."""
+        answer in time, serves no kept page. A fresh page is returned at once and kept off
+        the request path (in memory and in the page store on disk, so a restart or the
+        other processes start from it)."""
         key = (reader.key, reader.mode, name)
-        with self._lock:
-            held = self._good.get(key)
+        held = self._held_good(key)
         before = self._access_later(reader, page_handles(held[1]) if held else ())
+        with self._lock:
+            reading = key in self._refreshing
+        if held is not None and reading:
+            # a read of this screen is under way: its last good page now, if still open
+            stale = self._stale_copy(key, held, before)
+            if stale is not None:
+                return stale
+        box: Future = Future()
+
+        def run() -> None:
+            try:
+                box.set_result(read())
+            except BaseException as error:  # noqa: BLE001 - handed to the request
+                box.set_exception(error)
+
+        if held is None:
+            run()   # nothing to serve meanwhile: read on the request's own thread
+        else:
+            threading.Thread(target=run, name="serving-read", daemon=True).start()
         try:
-            value = read()
+            value = box.result(timeout=SERVE_FAST_SECONDS if held is not None else None)
+        except FutureTimeout as error:
+            if box.done():   # the read's own time limit (one class since Python 3.11)
+                return self._refused(reader, key, held, before, read, error)
+            stale = self._stale_copy(key, held, before)
+            if stale is not None and self._finish_later(reader, key, box, before):
+                return stale
+            try:
+                value = box.result()   # no page that may be served: the read itself
+            except (TimeoutError, errors.UserFacing) as error:
+                return self._refused(reader, key, held, before, read, error)
         except (TimeoutError, errors.UserFacing) as error:
-            if isinstance(error, errors.UserFacing) and error.code != errors.BUSY.code:
-                before.cancel()
-                raise
-            with self._lock:
-                still = self._good.get(key)
-            if held is None or still is not held \
-                    or time.time() - held[0] > LAST_GOOD_SECONDS:
-                before.cancel()
-                raise
-            now = self._access_result(before, ACCESS_WAIT_SECONDS)
-            if now is None or now[0] != held[2] or now[1] is not True:
-                raise
-            self._refresh_later(reader, key, read)
-            return held[1].model_copy(deep=True, update={
-                "stale_since": datetime.fromtimestamp(held[0], timezone.utc).isoformat(
-                    timespec="seconds").replace("+00:00", "Z")})
+            return self._refused(reader, key, held, before, read, error)
         if getattr(value, "stale_since", None) is None:
             kept = value.model_copy(deep=True)
             self._after(lambda: self._keep_good(
                 key, kept, self._state_of(self._access_result(before, ACCESS_WAIT_SECONDS)),
                 self._access_now(reader)))
         return value
+
+    def _refused(self, reader: Reader, key: tuple, held: Optional[tuple], before: Future,
+                 read: Callable[[], Any], error: Exception) -> Any:
+        """A read that timed out or was refused busy: the reader's last good page (read
+        again in the background), else the refusal."""
+        if isinstance(error, errors.UserFacing) and error.code != errors.BUSY.code:
+            before.cancel()
+            raise error
+        stale = self._stale_copy(key, held, before)
+        if stale is None:
+            before.cancel()
+            raise error
+        self._refresh_later(reader, key, read)
+        return stale
+
+    def _stale_copy(self, key: tuple, held: Optional[tuple], before: Future) -> Any:
+        """``held`` marked ``stale_since`` when it is still this key's, within
+        ``LAST_GOOD_SECONDS``, and the reader's access state now is the one it was read
+        under with every source it shows still open; else None."""
+        if held is None or time.time() - held[0] > LAST_GOOD_SECONDS:
+            return None
+        now = self._access_result(before, ACCESS_WAIT_SECONDS)
+        if now is None or now[0] != held[2] or now[1] is not True:
+            return None
+        return held[1].model_copy(deep=True, update={
+            "stale_since": datetime.fromtimestamp(held[0], timezone.utc).isoformat(
+                timespec="seconds").replace("+00:00", "Z")})
+
+    def _held_good(self, key: tuple) -> Optional[tuple]:
+        """The last good page of ``key``: in memory, else in the page store on disk (the
+        same entry another process or an earlier run kept), within ``LAST_GOOD_SECONDS``."""
+        with self._lock:
+            held = self._good.get(key)
+        if held is not None:
+            return held
+        store = getattr(getattr(self, "page_cache", None), "store", None)
+        if store is None:
+            return None
+        found = store.get(("last-good",) + key)
+        if found is None:
+            return None
+        value = found[1]
+        if not (isinstance(value, tuple) and len(value) == 3
+                and isinstance(value[0], float) and isinstance(value[2], tuple)
+                and hasattr(value[1], "model_copy")
+                and getattr(value[1], "stale_since", None) is None):
+            return None   # not a kept page of this shape: never served
+        with self._lock:
+            held = self._good.setdefault(key, value)
+        return held
+
+    def _finish_later(self, reader: Reader, key: tuple, box: Future, before: Future) -> bool:
+        """Keep the page the read under way returns (one at a time per screen and
+        reader) under ``before``, the access state asked for ahead of that read (never one
+        read after it started: a grant revoked, a document re-marked or an exclusion added
+        during the read keeps nothing); False when one is already being finished."""
+        with self._lock:
+            if key in self._refreshing:
+                return True
+            self._refreshing.add(key)
+
+        def run() -> None:
+            try:
+                value = box.result(timeout=PAGE_TIMEOUT_SECONDS)
+                self._keep_good(key, value, self._state_of(
+                    self._access_result(before, ACCESS_WAIT_SECONDS)),
+                    self._access_now(reader))
+            except Exception:  # noqa: BLE001 - the next request tries again
+                pass
+            finally:
+                with self._lock:
+                    self._refreshing.discard(key)
+
+        threading.Thread(target=run, name="last-good-finish", daemon=True).start()
+        return True
 
     def _after(self, step: Callable[[], None]) -> None:
         """``step`` off the request path (keeping a page waits on the read worker)."""
@@ -2638,7 +2737,8 @@ class WorkspaceBackend(ActionsMixin):
             with view._request():
                 gated, policy = view.access.reader_policy()
                 state = (_fingerprint(policy, gated),
-                         bool(getattr(policy, "unrestricted", False)), exclusion_stamp())
+                         bool(getattr(policy, "unrestricted", False)), exclusion_stamp(),
+                         _marks_stamp(view))
                 decided = view.access.decide(listed) if listed else {}
                 opens = isinstance(decided, dict) and all(
                     h in decided and decided[h] is None for h in listed)
@@ -2664,8 +2764,9 @@ class WorkspaceBackend(ActionsMixin):
             return None
 
     def _access_now(self, reader: Reader) -> Optional[tuple]:
-        """(policy fingerprint, unrestricted, people exclusion stamp) of the reader now,
-        the parts ``page_key`` keys a page on; None when it cannot be read in time."""
+        """(policy fingerprint, unrestricted, people exclusion stamp, document markings
+        stamp) of the reader now, the parts ``page_key`` keys a page on; None when it
+        cannot be read in time."""
         return self._state_of(self._access_result(self._access_later(reader),
                                                   ACCESS_WAIT_SECONDS))
 
@@ -2675,13 +2776,20 @@ class WorkspaceBackend(ActionsMixin):
         after the read (a state that changed or could not be read keeps nothing)."""
         if getattr(value, "stale_since", None) is not None:
             return   # never a page served stale kept as a fresh one
+        store = getattr(getattr(self, "page_cache", None), "store", None)
         with self._lock:
             self._good.pop(key, None)
-            if before is None or before != after:
-                return   # the page may not match any one access state: never served stale
+            kept = before is not None and before == after
+        if not kept:   # the page may not match any one access state: never served stale
+            if store is not None:   # nor its disk copy, not left there for 12 h
+                store.pop(("last-good",) + key)
+            return
+        with self._lock:
             while len(self._good) >= LAST_GOOD_KEPT:
                 self._good.pop(next(iter(self._good)))
-            self._good[key] = (time.time(), value.model_copy(deep=True), before)
+            held = self._good[key] = (time.time(), value.model_copy(deep=True), before)
+        if store is not None:   # on disk too: a restart starts from it
+            store.put(("last-good",) + key, held, LAST_GOOD_SECONDS)
 
     def _refresh_later(self, reader: Reader, key: tuple, read: Callable[[], Any]) -> None:
         """Read the screen again off the request (one at a time per screen and reader)."""
@@ -3047,26 +3155,38 @@ class WorkspaceBackend(ActionsMixin):
         ``quick``: a first read without the checks (``ObjectPage.complete`` false), unless
         the full page is already kept; its sections start at once on the section pool,
         beside the quick read, so they are kept (or in progress) when the app asks."""
-        if quick:
-            self._sections_ahead(reader, object_type, object_id)
-        elif self.sections is not None and self.page_cache.store is not None:
-            # The full page not kept: its quick read here; the sections that run no plan
-            # read at once on the section pool's processes (kept on disk, where the full
-            # read below finds them) while the plans' sections are read here, in the
-            # page's order, each plan once (a plan's section rests on the plans before
-            # it, so splitting them over processes only runs those plans again).
-            first = self.reads.run(reader, lambda view: object_page(
-                self, view, object_type, object_id, quick=True), timeout=PAGE_TIMEOUT_SECONDS)
-            if not first.complete:
-                waits = self._sections_on_pool(reader, object_type, object_id,
-                                               POOL_SECTIONS)
-                self.reads.run(reader, lambda view: page_sections(
-                    self, view, object_type, object_id, PLAN_SECTIONS),
+        def read() -> m.ObjectPage:
+            if quick:
+                self._sections_ahead(reader, object_type, object_id)
+            elif self.sections is not None and self.page_cache.store is not None:
+                # The full page not kept: its quick read here; the sections that run no plan
+                # read at once on the section pool's processes (kept on disk, where the full
+                # read below finds them) while the plans' sections are read here, in the
+                # page's order, each plan once (a plan's section rests on the plans before
+                # it, so splitting them over processes only runs those plans again).
+                first = self.reads.run(reader, lambda view: object_page(
+                    self, view, object_type, object_id, quick=True),
                     timeout=PAGE_TIMEOUT_SECONDS)
-                waits()
-        page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
-                                                               object_id, quick=quick),
-                              timeout=PAGE_TIMEOUT_SECONDS)
+                if not first.complete:
+                    waits = self._sections_on_pool(reader, object_type, object_id,
+                                                   POOL_SECTIONS)
+                    self.reads.run(reader, lambda view: page_sections(
+                        self, view, object_type, object_id, PLAN_SECTIONS),
+                        timeout=PAGE_TIMEOUT_SECONDS)
+                    waits()
+            page = self.reads.run(reader, lambda view: object_page(self, view, object_type,
+                                                                   object_id, quick=quick),
+                                  timeout=PAGE_TIMEOUT_SECONDS)
+            # On the quick read too: the app shows the quick read with its sections merged,
+            # never a full page, so the customers sharing the name come with the first read.
+            if page.customer is not None:
+                page = page.model_copy(update={"customer": page.customer.model_copy(
+                    update={"same_name": self.same_name(reader, page)})})
+            return page
+
+        # a page not read in time (a delta layer landed, nothing kept yet) serves this
+        # reader's last good copy of it while the read goes on (``_serving``)
+        page = self._serving(reader, ("page", object_type, object_id, bool(quick)), read)
         with self._lock:   # what the reader's next warm-up reads ahead
             seen = self._pages_seen.setdefault(reader.key, [])
             entry = (page.type, page.object_id)
@@ -3075,11 +3195,6 @@ class WorkspaceBackend(ActionsMixin):
             seen.insert(0, entry)
             del seen[WARM_RECENT_PAGES:]
         self.remember_reader(reader)   # the pages they opened warm after a restart
-        # On the quick read too: the app shows the quick read with its sections merged,
-        # never a full page, so the customers sharing the name come with the first read.
-        if page.customer is not None:
-            page = page.model_copy(update={"customer": page.customer.model_copy(
-                update={"same_name": self.same_name(reader, page)})})
         return self._labelled(reader, page, "/api/object")
 
     def same_name(self, reader: Reader, page: m.ObjectPage) -> list[m.ObjectRef]:
@@ -3117,7 +3232,9 @@ class WorkspaceBackend(ActionsMixin):
         pool (``_run_section``); labelled and journalled as the page is."""
         if section not in m.PAGE_SECTIONS:
             raise ValueError("unknown_section")
-        out = self._run_section(reader, object_type, object_id, section)
+        out = self._serving(reader, ("section", object_type, object_id, section),
+                            lambda: self._run_section(reader, object_type, object_id,
+                                                      section))
         return self._labelled(reader, out, "/api/object-section")
 
     def _labelled(self, reader: Reader, payload: Any, path: str) -> Any:
