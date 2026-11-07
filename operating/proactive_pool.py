@@ -220,7 +220,7 @@ def _init(spec: WorkerSpec) -> None:
     from .proactive_engine import engine_marking_grants
     session = live._Session(runtime, actor, AudienceMap.from_file(Path(spec.mirror_audience)),
                             Path(spec.store), captures=Path(spec.state_dir),
-                            marking_grants=engine_marking_grants(actor))
+                            marking_grants=engine_marking_grants(actor), warm=False)
 
     def close() -> None:
         session.close()

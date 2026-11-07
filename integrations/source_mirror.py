@@ -255,8 +255,11 @@ def attach_scoped(conn: sqlite3.Connection) -> list[str] | None:
             else f"relation IN ({quoted})"
         conn.execute(f"CREATE TEMP VIEW {table} AS SELECT * FROM shared.{table} WHERE {where}")
     if "capture_state" in have:
-        conn.execute("CREATE TEMP VIEW capture_state AS SELECT * FROM shared.capture_state "
-                     "WHERE capture_id IN (SELECT capture_id FROM temp.capture)")
+        # Correlated on the capture's key: a filtered read (the unfinished captures) looks
+        # up only its own rows' captures instead of listing every scope capture first.
+        conn.execute("CREATE TEMP VIEW capture_state AS SELECT s.* FROM shared.capture_state s "
+                     "WHERE EXISTS (SELECT 1 FROM temp.capture c "
+                     "WHERE c.capture_id = s.capture_id)")
     if "absence_seen" in have and "absence_scan" in have:
         conn.execute("CREATE TEMP VIEW absence_seen AS SELECT * FROM shared.absence_seen "
                      "WHERE scan_id IN (SELECT scan_id FROM temp.absence_scan)")
@@ -4750,15 +4753,20 @@ class SourceMirror:
             found["in_progress"] = {row[0] for row in self._db.execute(
                 "SELECT capture_id FROM capture_state WHERE state = 'in_progress'")}
             # The versions a full re-read merging in batches replaced: the content served
-            # until it completes (``_merge_batches``).
-            for record in self._db.execute(
-                    """SELECT b.idx AS batch_idx, v.* FROM temp.cite_batch b
-                       JOIN row_version v ON v.relation = b.relation
-                        AND v.key_json = b.key_json
-                       JOIN capture_state s ON s.capture_id = v.superseded_by_capture
-                        AND s.state = 'in_progress'
-                       ORDER BY b.idx, v.run_index"""):
-                found["served"][record["batch_idx"]].append(record)
+            # until it completes (``_merge_batches``). Read from the cited keys outward
+            # (CROSS JOIN fixes the order) and only for the unfinished captures just read
+            # in this transaction: joined to ``capture_state`` instead, the planner may walk
+            # every version of the cited relation (seconds per citation on a scoped copy,
+            # whose tables are views), for the same rows.
+            if found["in_progress"]:
+                for record in self._db.execute(
+                        """SELECT b.idx AS batch_idx, v.* FROM temp.cite_batch b
+                           CROSS JOIN row_version v ON v.relation = b.relation
+                            AND v.key_json = b.key_json
+                           WHERE v.superseded_by_capture IN (SELECT value FROM json_each(?))
+                           ORDER BY b.idx, v.run_index""",
+                        (json.dumps(sorted(found["in_progress"])),)):
+                    found["served"][record["batch_idx"]].append(record)
             for (index,) in self._db.execute(
                     """SELECT b.idx FROM temp.cite_batch b WHERE EXISTS (
                        SELECT 1 FROM row_version v WHERE v.relation = b.relation

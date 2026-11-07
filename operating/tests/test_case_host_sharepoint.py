@@ -1908,6 +1908,24 @@ class StoredTextLookupTests(SharePointHostCase):
                 answer.get("meta", {}).pop("as_known_at", None)
             self.assertEqual(first, expected)
 
+    def test_a_batch_reader_starts_no_warm_up_and_reads_the_index_when_asked(self):
+        # 2026-11-07: every proactive engine worker started the warm-up, which (its kept
+        # index written by other code) re-read every file's text for minutes, holding
+        # the interpreter while the worker's margin reads waited. A batch reader starts
+        # none; a question that needs the index still reads it and finds the same files.
+        from operating import case_tools_host
+        with self.new_process():
+            expected = self.ask(EMPLOYEE, "PO999999")
+            self.assertTrue(case_tools_host.warm_sharepoint.called)
+        with self.new_process():
+            batch = self.server(EMPLOYEE, portal_granted=False, warm_sharepoint=False)
+            self.assertFalse(case_tools_host.warm_sharepoint.called)
+            found = self.ok(batch, "plx.documents",
+                            {"query": "PO999999", "sources": ["sharepoint"]})
+        for answer in (found, expected):
+            answer.get("meta", {}).pop("as_known_at", None)
+        self.assertEqual(found, expected)
+
 
 class CapturedFilePageTests(SharePointHostCase):
     """The captured files naming a query's identifier are gated only as far as the page

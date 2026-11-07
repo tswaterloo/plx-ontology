@@ -1081,7 +1081,10 @@ class _Session:
                  name: str = "case-workspace-live", author_kind: str | None = None,
                  captures: Path | None = None,
                  bc_books: Mapping[str, Mapping[str, str]] | None = None,
-                 marking_grants: Mapping[str, Any] | None = None) -> None:
+                 marking_grants: Mapping[str, Any] | None = None,
+                 warm: bool = True) -> None:
+        """``warm=False``: no background SharePoint warm-up (``case_tools_host.
+        warm_sharepoint``), for a batch reader that does not answer people's questions."""
         from integrations import capture_mail, capture_sharepoint
 
         from .case_tools_host import serving_tools
@@ -1099,6 +1102,8 @@ class _Session:
         bc = getattr(getattr(runtime, "live", None), "bc", None)
         books = None if bc_books is None or bc is None else bc_books.get(
             str(bc.environment).lower(), {})
+        if held["sharepoint_capture_dir"] is not None and not warm:
+            held["warm_sharepoint"] = False
         self.host = serving_tools(runtime, actor, store_path=store_path,
                                   reserve_bytes=META_RESERVE_BYTES, bc_books=books,
                                   marking_grants=marking_grants, **held)

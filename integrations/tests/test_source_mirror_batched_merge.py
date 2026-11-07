@@ -21,7 +21,8 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from integrations.source_mirror import MirrorError, SourceMirror, make_citation
+from integrations.source_mirror import (PERSISTED_FALLBACK_META, POINTER_TABLE, MirrorError,
+                                       SourceMirror, make_citation)
 from integrations.tests.test_source_mirror import ALL, BASE, KEY, OPS
 from integrations.tests.test_source_mirror_sync import ScriptedFake, SyncTestCase
 from integrations.workbench_read_api import WorkbenchReadApiClient
@@ -350,6 +351,73 @@ class FullRereadTests(SyncTestCase):
         self.assertNotIn({"id": 5}, [r["key"] for r in after["rows"]])
         self.assertTrue(reader.resolve_citation(before["rows"][3]["citation"], OPS)
                         ["changed_since"])
+
+    def scoped_fallback(self, relations):
+        """A scoped fallback file naming this mirror (as ``mirror_capture`` writes one)."""
+        path = self.path.with_name("scoped.sqlite")
+        conn = sqlite3.connect(str(path), isolation_level=None)
+        try:
+            conn.execute("ATTACH DATABASE ? AS shared", (f"file:{self.path}?mode=ro",))
+            (sql,) = conn.execute("SELECT sql FROM shared.sqlite_master WHERE "
+                                  "name = 'mirror_meta'").fetchone()
+            conn.execute(sql)
+            conn.execute("INSERT INTO main.mirror_meta SELECT * FROM shared.mirror_meta")
+            conn.execute("DETACH DATABASE shared")
+            conn.execute(f"CREATE TABLE {POINTER_TABLE} (path TEXT NOT NULL, "
+                         "relations TEXT NOT NULL)")
+            conn.execute(f"INSERT INTO {POINTER_TABLE} VALUES (?, ?)",
+                         (str(self.path), json.dumps(sorted(relations))))
+            conn.execute("INSERT INTO mirror_meta VALUES (?, ?)", (
+                PERSISTED_FALLBACK_META, json.dumps({
+                    "state": "stale", "live": False, "served_from": "persisted_capture",
+                    "captures_as_of": "2026-09-30T00:00:00Z", "http_status": None,
+                    "error_code": None, "complete": True, "relation_count": len(relations),
+                    "label": "scoped"}, sort_keys=True)))
+        finally:
+            conn.close()
+        return path
+
+    def test_citations_during_a_reread_resolve_alike_on_a_scoped_fallback(self):
+        """2026-11-07: a scoped fallback (its tables views of the shared mirror) took ~1.5 s
+        per citation lookup (the replaced versions an unfinished capture serves were read by
+        walking the cited relation's every version), minutes per Sage order margin. Every
+        citation, of the served capture, the merging one and a key the merge replaced,
+        resolves on the fallback exactly as on the mirror itself, and the replaced
+        versions are read from the cited keys."""
+        big_relation(self.fake, 60)
+        writer = self.captured_then_reread(8)
+        before = writer.rows(OPS, BIG, limit=100, max_staleness=10 ** 6)["rows"]
+        with self.kill_after(15):
+            writer.sync(OPS, relations=[BIG], full=True)
+        merging = self.db().execute("SELECT capture_id FROM capture_state WHERE "
+                                    "state = 'in_progress'").fetchone()[0]
+        direct = SourceMirror(self.path, None, ALL, clock=self.clock, identifiers=IDENTIFIERS)
+        self.addCleanup(direct.close)
+        scoped = SourceMirror(self.scoped_fallback([BIG]), None, ALL, clock=self.clock,
+                              identifiers=IDENTIFIERS)
+        self.addCleanup(scoped.close)
+        self.assertEqual(scoped.scope, [BIG])
+        handles = [row["citation"] for row in before] + [
+            make_citation(BIG, {"id": key}, merging, direct.generation) for key in (1, 10, 100)]
+        compared = ("ok", "error", "status", "changed_since", "row", "rows",
+                    "current_citation", "superseded_at")
+        served = 0
+        for handle in handles:
+            want = direct.resolve_citation(handle, OPS)
+            got = scoped.resolve_citation(handle, OPS)
+            self.assertEqual({k: got.get(k) for k in compared},
+                             {k: want.get(k) for k in compared}, handle)
+            served += bool(want.get("ok") and want.get("status") == "current")
+        self.assertEqual(served, len(before))   # the replaced versions are what is served
+        plans = []
+        scoped._db.set_trace_callback(plans.append)
+        scoped.resolve_citation(before[0]["citation"], OPS)
+        scoped._db.set_trace_callback(None)
+        replaced = [sql for sql in plans if "superseded_by_capture IN" in sql]
+        self.assertEqual(len(replaced), 1)
+        detail = " | ".join(row[3] for row in scoped._db.execute(
+            "EXPLAIN QUERY PLAN " + replaced[0]))
+        self.assertTrue(detail.startswith("SCAN b"), detail)   # from the cited keys out
 
     def db_at(self, path):
         connection = sqlite3.connect(str(path))

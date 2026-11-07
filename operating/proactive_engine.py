@@ -4415,8 +4415,9 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
         return customer_po_coverage.coverage(runtime.mirror, investigator,
                                              statuses=("absent_in_this_source",))
 
+    # no SharePoint warm-up beside the rules: a batch reader, not one answering questions
     session = live._Session(runtime, investigator, audience, projection, captures=captures,
-                            marking_grants=engine_marking_grants(investigator))
+                            marking_grants=engine_marking_grants(investigator), warm=False)
     try:
         # the reader the engine's verdicts are read as (the capture principal, granted
         # what it captured: ``host.engine_readers``): every reader's inbox and briefing

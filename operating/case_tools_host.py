@@ -973,6 +973,11 @@ class CaptureCaseHostTools(CaseHostTools):
         tool call of its own."""
         # The use-case catalog (``operating.use_case_catalog``; None: the default file).
         self.use_cases = options.pop("use_cases", None)
+        # ``warm_sharepoint=False``: no background warm-up thread (a batch reader such as
+        # the proactive engine's, whose calls rarely read the file index: a warm-up
+        # reading it anew holds the interpreter for minutes beside them); a call that
+        # needs the index reads it on its own thread, as before.
+        warm = options.pop("warm_sharepoint", True)
         super().__init__(runtime, actor, mail_capture_dir=mail_capture_dir, **options)
         self._projection = projection
         self.sharepoint_capture_dir = (None if sharepoint_capture_dir is None
@@ -983,7 +988,8 @@ class CaptureCaseHostTools(CaseHostTools):
         self._policy_doubts = 0   # policies decided with an undecidable mailbox check
         if self.sharepoint_capture_dir is not None:
             self.label_reserve = LABEL_RESERVE_BYTES
-            warm_sharepoint(self.sharepoint_capture_dir)
+            if warm:
+                warm_sharepoint(self.sharepoint_capture_dir)
         self._sharepoint_store: Any = None
         # The store a documents search's SharePoint lookup reads on its own thread, beside
         # the projected search (``_search_ahead``); handed back to the call's thread after.
