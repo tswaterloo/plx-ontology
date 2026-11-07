@@ -472,7 +472,7 @@ class OneGateTests(unittest.TestCase):
         # gate (the reads are the session's own evidence), and the transcript holds them
         # first, with full handles.
         from unittest import mock
-        from operating import agent_session, fast_answer
+        from operating import agent_session, session_prefetch
         host = self.host()
         server = self.in_process(host)
         handle, field, value = self.record(server)
@@ -515,7 +515,7 @@ class OneGateTests(unittest.TestCase):
             return 0, "\n".join(lines)
         spawn.feeds = spawn.stops = True
 
-        def follow(question, done):
+        def follow(done):
             # a follow-up read made from what the first read returned (full handles); a
             # tool the session may not call is never made
             seen["done"] = [(name, arguments) for name, arguments, _result in done]
@@ -523,9 +523,9 @@ class OneGateTests(unittest.TestCase):
             return [("plx.read", {"citation": cited[0]}),
                     ("plx.case_close", {"case_id": "x", "outcome": "y"})]
 
-        with mock.patch.object(fast_answer, "first_reads",
+        with mock.patch.object(session_prefetch, "first_reads",
                                lambda question: [("plx.find", query)]), \
-                mock.patch.object(fast_answer, "follow_reads", follow):
+                mock.patch.object(session_prefetch, "follow_reads", follow):
             transcript = runner.record(self.item, runner.ClaudeCodeAgent(spawn=spawn,
                                                                          max_turns=8),
                                        host, evidence_label="injected-transport",
@@ -605,7 +605,7 @@ class OneGateTests(unittest.TestCase):
         # again), so the gate decides that claim on evidence this session returned, under
         # its own gates. Without it the same claim cites what the run did not return.
         from unittest import mock
-        from operating import agent_session, fast_answer
+        from operating import agent_session, session_prefetch
         host = self.host()
         handle, field, value = self.prepared(host)["claim"]
         brief = f"Already read for you:\n- 2026-10-14: a step [source {handle}]"
@@ -641,7 +641,7 @@ class OneGateTests(unittest.TestCase):
             seen = {}
             agent = runner.ClaudeCodeAgent(spawn=session(seen), max_turns=8)
             agent.quiet_reads = agent_session.told_reads(brief) if quiet else []
-            with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+            with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
                 ran = agent.for_question("q").run("Answer the question." + brief, host)
             outcomes[quiet] = seen["gate"]
             if quiet:
@@ -656,7 +656,7 @@ class OneGateTests(unittest.TestCase):
         # unknown is answered but sent back with a "continue" note (its instruction the
         # note's), the session is not ended there (GateEnd), and the next submission,
         # with nothing open, is the final decision the reply is rendered from.
-        from operating import agent_session, deep_investigation as deep, fast_answer
+        from operating import agent_session, deep_investigation as deep, session_prefetch
         from unittest import mock
         host = self.host()
         seen = self.prepared(host)
@@ -692,7 +692,7 @@ class OneGateTests(unittest.TestCase):
                     break
             return 0, "\n".join(out)
         spawn.feeds = spawn.stops = True
-        with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+        with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
             ran = runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, budget_seconds=150,
                                          max_steps=30).for_question("q").run(
                 "Answer the question.", host)
@@ -711,7 +711,7 @@ class OneGateTests(unittest.TestCase):
         # same reader, its own process) the read; the helper's read reaches the session's
         # host with the session's key, so the gate passes a claim citing what it served.
         from unittest import mock
-        from operating import fast_answer
+        from operating import session_prefetch
         host = self.host()
         seen = self.prepared(host)
         handle, field, value = seen["claim"]
@@ -745,7 +745,7 @@ class OneGateTests(unittest.TestCase):
             from evals.tests.test_runner import _stream
             return 0, _stream("Written.", client.calls)
 
-        with mock.patch.object(fast_answer, "first_reads", lambda question: []):
+        with mock.patch.object(session_prefetch, "first_reads", lambda question: []):
             runner.ClaudeCodeAgent(spawn=spawn, max_turns=8, helpers=1).for_question(
                 "q").run("Answer the question.", host)
         self.assertEqual(seen["gate"], ("answered", []))
@@ -756,7 +756,7 @@ class OneGateTests(unittest.TestCase):
         # still reaches the session with them, and the session's gate passes a claim
         # citing one. Nothing waits past LIST_SECONDS for the host's silence.
         from unittest import mock
-        from operating import agent_session, fast_answer
+        from operating import agent_session, session_prefetch
         host = self.host()
         seen = self.prepared(host)
         served = host.mcp_server
@@ -775,9 +775,9 @@ class OneGateTests(unittest.TestCase):
         started = time.monotonic()
         with mock.patch.object(host, "mcp_server", deaf), \
                 mock.patch.object(agent_session, "LIST_SECONDS", 2.0), \
-                mock.patch.object(fast_answer, "first_reads",
+                mock.patch.object(session_prefetch, "first_reads",
                                   lambda question: [("plx.find", seen["query"])]), \
-                mock.patch.object(fast_answer, "follow_reads", lambda q, done: []):
+                mock.patch.object(session_prefetch, "follow_reads", lambda done: []):
             transcript = runner.record(
                 self.item, runner.ClaudeCodeAgent(
                     spawn=self.gated_session(seen, connect_first=True), max_turns=8),
@@ -793,7 +793,7 @@ class OneGateTests(unittest.TestCase):
         # reader's next session takes it, its first reads and gate as before. Another
         # reader never takes it, and a spare is taken once.
         from unittest import mock
-        from operating import agent_session, fast_answer
+        from operating import agent_session, session_prefetch
         host = self.host()
         seen = self.prepared(host)
 
@@ -813,9 +813,9 @@ class OneGateTests(unittest.TestCase):
         self.addCleanup(spares.close)
         runs = []
         with mock.patch.object(agent_session, "SPARES", spares), \
-                mock.patch.object(fast_answer, "first_reads",
+                mock.patch.object(session_prefetch, "first_reads",
                                   lambda question: [("plx.find", seen["query"])]), \
-                mock.patch.object(fast_answer, "follow_reads", lambda q, done: []):
+                mock.patch.object(session_prefetch, "follow_reads", lambda done: []):
             for reader in ("a", "a", "b", "a"):
                 agent = runner.ClaudeCodeAgent(spawn=self.gated_session(seen), max_turns=8)
                 ran = agent.for_question("q").run("Answer the question.", Named(reader))

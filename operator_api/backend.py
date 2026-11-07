@@ -1797,9 +1797,15 @@ class WorkspaceBackend(ActionsMixin):
                         raise errors.ASK_BUSY
                 try:
                     status("searching", "Finding the records your question is about")
+                    roots = [root for root in (pre.get("found") or {}).get("roots") or ()
+                             if isinstance(root, Mapping)
+                             and root.get("found_by") in ("identifier", "resolver")]
+                    if request.object_id:
+                        roots.insert(0, {"object_id": request.object_id})
                     session.set_result(self.agent_ask.run(
                         reader.session, question, emit, context=brief,
                         **({"route": route} if route else {}),
+                        **({"roots": roots} if roots else {}),
                         **({"entities": pre["entities"]} if "entities" in pre else {})))
                 finally:
                     self._sessions.release()

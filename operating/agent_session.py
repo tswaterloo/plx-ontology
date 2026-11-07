@@ -1329,7 +1329,7 @@ HOST_EXIT_SECONDS = 10
 PREFETCH_CALL_SECONDS = 20
 PREFETCH_WAIT_SECONDS = 30
 PREFETCH_MAX_CHARS = 40_000
-# The follow-up reads (``fast_answer.follow_reads``) start only this long after the
+# The follow-up reads (``session_prefetch.follow_reads``) start only this long after the
 # first reads began: a slow host feeds the task sooner, and the session reads the rest.
 PREFETCH_FOLLOW_SECONDS = 10
 
@@ -1442,7 +1442,7 @@ class EarlyStart:
 # A started host waits this long for its reader's next session (``HostSpares``), and at
 # most this many wait at once (one per reader, the least recently started stopped first).
 SPARE_SECONDS = 300.0
-SPARE_MOST = 4
+SPARE_MOST = 4 * (1 + HOST_HELPERS)   # four readers' primaries and their helpers
 
 
 @dataclass
@@ -1579,6 +1579,12 @@ import atexit  # noqa: E402 - the spares stop with the process that started them
 atexit.register(_close_spares)
 
 
+def _helper_key(key: str, n: int) -> str:
+    """The ``HostSpares`` key of a reader's ``n``-th helper host (``key``: their helpers'
+    ``spare_key``)."""
+    return json.dumps(["helper", n, key])
+
+
 def spare_key(host: Any, command: Sequence[str], cwd: Any, env: Mapping[str, str]
               ) -> str | None:
     """``HostSpares``' key of a host started with ``command``, ``cwd`` and ``env`` for
@@ -1640,12 +1646,14 @@ class HostGate:
         # ``prefetch``: reads the host makes in the session as soon as its client has
         # initialized, before the session's first turn (``prefetched``, then
         # ``prefetch_done`` is set); ``follow``: given those reads (name, arguments, their
-        # result as read), the reads made next, one round (``fast_answer.follow_reads``).
+        # result as read), the reads made next, one round (``session_prefetch.follow_reads``).
         self.allowed = frozenset(allowed)
         self.follow = follow
         self.prefetch = [(name, dict(arguments)) for name, arguments in prefetch
                          if name in allowed]
         self.prefetched: list[dict[str, Any]] = []
+        # each first read's tool name and milliseconds, in the order made (timing only)
+        self.prefetch_ms: list[tuple[str, int]] = []
         self.prefetch_done = threading.Event()
         self.inbound, self.outbound = Path(work) / "gate.in", Path(work) / "gate.out"
         os.mkfifo(self.inbound, 0o600)
@@ -1763,7 +1771,9 @@ class HostGate:
         left = ends - time.monotonic()
         if left <= 0:
             return
+        began = time.monotonic()
         reply = ask(name, arguments, min(PREFETCH_CALL_SECONDS, left))
+        self.prefetch_ms.append((name, round((time.monotonic() - began) * 1000)))
         raw = reply.get("result") if isinstance(reply, Mapping) else None
         if not isinstance(raw, Mapping):
             return
@@ -2178,13 +2188,15 @@ class ClaudeCodeAgent:
         and its final message is rendered from it (``decided_reply``), never written by
         the model while the reader waits.
         ``prefetch``: for a question it is told (``for_question``), the host makes the
-        question's first reads (``fast_answer.first_reads``) in the session while Claude
-        Code starts, and the task reaches the session (on stdin) with their results, so
-        its first turn needs no call for them.
+        question's first reads (``session_prefetch``: the records it names, found and
+        read) in the session while Claude Code starts, and the task reaches the session
+        (on stdin) with their results, so its first turn needs no call for them.
         ``helpers``: the helper hosts the session may run beside its own, so its
         independent reads run at once (``HostPool``, ``operating.host_peers``); 0: one
         host serves every call, one at a time."""
         self.binary, self.model, self.timeout = binary, model, timeout
+        # the session's reasoning effort (``--effort``); None: the CLI's default
+        self.effort: str | None = None
         self.helpers = helpers
         self.lookup_model = lookup_model
         self.extra_args, self.spawn, self.case_tools = list(extra_args), spawn, case_tools
@@ -2198,6 +2210,9 @@ class ClaudeCodeAgent:
         self.records_named = False
         self.first_reads: list[tuple[str, dict[str, Any]]] = []
         self.follow_reads: Callable[..., Any] | None = None
+        # The records the Ask found for the question before the session (object_id,
+        # object_type, same_as): its first reads are their cards (``for_question``).
+        self.known_roots: list[Mapping[str, Any]] = []
         # Reads the host makes in the session before its first turn whose results are not
         # shown (``HostGate`` quiet): the sources the task already told the session about
         # (the app's pre-read brief), so what it cites of them is evidence this session
@@ -2218,10 +2233,15 @@ class ClaudeCodeAgent:
         told.asked = question
         if not self.prefetch:
             return told
-        from operating import fast_answer
-        told.first_reads = fast_answer.first_reads(question)
-        told.follow_reads = (lambda done: fast_answer.follow_reads(question, done)) \
-            if told.first_reads else None
+        from operating import session_prefetch
+        known = session_prefetch.root_reads(self.known_roots) if self.known_roots else []
+        if known:
+            # the Ask found the question's records already: they are read at once, the
+            # lookup that found them is not made again
+            told.first_reads, told.follow_reads = known, None
+            return told
+        told.first_reads = session_prefetch.first_reads(question)
+        told.follow_reads = session_prefetch.follow_reads if told.first_reads else None
         return told
 
     def routed(self, question: str) -> "ClaudeCodeAgent":
@@ -2241,12 +2261,18 @@ class ClaudeCodeAgent:
         built-in tools; only the named host tools are allowed, the others refused."""
         argv = [self.binary, "-p", prompt, "--output-format", "stream-json", "--verbose",
                 "--setting-sources", "", "--strict-mcp-config", "--mcp-config", config,
-                "--tools", "", "--no-session-persistence"]
+                "--tools", "", "--no-session-persistence",
+                # the session's own working directory moves out of the system prompt, so
+                # every session's prompt prefix (tools, system prompt) is read from the
+                # prompt cache instead of being written to it again
+                "--exclude-dynamic-system-prompt-sections"]
         argv += ["--allowedTools", ",".join(mcp_tool_name(name) for name in allowed)]
         if refused:
             argv += ["--disallowedTools", ",".join(mcp_tool_name(name) for name in refused)]
         if self.model:
             argv += ["--model", self.model]
+        if self.effort:
+            argv += ["--effort", self.effort]
         if self.max_turns:
             argv += ["--max-turns", str(self.max_turns)]
         return argv + self.extra_args
@@ -2263,6 +2289,7 @@ class ClaudeCodeAgent:
             budget_log = Path(work) / "gate-budget.jsonl"
             server = host.mcp_server()
             started = time.time()
+            phases: dict[str, Any] = {}
             budgeted = []
             if self.budget_seconds is not None:
                 ends = started + float(self.budget_seconds)
@@ -2284,7 +2311,18 @@ class ClaudeCodeAgent:
             if calls_file is not None:
                 calls_file.write_text(f"{deadline:.3f}", encoding="utf-8")
             server_env = self._server_env(server, calls_file)
-            pool = self._pool(host, tools, allowed, server_env)
+            taken: list[Spare] = []   # helper hosts this session took warm
+            held: list[Spare] = []    # the primary's spare, once taken
+
+            def deadline_now() -> float | None:
+                """The second this session's calls end by, as its primary reads it."""
+                source = held[0].deadline if held else calls_file
+                try:
+                    return float(source.read_text(encoding="utf-8")) if source else None
+                except (OSError, ValueError):
+                    return None
+            pool = self._pool(host, tools, allowed, server_env, deadline_now, taken,
+                              server)
             # The reader's host started after their last session (``HostSpares``) is
             # taken when this session is its exact key; else it starts now, as before.
             key = spare_key(host, [server["command"], *server.get("args", [])],
@@ -2293,6 +2331,8 @@ class ClaudeCodeAgent:
             spare = SPARES.take(key) if key is not None else None
             if spare is not None and deadline is not None:
                 spare.set_deadline(deadline)
+            if spare is not None:
+                held.append(spare)
             if pool is not None:
                 if spare is not None:
                     spare.set_peer_key(pool.key)
@@ -2335,12 +2375,16 @@ class ClaudeCodeAgent:
 
                         def feed() -> str:
                             task = _fed(prompt, gate)
+                            phases["fed_ms"] = round((time.time() - started) * 1000)
                             # The session's clock starts when it has its task: the time
                             # its first reads took (up to PREFETCH_WAIT_SECONDS, longer
                             # than its research share on a busy host) is not taken from
                             # its research, its calls or its end.
                             _shift_clock(budget, self._shift_room(time.time() - started),
                                          deadline, calls_file, spare)
+                            moved = deadline_now()
+                            for helper in list(taken) if moved is not None else ():
+                                helper.set_deadline(moved)
                             return task
                         options["feed"] = feed
                     if ends is not None and getattr(self.spawn, "stops", False):
@@ -2389,6 +2433,8 @@ class ClaudeCodeAgent:
             seconds = round(time.time() - started, 1)
         if spare is not None:
             spare.release()
+        for helper in taken:
+            helper.release()
         if key is not None:
             self._start_spare(host)
         if gate.prefetched:
@@ -2397,6 +2443,12 @@ class ClaudeCodeAgent:
             for seq, event in enumerate(run.events):
                 event["seq"] = seq
         attach_call_timing(run.events, timed)
+        # Where the session's time went (milliseconds; tool names only): the first reads,
+        # when the task reached the session, and each call the session made.
+        run.agent["timing"] = {**phases, "prefetch": [list(r) for r in gate.prefetch_ms],
+                               "calls": [[e.get("name"), e.get("elapsed_ms")]
+                                         for e in run.events if e.get("type") == "tool_call"
+                                         and "elapsed_ms" in e]}
         if submission is not None and gate.served:
             run.events.append(_host_event(len(run.events), submission, submitted))
         if timed_out:
@@ -2435,7 +2487,10 @@ class ClaudeCodeAgent:
         return max(0.0, min(waited, room))
 
     def _pool(self, host: Host, tools: Sequence[Mapping[str, Any]], allowed: Sequence[str],
-              server_env: Mapping[str, str]) -> "HostPool | None":
+              server_env: Mapping[str, str],
+              deadline_now: Callable[[], float | None] | None = None,
+              taken: "list[Spare] | None" = None,
+              server: Mapping[str, Any] | None = None) -> "HostPool | None":
         """The session's helper hosts (``HostPool``), or None: none asked for, a host
         that cannot start another server of its reader, or no tool a helper may serve
         (the read-only tools whose results are evidence, ``mcp_server.RETURNING_TOOLS``)."""
@@ -2450,8 +2505,21 @@ class ClaudeCodeAgent:
             return None
         helper_env = {**server_env, host_peers.ROLE_ENV: host_peers.HELPER}
         helper_env.pop(host_peers.KEY_ENV, None)
+        key = self._helper_spare_key(host, helper_env, server)
 
         def start() -> "subprocess.Popen":
+            # the reader's helper started after their last session (``HostSpares``, kept
+            # per reader like the primary's): already past its start-up
+            for n in range(self.helpers):
+                spare = SPARES.take(_helper_key(key, n)) if key is not None else None
+                if spare is None:
+                    continue
+                at = deadline_now() if deadline_now is not None else None
+                if at is not None:
+                    spare.set_deadline(at)
+                if taken is not None:
+                    taken.append(spare)
+                return spare.child
             # a fresh server of the same reader: its own single-use ticket
             server = host.mcp_server()
             env = {**agent_environment(os.environ), **(server.get("env") or {}),
@@ -2479,9 +2547,25 @@ class ClaudeCodeAgent:
                 env[call_limits.DEADLINE_FILE_ENV] = str(deadline_file)
         return env
 
+    def _helper_spare_key(self, host: Host, helper_env: Mapping[str, str],
+                          server: Mapping[str, Any] | None = None) -> str | None:
+        """The ``HostSpares`` key of this reader's helper hosts (``_helper_key`` numbers
+        them), or None: a host whose hosts are never kept. ``server``: a server already
+        made for this reader (the key leaves its ticket out, so none is minted here)."""
+        if server is None:
+            return None
+        env = {**agent_environment(os.environ), **(server.get("env") or {}),
+               **{name: value for name, value in helper_env.items()
+                  if name != getattr(host, "ticket_env", None)}}
+        return spare_key(host, [server["command"], *server.get("args", [])],
+                         server.get("cwd"), env)
+
     def _start_spare(self, host: Host) -> None:
         """The reader's host for their next session (``HostSpares``), started now with a
-        fresh ticket; its deadline is set when a session takes it."""
+        fresh ticket; its deadline is set when a session takes it. Its helper hosts
+        (``helpers``) are kept the same way, so the next session's parallel calls reach
+        hosts already past their start-up (measured on a loaded host: a helper started
+        on a parallel call answered its first call in 25-30 s, a running one in 1-3 s)."""
         server = host.mcp_server()
         command = [server["command"], *server.get("args", [])]
         cwd = None if server.get("cwd") is None else str(server.get("cwd"))
@@ -2489,6 +2573,21 @@ class ClaudeCodeAgent:
         key = spare_key(host, command, cwd, env)
         if key is not None:
             SPARES.start(key, command, env, cwd)
+        if self.helpers <= 0 or key is None:
+            return
+        helper_env = {**self._server_env(server, None),
+                      host_peers.ROLE_ENV: host_peers.HELPER}
+        helper_env.pop(host_peers.KEY_ENV, None)
+        helper_key = self._helper_spare_key(host, helper_env, server)
+        if helper_key is None:
+            return
+        for n in range(self.helpers):
+            helper = host.mcp_server()   # each helper its own single-use ticket
+            SPARES.start(_helper_key(helper_key, n),
+                         [helper["command"], *helper.get("args", [])],
+                         {**agent_environment(os.environ), **(helper.get("env") or {}),
+                          **{name: value for name, value in helper_env.items()
+                             if name != getattr(host, "ticket_env", None)}}, cwd)
 
 
 PREFETCH_HEADING = (

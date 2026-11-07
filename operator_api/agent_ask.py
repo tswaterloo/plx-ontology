@@ -68,6 +68,11 @@ _PREWARMED_LOCK = threading.Lock()
 # questions the short method is asked for); any other question stays on the session's.
 # None: every Ask on the session's model.
 LOOKUP_MODEL: Optional[str] = None
+# The reasoning effort of an Ask about one named record (the front door's lookup route or
+# ``deep_investigation.is_lookup``): its records are read before its first turn, so its
+# turns are mechanical; an investigation keeps the CLI's default. "" or "default": none.
+LOOKUP_EFFORT_ENV = "PLX_ASK_LOOKUP_EFFORT"
+LOOKUP_EFFORT = "medium"
 
 
 # The app's reader is a business user: the words around the answer block say what the
@@ -365,6 +370,7 @@ class AgentAsk:
     def run(self, session: Any, question: str,
             emit: Callable[[str, Mapping[str, Any]], None] = lambda kind, data: None,
             context: str = "", route: Optional[str] = None,
+            roots: Sequence[Mapping[str, Any]] = (),
             entities: Optional[Sequence[Mapping[str, Any]]] = None) -> AskRun:
         """One question as the reader (``ReaderRefused`` before any session for a reader
         with no employee identity). ``emit(kind, data)``: ``("call", {"tool": name})`` as
@@ -441,6 +447,13 @@ class AgentAsk:
             # the sources the pre-read brief names are read in the session itself, so
             # what the agent cites of them is evidence the session returned
             agent.quiet_reads = runner.told_reads(context)
+            # the records the Ask found for the question (``roots``: object_id,
+            # object_type, same_as) are the session's first reads, not looked up again
+            agent.known_roots = [dict(root) for root in roots if isinstance(root, Mapping)]
+            if route == "lookup" or (route is None and deep.is_lookup(question)):
+                effort = os.environ.get(LOOKUP_EFFORT_ENV, LOOKUP_EFFORT).strip()
+                if effort and effort != "default" and hasattr(agent, "effort"):
+                    agent.effort = effort
             # the Ask resolved records the question names (the brief's roots): a text
             # search waits for the agent's first record read
             agent.records_named = bool(re.search(r'" names (?:one |the record)', context))
@@ -465,7 +478,8 @@ class AgentAsk:
             "gate": (run.agent.get("answer_gate") or {}).get("outcomes"),
             "removed_sentences": reply.get("removed_sentences"),
             "withheld_values": len(reply.get("withheld") or ()),
-            "prose_chars": len(reply_prose(run.final_text, answer))}))
+            "prose_chars": len(reply_prose(run.final_text, answer)),
+            "timing": run.agent.get("timing")}))
         # the CLI's own message (a limit or sign-in notice) before the gate screened it
         failure = session_failure(str(reply.get("agent_final_text") or run.final_text or ""),
                                   run.usage, run.events, answer)
