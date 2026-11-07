@@ -10,7 +10,7 @@ Wants=network-online.target
 Type=simple
 User=plx-workbench
 Group=plx-workbench
-WorkingDirectory=/data/OntologyProject/app
+WorkingDirectory=@PLX_CURRENT@/app
 Environment=NODE_ENV=production
 Environment=NEXT_TELEMETRY_DISABLED=1
 Environment=PATH=/data/tools/node/bin:/usr/bin:/bin
@@ -23,7 +23,7 @@ RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/data/OntologyProject/app/.next/cache
+ReadWritePaths=@PLX_CURRENT@/app/.next/cache
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true

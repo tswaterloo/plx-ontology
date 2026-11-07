@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const auth = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
@@ -8,7 +8,13 @@ vi.mock("./auth", () => ({
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/", useRouter: () => ({ push: () => undefined }) }));
 
-import { AccessBanner, DevBanner } from "./shell";
+const api = vi.hoisted(() => ({ ops: null as unknown }));
+vi.mock("@/lib/api", async (orig) => ({
+  ...(await orig<typeof import("@/lib/api")>()),
+  getOpsHealth: () => Promise.resolve(api.ops),
+}));
+
+import { AccessBanner, DevBanner, OpsStatus } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -52,5 +58,42 @@ describe("page banners", () => {
     render(<Banners />);
     expect(screen.queryByTestId("access-banner")).toBeNull();
     expect(screen.queryByTestId("dev-banner")).toBeNull();
+  });
+});
+
+describe("ops status line", () => {
+  afterEach(() => {
+    auth.state = {};
+    api.ops = null;
+  });
+  const breach = {
+    status: "breach",
+    checked_at: "2030-01-02T12:00:00Z",
+    breaches: ["delta_last_cycle", "truth_contradicted_share"],
+    checks: [
+      { name: "delta_last_cycle", value: 107, target: 15, unit: "min", state: "breach", detail: "" },
+      { name: "truth_contradicted_share", value: 0.75, target: 0.25, unit: "share", state: "breach", detail: "" },
+      { name: "capture:mail", value: 30, target: 360, unit: "min", state: "ok", detail: "" },
+    ],
+  };
+
+  it("names each missed target to the full-read owner", async () => {
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.ops = breach;
+    render(<OpsStatus />);
+    const line = await screen.findByTestId("ops-status");
+    expect(line).toHaveTextContent("Ops: 2 behind");
+    expect(line).toHaveTextContent("Last update cycle, Alerts contradicted");
+    expect(line).not.toHaveTextContent("Capture");
+  });
+
+  it("says nothing to other readers, or when every target holds", async () => {
+    auth.state = me({});
+    api.ops = breach;
+    render(<OpsStatus />);
+    auth.state = me({ access_label: "Viewing with full-read access" });
+    api.ops = { ...breach, status: "ok", breaches: [], checks: [] };
+    render(<OpsStatus />);
+    await waitFor(() => expect(screen.queryByTestId("ops-status")).toBeNull());
   });
 });

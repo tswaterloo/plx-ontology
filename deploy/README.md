@@ -1,5 +1,11 @@
 # Deploying the PLX Workbench app on this server
 
+**Code and units.** Every unit runs from one release, `/data/plx-releases/current`. The units
+here are templates that `deploy/render.py` fills in from `~/.config/plx/deploy.env`. Cut,
+switch and roll back with `deploy/release/plx-release`. See `docs/release.md`, which
+supersedes the checkout paths below. Ops scripts: `deploy/ops/`; host drop-ins:
+`deploy/systemd/host/`.
+
 One HTTPS link, two local processes behind Caddy:
 
 | Piece | Listens on | Unit |
@@ -210,3 +216,12 @@ host's cycle lock refuses the second).
    generation, last capture and blocked parts) and `journalctl -u plx-ingest` (one JSON line
    per refresh: counts and codes only). Stop cleanly with `touch
    /data/plx-state/host/ingest.stop` (remove it before the next start).
+
+## Host overrides that persist
+
+`deploy/systemd/host/plx-api.service.d/live-secret.conf` is rendered like the other drop-ins
+and points `plx-api` at `/etc/plx/live-session.env` (the path only; create that file on the
+host, root-owned, mode 0600, and never commit it). Memory and CPU limits set with
+`systemctl set-property` live in `/etc/systemd/system.control/<unit>.d/` on the host, not in
+this repo. They survive a render and a release switch and take precedence over the unit
+files and drop-ins.

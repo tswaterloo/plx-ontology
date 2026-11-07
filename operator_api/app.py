@@ -108,6 +108,13 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                               "signed-in reader. Errors are {error:{code,message}}.",
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.backend, app.state.auth = backend, auth
+    # Operator freshness targets (operating.ops_health): the page latency window this
+    # process measures, and the checks over the served state dir (none for a fixture).
+    from operating.ops_health import CachedHealth, LatencyWindow
+    pages = LatencyWindow()
+    state_dir = getattr(backend, "state_dir", None)
+    ops = CachedHealth(state_dir, pages) if state_dir else None
+    app.state.page_latency = pages
     feedback_store = getattr(backend, "feedback_store", None) \
         or fb.FeedbackStore.for_backend(backend)
     app.state.feedback = feedback_store
@@ -159,10 +166,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         except Exception as error:  # noqa: BLE001 - never a stack trace to a person
             response = problem("internal", 500, incident=_incident(error, request.url.path))
         route = request.scope.get("route")
+        ms = round((time.perf_counter() - started) * 1000, 1)
+        path = getattr(route, "path", "unmatched")
         latency_log.info(json.dumps({
-            "method": request.method, "route": getattr(route, "path", "unmatched"),
-            "status": response.status_code,
-            "ms": round((time.perf_counter() - started) * 1000, 1)}))
+            "method": request.method, "route": path, "status": response.status_code,
+            "ms": ms}))
+        if request.method == "GET" and path.startswith("/api/") and path not in (
+                "/api/health", "/api/ask") and response.status_code < 500:
+            pages.add(ms)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         return response
@@ -176,8 +187,17 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     # ---- auth -----------------------------------------------------------------------
 
     @app.get("/api/health", include_in_schema=False)
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health() -> dict[str, Any]:
+        """Public liveness ("status" stays "ok" while the process serves) and the operator
+        freshness targets (``ops``: each check's value, target and breach; ages and
+        counts only, never a record)."""
+        if ops is None:
+            return {"status": "ok"}
+        try:
+            return {"status": "ok", "ops": ops.get()}
+        except Exception as error:  # noqa: BLE001 - liveness never fails on a check
+            log.warning("ops health failed: %s", type(error).__name__)
+            return {"status": "ok", "ops": None}
 
     @app.get("/api/auth/config", response_model=m.AuthConfig, tags=["auth"])
     def auth_config_route() -> m.AuthConfig:

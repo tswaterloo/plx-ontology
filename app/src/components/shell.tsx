@@ -1,11 +1,11 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Bookmark, CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, type LucideIcon } from "lucide-react";
+import { Bookmark, CalendarCheck2, Clock3, History, Inbox, MessageCircle, MessageSquareText, MoreHorizontal, RefreshCw, Search, TriangleAlert, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
-import { getHome, getLateList } from "@/lib/api";
+import { getHome, getLateList, getOpsHealth, type OpsCheck, type OpsHealth } from "@/lib/api";
 import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { plainServerNote, SYSTEM_LABEL } from "@/lib/format";
@@ -233,6 +233,77 @@ function SyncStatus({ home }: { home: HomeResponse | null }) {
   );
 }
 
+const OPS_LABEL: Record<string, string> = {
+  delta_last_cycle: "Last update cycle",
+  delta_cycle_runtime: "Running update cycle",
+  pg_follow: "Postgres copy",
+  proactive_last_pass: "Proactive alerts",
+  truth_contradicted_share: "Alerts contradicted",
+  ai_watcher_last_run: "AI watcher",
+  api_page_p95: "Page time (p95)",
+  api_reachable: "API",
+};
+
+function opsLabel(name: string) {
+  return name.startsWith("capture:") ? `Capture: ${name.slice(8)}` : OPS_LABEL[name] ?? name;
+}
+
+function opsValue(c: OpsCheck) {
+  if (c.value === null || typeof c.value === "boolean") return c.detail || "unknown";
+  if (c.unit === "share") return `${Math.round(c.value * 100)}% (target ${Math.round(c.target * 100)}%)`;
+  if (c.unit === "min") return `${Math.round(c.value)} min (target ${c.target})`;
+  return `${c.value} ${c.unit} (target ${c.target})`;
+}
+
+/** The owner's ops line: any freshness target breached (delta, captures, Postgres, proactive,
+ * truth check, AI watcher, page time), polled from the public health route. Shown only to a
+ * full-read reader; nothing when every target holds. */
+export function OpsStatus({ every = 60_000 }: { every?: number }) {
+  const { state } = useAuth();
+  const owner = state.status === "signed-in" && !!state.me?.access_label;
+  const [ops, setOps] = useState<OpsHealth | null>(null);
+  useEffect(() => {
+    if (!owner) return;
+    let live = true;
+    const ctl = new AbortController();
+    const load = () => getOpsHealth(ctl.signal).then((o) => live && setOps(o)).catch(() => undefined);
+    load();
+    const id = setInterval(load, every);
+    return () => {
+      live = false;
+      ctl.abort();
+      clearInterval(id);
+    };
+  }, [owner, every]);
+  if (!owner || !ops || ops.breaches.length === 0) return null;
+  const breached = ops.checks.filter((c) => c.state === "breach");
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        className="group flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer"
+        title={`${breached.length} ops target${breached.length === 1 ? "" : "s"} missed`}
+        data-testid="ops-status"
+      >
+        <TriangleAlert className="size-[14px] shrink-0 text-fg" strokeWidth={2} aria-hidden />
+        <span className="min-w-0 text-[12px] leading-4 max-xl:hidden">
+          <span className="block text-fg">Ops: {breached.length} behind</span>
+          <span className="block truncate text-faint">{breached.map((c) => opsLabel(c.name)).join(", ")}</span>
+        </span>
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Content side="top" align="start" sideOffset={6} className="z-50 w-80 rounded-xl bg-raised p-1.5 shadow-pop" data-testid="ops-detail">
+          {breached.map((c) => (
+            <div key={c.name} className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-row">
+              <span className="flex-1 truncate">{opsLabel(c.name)}</span>
+              <span className="text-meta tabular-nums text-fg">{opsValue(c)}</span>
+            </div>
+          ))}
+        </Menu.Content>
+      </Menu.Portal>
+    </Menu.Root>
+  );
+}
+
 function NavItem({ href, label, count, onNavigate }: { href: string; label: string; count?: number | null; onNavigate?: () => void }) {
   const path = usePathname();
   const on = isOn(path, href);
@@ -394,6 +465,7 @@ function Sidebar() {
       <div className="shrink-0 space-y-0.5 border-t border-border px-3 py-2.5">
         <FeedbackButton />
         <SyncStatus home={home} />
+        <OpsStatus />
         <UserMenu />
       </div>
     </aside>

@@ -3,7 +3,7 @@
 Rishi (29 Oct 2026): backups in three places (a local copy plus two other regions or
 providers), nightly Postgres dumps and state backups, and a restore test.
 
-## What is backed up (nightly, 03:15 ET)
+## What is backed up (nightly, 03:15 ET; restore test nightly, 04:30 ET)
 
 - **Postgres `plx`** (`pg_dump -Fc` on one exported snapshot): the DDL of every schema and
   the extensions; the data of `plx_meta` (and `public`). The data of `search` and
@@ -19,7 +19,9 @@ providers), nightly Postgres dumps and state backups, and a restore test.
   kind-confirmations}.sqlite` and `.cursors`, `session-replay.sqlite`,
   `console-ticket-audit.jsonl`, `search/follow.json`, `truth-check/{status.json,report.md}`
   and small JSON files; `actions.sqlite` and `actions/journal.jsonl` when they exist; the AI
-  watcher store `/data/scratch/ai-watcher/watcher.sqlite`. A file over 512 MB is refused.
+  watcher store and its switch (`ai-watcher/watcher.sqlite`, `ai-watcher/switch.json`); and
+  the app's data dir `${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app` (feedback,
+  known readers, test records), archived under `extra/`. A file over 512 MB is refused.
 - **Config**: `~/.config/plx`, `/etc/plx`, `/etc/systemd/system/plx-*` as a tar with modes,
   owners and times kept. A secret-bearing file (any name but `*.json`, unit or Caddyfile, or
   text assigning a KEY/SECRET/TOKEN/PASSWORD/DSN) is never stored in plain text: with
@@ -45,12 +47,17 @@ exceed `PLX_BACKUP_MAX_GB` (20). No run starts when `/data` would keep less than
     deploy/backup/restore_test.sh    # newest set: digests, dump into a throwaway DB (dropped),
                                      # PRAGMA integrity_check of each restored SQLite store
 
-## Install (system units)
+## Install (system units, run as $PLX_USER)
 
-    sudo cp /data/OntologyProject/deploy/backup/plx-backup.{service,timer} \
-            /data/OntologyProject/deploy/backup/plx-restore-test.{service,timer} /etc/systemd/system/
+The units run from the current release (`deploy/release/plx-release`, docs/release.md) and
+are rendered from templates with the host user's settings (`~/.config/plx/deploy.env`):
+
+    python3 $PLX_RELEASES/current/deploy/render.py --out /tmp/plx-units
+    sudo install -m 644 /tmp/plx-units/plx-backup.{service,timer} \
+         /tmp/plx-units/plx-restore-test.{service,timer} /etc/systemd/system/
     sudo systemctl daemon-reload
     sudo systemctl enable --now plx-backup.timer plx-restore-test.timer
+    sudo systemctl start plx-backup.service && sudo systemctl start plx-restore-test.service
     systemctl list-timers 'plx-backup*' 'plx-restore*'
 
 Settings go in `~/.config/plx/backup.env` (mode 600), e.g. `PLX_BACKUP_OFFSITE_HOOK=` or

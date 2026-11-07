@@ -1,0 +1,16 @@
+[Unit]
+Description=PLX memory logger (available memory every 60 s, top processes when low)
+
+[Service]
+Type=simple
+User=@PLX_USER@
+Group=@PLX_GROUP@
+ExecStart=@PLX_CURRENT@/deploy/ops/memlog.sh
+Restart=always
+RestartSec=30
+Nice=10
+MemoryMax=256M
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

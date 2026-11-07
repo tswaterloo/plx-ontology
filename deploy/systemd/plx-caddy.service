@@ -15,8 +15,8 @@ EnvironmentFile=/etc/plx/workbench-caddy.env
 # Caddy's certificates and autosaved config stay under /var/lib/caddy.
 Environment=XDG_DATA_HOME=/var/lib/caddy
 Environment=XDG_CONFIG_HOME=/var/lib/caddy/config
-ExecStart=/usr/bin/caddy run --config /data/OntologyProject/deploy/Caddyfile --adapter caddyfile
-ExecReload=/usr/bin/caddy reload --config /data/OntologyProject/deploy/Caddyfile --adapter caddyfile --force
+ExecStart=/usr/bin/caddy run --config @PLX_CURRENT@/deploy/Caddyfile --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config @PLX_CURRENT@/deploy/Caddyfile --adapter caddyfile --force
 TimeoutStopSec=5s
 LimitNOFILE=1048576
 Restart=on-failure

@@ -92,6 +92,29 @@ export async function logout(): Promise<void> {
   await call("/api/auth/logout", { method: "POST" }).catch(() => undefined);
 }
 
+/** One operator freshness target from the public health route (operating/ops_health.py). */
+export interface OpsCheck {
+  name: string;
+  value: number | boolean | null;
+  target: number;
+  unit: string;
+  state: "ok" | "breach" | "unknown";
+  detail: string;
+}
+
+export interface OpsHealth {
+  status: "ok" | "breach";
+  checked_at: string;
+  breaches: string[];
+  checks: OpsCheck[];
+}
+
+/** The API's liveness and, on a served state dir, its freshness targets (public, no reader). */
+export async function getOpsHealth(signal?: AbortSignal): Promise<OpsHealth | null> {
+  const body = await getJson<{ status: string; ops?: OpsHealth | null }>("/api/health", signal);
+  return body.ops ?? null;
+}
+
 export function getHome(signal?: AbortSignal): Promise<HomeResponse> {
   return getJson<HomeResponse>("/api/home", signal);
 }

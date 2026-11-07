@@ -1,0 +1,189 @@
+#!/bin/bash
+# One release for every unit: each commit is unpacked once into its own directory under
+# $PLX_RELEASES, every unit runs from $PLX_RELEASES/current (a symlink), the switch is one
+# atomic rename, and the previous release stays one command away.
+#
+#   plx-release build <ref> [--overlay <commit>:<path>]... [--node-modules-from DIR]
+#                           [--no-app] [--no-schema-check]
+#       Cut a release from <ref> of $PLX_REPO (read only: git archive, nothing checked out).
+#       --overlay takes <path> from <commit> instead (the held-back schema files while a
+#       generation on the old schema is served). The release's schema digest must equal the
+#       served projection's (store_meta schema_digest), else nothing is built. The app is
+#       built inside the release; node_modules is hard-linked from the current release when
+#       app/package-lock.json is unchanged (else npm ci). Prints the release id.
+#   plx-release switch <id>     current -> <id>, previous -> the old current (atomic)
+#   plx-release rollback        current -> previous (and previous -> the one rolled back)
+#   plx-release restart [--with-ingest]
+#       Restart the long-running units that are active (try-restart) so they load current;
+#       timer-driven units (delta, proactive, truth check, AI watcher, backup) pick it up on
+#       their next run. plx-ingest restarts only with --with-ingest (a restart ends a build).
+#       Then waits for /api/health. Needs sudo; the supervisor runs it.
+#   plx-release status | list | prune [--keep N]
+#
+# Settings: deploy/lib.sh (PLX_REPO, PLX_RELEASES, PLX_STATE, PLX_VENV, PLX_NODE).
+set -euo pipefail
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+. "$here/../lib.sh"
+LONG_RUNNING="plx-api plx-app plx-search-follow plx-search-generation plx-rag-backfill"
+
+die() { echo "plx-release: $*" >&2; exit 1; }
+log() { mkdir -p "$PLX_RELEASES"; echo "$(date -u +%FT%TZ) $*" >> "$PLX_RELEASES/history.log"; }
+current_id() { basename "$(readlink "$PLX_RELEASES/current" 2>/dev/null || echo none)"; }
+
+served_digest() {
+  local store="$PLX_STATE/projection/ontology.sqlite"
+  [ -r "$store" ] || return 0
+  "$PLX_VENV/bin/python3" - "$store" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=5)
+row = c.execute("SELECT value FROM store_meta WHERE key = 'schema_digest'").fetchone()
+print(row[0] if row else "")
+PY
+}
+
+build() {
+  local ref="" app=1 schema_check=1 seed="" overlays=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --overlay) overlays+=("$2"); shift 2 ;;
+      --node-modules-from) seed=$2; shift 2 ;;
+      --no-app) app=0; shift ;;
+      --no-schema-check) schema_check=0; shift ;;
+      -*) die "unknown option $1" ;;
+      *) ref=$1; shift ;;
+    esac
+  done
+  [ -n "$ref" ] || die "build needs a ref"
+  local sha; sha=$(git -C "$PLX_REPO" rev-parse --verify "$ref^{commit}") || die "no commit $ref"
+  local id=${sha:0:12}
+  if [ ${#overlays[@]} -gt 0 ]; then
+    local spec="" o
+    for o in "${overlays[@]}"; do
+      spec+="$(git -C "$PLX_REPO" rev-parse --verify "${o%%:*}^{commit}"):${o#*:} "
+    done
+    id="$id-o$(printf %s "$spec" | sha256sum | cut -c1-8)"
+  fi
+  local dir="$PLX_RELEASES/$id"
+  if [ -f "$dir/RELEASE.json" ]; then echo "$id"; return 0; fi
+  mkdir -p "$PLX_RELEASES"
+  local tmp="$PLX_RELEASES/.build-$id-$$"
+  rm -rf "$tmp"; mkdir -p "$tmp"
+  trap 'rm -rf "$tmp"' EXIT
+  git -C "$PLX_REPO" archive "$sha" | tar -x -C "$tmp"
+  for o in "${overlays[@]}"; do
+    git -C "$PLX_REPO" archive "${o%%:*}" -- "${o#*:}" | tar -x -C "$tmp"
+  done
+  local got="" want
+  if [ -d "$tmp/ontology/schema" ]; then
+    got=$(cd "$tmp" && timeout 300 "$PLX_VENV/bin/python3" -c \
+          "from ontology.schema import load_schema; print(load_schema().digest)")
+  fi
+  want=$(served_digest || true)
+  if [ "$schema_check" = 1 ] && [ -n "$want" ] && [ "$got" != "$want" ]; then
+    die "schema $got differs from the served generation's $want: not built (--overlay the served schema, or --no-schema-check)"
+  fi
+  if [ "$app" = 1 ] && [ -f "$tmp/app/package.json" ]; then
+    local cur="$PLX_RELEASES/current/app"
+    if [ -z "$seed" ] && [ -d "$cur/node_modules" ] && cmp -s "$cur/package-lock.json" "$tmp/app/package-lock.json"; then
+      seed="$cur/node_modules"
+    fi
+    if [ -n "$seed" ]; then
+      cp -al "$(readlink -f "$seed")" "$tmp/app/node_modules"
+    else
+      (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" npm ci --no-audit --no-fund >/dev/null)
+    fi
+    (cd "$tmp/app" && PATH="$PLX_NODE/bin:/usr/bin:/bin" NEXT_TELEMETRY_DISABLED=1 \
+       node node_modules/next/dist/bin/next build > "$tmp/.app-build.log" 2>&1) \
+      || { tail -20 "$tmp/.app-build.log" >&2; die "app build failed"; }
+  fi
+  "$PLX_VENV/bin/python3" - "$tmp/RELEASE.json" "$id" "$sha" "$ref" "$got" "${overlays[@]}" <<'PY'
+import json, sys, datetime
+path, rid, sha, ref, digest, *overlays = sys.argv[1:]
+json.dump({"id": rid, "sha": sha, "ref": ref, "overlays": overlays, "schema_digest": digest,
+           "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+          open(path, "w"), indent=1)
+PY
+  chmod -R go+rX "$tmp"          # caddy reads the Caddyfile from the release
+  mv -T "$tmp" "$dir"
+  trap - EXIT
+  log "built $id from $ref ($sha)${overlays:+ overlays ${overlays[*]}}"
+  echo "$id"
+}
+
+relink() {  # relink <name> <target id>: atomic (rename over the old link)
+  ln -sfn "$2" "$PLX_RELEASES/.$1.new"
+  mv -Tf "$PLX_RELEASES/.$1.new" "$PLX_RELEASES/$1"
+}
+
+switch() {
+  local id=${1:?switch needs a release id}
+  [ -f "$PLX_RELEASES/$id/RELEASE.json" ] || die "no built release $id"
+  local old; old=$(current_id)
+  [ "$old" = "$id" ] && { echo "already current: $id"; return 0; }
+  relink current "$id"
+  [ "$old" != none ] && relink previous "$old"
+  log "switch $old -> $id"
+  echo "current: $id (previous: $old). Long-running units load it on: $0 restart"
+}
+
+rollback() {
+  local prev; prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || true)")
+  [ -n "$prev" ] || die "no previous release"
+  switch "$prev"
+}
+
+restart() {
+  local units=$LONG_RUNNING
+  [ "${1:-}" = "--with-ingest" ] && units="$units plx-ingest"
+  # shellcheck disable=SC2086
+  sudo systemctl try-restart $units
+  sudo systemctl reload-or-restart plx-caddy 2>/dev/null || true
+  local code=000 i
+  for i in $(seq 1 60); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$PLX_API_URL/api/health" || true)
+    [ "$code" = 200 ] && break; sleep 3
+  done
+  log "restart ($units) api=$code on $(current_id)"
+  echo "$(plx_now) restarted on $(current_id): api=$code"
+  [ "$code" = 200 ] || die "API not healthy; roll back with: $0 rollback && $0 restart"
+}
+
+status() {
+  echo "current:  $(current_id)"
+  echo "previous: $(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || echo none)")"
+  [ -f "$PLX_RELEASES/current/RELEASE.json" ] && cat "$PLX_RELEASES/current/RELEASE.json"
+  local pid cwd
+  for pid in $(pgrep -u "$PLX_USER" -f 'python3 -m (operator_api|operating|ontology)' || true); do
+    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+    [ -n "$cwd" ] && echo "pid $pid runs from ${cwd#$PLX_RELEASES/}"
+  done | sort -k4 | uniq -c -f3 | sed 's/^ *//' || true
+}
+
+list() {
+  local d
+  for d in "$PLX_RELEASES"/*/RELEASE.json; do
+    [ -f "$d" ] || continue
+    printf '%s  %s\n' "$(basename "$(dirname "$d")")" "$(date -r "$d" +%FT%T)"
+  done
+}
+
+prune() {
+  local keep=5
+  [ "${1:-}" = "--keep" ] && keep=$2
+  local cur prev busy d n=0
+  cur=$(current_id); prev=$(basename "$(readlink "$PLX_RELEASES/previous" 2>/dev/null || echo none)")
+  busy=$(for p in /proc/[0-9]*; do readlink "$p/cwd" 2>/dev/null; done | sort -u)
+  for d in $(ls -1td "$PLX_RELEASES"/*/ 2>/dev/null); do
+    d=${d%/}; local id; id=$(basename "$d")
+    [ -f "$d/RELEASE.json" ] || continue
+    n=$((n + 1))
+    if [ "$id" = "$cur" ] || [ "$id" = "$prev" ] || [ $n -le "$keep" ] || grep -qx "$d.*" <<<"$busy"; then continue; fi
+    rm -rf "$d" && log "pruned $id" && echo "pruned $id"
+  done
+}
+
+cmd=${1:-status}; shift || true
+case $cmd in
+  build|switch|rollback|restart|status|list|prune) "$cmd" "$@" ;;
+  *) die "unknown command $cmd (build|switch|rollback|restart|status|list|prune)" ;;
+esac

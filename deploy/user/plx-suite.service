@@ -1,0 +1,14 @@
+# The nightly full test suite on origin/main across all cores (deploy/ops/suite_nightly.sh):
+# results in $PLX_RUNS/suite/latest.{txt,json}. A user unit: no sudo, no secrets (main_ci
+# strips the credential variables from every test). Install: docs/release.md.
+[Unit]
+Description=PLX nightly full test suite on origin/main (sharded on every core)
+
+[Service]
+Type=oneshot
+Environment=PATH=/data/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash @PLX_CURRENT@/deploy/ops/suite_nightly.sh
+Nice=5
+# the suite yields the cores to services; a stuck module is killed after 15 min by main_ci
+CPUWeight=50
+TimeoutStartSec=2h

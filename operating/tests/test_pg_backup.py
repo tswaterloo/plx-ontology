@@ -232,5 +232,31 @@ class BackupRestoreTest(unittest.TestCase):
         self.assertFalse((daily / "plx-20261001T000000Z.dump").exists())
 
 
+class ExtraFilesTest(unittest.TestCase):
+    """The app's data dir is kept whole: a directory stands for its files (no WAL or SHM
+    sidecars), ``~`` and the XDG fallback expand, a relative path is never archived."""
+
+    def test_a_directory_and_the_xdg_fallback_expand_to_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp, "state", "plx-workbench-app")
+            (app / "sub").mkdir(parents=True)
+            for name in ("feedback.jsonl", "known-readers.json", "sub/x.sqlite",
+                         "sub/x.sqlite-wal"):
+                (app / name).write_text("made-up")
+            old = os.environ.get("XDG_STATE_HOME")
+            os.environ["XDG_STATE_HOME"] = str(Path(tmp, "state"))
+            try:
+                found = plx_backup._extra_files(list(plx_backup.EXTRA_FILES) + ["relative/x"])
+            finally:
+                if old is None:
+                    os.environ.pop("XDG_STATE_HOME")
+                else:
+                    os.environ["XDG_STATE_HOME"] = old
+            self.assertEqual([p.relative_to(app).as_posix() for p in found],
+                             ["feedback.jsonl", "known-readers.json", "sub/x.sqlite"])
+
+    def test_the_ai_watcher_store_is_a_required_state_file(self) -> None:
+        self.assertIn("ai-watcher/watcher.sqlite", plx_backup.STATE_FILES)
+
 if __name__ == "__main__":
     unittest.main()

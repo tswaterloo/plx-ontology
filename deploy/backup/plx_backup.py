@@ -93,13 +93,18 @@ STATE_FILES = (
     "session-state-label.json",
     "host/cycle-children.json",
     "host/sharepoint-census.json",
+    "ai-watcher/watcher.sqlite",                    # the AI watcher's items and their states
+    "ai-watcher/switch.json",                       # the owner's on/off for the watcher
 )
 # Kept when present, never a problem when absent (written on first use).
 OPTIONAL_STATE_FILES = (
     "actions.sqlite",           # the case console's action records
     "actions/journal.jsonl",    # card actions' journal
 )
-EXTRA_FILES = ("/data/scratch/ai-watcher/watcher.sqlite",)
+# Outside the state dir, kept when present: the app's own data dir (feedback.jsonl, the
+# known readers, test records; ``operator_api.backend.DEFAULT_DATA_DIR``). A directory
+# stands for every file under it; ``~`` is the unit user's home.
+EXTRA_FILES = ("${XDG_STATE_HOME:-~/.local/state}/plx-workbench-app",)
 CONFIG_PATHS = ("~/.config/plx", "/etc/plx", "/etc/systemd/system/plx-*")
 # Config file names that may stay plain (still screened for assigned secrets, ``_is_secret``).
 PLAIN_SUFFIXES = (".json", ".service", ".timer", ".path", ".conf", "Caddyfile")
@@ -226,6 +231,28 @@ def _copy_one(source: Path, out: Path) -> str:
     return "file"
 
 
+def _extra_files(extra: list[str] | tuple[str, ...]) -> list[Path]:
+    """The ``extra`` paths as files: ``~`` and ``$VARS`` expanded (``${XDG_STATE_HOME:-~/..}``
+    falls back when unset), a directory as every regular file under it (SQLite ``-wal`` and
+    ``-shm`` files left out: the online backup of the database holds their pages), only
+    absolute paths."""
+    out: list[Path] = []
+    for raw in extra:
+        text = raw
+        if text.startswith("${XDG_STATE_HOME:-") and "}" in text:
+            fallback, _, rest = text[len("${XDG_STATE_HOME:-"):].partition("}")
+            text = (os.environ.get("XDG_STATE_HOME") or fallback) + rest
+        path = Path(os.path.expanduser(os.path.expandvars(text)))
+        if not path.is_absolute():
+            continue
+        if path.is_dir():
+            out += sorted(p for p in path.rglob("*") if p.is_file() and not p.is_symlink()
+                          and not p.name.endswith(("-wal", "-shm", "-journal")))
+        else:
+            out.append(path)
+    return out
+
+
 def _state_tar(state_dir: Path, files: list[str], target: Path, max_bytes: int, *,
                optional: list[str] | tuple[str, ...] = (),
                extra: list[str] | tuple[str, ...] = ()) -> tuple[dict[str, Any], list[str]]:
@@ -235,8 +262,7 @@ def _state_tar(state_dir: Path, files: list[str], target: Path, max_bytes: int, 
     problems: list[str] = []
     wanted = [(rel, state_dir / rel, False) for rel in files] + \
         [(rel, state_dir / rel, True) for rel in optional if rel not in files] + \
-        [("extra/" + path.lstrip("/"), Path(path), True) for path in extra
-         if Path(path).is_absolute()]
+        [("extra/" + str(path).lstrip("/"), path, True) for path in _extra_files(extra)]
     with tempfile.TemporaryDirectory(prefix="plx-state-", dir=target.parent) as tmp:
         staged = Path(tmp)
         for rel, source, may_lack in wanted:
