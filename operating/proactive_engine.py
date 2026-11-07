@@ -116,6 +116,8 @@ label: that of the captures it reads (live-unverified until the verifier runs it
 from __future__ import annotations
 
 import argparse
+import contextlib
+import dataclasses
 from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import date, datetime, timezone
@@ -130,7 +132,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from ontology import store as ostore
 from ontology.units import unit_token
@@ -146,6 +148,7 @@ INBOX_SCHEMA = "plx-gap-inbox/v1"
 MAX_SHOWN = 100
 CARD_BOUND = 500
 VALUES_CHUNK = 500   # object ids per value read (``_Store.values``)
+SCOPE_CHUNK = 500    # object ids per scoped list or link read (an incremental pass)
 # The link scan (``_Store.links``): threads (every core unless ``SCAN_THREADS_ENV`` says),
 # rowid ranges per thread (a slow range is evened out by the others), the table size from
 # which it splits, and the link rows a run keeps for the rules after it (~1 GB).
@@ -300,10 +303,24 @@ class _Store:
     ``conn`` is per thread (the detectors run side by side, ``run(threads=)``): each thread
     reads on its own read-only connection, all closed with the store."""
 
-    def __init__(self, path: Path, *, threads: int | None = None) -> None:
+    def __init__(self, path: Path, *, threads: int | None = None,
+                 scope: Iterable[str] | None = None,
+                 audience_keys: Iterable[str] | None = None) -> None:
         if not Path(path).is_file():
             raise ostore.StoreError("store_missing")
         self.path = Path(path)
+        # an incremental pass (``operating.proactive_incremental``): the records it may read
+        # whole types of (every record a changed record's rules read, per their declared
+        # inputs); a whole-type read lists only these, a link read only links touching
+        # them. A read naming its objects (``objects=``, ``handles=``) is never narrowed.
+        self.limit: frozenset[str] | None = None if scope is None else frozenset(scope)
+        self._scope_ids: list[str] = sorted(self.limit) if self.limit is not None else []
+        self._known_keys = None if audience_keys is None else frozenset(audience_keys)
+        self.whole_rows = _LinkRows()   # links read whole in a scoped store (``whole``)
+        # the populations the rules judged against (``population``): key -> digest, and the
+        # rules that read each ("*": every rule, a filter over all their gaps)
+        self.populations: dict[str, str] = {}
+        self.population_readers: dict[str, set[str]] = defaultdict(set)
         self._local = threading.local()
         self._conns: list[sqlite3.Connection] = []
         self._conns_lock = threading.Lock()
@@ -320,6 +337,46 @@ class _Store:
         # queries do (it reads the window of the thread running the statement)
         self._memo: dict[str, Any] = {}
         self._making: dict[str, threading.Lock] = {}
+
+    @property
+    def scoped(self) -> bool:
+        """Whether this thread's reads are narrowed to the scope (not inside ``whole``)."""
+        return self.limit is not None and not getattr(self._local, "whole", False)
+
+    @contextlib.contextmanager
+    def whole(self) -> Iterator[None]:
+        """Reads on this thread over the whole store, even in an incremental pass: what a
+        rule judges a subject against that sums over every record (a population)."""
+        before = getattr(self._local, "whole", False)
+        self._local.whole = True
+        try:
+            yield
+        finally:
+            self._local.whole = before
+
+    def judging(self, rule: str | None) -> None:
+        """The rule this thread judges now (``population`` names its readers)."""
+        self._local.rule = rule
+
+    def population(self, key: str, make: Callable[[], Any],
+                   digest: Callable[[Any], Any] = lambda made: made) -> Any:
+        """What ``make()`` reads over the whole store (never the scope), once per run, its
+        ``digest`` kept with the rule reading it: an incremental pass judges a rule whole
+        when one of its populations moved (``run(scope=)``), since that moves subjects
+        it did not read."""
+        rule = getattr(self._local, "rule", None) or "*"
+
+        def read() -> Any:
+            with self.whole():
+                made = make()
+            text = json.dumps(_canonical(digest(made)), sort_keys=True)
+            with self.link_rows.lock:
+                self.populations[key] = hashlib.sha256(text.encode()).hexdigest()[:32]
+            return made
+        made = self.memo("population:" + key, read)
+        with self.link_rows.lock:
+            self.population_readers[key].add(rule)
+        return made
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -382,10 +439,18 @@ class _Store:
         listed = ("SELECT o.object_id FROM objects o "
                   "WHERE o.object_type IN (SELECT value FROM json_each(:types)) AND NOT "
                   + ostore.removed_at_sql("o.object_id"))
-        if objects is not None:
+        if objects is not None or self.scoped:
+            # named objects, or the scope's (an incremental pass): listed by object id
             listed += " AND o.object_id IN (SELECT value FROM json_each(:objects))"
-            params["objects"] = json.dumps(list(objects))
-        ids = [row[0] for row in self.conn.execute(listed + " ORDER BY o.object_id", params)]
+            named = sorted(set(objects)) if objects is not None else self._scope_ids
+            ids = []
+            for start in range(0, len(named), SCOPE_CHUNK):
+                params["objects"] = json.dumps(named[start:start + SCOPE_CHUNK])
+                ids.extend(row[0] for row in self.conn.execute(listed, params))
+            ids.sort()
+        else:
+            ids = [row[0] for row in self.conn.execute(listed + " ORDER BY o.object_id",
+                                                       params)]
         sql = ("SELECT o.object_id, o.object_type, v.property, v.value_type, v.value, v.unit, "
                "v.quantity_role, v.l1_handle, v.markings, v.lineage FROM objects o "
                "JOIN object_values v ON v.object_id = o.object_id "
@@ -419,7 +484,7 @@ class _Store:
         self._link_rows(list(dict.fromkeys(types)))
 
     def _link_rows(self, types: list[str]) -> list[tuple]:
-        cache = self.link_rows
+        cache = self.link_rows if self.limit is None or self.scoped else self.whole_rows
         with cache.lock:
             missing = [t for t in types if t not in cache.by_type]
             found = {t: cache.by_type[t] for t in types if t in cache.by_type}
@@ -443,11 +508,61 @@ class _Store:
                "WHERE l.link_type IN (SELECT value FROM json_each(:types)) "
                "AND l.superseded_at IS NULL AND l.tier <> 'contradicted'")
         out: dict[str, list[tuple]] = defaultdict(list)
+        if self.scoped:
+            # an incremental pass: the links with an end in its scope, by the end indexes
+            for row in self.touching(self._scope_ids, types):
+                out[row[2]].append(row)
+            return out
+        if self.limit is not None:
+            # a population of an incremental pass: each type whole, by the end index of
+            # its smaller end type (every record of it), never a scan of the link table
+            rest = []
+            for link_type, ends in _link_ends(types).items():
+                sized = sorted((self._type_count(e), e) for e in ends)
+                if not sized or sized[0][0] > WHOLE_BY_INDEX_MAX:
+                    rest.append(link_type)
+                    continue
+                ids = [r[0] for r in self.conn.execute(
+                    "SELECT object_id FROM objects WHERE object_type = ?", (sized[0][1],))]
+                for row in self.touching(ids, [link_type]):
+                    out[row[2]].append(row)
+            if not rest:
+                return out
+            types = rest
         for rows in self._ranged("link_rows", "l", sql, " ORDER BY l.rowid",
                                  {"types": json.dumps(list(types))}, _link_row):
             for row in rows:   # the ranges in rowid order, each in rowid order
                 out[row[2]].append(row)
         return out
+
+    def _type_count(self, object_type: str) -> int:
+        return self.memo("count:" + object_type, lambda: self.conn.execute(
+            "SELECT count(*) FROM objects WHERE object_type = ?", (object_type,)).fetchone()[0])
+
+    def touching(self, objects: Sequence[str], types: Sequence[str] | None = None,
+                 *, every: bool = False) -> list[tuple]:
+        """The current links (``_LinkRows`` rows) with an end at one of ``objects``, of
+        ``types`` (None: every type), in rowid order, read by the link table's end indexes;
+        ``every``: contradicted ones too (a walk of what a record is tied to)."""
+        base = ("SELECT l.rowid, l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
+                "l.markings, (" + ostore.removed_at_sql("l.from_object") + " OR "
+                + ostore.removed_at_sql("l.to_object") + ") AS gone FROM link_rows l "
+                "WHERE l.superseded_at IS NULL"
+                + ("" if every else " AND l.tier <> 'contradicted'"))
+        params: dict[str, Any] = {}
+        if types is not None:
+            base += " AND l.link_type IN (SELECT value FROM json_each(:types))"
+            params["types"] = json.dumps(list(types))
+        found: dict[str, tuple] = {}
+        ids = sorted(set(objects))
+        for start in range(0, len(ids), SCOPE_CHUNK):
+            params["chunk"] = json.dumps(ids[start:start + SCOPE_CHUNK])
+            for end in ("from_object", "to_object"):
+                for r in self.conn.execute(
+                        base + f" AND l.{end} IN (SELECT value FROM json_each(:chunk))",
+                        params):
+                    found.setdefault(r[1], _link_row(r))
+        return sorted(found.values(), key=lambda r: r[0])
 
     def _ranged(self, table: str, alias: str, sql: str, tail: str,
                 params: Mapping[str, Any], shape: Callable[[Any], Any]) -> list[list[Any]]:
@@ -493,6 +608,8 @@ class _Store:
         if object_type is not None:
             sql += " AND o.object_type = :type"
             params["type"] = object_type
+            if handles is None and objects is None and self.scoped:
+                objects = self._scope_ids   # a whole type in an incremental pass: its scope
         if handles is not None:
             sql += " AND v.l1_handle IN (SELECT value FROM json_each(:handles))"
             params["handles"] = json.dumps(sorted(set(handles)))
@@ -505,6 +622,11 @@ class _Store:
         """Every audience key a record of the store sits in (removed ones too), read once
         per run by object rowid ranges side by side (``_ranged``): a scan of every record
         (minutes on the live store), asked by several rules."""
+        if self._known_keys is not None:
+            # an incremental pass: the generation's keys and its changed records' (kept
+            # beside the inbox, ``operating.proactive_incremental``), never a whole scan
+            return set(self._known_keys)
+
         def read() -> frozenset[str]:
             return frozenset(key for rows in self._ranged(
                 "objects", "o", "SELECT DISTINCT o.audience_key FROM objects o WHERE 1",
@@ -524,6 +646,33 @@ class _Store:
             for key, marks, n in rows:
                 counts[(key, marks)] += n
         return [(key, marks, n) for (key, marks), n in sorted(counts.items())]
+
+
+WHOLE_BY_INDEX_MAX = 300_000   # an end type of up to this many records: read by index
+
+
+def _link_ends(types: Sequence[str]) -> dict[str, list[str]]:
+    """link type -> its declared end types (schema ``from``/``to``): a population reads
+    the type whole through the end index of the smaller one (every link of the type has
+    that end); none declared: a scan of the link table."""
+    from ontology.schema import load_schema
+
+    declared = load_schema().link_types
+    return {t: [e for e in ((declared.get(t) or {}).get("from"), (declared.get(t) or {})
+                            .get("to")) if isinstance(e, str) and e] for t in types}
+
+
+def _canonical(value: Any) -> Any:
+    """``value`` as JSON in one order (a population's digest)."""
+    if isinstance(value, Mapping):
+        return sorted(([_canonical(k), _canonical(v)] for k, v in value.items()), key=repr)
+    if isinstance(value, (set, frozenset)):
+        return sorted((_canonical(v) for v in value), key=repr)
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return repr(value)
 
 
 def _markings(*texts: str | None) -> str:
@@ -711,7 +860,10 @@ _ORDER = "order"
 def _po_source(st: _Store) -> po_status.StoreSource:
     """The whole store's purchase orders as the one PO reader reads them, read once per
     run (the late rule and the receipt quantity rule both read every order)."""
-    return st.memo("po_source", lambda: po_status.StoreSource(st))
+    # read whole even in an incremental pass: its number collisions and default dates
+    # are populations every order is judged against
+    return st.population("po_source", lambda: po_status.StoreSource(st),
+                         lambda src: (sorted(src.colliding), src.defaults.values))
 
 
 def _late_or_unconfirmed_po(st: _Store, as_of: date) -> dict[str, Any]:
@@ -1109,9 +1261,15 @@ def _late_customer_order(st: _Store, as_of: date) -> dict[str, Any]:
                 and root[ends[0]] != root[ends[1]]:
             lead_twins[root[ends[0]]].add((ends[1], link["markings"]))
             lead_twins[root[ends[1]]].add((ends[0], link["markings"]))
-    defaults = so_status.date_defaults(_grouped(
-        (binding[oid], _day(r.get("value"))) for oid, entry in found.items()
-        for r in entry["props"].get(so_status.DATE_PROP, ())))
+    scoped = st.scoped
+
+    def every_default() -> dict[Any, frozenset]:
+        # the default required dates of each binding: a population (all its orders)
+        held = st.values((so_status.TYPE,), (so_status.DATE_PROP,)) if scoped else found
+        return so_status.date_defaults(_grouped(
+            (po_status.binding_of(oid), _day(r.get("value"))) for oid, entry in held.items()
+            for r in entry["props"].get(so_status.DATE_PROP, ())))
+    defaults = st.population("so_default_dates", every_default)
     state = {oid: so_status.record_status(entry["props"], binding=binding[oid],
                                           fulfilled=fulfilled.get(oid, False))
              for oid, entry in found.items()}
@@ -1449,7 +1607,10 @@ def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
     layouts that hold a quantity, then their cells by layout). Through the view the
     planner scanned every value source of the store (51 s on 2.8M). The order is the
     view's scan order: value source, then cell, then the field's place in its layout."""
-    found = st.conn.execute(
+    if st.scoped:
+        found = _scoped_quantity_rows(st)
+    else:
+        found = st.conn.execute(
         "SELECT s.src, c.field AS cell_field, lf.pos, v.object_id, o.object_type, "
         "f.property, CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) "
         "ELSE c.value END AS value, k.unit, k.quantity_role, v.l1_handle, k.markings "
@@ -1459,11 +1620,32 @@ def _quantity_rows(st: _Store) -> list[dict[str, Any]]:
         "JOIN objects o ON o.object_id = v.object_id JOIN value_fields f ON f.field = lf.field "
         "WHERE k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
         + ostore.removed_at_sql("o.object_id")).fetchall()
+    found = list(found)
     found.sort(key=lambda r: (r["src"], r["cell_field"] is not None, r["cell_field"] or 0,
                               r["pos"]))
     keep = ("object_id", "object_type", "property", "value", "unit", "quantity_role",
             "l1_handle", "markings")
     return [{key: row[key] for key in keep} for row in found]
+
+
+def _scoped_quantity_rows(st: _Store) -> list[Any]:
+    """``_quantity_rows``' rows of the scope's records (an incremental pass), read from
+    each record's own value sources (its version, never a scan of the quantity cells)."""
+    found: list[Any] = []
+    sql = ("SELECT s.src, c.field AS cell_field, lf.pos, v.object_id, o.object_type, "
+           "f.property, CASE WHEN c.field IS NULL THEN json_extract(c.value, lf.path) "
+           "ELSE c.value END AS value, k.unit, k.quantity_role, v.l1_handle, k.markings "
+           "FROM object_versions v JOIN objects o ON o.object_id = v.object_id "
+           "JOIN value_sources s ON s.ver = v.rowid JOIN value_cells c ON c.src = s.src "
+           "JOIN value_layout_fields lf ON lf.layout = c.layout "
+           "JOIN value_kinds k ON k.kind = lf.kind JOIN value_fields f ON f.field = lf.field "
+           "WHERE v.object_id IN (SELECT value FROM json_each(:chunk)) "
+           "AND k.value_type = 'quantity' AND s.superseded_at IS NULL AND NOT "
+           + ostore.removed_at_sql("o.object_id"))
+    ids = st._scope_ids
+    for start in range(0, len(ids), SCOPE_CHUNK):
+        found.extend(st.conn.execute(sql, {"chunk": json.dumps(ids[start:start + SCOPE_CHUNK])}))
+    return found
 
 
 def _conflicting_quantity(st: _Store, as_of: date) -> dict[str, Any]:
@@ -2437,6 +2619,15 @@ def currency_word(raw: Any) -> str | None:
     return code if code in ISO_4217 else None
 
 
+def _suspects(st: _Store, object_type: str, objects: Sequence[str] = ()) -> dict[str, Any]:
+    """``suspect_money.suspects`` of ``objects``, judged once over every record of the type
+    that states a total (its medians are populations: an incremental pass compares them
+    with the last fold's, ``_Store.population``)."""
+    every = st.population(f"suspects:{object_type}", lambda: suspect_money.suspects(
+        st, object_type, sorted(st.values([object_type], AMOUNT_OF[object_type][:1]))))
+    return {oid: every[oid] for oid in objects if oid in every}
+
+
 def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
     """Each gap about a record ``AMOUNT_OF`` names that states no amount gets the record's
     own cited total with its cited currency: both citations join the gap as extra (they
@@ -2447,6 +2638,11 @@ def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
     could not be checked, carries ``suspect`` (why): the briefing never ranks by it."""
     from . import proactive_events as ev
 
+    for object_type in AMOUNT_OF:   # every run reads the same populations, gaps or none
+        try:
+            _suspects(st, object_type)
+        except Exception:  # noqa: BLE001 - checked again below, per gap
+            pass
     wanted: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for result in results.values():
         for gap in result["gaps"]:
@@ -2456,8 +2652,7 @@ def _with_amounts(st: _Store, results: Mapping[str, Mapping[str, Any]]) -> None:
     for object_type, gaps in wanted.items():
         amount, currency = AMOUNT_OF[object_type]
         try:
-            checked = suspect_money.suspects(st, object_type,
-                                             sorted({g["object_id"] for g in gaps}))
+            checked = _suspects(st, object_type, sorted({g["object_id"] for g in gaps}))
         except Exception:  # noqa: BLE001 - an unchecked total is never stated as fact
             checked = None
         try:
@@ -2817,14 +3012,46 @@ def _lanes(order: Sequence[str], threads: int) -> list[list[str]]:
 
 
 def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
-        coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
+        locked: bool = False, **options: Any) -> dict[str, Any]:
+    """Run the detectors and fold their gaps into the inbox (``_run``), holding the
+    inbox's pass lock (``pass_lock``; ``locked``: the caller holds it): two runs never
+    read and fold over each other, so a fold is never of older data than the last."""
+    if locked:
+        return _run(store_path, inbox, as_of, **options)
+    with pass_lock(inbox) as _held:
+        return _run(store_path, inbox, as_of, **options)
+
+
+@contextlib.contextmanager
+def pass_lock(inbox: Any, *, wait: bool = True) -> Iterator[bool]:
+    """The inbox's pass lock (``<inbox>.lock``); ``wait`` False:
+    yields False at once when another pass holds it."""
+    import fcntl
+
+    path = Path(inbox).with_name(Path(inbox).name + ".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+    finally:
+        os.close(fd)
+
+
+def _run(store_path: Any, inbox: Any, as_of: date | None = None, *,
+         coverage: Mapping[str, Any] | Callable[[], Mapping[str, Any]] | None = None,
         call: Callable | None = None, card_bound: int = CARD_BOUND,
         qc_link_types: Sequence[str] | None = None, budget: Budget | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         only: Sequence[str] | None = None, vendor_bound: int | None = None,
         reader_may_read: Callable[[str], bool] | None = None,
         pool: Any = None, people: Any = None, threads: int | None = 1,
-        detector_seconds: Mapping[str, float] | None = None) -> dict[str, Any]:
+        detector_seconds: Mapping[str, float] | None = None,
+        scope: "Scope | None" = None) -> dict[str, Any]:
     """Run every detector over the store and fold the gaps into the inbox; the summary
     (counts and enums only). A detector that fails is ``failed`` and leaves its gaps as
     they were; only a ``complete`` detector resolves the gaps it no longer finds. The
@@ -2852,7 +3079,11 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     rules run side by side on this many threads (``_lanes``; 1: one after another; None:
     ``detector_threads()``), the tool-call rules on this thread. With a ``budget`` every
     detector runs in its own window (``DETECTOR_SECONDS``, ``detector_seconds`` overriding
-    some), within the run's deadline; the summary's ``seconds`` holds each one's time."""
+    some), within the run's deadline; the summary's ``seconds`` holds each one's time.
+    ``scope``: an incremental pass (``Scope``, ``operating.proactive_incremental``): its
+    rules read only the scope's records and keep only the gaps about their own subjects;
+    only those subjects' gaps are folded and resolved (``_fold``), nothing else of the
+    inbox (the full run's records, counts and generation) changes."""
     moment = clock()
     as_of = po_status.business_today(moment) if as_of is None else as_of
     if type(as_of) is not date:   # a datetime or text is no day: refused, never coerced
@@ -2869,7 +3100,10 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         def many(tool: str, arguments: Sequence[Any]) -> list[Any]:
             return pmap(proactive_pool.tool_call, [(tool, a) for a in arguments])
     cache = _read_cache(Path(inbox))
-    st = _Store(Path(store_path))
+    if scope is not None:
+        only = [d for d in DETECTORS if d in scope.subjects]
+    st = _Store(Path(store_path), scope=None if scope is None else scope.read,
+                audience_keys=None if scope is None else scope.audience_keys)
     if budget is not None:
         st.watch(budget.interrupt)
     try:
@@ -2879,7 +3113,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
         if unknown:
             raise ValueError("detector_unknown")
         order = list(DETECTORS) if only is None else [d for d in DETECTORS if d in only]
-        if only is None and not (budget is not None and budget.spent()):
+        if (only is None or scope is not None) and not (budget is not None and budget.spent()):
             # every link type the rules read, in one scan of the link table (``_Store``)
             started = time.monotonic()
             try:
@@ -2925,6 +3159,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             if budget is not None:
                 budget.open(windows.get(name, DETECTOR_SECONDS_DEFAULT))
             started = time.monotonic()
+            st.judging(name)
             try:
                 results[name] = steps[name]()
             except TimeBudgetSpent:
@@ -2938,6 +3173,7 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                     results[name] = _result([], status="failed",
                                             reasons=[type(error).__name__])
             finally:
+                st.judging(None)
                 if budget is not None:
                     budget.unshare()
                 seconds[name] = round(time.monotonic() - started, 1)
@@ -2978,6 +3214,12 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
                 head.stop()   # its rule did not run (the time ran out): no read goes on
         if budget is not None:
             budget.release()   # the amounts run in the reserve, still inside the bound
+        if scope is not None:
+            # an incremental pass: a gap is this pass's only when its subject is one the
+            # pass judged whole (the others' inputs were not all read)
+            for name, result in results.items():
+                mine = scope.subjects.get(name, frozenset())
+                result["gaps"] = [g for g in result["gaps"] if g["object_id"] in mine]
         _with_amounts(st, results)
         # one test-record filter for every detector (never a page's own): a claim about a
         # test, UAT, demo or proof record, a go-live first document or a carried-over old
@@ -2986,10 +3228,14 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
             _drop_test_records(st, results, as_of)
         except sqlite3.Error:
             pass   # the store could not be read for it: the gaps stand as found
+        populations = {name: {key: digest for key, digest in sorted(st.populations.items())
+                              if name in st.population_readers[key]
+                              or "*" in st.population_readers[key]}
+                       for name in results}
         # the bound is spent on the detectors and the amounts only: the run's record (scope,
         # digest) is always read whole, so a run cut short still folds what it found
         st.watch(None)
-        scope = st.scope()
+        held = st.scope() if scope is None else []
         digest = st.meta("content_digest")
     finally:
         st.close()
@@ -2997,13 +3243,39 @@ def run(store_path: Any, inbox: Any, as_of: date | None = None, *,
     for result in results.values():
         for gap in result["gaps"]:
             gaps.setdefault(gap["id"], gap)
-    summary = _summary(results, gaps, scope)
-    summary["seconds"] = seconds   # each detector's run time (counts and enums only)
     with closing(_open_inbox(Path(inbox))) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _fold(conn, results, gaps, scope, run_at, as_of, digest, summary,
-                  record_run=only is None)
+            held_pops = _populations(conn)
+            moved: list[str] = []
+            if scope is not None:
+                # a population a rule judges against moved since the rule's last fold:
+                # subjects this pass did not read may move with it, so the rule is not
+                # folded here but judged whole (``proactive_incremental``)
+                moved = sorted(name for name in results
+                               if populations.get(name) != held_pops.get(name))
+                for name in moved:
+                    del results[name]
+                gaps = {gid: gap for gid, gap in gaps.items() if gap["detector"] in results}
+            summary = _summary(results, gaps, held)
+            summary["seconds"] = seconds   # each detector's run time (counts and enums only)
+            if moved:
+                summary["population_moved"] = moved
+                summary["populations_moved"] = sorted({
+                    key for name in moved for key in set(populations.get(name, {}))
+                    | set(held_pops.get(name) or {})
+                    if populations.get(name, {}).get(key)
+                    != (held_pops.get(name) or {}).get(key)})
+            for name, result in results.items():
+                if result["status"] in READ_WHOLE_DATA:
+                    held_pops[name] = populations.get(name, {})
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                         (_POPULATIONS_KEY, json.dumps(held_pops, sort_keys=True)))
+            if scope is not None:
+                _fold_scoped(conn, results, gaps, run_at, scope)
+            else:
+                _fold(conn, results, gaps, held, run_at, as_of, digest, summary,
+                      record_run=only is None)
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -3043,7 +3315,9 @@ def test_records(st: _Store, as_of: date) -> dict[str, str]:
     """object id -> why it is a test or carried-over record (``mark``, ``go_live_first``,
     ``old_empty_draft``), every copy of the order included: the one filter every detector
     and every page shares (``_drop_test_records``; the operator API reads it too)."""
-    return st.memo(f"test_records:{as_of.isoformat()}", lambda: _find_test_records(st, as_of))
+    # a population (number series across records): read whole in an incremental pass
+    return st.population(f"test_records:{as_of.isoformat()}",
+                         lambda: _find_test_records(st, as_of))
 
 
 def _find_test_records(st: _Store, as_of: date) -> dict[str, str]:
@@ -3172,6 +3446,47 @@ def _summary(results: Mapping[str, Mapping[str, Any]], gaps: Mapping[str, Mappin
             "top_finding": results.get("orders_at_risk", {}).get("finding")}
 
 
+_POPULATIONS_KEY = "populations"   # inbox meta: per rule, the populations of its last fold
+
+
+def _populations(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (_POPULATIONS_KEY,)).fetchone()
+    try:
+        held = json.loads(row[0]) if row else {}
+    except ValueError:
+        held = {}
+    return held if isinstance(held, dict) else {}
+
+
+@dataclasses.dataclass(frozen=True)
+class Scope:
+    """An incremental pass (``operating.proactive_incremental``): ``subjects``, per rule,
+    the records it judges again (every subject whose declared inputs hold a changed
+    record, or whose truth moved with the day); ``read``, every record those judgements
+    read; ``audience_keys``: the store's keys (the generation's and its changed records')."""
+    subjects: Mapping[str, frozenset[str]]
+    read: frozenset[str]
+    audience_keys: frozenset[str] | None = None
+
+
+def _fold_scoped(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
+                 gaps: Mapping[str, Mapping[str, Any]], run_at: str, scope: Scope) -> None:
+    """Fold an incremental pass: the gaps it found are written as a full run writes them
+    (``_upsert_gaps``), and of each rule that judged its subjects whole (``complete``) an
+    open gap about one of them that it no longer finds is resolved. The run records,
+    counts, coverage and generation stay the last full run's."""
+    _upsert_gaps(conn, results, gaps, run_at)
+    for name, result in results.items():
+        if result["status"] != "complete":
+            continue
+        conn.execute(
+            "UPDATE gaps SET state = 'resolved', resolved_at = ? WHERE state = 'open' "
+            "AND detector = ? AND object_id IN (SELECT value FROM json_each(?)) "
+            "AND gap_id NOT IN (SELECT value FROM json_each(?))",
+            (run_at, name, json.dumps(sorted(scope.subjects.get(name, ()))),
+             json.dumps(sorted(gaps))))
+
+
 def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
           gaps: Mapping[str, Mapping[str, Any]], scope: Sequence[tuple[str, str, int]],
           run_at: str, as_of: date, digest: str | None, summary: Mapping[str, Any], *,
@@ -3232,6 +3547,18 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
             (name, int(result.get("unattributed") or 0), run_at))
         if result["status"] in READ_WHOLE_DATA:
             _note_generation(conn, name, digest, run_at)
+    _upsert_gaps(conn, results, gaps, run_at)
+    complete = [name for name, result in results.items() if result["status"] == "complete"]
+    conn.execute(
+        "UPDATE gaps SET state = 'resolved', resolved_at = ? WHERE state = 'open' "
+        "AND detector IN (SELECT value FROM json_each(?)) "
+        "AND gap_id NOT IN (SELECT value FROM json_each(?))",
+        (run_at, json.dumps(complete), json.dumps(sorted(gaps))))
+
+
+def _upsert_gaps(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
+                 gaps: Mapping[str, Mapping[str, Any]], run_at: str) -> None:
+    """Write each found gap (a resolved one reopened, its acknowledgements dropped)."""
     for gap in gaps.values():
         before = conn.execute("SELECT state FROM gaps WHERE gap_id = ?", (gap["id"],)).fetchone()
         if before is not None and before["state"] == "resolved":
@@ -3259,12 +3586,6 @@ def _fold(conn: sqlite3.Connection, results: Mapping[str, Mapping[str, Any]],
         conn.execute("DELETE FROM gap_requires WHERE gap_id = ?", (gap["id"],))
         conn.executemany("INSERT INTO gap_requires VALUES (?, ?)",
                          [(gap["id"], key) for key in sorted(set(gap.get("requires", ())))])
-    complete = [name for name, result in results.items() if result["status"] == "complete"]
-    conn.execute(
-        "UPDATE gaps SET state = 'resolved', resolved_at = ? WHERE state = 'open' "
-        "AND detector IN (SELECT value FROM json_each(?)) "
-        "AND gap_id NOT IN (SELECT value FROM json_each(?))",
-        (run_at, json.dumps(complete), json.dumps(sorted(gaps))))
 
 
 # A detector whose run ended in one of these read the store it ran over: what it found is
@@ -3374,6 +3695,21 @@ def _of_served(row: Mapping[str, Any], current: Mapping[str, datetime | None]) -
     resolved = "state" in keys and row["state"] == "resolved"
     seen = _moment(row["resolved_at"] if resolved else row["last_seen"])
     return seen is not None and seen >= since
+
+
+def rules_behind(store_path: Any, inbox: Any = None) -> set[str]:
+    """The rules whose findings in the inbox are not of the served generation and the
+    deployed code (``_current_since``): each needs a whole run before it is current."""
+    store = Path(store_path)
+    path = Path(inbox) if inbox is not None else inbox_path(store)
+    if not path.is_file():
+        return set(DETECTORS)
+    with closing(_attach(path, store)) as conn:
+        served = conn.execute(
+            "SELECT value FROM st.store_meta WHERE key = 'content_digest'").fetchone()
+        older: set[str] = set()
+        _current, behind = _current_since(conn, served[0] if served else None, older)
+    return (set(behind) | older) & set(DETECTORS)
 
 
 def served_behind(store_path: Any, inbox: Any = None) -> bool:
@@ -3857,7 +4193,8 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
             budget: Budget | None = None,
             clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
             vendor_bound: int | None = None, pool: Any = None, threads: int | None = None,
-            detector_seconds: Mapping[str, float] | None = None) -> dict[str, Any]:
+            detector_seconds: Mapping[str, float] | None = None,
+            only: Sequence[str] | None = None) -> dict[str, Any]:
     """The full scheduled run over ``projection`` into its inbox, as ``investigator``: the
     customer PO coverage scan of the runtime's mirror (``scan_coverage``; its order
     statuses ``absent_in_this_source``) and a case session over the projection and the
@@ -3889,7 +4226,7 @@ def refresh(runtime: Any, investigator: Any, audience: Any, projection: Path, as
                    coverage=coverage if scan_coverage else None, call=session,
                    budget=budget, clock=clock, vendor_bound=vendor_bound,
                    reader_may_read=lambda key: policy.may_read(investigator, key),
-                   pool=pool, threads=threads, detector_seconds=detector_seconds)
+                   pool=pool, threads=threads, detector_seconds=detector_seconds, only=only)
     finally:
         session.close()
 

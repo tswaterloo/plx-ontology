@@ -15,13 +15,21 @@ served is newer than the inbox's last full run (the build's own run failed, did 
 has not run yet), so the findings Home and the briefing list follow every published
 generation; meanwhile ``read_inbox`` holds back what older data found.
 
-``--refresh always`` runs the whole engine first on every pass, whatever the inbox's last
+``--refresh calling`` (the scheduled pass since the incremental store-only passes,
+``operating.proactive_incremental``): the whole engine when the served generation or code
+is new to the inbox, else only the tool-call rules and the customer PO scan
+(``CALLING_PASS``); ``--refresh always`` (the nightly pass) runs the whole engine first on
+every pass, whatever the inbox's last
 full run read (the day moves on, a run cut short or failed is made whole): the scheduled
-pass (``deploy/systemd/plx-proactive.timer``, every 30 minutes after the last one ended)
+pass (``deploy/systemd/plx-proactive-nightly.timer``, nightly; the 2-hourly
+``plx-proactive.timer`` runs ``--refresh calling``)
 gives the engine ``--refresh-seconds`` and the vendor checks what is left.
 
-Schedule: ``deploy/systemd/plx-proactive.{service,timer}`` (one pass each, ``--refresh
-always``); ``scripts/vendor_watch_loop.sh`` is the older loop (every 2 hours, and as soon as
+Schedule: ``deploy/systemd/plx-proactive.{service,timer}`` (every 2 hours after the last
+pass ended, ``--refresh calling``) and ``plx-proactive-nightly.{service,timer}`` (03:30 ET,
+``--refresh always``: the safety net that re-reads every record); the store-only rules
+follow every delta cycle in ``plx-proactive-inc`` (``operating.proactive_incremental``).
+``scripts/vendor_watch_loop.sh`` is the older loop (every 2 hours, and as soon as
 a new generation is published, ``--refresh new``). The first passes over a store work off
 the backlog; after that a pass reads only the threads that changed. Read only: no reader is
 built for any live source, nothing is sent or written to a business system. Usage::
@@ -41,8 +49,13 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 DEFAULT_SECONDS = 5400
+# the rules ``--refresh calling`` runs whole when the served data and code are current: the
+# tool-call rules (but the vendor-terms check, run incrementally below) and the customer PO
+# scan of the Portal mirror
+CALLING_PASS = frozenset({"orders_at_risk", "card_rules", "negative_margin",
+                          "order_without_customer_po"})
 DEFAULT_BOUND = 400
-REFRESH_MODES = ("new", "always", "never")
+REFRESH_MODES = ("new", "always", "never", "calling")
 
 
 def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
@@ -81,7 +94,8 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
     # every core the host can spare reads as the same principal, offline (``proactive_pool``)
     pool = proactive_pool.from_host_config(config, state_dir, store, environ)
     try:
-        if mode == "always" or (mode == "new" and pe.served_behind(store)):
+        behind = mode in ("new", "calling") and pe.served_behind(store)
+        if mode == "always" or behind or mode == "calling":
             # a generation was served since the last full run (the build's own run did not
             # run, failed or is still to come): the whole engine runs over it now, in this
             # fresh process, so Home and the briefing never list older data's findings
@@ -89,11 +103,16 @@ def run_pass(state_dir: Path, config: Any, *, seconds: float, bound: int,
             # outside the cycle lock: half the pass, not the build's bound
             # (``REFRESH_BUDGET_SECONDS``), so every rule finishes on a cold store
             share = min(seconds, refresh_seconds) if refresh_seconds else seconds / 2
+            # ``calling``: when nothing is behind, only the rules the incremental pass
+            # leaves to this one (the tool-call rules and the Portal mirror's customer PO
+            # scan); the store-only rules follow every delta cycle there
+            # (``operating.proactive_incremental``)
+            only = sorted(CALLING_PASS) if mode == "calling" and not behind else None
             try:
                 ran = pe.refresh(runtime, actor, audience, store, day, captures=state_dir,
                                  scan_coverage="portal" in config.sources,
                                  budget=pe.Budget(share, reserve=pe.AMOUNTS_RESERVE_SECONDS),
-                                 vendor_bound=0, pool=pool)
+                                 vendor_bound=0, pool=pool, only=only)
             except Exception as error:  # noqa: BLE001 - the vendor checks still run
                 full = {"state": "failed", "error": type(error).__name__}
             else:

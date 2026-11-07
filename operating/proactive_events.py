@@ -158,6 +158,8 @@ def eta_slipped(st: Any, as_of: date, *, gap: Callable, cites: Callable, result:
         ids = [r[0] for r in st.conn.execute(
             "SELECT o.object_id FROM objects o WHERE o.object_type = ? AND NOT "
             + ostore.removed_at_sql("o.object_id") + " ORDER BY o.object_id", (object_type,))]
+        if getattr(st, "scoped", False):
+            ids = [oid for oid in ids if oid in st.limit]   # an incremental pass's records
         for start in range(0, len(ids), 500):
             chunk = json.dumps(ids[start:start + 500])
             rows = st.conn.execute(
@@ -451,12 +453,25 @@ def _batches_on_hold(st: Any, gaps: list, skipped: Counter, *, gap: Callable,
         if read[oid][0] is None and any(r.get("value") not in (None, "")
                                         for r in props.get("quality_status") or ()):
             skipped["quality_status_disputed"] += 1
-    systems: dict[str, list] = defaultdict(list)
-    for oid, (hold, status) in read.items():
-        if hold is not None and status is not None:
-            systems[ostore.object_segment(oid)].append((status["value"], hold["value"]))
-    profiles = {system: stock_state.hold_profile(pairs) for system, pairs in systems.items()}
-    every = stock_state.pooled(*profiles.values())
+    scoped = getattr(st, "scoped", False)
+
+    def hold_profiles() -> tuple[dict[str, Any], Any]:
+        # what every batch in each state carries per system: a population (all batches),
+        # read whole in an incremental pass (``proactive_engine._Store.population``)
+        held = read if not scoped else {
+            oid: (_one(entry["props"].get("quality_status")),
+                  _one(entry["props"].get("status")))
+            for oid, entry in st.values(["Batch"], ("quality_status", "status")).items()}
+        systems: dict[str, list] = defaultdict(list)
+        for oid, (hold, status) in held.items():
+            if hold is not None and status is not None:
+                systems[ostore.object_segment(oid)].append((status["value"], hold["value"]))
+        profiles = {system: stock_state.hold_profile(pairs)
+                    for system, pairs in systems.items()}
+        return profiles, stock_state.pooled(*profiles.values())
+    population = getattr(st, "population", None)
+    profiles, every = (population("batch_hold_profiles", hold_profiles)
+                       if population is not None else hold_profiles())
     origins: set[str] = set()
     copies: dict[str, set[str]] = defaultdict(set)    # origin -> its copies
     for link in st.links([stock_state.BATCH_TWIN_LINK]):
