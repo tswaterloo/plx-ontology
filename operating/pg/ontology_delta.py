@@ -70,6 +70,13 @@ _PLAIN = {
 }
 
 
+# The follower's connections give up on a server that does not answer, and its
+# statements and lock waits end in time: a hung connection or a load that never releases
+# its lock fails this cycle (the next one tries again) instead of holding the follower.
+FOLLOW_LIMITS = {"connect_timeout": 10,
+                 "options": "-c statement_timeout=1800000 -c lock_timeout=600000"}
+
+
 def _copy(cur: Any, table: str, columns: Sequence[str], rows: Any) -> int:
     count = 0
     with cur.copy(f"COPY ontology.{table} ({', '.join(columns)}) FROM STDIN") as copy:
@@ -124,7 +131,7 @@ def apply_layer(layer: str | Path, dsn: str, *, newer: Sequence[str | Path] = ()
                  if r[0] not in above]
         ids = json.dumps(owned)
         report: dict[str, Any] = {"layer": layer.name, "owned": len(owned)}
-        with psycopg.connect(dsn) as pg, pg.cursor() as cur:
+        with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg, pg.cursor() as cur:
             # one layer at a time (a cycle and the fold may finish together); the
             # generation is read under the lock: a load emptying the tables waits for
             # this transaction, and a load in progress refuses the layer
@@ -353,7 +360,7 @@ def follow(state_dir: str | Path, dsn: str, *, reload: bool = True, workers: int
                               ).fetchone()[0]
     deferred = tuple(t for t in os.environ.get("PLX_ONTOLOGY_DEFER", "").split(",") if t)
     needed = set(ontology_load.ORDER) - set(deferred)
-    with psycopg.connect(dsn) as pg:
+    with psycopg.connect(dsn, **FOLLOW_LIMITS) as pg:
         row = pg.execute("SELECT value->>'content_digest' FROM ontology.load_state "
                          "WHERE name = 'generation'").fetchone()
         done = {r[0] for r in pg.execute("SELECT substr(name, 7) FROM ontology.load_state "

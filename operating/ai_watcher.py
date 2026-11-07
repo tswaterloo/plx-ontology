@@ -1320,6 +1320,8 @@ class Places:
         self.store = Path(store)
         _digest, self.layers = _pointer(self.store)
         self._conns: dict[str, sqlite3.Connection] = {}
+        self._owner: dict[str, str] | None = None   # object id -> its newest owning layer
+        self._objects: dict[str, str | None] = {}   # handle -> the object it cites
 
     def _conn(self, path: str) -> sqlite3.Connection:
         if path not in self._conns:
@@ -1327,23 +1329,34 @@ class Places:
         return self._conns[path]
 
     def _where(self, object_id: str) -> str:
-        for layer in self.layers:   # newest first
-            if self._conn(layer).execute("SELECT 1 FROM delta_owned WHERE object_id = ?",
-                                         (object_id,)).fetchone():
-                return layer
-        return str(self.store)
+        if self._owner is None:
+            # Every layer's owned ids read once (newest first: the newest owner wins),
+            # not one query per layer for every cited record.
+            owner: dict[str, str] = {}
+            for layer in self.layers:
+                for (owned,) in self._conn(layer).execute("SELECT object_id FROM delta_owned"):
+                    owner.setdefault(owned, layer)
+            self._owner = owner
+        return self._owner.get(object_id, str(self.store))
 
     def object_of(self, handle: str) -> str | None:
         """The object a handle cites (exact, then without a page or field fragment)."""
+        if handle in self._objects:
+            return self._objects[handle]
         tries = [handle, handle.split("#page=", 1)[0], handle.split("#", 1)[0]]
+        found = None
         for path in [*(layer for layer in self.layers), str(self.store)]:
             conn = self._conn(path)
             for candidate in dict.fromkeys(tries):
                 row = conn.execute("SELECT object_id FROM object_versions WHERE l1_handle = ? "
                                    "LIMIT 1", (candidate,)).fetchone()
                 if row is not None:
-                    return row[0]
-        return None
+                    found = row[0]
+                    break
+            if found is not None:
+                break
+        self._objects[handle] = found
+        return found
 
     def markings_of(self, handle: str, object_id: str, fields: Sequence[str] | None
                     ) -> str:

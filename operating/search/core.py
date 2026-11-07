@@ -72,6 +72,62 @@ def connect(target: str | None = None) -> Any:
                            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
+# Each search read its scope on one new connection and ran each retriever (up to six) on
+# another: seven connects per search. Connections are now kept per database and lent to
+# one reader at a time; one comes back only idle and clean (``RESET ALL``: every session
+# setting a job made is undone, the connection's own limits stay), else it is closed.
+POOL_IDLE_KEPT = 16
+_IDLE: dict[str, list[Any]] = {}
+_IDLE_LOCK = threading.Lock()
+
+
+class _Borrowed:
+    """``with _Borrowed(target) as conn``: a kept connection to ``target`` or a new one
+    (``connect``), handed back to the pool when the block ends without an error."""
+
+    def __init__(self, target: str) -> None:
+        self.target, self.conn = target, None
+
+    def __enter__(self) -> Any:
+        with _IDLE_LOCK:
+            idle = _IDLE.get(self.target) or []
+            conn = idle.pop() if idle else None
+        if conn is not None and getattr(conn, "closed", True):
+            conn = None
+        self.conn = conn if conn is not None else connect(self.target)
+        return self.conn
+
+    def __exit__(self, kind: Any, error: Any, trace: Any) -> bool:
+        conn, self.conn = self.conn, None
+        if conn is None:
+            return False
+        if kind is None and _give_back(self.target, conn):
+            return False
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 - a broken connection closes as it can
+            pass
+        return False
+
+
+def _give_back(target: str, conn: Any) -> bool:
+    """Keep ``conn`` for the next search when it is open, outside any transaction and
+    reset; False: the caller closes it."""
+    try:
+        import psycopg
+        if conn.closed or conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+            return False
+        conn.execute("RESET ALL")
+    except Exception:  # noqa: BLE001 - not reusable: closed instead
+        return False
+    with _IDLE_LOCK:
+        idle = _IDLE.setdefault(target, [])
+        if len(idle) >= POOL_IDLE_KEPT:
+            return False
+        idle.append(conn)
+    return True
+
+
 class _Keys:
     """The chunk table's audience units, re-read at most once a minute per database."""
 
@@ -164,7 +220,9 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
     texts_now = (query.texts() if weights.query_texts == "rewrites" else [query.question])
     embedding = _start_embed(embedder, texts_now)
 
-    conn = connect(target)
+    borrowed = _Borrowed(target)
+    conn = borrowed.__enter__()
+    failed = True   # until the answer is whole: a connection a failure left is closed
     try:
         t = time.perf_counter()
         pg_scope = _pg_scope(conn, target, reader, lane_a, owners)
@@ -311,9 +369,13 @@ def search(understanding: Any, actor: Any, *, k: int = 20,
             t = time.perf_counter()
             result.query_log_id = _log(conn, reader.label, query, result)
             timings["log"] = _ms(t)
+        failed = False
         return result
     finally:
-        conn.close()
+        if failed:
+            borrowed.__exit__(RuntimeError, None, None)   # closed, never lent again
+        else:
+            borrowed.__exit__(None, None, None)
 
 
 def _priors(weights: Weights, reps: Sequence[tuple[str, float]],
@@ -422,7 +484,7 @@ def _run(jobs: Mapping[str, Callable[[Any], Any]], target: str,
     def run(name: str, job: Callable[[Any], Any]) -> tuple[str, Any, float, str | None]:
         t = time.perf_counter()
         try:
-            with connect(target) as c:
+            with _Borrowed(target) as c:
                 # A list that cannot finish in time (statement_timeout) is left out
                 # (named in notes), never waited for: the others still rank.
                 return name, job(c), _ms(t), None

@@ -301,7 +301,8 @@ class LiveMirrorWorkspaceTest(unittest.TestCase):
         # plx.changes keeps its index beside each store file (``index_path``: the host's
         # background prime builds it once per generation); a temporary file is never kept
         from operating.ontology_tools_changes import INDEX_PREFIX
-        kept_change_index = re.compile(re.escape(INDEX_PREFIX) + r"\d+-\d+\.sqlite")
+        kept_change_index = re.compile(re.escape(INDEX_PREFIX)
+                                       + r"\d+-\d+(-[0-9a-f]{16})?\.sqlite(\.lock)?")
         leftovers = [p.name for p in index.iterdir()
                      if p.name not in allowed and not kept_change_index.fullmatch(p.name)]
         self.assertEqual(leftovers, [])  # each write goes through its own temp file

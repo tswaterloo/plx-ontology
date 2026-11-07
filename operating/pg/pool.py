@@ -56,9 +56,15 @@ class PoolTimeout(RuntimeError):
 
 class Pool:
     def __init__(self, dsn: str | None = None, *, max_size: int = 8, timeout: float = 10.0,
-                 configure: Callable[[psycopg.Connection], None] | None = None) -> None:
+                 configure: Callable[[psycopg.Connection], None] | None = None,
+                 connect_timeout: int | None = None,
+                 statement_timeout_ms: int | None = None) -> None:
+        """``connect_timeout``: seconds a new connection may take (None: libpq's, which
+        waits as long as the network does); ``statement_timeout_ms``: the longest any
+        statement on a lent connection runs (None: the server's)."""
         if max_size < 1:
             raise ValueError("pool_max_size_invalid")
+        self.connect_timeout, self.statement_timeout_ms = connect_timeout, statement_timeout_ms
         self.dsn = dsn or config.dsn()
         self.max_size = max_size
         self.timeout = timeout
@@ -74,8 +80,13 @@ class Pool:
         conn.commit()
 
     def _new(self) -> psycopg.Connection:
-        conn = connect(self.dsn)
+        conn = connect(self.dsn, **({"connect_timeout": max(1, int(self.connect_timeout))}
+                                    if self.connect_timeout is not None else {}))
         try:
+            if self.statement_timeout_ms is not None:
+                with conn.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
+                conn.commit()
             self._configure(conn)
         except BaseException:
             conn.close()

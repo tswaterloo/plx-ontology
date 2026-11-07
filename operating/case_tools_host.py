@@ -785,8 +785,11 @@ class _CallBound:
 
 # Reads a documents search's SharePoint lookup beside its projected search
 # (``CaptureCaseHostTools._search_ahead``).
-_AHEAD_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=2,
-                                                    thread_name_prefix="plx-sp-lookup")
+# One per core: two served every reader's search, so a third concurrent search waited for
+# both before its own lookup started. One that has not started when the projected search
+# ends is cancelled and read on the caller's thread (``_captured_call``).
+_AHEAD_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, min(16, os.cpu_count() or 2)), thread_name_prefix="plx-sp-lookup")
 
 
 # The bound of the tool call in progress on this context (``CaptureCaseHostTools.per_call``).
@@ -2228,7 +2231,9 @@ class CaptureCaseHostTools(CaseHostTools):
         finally:
             # Taken back before anything else reads its store (whatever the search did).
             searched = _UNPREPARED
-            if ahead is not None:
+            # Not started yet (the pool busy with other readers' lookups): read on this
+            # thread below rather than queue behind them.
+            if ahead is not None and not ahead.cancel():
                 try:
                     searched = ahead.result()
                 except Exception:  # noqa: BLE001 - read on this thread below, as before
@@ -2532,7 +2537,7 @@ class CaptureCaseHostTools(CaseHostTools):
                       if at not in pages and lookup.handles[at] not in listed
                       and lookup.handles[at] not in found_handles]
         found, capped, over_cap, over_bound, over_budget, cited = [], [], 0, 0, 0, 0
-        not_read = text_unread = 0
+        not_read = text_unread = warming = 0
         room = arguments.get("limit", DEFAULT_LIMIT) - len(documents)
         # The per-item gate (a permission re-read each) runs on what the page can show:
         # the files the projection already listed, then the new ones best first by
@@ -2573,11 +2578,13 @@ class CaptureCaseHostTools(CaseHostTools):
                 not_read += 1
             elif why == TEXT_NOT_READ:
                 text_unread += 1
+            elif why == STALE_INDEX:
+                warming += 1
             else:
                 capped.append(skipped_gap(handle, why))
         if not found and not lookup.truncated and not over_cap and not over_bound \
                 and not capped and not over_budget and not not_read and not text_unread \
-                and not ungated and not unchecked:
+                and not ungated and not unchecked and not warming:
             return dict(result, documents=documents) if cited else result
         out = dict(result, documents=_placed(documents, found[:max(room, 0)], prior))
         gaps = [g for g in result["gaps"] if not (found and g["reason"] == "no_match")]
@@ -2613,11 +2620,17 @@ class CaptureCaseHostTools(CaseHostTools):
                              "the text extractor's bound: their bytes are captured, their "
                              "text was never read whole, so identifiers in them were not "
                              "searched"))
-        if unchecked and not (over_cap or not_read or text_unread or over_bound or capped):
+        if unchecked and not (over_cap or not_read or text_unread or over_bound or capped or warming):
             gaps.append(_gap("unknown", "unsearched_not_counted", "capture:sharepoint",
                              "more captured SharePoint files whose text was not searched "
                              "for identifiers were not checked or counted for this answer; "
                              "identifiers in them were not searched"))
+        if warming:
+            gaps.append(_gap("unknown", "index_warming", "capture:sharepoint",
+                             f"{warming}{more} captured SharePoint file(s) you may see were "
+                             "added or changed since the identifier index last finished and "
+                             "it is being rebuilt now, so identifiers in them were not "
+                             "searched; ask again shortly"))
         if over_budget:
             gaps.append(_gap("unknown", "live_read_budget", "capture:sharepoint",
                              f"{over_budget} captured SharePoint file(s) were left out of "
@@ -2633,7 +2646,7 @@ class CaptureCaseHostTools(CaseHostTools):
         if cut:
             completeness.update(complete=False, truncated=True, reason="scan_cap")
         elif (over_cap or over_bound or capped or over_budget or not_read or text_unread
-              or unchecked) and not completeness.get("truncated"):
+              or unchecked or warming) and not completeness.get("truncated"):
             completeness.update(complete=False, reason="partial_scope")
         return dict(out, gaps=gaps[:20], searched=searched, completeness=completeness)
 
@@ -2694,16 +2707,29 @@ class CaptureCaseHostTools(CaseHostTools):
             return held
         lookup = _IdentifierLookup(store, gated, audience, state)
         lookup.version = version
+        _STALE.hit = False
         files = file_index(store) if index["items"] else {}
         names = file_names(store) if index["items"] else {}
+        stale = bool(_STALE.hit)
+        _STALE.hit = False
+        before = held.seen if held is not None and held.reader == gated \
+            and held.audience is audience and held.store is store else {}
         lookup.truncated, held_entries = index["truncated"], 0
         for item in index["items"]:
             handle = item["l1_handle"]
             if handle in names:
                 lookup.names.append((handle, *names[handle]))
             entry = files.get(handle)
+            stamp_now = (item.get("content_sha256"), item.get("recorded_at"))
+            if stale and (entry is None or before.get(handle) != stamp_now):
+                # Served from the previous snapshot while the new one is read: this file
+                # is new or changed since, so its text is not searched yet.
+                lookup.unsearched.append((len(lookup.handles), STALE_INDEX))
+                lookup.handles.append(handle)
+                continue
             if entry is None:
                 continue   # no longer current: the index read the store after the listing
+            lookup.seen[handle] = stamp_now
             named, why = entry["named"], entry["why"]
             if named is None:
                 if why is not None:
@@ -2725,7 +2751,10 @@ class CaptureCaseHostTools(CaseHostTools):
                 lookup.unsearched.append((at, skipped))
             elif why is not None:
                 lookup.unsearched.append((at, why))   # scanned pages left for OCR
-        self._lookup = lookup
+        if not stale:
+            self._lookup = lookup   # a lookup from a stale snapshot is never kept
+        else:
+            lookup.version = None
         return lookup
 
     def _named(self, handle: str, name: Any, path: Any, modified: Any) -> dict[str, Any]:
@@ -2792,6 +2821,7 @@ class _IdentifierLookup:
         # (handle, name, path, last modified, the name's and path's words) per file listed.
         self.names: list[tuple[str, Any, Any, Any, frozenset[str]]] = []
         self.truncated = False
+        self.seen: dict[str, tuple[Any, Any]] = {}   # handle -> (content hash, recorded at)
 
 
 # ---------------------------------------------------------------- the identifier index
@@ -2809,6 +2839,7 @@ INDEX_FILE = ".identifier-index.json"
 INDEX_MAX_BYTES = 256 << 20
 # Why a file's text is not searched whole (``_IdentifierLookup.unsearched``).
 TEXT_NOT_READ = "text_not_read"
+STALE_INDEX = "index_warming"
 _UNSEARCHED = ("cap", "not_read", "bound", TEXT_NOT_READ)
 _INDEX_ROWS_SQL = ("SELECT l1_handle, record, content_status, content_sha256, text_status, "
                    "text_sha256 FROM items WHERE superseded_at IS NULL")
@@ -2967,12 +2998,85 @@ def _load_index(path: Path, code: str) -> dict[str, dict[str, Any]] | None:
 def _save_index(path: Path, code: str, files: Mapping[str, Any]) -> None:
     """Keep ``files`` in ``path``, owner-only, written whole or not at all (a temporary
     file renamed over it); a directory this process may not write keeps nothing."""
+    files = dict(files)
+    _persist(path, lambda: json.dumps({"format": INDEX_FORMAT, "code": code, "files": files},
+                                      sort_keys=True, separators=(",", ":")))
+
+
+# The kept files (identifier index, file facts) only spare a new process reading the
+# capture again: one older than the capture is still right (each entry is checked
+# against the store; what it lacks is read). So a process writes one when it has none,
+# else at most every ``PERSIST_EVERY`` seconds and on its own writer thread: a capture
+# commit no longer has the reader holding the snapshot lock rewrite tens of MB.
+PERSIST_EVERY = 600.0
+# A temporary file of a write that never finished (a process ended while writing) is
+# removed by the next writer once it is this old.
+PERSIST_TMP_STALE = 3600.0
+_PERSIST_DUE: dict[str, tuple[float, Callable[[], str]]] = {}
+_PERSIST_LAST: dict[str, float] = {}
+_PERSIST_LOCK = threading.Condition()
+_PERSIST_WRITER: list[threading.Thread] = []
+
+
+def _persist(path: Path, text: Callable[[], str]) -> None:
+    """Keep ``text()`` in ``path``: now when ``path`` does not exist yet, else on the
+    writer thread once ``PERSIST_EVERY`` passed since this process last wrote it (the
+    latest text asked by then is written; earlier ones are dropped)."""
+    key = str(path)
+    if not path.exists():
+        _write_kept(path, text())
+        with _PERSIST_LOCK:
+            _PERSIST_LAST[key] = time.monotonic()
+            _PERSIST_DUE.pop(key, None)
+        return
+    with _PERSIST_LOCK:
+        due = _PERSIST_LAST.get(key, time.monotonic() - PERSIST_EVERY) + PERSIST_EVERY
+        _PERSIST_DUE[key] = (due, text)
+        if not _PERSIST_WRITER or not _PERSIST_WRITER[0].is_alive():
+            _PERSIST_WRITER[:] = [threading.Thread(target=_persist_loop, daemon=True,
+                                                   name="sharepoint-kept-writer")]
+            _PERSIST_WRITER[0].start()
+        _PERSIST_LOCK.notify_all()
+
+
+def _persist_loop() -> None:
+    while True:
+        with _PERSIST_LOCK:
+            while not _PERSIST_DUE:
+                _PERSIST_LOCK.wait()
+            key, (due, text) = min(_PERSIST_DUE.items(), key=lambda item: item[1][0])
+            wait = due - time.monotonic()
+            if wait > 0:
+                _PERSIST_LOCK.wait(wait)
+                continue
+            del _PERSIST_DUE[key]
+            _PERSIST_LAST[key] = time.monotonic()
+        try:
+            _write_kept(Path(key), text())
+        except Exception:  # noqa: BLE001 - a kept file not written is read again later
+            pass
+
+
+def flush_kept() -> None:
+    """Write every kept file now that waits for its turn (tests, a process ending)."""
+    with _PERSIST_LOCK:
+        due = list(_PERSIST_DUE.items())
+        _PERSIST_DUE.clear()
+        for key, _ in due:
+            _PERSIST_LAST[key] = time.monotonic()
+    for key, (_due, text) in due:
+        _write_kept(Path(key), text())
+
+
+def _write_kept(path: Path, text: str) -> None:
+    """``text`` in ``path``, owner-only, whole or not at all (a temporary file renamed
+    over it); none over ``INDEX_MAX_BYTES`` or into a directory this process may not
+    write. Temporary files of writes that never finished are removed first."""
     import os
     import secrets
-    text = json.dumps({"format": INDEX_FORMAT, "code": code, "files": dict(files)},
-                      sort_keys=True, separators=(",", ":"))
     if len(text) > INDEX_MAX_BYTES:
         return
+    _remove_stale_temps(path)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -2982,6 +3086,26 @@ def _save_index(path: Path, code: str, files: Mapping[str, Any]) -> None:
     except OSError:
         try:
             tmp.unlink()
+        except OSError:
+            pass
+
+
+def _remove_stale_temps(path: Path) -> None:
+    """Remove ``path``'s own temporary files (``.<name>.<8 hex>.tmp``) older than
+    ``PERSIST_TMP_STALE``: a write that ended with its process. A newer one may be
+    another process's write in progress and is left."""
+    shape = re.compile(r"\." + re.escape(path.name) + r"\.[0-9a-f]{8}\.tmp")
+    try:
+        found = list(path.parent.iterdir())
+    except OSError:
+        return
+    now = time.time()
+    for entry in found:
+        if not shape.fullmatch(entry.name):
+            continue
+        try:
+            if now - entry.lstat().st_mtime > PERSIST_TMP_STALE and entry.is_file():
+                entry.unlink()
         except OSError:
             pass
 
@@ -3036,6 +3160,10 @@ _SNAPSHOTS_LOCK = threading.Lock()
 # One read at a time per file and kind: sessions asking together wait for it, not each
 # making its own (several concurrent readers' sessions each parsed every record).
 _SNAPSHOT_READS: dict[tuple[str, str], threading.Lock] = {}
+# Set on the calling thread when a snapshot read returned the previous state while the
+# warm-up reads the new one (``_identifier_lookup`` then marks what changed unsearched and
+# keeps nothing).
+_STALE = threading.local()
 
 
 def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
@@ -3047,7 +3175,17 @@ def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
         return read()
     key = (str(path), kind)
     with _SNAPSHOTS_LOCK:
-        reading = _SNAPSHOT_READS.setdefault(key, threading.Lock())
+        reading = _SNAPSHOT_READS.setdefault(key, threading.RLock())
+        held = _SNAPSHOTS.get(key)
+    if held is not None and not reading.acquire(blocking=False):
+        # Another thread (the warm-up) is reading the store's newer state now: the last
+        # snapshot read serves meanwhile, as it served a moment before that commit, rather
+        # than every question waiting seconds for the new one. Nothing here is shown as
+        # is: each reader's lookup takes only the files the store lists for it now.
+        _STALE.hit = True   # the caller must not treat this as the store's current state
+        return held[1]
+    if held is not None:
+        reading.release()
     with reading:
         before = _snapshot_state(store, path)
         with _SNAPSHOTS_LOCK:
@@ -3059,6 +3197,13 @@ def _kept_snapshot(store: Any, kind: str, read: Callable[[], Any]) -> Any:
             with _SNAPSHOTS_LOCK:
                 _SNAPSHOTS[key] = (before, value)
         return value
+
+
+def _snapshot_lock(store: Any, kind: str) -> Any:
+    """The lock a ``kind`` snapshot of ``store`` is read under (``_kept_snapshot``)."""
+    with _SNAPSHOTS_LOCK:
+        return _SNAPSHOT_READS.setdefault((str(getattr(store, "path", "")), kind),
+                                          threading.RLock())
 
 
 def _snapshot_state(store: Any, path: Any) -> tuple:
@@ -3105,8 +3250,17 @@ def warm_sharepoint(capture_dir: str | Path, *, every: float | None = WARM_EVERY
             store = SharePointCaptureStore.open_read_only(Path(key))
             try:
                 while True:
-                    file_names(store)
-                    file_index(store)
+                    # Both snapshots' read locks for the whole cycle: a question meanwhile
+                    # takes the last snapshots rather than reading one beside this read.
+                    locks = [_snapshot_lock(store, kind) for kind in ("names", "index")]
+                    for lock in locks:
+                        lock.acquire()
+                    try:
+                        file_names(store)
+                        file_index(store)
+                    finally:
+                        for lock in reversed(locks):
+                            lock.release()
                     if every is None or (stop.wait(every) if stop is not None
                                          else time.sleep(every)):
                         return
@@ -3216,24 +3370,9 @@ def _save_facts(store: Any, facts: Mapping[int, tuple[Any, ...]]) -> None:
     path, inode, code = _facts_path(store), _store_inode(store), _facts_code()
     if path is None or inode is None or code is None:
         return
-    import os
-    import secrets
-    text = json.dumps({"code": code, "inode": inode, "facts": {
+    _persist(path, lambda: json.dumps({"code": code, "inode": inode, "facts": {
         str(v): [f[0], f[1], f[2], sorted(f[3]), f[4], f[5]] for v, f in facts.items()
-        if len(f) == 6}}, separators=(",", ":"))
-    if len(text) > INDEX_MAX_BYTES:
-        return
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        if len(f) == 6}}, separators=(",", ":")))
 
 
 def _version_facts(store: Any, version_ids: Sequence[int]) -> dict[int, tuple[Any, ...]]:
@@ -3740,6 +3879,9 @@ class CaseCaptures:
 # mail attachment scanned for 51-77 s inside one answer submission), and never waits for a
 # refresh once a list is held.
 ATTACHMENT_MAILBOXES_SECONDS = 300.0
+# How long a request waits for the background read of the list before reading it itself
+# (the side-by-side read takes a few seconds; the background one ran 12-60 s at a start).
+MAILBOXES_WAIT_SECONDS = 5.0
 _MAILBOXES: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _MAILBOXES_LOCK = threading.Lock()
 # path -> set once its running read ends (kept or failed)
@@ -3893,8 +4035,15 @@ def _attachment_mailboxes(store: Any) -> list[dict[str, Any]]:
         held = _MAILBOXES.get(key)
         running = _MAILBOXES_READING.get(key)
     if held is None and running is not None:
-        # The start's read is running: its list, once it ends (a failed one: read now).
-        running.wait()
+        # The start's read is running: the list another host kept (the one that read
+        # takes too), else its list once it ends, waiting at most MAILBOXES_WAIT_SECONDS
+        # (a failed or slower one: read now).
+        kept = _cached_mailboxes(key)
+        if kept is not None:
+            with _MAILBOXES_LOCK:
+                _MAILBOXES.setdefault(key, kept)
+            return kept[1]
+        running.wait(MAILBOXES_WAIT_SECONDS)
         with _MAILBOXES_LOCK:
             held = _MAILBOXES.get(key)
     if held is None:   # never read in this process: another host's, else read now

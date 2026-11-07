@@ -349,26 +349,90 @@ def _identity(conn: Any) -> tuple[str, dict[str, Any]] | None:
 
 def index_path(store_file: str | Path) -> Path:
     """Where the kept index of ``store_file`` is: its directory, named by the file's device
-    and inode (every hard link to one generation in a directory shares it)."""
+    and inode (every hard link to one generation in a directory shares it) and by this
+    code (``_index_code``): processes running other code keep their own index beside it
+    rather than each replacing the other's."""
     path = Path(store_file)
     stat = os.stat(path)
-    return path.with_name(f"{INDEX_PREFIX}{stat.st_dev}-{stat.st_ino}.sqlite")
+    code = (_index_code() or "")[:16]
+    return path.with_name(f"{INDEX_PREFIX}{stat.st_dev}-{stat.st_ino}"
+                          f"{'-' + code if code else ''}.sqlite")
+
+
+# A kept index file of another code than this process's, of a store still here, is
+# removed once this long unused (its process is long gone, or will build it again).
+OTHER_CODE_KEPT_SECONDS = 2 * 86400
+# A temporary index file of a build that never finished (its process ended mid-build) is
+# removed once this long untouched; a build in progress writes it continuously.
+STALE_TMP_SECONDS = 3600
+_INDEX_NAME = re.compile(re.escape(INDEX_PREFIX) + r"(\d+-\d+)(?:-([0-9a-f]{16}))?\.sqlite")
+_INDEX_TMP = re.compile(r"\." + re.escape(INDEX_PREFIX) + r"(\d+-\d+)(?:-[0-9a-f]{16})?"
+                        r"\.sqlite\.[0-9a-f]{8}\.tmp")
 
 
 def _prune_indexes(directory: Path) -> None:
-    """Drop the kept indexes of store files no longer in ``directory``."""
+    """Drop the kept indexes (and their build locks) of store files no longer in
+    ``directory``, those of another code unused for ``OTHER_CODE_KEPT_SECONDS``, and the
+    temporary files of builds that ended unfinished (``STALE_TMP_SECONDS``)."""
+    import time
     try:
         entries = list(os.scandir(directory))
-        held = {f"{INDEX_PREFIX}{e.stat(follow_symlinks=False).st_dev}-"
-                f"{e.stat(follow_symlinks=False).st_ino}.sqlite"
+        held = {f"{e.stat(follow_symlinks=False).st_dev}-"
+                f"{e.stat(follow_symlinks=False).st_ino}"
                 for e in entries if not e.name.startswith((INDEX_PREFIX, "."))
                 and e.is_file(follow_symlinks=False)}
+        code = (_index_code() or "")[:16]
+        now = time.time()
         for entry in entries:
-            if re.fullmatch(re.escape(INDEX_PREFIX) + r"\d+-\d+\.sqlite", entry.name) \
-                    and entry.name not in held:
-                os.unlink(entry.path)
+            name = entry.name[:-len(".lock")] if entry.name.endswith(".lock") else entry.name
+            kept = _INDEX_NAME.fullmatch(name)
+            temp = _INDEX_TMP.fullmatch(entry.name)
+            try:
+                if kept is not None and (kept.group(1) not in held or (
+                        kept.group(2) != code and not entry.name.endswith(".lock")
+                        and now - entry.stat().st_mtime > OTHER_CODE_KEPT_SECONDS)):
+                    os.unlink(entry.path)
+                elif temp is not None and now - entry.stat().st_mtime > STALE_TMP_SECONDS:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+def build_shared(conn: Any, identity: Mapping[str, Any], target: Path,
+                 types: Sequence[str] = DEFAULT_TYPES,
+                 stop: Callable[[], bool] | None = None) -> bool:
+    """Have the kept index ``target`` of the store ``conn`` reads built once across
+    processes: the process holding its build lock (``<target>.lock``) builds it
+    (``build_index``); another one waits for that build to end and builds only when it
+    left no index. True when the index is there; False when none could be kept (the
+    caller reads the store itself)."""
+    import fcntl
+    import time
+    lock_path = target.with_name(target.name + ".lock")
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return build_index(conn, identity, target, types, stop)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if _STOP.is_set() or (stop is not None and stop()):
+                    return False
+                time.sleep(1.0)
+        try:
+            _Kept(target, identity).close()
+            return True   # built by another process meanwhile
+        except (OSError, sqlite3.Error, ValueError, KeyError):
+            pass
+        _prune_indexes(target.parent)
+        return build_index(conn, identity, target, types, stop)
+    finally:
+        os.close(fd)   # releases the lock
 
 
 def build_index(conn: Any, identity: Mapping[str, Any], target: Path,
@@ -729,8 +793,16 @@ class ChangeTools:
         the path later is never read into this index); the shared connection is never used
         off its callers' threads. Nothing starts when the kept index is already there."""
         with self.base.store.lock:
-            if self.kept() is not None:
-                return None
+            kept = self.kept()
+        if kept is not None:
+            # Built already: only the leftovers of builds that died are cleared.
+            try:
+                _prune_indexes(Path(next(
+                    row[2] for row in kept.conn.execute("PRAGMA database_list")
+                    if row[1] == "main")).parent)
+            except (OSError, sqlite3.Error, StopIteration):
+                pass
+            return None
         conn = self.base.store.conn
         try:
             path = next(row[2] for row in conn.execute("PRAGMA database_list")
@@ -764,7 +836,10 @@ class ChangeTools:
                     target = index_path(found[0])
                 except OSError:
                     target = None
-                if target is not None and build_index(conn, found[1], target, types, self._closed.is_set):
+                if target is not None and build_shared(conn, found[1], target, types,
+                                                       self._closed.is_set):
+                    return
+                if target is not None and self._stopping():
                     return
             for object_type in types:
                 if self._stopping():

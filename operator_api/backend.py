@@ -446,13 +446,24 @@ class Worker:
         view.bind(session)
         return view
 
-    def submit(self, reader: Reader, job: Callable[[Any], Any], *, priority: int = 0
-               ) -> Future:
-        return submit(self.jobs, self.stopped, reader, job, priority)
+    def submit(self, reader: Reader, job: Callable[[Any], Any], *, priority: int = 0,
+               deadline: Optional[float] = None) -> Future:
+        """``deadline``: the monotonic second by which nobody waits for the job's result
+        any more; the job's store statements past it are interrupted (``_bounded_job``)."""
+        future = submit(self.jobs, self.stopped, reader, job, priority)
+        if deadline is not None:
+            future.plx_deadline = deadline   # type: ignore[attr-defined]
+        return future
 
     def run(self, reader: Reader, job: Callable[[Any], Any], timeout: float = 120,
             priority: int = 0) -> Any:
-        future = self.submit(reader, job, priority=priority)
+        """The job's result within ``timeout`` seconds, else ``workbench_busy``. A job
+        still running then ends at its next store statement (it is interrupted at that
+        deadline), so the worker is free for the next reader's job instead of finishing
+        a read nobody waits for."""
+        from operating.call_limits import SQL_GRACE
+        future = self.submit(reader, job, priority=priority,
+                             deadline=time.monotonic() + timeout + SQL_GRACE)
         try:
             return future.result(timeout=timeout)
         except FutureTimeout:
@@ -475,7 +486,8 @@ class Worker:
                     continue
                 self.running += 1
                 try:
-                    future.set_result(job(self._workspace(reader.session)))
+                    future.set_result(_bounded_job(future, job, self._workspace(
+                        reader.session)))
                 except BaseException as error:  # noqa: BLE001 - handed to the route
                     future.set_exception(error)
                 finally:
@@ -496,6 +508,18 @@ class Worker:
 
     def idle_for(self) -> float:
         return 0.0 if self.busy() else time.monotonic() - self.last_done
+
+
+def _bounded_job(future: Future, job: Callable[[Any], Any], view: Any) -> Any:
+    """``job(view)`` with the store statements it runs past its future's deadline (the
+    route stopped waiting: ``Worker.run``) interrupted, so it ends there with an error
+    nobody reads rather than holding the worker; none: unbounded, as before."""
+    deadline = getattr(future, "plx_deadline", None)
+    if deadline is None:
+        return job(view)
+    from operating.call_limits import sql_deadline
+    with sql_deadline(deadline):
+        return job(view)
 
 
 _SEQ = iter(range(1, 1 << 62))
@@ -920,7 +944,10 @@ class WorkspaceBackend(ActionsMixin):
             from operating.pg.pool import Pool
             with self._lock:
                 if self._pool is None:
-                    self._pool = Pool(self.pg_dsn, max_size=4, timeout=2.0)
+                    # Suggest, units and hidden counts are interactive reads: a
+                    # connection or a statement that hangs fails fast, never the page.
+                    self._pool = Pool(self.pg_dsn, max_size=4, timeout=2.0,
+                                      connect_timeout=2, statement_timeout_ms=5000)
         return self._pool
 
     # ---- me ---------------------------------------------------------------------------

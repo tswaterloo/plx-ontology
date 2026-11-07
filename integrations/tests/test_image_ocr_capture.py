@@ -153,10 +153,25 @@ class MailImageTests(unittest.TestCase):
         store.blob = blobs.__getitem__
         store.put_text = lambda text: "t:" + text
         store.fill_text = lambda handle, status, pinned: filled.append((handle, status, pinned))
+        pools = []
+
+        class Pool:   # the worker pool, run in this process (the OCR stand-in is a mock)
+            def __init__(self, workers, mp_context=None):
+                pools.append(mp_context.get_start_method() if mp_context else "fork")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            map = staticmethod(map)
         with mock.patch.object(du, "local_image_ocr_available", return_value=True), \
-                mock.patch.object(du, "local_image_text", return_value="Open POs") as ocr:
+                mock.patch.object(du, "local_image_text", return_value="Open POs") as ocr, \
+                mock.patch("concurrent.futures.ProcessPoolExecutor", Pool):
             counts = cm.image_ocr_pass(store, budget_seconds=60, since="2026-10-01",
-                                       excluded=lambda box: box == "gone")
+                                       excluded=lambda box: box == "gone", workers=2)
+        self.assertEqual(pools, ["spawn"])   # never a fork of this threaded process
         self.assertEqual(ocr.call_count, 1)                       # one distinct table
         self.assertEqual(sorted(filled), [("a0", ct.TEXT_OCR, "t:Open POs"),
                                           ("a1", ct.TEXT_OCR, "t:Open POs")])

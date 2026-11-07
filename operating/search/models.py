@@ -185,14 +185,23 @@ class OnnxReranker:
         return out
 
 
-class TimeBoxed:
-    """Runs a reranker on one worker thread with a time box. A call made while an
-    earlier one is still running (it timed out) is refused at once (``busy``)."""
+# Reranks run side by side, up to this many (inference is read-only on the loaded model):
+# one at a time, a second search reranking beside the first got no rerank at all.
+RERANK_CONCURRENCY = 3
 
-    def __init__(self, reranker: Reranker) -> None:
+
+class TimeBoxed:
+    """Runs a reranker on up to ``workers`` worker threads, each call with a time box. A
+    call made while every worker still runs an earlier one (they timed out, or are
+    busy) is refused at once (``busy``)."""
+
+    def __init__(self, reranker: Reranker, workers: int = RERANK_CONCURRENCY) -> None:
         self.reranker = reranker
-        self._pool = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="plx-rerank")
-        self._running: cf.Future | None = None
+        self.workers = max(1, workers)
+        self._pool = cf.ThreadPoolExecutor(max_workers=self.workers,
+                                           thread_name_prefix="plx-rerank")
+        self._running: cf.Future | None = None   # the warm-up's
+        self._calls: set[cf.Future] = set()
         self._lock = threading.Lock()
 
     def warm(self, wait: bool = False) -> None:
@@ -219,7 +228,9 @@ class TimeBoxed:
         stop = threading.Event()
         done: list[float] = []
         with self._lock:
-            if self._running is not None and not self._running.done():
+            self._calls = {call for call in self._calls if not call.done()}
+            warming = self._running is not None and not self._running.done()
+            if len(self._calls) + warming >= self.workers:
                 return None, "reranker_busy"
             takes = inspect.signature(self.reranker.score).parameters
             if "sink" in takes:
@@ -230,7 +241,7 @@ class TimeBoxed:
                                            stop.is_set)
             else:
                 future = self._pool.submit(self.reranker.score, query, list(passages))
-            self._running = future
+            self._calls.add(future)
         try:
             return future.result(timeout=timeout), None
         except cf.TimeoutError:

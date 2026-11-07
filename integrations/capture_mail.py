@@ -3549,7 +3549,11 @@ def image_ocr_pass(store: MailCaptureStore, *, budget_seconds: float, workers: i
     deadline = monotonic() + budget_seconds
     digests = list(by_digest)
     import contextlib
-    with (ProcessPoolExecutor(workers) if workers > 1 else contextlib.nullcontext()) as pool:
+    import multiprocessing
+    # Spawned, never forked: a fork copies this process's threads' held locks (SQLite,
+    # logging) and its whole heap into each worker.
+    with (ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"))
+          if workers > 1 else contextlib.nullcontext()) as pool:
         run = pool.map if pool is not None else map
         for start in range(0, len(digests), 8 * max(1, workers)):
             if monotonic() >= deadline:

@@ -43,7 +43,8 @@ MAX_REQUEST = 4 << 20          # bytes in one request
 MAX_TEXTS = 200                # texts or passages in one request
 START_SECONDS = 180.0          # how long a client waits for a server it started
 POLL_SECONDS = 0.01
-WORKERS = 8                    # requests answered at once (embeds queue on one lock)
+WORKERS = 8                    # requests answered at once
+EMBED_CONCURRENCY = 4          # of them embedding at once
 
 
 def spool_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -92,7 +93,9 @@ class _Models:
         from operating.search import models
         self.embedder = models.local_embedder()
         self.reranker = models.local_reranker()
-        self.embed_lock = threading.Lock()
+        # Embeds run side by side, up to EMBED_CONCURRENCY (inference only reads the
+        # loaded model): one at a time, concurrent searches queued on each other.
+        self.embed_lock = threading.BoundedSemaphore(EMBED_CONCURRENCY)
         self.last = time.monotonic()
 
     def answer(self, request: Mapping[str, Any]) -> dict[str, Any]:

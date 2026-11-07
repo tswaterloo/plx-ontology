@@ -45,6 +45,7 @@ RECIPES = ("late_list", "at_risk", "profit")
 QUEUE_SECONDS = 8.0   # a question waits this long for a free session, then routes as typed
 TURNS = 20
 SECONDS = 12.0
+SETTLE_SECONDS = 90.0   # a session whose turn timed out has this long to send its reply
 MODEL_SETTING = "PLX_FRONT_DOOR_MODEL"
 SWITCH = "PLX_FRONT_DOOR"          # "off" turns the front door off
 
@@ -109,6 +110,7 @@ class _Session:
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                      text=True, env=env, start_new_session=True)
         self.turns = 0
+        self.owed = 0   # results of turns that timed out, still to arrive (``settle``)
         self.lines: "queue.Queue[Optional[str]]" = queue.Queue()
         threading.Thread(target=self._pump, daemon=True,
                          name="front-door-reader").start()
@@ -129,7 +131,13 @@ class _Session:
         except (BrokenPipeError, OSError, ValueError):
             return None
         self.turns += 1
-        deadline = time.monotonic() + seconds
+        self.owed += 1
+        found = self._result(time.monotonic() + seconds)
+        return found if isinstance(found, str) else None
+
+    def _result(self, deadline: float) -> Any:
+        """The next result line's text (a non-text result: ``False``), or None by the
+        deadline or at the session's end; each result read pays one owed turn."""
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -145,8 +153,19 @@ class _Session:
             except ValueError:
                 continue
             if message.get("type") == "result":
+                self.owed -= 1
                 result = message.get("result")
-                return result if isinstance(result, str) else None
+                return result if isinstance(result, str) else False
+
+    def settle(self, seconds: float) -> bool:
+        """Read the late results of the turns that timed out (dropped: their question
+        was answered without them), within ``seconds``; True when none is owed now and the
+        session still runs, so its next turn reads its own result."""
+        deadline = time.monotonic() + seconds
+        while self.owed > 0:
+            if self._result(deadline) is None:
+                return False
+        return self.proc.poll() is None
 
     def close(self) -> None:
         try:
@@ -213,6 +232,7 @@ class FrontDoor:
         self._lock = threading.Lock()
         self._starting = 0
         self._busy = 0   # sessions reading a question now
+        self._settling = 0   # sessions reading a late reply before their next question
 
     @staticmethod
     def enabled() -> bool:
@@ -227,7 +247,8 @@ class FrontDoor:
     def warm(self) -> None:
         """Start sessions in the background until ``size`` are free or starting."""
         with self._lock:
-            missing = self.size - self._free.qsize() - self._starting - self._busy
+            missing = (self.size - self._free.qsize() - self._starting - self._busy
+                       - self._settling)
             self._starting += max(0, missing)
         for _ in range(max(0, missing)):
             threading.Thread(target=self._start, daemon=True,
@@ -287,9 +308,29 @@ class FrontDoor:
                 self._busy -= 1
             if keep and session.turns < TURNS:
                 self._free.put(session)
+            elif not keep and getattr(session, "owed", 0) > 0 and session.turns < TURNS:
+                # Timed out, not ended: the warm session reads its late reply on its own
+                # thread and serves again, rather than a cold one starting in its place.
+                with self._lock:
+                    self._settling += 1
+                threading.Thread(target=self._settle, args=(session,), daemon=True,
+                                 name="front-door-settle").start()
             else:
                 session.close()
                 self.warm()
+
+    def _settle(self, session: Any) -> None:
+        try:
+            settled = session.settle(SETTLE_SECONDS)
+        except Exception:  # noqa: BLE001 - a session that cannot settle is replaced
+            settled = False
+        with self._lock:
+            self._settling -= 1
+        if settled:
+            self._free.put(session)
+        else:
+            session.close()
+            self.warm()
 
 
 __all__ = ["FrontDoor", "Reading", "RULES", "grounded"]

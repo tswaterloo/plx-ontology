@@ -60,7 +60,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .ontology_tools import (_ITEM_ACL_SCHEMES, TOOL_NAMES, OntologyTools, ReadPolicy,
                              StoreReader, _envelope_bytes, _error, default_schema,
@@ -521,6 +521,59 @@ def _file_stamp(path: Any) -> tuple | None:
 POLICY_PIN_SECONDS = 120.0
 # How often a host asks whether Postgres holds the served generation (``_store_moved``).
 PG_CHECK_SECONDS = 30.0
+
+
+# The delta overlay's layers are read side by side (``_each_layer``): a find reads every
+# layer, up to ``delta.MAX_LAYERS``, and one after another they cost seconds per find.
+LAYER_WORKERS = max(2, min(16, os.cpu_count() or 2))
+_LAYER_POOL: Any = None
+_LAYER_POOL_LOCK = threading.Lock()
+
+
+def _layer_pool() -> Any:
+    global _LAYER_POOL
+    with _LAYER_POOL_LOCK:
+        if _LAYER_POOL is None:
+            from concurrent.futures import ThreadPoolExecutor
+            _LAYER_POOL = ThreadPoolExecutor(LAYER_WORKERS, thread_name_prefix="plx-layer")
+        return _LAYER_POOL
+
+
+def _each_layer(layers: Sequence[Any], read: Callable[[Any], Any]) -> list[Any]:
+    """``read(layer)`` of every layer, in the layers' order, read side by side: the
+    calling thread reads too, taking the next unread layer, so a busy (or nested) pool
+    never holds it back; each read runs in a copy of the caller's context (its deadline,
+    its run's reader decisions). Any read's exception is raised once every read ended."""
+    import contextvars
+    count = len(layers)
+    if count < 2:
+        return [read(layer) for layer in layers]
+    out: list[Any] = [None] * count
+    failed: list[BaseException] = []
+    taken = iter(range(count))
+    taking = threading.Lock()
+    context = contextvars.copy_context()
+
+    def drain() -> None:
+        while True:
+            with taking:
+                index = next(taken, None)
+            if index is None:
+                return
+            try:
+                out[index] = context.copy().run(read, layers[index])
+            except BaseException as error:  # noqa: BLE001 - raised to the caller below
+                failed.append(error)
+
+    pool = _layer_pool()
+    helpers = [pool.submit(drain) for _ in range(min(count, LAYER_WORKERS) - 1)]
+    drain()
+    for helper in helpers:
+        if not helper.cancel():   # one never started has nothing left to read
+            helper.result()
+    if failed:
+        raise failed[0]
+    return out
 
 
 class CaseHostTools:
@@ -1028,8 +1081,8 @@ class CaseHostTools:
             # question's names resolved them once per layer, 5 times over)
             return result
         try:
-            answers = [(layer.tools.call(name, arguments, actor), layer.serves)
-                       for layer in overlay.layers]
+            answers = list(zip(_each_layer(overlay.layers, lambda layer: layer.tools.call(
+                name, arguments, actor)), (layer.serves for layer in overlay.layers)))
             merged = delta_overlay.merge_find(result, answers, overlay.owned, arguments)
         except Exception:  # noqa: BLE001 - the served answer stands
             merged = None

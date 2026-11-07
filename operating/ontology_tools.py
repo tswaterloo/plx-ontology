@@ -142,7 +142,10 @@ import sqlite3
 import threading
 import time
 import zlib
-from typing import Any, Callable, Collection, Iterable, Mapping, MutableMapping, Protocol, Sequence
+# The abstract collection classes (not their ``typing`` aliases): an ``isinstance`` check
+# against a ``typing`` alias costs several times more, and a find makes hundreds per call.
+from collections.abc import Callable, Collection, Iterable, Mapping, MutableMapping, Sequence
+from typing import Any, Protocol
 from urllib.parse import unquote
 
 from ontology import store_ddl
@@ -1337,6 +1340,31 @@ class StoreReader:
 
 
 # --------------------------------------------------------------------------- schema
+
+# What a find derives from a schema alone (its display properties, identifier carriers),
+# kept per schema object: a SchemaView is frozen and every layer of a delta overlay
+# shares its host's, so each find no longer derives them again per store it reads.
+_SCHEMA_MEMO: dict[int, tuple[Any, dict[Any, Any]]] = {}
+_SCHEMA_MEMO_LOCK = threading.Lock()
+_SCHEMA_MEMO_KEPT = 32
+
+
+def _schema_memo(schema: Any, key: Any, build: Callable[[], Any]) -> Any:
+    """``build()`` for ``schema`` and ``key``, built once per schema object (the caller
+    never changes the value)."""
+    with _SCHEMA_MEMO_LOCK:
+        held = _SCHEMA_MEMO.get(id(schema))
+        if held is not None and held[0] is schema and key in held[1]:
+            return held[1][key]
+    value = build()
+    with _SCHEMA_MEMO_LOCK:
+        held = _SCHEMA_MEMO.get(id(schema))
+        if held is None or held[0] is not schema:
+            if len(_SCHEMA_MEMO) >= _SCHEMA_MEMO_KEPT:
+                _SCHEMA_MEMO.clear()
+            held = _SCHEMA_MEMO[id(schema)] = (schema, {})
+        return held[1].setdefault(key, value)
+
 
 @dataclass(frozen=True)
 class SchemaView:
@@ -2770,10 +2798,14 @@ class OntologyTools:
                     readings[kind] = False
             return readings[kind]
 
+        held_carriers = _schema_memo(self.schema, "carriers", lambda: {
+            tid: [p for p in (declared or {}).get("properties", ())
+                  if isinstance(p, Mapping) and p.get("identifier_kind")
+                  and p.get("identifies") != "reference"]
+            for tid, declared in types.items()})
+
         def carriers(tid: str) -> list[Mapping[str, Any]]:
-            return [p for p in (types.get(tid) or {}).get("properties", ())
-                    if isinstance(p, Mapping) and p.get("identifier_kind")
-                    and p.get("identifies") != "reference"]
+            return held_carriers.get(tid, [])
 
         wanted = [object_type] if object_type is not None else sorted(
             tid for tid in types if any(reads(p["identifier_kind"]) for p in carriers(tid)))
@@ -4235,8 +4267,9 @@ class OntologyTools:
         asked_name = _name_words(query)
         typed = None
         if self.schema is not None:
-            typed = [f"{tid}.{prop}" for tid, props in self.schema.display().items()
-                     if object_type is None or tid == object_type for prop in props]
+            typed = list(_schema_memo(self.schema, ("typed", object_type), lambda: [
+                f"{tid}.{prop}" for tid, props in self.schema.display().items()
+                if object_type is None or tid == object_type for prop in props]))
         # One batch reads past the cap: each index query merges the words' whole row lists.
         batch = TEXT_SCAN_CAP + 1
         passes: list[tuple[str, Callable[[int], list[sqlite3.Row]]]] = [
@@ -4251,16 +4284,17 @@ class OntologyTools:
             # Other text is never a declared identifier's property or carrier
             # (``_carried``): that value is found by its identifier (its grammar and scope
             # gate) or as display text, never here.
-            held = typed + [f"{tid}.{prop['name']}" for tid, declared
-                            in self.schema.object_types.items()
-                            if object_type is None or tid == object_type
-                            for prop in declared.get("properties") or ()
-                            if isinstance(prop, Mapping) and prop.get("identifier_kind")]
+            held = typed + _schema_memo(self.schema, ("held", object_type), lambda: [
+                f"{tid}.{prop['name']}" for tid, declared in self.schema.object_types.items()
+                if object_type is None or tid == object_type
+                for prop in declared.get("properties") or ()
+                if isinstance(prop, Mapping) and prop.get("identifier_kind")])
             own = None
             if object_type is not None:
-                own = [prop["name"] for prop in (self.schema.object_types.get(object_type)
-                                                 or {}).get("properties") or ()
-                       if isinstance(prop, Mapping) and isinstance(prop.get("name"), str)]
+                own = list(_schema_memo(self.schema, ("own", object_type), lambda: [
+                    prop["name"] for prop in (self.schema.object_types.get(object_type)
+                                              or {}).get("properties") or ()
+                    if isinstance(prop, Mapping) and isinstance(prop.get("name"), str)]))
             passes.append(("value_text", lambda after: self.store.text_matches(
                 scope, words, held, after, batch, beside=True, object_type=object_type,
                 type_properties=own or None)))

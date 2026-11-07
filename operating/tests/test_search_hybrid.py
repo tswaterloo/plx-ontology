@@ -92,6 +92,37 @@ class RerankTimeBoxTests(unittest.TestCase):
         scores, problem = boxed.score("q", ["p"] * 2, timeout=1.0)
         self.assertEqual((scores, problem), ([0.5, 0.5], None))
 
+    def test_reranks_run_side_by_side_up_to_the_workers(self):
+        import threading
+        import time as _time
+        from operating.search.models import TimeBoxed
+
+        class Held:
+            def score(self, query, passages):
+                _time.sleep(0.3)
+                return [0.5] * len(passages)
+
+        boxed = TimeBoxed(Held(), workers=2)
+        answers = []
+        threads = [threading.Thread(target=lambda: answers.append(
+            boxed.score("q", ["p"], timeout=5.0))) for _ in range(2)]
+        began = _time.monotonic()
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+        self.assertEqual(answers, [([0.5], None)] * 2)   # neither refused as busy
+        self.assertLess(_time.monotonic() - began, 0.55)
+        # every worker held: the next call is refused at once
+        held = [threading.Thread(target=boxed.score, args=("q", ["p"], 5.0))
+                for _ in range(2)]
+        for thread in held:
+            thread.start()
+        _time.sleep(0.05)
+        self.assertEqual(boxed.score("q", ["p"], timeout=5.0), (None, "reranker_busy"))
+        for thread in held:
+            thread.join(5)
+
     def test_a_timed_out_rerank_keeps_the_batches_it_finished(self):
         import time as _time
         from operating.search.models import TimeBoxed
