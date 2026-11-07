@@ -139,6 +139,46 @@ class DeltaEquivalenceTests(DeltaCase):
         self.assertEqual(set(folded), set(owned) | set(later))
         self.assertEqual(delta.compare(Path(fold["store"]), newer, folded)["differ"], 0)
 
+    def test_a_record_restamped_after_its_layer_is_not_projected_again(self):
+        """The Portal ETL rewrites rows it did not change: a record a layer holds whose
+        newer version reads the same on every path the build reads is not projected
+        again (live 2026-11-07: 110,216 such rows fanned out to 418,523 records and 7.3M
+        values in one cycle); a real change to it is, and a path read only by an event
+        time is a change too."""
+        self.capture(T1)
+        base = self.full("gen1.sqlite")
+        self.fake.set("public.app_purchase_order", "po-a", status="RECEIVED")
+        self.capture(T2)
+        first = self.cycle(base)
+        po_a = next(o for o in self.owned(first["store"]) if '"po-a"' in o)
+        # a rewrite of a part of the row no projection reads
+        self.fake.set("public.app_purchase_order", "po-a",
+                      custom_fields={"source": "etl", "fmGeneratedPoId": 1, "etl_run": 2})
+        self.capture(T2 + timedelta(minutes=30))
+        again = self.cycle(base)
+        self.assertEqual(again["layer"], "none: nothing new", again)
+        self.assertEqual(again["new_changes"]["portal_api"], 0)
+        # what serves po-a (the first layer) is what a full build of the newest captures
+        # derives for it
+        full = self.full("gen-restamped.sqlite")
+        self.assertEqual(self.served_by(po_a), first["store"])
+        # (the version history aside: the rewrite cites a newer capture, says the same)
+        result = delta.compare(Path(first["store"]), full, [po_a], current=True)
+        self.assertEqual((result["equal"], result["differ"]), (1, 0), result)
+        # a real change to the same record is projected
+        self.fake.set("public.app_purchase_order", "po-a", status="CLOSED")
+        # and a receipt time (read by its event alone) is a change, not a restamp
+        self.fake.set("public.app_receipt", "r1", received_at="2026-09-22T09:00:00Z")
+        self.capture(T2 + timedelta(hours=1))
+        later = self.cycle(base)
+        owned = self.owned(later["store"])
+        r1 = [o for o in owned if '"r1"' in o]
+        self.assertIn(po_a, owned)
+        self.assertTrue(r1, owned)
+        newest = self.full("gen-changed.sqlite")
+        self.assertEqual(delta.compare(Path(later["store"]), newest, [po_a, *r1])["differ"],
+                         0)
+
     def served_by(self, object_id):
         """The store of the newest published layer owning ``object_id`` (None: served)."""
         pointer = json.loads((self.root / "delta" / delta.POINTER).read_text())
@@ -299,6 +339,13 @@ class DeltaDocumentTests(DeltaCase):
         delta_dir = self.root / "delta"
         self.assertTrue(all((delta_dir / name).is_file() for name in delta.KEPT))
         self.assertFalse([p for p in delta_dir.iterdir() if p.name.startswith("work-")])
+        # the superseded version is found by every scan since the generation: once its
+        # layer holds it, a cycle with nothing new projects nothing (live 2026-11-07:
+        # about 1,900 such files re-projected with 25,000 records every cycle)
+        with mock.patch.dict(os.environ, {"PLX_BUILD_WORKERS": "1"}):
+            third = self.cycle(base)
+        self.assertEqual(third["layer"], "none: nothing new", third)
+        self.assertEqual(third["new_changes"].get("sharepoint"), 0)
 
     def test_a_killed_cycles_work_is_taken_in_and_its_directory_removed(self):
         delta_dir = self.root / "delta"
@@ -432,7 +479,8 @@ class StateUpgradeTests(unittest.TestCase):
                     ("context", [("bc", json.dumps(bc)), ("bc", json.dumps(["bc", bc]))]),
                     ("owned", [("SalesOrder:bc.sales_orders:x", "bc", json.dumps(bc))])):
                 marks = ", ".join("?" * len(rows[0]))
-                old.conn.executemany(f"INSERT INTO {table} VALUES ({marks})", rows)
+                columns = ("(source, key, seen_at, closed)" if table == "changed" else "")
+                old.conn.executemany(f"INSERT INTO {table} {columns} VALUES ({marks})", rows)
             old.conn.close()
             state = delta.State(path)
             records = state.context("bc") | set(state.changed("bc"))
@@ -442,6 +490,31 @@ class StateUpgradeTests(unittest.TestCase):
                              [("bc", "production/ca41/items/1")])
             self.assertEqual(state.owned_records(["SalesOrder:bc.sales_orders:x"]),
                              {"SalesOrder:bc.sales_orders:x": ("bc", ("bc", bc))})
+
+
+    def test_a_state_without_input_marks_reopens_each_record_once_then_holds_it(self):
+        """A state written before input marks: opened, it gains them; a record found again
+        under the mark it was last taken at stays closed, a new mark reopens it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TABLE changed (source TEXT NOT NULL, key TEXT NOT NULL, "
+                             "seen_at TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0, "
+                             "PRIMARY KEY (source, key))")
+                conn.execute("INSERT INTO changed VALUES ('teams', ?, 't', 1)",
+                             (json.dumps(["teams_chat", "c/1"]),))
+            conn.close()
+            state = delta.State(path)
+            self.addCleanup(state.conn.close)
+            key = ("teams_chat", "c/1")
+            self.assertEqual(state.add("teams", [key], {key: "m1"}), 1)   # unmarked: once
+            state.close_over({}, {"teams": [key]})
+            self.assertEqual(state.add("teams", [key], {key: "m1"}), 0)
+            self.assertEqual(state.changed("teams", open_only=True), [])
+            self.assertEqual(state.add("teams", [key], {key: "m2"}), 1)
+            self.assertEqual(state.changed("teams", open_only=True), [key])
+            state.close_over({}, {"teams": [key]})
+            self.assertEqual(state.add("teams", [key]), 1)   # no mark: always reopened
 
 
 class HandleTests(unittest.TestCase):
@@ -466,3 +539,23 @@ class HandleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WherePathsTest(__import__("unittest").TestCase):
+    def test_a_bindings_filter_columns_are_read_paths(self):
+        from ontology import delta
+        where = [{"path": "categorymo", "op": "eq", "value": "AO"},
+                 {"any": [{"path": "status", "op": "eq", "value": "x"}]}]
+        self.assertEqual(set(delta._where_paths(where)), {"categorymo", "status"})
+
+    def test_the_live_schema_reads_production_category_for_its_bindings(self):
+        from ontology import delta
+        from ontology.schema import load_schema
+        schema = load_schema()
+        hits = [(tid, b) for tid, t in schema.object_types.items()
+                for b in (t.get("bindings") or ())
+                if any(p == "categorymo" for p in delta._where_paths(b.get("where")))]
+        if not hits:
+            self.skipTest("no binding filters on categorymo in this schema")
+        for _tid, b in hits:
+            self.assertIn("categorymo", set(delta._where_paths(b.get("where"))))

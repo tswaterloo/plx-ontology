@@ -197,6 +197,7 @@ import time
 import zlib
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
+from integrations import cpu_budget
 from ontology.mentions import cited_page, is_paged_file
 from ontology.mentions import sender_class as mentions_sender_class
 from ontology.types import Actor
@@ -2865,10 +2866,14 @@ def _memory_bytes() -> int | None:
 # The niceness of an OCR extraction process (and the poppler/tesseract it runs): the
 # idle cores read the backlog, never the cores the capture's lanes and text need.
 OCR_NICE = 10
+# Started by the ingest host, the OCR readings take at most this child's share of the
+# host's extraction budget and text extraction half of it (``integrations.cpu_budget``).
 PRODUCTION: dict[str, Any] = {"workers": 4, "pages_per_turn": 2, "defer_ocr": True,
-                              "ocr_workers": ocr_workers_for(_CPUS, _memory_bytes()),
+                              "ocr_workers": cpu_budget.cap(
+                                  ocr_workers_for(_CPUS, _memory_bytes())),
                               "page_size": 100, "lanes": max(1, min(12, _CPUS * 3 // 4)),
-                              "extract_workers": max(1, min(6, _CPUS // 2 - 2))}
+                              "extract_workers": cpu_budget.cap(
+                                  max(1, min(6, _CPUS // 2 - 2)), part=0.5)}
 
 
 # ---------------------------------------------------------------- what a run reads first

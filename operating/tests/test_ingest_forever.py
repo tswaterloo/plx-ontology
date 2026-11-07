@@ -293,9 +293,11 @@ class IngestModeTest(unittest.TestCase):
         self.assertEqual((block["error_code"], block["later_ask"], block["missing_settings"]),
                          ("credentials_absent", "credentials", ["FAKE_SOURCE_TOKEN"]))
         self.assertEqual(report["sources"]["mail"]["state"], "blocked")
-        child = forever.child_env({"FAKE_SOURCE_TOKEN": "x", "OTHER_SECRET": "y", "PATH": "p"},
+        child = forever.child_env({"FAKE_SOURCE_TOKEN": "x", "OTHER_SECRET": "y", "PATH": "p",
+                                   "PLX_INGEST_CPU_TOTAL": "8"},
                                   table["mail"], self.state)
         self.assertEqual(child, {"FAKE_SOURCE_TOKEN": "x", "PATH": "p",
+                                 "PLX_INGEST_CPU_BUDGET": "4",
                                  "PLX_WORKBENCH_STATE_DIR": str(self.state)})
 
     def test_cursors_persist_across_cycles_under_the_host_check(self) -> None:
@@ -588,6 +590,47 @@ class IngestModeTest(unittest.TestCase):
         self.assertEqual([r["status"] for r in runs], ["complete", "complete"])
         self.assertEqual([r["resumed_from_cursor"] for r in runs], [False, True])
         self.assertGreater(runs[1]["units_full_by_design"], 0)
+
+class CpuBudgetTest(unittest.TestCase):
+    """One host budget for the mail and SharePoint children's text extraction and OCR
+    (audit 2026-11-06: 20 extraction workers beside the rest of the host on 16 cores)."""
+
+    def test_each_extracting_child_gets_its_share_and_caps_its_pools(self) -> None:
+        from integrations import cpu_budget
+        spec = lambda name: SourceSpec(name, "fake", lambda *_: [], summarize_mail, ())
+        state = Path("/nonexistent")
+        # configured: the total is split between the extracting children only
+        settings = forever.ingest_settings({"mode": forever.MODE, "cpu_budget": 8})
+        environ = forever.budget_environ(settings, {"PATH": "p"})
+        for name, expected in (("mail", "4"), ("sharepoint", "4"), ("teams", None)):
+            env = forever.child_env(environ, spec(name), state)
+            self.assertEqual(env.get(cpu_budget.BUDGET_ENV), expected, name)
+            self.assertNotIn(cpu_budget.TOTAL_ENV, env)
+        # absent: the host's load as the child starts (16 cores: 14 quiet, 8 busy)
+        settings = forever.ingest_settings({"mode": forever.MODE})
+        self.assertIsNone(settings["cpu_budget"])
+        for load, expected in ((2.0, "7"), (40.0, "4")):
+            with mock.patch.object(os, "getloadavg", return_value=(load, 0, 0)), \
+                    mock.patch.object(os, "cpu_count", return_value=16):
+                env = forever.child_env(forever.budget_environ(settings, {}), spec("mail"),
+                                        state)
+            self.assertEqual(env[cpu_budget.BUDGET_ENV], expected, load)
+        # an operator's own per-child value stands
+        env = forever.child_env({cpu_budget.BUDGET_ENV: "2"}, spec("mail"), state)
+        self.assertEqual(env[cpu_budget.BUDGET_ENV], "2")
+        # a budget that is not 1 to 256 whole cores is refused in the config
+        for bad in (0, 257, "8", 2.5, True):
+            with self.assertRaises(forever.IngestError):
+                forever.ingest_settings({"mode": forever.MODE, "cpu_budget": bad})
+        # the child: its pools at most its share, a malformed share reads as one core,
+        # none given keeps its own sizing
+        self.assertEqual(cpu_budget.cap(14, {cpu_budget.BUDGET_ENV: "4"}), 4)
+        self.assertEqual(cpu_budget.cap(6, {cpu_budget.BUDGET_ENV: "4"}, part=0.5), 2)
+        self.assertEqual(cpu_budget.cap(3, {cpu_budget.BUDGET_ENV: "16"}), 3)
+        for bad in ("x", "0", "-3", "1e9"):
+            self.assertEqual(cpu_budget.cap(14, {cpu_budget.BUDGET_ENV: bad}), 1, bad)
+        self.assertEqual(cpu_budget.cap(14, {}), 14)
+
 
 class ConcurrentIngestTest(unittest.TestCase):
     """Sources read concurrently (2026-10-27: one cycle of seven sources one after another

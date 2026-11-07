@@ -1315,7 +1315,8 @@ class Host:
         from . import ingest_forever
 
         return self._cycle(lambda: ingest_forever.read_sources(
-            self.config.capture_sources, self.config.sources, self.state_dir, self.environ,
+            self.config.capture_sources, self.config.sources, self.state_dir,
+            ingest_forever.budget_environ(self.config.ingest, self.environ),
             grace=self.config.ingest["grace_seconds"], children=self.children(),
             parallel=ingest_forever.max_parallel(self.config.ingest,
                                                  len(self.config.sources))),
@@ -1489,7 +1490,8 @@ class Host:
 
             summary = ingest_forever.Continuous(
                 self.config.capture_sources, self.config.sources, self.state_dir,
-                self.environ, grace=self.config.ingest["grace_seconds"],
+                ingest_forever.budget_environ(self.config.ingest, self.environ),
+                grace=self.config.ingest["grace_seconds"],
                 parallel=ingest_forever.max_parallel(self.config.ingest,
                                                      len(self.config.sources)),
                 refresh=refresh, should_stop=lambda: self.stop_reason(stop_file),

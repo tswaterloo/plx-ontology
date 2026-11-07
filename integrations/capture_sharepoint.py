@@ -382,6 +382,7 @@ import sqlite3
 import time
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
+from integrations import cpu_budget
 from ontology.mentions import cited_page, is_paged_file
 from ontology.types import Actor
 
@@ -447,7 +448,9 @@ REREAD_OUTAGE_STREAK = 3
 # Worker threads that extract the text (OCR included) of a walk's new files while the walk
 # reads the next ones (:class:`_Extraction`); 1: inline. Every source read stays on the
 # walking thread, one request at a time, through the one guarded client.
-EXTRACT_WORKERS = max(1, min(4, (os.cpu_count() or 1) - 1))
+# Started by the ingest host: at most this child's share of the host's extraction
+# budget (``integrations.cpu_budget``).
+EXTRACT_WORKERS = cpu_budget.cap(max(1, min(4, (os.cpu_count() or 1) - 1)))
 # OCR never runs past the run's time budget (live 2026-10-27: a run whose walk was cut
 # while three scans were being OCR-read waited for them, past the host's grace, was
 # killed, and reported nothing). A file's OCR starts only while at least this much of the

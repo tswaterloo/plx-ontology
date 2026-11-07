@@ -116,6 +116,10 @@ UNADOPTED_DAYS = 2
 # Write-stamp properties: a change of these alone is a restamp, not a change
 # (``operating.ontology_tools_changes.STAMPS``: the Portal ETL bumps updated_at every run).
 STAMP_PROPERTIES = frozenset({"bc_last_modified_at", "fm_modified_at", "portal_updated_at"})
+# Source columns that are write stamps: a property reading nothing else is a stamp too,
+# whatever its name (the generated relation types name the Portal's ``updated_at``
+# column after itself, the domain types call it ``portal_updated_at``).
+STAMP_COLUMNS = {"portal_api": frozenset({"updated_at"})}
 
 
 def _now() -> str:
@@ -319,6 +323,10 @@ class State:
             "key TEXT NOT NULL);"
             "CREATE TABLE IF NOT EXISTS slow (digest TEXT PRIMARY KEY, "
             "timeouts INTEGER NOT NULL);")
+        # a changed record's input mark (``add``): a state written before it has none,
+        # so its records are each taken once more and marked then
+        if "mark" not in {r[1] for r in self.conn.execute("PRAGMA table_info(changed)")}:
+            self.conn.execute("ALTER TABLE changed ADD COLUMN mark TEXT")
         if self.get("state_format") != STATE_FORMAT:
             self._upgrade()
 
@@ -364,15 +372,32 @@ class State:
         self.put("base_digest", digest)
         self.put("state_format", STATE_FORMAT)
 
-    def add(self, source: str, keys: Iterable[Any]) -> int:
+    def add(self, source: str, keys: Iterable[Any],
+            marks: Mapping[Any, str] | None = None) -> int:
+        """Open ``keys`` (a record changed again is followed and projected again: its
+        newest version); the number of records opened or reopened.
+
+        ``marks``: each record's input mark as discovery read it (the capture version it
+        was found at, its removal stretches...). A record already held under the same mark
+        is not reopened: what its layer projected is what it still reads (a discovery
+        scan that sees the same version or the same removal again, cycle after cycle,
+        changes nothing). A record added without a mark is always reopened."""
         now = _now()
         before = self.conn.total_changes
-        # a record changed again is followed and projected again (its newest version)
-        self.conn.executemany("INSERT INTO changed (source, key, seen_at) VALUES (?, ?, ?) "
+        marks = marks or {}
+        self.conn.executemany("INSERT INTO changed (source, key, seen_at, mark) "
+                              "VALUES (?, ?, ?, ?) "
                               "ON CONFLICT (source, key) DO UPDATE SET closed = 0, "
-                              "seen_at = excluded.seen_at",
-                              [(source, json.dumps(k), now) for k in keys])
+                              "seen_at = excluded.seen_at, mark = excluded.mark "
+                              "WHERE excluded.mark IS NULL OR changed.mark IS NULL "
+                              "OR changed.mark != excluded.mark",
+                              [(source, json.dumps(k), now, marks.get(k)) for k in keys])
         return self.conn.total_changes - before
+
+    def marks(self, source: str) -> dict[Any, str | None]:
+        """Every record of ``source`` held as changed, with its input mark (None: none)."""
+        return {_tuple(json.loads(r[0])): r[1] for r in self.conn.execute(
+            "SELECT key, mark FROM changed WHERE source = ?", (source,))}
 
     def changed(self, source: str, *, open_only: bool = False, done_only: bool = False
                 ) -> list[Any]:
@@ -485,6 +510,7 @@ def portal_changes(mirror: Path, base: Base, state: State, plan: "Plan") -> int:
             seen = min(known) if known else 0
         start = _first_rowid(conn, seen)
         keys: set[tuple[str, str]] = set()
+        captured: dict[tuple[str, str], int] = {}   # each key's newest version found
         newest = seen
         for row in conn.execute("SELECT relation, key_json, capture_id FROM row_current "
                                 "WHERE rowid >= ?", (start,)):
@@ -493,34 +519,68 @@ def portal_changes(mirror: Path, base: Base, state: State, plan: "Plan") -> int:
                 continue
             mark = marks.get(row[0])
             if row[2] > (-1 if mark is None else mark):
-                keys.add((row[0], row[1]))
+                key = (row[0], row[1])
+                keys.add(key)
+                captured[key] = max(captured.get(key, row[2]), row[2])
         # removal stretches opened or closed after the generation was built
         since = base.built_at or ""
-        for row in conn.execute("SELECT relation, key_json FROM row_removal WHERE since > ? "
-                                "OR until > ?", (since, since)):
+        stretches: dict[tuple[str, str], list[list[Any]]] = {}
+        for row in conn.execute("SELECT relation, key_json, basis, since, until FROM "
+                                "row_removal WHERE since > ? OR until > ?", (since, since)):
             if row[0] in bound:
                 keys.add((row[0], row[1]))
+                stretches.setdefault((row[0], row[1]), []).append(list(row[2:]))
+        for key in stretches:   # a mark names the version, whichever scan found it
+            if key not in captured:
+                captured[key] = conn.execute(
+                    "SELECT MAX(capture_id) FROM row_current WHERE relation = ? AND "
+                    "key_json = ?", key).fetchone()[0]
         # A row whose every field the ontology reads (write stamps aside) equals the
         # version the served generation holds is restamped (the Portal ETL bumps
-        # updated_at on every run): the served objects already say what it says.
-        known = set(state.changed("portal_api"))
-        restamped = {key for key in keys
-                     if _restamped(conn, plan, key, marks.get(key[0]), key in known)}
+        # updated_at on every run): the served objects already say what it says. A record
+        # a layer already holds is compared with the version that layer was made from
+        # (its mark), so an ETL run that restamps it again projects nothing.
+        held = state.marks("portal_api")
+        restamped = set()
+        for key in keys:
+            if key in stretches:
+                continue   # a removal is never a restamp
+            if key not in held:
+                if _restamped(conn, plan, key, marks.get(key[0])):
+                    restamped.add(key)
+                continue
+            was = _mark_capture(held[key])
+            if was is not None and key in captured and (
+                    captured[key] <= was or _restamped(conn, plan, key, was)):
+                restamped.add(key)
+        found = sorted(keys - restamped)
+        input_marks = {key: json.dumps([captured.get(key),
+                                        sorted(stretches.get(key, []), key=str)])
+                       for key in found}
         with state.transaction():   # the keys and the cursor past them, at once
             state.put("portal_restamped", (state.get("portal_restamped") or 0) + len(restamped))
             state.put("portal_capture", newest)
-            return state.add("portal_api", sorted(keys - restamped))
+            return state.add("portal_api", found, input_marks)
     finally:
         conn.close()
 
 
+def _mark_capture(mark: str | None) -> int | None:
+    """The capture version an input mark (``State.add``) records (None: none)."""
+    try:
+        value = json.loads(mark)[0] if mark else None
+    except (ValueError, TypeError, IndexError, KeyError):
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _restamped(conn: sqlite3.Connection, plan: "Plan", key: tuple[str, str],
-               mark: int | None, known: bool = False) -> bool:
-    """Every version since the served one (the current one and any in between, so an
-    A -> B -> A revert is a change) equals the served version on every field the
-    ontology reads, write stamps aside; a record an earlier layer already holds is never
-    a restamp (its layer's version must be replaced)."""
-    if mark is None or known:
+               mark: int | None) -> bool:
+    """Every version since the one held at capture ``mark`` (the served generation's,
+    or the one a layer was made from: the current one and any in between, so an
+    A -> B -> A revert is a change) equals it on every field the ontology reads, write
+    stamps aside."""
+    if mark is None:
         return False
     paths = set()
     for bid in plan.by_relation.get(("portal_api", key[0]), ()):
@@ -638,24 +698,39 @@ def sharepoint_changes(drive: Path, lists: Path, base: Base, state: State) -> in
     item_mark = state.get("sharepoint_item") or base.mark("sharepoint", "driveItems") or 0
     list_mark = state.get("sharepoint_list") or base.mark("sharepoint", "listItems") or 0
     last_item, last_list = item_mark, list_mark
+    # an item's mark is its newest version, newest supersession and version count: an
+    # item whose version was superseded after the generation is found again by every
+    # scan, and is reopened only when a version or a supersession is new
+    captured: dict[tuple[str, ...], Any] = {}
+    stretches: dict[tuple[str, ...], list[list[Any]]] = {}
     if drive.is_file():
         with contextlib.closing(_ro(drive)) as conn:
+            items = set()
             for row in conn.execute("SELECT version_id, drive_id, item_id FROM items WHERE "
                                     "version_id > ? OR superseded_at > ?", (item_mark, since)):
                 last_item = max(last_item, row[0])
-                keys.add(("item", row[1], row[2]))
+                items.add(("item", row[1], row[2]))
+            for key in items:
+                captured[key] = list(conn.execute(
+                    "SELECT MAX(version_id), MAX(superseded_at), COUNT(*) FROM items "
+                    "WHERE drive_id = ? AND item_id = ?", key[1:]).fetchone())
+            keys |= items
     if lists.is_file():
         with contextlib.closing(_ro(lists)) as conn:
             for row in conn.execute("SELECT capture_id, kind, path FROM versions WHERE "
                                     "capture_id > ?", (list_mark,)):
                 last_list = max(last_list, row[0])
                 keys.add((row[1], row[2]))
-            keys.update((r[0], r[1]) for r in conn.execute(
-                "SELECT kind, path FROM removals WHERE since > ? OR until > ?", (since, since)))
+                captured[(row[1], row[2])] = max(captured.get((row[1], row[2]), row[0]),
+                                                 row[0])
+            removed = _store_removals(conn, None, since)
+            keys.update(removed)
+            stretches.update(removed)
+            _newest_versions(conn, removed, captured)
     with state.transaction():
         state.put("sharepoint_item", last_item)
         state.put("sharepoint_list", last_list)
-        return state.add("sharepoint", sorted(keys))
+        return state.add("sharepoint", sorted(keys), _input_marks(keys, captured, stretches))
 
 
 _MEETING_RELATIONS = {"calendar_event": "calendarEvents", "planner_task": "plannerTasks",
@@ -690,6 +765,7 @@ def store_changes(family: str, db: Path, base: Base, state: State) -> int:
             start = min(known) if known else 0
         floor = min(known) if known else 0
         keys: set[tuple[str, str]] = set()
+        captured: dict[tuple[str, str], int] = {}
         last = start
         for row in conn.execute("SELECT capture_id, kind, path FROM versions "
                                 "WHERE capture_id > ?", (start,)):
@@ -701,15 +777,48 @@ def store_changes(family: str, db: Path, base: Base, state: State) -> int:
             mark = marks.get(_store_relation(family, row[1], row[2]))
             if row[0] > (mark if isinstance(mark, int) else floor):
                 keys.add((row[1], row[2]))
-        since = base.built_at or ""
-        keys.update((r[0], r[1]) for r in conn.execute(
-            "SELECT kind, path FROM removals WHERE since > ? OR until > ?", (since, since))
-            if KIND_FAMILY.get(r[0]) == family)
+                captured[(row[1], row[2])] = max(captured.get((row[1], row[2]), row[0]),
+                                                 row[0])
+        stretches = _store_removals(conn, family, base.built_at or "")
+        keys.update(stretches)
+        _newest_versions(conn, stretches, captured)
         with state.transaction():
             state.put(f"{family}_capture", last)
-            return state.add(family, sorted(keys))
+            return state.add(family, sorted(keys), _input_marks(keys, captured, stretches))
     finally:
         conn.close()
+
+
+def _store_removals(conn: sqlite3.Connection, family: str | None, since: str
+                    ) -> dict[tuple[str, str], list[list[Any]]]:
+    """The removal stretches of a capture store opened or closed after ``since``, by
+    record (``family``: only that family's kinds)."""
+    out: dict[tuple[str, str], list[list[Any]]] = {}
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(removals)")]
+    rest = [c for c in columns if c not in ("kind", "path")]
+    for row in conn.execute(f"SELECT kind, path{''.join(', ' + c for c in rest)} FROM "
+                            "removals WHERE since > ? OR until > ?", (since, since)):
+        if family is None or KIND_FAMILY.get(row[0]) == family:
+            out.setdefault((row[0], row[1]), []).append(list(row[2:]))
+    return out
+
+
+def _newest_versions(conn: sqlite3.Connection, keys: Iterable[tuple[str, str]],
+                     captured: dict[Any, Any]) -> None:
+    """The newest version of each capture-store record found by its removals alone (a
+    mark names the version, whichever scan found the record)."""
+    for key in keys:
+        if key not in captured:
+            captured[key] = conn.execute("SELECT MAX(capture_id) FROM versions WHERE "
+                                         "kind = ? AND path = ?", key).fetchone()[0]
+
+
+def _input_marks(keys: Iterable[Any], captured: Mapping[Any, Any],
+                 stretches: Mapping[Any, Sequence[Any]]) -> dict[Any, str]:
+    """Each record's input mark (``State.add``): the newest version discovery found it
+    at and its removal stretches since the generation."""
+    return {key: json.dumps([captured.get(key), sorted(stretches.get(key, ()), key=str)],
+                            default=str) for key in keys}
 
 
 # --------------------------------------------------------------------------- schema
@@ -732,6 +841,18 @@ class Plan:
         for bid, (_tid, b) in self.bindings.items():
             self.lineage[bid] = {s for s in _strings(b.get("lineage")) if s in link_ids}
         self._paths: dict[str, set[str]] = {}
+        # paths read through a link (``via_link``: the row at the link's other end, any
+        # binding) and paths event types read: every binding counts the first, its own
+        # bindings the second (a restamp check must never miss a path the build reads)
+        self._through_links: set[str] = set()
+        self._event_paths: dict[str, set[str]] = {}
+        for found in _mappings(schema.object_types):
+            if "via_link" in found:
+                self._through_links |= _path_strings(found)
+        for found in _mappings(getattr(schema, "event_types", {}) or {}):
+            if isinstance(found.get("binding"), str):
+                self._event_paths.setdefault(found["binding"], set()).update(
+                    _path_strings(found))
         self.link_bindings: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
         for lid, lt in schema.link_types.items():
             for lb in lt.get("bindings", ()) or ():
@@ -748,15 +869,21 @@ class Plan:
         if cached is not None:
             return cached
         tid, b = self.bindings[bid]
+        stamps = STAMP_COLUMNS.get(b.get("source"), frozenset())
         paths = set(b.get("key") or ()) | set(_strings(b.get("lineage")))
+        # a binding's own filter decides whether a row becomes this object at all: a
+        # change to a filtered column (e.g. which category a row is) is never a restamp
+        paths |= set(_where_paths(b.get("where")))
+        paths |= self._through_links | self._event_paths.get(bid, set())
         for prop in self.schema.object_types[tid].get("properties", ()) or ():
             if not isinstance(prop, Mapping) or prop.get("name") in STAMP_PROPERTIES:
                 continue
             for src in prop.get("sources", ()) or ():
                 if isinstance(src, Mapping) and src.get("binding") == bid:
-                    paths |= {v for k, v in src.items() if isinstance(v, str)
-                              and (k == "path" or k.endswith("_from") or k.endswith("path"))}
-                    paths |= set(_strings(src.get("when")))
+                    read = _path_strings(src) | set(_strings(src.get("when")))
+                    if read and read <= stamps:
+                        continue   # a write stamp alone
+                    paths |= read
         for _lid, lb in self.link_bindings.get(bid, ()):
             for _target, pairs in _hops(lb, bid):
                 paths |= {mine for mine, _theirs, _pair in pairs}
@@ -766,6 +893,42 @@ class Plan:
 
     def relations(self, source: str) -> set[str]:
         return {rel for (src, rel) in self.by_relation if src == source}
+
+
+def _path_strings(spec: Mapping[str, Any]) -> set[str]:
+    """The row paths a source spec names: ``path`` and every ``*path`` or ``*_from`` key,
+    in it and in every mapping it nests (``currency_from: {via_link, path}``)."""
+    out: set[str] = set()
+    for found in _mappings(spec):
+        for k, v in found.items():
+            if k == "path" or k.endswith("path") or k.endswith("_from"):
+                out |= set(_strings(v)) if not isinstance(v, Mapping) else set()
+    return out
+
+
+def _mappings(value: Any) -> Iterator[Mapping[str, Any]]:
+    """Every mapping in ``value``, itself included, depth first."""
+    if isinstance(value, Mapping):
+        yield value
+        for item in value.values():
+            yield from _mappings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _mappings(item)
+
+
+def _where_paths(value: Any) -> Iterator[str]:
+    """The row paths a binding's ``where`` filter reads (every ``path`` in its conditions,
+    nested any/all groups included)."""
+    if isinstance(value, Mapping):
+        if isinstance(value.get("path"), str):
+            yield value["path"]
+        for item in value.values():
+            if isinstance(item, (Mapping, list, tuple)):
+                yield from _where_paths(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _where_paths(item)
 
 
 def _strings(value: Any) -> Iterator[str]:
@@ -2019,22 +2182,66 @@ def object_rows(conn: sqlite3.Connection, object_id: str) -> dict[str, list[tupl
     return out
 
 
+# What names a version rather than what it says: dropped when only the current state
+# is compared (a version restamped upstream cites a newer capture, says the same).
+_VERSION_NAMING = {"l1_handle", "digest", "recorded_at", "superseded_at", "event_id",
+                   "link_id", "reason", "evidence_handles"}
+
+
+def current_rows(conn: sqlite3.Connection, object_id: str) -> dict[str, list[tuple]]:
+    """What an object says now: the rows of its current version (and its current links,
+    identifiers and events), without the columns naming the version they came from."""
+    out: dict[str, list[tuple]] = {}
+    for table, (sql, n) in _OBJECT_ROWS.items():
+        try:
+            cur = conn.execute(sql, (object_id,) * n)
+        except sqlite3.OperationalError:
+            continue
+        names = [d[0] for d in cur.description]
+        live = names.index("superseded_at") if "superseded_at" in names else None
+        keep = [i for i, name in enumerate(names)
+                if name not in _VERSION_NAMING | {"rowid", "row_no", "id", "ver"}]
+        out[table] = sorted({tuple(json.dumps(_unnamed(row[i])) for i in keep) for row in cur
+                             if live is None or row[live] is None})
+    return out
+
+
+def _unnamed(value: Any) -> Any:
+    """A column's value without the version naming its JSON nests (a conflict's
+    citations name the captures they read)."""
+    if isinstance(value, str) and value[:1] in ("[", "{"):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return value
+        return json.dumps(_unnamed(parsed), sort_keys=True)
+    if isinstance(value, dict):
+        return {k: _unnamed(v) for k, v in value.items() if k not in _VERSION_NAMING}
+    if isinstance(value, list):
+        return [_unnamed(v) for v in value]
+    return value
+
+
 def compare(delta_store: Path, other_store: Path, object_ids: Iterable[str],
-            *, link_ends: Iterable[str] | None = None) -> dict[str, Any]:
+            *, link_ends: Iterable[str] | None = None, current: bool = False
+            ) -> dict[str, Any]:
     """Row-for-row comparison of each object's served rows in the delta store and in
     another store (a full build): equal objects, and per differing object the tables that
     differ. ``link_ends``: compare only links whose other end is one of these (the rest of
-    a context end's links are not the delta's)."""
+    a context end's links are not the delta's). ``current``: compare what each object
+    says now (:func:`current_rows`), not its version history."""
     a, b = _ro(delta_store), _ro(other_store)
     ends = None if link_ends is None else set(link_ends)
+    rows_of = current_rows if current else object_rows
+    f, t = (1, 2) if current else (2, 3)   # a link's ends (current rows drop link_id)
     equal, differ = 0, {}
     try:
         for oid in object_ids:
-            mine, theirs = object_rows(a, oid), object_rows(b, oid)
+            mine, theirs = rows_of(a, oid), rows_of(b, oid)
             if ends is not None:
                 for rows in (mine, theirs):
                     rows["links"] = [r for r in rows.get("links", ())
-                                     if json.loads(r[2]) in ends and json.loads(r[3]) in ends]
+                                     if json.loads(r[f]) in ends and json.loads(r[t]) in ends]
             tables = sorted(t for t in set(mine) | set(theirs) if mine.get(t) != theirs.get(t))
             if tables:
                 differ[oid] = {t: {"delta": len(mine.get(t, ())), "full": len(theirs.get(t, ()))}

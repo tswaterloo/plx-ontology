@@ -640,6 +640,11 @@ def child_env(environ: Mapping[str, str], spec: SourceSpec, state: Path) -> dict
            if not CREDENTIAL_NAME.search(name) or name in spec.env
            or name in spec.optional_env}
     env[STATE_ENV] = str(state)
+    from integrations import cpu_budget
+    env.pop(cpu_budget.TOTAL_ENV, None)
+    if spec.name in cpu_budget.EXTRACTING and cpu_budget.BUDGET_ENV not in env:
+        # its share of the host's one extraction budget (``ingest.cpu_budget``)
+        env[cpu_budget.BUDGET_ENV] = str(cpu_budget.child_share(environ))
     return env
 
 
@@ -991,22 +996,37 @@ def ingest_settings(value: Any) -> dict[str, Any]:
     :data:`MAX_PARALLEL`), ``build_inputs`` (:data:`BUILD_INPUTS`, default ``live``) and
     ``builds`` (``on``, the default: each refresh builds the next projection generation;
     ``off``: captures and their records only, the served generation stays and the row
-    deltas keep the stores current, docs/pg-cutover.md); anything else is refused."""
+    deltas keep the stores current, docs/pg-cutover.md) and ``cpu_budget`` (cores the
+    mail and SharePoint children's text extraction and OCR share, 1 to 256; absent:
+    ``integrations.cpu_budget.host_budget`` as each child starts); anything else is
+    refused."""
     if not isinstance(value, Mapping) or set(value) - {"mode", "grace_seconds",
                                                        "max_parallel", "build_inputs",
-                                                       "builds"} \
+                                                       "builds", "cpu_budget"} \
             or value.get("mode") != MODE \
             or value.get("builds", "on") not in ("on", "off") \
             or value.get("build_inputs", "live") not in BUILD_INPUTS:
         raise IngestError("ingest_config_invalid")
     grace = value.get("grace_seconds", DEFAULT_GRACE_SECONDS)
     parallel = value.get("max_parallel")
+    budget = value.get("cpu_budget")
     if not _number(grace, 1, MAX_GRACE_SECONDS) or parallel is not None and (
-            type(parallel) is not int or not 1 <= parallel <= MAX_PARALLEL):
+            type(parallel) is not int or not 1 <= parallel <= MAX_PARALLEL) \
+            or budget is not None and (type(budget) is not int or not 1 <= budget <= 256):
         raise IngestError("ingest_config_invalid")
     return {"mode": MODE, "grace_seconds": grace, "max_parallel": parallel,
             "build_inputs": value.get("build_inputs", "live"),
-            "builds": value.get("builds", "on")}
+            "builds": value.get("builds", "on"), "cpu_budget": budget}
+
+
+def budget_environ(settings: Mapping[str, Any], environ: Mapping[str, str]
+                   ) -> Mapping[str, str]:
+    """``environ`` with the configured extraction budget for the runner to hand out
+    (``child_env``); unchanged when none is configured."""
+    from integrations import cpu_budget
+    if settings.get("cpu_budget") is None:
+        return environ
+    return {**environ, cpu_budget.TOTAL_ENV: str(settings["cpu_budget"])}
 
 
 def max_parallel(settings: Mapping[str, Any], configured: int) -> int:
